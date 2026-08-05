@@ -1,6 +1,7 @@
 # autoresearch
 
 [![ci](https://github.com/agentic-learning-ai-lab/autoresearch/actions/workflows/ci.yml/badge.svg)](https://github.com/agentic-learning-ai-lab/autoresearch/actions/workflows/ci.yml)
+
 Autonomous research agent that co-develops the lab's benchmark-bearing repos:
 picks work, implements, runs GPU experiments, opens PRs when metrics improve,
 reviews PRs, reports weekly. Humans keep the merge button.
