@@ -77,6 +77,28 @@ needs inbound access is a human with the runbook.
 - **GPU jobs**: submitted `--nice`/requeueable so humans always win the queue at
   deadlines; the pause sentinel doubles as a deadline blackout switch.
 
+## Task granularity
+
+A task is **one hypothesis, one PR** — but its evaluation scope follows the
+target's artifact structure, declared in the contract:
+
+- *Independent solvers* (the pilot): scope = a single benchmark; one PR moves
+  one metric; solvers never share code (duplication is fine in throwaway code).
+- *Unified benchmark* (jepa-agent): the artifact is one agent evaluated across
+  a suite, so a change to the shared artifact (world model, planner, memory) is
+  evaluated on the **full suite** and reported as the per-env breakdown plus the
+  contract's aggregate — improvements and regressions both. No cherry-picking;
+  contracts may declare suite aggregates (e.g. mean success rate) and
+  no-regression floors.
+
+What stays absolute regardless of scope: one hypothesis per PR (attributable
+diffs), full-scope reporting, and **cross-target separation** — separate clones,
+branches, budgets, and report streams per target (`runs/<target>/`,
+`lessons/<target>.md`), never cross-target code reuse. The only global artifact
+is this machinery; the only cross-project channel is process lessons in the
+notebook. Promotion of agent-written code into a target's shared library is a
+human-gated proposal like anyone else's, never implicit.
+
 ## The research loop
 
 ```
