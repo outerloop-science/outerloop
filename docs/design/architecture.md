@@ -67,10 +67,11 @@ needs inbound access is a human with the runbook.
 - **One state store**: an unprotected `state` branch on the notebook repo (task
   queue, leases, sentinel, run ledger). The bot already has write there; direct
   pushes give the lease its compare-and-swap; the notebook's `main` stays
-  PR-gated; and the bot never needs access to this repo — access is granted at
-  the phase that needs it (the reviewer uses the target repo's own Actions
-  `GITHUB_TOKEN`; the bot's first target-repo grant comes with the phase-5
-  opt-in). Issues and PRs are for humans — reports, digests, alerts.
+  PR-gated. The bot holds read-only on this repo (deploy pulls only — never
+  write); target-repo grants come at the phase that needs them (the reviewer
+  uses the target repo's own Actions `GITHUB_TOKEN`; the first target Write
+  grant comes with the phase-5 opt-in). Issues and PRs are for humans —
+  reports, digests, alerts.
 - **Watchdog**: a scheduled GitHub Action; alert-only (it cannot reach Torch) —
   it opens an issue and emails on stale heartbeat. Restart is a human action;
   the lease makes restarts safe, the runbook makes them fast.
@@ -83,9 +84,12 @@ needs inbound access is a human with the runbook.
   orchestrator from the fresh checkout. Merges to main are live at the next
   tick; a bad merge crashes the tick but not the chain — heartbeat records it,
   the fix is a revert PR. Slurm spools batch scripts at submission, so shim
-  changes propagate one tick-generation later. The pull authenticates with a
-  separate read-only fine-grained PAT (contents: read, this repo only) from the
-  sponsor account — the bot has no access here by design. Deploying from a
+  changes propagate one tick-generation later. The pull authenticates with the
+  bot PAT: the bot holds a **Read** collaborator role on this repo, so the
+  intersection rule makes the same token read-only here while R/W on its
+  targets — no extra deploy credential. Write stays impossible at the account
+  layer (read denial would be theater anyway: sessions share the filesystem
+  with the deploy clone, and this repo holds no secrets). Deploying from a
   pinned tag instead of main: deferred unless bad merges reach the loop.
 
 ## Task granularity
