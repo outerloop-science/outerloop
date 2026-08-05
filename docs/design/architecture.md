@@ -151,9 +151,14 @@ grep + recency + distillation until that provably fails.
 
 ## Secrets and confidentiality
 
+- **Bot account access**: direct per-repo collaborator grants (Write) on exactly
+  the opted-in repos — **never via team membership** (teams carry maintain,
+  receive review requests, and inherit future grants invisibly). The collaborator
+  list is the opt-in list.
 - **Bot PAT**: fine-grained; repos enumerated to the opted-in set; permissions
   contents + pull-requests + issues only — **no workflow permission**; 90-day
-  expiry with a rotation reminder in the ops calendar.
+  expiry with a rotation reminder in the ops calendar. Effective access is the
+  intersection of account grants and token scope — both stay minimal.
 - **Keys**: orchestrator env/0600 files in the cluster home dir. Exception, by
   design: the reviewer role holds its own separate, spend-capped API key in
   GitHub Actions secrets, revocable independently; fork PRs run without secrets.
