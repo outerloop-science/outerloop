@@ -29,10 +29,12 @@ Torch is backend #1 behind the `compute` interface. The external shape:
   commands and reports results. Access = they grant a runner, not credentials
   to their systems; and external code **never executes on lab or university
   hardware** — the runner is also the sandboxing answer.
-- **Verifiable reward**: benchmark commands are deterministic and re-runnable,
-  so a metric claimed in a PR is re-verified by the target's own CI at merge —
-  a receipt anyone with the repo can regenerate, not an assertion by the
-  agent. Attestation/signing layers on later if trust demands it.
+- **Grounded reward**: the reward is grounded in executed experiments — a
+  hypothesis is scored by actually running it, never by the model's own
+  judgment. Re-runnability is the product layer on top of that grounding:
+  benchmark commands are deterministic, so the target's CI can regenerate a
+  claimed metric at merge, and attestation can layer on later if trust
+  demands it.
 
 ## Multi-tenancy hardening
 
