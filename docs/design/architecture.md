@@ -64,8 +64,13 @@ needs inbound access is a human with the runbook.
   (3) write heartbeat with lease expiry; (4) work — sessions under a hard timeout
   safely below the partition walltime; (5) refresh heartbeat, exit. Stale leases
   are reaped by the next tick.
-- **One state store**: the state branch (task queue, leases, sentinel, run
-  ledger). Issues and PRs are for humans — reports, digests, alerts.
+- **One state store**: an unprotected `state` branch on the notebook repo (task
+  queue, leases, sentinel, run ledger). The bot already has write there; direct
+  pushes give the lease its compare-and-swap; the notebook's `main` stays
+  PR-gated; and the bot never needs access to this repo — access is granted at
+  the phase that needs it (the reviewer uses the target repo's own Actions
+  `GITHUB_TOKEN`; the bot's first target-repo grant comes with the phase-5
+  opt-in). Issues and PRs are for humans — reports, digests, alerts.
 - **Watchdog**: a scheduled GitHub Action; alert-only (it cannot reach Torch) —
   it opens an issue and emails on stale heartbeat. Restart is a human action;
   the lease makes restarts safe, the runbook makes them fast.
@@ -162,6 +167,8 @@ grep + recency + distillation until that provably fails.
 - **Keys**: orchestrator env/0600 files in the cluster home dir. Exception, by
   design: the reviewer role holds its own separate, spend-capped API key in
   GitHub Actions secrets, revocable independently; fork PRs run without secrets.
+  The reviewer's GitHub operations use the workflow's default `GITHUB_TOKEN` —
+  the bot PAT is not involved in that role.
 - **Transcripts**: contain target-repo code — same confidentiality as the code.
   Secret-scanned, then stored on project space (not scratch — 60-day purge) with
   a stated retention period; durable per-run metadata lives in the ledger so
