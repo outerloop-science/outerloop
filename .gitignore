@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environments
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Agent run artifacts (transcripts contain target-repo code — never commit)
+runs/
+transcripts/
+outputs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# NOTE: operational scripts (*.sh, *.slurm) are committed in scripts/, never ignored.

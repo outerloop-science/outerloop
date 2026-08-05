@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autoresearch"
+dynamic = ["version"]
+description = "Autonomous research agent that co-develops the lab's benchmark-bearing repos"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Agentic Learning AI Lab, New York University" }]
+dependencies = []
+
+# Deps are added with the code that needs them (see docs/roadmap.md). Planned:
+#   contract : pydantic
+#   github   : PyGithub or gh-CLI wrappers
+#   compute  : (stdlib subprocess over sbatch/squeue; no dep expected)
+#   llm      : anthropic, openai
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8",
+    "pre-commit>=4",
+]
+
+[tool.hatch.version]
+path = "src/autoresearch/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autoresearch"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E731", "SIM108"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -m 'not slow and not llm and not slurm'"
+markers = [
+    "slow: long-running; nightly/manual only",
+    "llm: calls a paid LLM API; manual only, never CI",
+    "slurm: needs a Slurm cluster; manual only, never CI",
+]

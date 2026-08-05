@@ -1,0 +1,3 @@
+# Solo phase. Add a second code owner before raising required approvals to 1
+# (scripts/setup_branch_protection.sh).
+* @renmengye
