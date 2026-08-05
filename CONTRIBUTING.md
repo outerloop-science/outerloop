@@ -23,6 +23,8 @@ uv run pre-commit install
   code-owner approval when a second owner joins
   (`scripts/setup_branch_protection.sh <repo> 1`).
 - Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
+- Solo phase: code PRs get an adversarial review-agent pass before merge;
+  findings are fixed or explicitly waived in the PR thread.
 
 ## Style
 
