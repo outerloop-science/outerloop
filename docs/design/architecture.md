@@ -77,6 +77,17 @@ needs inbound access is a human with the runbook.
 - **GPU jobs**: submitted `--nice`/requeueable so humans always win the queue at
   deadlines; the pause sentinel doubles as a deadline blackout switch.
 
+## Task granularity
+
+Tasks are keyed `(target repo, benchmark)` and stay that narrow: one PR touches
+one benchmark's scope and moves one metric, so every diff is reviewable and
+every metric delta attributable. No cross-target code reuse — separate clones,
+branches, budgets, and report streams per target (`runs/<target>/`,
+`lessons/<target>.md`). The only global artifact is this machinery; the only
+cross-project channel is process lessons in the notebook, which inform task
+selection without moving code. Promotion of agent-written code into a target's
+shared library is a human-gated proposal like anyone else's, never implicit.
+
 ## The research loop
 
 ```
