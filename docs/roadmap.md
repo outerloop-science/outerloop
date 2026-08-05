@@ -10,7 +10,7 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 
 ## Phase 1 — Contract + GitHub plumbing
 
-- [ ] `contract`: pydantic schema + loader, including the hard-coded invariants
+- [x] `contract`: pydantic schema + loader, including the hard-coded invariants
       (no self-targeting; contract/roadmap/`.github/` always forbidden)
 - [ ] `github`: bot auth, clone/branch/push, PR + issue operations
 - [ ] Dry-run mode: everything logs, nothing posts
