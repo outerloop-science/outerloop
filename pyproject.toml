@@ -11,10 +11,12 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Agentic Learning AI Lab, New York University" }]
-dependencies = []
+dependencies = [
+    "pydantic>=2",
+    "pyyaml>=6",
+]
 
 # Deps are added with the code that needs them (see docs/roadmap.md). Planned:
-#   contract : pydantic
 #   github   : PyGithub or gh-CLI wrappers
 #   compute  : (stdlib subprocess over sbatch/squeue; no dep expected)
 #   llm      : anthropic, openai
