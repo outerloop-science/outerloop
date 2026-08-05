@@ -81,6 +81,12 @@ the research repos' porting timelines; mistakes are free; adversarial testing
 - [ ] egolearn as second research target; second harness backend if volume warrants
 - [ ] API model tiering informed by pilot data; cloud burst if queues block
 
+## Beyond 1.0 — external-facing (design: design/external.md)
+
+- [ ] GitHub App identity replacing the machine user
+- [ ] Storage interface: notebook-repo backend → walled multi-tenant store
+- [ ] Experiment-backend interface: consumer-side runners, verifiable rewards
+
 ## Manual prerequisites (Mengye)
 
 - [ ] Create the bot machine user; invite to org (free seat on Team plan); mint
