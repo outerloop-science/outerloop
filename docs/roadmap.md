@@ -46,12 +46,20 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 
 ## Phase 5 — Benchmark-climb pilot
 
-- [ ] `.autoresearch.yaml` lands in jepa-agent with one benchmark
+Target: [autoresearch-pilot](https://github.com/agentic-learning-ai-lab/autoresearch-pilot)
+— a non-research-bearing proving ground (tsp / denoise / speedup; deterministic,
+CPU-only, contract and baselines already committed). Decouples this roadmap from
+the research repos' porting timelines; mistakes are free; adversarial testing
+(injection via issues) is staged here, never on research repos.
+
+- [ ] Bot opt-in on the pilot: Write grant + token scope
 - [ ] Task pinning: target SHA + contract hash at task start, re-validated each
       poll; baseline re-run at merge-base
-- [ ] Full loop on that benchmark; bounded iterations; PR with results table
+- [ ] Full loop on the pilot benchmarks; bounded iterations; PR with results
+      table, one human code-owner approval per merge
 - [ ] Every run ends with a research report — hypothesis, outcome, takeaways,
       next steps — posted to the PR or the ledger (negative results included)
+- [ ] Staged injection tests against the pilot before any research target
 
 ## Phase 6 — Reporting & research memory
 
@@ -62,9 +70,12 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 - [ ] Periodic distillation pass: raw reports → bounded lessons/<target>.md
 - [ ] Weekly digest aggregates per-run reports; cost ledger; leaderboard history
 
-## Phase 7 — Scale-out
+## Phase 7 — Research targets & scale-out
 
-- [ ] egolearn as second target; second harness backend if pilot volume warrants
+- [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
+      grant + token scope, once its benchmark harness lands and the pilot's
+      PR-quality bar is met
+- [ ] egolearn as second research target; second harness backend if volume warrants
 - [ ] API model tiering informed by pilot data; cloud burst if queues block
 
 ## Manual prerequisites (Mengye)
