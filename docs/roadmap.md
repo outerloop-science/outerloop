@@ -12,8 +12,8 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 
 - [x] `contract`: pydantic schema + loader, including the hard-coded invariants
       (no self-targeting; contract/roadmap/`.github/` always forbidden)
-- [ ] `github`: bot auth, clone/branch/push, PR + issue operations
-- [ ] Dry-run mode: everything logs, nothing posts
+- [x] `github`: bot auth, clone/branch/push, PR + issue operations
+- [x] Dry-run mode: everything logs, nothing posts
 
 ## Phase 2 — Advisory reviewer
 
