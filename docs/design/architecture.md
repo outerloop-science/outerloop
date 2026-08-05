@@ -76,6 +76,17 @@ needs inbound access is a human with the runbook.
   the lease makes restarts safe, the runbook makes them fast.
 - **GPU jobs**: submitted `--nice`/requeueable so humans always win the queue at
   deadlines; the pause sentinel doubles as a deadline blackout switch.
+- **Deployment = pull at tick start.** The batch script is a minimal, stable
+  shim ordered so updates can never kill the chain: submit successors first
+  (with the already-queued shim), then `git reset --hard origin/main` +
+  `uv sync --locked` in the deploy clone (Torch home dir), then exec the
+  orchestrator from the fresh checkout. Merges to main are live at the next
+  tick; a bad merge crashes the tick but not the chain — heartbeat records it,
+  the fix is a revert PR. Slurm spools batch scripts at submission, so shim
+  changes propagate one tick-generation later. The pull authenticates with a
+  separate read-only fine-grained PAT (contents: read, this repo only) from the
+  sponsor account — the bot has no access here by design. Deploying from a
+  pinned tag instead of main: deferred unless bad merges reach the loop.
 
 ## Task granularity
 

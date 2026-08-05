@@ -37,6 +37,8 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 
 - [ ] The chain: two queued successors, `--dependency=singleton`, absolute
       `--begin` cadence grid, sbatch retry/backoff
+- [ ] Deploy shim: submit-successors → pull main → `uv sync --locked` → exec;
+      read-only deploy PAT (sponsor account, contents: read, this repo only)
 - [ ] Pause sentinel + lease (compare-and-swap on the state branch); heartbeat at
       tick start; stale-lease reaping
 - [ ] `compute`: sbatch submit / squeue poll, jobs tagged + `--nice`, GPU-hour caps
