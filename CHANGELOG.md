@@ -28,6 +28,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Phase 4 loop plumbing: `compute` (Slurm submit/status/cancel behind an
+  injectable runner; afterany wake jobs; query-failure ≠ job-gone),
+  `runstate` (atomic run records, six endings, expiring wake leases with
+  handoff), `tick` (pause sentinel, heartbeat, the five-layer fail-safe
+  sweep), and the self-resubmitting chain script.
+
 - `autoresearch.brief` (typed, bounded, replayable session briefs — the
   context-engineering artifact) and `autoresearch.harness` (backend seam;
   Claude Code adapter with scrubbed session env, timeouts, and key-redacted
