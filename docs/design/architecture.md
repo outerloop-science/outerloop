@@ -222,6 +222,26 @@ accounting) live inside the adapter; context policy lives in the brief builder,
 shared by all backends. This is also what makes backend comparisons honest:
 same brief, same task pool, different backend, diff the outcomes.
 
+## Placement on the cluster (Torch facts, verified 2026-08-06)
+
+Slurm bounds every job: `cpu_short` = 6h wall, `cpu48`/`gpu48` = 48h,
+`cpu168`/`gpu168` = 7d. GPU partitions carry a utilization floor. Nothing
+about the agent may therefore depend on a long-lived process — and nothing
+does: **the agent is state on the shared filesystem** (per-run HOME, the
+workspace, run reports), never a process. Job death loses at most one bounded
+step, never the research.
+
+| What | Where | Lifetime | Why |
+| --- | --- | --- | --- |
+| Orchestrator tick | `cpu_short` | minutes | Self-resubmitting sbatch chain (verified live: a compute-node job can sbatch its successor with `--begin`); two queued successors + the GH-Actions watchdog cover a lost link |
+| Agent session | `cpu_short` | ≤ 1h (harness timeout) | A session must NEVER hold a GPU: it thinks, edits, and submits — idling a GPU under the utilization floor gets jobs killed and wastes allocation |
+| Experiment | `gpu48` (`gpu168` only by exception) | ≤ 48h and ≤ the contract's `gpu_hours_per_run` | Actually uses the GPU, so the floor is satisfied; results land on the shared filesystem |
+| The agent itself | shared filesystem | unbounded | Run state + session state + reports; any node can wake it (verified live: a session resumed on a different node recalled its context verbatim) |
+
+Scheduler etiquette learned live: `--exclude` is disallowed on Torch and node
+pinning (`-w`) queues behind reservations — the orchestrator requests
+partitions and lets the scheduler place jobs, never nodes.
+
 ## Threat model
 
 - **Untrusted text.** Task sources are attacker-writable once target repos are
