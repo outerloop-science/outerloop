@@ -131,9 +131,12 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     )
     assert outcome.outcome == "improved"
     assert outcome.pr_url.endswith("/pull/1")
-    # the branch actually landed in the bare origin with only the solver edit
-    files = _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-1").split()
-    assert files == ["src/pilot/solvers/tsp.py"]
+    # the branch landed in the bare origin: the solver edit plus the two
+    # orchestrator-written progress files, nothing else
+    files = set(
+        _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-1").split()
+    )
+    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
     pr = github.prs[0]
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert "13.876" in pr["title"]
@@ -290,3 +293,56 @@ def test_report_is_written_for_every_outcome(tmp_path, target_repo) -> None:
     text = Path(outcome.report_path).read_text()
     assert "no-improvement" in text
     assert "Agent's report" in text
+
+
+def test_improvement_pr_carries_progress_table(tmp_path, target_repo) -> None:
+    """The human-readable record lands in the same PR as the improvement."""
+    import json as _json
+
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+    )
+    assert outcome.outcome == "improved"
+    files = set(
+        _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-1").split()
+    )
+    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
+    table = _git(target_repo, "show", "feat/auto/agent-01/tsp-1:BENCHMARKS.md")
+    assert "| tsp | `mean_tour_length` ↓ | 13.876 | 13.1 |" in table
+    assert "▲" in table  # improvement marked good even though direction=min
+    leader = _json.loads(_git(target_repo, "show", "feat/auto/agent-01/tsp-1:results/leader.json"))
+    assert leader["tsp"]["best"] == 13.1
+    assert leader["tsp"]["baseline"] == 13.876
+
+
+def test_agent_editing_benchmarks_md_ends_the_run(tmp_path, target_repo) -> None:
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "ok\n",
+            "BENCHMARKS.md": "| fake | glory |\n",
+        },
+        values=[13.876, 13.1],
+    )
+    assert outcome.outcome == "scope-violation"
+    assert github.prs == []
+
+
+def test_second_improvement_updates_best_keeps_baseline(tmp_path, target_repo) -> None:
+    import json as _json
+
+    edits = {"src/pilot/solvers/tsp.py": "v1\n"}
+    run_live(tmp_path, target_repo, edits=edits, values=[13.876, 13.1], run_id="tsp-a")
+    # simulate the merge of run a: advance main to its branch
+    _git(target_repo, "branch", "-f", "main", "feat/auto/agent-01/tsp-a")
+    edits2 = {"src/pilot/solvers/tsp.py": "v2\n"}
+    outcome, _ = run_live(tmp_path, target_repo, edits=edits2, values=[13.1, 12.4], run_id="tsp-b")
+    assert outcome.outcome == "improved"
+    leader = _json.loads(_git(target_repo, "show", "feat/auto/agent-01/tsp-b:results/leader.json"))
+    assert leader["tsp"]["baseline"] == 13.876  # pinned from the FIRST run
+    assert leader["tsp"]["best"] == 12.4
+    assert leader["tsp"]["best_run"] == "tsp-b"

@@ -30,6 +30,12 @@ from autoresearch.orchestrator import (
     out_of_scope,
     pr_body,
 )
+from autoresearch.progress import (
+    PROGRESS_PATHS,
+    load_leader,
+    update_leader,
+    write_progress,
+)
 from autoresearch.runstate import (
     ABORTED,
     ENDED,
@@ -137,12 +143,30 @@ def live_climb(
             # unique branch per run: a fixed name collides on the second run
             branch = f"{config.branch_prefix}/{run_id}"
             ws.branch(branch)
+            # Progress record (BENCHMARKS.md + results/leader.json), written
+            # by the orchestrator from ITS measurements after the drift check
+            # — the improvement and its human-readable record land in one PR.
+            if result.baseline is None or result.candidate is None:
+                raise WorkspaceDrift("improved result missing measurements")
+            bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+            entries = update_leader(
+                load_leader(workspace),
+                benchmark=bench.name,
+                metric=bench.metric,
+                direction=bench.direction,
+                baseline=result.baseline,
+                candidate=result.candidate,
+                run_id=run_id,
+                date=created[:10],
+            )
+            write_progress(workspace, entries, config.target)
             # The commit veto re-checks FULL scope (allowed + forbidden) as
-            # defense in depth behind climb_once's pre-eval check.
+            # defense in depth behind climb_once's pre-eval check. The two
+            # orchestrator-written progress files are the only exemption.
             ws.commit_all(
                 f"agent: improve {config.benchmark} ({result.baseline} -> {result.candidate})",
                 author=config.agent_id,
-                forbidden=lambda p: bool(out_of_scope([p], contract)),
+                forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
             ws.push(branch)
             pr_url = github.create_pull(

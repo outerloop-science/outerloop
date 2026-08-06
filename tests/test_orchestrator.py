@@ -297,3 +297,30 @@ def test_report_redacts_secrets(tmp_path: Path) -> None:
     report = result.report(CONFIG, redact_secrets=("sk-report-leak",))
     assert "sk-report-leak" not in report
     assert "[redacted]" in report
+
+
+def test_progress_render_and_ledger_roundtrip(tmp_path: Path) -> None:
+    from autoresearch.progress import (
+        load_leader,
+        render_markdown,
+        update_leader,
+        write_progress,
+    )
+
+    entries = update_leader({}, "tsp", "mean_tour_length", "min", 13.876, 13.1, "r1", "2026-08-06")
+    entries = update_leader(entries, "sokoban", "solve_rate", "max", 0.25, 0.31, "r2", "2026-08-06")
+    write_progress(tmp_path, entries, "org/pilot")
+    reloaded = load_leader(tmp_path)
+    assert reloaded == entries
+    table = render_markdown(reloaded, "org/pilot")
+    assert "| sokoban | `solve_rate` ↑ | 0.25 | 0.31 | ▲ +24.0% |" in table
+    assert "measured by the orchestrator" in table
+
+
+def test_leader_survives_corruption(tmp_path: Path) -> None:
+    from autoresearch.progress import LEADER_FILE, load_leader
+
+    path = tmp_path / LEADER_FILE
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken")
+    assert load_leader(tmp_path) == {}
