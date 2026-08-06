@@ -17,6 +17,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Deployment hardening for the reviewer: operational LLM errors map to
+  `CompleterError` (an expected failure — never reds a target repo's CI),
+  missing API key skips cleanly, and the reusable workflow accepts a read-only
+  deploy key so private self-hosted copies work. README rewritten for external
+  adopters.
 - `autoresearch.contract_cli`: validate a `.autoresearch.yaml` locally and print
   what the agent would be allowed to do.
 - `autoresearch.review` + reusable advisory-review workflow: constrained PR

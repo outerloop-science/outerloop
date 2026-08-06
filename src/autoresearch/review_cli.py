@@ -13,7 +13,7 @@ import os
 import sys
 
 from autoresearch.github import EnvTokenProvider, GitHubClient, GitHubError
-from autoresearch.llm import AnthropicCompleter, RefusalError
+from autoresearch.llm import AnthropicCompleter, CompleterError, RefusalError, TruncatedError
 from autoresearch.review import MARKER, PullRequest, format_comment, review
 
 log = logging.getLogger(__name__)
@@ -21,7 +21,15 @@ log = logging.getLogger(__name__)
 # Failures that mean "this run can't post" — logged, never fatal, because an
 # advisory reviewer must not turn a target repo's CI red. Programming errors
 # (AttributeError, KeyError, TypeError) deliberately propagate.
-EXPECTED_FAILURES = (GitHubError, RefusalError, ValueError, OSError, json.JSONDecodeError)
+EXPECTED_FAILURES = (
+    GitHubError,
+    RefusalError,
+    TruncatedError,
+    CompleterError,
+    ValueError,
+    OSError,
+    json.JSONDecodeError,
+)
 
 
 def main() -> int:
@@ -33,6 +41,11 @@ def main() -> int:
     bot_login = os.environ.get("REVIEW_BOT_LOGIN", "").strip()
     if not bot_login:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
+        return 0
+    # An unset secret arrives as an empty string; skip cleanly instead of
+    # crashing inside the API client.
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        log.warning("ANTHROPIC_API_KEY is unset or empty; skipping review")
         return 0
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
 

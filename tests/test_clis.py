@@ -54,6 +54,26 @@ def test_review_cli_never_fails_the_build_on_api_errors(monkeypatch, caplog) -> 
     monkeypatch.setenv("PR_REPO", "org/repo")
     monkeypatch.setenv("PR_NUMBER", "1")
     monkeypatch.setenv("REVIEW_BOT_LOGIN", "some-bot")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)  # -> ValueError from the provider
     assert review_main() == 0
     assert "did not complete" in caplog.text
+
+
+def test_review_cli_skips_without_api_key(monkeypatch, caplog) -> None:
+    """An unset Actions secret arrives as an empty string; skip, don't crash."""
+    monkeypatch.setenv("PR_REPO", "org/repo")
+    monkeypatch.setenv("PR_NUMBER", "1")
+    monkeypatch.setenv("REVIEW_BOT_LOGIN", "some-bot")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    assert review_main() == 0
+    assert "ANTHROPIC_API_KEY is unset" in caplog.text
+
+
+def test_completer_failures_are_expected_failures() -> None:
+    """Operational LLM errors must never propagate out of the advisory CLI."""
+    from autoresearch.llm import CompleterError, TruncatedError
+    from autoresearch.review_cli import EXPECTED_FAILURES
+
+    assert CompleterError in EXPECTED_FAILURES
+    assert TruncatedError in EXPECTED_FAILURES

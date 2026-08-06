@@ -30,6 +30,8 @@ dev = [
     "mypy>=1.13",
     "pytest>=8",
     "pre-commit>=4",
+    # so the completer's error mapping is testable without the extra
+    "anthropic>=0.70",
 ]
 
 [tool.hatch.version]

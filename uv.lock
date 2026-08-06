@@ -103,6 +103,7 @@ review = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "anthropic" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -119,6 +120,7 @@ provides-extras = ["review"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "anthropic", specifier = ">=0.70" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=8" },
