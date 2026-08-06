@@ -232,11 +232,15 @@ failure can strand a run:
    report, not a dead run). `afterany` cannot be left never-satisfied, and a
    submit-time failure of the wake job is detected immediately and retried by
    the tick.
-2. *Lease before wake.* Whoever delivers a wake — the dependency job or the
-   sweep — first acquires the run's lease (atomic rename on the shared
-   filesystem). Double delivery is therefore harmless: the loser no-ops.
-   Sequentially re-resuming a session is safe; the lease exists to prevent
-   concurrent resumes.
+2. *Lease before wake — and leases expire.* Whoever delivers a wake — the
+   dependency job or the sweep — first acquires the run's lease (atomic
+   rename on the shared filesystem). Double delivery is therefore harmless:
+   the loser no-ops. The lease records its holder's Slurm job id and a
+   timestamp; it is *stale* — and reaped by the sweep, incrementing the
+   attempt counter — when the holder job is no longer alive per Slurm or the
+   timestamp exceeds the session timeout plus slack. A wake killed
+   mid-session therefore delays the retry by one grace window; it cannot
+   strand the run.
 3. *Backup — the tick sweeps.* The tick chain (independently kept alive:
    two queued successors, heartbeat, GH-Actions watchdog) scans every run in
    `waiting` each tick: experiment job terminal per `sacct` + no wake lease
@@ -244,9 +248,15 @@ failure can strand a run:
    itself. This covers a lost wake job, a wake killed mid-session, and Slurm
    controller restarts that drop pending jobs.
 4. *Deadline floor.* Every `waiting` run records
-   `deadline = submit_time + walltime + slack`. Past the deadline with no
-   `sacct` record at all (history purged, job vanished), the sweep wakes the
-   run with exactly that fact — the agent concludes with what it has.
+   `deadline = submit_time + walltime + slack` (recomputed from `start_time`
+   once the job starts, so late scheduling never truncates a healthy run).
+   Past the deadline the sweep consults `sacct` and acts on what it finds:
+   still PENDING → the experiment is unschedulable in practice; cancel it and
+   wake the run with that fact. No record on a *successful* query → the job
+   vanished; wake with that fact. Query failed or timed out → that is
+   "Slurm unknown", never "job gone" — defer to the next tick, and only a
+   sustained outage (its own alert via the watchdog) escalates. A fail-safe
+   that misreads an outage as a vanished job would terminate healthy runs.
 5. *Stuck is a state, not a loop.* A wake session that errors repeatedly
    (N attempts with backoff across ticks) moves the run to `stuck`, which is
    itself reported — to the notebook and the weekly digest — with transcripts
