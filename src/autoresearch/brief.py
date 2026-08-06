@@ -137,11 +137,19 @@ def render_wake(update: str, budget: BudgetState) -> str:
 
     The resumed session already holds its own working context (plan, code
     understanding, what it launched); the wake carries only what is new:
-    results and the current budget.
+    results and the current budget. It explicitly supersedes the brief's
+    wait-for-results instruction — a resumed agent honors standing
+    instructions, so a wake that silently contradicts one gets refused
+    (observed live on Torch). Task-level instructions only: contract scope,
+    budgets, and safety rules are never the wake's to relax.
     """
     return "\n".join(
         [
             "# Experiment update",
+            "The experiment you launched and were waiting for has finished; "
+            "this update supersedes the brief's instruction to wait. All "
+            "other rules (contract scope, budgets, ground rules) still bind.",
+            "",
             _cap(update, MAX_WAKE_CHARS),
             "",
             "# Budget",
