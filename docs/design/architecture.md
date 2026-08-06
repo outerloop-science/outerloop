@@ -15,7 +15,7 @@ reports weekly. Humans keep the merge button.
 | Axis | Decision |
 | --- | --- |
 | Compute | Torch-first: GPU jobs via sbatch under a sponsoring account, tagged, low-priority, hard GPU-hour budgets. Cloud burst deferred. |
-| Agent/LLM | Pilot on ONE subscription harness (Claude Code or Codex — whichever passes the headless-auth spike first); first-party API alongside (tiered models, hard $ caps). Second backend, third-party APIs, self-hosted: deferred. |
+| Agent/LLM | Pilot on ONE subscription harness (Claude Code or Codex — whichever passes the headless-auth spike first); first-party API alongside (tiered models, hard $ caps). **Provider-diverse by design, Anthropic as the pilot**: every LLM touchpoint sits behind a seam (`Completer` for reviews, `Harness` for sessions) so a second provider is a new implementation, not a rewrite. Third-party aggregators, self-hosted: deferred. |
 | GitHub | Org machine user (bot) with fine-grained access to opted-in repos + a contract file per repo. No GitHub App for now. |
 | Scheduling | Self-resubmitting sbatch chain on Torch (scrontab is disabled there); nothing SSHes in — all connections outbound. Reviewer role on GitHub Actions. |
 
@@ -163,12 +163,48 @@ grep + recency + distillation until that provably fails.
 | Module | Job |
 | --- | --- |
 | `contract` | Schema + loader for `.autoresearch.yaml`, incl. the hard-coded invariants |
-| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys); capture transcript, diff, cost; secret-scan transcripts before storage |
+| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys); capture transcript, diff, cost; secret-scan transcripts before storage. See "Harness and context engineering" below |
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |
 | `budget` | Hard caps: $ per run, weekly $, GPU-hours, PRs per week; subscription backends metered by a session/token proxy |
 | `report` | Per-run research reports (takeaways + next steps), notebook writes + distillation, weekly digests, cost ledger, leaderboard history |
+
+## Harness and context engineering
+
+The harness is where the research bet lives: two agents with the same tools and
+budgets are separated almost entirely by **what they see at session start and
+what survives between sessions**. So context assembly is a first-class,
+versioned, unit-tested artifact — not prompt strings scattered through
+orchestration code.
+
+**The session brief.** Every session starts from a `SessionBrief` built by a
+pure function (`brief.build(...)`) from typed inputs, so tests can assert on
+exactly what any given agent saw, and a bad run can be replayed from its brief:
+
+| Section | Source | Budgeted |
+| --- | --- | --- |
+| Task: one hypothesis, expected metric movement, done-criteria | task selection | fixed |
+| Contract: benchmarks, scope, budgets (verbatim) | `.autoresearch.yaml` | fixed |
+| Ruler: how the metric is computed, how claims get re-verified | target repo docs | fixed |
+| Lessons: distilled, bounded per-target lessons file | notebook `lessons/<target>.md` | hard cap |
+| Recent history: last N run reports for this target (incl. failures) | notebook `runs/<target>/` | hard cap, newest first |
+| Budget state: remaining GPU-hours/$/PRs this week | `budget` | fixed |
+
+Everything else is deliberately absent: no other targets' data (cross-target
+separation), no raw transcripts (distillation instead), no maintainer-private
+text. Each brief is stored alongside the run report, so "why did the agent do
+that?" is always answerable, and brief-construction changes are diffable
+experiments in their own right — the knob we expect to tune most.
+
+**The backend seam.** `Harness` is one method: take a `SessionBrief` and a
+workspace, return a `SessionResult` (diff produced, transcript path, cost,
+stop reason). Backends are adapters: subscription CLIs (Claude Code first,
+Codex next), first-party APIs, whatever comes later. Nothing provider-specific
+crosses the seam in either direction — provider quirks (auth, retries, token
+accounting) live inside the adapter; context policy lives in the brief builder,
+shared by all backends. This is also what makes backend comparisons honest:
+same brief, same task pool, different backend, diff the outcomes.
 
 ## Threat model
 

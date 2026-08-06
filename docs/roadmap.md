@@ -28,6 +28,11 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 - [ ] **Gating spike first**: headless subscription-CLI auth on a Torch compute
       node — token lifetime, refresh behavior, concurrent-session safety. Pick
       the ONE backend that passes; API backend as automatic fallback
+- [ ] `brief`: typed `SessionBrief` + pure builder (task, contract, ruler,
+      capped lessons + recent reports, budget state), stored with every run —
+      context engineering as a versioned, testable artifact (see architecture)
+- [ ] `harness`: backend-agnostic seam (`SessionBrief` in, `SessionResult`
+      out); Claude Code adapter first, dry-run/fake adapter for tests
 - [ ] Session sandboxing: scrubbed env (no PAT/billing keys), hard timeouts,
       transcript secret-scan before storage
 - [ ] `budget`: per-run and weekly caps; session/token proxy metering for the
