@@ -220,6 +220,53 @@ experiments. Wakes are node-independent (state on the shared filesystem) and
 survive orchestrator restarts; every session of a run appends its own
 transcript file.
 
+**Wake delivery and fail-safety.** The invariant: **every run terminates in a
+report — no run silently disappears.** Wake delivery is layered so no single
+failure can strand a run:
+
+1. *Primary — Slurm is the event system.* When the compute module submits an
+   experiment, it submits the wake job in the same breath with
+   `--dependency=afterany:<experiment>` (verified live on Torch: fires within
+   seconds of the experiment ending, including on FAILURE — a failed
+   experiment is a wake with bad news, which becomes a negative-result
+   report, not a dead run). `afterany` cannot be left never-satisfied, and a
+   submit-time failure of the wake job is detected immediately and retried by
+   the tick.
+2. *Lease before wake — and leases expire.* Whoever delivers a wake — the
+   dependency job or the sweep — first acquires the run's lease (atomic
+   rename on the shared filesystem). Double delivery is therefore harmless:
+   the loser no-ops. The lease records its holder's Slurm job id and a
+   timestamp; it is *stale* — and reaped by the sweep, incrementing the
+   attempt counter — when the holder job is no longer alive per Slurm or the
+   timestamp exceeds the session timeout plus slack. A wake killed
+   mid-session therefore delays the retry by one grace window; it cannot
+   strand the run.
+3. *Backup — the tick sweeps.* The tick chain (independently kept alive:
+   two queued successors, heartbeat, GH-Actions watchdog) scans every run in
+   `waiting` each tick: experiment job terminal per `sacct` + no wake lease
+   or completion within a grace window → the tick dispatches the wake
+   itself. This covers a lost wake job, a wake killed mid-session, and Slurm
+   controller restarts that drop pending jobs.
+4. *Deadline floor.* Every `waiting` run records
+   `deadline = submit_time + walltime + slack` (recomputed from `start_time`
+   once the job starts, so late scheduling never truncates a healthy run).
+   Past the deadline the sweep consults `sacct` and acts on what it finds:
+   still PENDING → the experiment is unschedulable in practice; cancel it and
+   wake the run with that fact. No record on a *successful* query → the job
+   vanished; wake with that fact. Query failed or timed out → that is
+   "Slurm unknown", never "job gone" — defer to the next tick, and only a
+   sustained outage (its own alert via the watchdog) escalates. A fail-safe
+   that misreads an outage as a vanished job would terminate healthy runs.
+5. *Stuck is a state, not a loop.* A wake session that errors repeatedly
+   (N attempts with backoff across ticks) moves the run to `stuck`, which is
+   itself reported — to the notebook and the weekly digest — with transcripts
+   attached. Infrastructure failure produces a report saying so.
+
+Run state is a small file per run on the shared filesystem, written by atomic
+rename; the sweep reasons only from state files plus `sacct`, never from
+process memory — a crash anywhere leaves a file that says what happens next.
+No component lives on a login node (ephemeral k8s pods on Torch).
+
 **The backend seam.** `Harness` is one method: take rendered brief text and a
 workspace, return a `SessionResult` (transcript path, cost, stop reason, final
 report text). The orchestrator owns the git clone, so it captures the diff. Backends are adapters: subscription CLIs (Claude Code first,

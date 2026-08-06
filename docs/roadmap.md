@@ -61,6 +61,10 @@ standing instruction they supersede — a resumed agent honors stale constraints
 
 ## Phase 4 — Torch tick + compute
 
+- [ ] Wake delivery per the architecture's fail-safe layers: afterany
+      dependency job (mechanism verified live 2026-08-06, incl. on failed
+      experiments) + run lease + tick sweep + deadline floor + `stuck` state
+
 - [ ] The chain: two queued successors, `--dependency=singleton`, absolute
       `--begin` cadence grid, sbatch retry/backoff
 - [ ] Deploy shim: submit-successors → pull main → `uv sync --locked` → exec;
