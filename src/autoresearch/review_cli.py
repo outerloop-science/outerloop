@@ -11,10 +11,21 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from dataclasses import replace
+from datetime import UTC, datetime
 
 from autoresearch.github import EnvTokenProvider, GitHubClient, GitHubError
 from autoresearch.llm import AnthropicCompleter, CompleterError, RefusalError, TruncatedError
-from autoresearch.review import MARKER, PullRequest, format_comment, review
+from autoresearch.review import (
+    MARKER,
+    MAX_CONTEXT_FILES,
+    PullRequest,
+    format_comment,
+    pick_context_files,
+    review,
+    skip_reason,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +43,38 @@ EXPECTED_FAILURES = (
 )
 
 
+def _gather_context(
+    client: GitHubClient, repo: str, number: int, pr_data: dict
+) -> tuple[tuple[str, str], ...]:
+    """Head-revision contents of changed files, bounded. Best-effort: a
+    degraded review beats no review, so failures here return empty context."""
+    try:
+        head_sha = str((pr_data.get("head") or {}).get("sha", ""))
+        if not head_sha:
+            return ()
+        # Cap the fetch fan-out BEFORE hitting the contents API: a 400-file PR
+        # must not turn into 400 sequential requests against the workflow
+        # token's rate budget. Lazy generator so pick_context_files stops the
+        # fetching as soon as its caps are met.
+        files = client.get_pull_request_files(repo, number)[: MAX_CONTEXT_FILES * 3]
+
+        def candidates() -> Iterator[tuple[str, str]]:
+            for item in files:
+                if item.get("status") == "removed":
+                    continue
+                path = str(item.get("filename", ""))
+                if not path:
+                    continue
+                content = client.get_file_content(repo, path, head_sha)
+                if content is not None:
+                    yield (path, content)
+
+        return pick_context_files(candidates())
+    except (GitHubError, ValueError) as exc:  # ValueError covers JSONDecodeError
+        log.warning("reviewing without file context: %s", exc)
+        return ()
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     repo = os.environ["PR_REPO"]
@@ -44,8 +87,8 @@ def main() -> int:
         return 0
     # An unset secret arrives as an empty string; skip cleanly instead of
     # crashing inside the API client.
-    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        log.warning("ANTHROPIC_API_KEY is unset or empty; skipping review")
+    if not os.environ.get("ANTHROPIC_REVIEWER_KEY", "").strip():
+        log.warning("ANTHROPIC_REVIEWER_KEY is unset or empty; skipping review")
         return 0
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
 
@@ -66,11 +109,16 @@ def main() -> int:
             ),
         )
         completer = AnthropicCompleter(
-            api_key=os.environ["ANTHROPIC_API_KEY"],
+            api_key=os.environ["ANTHROPIC_REVIEWER_KEY"],
             model=os.environ.get("REVIEW_MODEL") or "claude-opus-5",
             effort=os.environ.get("REVIEW_EFFORT") or "high",
         )
-        body = format_comment(review(pr, completer, bot_login))
+        # Context is fetched only for PRs that will actually be reviewed —
+        # bot-authored and opted-out PRs must not pay the API fan-out.
+        if skip_reason(pr, bot_login) is None:
+            pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
+        today = datetime.now(UTC).date().isoformat()
+        body = format_comment(review(pr, completer, bot_login, today=today))
         if body is None:
             log.info("nothing to post")
             return 0

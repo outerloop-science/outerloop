@@ -79,7 +79,7 @@ jobs:
       - name: Run advisory review
         working-directory: .autoresearch
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.reviewer_api_key }}
+          ANTHROPIC_REVIEWER_KEY: ${{ secrets.reviewer_api_key }}
           # The caller's own workflow token — the bot PAT is never used here.
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}

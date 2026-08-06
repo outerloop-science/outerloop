@@ -237,6 +237,45 @@ class GitHubClient:
         )
         return self.raw_transport(request)
 
+    def get_pull_request_files(
+        self, repo: str, number: int, max_pages: int = 5
+    ) -> list[dict[str, Any]]:
+        """Changed files of a PR (filename, status), following pagination."""
+        out: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            path = (
+                f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/files?per_page=100&page={page}"
+            )
+            data = self._request("GET", path)
+            if not isinstance(data, list) or not data:
+                break
+            out.extend(item for item in data if isinstance(item, dict))
+            if len(data) < 100:
+                break
+        return out
+
+    def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
+        """A file's text at `ref`, or None when it can't be provided.
+
+        Best-effort by design (reviewer context): directories, submodules,
+        files over the API's inline limit, and missing paths all return None
+        rather than raising.
+        """
+        api_path = (
+            f"/repos/{urllib.parse.quote(repo)}/contents/"
+            f"{urllib.parse.quote(path)}?ref={urllib.parse.quote(ref)}"
+        )
+        try:
+            data = self._request("GET", api_path)
+        except GitHubError:
+            return None
+        if not isinstance(data, dict) or data.get("encoding") != "base64":
+            return None
+        try:
+            return base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
+        except (ValueError, TypeError):
+            return None
+
     def list_comments(
         self, repo: str, issue_number: int, max_pages: int = 20
     ) -> list[dict[str, Any]]:
