@@ -17,10 +17,10 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 
 ## Phase 2 — Advisory reviewer
 
-- [ ] PR-triggered advisory review via GitHub Actions on opted-in repos, with the
+- [x] PR-triggered advisory review via GitHub Actions on opted-in repos, with the
       constraints from the architecture: advisory header, never on bot-authored
       PRs, one thread per PR, opt-out label, org-member/label gate on inputs
-- [ ] Separate spend-capped API key in Actions secrets; no secrets on fork PRs
+- [x] Separate spend-capped API key in Actions secrets; no secrets on fork PRs
 - [ ] Pilot on jepa-agent; measure signal-to-noise with the humans reviewing
 
 ## Phase 3 — Harness

@@ -17,6 +17,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `autoresearch.contract_cli`: validate a `.autoresearch.yaml` locally and print
+  what the agent would be allowed to do.
+- `autoresearch.review` + reusable advisory-review workflow: constrained PR
+  reviewer (never on bot PRs, opt-out label, one thread per PR, advisory header),
+  Anthropic completer behind an injectable interface, `docs/install.md` for
+  self-hosting (phase 2).
 - `autoresearch.github`: REST client + git workspace behind a token-provider
   seam (GitHub App-ready), env-injected git auth, dry-run mode (phase 1).
 - `autoresearch.contract`: schema + loader for `.autoresearch.yaml` with suite

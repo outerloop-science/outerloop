@@ -1,0 +1,78 @@
+# Reusable advisory-review workflow. Target repos call this with `uses:`;
+# they never vendor the reviewer code. Constraints enforced here and in
+# autoresearch.review: never reviews bot-authored PRs, never approves, never
+# fails the caller's CI, and never runs with secrets on a fork PR.
+name: advisory-review
+
+on:
+  workflow_call:
+    inputs:
+      bot_login:
+        description: Login of your bot account — its PRs are never reviewed. Required.
+        type: string
+        required: true
+      reviewer_repo:
+        description: Repo holding the reviewer (change this if you forked).
+        type: string
+        required: false
+        default: agentic-learning-ai-lab/autoresearch
+      reviewer_ref:
+        description: Ref of the reviewer to run. Pin to a tag or SHA in production.
+        type: string
+        required: false
+        default: main
+      model:
+        type: string
+        required: false
+        default: claude-opus-5
+      effort:
+        type: string
+        required: false
+        default: high
+    secrets:
+      reviewer_api_key:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One review at a time per PR: a second push must not race the first into a
+# duplicate comment (or a duplicate model bill).
+concurrency:
+  group: advisory-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Advisory means advisory: an infrastructure failure here must never turn
+    # the caller's PR red.
+    continue-on-error: true
+    # Fork PRs must not reach the secret. `pull_request_target` runs in the
+    # base repo's context, so this gate is what closes the pwn-request hole.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      # Checks out the REVIEWER, never the pull request's code. Nothing from
+      # the PR is executed at any point.
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          path: .autoresearch
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Run advisory review
+        working-directory: .autoresearch
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.reviewer_api_key }}
+          # The caller's own workflow token — the bot PAT is never used here.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          REVIEW_EFFORT: ${{ inputs.effort }}
+        run: uv run --extra review python -m autoresearch.review_cli

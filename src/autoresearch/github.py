@@ -84,6 +84,19 @@ class TokenProvider(Protocol):
 
 
 @dataclass(frozen=True)
+class EnvTokenProvider:
+    """Reads a token from an environment variable (CI-supplied credentials)."""
+
+    variable: str
+
+    def token(self) -> str:
+        token = os.environ.get(self.variable, "").strip()
+        if not token:
+            raise ValueError(f"{self.variable} is unset or empty")
+        return token
+
+
+@dataclass(frozen=True)
 class FileTokenProvider:
     """Reads a credential file (the bot PAT on the orchestrator host)."""
 
@@ -122,6 +135,20 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoAuthRedirect)
 
 
+def _raw_transport(request: urllib.request.Request) -> str:
+    """Fetch a non-JSON body (the diff media type returns text/plain)."""
+    try:
+        with _opener.open(request, timeout=30) as response:
+            return str(response.read().decode(errors="replace"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:500]
+        raise GitHubError(exc.code, urllib.parse.urlparse(request.full_url).path, body) from None
+    except urllib.error.URLError as exc:
+        raise GitHubError(
+            0, urllib.parse.urlparse(request.full_url).path, str(exc.reason)
+        ) from None
+
+
 def _default_transport(request: urllib.request.Request) -> Any:
     try:
         with _opener.open(request, timeout=30) as response:
@@ -142,6 +169,7 @@ class GitHubClient:
 
     auth: TokenProvider
     transport: Transport = field(default=_default_transport)
+    raw_transport: Callable[[urllib.request.Request], str] = field(default=_raw_transport)
     dry_run: bool = False
 
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
@@ -191,6 +219,62 @@ class GitHubClient:
         if "number" not in data:
             raise GitHubError(200, path, f"no PR number in response: {data.get('message')}")
         return int(data["number"])
+
+    def get_pull_request(self, repo: str, number: int) -> dict[str, Any]:
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        return self._expect_dict(self._request("GET", path), path)
+
+    def get_pull_request_diff(self, repo: str, number: int) -> str:
+        """Fetch a PR's unified diff (uses the diff media type)."""
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        request = urllib.request.Request(
+            f"{API}{path}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.auth.token()}",
+                "Accept": "application/vnd.github.v3.diff",
+            },
+        )
+        return self.raw_transport(request)
+
+    def list_comments(
+        self, repo: str, issue_number: int, max_pages: int = 20
+    ) -> list[dict[str, Any]]:
+        """All comments on an issue/PR, following pagination."""
+        comments: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            path = (
+                f"/repos/{urllib.parse.quote(repo)}/issues/{issue_number}"
+                f"/comments?per_page=100&page={page}"
+            )
+            data = self._request("GET", path)
+            if not isinstance(data, list) or not data:
+                break
+            comments.extend(item for item in data if isinstance(item, dict))
+            if len(data) < 100:
+                break
+        return comments
+
+    def upsert_comment(self, repo: str, issue_number: int, marker: str, body: str) -> None:
+        """Post the comment, or edit the existing one carrying `marker`.
+
+        Keeps the reviewer to one thread per PR however many times it runs.
+        """
+        if self.dry_run:
+            log.info("[dry-run] upsert comment on %s#%s (%d chars)", repo, issue_number, len(body))
+            return
+        for comment in self.list_comments(repo, issue_number):
+            # Only ever edit a bot's own comment: a human who quote-replies
+            # copies the marker, and overwriting their text would be worse
+            # than posting a second thread.
+            author_type = str((comment.get("user") or {}).get("type", ""))
+            if author_type.casefold() != "bot":
+                continue
+            if marker in str(comment.get("body", "")):
+                path = f"/repos/{urllib.parse.quote(repo)}/issues/comments/{int(comment['id'])}"
+                self._request("PATCH", path, {"body": body})
+                return
+        self.comment(repo, issue_number, body)
 
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:

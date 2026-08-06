@@ -1,6 +1,7 @@
 import base64
 import json
 import subprocess
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -113,3 +114,90 @@ def test_workspace_dry_run_push_stays_local(tmp_path: Path) -> None:
         ["git", "-C", str(origin), "branch"], capture_output=True, text=True, check=True
     ).stdout
     assert "feat/auto/nope" not in branches
+
+
+def test_env_token_provider(monkeypatch) -> None:
+    from autoresearch.github import EnvTokenProvider
+
+    monkeypatch.setenv("SOME_TOKEN", " tok \n")
+    assert EnvTokenProvider("SOME_TOKEN").token() == "tok"
+    monkeypatch.setenv("SOME_TOKEN", "")
+    with pytest.raises(ValueError, match="unset or empty"):
+        EnvTokenProvider("SOME_TOKEN").token()
+
+
+def test_upsert_comment_edits_existing_marked_comment(provider: FileTokenProvider) -> None:
+    marker = "<!-- m -->"
+    transport = FakeTransport([[{"id": 42, "body": f"{marker} old", "user": {"type": "Bot"}}], {}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.upsert_comment("org/repo", 7, marker, f"{marker} new")
+    edit = transport.requests[-1]
+    assert edit.get_method() == "PATCH"
+    assert "/issues/comments/42" in edit.full_url
+
+
+def test_upsert_comment_creates_when_absent(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([[{"id": 1, "body": "unrelated", "user": {"type": "Bot"}}], {}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.upsert_comment("org/repo", 7, "<!-- m -->", "body")
+    create = transport.requests[-1]
+    assert create.get_method() == "POST"
+    assert create.full_url.endswith("/issues/7/comments")
+
+
+def test_diff_uses_raw_transport_and_diff_media_type(provider: FileTokenProvider) -> None:
+    """The diff is text/plain — a JSON-decoding transport would break it."""
+    seen: list[urllib.request.Request] = []
+
+    def raw(request: urllib.request.Request) -> str:
+        seen.append(request)
+        return "--- a/x\n+++ b/x\n"
+
+    client = GitHubClient(auth=provider, transport=FakeTransport([]), raw_transport=raw)
+    assert client.get_pull_request_diff("org/repo", 3).startswith("--- a/x")
+    assert seen[0].get_header("Accept") == "application/vnd.github.v3.diff"
+
+
+def test_default_raw_transport_returns_text_not_json() -> None:
+    """Regression: the diff path must not go through json.loads."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from autoresearch.github import _raw_transport
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"--- a/x\n+++ b/x\n")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/d")
+        assert _raw_transport(request).startswith("--- a/x")
+    finally:
+        server.shutdown()
+
+
+def test_upsert_never_overwrites_a_human_comment(provider: FileTokenProvider) -> None:
+    """A human who quote-replies copies the marker; editing their comment is worse
+    than posting a second one."""
+    marker = "<!-- m -->"
+    transport = FakeTransport(
+        [[{"id": 9, "body": f"quoting: {marker}", "user": {"type": "User"}}], {}]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    client.upsert_comment("org/repo", 7, marker, "body")
+    assert transport.requests[-1].get_method() == "POST"
+
+
+def test_list_comments_paginates(provider: FileTokenProvider) -> None:
+    page1 = [{"id": i, "body": "x", "user": {"type": "Bot"}} for i in range(100)]
+    page2 = [{"id": 100, "body": "marked", "user": {"type": "Bot"}}]
+    transport = FakeTransport([page1, page2])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert len(client.list_comments("org/repo", 7)) == 101
