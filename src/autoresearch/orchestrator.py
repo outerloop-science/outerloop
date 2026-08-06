@@ -144,6 +144,13 @@ def _metric_from_output(stdout: str, metric: str) -> float | None:
                     return float(data[metric])
                 except (TypeError, ValueError):
                     return None
+            # the {"metric": <name>, "value": <v>} shape (what the pilot's
+            # eval actually prints)
+            if isinstance(data, dict) and data.get("metric") == metric and "value" in data:
+                try:
+                    return float(data["value"])
+                except (TypeError, ValueError):
+                    return None
     return None
 
 
@@ -167,6 +174,9 @@ class ClimbResult:
     baseline: float | None = None
     candidate: float | None = None
     branch: str = ""
+    # the exact paths that were scope-checked and then measured — the caller
+    # must refuse to commit anything beyond this set
+    measured_paths: tuple[str, ...] = ()
     session: SessionResult | None = None
     note: str = ""
 
@@ -309,7 +319,8 @@ def climb_once(
 
     # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
     # because the out-of-scope edit could be to the ruler itself.
-    violations = out_of_scope(list(changed_paths()), load_contract(contract_text, config.target))
+    measured = tuple(changed_paths())
+    violations = out_of_scope(list(measured), load_contract(contract_text, config.target))
     if violations:
         return ClimbResult(
             outcome="scope-violation",
@@ -332,6 +343,7 @@ def climb_once(
             candidate=candidate,
             session=session,
             branch=f"{config.branch_prefix}/{config.benchmark}",
+            measured_paths=measured,
         )
     return ClimbResult(
         outcome="no-improvement",

@@ -41,6 +41,11 @@ from autoresearch.runstate import (
 
 log = logging.getLogger(__name__)
 
+
+class WorkspaceDrift(RuntimeError):
+    """The tree changed between measurement and commit."""
+
+
 RULER = (
     "The metric is computed by the contract's eval command over a frozen "
     "instance pool. Your claim is verified by the orchestrator re-running "
@@ -119,25 +124,46 @@ def live_climb(
     report_path.write_text(report)
 
     pr_url = ""
+    outcome_name = result.outcome
     if result.outcome == "improved":
-        branch = result.branch
-        ws.branch(branch)
-        # The commit veto re-checks FULL scope (allowed + forbidden) as
-        # defense in depth behind climb_once's pre-eval check.
-        ws.commit_all(
-            f"agent: improve {config.benchmark} ({result.baseline} -> {result.candidate})",
-            author=config.agent_id,
-            forbidden=lambda p: bool(out_of_scope([p], contract)),
-        )
-        ws.push(branch)
-        pr_url = github.create_pull(
-            config.target,
-            title=f"[agent] {config.benchmark}: {result.baseline} -> {result.candidate}",
-            head=branch,
-            base=base_branch,
-            body=pr_body(result, config, redact_secrets=secrets),
-        )
-        final = RunRecord(**{**record.__dict__, "state": IN_REVIEW, "ending_note": pr_url})
+        try:
+            # The committed tree must be EXACTLY the measured tree: code the
+            # agent's solver wrote during the candidate eval was neither
+            # scope-checked nor measured, so its presence voids the claim.
+            post_eval = set(changed_paths())
+            if post_eval != set(result.measured_paths):
+                drift = sorted(post_eval.symmetric_difference(result.measured_paths))
+                raise WorkspaceDrift(f"workspace changed during eval: {drift[:10]}")
+            # unique branch per run: a fixed name collides on the second run
+            branch = f"{config.branch_prefix}/{run_id}"
+            ws.branch(branch)
+            # The commit veto re-checks FULL scope (allowed + forbidden) as
+            # defense in depth behind climb_once's pre-eval check.
+            ws.commit_all(
+                f"agent: improve {config.benchmark} ({result.baseline} -> {result.candidate})",
+                author=config.agent_id,
+                forbidden=lambda p: bool(out_of_scope([p], contract)),
+            )
+            ws.push(branch)
+            pr_url = github.create_pull(
+                config.target,
+                title=f"[agent] {config.benchmark}: {result.baseline} -> {result.candidate}",
+                head=branch,
+                base=base_branch,
+                body=pr_body(result, config, redact_secrets=secrets),
+            )
+            final = RunRecord(**{**record.__dict__, "state": IN_REVIEW, "ending_note": pr_url})
+        except Exception as exc:
+            log.warning("publish failed for %s: %s: %s", run_id, type(exc).__name__, exc)
+            outcome_name = "publish-error"
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": ABORTED,
+                    "ending_note": redact(f"{type(exc).__name__}: {exc}", secrets)[:500],
+                }
+            )
     else:
         final = RunRecord(
             **{
@@ -148,10 +174,10 @@ def live_climb(
             }
         )
     save_record(run_root, final, now)
-    log.info("run %s: %s %s", run_id, result.outcome, pr_url)
+    log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return LiveClimbOutcome(
         run_id=run_id,
-        outcome=result.outcome,
+        outcome=outcome_name,
         pr_url=pr_url,
         report_path=str(report_path),
     )
@@ -168,6 +194,12 @@ def main() -> int:
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument("--image", default="", help="apptainer image for session+eval")
+    parser.add_argument(
+        "--uncontained",
+        action="store_true",
+        help="run WITHOUT a container (dev only: sessions can then read "
+        "same-user files, including credential files)",
+    )
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument("--max-turns", type=int, default=60)
@@ -177,8 +209,11 @@ def main() -> int:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    if not args.image and not args.uncontained:
+        parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
-    api_key = Path(args.key_file).read_text().strip()
+    # same 0600 discipline as the PAT: this key spends real money
+    api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
@@ -199,7 +234,7 @@ def main() -> int:
         bot_auth=bot_auth,
         now=time.time(),
         created=datetime.now(UTC).isoformat(),
-        secrets=(api_key,),
+        secrets=(api_key, bot_auth.token()),
     )
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0

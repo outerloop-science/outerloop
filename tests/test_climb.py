@@ -50,12 +50,12 @@ def target_repo(tmp_path: Path, monkeypatch) -> Path:
     from autoresearch import climb as climb_mod
     from autoresearch.github import Workspace
 
-    real_clone = Workspace.clone.__func__
+    real_clone = Workspace.clone
 
-    def fake_clone(cls, url, dest, auth=None, dry_run=False):
-        return real_clone(cls, str(bare), dest, auth=None, dry_run=dry_run)
+    def fake_clone(url, dest, auth=None, dry_run=False):
+        return real_clone(str(bare), dest, auth=None, dry_run=dry_run)
 
-    monkeypatch.setattr(climb_mod.Workspace, "clone", classmethod(fake_clone))
+    monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(fake_clone))
     return bare
 
 
@@ -132,10 +132,10 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert outcome.outcome == "improved"
     assert outcome.pr_url.endswith("/pull/1")
     # the branch actually landed in the bare origin with only the solver edit
-    files = _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp").split()
+    files = _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-1").split()
     assert files == ["src/pilot/solvers/tsp.py"]
     pr = github.prs[0]
-    assert pr["head"] == "feat/auto/agent-01/tsp"
+    assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert "13.876" in pr["title"]
     assert "measured by the orchestrator" in pr["body"]
     # run record went in-review with the PR url
@@ -208,6 +208,76 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
     )
     assert outcome.outcome == "session-error"
     assert github.prs == []
+
+
+def test_second_run_gets_its_own_branch(tmp_path, target_repo) -> None:
+    """A fixed branch name would non-fast-forward on run two."""
+    edits = {"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}
+    run_live(tmp_path, target_repo, edits=edits, values=[13.876, 13.1], run_id="tsp-a")
+    edits2 = {"src/pilot/solvers/tsp.py": "def solve(): return 2\n"}
+    outcome, _ = run_live(tmp_path, target_repo, edits=edits2, values=[13.1, 12.5], run_id="tsp-b")
+    assert outcome.outcome == "improved"
+    branches = _git(target_repo, "branch", "--list")
+    assert "feat/auto/agent-01/tsp-a" in branches
+    assert "feat/auto/agent-01/tsp-b" in branches
+
+
+def test_files_written_during_eval_void_the_claim(tmp_path, target_repo) -> None:
+    """The committed tree must be exactly the measured tree — solver code
+    that writes files at eval time is neither scope-checked nor measured."""
+
+    @dataclass
+    class PlantingEvaluator:
+        values: list[float] = field(default_factory=list)
+        calls: int = 0
+
+        def evaluate(self, workspace, command, metric) -> float:
+            self.calls += 1
+            if self.calls == 2:  # during the candidate eval
+                (workspace / "src" / "pilot" / "solvers" / "planted.py").write_text("x=1\n")
+            return self.values.pop(0)
+
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-drift",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "y=2\n"}),
+        evaluator=PlantingEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    assert "feat/auto" not in _git(target_repo, "branch", "--list")
+    record = load_record(tmp_path / "state", "tsp-drift")
+    assert record.ending == "aborted"
+    assert "changed during eval" in record.ending_note
+
+
+def test_create_pull_failure_records_aborted_not_crash(tmp_path, target_repo) -> None:
+    @dataclass
+    class FailingGitHub:
+        def create_pull(self, *a, **k) -> str:
+            raise RuntimeError("422 already exists")
+
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-prfail",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "z=3\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=FailingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "publish-error"
+    record = load_record(tmp_path / "state", "tsp-prfail")
+    assert record.state == "ended"
+    assert record.ending == "aborted"
 
 
 def test_report_is_written_for_every_outcome(tmp_path, target_repo) -> None:

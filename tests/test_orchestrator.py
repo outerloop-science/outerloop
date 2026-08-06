@@ -150,6 +150,17 @@ def test_improved_direction_semantics() -> None:
     assert not improved(0.25, 0.24, "max", 0.005)
 
 
+def test_metric_parsing_accepts_pilot_shape() -> None:
+    """The pilot's eval prints the metric NAME as a value: caught pre-live by
+    the review agent — this exact line would have aborted the first climb."""
+    line = (
+        '{"benchmark": "tsp", "metric": "mean_tour_length",'
+        ' "value": 13.875696168157484, "direction": "min"}'
+    )
+    assert _metric_from_output(line, "mean_tour_length") == 13.875696168157484
+    assert _metric_from_output(line, "solve_rate") is None
+
+
 def test_metric_parsing_json_only_no_fuzzy_fallback() -> None:
     assert _metric_from_output('{"mean_tour_length": 13.1}', "mean_tour_length") == 13.1
     noisy = 'log line\n{"other": 1}\n{"solve_rate": 0.31, "n": 40}'
