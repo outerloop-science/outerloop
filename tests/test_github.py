@@ -23,6 +23,7 @@ class FakeTransport:
 def provider(tmp_path: Path) -> FileTokenProvider:
     pat = tmp_path / "pat"
     pat.write_text("github_pat_test123\n")
+    pat.chmod(0o600)
     return FileTokenProvider(pat)
 
 
@@ -41,7 +42,7 @@ def test_default_branch_and_headers(provider: FileTokenProvider) -> None:
 
 def test_get_file_decodes_base64(provider: FileTokenProvider) -> None:
     content = base64.b64encode(b"benchmarks: []\n").decode()
-    transport = FakeTransport([{"encoding": "base64", "content": content}])
+    transport = FakeTransport([{"type": "file", "encoding": "base64", "content": content}])
     client = GitHubClient(auth=provider, transport=transport)
     assert client.get_file("org/repo", ".autoresearch.yaml", "main") == "benchmarks: []\n"
     assert "ref=main" in transport.requests[0].full_url

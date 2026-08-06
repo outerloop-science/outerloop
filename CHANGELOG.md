@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardening from the first adversarial review pass: local git runs without
+  credentials and with hooks disabled (planted hooks can no longer read the
+  PAT), scope paths are normalized component-wise, self-target matching accepts
+  any repo spelling, contract YAML rejects aliases/duplicate keys/oversized
+  input, commits are vetoed against the contract's forbidden paths, and API
+  errors/response shapes are typed instead of crashing.
+
 ### Added
 
 - `autoresearch.github`: REST client + git workspace behind a token-provider
