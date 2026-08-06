@@ -415,6 +415,15 @@ partitions and lets the scheduler place jobs, never nodes.
 Account names, partitions, and hostnames stay in the lab wiki and untracked ops
 notes, not in this repo.
 
+## Scaling direction (sketch)
+
+Planned search around a per-benchmark leader config, an experiment ladder
+(smoke → small proof-of-idea → periodic large consolidation runs with
+ablations), and multi-agent sharding by repo assignment with per-agent
+identity, chains, and credentials (seats or API keys): see
+[design/scaling.md](scaling.md) — a v1 sketch under iteration with Mengye,
+not yet build-gating.
+
 ## Deferred by default
 
 - The second harness backend (pilot one; add the other when the pilot's volume
