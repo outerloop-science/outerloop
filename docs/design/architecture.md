@@ -206,7 +206,14 @@ what it is waiting for, and ends. The orchestrator watches the experiment job;
 when results land it wakes the agent — native session resume against the
 per-run HOME, so the agent's working context (its plan, its notes, what it
 tried) is restored, plus a bounded wake prompt carrying only what is new:
-results and remaining budget. The cycle repeats — iterate or conclude — until
+results and remaining budget. A resumed agent honors its standing
+instructions (observed live: it refused a wake task that contradicted its
+brief), so a wake prompt must explicitly mark which TASK-level instruction it
+supersedes ("the experiment you were waiting for is done"). Only task-level
+instructions are ever liftable: contract scope, budgets, and the standing
+safety rules are not the wake prompt's to relax, and wake text never embeds
+raw experiment output that could try (results are summarized, data-fenced,
+by the orchestrator). The cycle repeats — iterate or conclude — until
 the run ends in a research report and (when the metric moved) a PR. A run is
 never a one-off launch; it is a persistent agent that hibernates through
 experiments. Wakes are node-independent (state on the shared filesystem) and
@@ -296,7 +303,8 @@ partitions and lets the scheduler place jobs, never nodes.
       Slurm 25.05
 - [x] Login nodes are ephemeral Kubernetes pods — never park a daemon on one;
       the chain lives in the Slurm queue
-- [ ] Headless CLI auth on a compute node (the phase-3 gating spike)
+- [x] Headless CLI auth on a compute node (2026-08-05 spike; production
+      session path incl. cross-node resume re-verified live 2026-08-06)
 - [ ] Bot git push over HTTPS with fine-grained PAT (needs the bot account)
 
 Account names, partitions, and hostnames stay in the lab wiki and untracked ops
