@@ -25,9 +25,16 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 
 ## Phase 3 — Harness
 
-- [ ] **Gating spike first**: headless subscription-CLI auth on a Torch compute
-      node — token lifetime, refresh behavior, concurrent-session safety. Pick
-      the ONE backend that passes; API backend as automatic fallback
+- [x] **Gating spike** (2026-08-05, Torch): Claude Code 2.1.223 native binary
+      (no node needed) checksum-installed to `~/.local/bin`; headless `-p
+      --output-format json` on a cpu_short compute node returns cost, usage,
+      session id, and stop reason — everything `SessionResult` needs. Two
+      concurrent sessions (shared `$HOME`, separate workspaces, `--allowedTools
+      Write --permission-mode acceptEdits`) both correct, no state corruption.
+      Auth: **API key** (static; no lifetime/refresh concerns) — subscription
+      OAuth (`claude setup-token`) untested, needs an interactive browser
+      login; decision: pilot on API-key auth, revisit a seat when volume
+      justifies it. Backend picked: **Claude Code**
 - [ ] `brief`: typed `SessionBrief` + pure builder (task, contract, ruler,
       capped lessons + recent reports, budget state), stored with every run —
       context engineering as a versioned, testable artifact (see architecture)
