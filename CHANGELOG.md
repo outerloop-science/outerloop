@@ -28,6 +28,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `autoresearch.brief` (typed, bounded, replayable session briefs — the
+  context-engineering artifact) and `autoresearch.harness` (backend seam;
+  Claude Code adapter with scrubbed session env, timeouts, and key-redacted
+  transcripts; fake adapter for tests) — phase 3.
+
 - Deployment hardening for the reviewer: operational LLM errors map to
   `CompleterError` (an expected failure — never reds a target repo's CI),
   missing API key skips cleanly, and the reusable workflow accepts a read-only
