@@ -13,11 +13,16 @@ from typing import Any
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_EFFORT = "high"
-DEFAULT_MAX_TOKENS = 16000
+DEFAULT_MAX_TOKENS = 32000
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 class RefusalError(RuntimeError):
     """The model declined the request (`stop_reason == "refusal"`)."""
+
+
+class TruncatedError(RuntimeError):
+    """The response hit max_tokens; the JSON body is incomplete."""
 
 
 @dataclass
@@ -35,7 +40,11 @@ class AnthropicCompleter:
         return anthropic.Anthropic(api_key=self.api_key)
 
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> str:
-        response = self._client().beta.messages.create(
+        if self.effort not in EFFORTS:
+            raise ValueError(f"effort must be one of {EFFORTS}, got {self.effort!r}")
+        # Streamed: thinking is on by default and shares max_tokens with the
+        # response, so a long review can outlive a non-streaming timeout.
+        with self._client().beta.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
             system=system,
@@ -47,10 +56,13 @@ class AnthropicCompleter:
             # Safety classifiers can decline; route the retry server-side.
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
-        )
+        ) as stream:
+            response = stream.get_final_message()
         if response.stop_reason == "refusal":
             category = getattr(response.stop_details, "category", None)
             raise RefusalError(f"model declined the review (category={category})")
+        if response.stop_reason == "max_tokens":
+            raise TruncatedError("review output hit max_tokens; raise max_tokens or lower effort")
         for block in response.content:
             if block.type == "text":
                 return str(block.text)

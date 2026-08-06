@@ -135,6 +135,20 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoAuthRedirect)
 
 
+def _raw_transport(request: urllib.request.Request) -> str:
+    """Fetch a non-JSON body (the diff media type returns text/plain)."""
+    try:
+        with _opener.open(request, timeout=30) as response:
+            return str(response.read().decode(errors="replace"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:500]
+        raise GitHubError(exc.code, urllib.parse.urlparse(request.full_url).path, body) from None
+    except urllib.error.URLError as exc:
+        raise GitHubError(
+            0, urllib.parse.urlparse(request.full_url).path, str(exc.reason)
+        ) from None
+
+
 def _default_transport(request: urllib.request.Request) -> Any:
     try:
         with _opener.open(request, timeout=30) as response:
@@ -155,6 +169,7 @@ class GitHubClient:
 
     auth: TokenProvider
     transport: Transport = field(default=_default_transport)
+    raw_transport: Callable[[urllib.request.Request], str] = field(default=_raw_transport)
     dry_run: bool = False
 
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
@@ -220,12 +235,25 @@ class GitHubClient:
                 "Accept": "application/vnd.github.v3.diff",
             },
         )
-        return str(self.transport(request))
+        return self.raw_transport(request)
 
-    def list_comments(self, repo: str, issue_number: int) -> list[dict[str, Any]]:
-        path = f"/repos/{urllib.parse.quote(repo)}/issues/{issue_number}/comments?per_page=100"
-        data = self._request("GET", path)
-        return list(data) if isinstance(data, list) else []
+    def list_comments(
+        self, repo: str, issue_number: int, max_pages: int = 20
+    ) -> list[dict[str, Any]]:
+        """All comments on an issue/PR, following pagination."""
+        comments: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            path = (
+                f"/repos/{urllib.parse.quote(repo)}/issues/{issue_number}"
+                f"/comments?per_page=100&page={page}"
+            )
+            data = self._request("GET", path)
+            if not isinstance(data, list) or not data:
+                break
+            comments.extend(item for item in data if isinstance(item, dict))
+            if len(data) < 100:
+                break
+        return comments
 
     def upsert_comment(self, repo: str, issue_number: int, marker: str, body: str) -> None:
         """Post the comment, or edit the existing one carrying `marker`.
@@ -236,6 +264,12 @@ class GitHubClient:
             log.info("[dry-run] upsert comment on %s#%s (%d chars)", repo, issue_number, len(body))
             return
         for comment in self.list_comments(repo, issue_number):
+            # Only ever edit a bot's own comment: a human who quote-replies
+            # copies the marker, and overwriting their text would be worse
+            # than posting a second thread.
+            author_type = str((comment.get("user") or {}).get("type", ""))
+            if author_type.casefold() != "bot":
+                continue
             if marker in str(comment.get("body", "")):
                 path = f"/repos/{urllib.parse.quote(repo)}/issues/comments/{int(comment['id'])}"
                 self._request("PATCH", path, {"body": body})
