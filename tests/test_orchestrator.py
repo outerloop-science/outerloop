@@ -265,3 +265,24 @@ def test_report_covers_failure_outcomes(tmp_path: Path) -> None:
     assert "no-improvement" in report
     assert "13.876" in report
     assert "Agent's report" in report
+
+
+def test_eval_home_is_outside_the_clone(tmp_path: Path) -> None:
+    """Eval cache/state must not masquerade as agent edits in the diff."""
+    from autoresearch.orchestrator import SubprocessEvaluator
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    SubprocessEvaluator(timeout_s=30).evaluate(
+        ws, """touch "$HOME/marker" && printf '{"m": 1}\\n'""", "m"
+    )
+    assert not (ws / "marker").exists()
+    assert (tmp_path / "ws-eval-home" / "marker").exists()
+
+
+def test_report_redacts_secrets(tmp_path: Path) -> None:
+    session = ok_session(text="oops the key is sk-report-leak")
+    result, _, _ = run_climb(tmp_path, [13.876, 14.5], session=session)
+    report = result.report(CONFIG, redact_secrets=("sk-report-leak",))
+    assert "sk-report-leak" not in report
+    assert "[redacted]" in report

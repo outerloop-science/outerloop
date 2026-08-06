@@ -209,6 +209,9 @@ class ClaudeCodeHarness:
         if resume_session_id:
             claude_argv += ["--resume", resume_session_id]
         if self.container_image:
+            # bind sources must be absolute or apptainer fails at mount time
+            workspace = workspace.resolve()
+            session_home = session_home.resolve()
             if not os.path.isabs(self.binary):
                 # a relative bind source fails at mount time deep inside
                 # apptainer; catch the misconfiguration here instead

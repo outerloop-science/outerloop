@@ -82,7 +82,12 @@ class SubprocessEvaluator:
         else:
             argv = ["sh", "-c", command]
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
-        env["HOME"] = str(workspace)  # never the orchestrator's real home
+        # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
+        # (it shelters the PAT), and never the workspace — eval cache/state
+        # artifacts must not masquerade as agent edits in the diff.
+        eval_home = workspace.resolve().parent / f"{workspace.name}-eval-home"
+        eval_home.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(eval_home)
         try:
             # process group, like the harness: a timed-out eval must not
             # leave orphans mutating a workspace that later gets committed
@@ -104,8 +109,12 @@ class SubprocessEvaluator:
 
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
+            try:
                 process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.communicate(timeout=5)
             raise EvalError(f"eval timed out after {self.timeout_s}s") from exc
         if process.returncode != 0:
             raise EvalError(f"eval failed ({process.returncode}): {stderr[-500:]}")
@@ -161,7 +170,7 @@ class ClimbResult:
     session: SessionResult | None = None
     note: str = ""
 
-    def report(self, config: ClimbConfig) -> str:
+    def report(self, config: ClimbConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
             f"# Run report — {config.target} / {config.benchmark}",
             f"Outcome: **{self.outcome}**",
@@ -178,9 +187,11 @@ class ClimbResult:
                 f"turns={self.session.num_turns}, stop={self.session.stop_reason}",
                 "",
                 "## Agent's report",
-                self.session.final_text[:MAX_REPORT_BODY],
+                # redact BEFORE truncating: a secret straddling the cut would
+                # otherwise survive as an unmatchable prefix
+                redact(self.session.final_text, redact_secrets)[:MAX_REPORT_BODY],
             ]
-        return "\n".join(lines)
+        return redact("\n".join(lines), redact_secrets)
 
 
 def _benchmark(contract: Contract, name: str):
@@ -351,7 +362,11 @@ def pr_body(result: ClimbResult, config: ClimbConfig, redact_secrets: tuple[str,
             "",
             "## Research report",
             "",
-            (result.session.final_text[:MAX_REPORT_BODY] if result.session else ""),
+            (
+                redact(result.session.final_text, redact_secrets)[:MAX_REPORT_BODY]
+                if result.session
+                else ""
+            ),
         ]
     )
     return redact(body, redact_secrets)
