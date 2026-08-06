@@ -136,9 +136,10 @@ that can reach GitHub and your LLM provider works.
   2FA.
 - **A VM or workstation**: run it on a timer.
 
-Experiments run wherever your `compute` backend says. Slurm ships today; the
-interface is small (submit a job, poll for completion), so a CI runner, a cloud
-backend, or a hardware rig plugs in the same way.
+Experiments run wherever your `compute` backend says. Slurm is the first
+backend (arriving per the roadmap); the interface is small (submit a job, poll
+for completion), so a CI runner, a cloud backend, or a hardware rig plugs in
+the same way.
 
 ---
 

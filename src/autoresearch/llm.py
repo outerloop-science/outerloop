@@ -25,6 +25,10 @@ class TruncatedError(RuntimeError):
     """The response hit max_tokens; the JSON body is incomplete."""
 
 
+class CompleterError(RuntimeError):
+    """The completion failed operationally (auth, network, rate limit, overload)."""
+
+
 @dataclass
 class AnthropicCompleter:
     """Calls Claude and returns the raw JSON text of a structured response."""
@@ -42,22 +46,28 @@ class AnthropicCompleter:
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> str:
         if self.effort not in EFFORTS:
             raise ValueError(f"effort must be one of {EFFORTS}, got {self.effort!r}")
+        import anthropic  # imported lazily: the `review` extra is optional
+        import httpx  # anthropic's transport; mid-stream failures surface raw
+
         # Streamed: thinking is on by default and shares max_tokens with the
         # response, so a long review can outlive a non-streaming timeout.
-        with self._client().beta.messages.stream(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "effort": self.effort,
-                "format": {"type": "json_schema", "schema": schema},
-            },
-            # Safety classifiers can decline; route the retry server-side.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        ) as stream:
-            response = stream.get_final_message()
+        try:
+            with self._client().beta.messages.stream(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={
+                    "effort": self.effort,
+                    "format": {"type": "json_schema", "schema": schema},
+                },
+                # Safety classifiers can decline; route the retry server-side.
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+            ) as stream:
+                response = stream.get_final_message()
+        except (anthropic.AnthropicError, httpx.HTTPError) as exc:
+            raise CompleterError(f"{type(exc).__name__}: {exc}") from exc
         if response.stop_reason == "refusal":
             category = getattr(response.stop_details, "category", None)
             raise RefusalError(f"model declined the review (category={category})")
