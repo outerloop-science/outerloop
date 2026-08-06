@@ -3,9 +3,17 @@
 Auth flows through :class:`TokenProvider` so a GitHub App installation-token
 provider can replace the PAT file without touching callers
 (docs/design/external.md). Every mutating operation respects ``dry_run``: log
-the intent, touch nothing. Tokens never appear in process arguments or in
-``.git/config`` — git auth is injected per-invocation via ``GIT_CONFIG_*``
-environment variables.
+the intent, touch nothing.
+
+Credential rules enforced here:
+- Tokens never appear in process arguments or in ``.git/config``; git auth is
+  injected per-invocation via ``GIT_CONFIG_*`` environment variables.
+- Only network git subcommands get that environment. Local subcommands run
+  token-free with hooks disabled, so repo content written by an agent session
+  (hooks, filters) can never read the credential.
+- Credentialed invocations additionally neutralize every git setting that can
+  spawn a child process (ssh command, credential helpers, alternate
+  protocols), because the session owns the clone's ``.git/config``.
 """
 
 from __future__ import annotations
@@ -15,6 +23,8 @@ import json
 import logging
 import os
 import subprocess
+import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,7 +34,49 @@ from typing import Any, Protocol
 log = logging.getLogger(__name__)
 
 API = "https://api.github.com"
+NETWORK_GIT_COMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
+# Settings a session could add to .git/config that make git spawn a child
+# process; neutralized on every credentialed invocation.
+SAFE_GIT_FLAGS = (
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.sshCommand=false",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.https.allow=always",
+    "-c",
+    "protocol.file.allow=always",
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "core.quotePath=false",
+)
 Transport = Callable[[urllib.request.Request], Any]
+
+
+class GitHubError(RuntimeError):
+    """A GitHub API call failed."""
+
+    def __init__(self, status: int, path: str, message: str) -> None:
+        super().__init__(f"{status} on {path}: {message}")
+        self.status = status
+        self.path = path
+
+
+class GitError(RuntimeError):
+    """A git subcommand failed; carries git's own explanation."""
+
+
+class NothingToCommit(GitError):
+    """Nothing staged — an ordinary outcome, not a crash."""
+
+
+class ForbiddenPathError(GitError):
+    """A commit tried to stage a path the contract forbids."""
 
 
 class TokenProvider(Protocol):
@@ -33,17 +85,54 @@ class TokenProvider(Protocol):
 
 @dataclass(frozen=True)
 class FileTokenProvider:
-    """Reads a 0600 credential file (the bot PAT on the orchestrator host)."""
+    """Reads a credential file (the bot PAT on the orchestrator host)."""
 
     path: Path
 
     def token(self) -> str:
-        return self.path.read_text().strip()
+        if not self.path.is_file():
+            raise ValueError(f"{self.path} is not a readable credential file")
+        mode = self.path.stat().st_mode & 0o077
+        if mode:
+            raise PermissionError(f"{self.path} is group/world accessible; chmod 600 it")
+        token = self.path.read_text().strip()
+        if not token:
+            raise ValueError(f"{self.path} is empty")
+        return token
+
+
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Drop the Authorization header when a redirect changes host."""
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> Any:
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        old_parts = urllib.parse.urlparse(req.full_url)
+        new_parts = urllib.parse.urlparse(newurl)
+        if new is not None and (
+            new_parts.netloc != old_parts.netloc or new_parts.scheme != old_parts.scheme
+        ):
+            for header in ("Authorization", "authorization"):
+                new.headers.pop(header, None)
+                new.unredirected_hdrs.pop(header, None)
+        return new
+
+
+_opener = urllib.request.build_opener(_NoAuthRedirect)
 
 
 def _default_transport(request: urllib.request.Request) -> Any:
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = response.read()
+    try:
+        with _opener.open(request, timeout=30) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:500]
+        raise GitHubError(exc.code, urllib.parse.urlparse(request.full_url).path, body) from None
+    except urllib.error.URLError as exc:
+        raise GitHubError(
+            0, urllib.parse.urlparse(request.full_url).path, str(exc.reason)
+        ) from None
     return json.loads(payload) if payload else None
 
 
@@ -68,47 +157,77 @@ class GitHubClient:
         )
         return self.transport(request)
 
+    @staticmethod
+    def _expect_dict(data: Any, path: str) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise GitHubError(200, path, f"expected an object, got {type(data).__name__}")
+        return data
+
     def default_branch(self, repo: str) -> str:
-        return str(self._request("GET", f"/repos/{repo}")["default_branch"])
+        path = f"/repos/{urllib.parse.quote(repo)}"
+        return str(self._expect_dict(self._request("GET", path), path)["default_branch"])
 
     def get_file(self, repo: str, path: str, ref: str) -> str:
         """Fetch a file's text at a ref — used to read contracts from the
         default branch, never from PR branches."""
-        data = self._request("GET", f"/repos/{repo}/contents/{path}?ref={ref}")
+        query = urllib.parse.urlencode({"ref": ref})
+        api_path = f"/repos/{urllib.parse.quote(repo)}/contents/{urllib.parse.quote(path)}?{query}"
+        data = self._expect_dict(self._request("GET", api_path), api_path)
+        if data.get("type") != "file":
+            raise GitHubError(200, api_path, f"not a file (type={data.get('type')!r})")
         if data.get("encoding") != "base64":
-            raise ValueError(f"unexpected encoding for {repo}:{path}")
+            raise GitHubError(200, api_path, f"unreadable encoding {data.get('encoding')!r}")
         return base64.b64decode(data["content"]).decode()
 
     def create_pr(self, repo: str, head: str, base: str, title: str, body: str) -> int | None:
         if self.dry_run:
             log.info("[dry-run] create PR %s: %s <- %s (%r)", repo, base, head, title)
             return None
-        data = self._request(
-            "POST",
-            f"/repos/{repo}/pulls",
-            {"title": title, "head": head, "base": base, "body": body},
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls"
+        data = self._expect_dict(
+            self._request("POST", path, {"title": title, "head": head, "base": base, "body": body}),
+            path,
         )
+        if "number" not in data:
+            raise GitHubError(200, path, f"no PR number in response: {data.get('message')}")
         return int(data["number"])
 
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:
             log.info("[dry-run] comment on %s#%s (%d chars)", repo, issue_number, len(body))
             return
-        self._request("POST", f"/repos/{repo}/issues/{issue_number}/comments", {"body": body})
+        path = f"/repos/{urllib.parse.quote(repo)}/issues/{issue_number}/comments"
+        self._request("POST", path, {"body": body})
 
 
-def _git_auth_env(token: str | None) -> dict[str, str]:
-    """Per-invocation git auth that never lands in argv or .git/config."""
+def _git_env(token: str | None) -> dict[str, str]:
+    """Environment for a git invocation. The token is present only for network
+    subcommands; local ones also get hooks disabled."""
     env = dict(os.environ)
-    if token is not None:
-        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        env |= {
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
-        }
     env["GIT_TERMINAL_PROMPT"] = "0"
+    if token is None:
+        env["GIT_CONFIG_COUNT"] = "0"
+        return env
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    env |= {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
+    }
     return env
+
+
+def _run_git(args: list[str], env: dict[str, str]) -> str:
+    result = subprocess.run(args, capture_output=True, text=True, env=env, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        skip = {"-C", "-c"}
+        subcommand = next(
+            (a for i, a in enumerate(args[1:], 1) if a not in skip and args[i - 1] not in skip),
+            "?",
+        )
+        raise GitError(f"git {subcommand} failed: {detail}")
+    return result.stdout.strip()
 
 
 @dataclass
@@ -118,19 +237,22 @@ class Workspace:
     root: Path
     auth: TokenProvider | None = None
     dry_run: bool = False
-
-    def _token(self) -> str | None:
-        return self.auth.token() if self.auth is not None else None
+    url: str | None = None
 
     def git(self, *args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(self.root), *args],
-            capture_output=True,
-            text=True,
-            env=_git_auth_env(self._token()),
-            check=True,
-        )
-        return result.stdout.strip()
+        """Run a local git subcommand: no credential, no child-spawning config."""
+        return _run_git(["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None))
+
+    def git_network(self, *args: str) -> str:
+        """Run a git subcommand that talks to the remote, with credentials."""
+        if args and args[0] not in NETWORK_GIT_COMMANDS:
+            raise ValueError(f"{args[0]!r} is not a network git command")
+        token = self.auth.token() if self.auth is not None else None
+        return _run_git(["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token))
+
+    def remote_url(self) -> str:
+        """The remote URL as recorded at clone time, read token-free."""
+        return self.git("config", "--get", "remote.origin.url")
 
     @classmethod
     def clone(
@@ -141,20 +263,39 @@ class Workspace:
         dry_run: bool = False,
     ) -> Workspace:
         token = auth.token() if auth is not None else None
-        subprocess.run(
-            ["git", "clone", "--quiet", url, str(dest)],
-            capture_output=True,
-            text=True,
-            env=_git_auth_env(token),
-            check=True,
-        )
-        return cls(root=dest, auth=auth, dry_run=dry_run)
+        _run_git(["git", "clone", "--quiet", *SAFE_GIT_FLAGS, url, str(dest)], _git_env(token))
+        return cls(root=dest, auth=auth, dry_run=dry_run, url=url)
 
     def branch(self, name: str) -> None:
         self.git("switch", "-c", name)
 
-    def commit_all(self, message: str, author: str) -> None:
+    def staged_paths(self) -> list[str]:
+        """Staged paths, NUL-delimited so unicode/space/newline names survive."""
+        output = self.git("diff", "--cached", "--name-only", "-z")
+        return [entry for entry in output.split("\0") if entry]
+
+    def commit_all(
+        self,
+        message: str,
+        author: str,
+        forbidden: Callable[[str], bool] | None = None,
+    ) -> None:
+        """Stage everything and commit.
+
+        `forbidden(path)` — normally `partial(path_is_forbidden, contract=...)`
+        — vetoes the commit if the session touched a path the contract puts
+        off-limits, so the invariant is enforced against the diff, not only
+        against the contract's own scope list.
+        """
         self.git("add", "-A")
+        staged = self.staged_paths()
+        if not staged:
+            raise NothingToCommit("nothing to commit; working tree clean")
+        if forbidden is not None:
+            violations = [p for p in staged if forbidden(p)]
+            if violations:
+                self.git("reset")
+                raise ForbiddenPathError(f"commit touches forbidden paths: {sorted(violations)}")
         self.git(
             "-c",
             f"user.name={author}",
@@ -169,4 +310,7 @@ class Workspace:
         if self.dry_run:
             log.info("[dry-run] push %s from %s", branch, self.root)
             return
-        self.git("push", "-u", "origin", branch)
+        # Push to the URL captured at clone time: the session can rewrite
+        # remote.origin.url, and "origin" would follow it.
+        target = self.url or self.remote_url()
+        self.git_network("push", target, "--", f"{branch}:{branch}")
