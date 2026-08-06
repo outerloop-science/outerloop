@@ -103,13 +103,13 @@ def test_first_terminal_sighting_starts_the_grace_clock_not_a_wake(tmp_path: Pat
     24h experiment must not be woken by the backup the instant it completes
     (the afterany job owns the fresh case)."""
     waiting_run(tmp_path, terminal_seen=0.0)
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
+    _report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
     assert dispatcher.dispatched == []
     assert load_record(tmp_path, "r1").terminal_seen == NOW
     # attempts untouched by the sighting
     assert load_record(tmp_path, "r1").wake_attempts == 0
     # next tick, grace elapsed → wake
-    report2, dispatcher2 = run_tick(
+    report2, _dispatcher2 = run_tick(
         tmp_path, FakeSlurm(states={"100": "COMPLETED"}), now=NOW + GRACE + 1
     )
     assert report2.woken == (("r1", "COMPLETED"),)
@@ -162,20 +162,20 @@ def test_query_failure_defers_never_concludes(tmp_path: Path) -> None:
 
 def test_gone_before_deadline_waits_for_sacct_lag(tmp_path: Path) -> None:
     waiting_run(tmp_path)  # deadline far in the future
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))  # sacct empty
+    _report, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))  # sacct empty
     assert dispatcher.dispatched == []
 
 
 def test_gone_past_deadline_wakes_with_vanished(tmp_path: Path) -> None:
     waiting_run(tmp_path, deadline=NOW - 1)
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
+    report, _dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
     assert report.woken == (("r1", "vanished"),)
 
 
 def test_pending_past_deadline_cancels_then_wakes(tmp_path: Path) -> None:
     waiting_run(tmp_path, deadline=NOW - 1)
     slurm = FakeSlurm(states={"100": "PENDING"})
-    report, dispatcher = run_tick(tmp_path, slurm)
+    report, _dispatcher = run_tick(tmp_path, slurm)
     assert slurm.cancelled == ["100"]
     assert report.woken == (("r1", "unschedulable"),)
 
@@ -183,14 +183,14 @@ def test_pending_past_deadline_cancels_then_wakes(tmp_path: Path) -> None:
 def test_pending_before_deadline_is_left_alone(tmp_path: Path) -> None:
     waiting_run(tmp_path)
     slurm = FakeSlurm(states={"100": "PENDING"})
-    report, dispatcher = run_tick(tmp_path, slurm)
+    _report, dispatcher = run_tick(tmp_path, slurm)
     assert slurm.cancelled == []
     assert dispatcher.dispatched == []
 
 
 def test_running_experiment_is_left_alone(tmp_path: Path) -> None:
     waiting_run(tmp_path)
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "RUNNING"}))
+    _report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "RUNNING"}))
     assert dispatcher.dispatched == []
 
 
@@ -209,7 +209,9 @@ def test_live_lease_defers_even_the_stuck_verdict(tmp_path: Path) -> None:
     LIVE lease must not be truncated to stuck underneath it."""
     waiting_run(tmp_path, wake_attempts=3)
     acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED", "55": "RUNNING"}))
+    report, _dispatcher = run_tick(
+        tmp_path, FakeSlurm(states={"100": "COMPLETED", "55": "RUNNING"})
+    )
     assert report.stuck == ()
     assert load_record(tmp_path, "r1").state == WAITING
 
@@ -269,7 +271,7 @@ def test_legacy_zero_deadline_still_wakes_gone_runs(tmp_path: Path) -> None:
 
     (directory / "state.json").write_text(_json.dumps(record))
     slurm = FakeSlurm(states={"100": "PENDING"})
-    report2, _ = run_tick(tmp_path, slurm)
+    _report2, _ = run_tick(tmp_path, slurm)
     assert slurm.cancelled == []  # healthy pending job never cancelled
 
 
@@ -325,3 +327,87 @@ def test_heartbeat_written_every_tick(tmp_path: Path) -> None:
     beat = json.loads((tmp_path / "heartbeat.json").read_text())
     assert beat["ts"] == NOW
     assert "host" in beat
+
+
+def test_one_bad_record_does_not_blind_the_sweep(tmp_path: Path) -> None:
+    """Per-record isolation: a record that makes processing raise must not
+    stop the remaining runs from being swept."""
+    import json as _json
+
+    # legacy zero-deadline record whose experiment is TERMINAL: the sighting
+    # save would raise without the repair; either way the sweep must go on
+    directory = tmp_path / "runs" / "a-bad"
+    directory.mkdir(parents=True)
+    record = dict(
+        run_id="a-bad",
+        target="o/r",
+        task_title="t",
+        state=WAITING,
+        agent_id="a",
+        experiment_job_id="200",
+        wake_job_id="",
+        resume_session_id="",
+        wake_attempts=0,
+        deadline=0.0,
+        terminal_seen=0.0,
+        ending="",
+        ending_note="",
+        created=NOW - 5000,
+        updated=NOW - 5000,
+    )
+    (directory / "state.json").write_text(_json.dumps(record))
+    waiting_run(tmp_path, run_id="z-good")
+    slurm = FakeSlurm(states={"200": "COMPLETED", "100": "COMPLETED"})
+    report, _dispatcher = run_tick(tmp_path, slurm)
+    assert ("z-good", "COMPLETED") in report.woken  # the good run was served
+
+
+def test_legacy_terminal_record_gets_deadline_repaired_on_sighting(tmp_path: Path) -> None:
+    import json as _json
+
+    directory = tmp_path / "runs" / "legacy2"
+    directory.mkdir(parents=True)
+    record = dict(
+        run_id="legacy2",
+        target="o/r",
+        task_title="t",
+        state=WAITING,
+        agent_id="a",
+        experiment_job_id="300",
+        wake_job_id="",
+        resume_session_id="",
+        wake_attempts=0,
+        deadline=0.0,
+        terminal_seen=0.0,
+        ending="",
+        ending_note="",
+        created=NOW - 5000,
+        updated=NOW - 5000,
+    )
+    (directory / "state.json").write_text(_json.dumps(record))
+    run_tick(tmp_path, FakeSlurm(states={"300": "FAILED"}))
+    repaired = load_record(tmp_path, "legacy2")
+    assert repaired.terminal_seen == NOW
+    assert repaired.deadline > 0
+
+
+def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
+    """--grace-s must actually change sweep behavior (was parsed-but-ignored)."""
+    import sys
+
+    import autoresearch.tick as tick_mod
+
+    waiting_run(tmp_path, terminal_seen=NOW - 5)  # 5s since sighting
+    captured: dict = {}
+
+    real_tick = tick_mod.tick
+
+    def spy(root, compute, dispatcher, now, grace_s=0, lease_ttl_s=0, dry_run=False):
+        captured["grace_s"] = grace_s
+        return real_tick(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run)
+
+    monkeypatch.setattr(tick_mod, "tick", spy)
+    monkeypatch.setattr(tick_mod, "SlurmCompute", lambda: FakeSlurm(states={}).compute())
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--grace-s", "1"])
+    assert tick_mod.main() == 0
+    assert captured["grace_s"] == 1.0

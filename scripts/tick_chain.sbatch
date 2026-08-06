@@ -22,28 +22,33 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --output=/dev/null
 
-set -u
+# NO set -u before the top-up: a config mistake must fail loudly AFTER the
+# chain has secured its successors, not break the chain silently. Required
+# vars are checked by hand instead.
 CADENCE_MIN="${AUTORESEARCH_CADENCE_MIN:-30}"
 JOB_NAME="autoresearch-tick"
-LOG_DIR="$AUTORESEARCH_ROOT/logs"
-mkdir -p "$LOG_DIR"
-exec >>"$LOG_DIR/tick-$(date +%Y%m%d).log" 2>&1
-echo "=== tick $(date -Is) on $(hostname -s) job=${SLURM_JOB_ID:-none}"
+missing=""
+for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT AUTORESEARCH_PARTITION; do
+    eval "val=\${$var:-}"
+    [ -z "$val" ] && missing="$missing $var"
+done
 
 # --- 1. keep two successors queued (singleton serializes same-name jobs) ---
+# Successors land on slots AFTER the ones already-queued jobs occupy —
+# otherwise every top-up doubles the tick rate on the next slot.
 pending=$(squeue -u "$USER" --name="$JOB_NAME" -h -t PENDING 2>/dev/null | wc -l)
 need=$((2 - pending))
 epoch_now=$(date +%s)
 cadence_s=$((CADENCE_MIN * 60))
 next_slot=$(( (epoch_now / cadence_s + 1) * cadence_s ))
 for i in $(seq 1 "$need"); do
-    begin_epoch=$((next_slot + (i - 1) * cadence_s))
+    begin_epoch=$((next_slot + (pending + i - 1) * cadence_s))
     begin=$(date -d "@$begin_epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
         if sbatch --dependency=singleton --begin="$begin" \
-                  --account="$AUTORESEARCH_ACCOUNT" --partition="$AUTORESEARCH_PARTITION" \
-                  "$AUTORESEARCH_HOME/scripts/tick_chain.sbatch"; then
+                  --account="${AUTORESEARCH_ACCOUNT:-}" --partition="${AUTORESEARCH_PARTITION:-}" \
+                  "${AUTORESEARCH_HOME:-}/scripts/tick_chain.sbatch"; then
             break
         fi
         echo "sbatch retry $attempt failed; backing off"
@@ -51,11 +56,24 @@ for i in $(seq 1 "$need"); do
     done
 done
 
+# Only NOW may configuration problems kill this tick — successors are queued.
+set -u
+if [ -n "$missing" ]; then
+    echo "tick misconfigured; missing:$missing" >&2
+    exit 1
+fi
+LOG_DIR="$AUTORESEARCH_ROOT/logs"
+mkdir -p "$LOG_DIR" || true
+if [ -w "$LOG_DIR" ]; then
+    exec >>"$LOG_DIR/tick-$(date +%Y%m%d).log" 2>&1
+fi
+echo "=== tick $(date -Is) on $(hostname -s) job=${SLURM_JOB_ID:-none}"
+
 # --- 2. deploy: pull main with the bot PAT, sync deps (best-effort) ---
 # The PAT never appears in argv (argv is world-readable via /proc on shared
 # nodes): git asks for it through GIT_ASKPASS instead.
 if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
-    ASKPASS=$(mktemp) && chmod 700 "$ASKPASS"
+    ASKPASS=$(mktemp 2>/dev/null || echo "") && [ -n "$ASKPASS" ] && chmod 700 "$ASKPASS"
     printf '#!/bin/sh\ncat "%s"\n' "$AUTORESEARCH_PAT_FILE" > "$ASKPASS"
     if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -C "$AUTORESEARCH_HOME" fetch --quiet \
         "https://x-access-token@github.com/agentic-learning-ai-lab/autoresearch.git" main; then

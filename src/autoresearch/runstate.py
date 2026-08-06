@@ -14,6 +14,7 @@ strand the run.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -151,7 +152,8 @@ def read_lease(root: Path, run_id: str) -> Lease | None:
     path = run_dir(root, run_id) / LEASE_NAME
     try:
         raw = json.loads(path.read_text())
-        return Lease(**raw)
+        known = {k: v for k, v in raw.items() if k in Lease.__dataclass_fields__}
+        return Lease(**known)
     except FileNotFoundError:
         return None
     except (OSError, ValueError, TypeError, KeyError):
@@ -179,10 +181,8 @@ def update_lease_holder(
 
 def release_lease(root: Path, run_id: str) -> None:
     """For the lease HOLDER only. Non-holders must use reap_lease."""
-    try:
+    with contextlib.suppress(FileNotFoundError):
         (run_dir(root, run_id) / LEASE_NAME).unlink()
-    except FileNotFoundError:
-        pass
 
 
 def reap_lease(root: Path, run_id: str, reaper: str) -> bool:

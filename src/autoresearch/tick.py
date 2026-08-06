@@ -166,18 +166,62 @@ def sweep(
             woken.append((record.run_id, tag))
 
     for record in records:
+        try:
+            _sweep_one(
+                root,
+                compute,
+                dispatcher,
+                now,
+                grace_s,
+                lease_ttl_s,
+                dry_run,
+                record,
+                holder,
+                wake,
+                deferred,
+                reaped,
+                stuck,
+            )
+        except Exception as exc:
+            log.warning("sweep failed on %s: %s: %s", record.run_id, type(exc).__name__, exc)
+
+    return TickReport(
+        swept=len(records),
+        woken=tuple(woken),
+        deferred=tuple(deferred),
+        reaped_leases=tuple(reaped),
+        stuck=tuple(stuck),
+    )
+
+
+def _sweep_one(
+    root: Path,
+    compute: SlurmCompute,
+    dispatcher: WakeDispatcher,
+    now: float,
+    grace_s: float,
+    lease_ttl_s: float,
+    dry_run: bool,
+    record: RunRecord,
+    holder: str,
+    wake,
+    deferred: list[str],
+    reaped: list[str],
+    stuck: list[str],
+) -> None:
+    if True:
         # Leases first: a LIVE wake in flight owns this run — even the stuck
         # verdict must wait for it (its session may be the one that succeeds).
         lease = read_lease(root, record.run_id)
         if lease is not None:
             alive = _holder_alive(compute, lease.holder_job_id)
             if not lease_is_stale(lease, now, lease_ttl_s, alive):
-                continue
+                return
             if dry_run:
                 reaped.append(record.run_id)
-                continue
+                return
             if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}"):
-                continue  # a concurrent tick reaped it first; it owns redelivery
+                return  # a concurrent tick reaped it first; it owns redelivery
             reaped.append(record.run_id)
 
         # Layer 5: too many failed attempts is a terminal, reported state.
@@ -191,17 +235,17 @@ def sweep(
                 )
                 save_record(root, ended, now)
             stuck.append(record.run_id)
-            continue
+            return
 
         if not record.experiment_job_id:
-            continue  # not yet submitted; not the sweep's business
+            return  # not yet submitted; not the sweep's business
 
         try:
             state = compute.status(record.experiment_job_id)
         except SlurmQueryError:
             # Layer 4's rule: query failure is "Slurm unknown", never "gone".
             deferred.append(record.run_id)
-            continue
+            return
 
         # deadline <= 0 cannot be written by save_record for waiting runs;
         # if one exists anyway (legacy/hand-edited), treat it as already past
@@ -214,9 +258,22 @@ def sweep(
             # saw the experiment terminal, not from submission — the afterany
             # job gets the full window to deliver before the backup steps in.
             if record.terminal_seen <= 0:
-                if not dry_run:
-                    save_record(root, replace(record, terminal_seen=now), now)
-                continue
+                if dry_run:
+                    # no writes in dry-run: report the would-wake now so the
+                    # terminal path is visible to live plumbing checks
+                    wake(record, f"experiment {state}", state)
+                else:
+                    save_record(
+                        root,
+                        replace(
+                            record,
+                            terminal_seen=now,
+                            # repair legacy records as we touch them (see _wake)
+                            deadline=record.deadline if record.deadline > 0 else now,
+                        ),
+                        now,
+                    )
+                return
             if now - record.terminal_seen >= grace_s:
                 wake(record, f"experiment {state}", state)
         elif state == GONE:
@@ -224,19 +281,15 @@ def sweep(
                 wake(record, "experiment vanished from Slurm", "vanished")
             # else: sacct lag right after submission is normal; wait.
         elif is_pending(state) and record.deadline > 0 and now > record.deadline:
-            # Unschedulable in practice: cancel, then wake with that fact.
+            # Unschedulable in practice: cancel (best-effort — scancel
+            # trouble must not abort the sweep), then wake with that fact.
             if not dry_run:
-                compute.cancel(record.experiment_job_id)
+                try:
+                    compute.cancel(record.experiment_job_id)
+                except Exception as exc:  # scancel trouble is never fatal here
+                    log.warning("cancel %s failed: %s", record.experiment_job_id, exc)
             wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
         # RUNNING (or recently pending): nothing to do; the afterany job has it.
-
-    return TickReport(
-        swept=len(records),
-        woken=tuple(woken),
-        deferred=tuple(deferred),
-        reaped_leases=tuple(reaped),
-        stuck=tuple(stuck),
-    )
 
 
 def tick(
@@ -244,6 +297,8 @@ def tick(
     compute: SlurmCompute,
     dispatcher: WakeDispatcher,
     now: float,
+    grace_s: float = DEFAULT_GRACE_S,
+    lease_ttl_s: float = DEFAULT_LEASE_TTL_S,
     dry_run: bool = False,
 ) -> TickReport:
     """One full tick. Pause sentinel wins over everything: a paused loop
@@ -252,7 +307,7 @@ def tick(
     if (root / PAUSE_SENTINEL).exists():
         log.info("pause sentinel present; tick is a no-op")
         return TickReport(paused=True)
-    return sweep(root, compute, dispatcher, now, dry_run=dry_run)
+    return sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
 
 
 @dataclass
@@ -280,7 +335,15 @@ def main() -> int:
     args.root.mkdir(parents=True, exist_ok=True)
     # dry_run until the phase-5 dispatcher exists: the live loop must not
     # mutate run state it cannot follow through on.
-    report = tick(args.root, SlurmCompute(), LoggingDispatcher(), now=time.time(), dry_run=True)
+    report = tick(
+        args.root,
+        SlurmCompute(),
+        LoggingDispatcher(),
+        now=time.time(),
+        grace_s=args.grace_s,
+        lease_ttl_s=args.lease_ttl_s,
+        dry_run=True,
+    )
     log.info(
         "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d",
         report.paused,
