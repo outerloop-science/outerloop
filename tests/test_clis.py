@@ -151,3 +151,27 @@ def test_review_cli_skips_context_fetch_for_bot_prs(monkeypatch) -> None:
     _cli_env(monkeypatch)
     assert cli.main() == 0
     assert fake_client.content_fetches == []
+
+
+def test_context_fetch_stops_at_file_cap(monkeypatch) -> None:
+    """One content fetch per picked file — never one past the cap."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import MAX_CONTEXT_FILES
+
+    class WideClient(FakeReviewClient):
+        def get_pull_request_files(self, repo: str, number: int) -> list[dict]:
+            return [{"filename": f"f{i}.py", "status": "modified"} for i in range(100)]
+
+    fake_client = WideClient()
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None: __import__(
+            "autoresearch.review", fromlist=["ReviewResult"]
+        ).ReviewResult(findings=[], notes=""),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert len(fake_client.content_fetches) == MAX_CONTEXT_FILES

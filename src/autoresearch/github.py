@@ -272,8 +272,11 @@ class GitHubClient:
         if not isinstance(data, dict) or data.get("encoding") != "base64":
             return None
         try:
-            return base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
-        except (ValueError, TypeError):
+            raw = base64.b64decode(data.get("content", ""))
+            if b"\x00" in raw:
+                return None  # binary
+            return raw.decode("utf-8")
+        except (ValueError, TypeError, UnicodeDecodeError):
             return None
 
     def list_comments(

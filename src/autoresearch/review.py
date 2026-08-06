@@ -173,14 +173,16 @@ def pick_context_files(candidates: Iterable[tuple[str, str]]) -> tuple[tuple[str
     picked: list[tuple[str, str]] = []
     budget = MAX_CONTEXT_CHARS
     for path, content in candidates:
-        if len(picked) >= MAX_CONTEXT_FILES:
-            break
         if not content or "\x00" in content or len(content) > MAX_FILE_CHARS:
             continue
         if len(content) > budget:
             continue
         picked.append((path, content))
         budget -= len(content)
+        # Break AFTER appending: a lazily-fetching caller then does exactly one
+        # fetch per picked file, never one past the cap.
+        if len(picked) >= MAX_CONTEXT_FILES:
+            break
     return tuple(picked)
 
 
@@ -206,8 +208,11 @@ def build_prompt(pr: PullRequest, today: str | None = None) -> str:
     if pr.context_files:
         parts = ["\n\n## Current contents of changed files (head revision)"]
         for path, content in pr.context_files:
+            # Git allows newlines and backticks in filenames; a raw path could
+            # forge prompt structure even with fenced content.
+            safe_path = " ".join(str(path).split()).replace("`", "")[:300]
             fence = _fence(content)
-            parts.append(f"\n### {path}\n{fence}\n{content}\n{fence}")
+            parts.append(f"\n### {safe_path}\n{fence}\n{content}\n{fence}")
         context = "".join(parts)
     diff_fence = _fence(diff)
     return (

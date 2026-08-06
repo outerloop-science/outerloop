@@ -49,23 +49,34 @@ def _gather_context(
     """Head-revision contents of changed files, bounded. Best-effort: a
     degraded review beats no review, so failures here return empty context."""
     try:
-        head_sha = str((pr_data.get("head") or {}).get("sha", ""))
+        head = pr_data.get("head")
+        if not isinstance(head, dict):
+            return ()
+        head_sha = str(head.get("sha", ""))
         if not head_sha:
             return ()
-        # Cap the fetch fan-out BEFORE hitting the contents API: a 400-file PR
-        # must not turn into 400 sequential requests against the workflow
-        # token's rate budget. Lazy generator so pick_context_files stops the
-        # fetching as soon as its caps are met.
-        files = client.get_pull_request_files(repo, number)[: MAX_CONTEXT_FILES * 3]
+        # Fork PRs: the head commit lives in the head repo, not the base. (Our
+        # workflow only reviews same-repo PRs, but self-hosters can run the
+        # CLI directly.)
+        head_repo = head.get("repo")
+        content_repo = (
+            str(head_repo.get("full_name")) if isinstance(head_repo, dict) else ""
+        ) or repo
+        # Filter first, THEN cap the fetch fan-out — a PR whose first entries
+        # are all deletions must not blind the reviewer to later files — and a
+        # 400-file PR can't turn into 400 sequential requests against the
+        # workflow token's rate budget. Lazy generator: pick_context_files
+        # stops the fetching at its caps.
+        files = [
+            item
+            for item in client.get_pull_request_files(repo, number)
+            if item.get("status") != "removed" and item.get("filename")
+        ][: MAX_CONTEXT_FILES * 3]
 
         def candidates() -> Iterator[tuple[str, str]]:
             for item in files:
-                if item.get("status") == "removed":
-                    continue
-                path = str(item.get("filename", ""))
-                if not path:
-                    continue
-                content = client.get_file_content(repo, path, head_sha)
+                path = str(item["filename"])
+                content = client.get_file_content(content_repo, path, head_sha)
                 if content is not None:
                     yield (path, content)
 

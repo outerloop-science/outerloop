@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking**: the review CLI reads `ANTHROPIC_REVIEWER_KEY`, no longer
+  `ANTHROPIC_API_KEY` (role-named credentials; the harness gets its own key).
+  Reusable-workflow callers are unaffected. Direct invokers must export the
+  new name — with the old one the reviewer skips cleanly but silently.
+- The reviewer now sees today's date, repo/PR metadata, and bounded
+  head-revision contents of changed files, and its prompt demands
+  evidence-based findings (fixes a live false positive that flagged a correct
+  date as a typo).
+
 ### Fixed
 
 - Hardening from the first adversarial review pass: local git runs without
