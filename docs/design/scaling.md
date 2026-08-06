@@ -1,6 +1,6 @@
 # Research planning and multi-agent scaling
 
-**Status: design sketch, v2 — iterating with Mengye (started 2026-08-06;
+**Status: design sketch, v2 — iterating with the maintainers (started 2026-08-06;
 round-1 decisions folded in 2026-08-06). Nothing here gates the phase-4
 build; decided pieces get promoted into architecture.md as they firm up.**
 
@@ -26,7 +26,7 @@ explicitly:
 - *experiment economics* — expected information per GPU-hour; what this
   eliminates from the search space if the answer is negative.
 
-**Where plans live: GitHub Issues** (Mengye's call, for visibility), one
+**Where plans live: GitHub Issues** (maintainer decision, for visibility), one
 issue per search line on the target repo, plus a machine-readable copy in the
 notebook's `plans/<target>/`. Bot-authored plan issues do NOT pass the
 requested-lane gate (that would let the pipeline feed itself privileged
@@ -75,7 +75,7 @@ defensible headline number — and where interactions between improvements
 consolidation line carries its own ceiling (a minimum interval and a per-run
 GPU-hour cap), so a burst of merges cannot trigger unbounded large runs.
 
-## Part 2b — Maintenance work and the vision (added from Mengye's round 1)
+## Part 2b — Maintenance work and the vision (added in round 1)
 
 Not every valuable merge moves a benchmark. **Maintenance work** — refactors,
 test coverage, tooling, documentation, dependency health — is a first-class
@@ -99,14 +99,14 @@ a human PR to the target repo: governed, visible, versioned — the same forum
 mechanism as everything else. Agents may *propose* vision changes in reports
 or issues; they cannot enact them.
 
-## Part 2c — Results: three layers, one blur resolved (Mengye + round 3)
+## Part 2c — Results: three layers, one blur resolved (round 3)
 
 A codebase, a leaderboard, and an experiment server are different things;
 results tracking keeps them separate instead of blurring them:
 
 | Layer | Lives | Written by | Contains |
 | --- | --- | --- | --- |
-| **Telemetry** | W&B (`nyu-mengye-group`, the lab's existing standard) | experiment jobs, via the target repo's own config-driven logging | curves, configs, artifacts — the deep-dive surface; agent runs tagged with agent + run id, filterable next to human runs |
+| **Telemetry** | the experiment tracker your org already uses (W&B, in our case) | experiment jobs, via the target repo's own config-driven logging | curves, configs, artifacts — the deep-dive surface; agent runs tagged with agent + run id, filterable next to human runs |
 | **Ledger** | a `results` branch in the target repo — append-only `ledger.jsonl` + a full rendered history table | the orchestrator after every measured run (improvements, negative results, aborted); humans via one command that evals + appends | EVERY measured number with provenance: benchmark, value, sha, who (agent id or human), date, W&B link. Intermediate baselines and lab members' numbers live here — attributable, in-repo, zero PRs |
 | **Headline** | `BENCHMARKS.md` + `results/leader.json` on main | the orchestrator only, riding inside improvement PRs | current best per benchmark + milestones (rows where the leader changed) |
 
@@ -180,7 +180,7 @@ agents:
 testing is ready; round-1 decision 3).** Claude Code supports
 headless auth two ways: an API key (today's path, works), or a long-lived
 OAuth token minted by `claude setup-token` from a subscription seat —
-designed for CI, no browser on the cluster needed. Proposed flow: Mengye runs
+designed for CI, no browser on the cluster needed. Proposed flow: a maintainer runs
 `setup-token` locally once per seat, the token lands in
 `~/.config/autoresearch/agents/<agent-id>/credential` (0600) on Torch, and
 the harness's existing env-injection seam passes it as
@@ -201,7 +201,7 @@ not a technical one. Confirm against current terms before the seat path
 becomes default; needs a live spike regardless (token lifetime, refresh,
 concurrent seats).
 
-## Round-1 decisions (Mengye, 2026-08-06)
+## Round-1 decisions (maintainers, 2026-08-06)
 
 1. **Veto**: `autoresearch:stop` label; default start one day after the plan
    issue posts; a maintainer's `autoresearch:approved` label starts it

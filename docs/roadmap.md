@@ -75,7 +75,7 @@ standing instruction they supersede — a resumed agent honors stale constraints
 - [x] Deploy shim (same script): pull main with the bot PAT → `uv sync
       --locked` → exec tick; every step best-effort (bad merges crash ticks,
       never the chain). Bot PAT on Torch + repo in the token's selection
-      still owed by Mengye before live deploy
+      still owed by the maintainer before live deploy
 - [ ] Pause sentinel + lease (compare-and-swap on the state branch); heartbeat at
       tick start; stale-lease reaping
 - [ ] `compute`: sbatch submit / squeue poll, jobs tagged + `--nice`, GPU-hour caps
@@ -97,7 +97,7 @@ the research repos' porting timelines; mistakes are free; adversarial testing
 - [ ] Task pinning: target SHA + contract hash at task start, re-validated each
       poll; baseline re-run at merge-base
 - [x] `orchestrator.climb_once` (2026-08-06): one implement→evaluate→verify
-      cycle on ONE configured benchmark (Mengye: start with one, tsp, not
+      cycle on ONE configured benchmark (maintainer decision: start with one, tsp, not
       everything); baseline re-measured from the pre-session tree, candidate
       re-measured by the orchestrator (never the agent's claim), direction-
       aware threshold, PR body with results table + agent report. Sessions
@@ -114,14 +114,12 @@ the research repos' porting timelines; mistakes are free; adversarial testing
       workspace GC after PR close
 - [ ] Staged injection tests against the pilot before any research target
 
-Candidate second target (Mengye, 2026-08-06): **yolo-jepa** — clean toy JEPA
-experiments on synthetic dynamical systems (`run_sweep.py`, held-out probes).
-Attractive because it is real research code at toy scale: CPU-runnable,
-seeded, single-command evals. Two things to settle before opting it in: it is
-paper-bearing (unpublished results — needs the same private-history care as
-the research repos, and no injection testing), and a contract needs one
-deterministic headline metric (held-out probe error on a frozen config grid)
-rather than the open-ended sweep space.
+Candidate second target (2026-08-06): a private toy-scale research repo —
+real research code, CPU-runnable, seeded, single-command evals. Two things
+to settle before opting it in: it is paper-bearing (needs research-repo
+confidentiality care, and no injection testing), and its contract needs one
+deterministic headline metric over a frozen config grid rather than an
+open-ended sweep space.
 
 ## Phase 6 — Reporting & research memory
 
@@ -146,7 +144,7 @@ rather than the open-ended sweep space.
 - [ ] Storage interface: notebook-repo backend → walled multi-tenant store
 - [ ] Experiment-backend interface: consumer-side runners, verifiable rewards
 
-## Manual prerequisites (Mengye)
+## Manual prerequisites (maintainer)
 
 - [ ] Create the bot machine user; invite to org (free seat on Team plan); mint
       the fine-grained PAT per the architecture's spec
