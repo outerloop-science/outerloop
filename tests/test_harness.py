@@ -207,3 +207,47 @@ def test_fake_harness_records_calls(tmp_path: Path) -> None:
     )
     fake.run("brief text", tmp_path)
     assert fake.calls == [("brief text", str(tmp_path))]
+
+
+def test_resume_passes_session_id_and_reuses_run_home(tmp_path: Path) -> None:
+    """A wake must restore the run's context: --resume in argv, same HOME."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = ClaudeCodeHarness(api_key="k", binary=binary)
+    harness.run("initial brief", ws)
+    first_home = dict(
+        line.split("=", 1)
+        for line in (tmp_path / "seen_env").read_text().splitlines()
+        if "=" in line
+    )["HOME"]
+    harness.run("wake update", ws, resume_session_id="sess-1")
+    argv = (tmp_path / "seen_argv").read_text()
+    second_home = dict(
+        line.split("=", 1)
+        for line in (tmp_path / "seen_env").read_text().splitlines()
+        if "=" in line
+    )["HOME"]
+    assert "--resume sess-1" in argv
+    assert second_home == first_home
+
+
+def test_no_resume_flag_on_fresh_sessions(tmp_path: Path) -> None:
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ClaudeCodeHarness(api_key="k", binary=binary).run("brief", ws)
+    assert "--resume" not in (tmp_path / "seen_argv").read_text()
+
+
+def test_transcripts_accumulate_per_session_not_clobber(tmp_path: Path) -> None:
+    """Every session of a run keeps its own transcript."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = ClaudeCodeHarness(api_key="k", binary=binary)
+    first = harness.run("brief", ws)
+    second = harness.run("wake", ws, resume_session_id="sess-1")
+    assert first.transcript_path != second.transcript_path
+    assert Path(first.transcript_path).exists()
+    assert Path(second.transcript_path).exists()

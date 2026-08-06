@@ -41,6 +41,10 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 - [x] `harness`: backend-agnostic seam (brief text in, `SessionResult` out);
       Claude Code adapter (scrubbed session env, timeout, key-redacted
       transcript to disk) + fake adapter for tests
+- [x] Runs span sessions: per-run HOME + native resume (`resume_session_id`)
+      + bounded wake prompt (`render_wake`) so a run hibernates through
+      multi-day experiments with its agentic context intact (orchestrator-side
+      wake scheduling lands in phase 4 with `compute`)
 - [ ] Session sandboxing: scrubbed env (no PAT/billing keys), hard timeouts,
       transcript secret-scan before storage
 - [ ] `budget`: per-run and weekly caps; session/token proxy metering for the

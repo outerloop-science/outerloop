@@ -126,3 +126,17 @@ def test_memory_sections_are_fenced_as_data() -> None:
 def test_fence_outruns_backticks_in_memory() -> None:
     text = render(build_brief(make_inputs(lessons="x ``` y"), created="t"))
     assert "````" in text
+
+
+def test_wake_prompt_is_bounded_and_asks_for_conclusion() -> None:
+    from autoresearch.brief import MAX_WAKE_CHARS, render_wake
+
+    budget = BudgetState(gpu_hours_remaining=2.0, runs_remaining_this_week=1)
+    text = render_wake("success_rate: 0.31 (was 0.25)", budget)
+    assert "# Experiment update" in text
+    assert "0.31" in text
+    assert "GPU-hours remaining: 2.0" in text
+    assert "research report" in text
+    huge = render_wake("x" * 100_000, budget)
+    assert len(huge) < MAX_WAKE_CHARS + 600
+    assert "[truncated" in huge

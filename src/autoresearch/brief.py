@@ -129,6 +129,34 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
     )
 
 
+MAX_WAKE_CHARS = 12_000
+
+
+def render_wake(update: str, budget: BudgetState) -> str:
+    """The prompt for waking a resumed session when experiment results arrive.
+
+    The resumed session already holds its own working context (plan, code
+    understanding, what it launched); the wake carries only what is new:
+    results and the current budget.
+    """
+    return "\n".join(
+        [
+            "# Experiment update",
+            _cap(update, MAX_WAKE_CHARS),
+            "",
+            "# Budget",
+            f"GPU-hours remaining: {budget.gpu_hours_remaining}",
+            f"Runs remaining this week: {budget.runs_remaining_this_week}",
+            "",
+            "Continue from your notes: interpret these results against your "
+            "hypothesis, then either iterate (if the budget allows and a "
+            "clear next step exists) or finish with your research report. If "
+            "the results are inconclusive or negative, say so plainly — a "
+            "negative result reported clearly is a success.",
+        ]
+    )
+
+
 def render(brief: SessionBrief) -> str:
     """The prompt text a session starts from.
 

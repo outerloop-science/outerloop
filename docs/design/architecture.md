@@ -197,6 +197,22 @@ text. Each brief is stored alongside the run report, so "why did the agent do
 that?" is always answerable, and brief-construction changes are diffable
 experiments in their own right — the knob we expect to tune most.
 
+**Runs, sessions, and the wake cycle.** GPU experiments take hours to days;
+no single agent session spans that. A *run* is one hypothesis; it owns a
+workspace (the git clone), a per-run HOME (agent session state, on the shared
+filesystem), and a sequence of *sessions*. Session 1 gets the full brief:
+implements, launches its experiment through the contract's command, records
+what it is waiting for, and ends. The orchestrator watches the experiment job;
+when results land it wakes the agent — native session resume against the
+per-run HOME, so the agent's working context (its plan, its notes, what it
+tried) is restored, plus a bounded wake prompt carrying only what is new:
+results and remaining budget. The cycle repeats — iterate or conclude — until
+the run ends in a research report and (when the metric moved) a PR. A run is
+never a one-off launch; it is a persistent agent that hibernates through
+experiments. Wakes are node-independent (state on the shared filesystem) and
+survive orchestrator restarts; every session of a run appends its own
+transcript file.
+
 **The backend seam.** `Harness` is one method: take rendered brief text and a
 workspace, return a `SessionResult` (transcript path, cost, stop reason, final
 report text). The orchestrator owns the git clone, so it captures the diff. Backends are adapters: subscription CLIs (Claude Code first,

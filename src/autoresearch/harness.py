@@ -52,9 +52,18 @@ class SessionResult:
 
 
 class Harness(Protocol):
-    """One coding session over a workspace. Implementations are adapters."""
+    """One coding session over a workspace. Implementations are adapters.
 
-    def run(self, brief_text: str, workspace: Path) -> SessionResult: ...
+    A *run* (one hypothesis) may span many sessions: a session that launches a
+    long experiment ends, and when results arrive the orchestrator wakes the
+    agent with `resume_session_id` — restoring its full working context — and
+    a wake prompt carrying the results. Session state lives in the per-run
+    HOME next to the workspace, so wakes survive orchestrator restarts and can
+    land on a different cluster node (shared filesystem)."""
+
+    def run(
+        self, brief_text: str, workspace: Path, resume_session_id: str | None = None
+    ) -> SessionResult: ...
 
 
 def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
@@ -90,11 +99,15 @@ class ClaudeCodeHarness:
     allowed_tools: tuple[str, ...] = ("Write", "Edit", "Read", "Glob", "Grep", "Bash")
     extra_args: tuple[str, ...] = field(default_factory=tuple)
 
-    def run(self, brief_text: str, workspace: Path) -> SessionResult:
+    def run(
+        self, brief_text: str, workspace: Path, resume_session_id: str | None = None
+    ) -> SessionResult:
         # Both live OUTSIDE the git clone: the transcript must never enter the
-        # diff that gets committed/pushed, and the per-session HOME keeps CLI
+        # diff that gets committed/pushed, and the per-run HOME keeps CLI
         # state (and anything a session writes "home") out of the real home.
-        transcript = workspace.parent / f"{workspace.name}-session.json"
+        # The HOME is per-RUN, not per-session: it is what lets a later wake
+        # (`resume_session_id`) restore the agent's working context.
+        transcript = _fresh_path(workspace.parent, f"{workspace.name}-session", ".json")
         session_home = workspace.parent / f"{workspace.name}-home"
         session_home.mkdir(parents=True, exist_ok=True)
         command = [
@@ -115,6 +128,8 @@ class ClaudeCodeHarness:
             "acceptEdits",
             *self.extra_args,
         ]
+        if resume_session_id:
+            command += ["--resume", resume_session_id]
         try:
             completed = subprocess.run(
                 command,
@@ -194,6 +209,16 @@ class ClaudeCodeHarness:
             )
 
 
+def _fresh_path(directory: Path, stem: str, suffix: str) -> Path:
+    """A path that does not clobber earlier sessions of the same run."""
+    path = directory / f"{stem}{suffix}"
+    n = 2
+    while path.exists():
+        path = directory / f"{stem}-{n}{suffix}"
+        n += 1
+    return path
+
+
 def _parse_result(stdout: str) -> dict[str, Any] | None:
     """The result object from the CLI's JSON output, or None."""
     text = stdout.strip()
@@ -224,7 +249,9 @@ class FakeHarness:
     script: Any = None  # optional callable(brief_text, workspace) for side effects
     calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def run(self, brief_text: str, workspace: Path) -> SessionResult:
+    def run(
+        self, brief_text: str, workspace: Path, resume_session_id: str | None = None
+    ) -> SessionResult:
         self.calls.append((brief_text, str(workspace)))
         if self.script is not None:
             self.script(brief_text, workspace)
