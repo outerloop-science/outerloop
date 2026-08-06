@@ -177,3 +177,18 @@ def test_path_cannot_forge_prompt_structure() -> None:
     for line in prompt.splitlines():
         if line.startswith("### "):
             assert "`" not in line
+
+
+def test_pick_stops_pulling_once_budget_is_spent() -> None:
+    """With a lazily-fetching caller, an exhausted budget must stop the pulls."""
+    from autoresearch.review import pick_context_files
+
+    pulls: list[int] = []
+
+    def gen():
+        for i in range(30):
+            pulls.append(i)
+            yield (f"f{i}.py", "x" * 20_000)
+
+    assert len(pick_context_files(gen())) == 3  # 3 x 20k = the full budget
+    assert len(pulls) == 3

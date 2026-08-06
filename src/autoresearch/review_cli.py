@@ -60,7 +60,7 @@ def _gather_context(
         # CLI directly.)
         head_repo = head.get("repo")
         content_repo = (
-            str(head_repo.get("full_name")) if isinstance(head_repo, dict) else ""
+            str(head_repo.get("full_name") or "") if isinstance(head_repo, dict) else ""
         ) or repo
         # Filter first, THEN cap the fetch fan-out — a PR whose first entries
         # are all deletions must not blind the reviewer to later files — and a

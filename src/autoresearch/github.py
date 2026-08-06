@@ -267,7 +267,9 @@ class GitHubClient:
         )
         try:
             data = self._request("GET", api_path)
-        except GitHubError:
+        except GitHubError as exc:
+            if exc.status != 404:  # 404 = expected (path gone); the rest deserve a trace
+                log.warning("context fetch failed for %s@%s: %s", path, ref, exc)
             return None
         if not isinstance(data, dict) or data.get("encoding") != "base64":
             return None

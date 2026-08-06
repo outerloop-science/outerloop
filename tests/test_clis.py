@@ -98,7 +98,7 @@ class FakeReviewClient:
     def get_pull_request_diff(self, repo: str, number: int) -> str:
         return "--- a/x.py\n+++ b/x.py\n"
 
-    def get_pull_request_files(self, repo: str, number: int) -> list[dict]:
+    def get_pull_request_files(self, repo: str, number: int, max_pages: int = 5) -> list[dict]:
         return [{"filename": "x.py", "status": "modified"}]
 
     def get_file_content(self, repo: str, path: str, ref: str) -> str:
@@ -159,7 +159,7 @@ def test_context_fetch_stops_at_file_cap(monkeypatch) -> None:
     from autoresearch.review import MAX_CONTEXT_FILES
 
     class WideClient(FakeReviewClient):
-        def get_pull_request_files(self, repo: str, number: int) -> list[dict]:
+        def get_pull_request_files(self, repo: str, number: int, max_pages: int = 5) -> list[dict]:
             return [{"filename": f"f{i}.py", "status": "modified"} for i in range(100)]
 
     fake_client = WideClient()
@@ -175,3 +175,37 @@ def test_context_fetch_stops_at_file_cap(monkeypatch) -> None:
     _cli_env(monkeypatch)
     assert cli.main() == 0
     assert len(fake_client.content_fetches) == MAX_CONTEXT_FILES
+
+
+def test_fork_fallback_when_head_repo_lacks_full_name(monkeypatch) -> None:
+    """A deleted fork yields head.repo without full_name; str(None) must not
+    become the literal repo \"None\" (the live reviewer's catch)."""
+    import autoresearch.review_cli as cli
+
+    class DeletedFork(FakeReviewClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repos_fetched: list[str] = []
+
+        def get_pull_request(self, repo: str, number: int) -> dict:
+            data = super().get_pull_request(repo, number)
+            data["head"]["repo"] = {"id": 1, "full_name": None}
+            return data
+
+        def get_file_content(self, repo: str, path: str, ref: str) -> str:
+            self.repos_fetched.append(repo)
+            return "x"
+
+    fake_client = DeletedFork()
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None: __import__(
+            "autoresearch.review", fromlist=["ReviewResult"]
+        ).ReviewResult(findings=[], notes=""),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert fake_client.repos_fetched and set(fake_client.repos_fetched) == {"org/repo"}
