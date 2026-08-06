@@ -220,6 +220,23 @@ class GitHubClient:
             raise GitHubError(200, path, f"no PR number in response: {data.get('message')}")
         return int(data["number"])
 
+    def create_pull(
+        self, repo: str, title: str, head: str, base: str, body: str, draft: bool = False
+    ) -> str:
+        """Open a pull request; returns its html url."""
+        if self.dry_run:
+            log.info("[dry-run] PR on %s: %s (%s -> %s)", repo, title, head, base)
+            return f"https://github.com/{repo}/pull/dry-run"
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls"
+        data = self._request(
+            "POST",
+            path,
+            {"title": title, "head": head, "base": base, "body": body, "draft": draft},
+        )
+        if not isinstance(data, dict) or "html_url" not in data:
+            raise GitHubError(0, path, f"unexpected create_pull response: {str(data)[:200]}")
+        return str(data["html_url"])
+
     def get_pull_request(self, repo: str, number: int) -> dict[str, Any]:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)

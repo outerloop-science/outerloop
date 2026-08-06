@@ -28,6 +28,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `autoresearch.climb`: one live climb end to end — bot-auth clone, contract
+  from the target tree, contained session + eval, full-scope commit veto,
+  push, PR with orchestrator-measured numbers, durable run record and report.
+  `create_pull` on the GitHub client.
+
 - Phase 5 core: `orchestrator.climb_once` (single-benchmark climb with
   orchestrator-measured baseline/candidate — the agent's claim is never
   trusted) and Apptainer session containment in the harness
