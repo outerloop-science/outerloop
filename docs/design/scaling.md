@@ -99,6 +99,41 @@ a human PR to the target repo: governed, visible, versioned — the same forum
 mechanism as everything else. Agents may *propose* vision changes in reports
 or issues; they cannot enact them.
 
+## Part 2c — Results: three layers, one blur resolved (Mengye + round 3)
+
+A codebase, a leaderboard, and an experiment server are different things;
+results tracking keeps them separate instead of blurring them:
+
+| Layer | Lives | Written by | Contains |
+| --- | --- | --- | --- |
+| **Telemetry** | W&B (`nyu-mengye-group`, the lab's existing standard) | experiment jobs, via the target repo's own config-driven logging | curves, configs, artifacts — the deep-dive surface; agent runs tagged with agent + run id, filterable next to human runs |
+| **Ledger** | a `results` branch in the target repo — append-only `ledger.jsonl` + a full rendered history table | the orchestrator after every measured run (improvements, negative results, aborted); humans via one command that evals + appends | EVERY measured number with provenance: benchmark, value, sha, who (agent id or human), date, W&B link. Intermediate baselines and lab members' numbers live here — attributable, in-repo, zero PRs |
+| **Headline** | `BENCHMARKS.md` + `results/leader.json` on main | the orchestrator only, riding inside improvement PRs | current best per benchmark + milestones (rows where the leader changed) |
+
+Rules that fall out:
+
+- **No result ever creates its own main-branch PR.** Headline updates ride
+  inside improvement PRs that merge on their own merits; everything else goes
+  to the ledger branch (a push, not a PR — data, not code, same reasoning as
+  the notebook's auto-merge) or to W&B. Public research repos' main history
+  stays exactly as clean as their science.
+- **Humans share baselines through the ledger**, one command: run the eval,
+  append the JSON row with your name, push to the results branch. No W&B
+  account needed to be counted; no PR needed to be seen.
+- **History is the ledger, not the leader.** `leader.json` is a snapshot;
+  "what was the best before X" and every intermediate baseline is a ledger
+  query. The rendered history table on the results branch shows leader
+  transitions per benchmark.
+- **W&B credentials never enter agent sessions** (credential-free sessions
+  are an invariant); experiment jobs may log with the target repo's own
+  config. Whether agent experiments get a scoped W&B service account or log
+  anonymously-tagged is a phase-6 decision.
+- The pilot keeps its simpler shape (headline-on-main only): every merge
+  there is important by construction, and it has no W&B.
+
+Implementation lands with phase 6 (reports); nothing here blocks the live
+climb.
+
 ## Part 3 — Multi-agent: identity, isolation, seats
 
 **Why multiple agents at all** (practical, not aesthetic): subscription seats
