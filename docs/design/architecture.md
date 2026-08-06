@@ -163,7 +163,7 @@ grep + recency + distillation until that provably fails.
 | Module | Job |
 | --- | --- |
 | `contract` | Schema + loader for `.autoresearch.yaml`, incl. the hard-coded invariants |
-| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys); capture transcript, diff, cost; secret-scan transcripts before storage. See "Harness and context engineering" below |
+| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys; per-run HOME, fresh per run; brief on stdin, never argv); capture transcript and cost (the orchestrator captures the diff); secret-scan transcripts before storage. See "Harness and context engineering" below |
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |
@@ -197,9 +197,25 @@ text. Each brief is stored alongside the run report, so "why did the agent do
 that?" is always answerable, and brief-construction changes are diffable
 experiments in their own right — the knob we expect to tune most.
 
-**The backend seam.** `Harness` is one method: take a `SessionBrief` and a
-workspace, return a `SessionResult` (diff produced, transcript path, cost,
-stop reason). Backends are adapters: subscription CLIs (Claude Code first,
+**Runs, sessions, and the wake cycle.** GPU experiments take hours to days;
+no single agent session spans that. A *run* is one hypothesis; it owns a
+workspace (the git clone), a per-run HOME (agent session state, on the shared
+filesystem), and a sequence of *sessions*. Session 1 gets the full brief:
+implements, launches its experiment through the contract's command, records
+what it is waiting for, and ends. The orchestrator watches the experiment job;
+when results land it wakes the agent — native session resume against the
+per-run HOME, so the agent's working context (its plan, its notes, what it
+tried) is restored, plus a bounded wake prompt carrying only what is new:
+results and remaining budget. The cycle repeats — iterate or conclude — until
+the run ends in a research report and (when the metric moved) a PR. A run is
+never a one-off launch; it is a persistent agent that hibernates through
+experiments. Wakes are node-independent (state on the shared filesystem) and
+survive orchestrator restarts; every session of a run appends its own
+transcript file.
+
+**The backend seam.** `Harness` is one method: take rendered brief text and a
+workspace, return a `SessionResult` (transcript path, cost, stop reason, final
+report text). The orchestrator owns the git clone, so it captures the diff. Backends are adapters: subscription CLIs (Claude Code first,
 Codex next), first-party APIs, whatever comes later. Nothing provider-specific
 crosses the seam in either direction — provider quirks (auth, retries, token
 accounting) live inside the adapter; context policy lives in the brief builder,
@@ -213,8 +229,13 @@ same brief, same task pool, different backend, diff the outcomes.
   maintainer-applied `autoresearch:approved` label, become tasks; all other text
   is data, summarized in a no-tools context, never instructions.
 - **Credential theft.** Sessions never see the bot PAT or billing keys: the
-  environment is scrubbed, and pushes happen orchestrator-side after the session
-  ends. Transcripts are secret-scanned before storage.
+  environment is scrubbed (allowlist + a redirected per-run HOME, so
+  `~`-relative key files resolve nowhere), and pushes happen orchestrator-side after the
+  session ends. Transcripts are secret-scanned before storage. Residual risk,
+  accepted for now: the filesystem is not sandboxed, so same-user absolute
+  paths remain readable — therefore the bot PAT never lives on the account
+  that runs sessions, and the session key is spend-capped. OS-level
+  sandboxing (bwrap/containers) is the deferred fix.
 - **Self-modification.** The contract-loader invariants above: never
   self-targeting; contract, roadmap, and `.github/` unwritable everywhere.
 - **Reviewer influence.** The advisory constraints above prevent the pipeline

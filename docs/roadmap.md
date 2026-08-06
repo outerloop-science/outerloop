@@ -35,11 +35,16 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
       OAuth (`claude setup-token`) untested, needs an interactive browser
       login; decision: pilot on API-key auth, revisit a seat when volume
       justifies it. Backend picked: **Claude Code**
-- [ ] `brief`: typed `SessionBrief` + pure builder (task, contract, ruler,
+- [x] `brief`: typed `SessionBrief` + pure builder (task, contract, ruler,
       capped lessons + recent reports, budget state), stored with every run —
       context engineering as a versioned, testable artifact (see architecture)
-- [ ] `harness`: backend-agnostic seam (`SessionBrief` in, `SessionResult`
-      out); Claude Code adapter first, dry-run/fake adapter for tests
+- [x] `harness`: backend-agnostic seam (brief text in, `SessionResult` out);
+      Claude Code adapter (scrubbed session env, timeout, key-redacted
+      transcript to disk) + fake adapter for tests
+- [x] Runs span sessions: per-run HOME + native resume (`resume_session_id`)
+      + bounded wake prompt (`render_wake`) so a run hibernates through
+      multi-day experiments with its agentic context intact (orchestrator-side
+      wake scheduling lands in phase 4 with `compute`)
 - [ ] Session sandboxing: scrubbed env (no PAT/billing keys), hard timeouts,
       transcript secret-scan before storage
 - [ ] `budget`: per-run and weekly caps; session/token proxy metering for the
@@ -75,6 +80,15 @@ the research repos' porting timelines; mistakes are free; adversarial testing
 - [ ] Every run ends with a research report — hypothesis, outcome, takeaways,
       next steps — posted to the PR or the ledger (negative results included)
 - [ ] Staged injection tests against the pilot before any research target
+
+Candidate second target (Mengye, 2026-08-06): **yolo-jepa** — clean toy JEPA
+experiments on synthetic dynamical systems (`run_sweep.py`, held-out probes).
+Attractive because it is real research code at toy scale: CPU-runnable,
+seeded, single-command evals. Two things to settle before opting it in: it is
+paper-bearing (unpublished results — needs the same private-history care as
+the research repos, and no injection testing), and a contract needs one
+deterministic headline metric (held-out probe error on a frozen config grid)
+rather than the open-ended sweep space.
 
 ## Phase 6 — Reporting & research memory
 
