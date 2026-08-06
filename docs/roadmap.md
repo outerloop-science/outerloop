@@ -96,7 +96,15 @@ the research repos' porting timelines; mistakes are free; adversarial testing
       architecture "Environments and containers") wired into experiment launch
 - [ ] Task pinning: target SHA + contract hash at task start, re-validated each
       poll; baseline re-run at merge-base
-- [ ] Full loop on the pilot benchmarks; bounded iterations; PR with results
+- [x] `orchestrator.climb_once` (2026-08-06): one implement→evaluate→verify
+      cycle on ONE configured benchmark (Mengye: start with one, tsp, not
+      everything); baseline re-measured from the pre-session tree, candidate
+      re-measured by the orchestrator (never the agent's claim), direction-
+      aware threshold, PR body with results table + agent report. Sessions
+      run contained (Apptainer --containall, workspace + run-home binds only,
+      key via APPTAINERENV_ env). Git glue (clone/push/PR wiring) + live
+      pilot climb next
+- [ ] Full loop live on the pilot: bounded iterations; PR with results
       table, one human code-owner approval per merge
 - [ ] Every run ends with a research report — hypothesis, outcome, takeaways,
       next steps — posted to the PR or the ledger (negative results included)

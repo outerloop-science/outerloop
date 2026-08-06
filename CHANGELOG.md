@@ -28,6 +28,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Phase 5 core: `orchestrator.climb_once` (single-benchmark climb with
+  orchestrator-measured baseline/candidate — the agent's claim is never
+  trusted) and Apptainer session containment in the harness
+  (`container_image`: --containall with workspace + per-run-HOME binds only;
+  the API key travels via APPTAINERENV_, never argv).
+
 - Phase 4 loop plumbing: `compute` (Slurm submit/status/cancel behind an
   injectable runner; afterany wake jobs; query-failure ≠ job-gone),
   `runstate` (atomic run records, six endings, expiring wake leases with

@@ -159,6 +159,16 @@ class ClaudeCodeHarness:
     # passes the task-source gate upstream.
     allowed_tools: tuple[str, ...] = ("Write", "Edit", "Read", "Glob", "Grep", "Bash")
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    # Apptainer image for session containment (decided 2026-08-06). When set,
+    # the session runs under `apptainer exec --containall --cleanenv`: no host
+    # $HOME, no host env, no same-user absolute paths — the session sees only
+    # the workspace, its per-run HOME, and the read-only claude binary. This
+    # closes the threat model's shared-filesystem residual risk. Images stay
+    # generic (python + uv + git); the binary is bind-mounted in.
+    container_image: str = ""
+    apptainer_binary: str = "apptainer"
+
+    CONTAINER_CLAUDE = "/opt/agent/claude"
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -178,8 +188,8 @@ class ClaudeCodeHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
-        command = [
-            self.binary,
+        claude_argv = [
+            self.CONTAINER_CLAUDE if self.container_image else self.binary,
             "-p",
             # The brief travels on stdin: argv is world-readable via /proc on
             # shared nodes, and briefs carry private research text.
@@ -197,16 +207,46 @@ class ClaudeCodeHarness:
             *self.extra_args,
         ]
         if resume_session_id:
-            command += ["--resume", resume_session_id]
+            claude_argv += ["--resume", resume_session_id]
+        if self.container_image:
+            command = [
+                self.apptainer_binary,
+                "exec",
+                "--containall",
+                "--cleanenv",
+                "--bind",
+                f"{workspace}:{workspace}",
+                "--bind",
+                f"{session_home}:{session_home}",
+                "--bind",
+                f"{self.binary}:{self.CONTAINER_CLAUDE}:ro",
+                # HOME inside the container is the same per-run path, so
+                # native resume state survives contained/uncontained flips.
+                "--env",
+                f"HOME={session_home}",
+                "--pwd",
+                str(workspace),
+                self.container_image,
+                *claude_argv,
+            ]
+        else:
+            command = claude_argv
         try:
             # start_new_session puts the CLI and every descendant (Bash-tool
             # children included) in one process group we can kill as a unit —
             # a timed-out session must not leave orphans holding the API key
             # and writing into the clone.
+            env = session_env(self.api_key, "ANTHROPIC_API_KEY", session_home)
+            if self.container_image:
+                # --cleanenv drops the host environment inside the container
+                # EXCEPT APPTAINERENV_* variables, which apptainer injects
+                # with the prefix stripped — the key travels via the
+                # environment, never argv (argv is world-readable in /proc).
+                env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
-                env=session_env(self.api_key, "ANTHROPIC_API_KEY", session_home),
+                env=env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -350,3 +350,39 @@ def test_transcripts_accumulate_per_session_not_clobber(tmp_path: Path) -> None:
     assert first.transcript_path != second.transcript_path
     assert Path(first.transcript_path).exists()
     assert Path(second.transcript_path).exists()
+
+
+def test_container_image_wraps_in_apptainer(tmp_path: Path) -> None:
+    """Containment: --containall/--cleanenv, only workspace + run-home bound,
+    binary bind-mounted, key via APPTAINERENV_ (env, never argv)."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    # the fake stands in for apptainer itself; it records argv + env
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = ClaudeCodeHarness(
+        api_key="sk-c",
+        binary="/real/claude",
+        container_image="/img/agent.sif",
+        apptainer_binary=binary,
+    )
+    result = harness.run("task", ws)
+    assert not result.is_error
+    argv = (tmp_path / "seen_argv").read_text()
+    assert argv.startswith("exec --containall --cleanenv")
+    assert f"--bind {ws}:{ws}" in argv
+    assert f"--bind {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
+    assert "--bind /real/claude:/opt/agent/claude:ro" in argv
+    assert "/img/agent.sif /opt/agent/claude -p" in argv
+    assert "sk-c" not in argv  # the key travels via env, never argv
+    seen_env = (tmp_path / "seen_env").read_text()
+    assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen_env
+
+
+def test_no_container_means_no_apptainer(tmp_path: Path) -> None:
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    argv = (tmp_path / "seen_argv").read_text()
+    assert "apptainer" not in argv and "--containall" not in argv
+    assert "APPTAINERENV_" not in (tmp_path / "seen_env").read_text()
