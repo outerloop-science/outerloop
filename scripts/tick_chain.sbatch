@@ -52,15 +52,18 @@ for i in $(seq 1 "$need"); do
 done
 
 # --- 2. deploy: pull main with the bot PAT, sync deps (best-effort) ---
+# The PAT never appears in argv (argv is world-readable via /proc on shared
+# nodes): git asks for it through GIT_ASKPASS instead.
 if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
-    PAT=$(cat "$AUTORESEARCH_PAT_FILE")
-    if git -C "$AUTORESEARCH_HOME" fetch --quiet \
-        "https://x-access-token:${PAT}@github.com/agentic-learning-ai-lab/autoresearch.git" main; then
+    ASKPASS=$(mktemp) && chmod 700 "$ASKPASS"
+    printf '#!/bin/sh\ncat "%s"\n' "$AUTORESEARCH_PAT_FILE" > "$ASKPASS"
+    if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -C "$AUTORESEARCH_HOME" fetch --quiet \
+        "https://x-access-token@github.com/agentic-learning-ai-lab/autoresearch.git" main; then
         git -C "$AUTORESEARCH_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
     else
         echo "deploy: fetch failed; running previous code"
     fi
-    unset PAT
+    rm -f "$ASKPASS"
 fi
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
 

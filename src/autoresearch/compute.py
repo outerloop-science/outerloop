@@ -67,7 +67,11 @@ def _subprocess_runner(argv: Sequence[str], timeout_s: int) -> CommandResult:
 @dataclass(frozen=True)
 class JobSpec:
     """One sbatch submission. `command` is run via --wrap; a script path can
-    be passed as `script` instead (mutually exclusive)."""
+    be passed as `script` instead (mutually exclusive).
+
+    --wrap executes under a shell on the compute node: `command` must be
+    built from trusted parts, with anything variable passed through
+    `quote_command`. Never interpolate agent- or contract-supplied text."""
 
     job_name: str
     account: str
@@ -138,16 +142,15 @@ class SlurmCompute:
     def submit_after(self, spec: JobSpec, after_job_id: str) -> str:
         """Submit `spec` to run when `after_job_id` terminates — however it
         terminates (afterany: the wake-on-failure semantics the fail-safe
-        design requires; verified live on Torch 2026-08-06)."""
+        design requires; verified live on Torch 2026-08-06). Refuses a spec
+        that already carries a dependency rather than silently replacing it."""
         if not after_job_id.isdigit():
             raise ValueError(f"not a job id: {after_job_id!r}")
-        dependent = JobSpec(
-            **{
-                **{f: getattr(spec, f) for f in spec.__dataclass_fields__},
-                "dependency": f"afterany:{after_job_id}",
-            }
-        )
-        return self.submit(dependent)
+        if spec.dependency:
+            raise ValueError(f"spec already has dependency {spec.dependency!r}")
+        import dataclasses
+
+        return self.submit(dataclasses.replace(spec, dependency=f"afterany:{after_job_id}"))
 
     def status(self, job_id: str) -> str:
         """The job's Slurm state, or GONE when a *successful* query finds no

@@ -32,6 +32,7 @@ from autoresearch.runstate import (
     lease_is_stale,
     list_runs,
     read_lease,
+    reap_lease,
     release_lease,
     save_record,
     update_lease_holder,
@@ -115,7 +116,13 @@ def _wake(
     """
     if not acquire_lease(root, record.run_id, holder, holder_job_id="", now=now):
         return False
-    bumped = replace(record, wake_attempts=record.wake_attempts + 1)
+    bumped = replace(
+        record,
+        wake_attempts=record.wake_attempts + 1,
+        # repair legacy records as we touch them: save_record (rightly)
+        # refuses to write a waiting run without a deadline
+        deadline=record.deadline if record.deadline > 0 else now,
+    )
     save_record(root, bumped, now)
     try:
         holder_job = dispatcher.dispatch(bumped, reason)
@@ -139,8 +146,14 @@ def sweep(
     now: float,
     grace_s: float = DEFAULT_GRACE_S,
     lease_ttl_s: float = DEFAULT_LEASE_TTL_S,
+    dry_run: bool = False,
 ) -> TickReport:
-    """The backup wake layers, applied to every waiting run."""
+    """The backup wake layers, applied to every waiting run.
+
+    dry_run reports what WOULD happen with zero writes — no leases, no
+    attempt counters, no dispatch — so the plumbing can run live before the
+    real dispatcher exists.
+    """
     woken: list[tuple[str, str]] = []
     deferred: list[str] = []
     reaped: list[str] = []
@@ -148,29 +161,37 @@ def sweep(
     holder = f"tick:{socket.gethostname()}:{os.getpid()}"
     records = [r for r in list_runs(root) if r.state == WAITING]
 
-    for record in records:
-        # Layer 5 first: too many failed attempts is a terminal, reported state.
-        if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
-            ended = replace(
-                record,
-                state=ENDED,
-                ending=STUCK,
-                ending_note=f"{record.wake_attempts} wake attempts failed",
-            )
-            save_record(root, ended, now)
-            stuck.append(record.run_id)
-            continue
+    def wake(record: RunRecord, reason: str, tag: str) -> None:
+        if dry_run or _wake(root, record, reason, dispatcher, now, holder):
+            woken.append((record.run_id, tag))
 
-        # Stale-lease reaping (layer 2's expiry): a dead wake must not hold on.
+    for record in records:
+        # Leases first: a LIVE wake in flight owns this run — even the stuck
+        # verdict must wait for it (its session may be the one that succeeds).
         lease = read_lease(root, record.run_id)
         if lease is not None:
             alive = _holder_alive(compute, lease.holder_job_id)
-            if lease_is_stale(lease, now, lease_ttl_s, alive):
-                release_lease(root, record.run_id)
+            if not lease_is_stale(lease, now, lease_ttl_s, alive):
+                continue
+            if dry_run:
                 reaped.append(record.run_id)
-                lease = None
-            else:
-                continue  # a live wake is in flight; nothing for the sweep
+                continue
+            if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}"):
+                continue  # a concurrent tick reaped it first; it owns redelivery
+            reaped.append(record.run_id)
+
+        # Layer 5: too many failed attempts is a terminal, reported state.
+        if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
+            if not dry_run:
+                ended = replace(
+                    record,
+                    state=ENDED,
+                    ending=STUCK,
+                    ending_note=f"{record.wake_attempts} wake attempts failed",
+                )
+                save_record(root, ended, now)
+            stuck.append(record.run_id)
+            continue
 
         if not record.experiment_job_id:
             continue  # not yet submitted; not the sweep's business
@@ -182,33 +203,31 @@ def sweep(
             deferred.append(record.run_id)
             continue
 
-        past_deadline = record.deadline and now > record.deadline
+        # deadline <= 0 cannot be written by save_record for waiting runs;
+        # if one exists anyway (legacy/hand-edited), treat it as already past
+        # for GONE — a vanished-experiment wake is safe — but never for
+        # PENDING, where the consequence would be cancelling a healthy job.
+        past_deadline = record.deadline <= 0 or now > record.deadline
 
         if is_terminal(state):
-            # Layer 3: terminal + no live lease + grace expired → backup wake.
-            # (updated < now - grace approximates "terminal for a while": the
-            # record was last touched when the experiment was submitted.)
-            if now - record.updated >= grace_s:
-                if _wake(root, record, f"experiment {state}", dispatcher, now, holder):
-                    woken.append((record.run_id, state))
+            # Layer 3, with real grace: time runs from when the sweep FIRST
+            # saw the experiment terminal, not from submission — the afterany
+            # job gets the full window to deliver before the backup steps in.
+            if record.terminal_seen <= 0:
+                if not dry_run:
+                    save_record(root, replace(record, terminal_seen=now), now)
+                continue
+            if now - record.terminal_seen >= grace_s:
+                wake(record, f"experiment {state}", state)
         elif state == GONE:
             if past_deadline:
-                # Successful query, no record, deadline passed: vanished.
-                if _wake(root, record, "experiment vanished from Slurm", dispatcher, now, holder):
-                    woken.append((record.run_id, "vanished"))
+                wake(record, "experiment vanished from Slurm", "vanished")
             # else: sacct lag right after submission is normal; wait.
-        elif is_pending(state) and past_deadline:
+        elif is_pending(state) and record.deadline > 0 and now > record.deadline:
             # Unschedulable in practice: cancel, then wake with that fact.
-            compute.cancel(record.experiment_job_id)
-            if _wake(
-                root,
-                record,
-                "experiment unschedulable (pending past deadline)",
-                dispatcher,
-                now,
-                holder,
-            ):
-                woken.append((record.run_id, "unschedulable"))
+            if not dry_run:
+                compute.cancel(record.experiment_job_id)
+            wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
         # RUNNING (or recently pending): nothing to do; the afterany job has it.
 
     return TickReport(
@@ -225,6 +244,7 @@ def tick(
     compute: SlurmCompute,
     dispatcher: WakeDispatcher,
     now: float,
+    dry_run: bool = False,
 ) -> TickReport:
     """One full tick. Pause sentinel wins over everything: a paused loop
     heartbeats (so the watchdog stays quiet) but touches nothing."""
@@ -232,14 +252,14 @@ def tick(
     if (root / PAUSE_SENTINEL).exists():
         log.info("pause sentinel present; tick is a no-op")
         return TickReport(paused=True)
-    return sweep(root, compute, dispatcher, now)
+    return sweep(root, compute, dispatcher, now, dry_run=dry_run)
 
 
 @dataclass
 class LoggingDispatcher:
-    """Placeholder production dispatcher until session dispatch lands
-    (phase 5): logs what would be woken so the loop's plumbing can run live
-    without side effects."""
+    """Never dispatched in production today: main() runs the sweep in
+    dry_run mode until the real session dispatcher lands (phase 5), so no
+    lease is taken and no attempt is counted. This exists for the seam."""
 
     def dispatch(self, record: RunRecord, reason: str) -> str:
         log.info("WOULD WAKE %s (%s) — session dispatch lands in phase 5", record.run_id, reason)
@@ -258,7 +278,9 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     args.root.mkdir(parents=True, exist_ok=True)
-    report = tick(args.root, SlurmCompute(), LoggingDispatcher(), now=time.time())
+    # dry_run until the phase-5 dispatcher exists: the live loop must not
+    # mutate run state it cannot follow through on.
+    report = tick(args.root, SlurmCompute(), LoggingDispatcher(), now=time.time(), dry_run=True)
     log.info(
         "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d",
         report.paused,

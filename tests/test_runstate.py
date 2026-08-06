@@ -24,7 +24,7 @@ from autoresearch.runstate import (
 
 
 def make_record(**overrides) -> RunRecord:
-    base = dict(run_id="r1", target="org/repo", task_title="t", state=WAITING)
+    base = dict(run_id="r1", target="org/repo", task_title="t", state=WAITING, deadline=999.0)
     return RunRecord(**{**base, **overrides})
 
 
@@ -104,3 +104,39 @@ def test_lease_staleness_rules(tmp_path: Path) -> None:
     assert lease_is_stale(lease, now=1000.0 + 3601, ttl_s=3600, holder_alive=None)
     # live holder but ancient → stale (TTL wins: sessions are bounded)
     assert lease_is_stale(lease, now=1000.0 + 3601, ttl_s=3600, holder_alive=True)
+
+
+def test_reap_lease_exactly_one_reaper_wins(tmp_path: Path) -> None:
+    from autoresearch.runstate import reap_lease
+
+    acquire_lease(tmp_path, "r1", "dead", "", now=1.0)
+    assert reap_lease(tmp_path, "r1", reaper="a")
+    assert not reap_lease(tmp_path, "r1", reaper="b")  # already gone
+    assert acquire_lease(tmp_path, "r1", "next", "", now=2.0)
+
+
+def test_load_record_ignores_unknown_keys(tmp_path: Path) -> None:
+    """After a bad-merge revert, old code must still read new-code records."""
+    import json
+
+    save_record(tmp_path, make_record(), now=1.0)
+    path = run_dir(tmp_path, "r1") / "state.json"
+    data = json.loads(path.read_text())
+    data["field_from_the_future"] = 42
+    path.write_text(json.dumps(data))
+    assert load_record(tmp_path, "r1").run_id == "r1"
+    assert list_runs(tmp_path)  # not treated as corrupt
+
+
+def test_unreadable_lease_synthesizes_mtime_timestamp(tmp_path: Path) -> None:
+    import os
+
+    directory = run_dir(tmp_path, "r1")
+    directory.mkdir(parents=True)
+    lease_path = directory / "lease.json"
+    lease_path.touch()
+    os.utime(lease_path, (500.0, 500.0))
+    lease = read_lease(tmp_path, "r1")
+    assert lease is not None
+    assert lease.holder == "unreadable"
+    assert lease.acquired == 500.0

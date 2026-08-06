@@ -61,6 +61,7 @@ class RunRecord:
     resume_session_id: str = ""  # harness session to resume on wake
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
+    terminal_seen: float = 0.0  # when the sweep first saw the experiment terminal
     ending: str = ""  # one of ENDINGS once state == ENDED
     ending_note: str = ""
     created: float = 0.0
@@ -87,6 +88,10 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
         raise ValueError(f"unknown state {record.state!r}")
     if record.state == ENDED and record.ending not in ENDINGS:
         raise ValueError(f"ended run needs a valid ending, got {record.ending!r}")
+    if record.state == WAITING and record.experiment_job_id and record.deadline <= 0:
+        # A waiting run without a deadline is invisible to the deadline floor
+        # — the exact "silently immortal run" the fail-safe design forbids.
+        raise ValueError("waiting run with an experiment needs a deadline")
     directory = run_dir(root, record.run_id)
     directory.mkdir(parents=True, exist_ok=True)
     stamped = replace(record, updated=now, created=record.created or now)
@@ -97,7 +102,11 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
 
 def load_record(root: Path, run_id: str) -> RunRecord:
     raw = json.loads((run_dir(root, run_id) / RECORD_NAME).read_text())
-    return RunRecord(**raw)
+    # Ignore unknown keys: after a bad-merge revert, older code must still be
+    # able to read records written by newer code — a "corrupt" verdict here
+    # would blind the sweep to the whole run.
+    known = {k: v for k, v in raw.items() if k in RunRecord.__dataclass_fields__}
+    return RunRecord(**known)
 
 
 def list_runs(root: Path) -> list[RunRecord]:
@@ -121,9 +130,10 @@ def list_runs(root: Path) -> list[RunRecord]:
 def acquire_lease(root: Path, run_id: str, holder: str, holder_job_id: str, now: float) -> bool:
     """Take the run's wake lease. True if acquired; False if held.
 
-    O_EXCL makes acquisition atomic on the shared filesystem: exactly one
-    contender wins, the rest see False and no-op (double delivery is
-    harmless by design).
+    O_EXCL makes acquisition atomic: exactly one contender wins, the rest see
+    False and no-op. (O_EXCL is reliable on NFSv4/GPFS/Lustre; if the state
+    root ever lands on NFSv3, this needs a link(2)-based lock instead —
+    verify the cluster filesystem before trusting the lease.)
     """
     directory = run_dir(root, run_id)
     directory.mkdir(parents=True, exist_ok=True)
@@ -138,16 +148,22 @@ def acquire_lease(root: Path, run_id: str, holder: str, holder_job_id: str, now:
 
 
 def read_lease(root: Path, run_id: str) -> Lease | None:
+    path = run_dir(root, run_id) / LEASE_NAME
     try:
-        raw = json.loads((run_dir(root, run_id) / LEASE_NAME).read_text())
+        raw = json.loads(path.read_text())
         return Lease(**raw)
     except FileNotFoundError:
         return None
     except (OSError, ValueError, TypeError, KeyError):
-        # An unreadable lease is treated as held-but-unknown; the TTL path
-        # in `lease_is_stale` cannot run without a timestamp, so the sweep
-        # falls back to reaping it after the grace window via mtime.
-        return None
+        # A crash between O_EXCL create and write leaves an empty/corrupt
+        # lease. Synthesize one from the file mtime so the TTL path can
+        # still reap it — otherwise the run is stranded forever behind a
+        # lease nobody can read.
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None  # vanished between read and stat
+        return Lease(holder="unreadable", holder_job_id="", acquired=mtime)
 
 
 def update_lease_holder(
@@ -162,10 +178,29 @@ def update_lease_holder(
 
 
 def release_lease(root: Path, run_id: str) -> None:
+    """For the lease HOLDER only. Non-holders must use reap_lease."""
     try:
         (run_dir(root, run_id) / LEASE_NAME).unlink()
     except FileNotFoundError:
         pass
+
+
+def reap_lease(root: Path, run_id: str, reaper: str) -> bool:
+    """Remove a stale lease you do NOT hold. True if THIS caller reaped it.
+
+    Atomic rename to a unique tombstone: with two concurrent reapers exactly
+    one rename succeeds, so exactly one proceeds to redeliver — a blind
+    unlink here could delete a lease a faster reaper already handed to a new
+    wake job, re-opening the double-delivery hole.
+    """
+    directory = run_dir(root, run_id)
+    tombstone = directory / f".{LEASE_NAME}.reaped.{reaper}"
+    try:
+        os.rename(directory / LEASE_NAME, tombstone)
+    except FileNotFoundError:
+        return False
+    tombstone.unlink(missing_ok=True)
+    return True
 
 
 def lease_is_stale(lease: Lease, now: float, ttl_s: float, holder_alive: bool | None) -> bool:

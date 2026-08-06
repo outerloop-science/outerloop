@@ -58,9 +58,10 @@ def waiting_run(root: Path, run_id: str = "r1", **overrides) -> RunRecord:
         state=WAITING,
         experiment_job_id="100",
         deadline=NOW + 10_000,
+        # default: the sweep already saw the experiment terminal, grace passed
+        terminal_seen=NOW - GRACE - 1,
     )
     record = RunRecord(**{**base, **overrides})
-    # created/updated stamp: long enough ago that the grace window has passed
     save_record(root, record, now=NOW - GRACE - 1)
     return record
 
@@ -91,11 +92,46 @@ def test_terminal_experiment_past_grace_gets_backup_wake(tmp_path: Path) -> None
 
 
 def test_terminal_within_grace_leaves_it_to_the_afterany_job(tmp_path: Path) -> None:
-    record = waiting_run(tmp_path)
-    save_record(tmp_path, record, now=NOW - 10)  # updated moments ago
+    waiting_run(tmp_path, terminal_seen=NOW - 10)  # first seen moments ago
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
     assert report.woken == ()
     assert dispatcher.dispatched == []
+
+
+def test_first_terminal_sighting_starts_the_grace_clock_not_a_wake(tmp_path: Path) -> None:
+    """Grace runs from when the sweep FIRST saw the experiment terminal — a
+    24h experiment must not be woken by the backup the instant it completes
+    (the afterany job owns the fresh case)."""
+    waiting_run(tmp_path, terminal_seen=0.0)
+    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
+    assert dispatcher.dispatched == []
+    assert load_record(tmp_path, "r1").terminal_seen == NOW
+    # attempts untouched by the sighting
+    assert load_record(tmp_path, "r1").wake_attempts == 0
+    # next tick, grace elapsed → wake
+    report2, dispatcher2 = run_tick(
+        tmp_path, FakeSlurm(states={"100": "COMPLETED"}), now=NOW + GRACE + 1
+    )
+    assert report2.woken == (("r1", "COMPLETED"),)
+
+
+def test_dry_run_reports_without_any_writes(tmp_path: Path) -> None:
+    """python -m autoresearch.tick runs exactly this until phase 5: a healthy
+    completed run must survive any number of dry ticks unchanged."""
+    from autoresearch.tick import RecordingDispatcher as RD
+    from autoresearch.tick import tick as tick_fn
+
+    waiting_run(tmp_path)
+    slurm = FakeSlurm(states={"100": "COMPLETED"})
+    dispatcher = RD()
+    for i in range(5):
+        report = tick_fn(tmp_path, slurm.compute(), dispatcher, now=NOW + i * 60, dry_run=True)
+        assert report.woken == (("r1", "COMPLETED"),)
+    after = load_record(tmp_path, "r1")
+    assert after.wake_attempts == 0
+    assert after.state == WAITING
+    assert dispatcher.dispatched == []
+    assert read_lease(tmp_path, "r1") is None
 
 
 def test_live_lease_blocks_the_sweep(tmp_path: Path) -> None:
@@ -166,6 +202,75 @@ def test_attempts_exhausted_becomes_stuck(tmp_path: Path) -> None:
     ended = load_record(tmp_path, "r1")
     assert ended.state == ENDED
     assert ended.ending == STUCK
+
+
+def test_live_lease_defers_even_the_stuck_verdict(tmp_path: Path) -> None:
+    """Attempt 3's wake session may be the one that succeeds — a run with a
+    LIVE lease must not be truncated to stuck underneath it."""
+    waiting_run(tmp_path, wake_attempts=3)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED", "55": "RUNNING"}))
+    assert report.stuck == ()
+    assert load_record(tmp_path, "r1").state == WAITING
+
+
+def test_tick_held_lease_reaped_by_ttl_alone(tmp_path: Path) -> None:
+    """A crashed tick's lease has no holder job id — only the TTL can free
+    it. This is the sole escape path; a regression here strands runs."""
+    waiting_run(tmp_path)
+    acquire_lease(tmp_path, "r1", "tick:dead-host:1", "", now=NOW - TTL - 1)
+    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
+    assert report.reaped_leases == ("r1",)
+    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+
+
+def test_corrupt_empty_lease_is_reaped_via_mtime(tmp_path: Path) -> None:
+    """A crash between lease create and write must not strand the run."""
+    import os as _os
+
+    waiting_run(tmp_path)
+    lease_path = tmp_path / "runs" / "r1" / "lease.json"
+    lease_path.touch()  # empty: unreadable as JSON
+    old = NOW - TTL - 100
+    _os.utime(lease_path, (old, old))
+    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
+    assert report.reaped_leases == ("r1",)
+    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+
+
+def test_legacy_zero_deadline_still_wakes_gone_runs(tmp_path: Path) -> None:
+    """save_record forbids new waiting runs without a deadline, but a legacy
+    record must not be immortal: GONE wakes anyway (safe), PENDING does not
+    get cancelled (destructive)."""
+    import json as _json
+
+    directory = tmp_path / "runs" / "legacy"
+    directory.mkdir(parents=True)
+    record = dict(
+        run_id="legacy",
+        target="o/r",
+        task_title="t",
+        state=WAITING,
+        agent_id="a",
+        experiment_job_id="100",
+        wake_job_id="",
+        resume_session_id="",
+        wake_attempts=0,
+        deadline=0.0,
+        terminal_seen=0.0,
+        ending="",
+        ending_note="",
+        created=NOW - 5000,
+        updated=NOW - 5000,
+    )
+    (directory / "state.json").write_text(_json.dumps(record))
+    report, _ = run_tick(tmp_path, FakeSlurm(states={}))  # GONE
+    assert report.woken == (("legacy", "vanished"),)
+
+    (directory / "state.json").write_text(_json.dumps(record))
+    slurm = FakeSlurm(states={"100": "PENDING"})
+    report2, _ = run_tick(tmp_path, slurm)
+    assert slurm.cancelled == []  # healthy pending job never cancelled
 
 
 def test_dispatch_exception_releases_lease_and_counts_attempt(tmp_path: Path) -> None:
