@@ -39,7 +39,11 @@ tasks). Lifecycle of a plan issue (DECIDED 2026-08-06):
 - an explicit `autoresearch:approved` label from a maintainer (provenance
   verified, as in the intake gate) starts it immediately — approval promotes
   the plan to the requested lane, reusing the existing label and gate rather
-  than inventing a parallel one.
+  than inventing a parallel one;
+- **stop always wins, and is terminal**: with both labels present the line
+  does not run; approval applied after a stop never resurrects it (the veto
+  is a safety switch, not a debate) — reviving a vetoed idea takes a new plan
+  issue, so the reversal is as visible as the veto.
 
 ## Part 2 — The experiment ladder and coordinated runs
 
@@ -129,15 +133,16 @@ never takes the others down; pausing one agent is dropping one sentinel.
 agents:
   agent-01:
     targets: [autoresearch-pilot]
-    credential: seat            # or: api-key
-    max_runs_per_week: 10       # frequency cap per Mengye
+    credential: api-key         # the default for now (round-1 decision 3);
+    max_runs_per_week: 10       #   `seat` is the future state, post-spike
   agent-02:
     targets: [jepa-agent, egolearn]   # multiple repos per agent is fine
     credential: api-key
     max_runs_per_week: 6
 ```
 
-**Seats on Torch (the practical auth question).** Claude Code supports
+**Seats on Torch (the practical auth question — deferred until multi-agent
+testing is ready; round-1 decision 3).** Claude Code supports
 headless auth two ways: an API key (today's path, works), or a long-lived
 OAuth token minted by `claude setup-token` from a subscription seat —
 designed for CI, no browser on the cluster needed. Proposed flow: Mengye runs
