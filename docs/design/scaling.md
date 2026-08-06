@@ -30,10 +30,10 @@ explicitly:
 issue per search line on the target repo, plus a machine-readable copy in the
 notebook's `plans/<target>/`. Bot-authored plan issues do NOT pass the
 requested-lane gate (that would let the pipeline feed itself privileged
-tasks); they run under the self-initiated budget after a **veto window** —
-the plan issue sits at least one full day before its first run, so a human
-can re-scope it with a comment or stop it with a label. Visibility without a
-human-approval bottleneck; the gate stays where it was.
+tasks); they run under the self-initiated budget after a **veto window**
+(provisionally one day — open question 1), so a human can re-scope the plan
+with a comment or stop it with a label before anything runs. Visibility
+without a human-approval bottleneck; the gate stays where it was.
 
 ## Part 2 — The experiment ladder and coordinated runs
 
@@ -60,7 +60,9 @@ attribute the gain. Output: an updated leader, and a consolidation report to
 the notebook + a digest issue. This is where the "many small wins" become a
 defensible headline number — and where interactions between improvements
 (which single-hypothesis runs cannot see) get caught. Budgeted separately
-(`per: consolidation`), so weekly exploration never starves it.
+(`per: consolidation`) so weekly exploration never starves it — but the
+consolidation line carries its own ceiling (a minimum interval and a per-run
+GPU-hour cap), so a burst of merges cannot trigger unbounded large runs.
 
 ## Part 3 — Multi-agent: identity, isolation, seats
 
@@ -76,10 +78,12 @@ file. Every lease, run-state file, PR, and report already carries a run id;
 they now carry the agent id too — provenance for "who did this" across the
 whole forum.
 
-**Isolation and communication.** Isolation by construction: an agent only
-touches its assigned targets, so cross-agent races don't exist on the happy
-path; the existing lease/CAS design (leases record holder ids) covers the
-rest. Communication is deliberately indirect — through the notebook (lessons
+**Isolation and communication.** Isolation by construction: the assignment
+is a **partition, and validated as one** — every tick fails loudly if any
+target appears under two agents, so a copy/paste in the YAML cannot silently
+create the races this design claims cannot exist. Shared write surfaces that
+remain (the leader ledger, `plans/<target>/`) get the same lease/CAS
+treatment as run state, with holder ids recorded. Communication is deliberately indirect — through the notebook (lessons
 are per-target, shared by whoever serves that target next) and GitHub. No
 agent-to-agent channels until a concrete need appears; the forum-simplicity
 argument applies to agents talking to agents too.
@@ -112,9 +116,19 @@ the harness's existing env-injection seam passes it as
 `CLAUDE_CODE_OAUTH_TOKEN` instead of `ANTHROPIC_API_KEY` — a per-agent
 config switch, no code restructuring. Seat limits then meter per-agent by
 construction, and the budget module tracks session-hours per agent id so a
-throttled seat backs off instead of erroring. Needs a live spike before we
-rely on it: token lifetime, refresh behavior, and two seats running
-concurrently from one Unix account.
+throttled seat backs off instead of erroring.
+
+Two honest caveats. *Isolation*: all agents run as one Unix UID on Torch, so
+0600 separates agents from other users, not from each other — a session can
+read a sibling agent's credential file by absolute path. Per-agent isolation
+is therefore advisory until OS-level sandboxing lands (same residual risk,
+same mitigation as the threat model: spend caps per credential, and nothing
+more powerful than a metered LLM credential on the session account).
+*Permissibility*: whether subscription seats may drive unattended autonomous
+agents — several seats from one shared account — is a provider-ToS question,
+not a technical one. Confirm against current terms before the seat path
+becomes default; needs a live spike regardless (token lifetime, refresh,
+concurrent seats).
 
 ## Open questions for the next turn
 
