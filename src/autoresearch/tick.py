@@ -55,7 +55,12 @@ class WakeDispatcher(Protocol):
 
     Returns "" when delivery completed synchronously (the caller releases the
     lease), or the Slurm job id of an asynchronous wake job that now owns the
-    lease (released by that job on completion; reaped by TTL if it dies)."""
+    lease (released by that job on completion; reaped by TTL if it dies).
+
+    Contract for real (phase-5) dispatchers: a wake that RESULTS IN PROGRESS
+    must either move the run out of `waiting` or reset `wake_attempts` —
+    the counter means "wakes since the run last made progress", and layer 5
+    ends the run as stuck when it reaches MAX_WAKE_ATTEMPTS."""
 
     def dispatch(self, record: RunRecord, reason: str) -> str: ...
 
@@ -220,7 +225,7 @@ def _sweep_one(
             if dry_run:
                 reaped.append(record.run_id)
                 return
-            if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}"):
+            if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}", expected=lease):
                 return  # a concurrent tick reaped it first; it owns redelivery
             reaped.append(record.run_id)
 
@@ -231,7 +236,9 @@ def _sweep_one(
                     record,
                     state=ENDED,
                     ending=STUCK,
-                    ending_note=f"{record.wake_attempts} wake attempts failed",
+                    ending_note=(
+                        f"{record.wake_attempts} wake attempts without the run leaving 'waiting'"
+                    ),
                 )
                 save_record(root, ended, now)
             stuck.append(record.run_id)

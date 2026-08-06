@@ -36,8 +36,17 @@ done
 # --- 1. keep two successors queued (singleton serializes same-name jobs) ---
 # Successors land on slots AFTER the ones already-queued jobs occupy —
 # otherwise every top-up doubles the tick rate on the next slot.
-pending=$(squeue -u "$USER" --name="$JOB_NAME" -h -t PENDING 2>/dev/null | wc -l)
-need=$((2 - pending))
+if squeue_out=$(squeue -u "$USER" --name="$JOB_NAME" -h -t PENDING 2>/dev/null); then
+    pending=$(printf '%s' "$squeue_out" | grep -c '[0-9]')
+    need=$((2 - pending))
+else
+    # A failed squeue must not read as "zero pending" — that would stack
+    # extra successors onto occupied slots every outage. Skip the top-up;
+    # the (very likely still-queued) successors keep the chain alive and
+    # the next tick retries.
+    pending=0
+    need=0
+fi
 epoch_now=$(date +%s)
 cadence_s=$((CADENCE_MIN * 60))
 next_slot=$(( (epoch_now / cadence_s + 1) * cadence_s ))

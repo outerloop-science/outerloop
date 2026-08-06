@@ -110,9 +110,43 @@ def test_reap_lease_exactly_one_reaper_wins(tmp_path: Path) -> None:
     from autoresearch.runstate import reap_lease
 
     acquire_lease(tmp_path, "r1", "dead", "", now=1.0)
-    assert reap_lease(tmp_path, "r1", reaper="a")
-    assert not reap_lease(tmp_path, "r1", reaper="b")  # already gone
+    stale = read_lease(tmp_path, "r1")
+    assert stale is not None
+    assert reap_lease(tmp_path, "r1", reaper="a", expected=stale)
+    assert not reap_lease(tmp_path, "r1", reaper="b", expected=stale)  # gone
     assert acquire_lease(tmp_path, "r1", "next", "", now=2.0)
+
+
+def test_reap_lease_refuses_a_fresh_lease_it_did_not_observe(tmp_path: Path) -> None:
+    """The CAS: reaper B saw the stale lease, but reaper A already reaped it
+    and a fresh lease was written — B must restore, not steal."""
+    from autoresearch.runstate import reap_lease
+
+    acquire_lease(tmp_path, "r1", "dead", "", now=1.0)
+    stale = read_lease(tmp_path, "r1")
+    assert stale is not None
+    # A's reap + a new wake's fresh lease happen "before" B acts:
+    release_lease(tmp_path, "r1")
+    acquire_lease(tmp_path, "r1", "wake-job:777", "777", now=50.0)
+    assert not reap_lease(tmp_path, "r1", reaper="b", expected=stale)
+    fresh = read_lease(tmp_path, "r1")
+    assert fresh is not None and fresh.holder == "wake-job:777"  # restored
+
+
+def test_non_object_json_record_is_skipped_not_fatal(tmp_path: Path) -> None:
+    """Valid JSON that is not an object (null, list) must be 'corrupt',
+    never an exception that blinds the whole sweep."""
+
+    save_record(tmp_path, make_record(run_id="good"), now=1.0)
+    bad = run_dir(tmp_path, "nulled")
+    bad.mkdir(parents=True)
+    (bad / "state.json").write_text("null")
+    assert [r.run_id for r in list_runs(tmp_path)] == ["good"]
+
+    lease_dir = run_dir(tmp_path, "good")
+    (lease_dir / "lease.json").write_text("[1, 2]")
+    lease = read_lease(tmp_path, "good")
+    assert lease is not None and lease.holder == "unreadable"  # mtime fallback
 
 
 def test_load_record_ignores_unknown_keys(tmp_path: Path) -> None:

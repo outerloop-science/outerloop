@@ -96,13 +96,17 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
     directory = run_dir(root, record.run_id)
     directory.mkdir(parents=True, exist_ok=True)
     stamped = replace(record, updated=now, created=record.created or now)
-    tmp = directory / f".{RECORD_NAME}.tmp"
+    # unique tmp name: two concurrent writers must not interleave into the
+    # same tmp file before the atomic replace
+    tmp = directory / f".{RECORD_NAME}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(asdict(stamped), indent=2, sort_keys=True))
     os.replace(tmp, directory / RECORD_NAME)
 
 
 def load_record(root: Path, run_id: str) -> RunRecord:
     raw = json.loads((run_dir(root, run_id) / RECORD_NAME).read_text())
+    if not isinstance(raw, dict):
+        raise ValueError(f"record is not a JSON object: {type(raw).__name__}")
     # Ignore unknown keys: after a bad-merge revert, older code must still be
     # able to read records written by newer code — a "corrupt" verdict here
     # would blind the sweep to the whole run.
@@ -152,6 +156,8 @@ def read_lease(root: Path, run_id: str) -> Lease | None:
     path = run_dir(root, run_id) / LEASE_NAME
     try:
         raw = json.loads(path.read_text())
+        if not isinstance(raw, dict):
+            raise ValueError("lease is not a JSON object")
         known = {k: v for k, v in raw.items() if k in Lease.__dataclass_fields__}
         return Lease(**known)
     except FileNotFoundError:
@@ -174,7 +180,7 @@ def update_lease_holder(
     """Hand a HELD lease to a new holder (e.g. tick → the wake job it just
     submitted). Atomic replace; only valid while the caller holds the lease."""
     directory = run_dir(root, run_id)
-    tmp = directory / f".{LEASE_NAME}.tmp"
+    tmp = directory / f".{LEASE_NAME}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(asdict(Lease(holder, holder_job_id, now))))
     os.replace(tmp, directory / LEASE_NAME)
 
@@ -185,19 +191,42 @@ def release_lease(root: Path, run_id: str) -> None:
         (run_dir(root, run_id) / LEASE_NAME).unlink()
 
 
-def reap_lease(root: Path, run_id: str, reaper: str) -> bool:
-    """Remove a stale lease you do NOT hold. True if THIS caller reaped it.
+def reap_lease(root: Path, run_id: str, reaper: str, expected: Lease) -> bool:
+    """Remove the stale lease you observed (and do NOT hold). True if THIS
+    caller reaped exactly that lease.
 
-    Atomic rename to a unique tombstone: with two concurrent reapers exactly
-    one rename succeeds, so exactly one proceeds to redeliver — a blind
-    unlink here could delete a lease a faster reaper already handed to a new
-    wake job, re-opening the double-delivery hole.
+    Rename-to-tombstone makes removal atomic (one of N concurrent reapers
+    wins the rename); the identity check afterwards makes it a compare-and-
+    swap: if the file we renamed is NOT the stale lease we observed — a
+    faster reaper already reaped and a fresh lease was written — we restore
+    it via link (which cannot clobber a newer lease) and stand down. The
+    remaining hole needs a 3-party race inside this microsecond window and
+    the singleton tick serialization makes that effectively unreachable;
+    if it ever fires, the symptom is one duplicate wake, which the resumed
+    session tolerates (sequential re-resume is safe).
     """
     directory = run_dir(root, run_id)
     tombstone = directory / f".{LEASE_NAME}.reaped.{reaper}"
     try:
         os.rename(directory / LEASE_NAME, tombstone)
     except FileNotFoundError:
+        return False
+    try:
+        raw = json.loads(tombstone.read_text())
+        got: Lease | None = (
+            Lease(**{k: v for k, v in raw.items() if k in Lease.__dataclass_fields__})
+            if isinstance(raw, dict)
+            else None
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        got = None  # unreadable — the corrupt lease we came to reap
+    if got is not None and (got.holder != expected.holder or got.acquired != expected.acquired):
+        # we grabbed someone's FRESH lease; put it back without clobbering
+        try:
+            os.link(tombstone, directory / LEASE_NAME)
+        except FileExistsError:
+            log.warning("lease race on %s: fresh lease displaced during reap", run_id)
+        tombstone.unlink(missing_ok=True)
         return False
     tombstone.unlink(missing_ok=True)
     return True
