@@ -1,8 +1,8 @@
 # Research planning and multi-agent scaling
 
-**Status: design sketch, v1 — iterating with Mengye (started 2026-08-06).
-Nothing here gates the phase-4 build; decided pieces get promoted into
-architecture.md as they firm up.**
+**Status: design sketch, v2 — iterating with Mengye (started 2026-08-06;
+round-1 decisions folded in 2026-08-06). Nothing here gates the phase-4
+build; decided pieces get promoted into architecture.md as they firm up.**
 
 ## Part 1 — Planned search, not drive-by tasks
 
@@ -30,10 +30,16 @@ explicitly:
 issue per search line on the target repo, plus a machine-readable copy in the
 notebook's `plans/<target>/`. Bot-authored plan issues do NOT pass the
 requested-lane gate (that would let the pipeline feed itself privileged
-tasks); they run under the self-initiated budget after a **veto window**
-(provisionally one day — open question 1), so a human can re-scope the plan
-with a comment or stop it with a label before anything runs. Visibility
-without a human-approval bottleneck; the gate stays where it was.
+tasks). Lifecycle of a plan issue (DECIDED 2026-08-06):
+
+- posts, then starts under the self-initiated budget **one day later** by
+  default — the veto window;
+- an `autoresearch:stop` label vetoes it, at posting time or any time after
+  (a stopped line's in-flight run Aborts);
+- an explicit `autoresearch:approved` label from a maintainer (provenance
+  verified, as in the intake gate) starts it immediately — approval promotes
+  the plan to the requested lane, reusing the existing label and gate rather
+  than inventing a parallel one.
 
 ## Part 2 — The experiment ladder and coordinated runs
 
@@ -53,8 +59,9 @@ proxy horizon, data subset, fewer seeds — with explicit go/no-go criteria
 written before the small runs launch (pre-registration, agent edition). A
 large run request cites its small-tier evidence in the plan issue.
 
-**Periodic consolidation runs.** On a cadence (or when K improvements have
-accumulated since the last one), launch one coordinated large run that
+**Periodic consolidation runs.** Triggered by accumulation — **K
+benchmark-consequential merges since the last consolidation** (DECIDED
+2026-08-06; not calendar time) — launch one coordinated large run that
 combines the period's merged improvements, with leave-one-out ablations to
 attribute the gain. Output: an updated leader, and a consolidation report to
 the notebook + a digest issue. This is where the "many small wins" become a
@@ -63,6 +70,30 @@ defensible headline number — and where interactions between improvements
 (`per: consolidation`) so weekly exploration never starves it — but the
 consolidation line carries its own ceiling (a minimum interval and a per-run
 GPU-hour cap), so a burst of merges cannot trigger unbounded large runs.
+
+## Part 2b — Maintenance work and the vision (added from Mengye's round 1)
+
+Not every valuable merge moves a benchmark. **Maintenance work** — refactors,
+test coverage, tooling, documentation, dependency health — is a first-class
+task category, not hill-climbing exhaust:
+
+- Merged PRs are classified at close: *benchmark-consequential* (moved a
+  contract metric; counts toward the consolidation trigger K) or
+  *maintenance* (does not count toward K, but is reported and appears in the
+  digest — its value is legibility and long-term velocity, not the metric).
+- Maintenance tasks are motivated by the **vision** (below) and repo-health
+  signals rather than metric gaps, carry the same one-hypothesis-per-PR
+  granularity ("this module's duplication blocks the next two search lines"),
+  and draw from a bounded share of the weekly run budget so they can neither
+  starve nor be starved by benchmark work.
+
+**Vision lives in the contract.** The contract gains a `vision:` field — a
+short high-level statement of where the codebase is going, which the planner
+reads when proposing both search lines and maintenance work. Because the
+contract is agent-unwritable (loader invariant), the vision changes only by
+a human PR to the target repo: governed, visible, versioned — the same forum
+mechanism as everything else. Agents may *propose* vision changes in reports
+or issues; they cannot enact them.
 
 ## Part 3 — Multi-agent: identity, isolation, seats
 
@@ -130,14 +161,33 @@ not a technical one. Confirm against current terms before the seat path
 becomes default; needs a live spike regardless (token lifetime, refresh,
 concurrent seats).
 
+## Round-1 decisions (Mengye, 2026-08-06)
+
+1. **Veto**: `autoresearch:stop` label; default start one day after the plan
+   issue posts; a maintainer's `autoresearch:approved` label starts it
+   immediately (promotes to the requested lane).
+2. **Consolidation**: accumulation-triggered on K benchmark-consequential
+   merges. Maintenance merges are valuable but don't count toward K — see
+   Part 2b.
+3. **Credentials**: API keys for now (seats cost more up front); start a seat
+   when multi-agent testing is actually ready. The `setup-token` spike waits
+   until then.
+4. **Models**: the planner runs on **claude-fable-5 at extra-high effort** —
+   it is rare, cheap in absolute terms, and leverage-heavy (a bad plan wastes
+   whole GPU-budgets; a good one is compounding). Coding sessions and the
+   advisory reviewer stay on claude-opus-5. Maintenance-task planning is part
+   of the planner's job and gets the same tier.
+
 ## Open questions for the next turn
 
-1. Veto window on bot-authored plan issues: one day? And is a
-   `autoresearch:hold` label the right stop switch, or reuse `no-review`
-   style naming?
-2. Consolidation cadence: calendar (monthly) or accumulation-triggered
-   (K merged improvements), or "whichever comes first"?
-3. Seat vs API key per agent: start agent-01 (pilot repo) on the API key we
-   have, and spike `setup-token` for agent-02 before research repos onboard?
-4. Does the planner get its own model/effort tier (it is cheap, rare, and
-   leverage-heavy — a Fable candidate?), separate from coding sessions?
+1. K for the consolidation trigger (and does a failed consolidation reset the
+   counter, or carry it?).
+2. The maintenance budget share: a fixed fraction of weekly runs (e.g. 1 in
+   4), or planner-discretion within a cap?
+3. Who classifies a merge as consequential vs maintenance — the metric delta
+   mechanically (moved ≥ ε → consequential), or the planner with the metric
+   as evidence?
+4. `vision:` wording for the pilot repo's contract — a two-sentence draft to
+   iterate on: "A proving ground where optimization skill is demonstrated on
+   frozen, deterministic benchmarks. Solvers should stay small, readable, and
+   self-contained — clever beats large."
