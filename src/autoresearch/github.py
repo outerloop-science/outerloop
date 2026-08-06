@@ -11,6 +11,9 @@ Credential rules enforced here:
 - Only network git subcommands get that environment. Local subcommands run
   token-free with hooks disabled, so repo content written by an agent session
   (hooks, filters) can never read the credential.
+- Credentialed invocations additionally neutralize every git setting that can
+  spawn a child process (ssh command, credential helpers, alternate
+  protocols), because the session owns the clone's ``.git/config``.
 """
 
 from __future__ import annotations
@@ -32,6 +35,26 @@ log = logging.getLogger(__name__)
 
 API = "https://api.github.com"
 NETWORK_GIT_COMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
+# Settings a session could add to .git/config that make git spawn a child
+# process; neutralized on every credentialed invocation.
+SAFE_GIT_FLAGS = (
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.sshCommand=false",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.https.allow=always",
+    "-c",
+    "protocol.file.allow=always",
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "core.quotePath=false",
+)
 Transport = Callable[[urllib.request.Request], Any]
 
 
@@ -67,6 +90,8 @@ class FileTokenProvider:
     path: Path
 
     def token(self) -> str:
+        if not self.path.is_file():
+            raise ValueError(f"{self.path} is not a readable credential file")
         mode = self.path.stat().st_mode & 0o077
         if mode:
             raise PermissionError(f"{self.path} is group/world accessible; chmod 600 it")
@@ -83,9 +108,10 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> Any:
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if (
-            new is not None
-            and urllib.parse.urlparse(newurl).netloc != urllib.parse.urlparse(req.full_url).netloc
+        old_parts = urllib.parse.urlparse(req.full_url)
+        new_parts = urllib.parse.urlparse(newurl)
+        if new is not None and (
+            new_parts.netloc != old_parts.netloc or new_parts.scheme != old_parts.scheme
         ):
             for header in ("Authorization", "authorization"):
                 new.headers.pop(header, None)
@@ -103,6 +129,10 @@ def _default_transport(request: urllib.request.Request) -> Any:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:500]
         raise GitHubError(exc.code, urllib.parse.urlparse(request.full_url).path, body) from None
+    except urllib.error.URLError as exc:
+        raise GitHubError(
+            0, urllib.parse.urlparse(request.full_url).path, str(exc.reason)
+        ) from None
     return json.loads(payload) if payload else None
 
 
@@ -191,7 +221,12 @@ def _run_git(args: list[str], env: dict[str, str]) -> str:
     result = subprocess.run(args, capture_output=True, text=True, env=env, check=False)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        raise GitError(f"git {' '.join(args[1:3])} failed: {detail}")
+        skip = {"-C", "-c"}
+        subcommand = next(
+            (a for i, a in enumerate(args[1:], 1) if a not in skip and args[i - 1] not in skip),
+            "?",
+        )
+        raise GitError(f"git {subcommand} failed: {detail}")
     return result.stdout.strip()
 
 
@@ -202,23 +237,22 @@ class Workspace:
     root: Path
     auth: TokenProvider | None = None
     dry_run: bool = False
+    url: str | None = None
 
     def git(self, *args: str) -> str:
-        """Run a local git subcommand: no credential, hooks disabled."""
-        return _run_git(
-            ["git", "-C", str(self.root), "-c", "core.hooksPath=/dev/null", *args],
-            _git_env(None),
-        )
+        """Run a local git subcommand: no credential, no child-spawning config."""
+        return _run_git(["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None))
 
     def git_network(self, *args: str) -> str:
         """Run a git subcommand that talks to the remote, with credentials."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
         token = self.auth.token() if self.auth is not None else None
-        return _run_git(
-            ["git", "-C", str(self.root), "-c", "core.hooksPath=/dev/null", *args],
-            _git_env(token),
-        )
+        return _run_git(["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token))
+
+    def remote_url(self) -> str:
+        """The remote URL as recorded at clone time, read token-free."""
+        return self.git("config", "--get", "remote.origin.url")
 
     @classmethod
     def clone(
@@ -229,18 +263,16 @@ class Workspace:
         dry_run: bool = False,
     ) -> Workspace:
         token = auth.token() if auth is not None else None
-        _run_git(
-            ["git", "clone", "--quiet", "-c", "core.hooksPath=/dev/null", url, str(dest)],
-            _git_env(token),
-        )
-        return cls(root=dest, auth=auth, dry_run=dry_run)
+        _run_git(["git", "clone", "--quiet", *SAFE_GIT_FLAGS, url, str(dest)], _git_env(token))
+        return cls(root=dest, auth=auth, dry_run=dry_run, url=url)
 
     def branch(self, name: str) -> None:
         self.git("switch", "-c", name)
 
     def staged_paths(self) -> list[str]:
-        output = self.git("diff", "--cached", "--name-only")
-        return [line for line in output.splitlines() if line]
+        """Staged paths, NUL-delimited so unicode/space/newline names survive."""
+        output = self.git("diff", "--cached", "--name-only", "-z")
+        return [entry for entry in output.split("\0") if entry]
 
     def commit_all(
         self,
@@ -278,4 +310,7 @@ class Workspace:
         if self.dry_run:
             log.info("[dry-run] push %s from %s", branch, self.root)
             return
-        self.git_network("push", "-u", "origin", "--", branch)
+        # Push to the URL captured at clone time: the session can rewrite
+        # remote.origin.url, and "origin" would follow it.
+        target = self.url or self.remote_url()
+        self.git_network("push", target, "--", f"{branch}:{branch}")

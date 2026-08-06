@@ -13,6 +13,7 @@ rejects aliases, duplicate keys, and oversized documents.
 from __future__ import annotations
 
 import posixpath
+import re
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -92,17 +93,18 @@ class Contract(_StrictModel):
     suite: SuiteAggregate | None = None
 
 
+_HOST_PREFIX = re.compile(r"^(?:[a-z+]+://)?(?:[^@/]*@)?(?:www\.)?github\.com[:/]+")
+
+
 def normalize_repo(target_repo: str) -> str:
     """Reduce a repo reference to `owner/name`, casefolded.
 
-    Accepts bare `owner/name`, trailing `/` or `.git`, and https/ssh URLs, so
-    the self-target check can't be dodged by spelling.
+    Accepts bare `owner/name`, trailing `/` or `.git`, and any scheme/userinfo
+    URL spelling, so the self-target check can't be dodged by spelling.
     """
     ref = target_repo.strip().casefold()
-    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:", "ssh://"):
-        if ref.startswith(prefix):
-            ref = ref[len(prefix) :]
-    ref = ref.rstrip("/")
+    ref = _HOST_PREFIX.sub("", ref)
+    ref = re.sub(r"/{2,}", "/", ref).strip("/")
     if ref.endswith(".git"):
         ref = ref[: -len(".git")]
     return ref
@@ -121,6 +123,8 @@ def normalize_path(entry: str) -> PurePosixPath:
     path = PurePosixPath(normalized)
     if normalized in {".", ""} or any(part == ".." for part in path.parts):
         raise ScopeError(f"path escapes the repository: {entry!r}")
+    if any(part.casefold() == ".git" for part in path.parts):
+        raise ScopeError(f"the git directory is never writable: {entry!r}")
     return path
 
 
@@ -130,25 +134,34 @@ def forbidden_paths(contract: Contract) -> tuple[str, ...]:
     return (*ALWAYS_FORBIDDEN, str(normalize_path(contract.roadmap)))
 
 
+def _fold(path: PurePosixPath) -> PurePosixPath:
+    """Casefold components: `.GITHUB/x` must be as forbidden as `.github/x`."""
+    return PurePosixPath(*[part.casefold() for part in path.parts])
+
+
 def path_is_forbidden(candidate: str, contract: Contract) -> bool:
     """True if `candidate` (a repo-relative file path) may not be written.
 
-    Component-wise, so `README.mdx` is not shadowed by roadmap `README.md`.
-    Anything unnormalizable counts as forbidden.
+    Component-wise and case-insensitive, so `README.mdx` is not shadowed by
+    roadmap `README.md` but `.GITHUB/` is still blocked. Anything
+    unnormalizable counts as forbidden.
     """
     try:
-        path = normalize_path(candidate)
+        path = _fold(normalize_path(candidate))
     except ScopeError:
         return True
+    if any(part == ".git" for part in path.parts):
+        return True  # never write into the git directory itself
     for forbidden in forbidden_paths(contract):
-        f = PurePosixPath(forbidden)
+        f = _fold(PurePosixPath(forbidden))
         if path == f or f in path.parents:
             return True
     return False
 
 
 def _overlaps(allowed: PurePosixPath, forbidden: PurePosixPath) -> bool:
-    return allowed == forbidden or forbidden in allowed.parents or allowed in forbidden.parents
+    a, f = _fold(allowed), _fold(forbidden)
+    return a == f or f in a.parents or a in f.parents
 
 
 def load_contract(text: str, target_repo: str) -> Contract:
@@ -157,7 +170,12 @@ def load_contract(text: str, target_repo: str) -> Contract:
         raise SelfTargetError("autoresearch is never a valid target of itself")
     if len(text.encode()) > MAX_CONTRACT_BYTES:
         raise ContractError(f"contract exceeds {MAX_CONTRACT_BYTES} bytes")
-    data = yaml.load(text, Loader=_SafeLoader)
+    try:
+        data = yaml.load(text, Loader=_SafeLoader)
+    except ContractError:
+        raise
+    except (yaml.YAMLError, TypeError, ValueError) as exc:
+        raise ContractError(f"unparseable contract: {type(exc).__name__}") from None
     if not isinstance(data, dict):
         raise ContractError("contract must be a YAML mapping")
     contract = Contract.model_validate(data)
