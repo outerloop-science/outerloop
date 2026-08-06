@@ -113,3 +113,39 @@ def test_workspace_dry_run_push_stays_local(tmp_path: Path) -> None:
         ["git", "-C", str(origin), "branch"], capture_output=True, text=True, check=True
     ).stdout
     assert "feat/auto/nope" not in branches
+
+
+def test_env_token_provider(monkeypatch) -> None:
+    from autoresearch.github import EnvTokenProvider
+
+    monkeypatch.setenv("SOME_TOKEN", " tok \n")
+    assert EnvTokenProvider("SOME_TOKEN").token() == "tok"
+    monkeypatch.setenv("SOME_TOKEN", "")
+    with pytest.raises(ValueError, match="unset or empty"):
+        EnvTokenProvider("SOME_TOKEN").token()
+
+
+def test_upsert_comment_edits_existing_marked_comment(provider: FileTokenProvider) -> None:
+    marker = "<!-- m -->"
+    transport = FakeTransport([[{"id": 42, "body": f"{marker} old"}], {}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.upsert_comment("org/repo", 7, marker, f"{marker} new")
+    edit = transport.requests[-1]
+    assert edit.get_method() == "PATCH"
+    assert "/issues/comments/42" in edit.full_url
+
+
+def test_upsert_comment_creates_when_absent(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([[{"id": 1, "body": "unrelated"}], {}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.upsert_comment("org/repo", 7, "<!-- m -->", "body")
+    create = transport.requests[-1]
+    assert create.get_method() == "POST"
+    assert create.full_url.endswith("/issues/7/comments")
+
+
+def test_diff_request_uses_diff_media_type(provider: FileTokenProvider) -> None:
+    transport = FakeTransport(["--- a/x\n+++ b/x\n"])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.get_pull_request_diff("org/repo", 3).startswith("--- a/x")
+    assert transport.requests[0].get_header("Accept") == "application/vnd.github.v3.diff"

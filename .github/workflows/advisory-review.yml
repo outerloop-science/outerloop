@@ -1,0 +1,62 @@
+# Reusable advisory-review workflow. Target repos call this; they do not
+# vendor the reviewer code. See docs/design/architecture.md (Roles) for the
+# constraints this enforces.
+#
+# In a target repo (.github/workflows/review.yml):
+#
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened]
+#   jobs:
+#     advisory:
+#       uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review.yml@main
+#       secrets:
+#         reviewer_api_key: ${{ secrets.AUTORESEARCH_REVIEWER_KEY }}
+name: advisory-review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        required: false
+        default: claude-opus-5
+      effort:
+        type: string
+        required: false
+        default: high
+    secrets:
+      reviewer_api_key:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Fork PRs run without secrets elsewhere in CI; this job needs the key, so
+    # it is gated to PRs from the same repository (the pwn-request guard).
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: agentic-learning-ai-lab/autoresearch
+          ref: main
+          path: .autoresearch
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Run advisory review
+        working-directory: .autoresearch
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.reviewer_api_key }}
+          # The workflow's own token: the bot PAT is never used by this role.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          REVIEW_EFFORT: ${{ inputs.effort }}
+        run: uv run --extra review python -m autoresearch.review_cli

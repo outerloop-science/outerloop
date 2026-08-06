@@ -84,6 +84,19 @@ class TokenProvider(Protocol):
 
 
 @dataclass(frozen=True)
+class EnvTokenProvider:
+    """Reads a token from an environment variable (CI-supplied credentials)."""
+
+    variable: str
+
+    def token(self) -> str:
+        token = os.environ.get(self.variable, "").strip()
+        if not token:
+            raise ValueError(f"{self.variable} is unset or empty")
+        return token
+
+
+@dataclass(frozen=True)
 class FileTokenProvider:
     """Reads a credential file (the bot PAT on the orchestrator host)."""
 
@@ -191,6 +204,43 @@ class GitHubClient:
         if "number" not in data:
             raise GitHubError(200, path, f"no PR number in response: {data.get('message')}")
         return int(data["number"])
+
+    def get_pull_request(self, repo: str, number: int) -> dict[str, Any]:
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        return self._expect_dict(self._request("GET", path), path)
+
+    def get_pull_request_diff(self, repo: str, number: int) -> str:
+        """Fetch a PR's unified diff (uses the diff media type)."""
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        request = urllib.request.Request(
+            f"{API}{path}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.auth.token()}",
+                "Accept": "application/vnd.github.v3.diff",
+            },
+        )
+        return str(self.transport(request))
+
+    def list_comments(self, repo: str, issue_number: int) -> list[dict[str, Any]]:
+        path = f"/repos/{urllib.parse.quote(repo)}/issues/{issue_number}/comments?per_page=100"
+        data = self._request("GET", path)
+        return list(data) if isinstance(data, list) else []
+
+    def upsert_comment(self, repo: str, issue_number: int, marker: str, body: str) -> None:
+        """Post the comment, or edit the existing one carrying `marker`.
+
+        Keeps the reviewer to one thread per PR however many times it runs.
+        """
+        if self.dry_run:
+            log.info("[dry-run] upsert comment on %s#%s (%d chars)", repo, issue_number, len(body))
+            return
+        for comment in self.list_comments(repo, issue_number):
+            if marker in str(comment.get("body", "")):
+                path = f"/repos/{urllib.parse.quote(repo)}/issues/comments/{int(comment['id'])}"
+                self._request("PATCH", path, {"body": body})
+                return
+        self.comment(repo, issue_number, body)
 
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:
