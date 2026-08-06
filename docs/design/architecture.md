@@ -129,6 +129,64 @@ tick → pick task (benchmark gap / roadmap item / approved issue)
 → weekly digest issue: tried / worked / cost
 ```
 
+## The life of a run
+
+Explicit lifecycle: where work comes from, how humans steer it in flight, and
+what "done" means. Every channel is GitHub — a simplicity chosen on purpose:
+one forum, attributable, label-gated, auditable, versioned. No Slack, no
+email, no command grammar to learn or to secure.
+
+**Intake — two task lanes plus a program-level weighting input:**
+
+1. *Requested* (always wins): an issue on the target repo, authored by an org
+   member or carrying an `autoresearch:approved` label. The label is only
+   trusted after provenance is verified from the issue's timeline events —
+   the labeling actor must hold Write or better on the repo; label presence
+   alone proves nothing (triage-role users can apply labels). Anything that
+   fails the gate is data. The issue text enters the brief data-fenced; the
+   run's report lands back on the issue as a comment, closing the loop with
+   whoever asked.
+2. *Self-initiated* (the default background mode): task selection proposes a
+   hypothesis from the contract's benchmark gaps, the target repo's roadmap,
+   and the "next steps" of prior reports and lessons — the loop's own
+   research memory. Selection is weighted by the notebook's
+   `plans/<target>.md`, where humans set program-level priorities ("focus on
+   sample efficiency this month") — direction for this lane, never tasks of
+   its own.
+
+**In flight — humans steer through the PR.** A run whose PR is open enters
+`in-review` and stays alive: each tick, the sweep checks the PR for new
+comments by org members (the advisory reviewer never comments on bot PRs, so
+no bot-to-bot loop can form). A qualifying comment wakes the run — the same
+resume mechanism as experiment wakes, comment text data-fenced, task-level
+supersession only — and the agent pushes fixes and replies on the thread via
+the bot identity. Review-response sessions are bounded like everything else
+(attempt counter, budget). Non-member comments never trigger a wake.
+
+**Death — a run ends in exactly one of six ways, each producing a report:**
+
+| Ending | Trigger | Report outcome |
+| --- | --- | --- |
+| Merged | human merges the PR | success + measured effect |
+| Rejected | human closes the PR unmerged, or the PR sits idle past the staleness deadline (weeks) — the bot posts a stand-down note first | what was tried, why declined or abandoned (closing the PR *is* the "no" — no special command needed; a later comment on a stood-down PR starts a fresh requested task, it does not resurrect the run) |
+| Negative result | run concludes without a PR | hypothesis, evidence against, next step |
+| Budget exhausted | caps hit mid-run | partial findings + where it stopped |
+| Aborted | task invalidated (contract hash or pinned SHA changed under the run), sentinel-initiated stop, or hard offboarding | what was in flight and why it stopped |
+| Stuck | N failed wake attempts | infrastructure failure, transcripts attached |
+
+After the report is distilled into `lessons/`, the workspace and per-run HOME
+are garbage-collected (grace period first — an `in-review` run's context must
+survive until its PR closes). The notebook is the memory; the run directory
+is scaffolding.
+
+**The loop itself has no end state.** It pauses (sentinel) and resumes.
+Offboarding a target has a graceful path and a hard path: *graceful* — remove
+the contract; intake stops and in-flight runs drain to their natural endings
+(the bot can still post reports). *Hard* — revoke the bot's access; in-flight
+runs Abort, and their reports go to the notebook only, since the target repo
+can no longer be written. Reports never block on a repo the bot cannot reach:
+the notebook copy is always written first.
+
 ## Research reports and the notebook
 
 Every run — success or failure — ends with a short, readable report: hypothesis,
