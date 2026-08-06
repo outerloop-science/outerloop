@@ -24,3 +24,7 @@ outputs/
 .idea/
 
 # NOTE: operational scripts (*.sh, *.slurm) are committed in scripts/, never ignored.
+
+# local credentials (reviewer key lives here on dev machines)
+.env*
+!.env.example
