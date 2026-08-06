@@ -8,6 +8,8 @@ import json
 import stat
 from pathlib import Path
 
+import pytest
+
 from autoresearch.harness import (
     SESSION_ENV_ALLOWLIST,
     ClaudeCodeHarness,
@@ -130,14 +132,18 @@ def test_transcript_lives_outside_the_workspace(tmp_path: Path) -> None:
     assert transcript.exists()
 
 
-def test_malformed_result_fields_degrade_not_raise(tmp_path: Path) -> None:
+def test_malformed_fields_are_salvaged_not_discarded(tmp_path: Path) -> None:
+    """A quirky cost value must not cost us the session id (resume depends
+    on it) — field-level salvage, and never an exception."""
     bad = dict(CANNED, total_cost_usd="not-a-number")
     binary = fake_claude(tmp_path, json.dumps(bad))
     ws = tmp_path / "ws"
     ws.mkdir()
     result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
-    assert result.is_error
-    assert result.stop_reason == "unparseable-output"
+    assert result.cost_usd == 0.0
+    assert result.session_id == "sess-1"
+    assert result.num_turns == 3
+    assert not result.is_error
 
 
 def test_result_object_recovered_from_surrounding_log_lines(tmp_path: Path) -> None:
@@ -193,6 +199,65 @@ def test_redact_handles_empty_secrets() -> None:
     assert redact("key sk-key end", ("sk-key",)) == "key [redacted] end"
 
 
+def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
+    """Bash-tool descendants of a timed-out session must not survive holding
+    the API key and writing into the clone."""
+    import os as _os
+
+    script = tmp_path / "claude"
+    script.write_text(
+        f"#!/bin/sh\ncat > /dev/null\nsleep 300 &\necho $! > {tmp_path}/child_pid\nsleep 300\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = ClaudeCodeHarness(api_key="k", binary=str(script), timeout_s=1).run("task", ws)
+    assert result.stop_reason == "timeout"
+    child = int((tmp_path / "child_pid").read_text().strip())
+    with pytest.raises(ProcessLookupError):
+        _os.kill(child, 0)
+
+
+def test_transcript_and_home_are_owner_only(tmp_path: Path) -> None:
+    """Transcripts carry private research text on a shared filesystem."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert stat.S_IMODE(Path(result.transcript_path).stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / "ws-home").stat().st_mode) == 0o700
+
+
+def test_unwritable_parent_degrades_not_raises(tmp_path: Path) -> None:
+    """The adapter never raises — even when the shared filesystem misbehaves."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    parent = tmp_path / "ro"
+    parent.mkdir()
+    ws = parent / "ws"
+    ws.mkdir()
+    parent.chmod(0o500)
+    try:
+        result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    finally:
+        parent.chmod(0o700)
+    assert result.is_error
+    # home creation is the first write; a read-only parent stops it
+    assert result.stop_reason == "workspace-error"
+
+
+def test_stray_trailing_json_does_not_hijack_the_result(tmp_path: Path) -> None:
+    """An object printed after the CLI's result must not substitute its
+    fields into billing and resume."""
+    noisy = json.dumps(CANNED) + "\n" + json.dumps({"unrelated": True, "is_error": True})
+    binary = fake_claude(tmp_path, noisy)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert not result.is_error
+    assert result.session_id == "sess-1"
+    assert result.cost_usd == 0.42
+
+
 def test_fake_harness_records_calls(tmp_path: Path) -> None:
     fake = FakeHarness(
         result=SessionResult(
@@ -206,7 +271,11 @@ def test_fake_harness_records_calls(tmp_path: Path) -> None:
         )
     )
     fake.run("brief text", tmp_path)
-    assert fake.calls == [("brief text", str(tmp_path))]
+    fake.run("wake", tmp_path, resume_session_id="sess-9")
+    assert fake.calls == [
+        ("brief text", str(tmp_path), None),
+        ("wake", str(tmp_path), "sess-9"),
+    ]
 
 
 def test_resume_passes_session_id_and_reuses_run_home(tmp_path: Path) -> None:

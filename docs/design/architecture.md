@@ -163,7 +163,7 @@ grep + recency + distillation until that provably fails.
 | Module | Job |
 | --- | --- |
 | `contract` | Schema + loader for `.autoresearch.yaml`, incl. the hard-coded invariants |
-| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys; per-session HOME; brief on stdin, never argv); capture transcript and cost (the orchestrator captures the diff); secret-scan transcripts before storage. See "Harness and context engineering" below |
+| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys; per-run HOME, fresh per run; brief on stdin, never argv); capture transcript and cost (the orchestrator captures the diff); secret-scan transcripts before storage. See "Harness and context engineering" below |
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |
@@ -229,8 +229,8 @@ same brief, same task pool, different backend, diff the outcomes.
   maintainer-applied `autoresearch:approved` label, become tasks; all other text
   is data, summarized in a no-tools context, never instructions.
 - **Credential theft.** Sessions never see the bot PAT or billing keys: the
-  environment is scrubbed (allowlist + per-session HOME, so `~`-relative key
-  files resolve nowhere), and pushes happen orchestrator-side after the
+  environment is scrubbed (allowlist + a redirected per-run HOME, so
+  `~`-relative key files resolve nowhere), and pushes happen orchestrator-side after the
   session ends. Transcripts are secret-scanned before storage. Residual risk,
   accepted for now: the filesystem is not sandboxed, so same-user absolute
   paths remain readable — therefore the bot PAT never lives on the account

@@ -13,9 +13,11 @@ environment never reach a session (threat model: credential theft).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,12 +26,12 @@ from typing import Any, Protocol
 log = logging.getLogger(__name__)
 
 # What a session's environment contains — nothing else survives from the
-# parent. HOME is deliberately NOT inherited: it is redirected to a fresh
-# per-session directory so a session cannot read key files under the real
-# home or poison future sessions via ~/.claude state. (Residual risk: the
-# filesystem itself is not sandboxed — same-user absolute paths remain
-# readable. See the threat model; the bot PAT must not live on the account
-# that runs sessions until OS-level sandboxing lands.)
+# parent. HOME is deliberately NOT inherited: it is redirected to a per-run
+# directory so a session cannot read key files under the real home or poison
+# other runs via ~/.claude state. (Residual risk: the filesystem itself is
+# not sandboxed — same-user absolute paths remain readable. See the threat
+# model; the bot PAT must not live on the account that runs sessions until
+# OS-level sandboxing lands.)
 SESSION_ENV_ALLOWLIST = ("PATH", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
 DEFAULT_TIMEOUT_S = 3600
@@ -40,7 +42,12 @@ DEFAULT_MAX_TURNS = 80
 class SessionResult:
     """What happened in one session — everything the orchestrator needs to
     judge, bill, and report it. The workspace diff is captured by the caller
-    (it owns the git clone); the harness owns only the session."""
+    (it owns the git clone); the harness owns only the session.
+
+    On the "timeout" path, cost and session id are unknown (the CLI is killed
+    before it reports); budget accounting must treat a timeout as worst-case
+    spend, not zero.
+    """
 
     stop_reason: str  # backend's stop reason, or "timeout" / "spawn-error"
     is_error: bool
@@ -82,10 +89,53 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
     return text
 
 
+def _error_result(stop_reason: str, transcript_path: str = "") -> SessionResult:
+    return SessionResult(
+        stop_reason=stop_reason,
+        is_error=True,
+        cost_usd=0.0,
+        num_turns=0,
+        session_id="",
+        final_text="",
+        transcript_path=transcript_path,
+    )
+
+
+def _write_private(path: Path, text: str) -> str:
+    """Write `text` to `path` readable only by the owner (transcripts carry
+    private research text on a shared filesystem). Returns the path written,
+    or "" — storage failures must not crash the adapter."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        return str(path)
+    except OSError as exc:
+        log.warning("could not store transcript at %s: %s", path, exc)
+        return ""
+
+
+def _float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
 @dataclass
 class ClaudeCodeHarness:
     """Headless Claude Code (`claude -p`), as validated in the Torch spike:
-    the JSON output carries cost, usage, session id, and stop reason."""
+    the JSON output carries cost, usage, session id, and stop reason.
+
+    `run` never raises: every failure comes back as an error SessionResult.
+    """
 
     api_key: str
     binary: str = "claude"
@@ -103,13 +153,17 @@ class ClaudeCodeHarness:
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
         # Both live OUTSIDE the git clone: the transcript must never enter the
-        # diff that gets committed/pushed, and the per-run HOME keeps CLI
-        # state (and anything a session writes "home") out of the real home.
-        # The HOME is per-RUN, not per-session: it is what lets a later wake
-        # (`resume_session_id`) restore the agent's working context.
+        # diff that gets committed/pushed, and the per-RUN home (0700; reused
+        # across this run's sessions, never across runs — the orchestrator
+        # gives every run a fresh workspace path) is what lets a later wake
+        # restore the agent's working context.
         transcript = _fresh_path(workspace.parent, f"{workspace.name}-session", ".json")
         session_home = workspace.parent / f"{workspace.name}-home"
-        session_home.mkdir(parents=True, exist_ok=True)
+        try:
+            session_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as exc:
+            log.warning("could not create session home %s: %s", session_home, exc)
+            return _error_result("workspace-error")
         command = [
             self.binary,
             "-p",
@@ -131,82 +185,52 @@ class ClaudeCodeHarness:
         if resume_session_id:
             command += ["--resume", resume_session_id]
         try:
-            completed = subprocess.run(
+            # start_new_session puts the CLI and every descendant (Bash-tool
+            # children included) in one process group we can kill as a unit —
+            # a timed-out session must not leave orphans holding the API key
+            # and writing into the clone.
+            process = subprocess.Popen(
                 command,
                 cwd=workspace,
                 env=session_env(self.api_key, "ANTHROPIC_API_KEY", session_home),
-                input=brief_text,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self.timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # TimeoutExpired carries bytes even under text=True.
-            raw = exc.stdout or b""
-            partial = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
-            transcript.write_text(redact(partial, (self.api_key,)))
-            log.warning("session timed out after %ss in %s", self.timeout_s, workspace)
-            return SessionResult(
-                stop_reason="timeout",
-                is_error=True,
-                cost_usd=0.0,
-                num_turns=0,
-                session_id="",
-                final_text="",
-                transcript_path=str(transcript),
+                start_new_session=True,
             )
         except OSError as exc:
             log.warning("could not spawn %s: %s", self.binary, exc)
-            return SessionResult(
-                stop_reason="spawn-error",
-                is_error=True,
-                cost_usd=0.0,
-                num_turns=0,
-                session_id="",
-                final_text="",
-                transcript_path="",
-            )
+            return _error_result("spawn-error")
 
-        stdout = redact(completed.stdout, (self.api_key,))
-        transcript.write_text(stdout)
+        try:
+            stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            stdout, _ = process.communicate()
+            path = _write_private(transcript, redact(stdout or "", (self.api_key,)))
+            log.warning("session timed out after %ss in %s", self.timeout_s, workspace)
+            return _error_result("timeout", path)
+
+        stdout = redact(stdout, (self.api_key,))
+        transcript_path = _write_private(transcript, stdout)
         data = _parse_result(stdout)
         if data is None:
-            stderr_tail = redact(completed.stderr, (self.api_key,))[-500:]
-            log.warning(
-                "unparseable session output (exit %s): %s", completed.returncode, stderr_tail
-            )
-            return SessionResult(
-                stop_reason="unparseable-output",
-                is_error=True,
-                cost_usd=0.0,
-                num_turns=0,
-                session_id="",
-                final_text="",
-                transcript_path=str(transcript),
-            )
-        try:
-            return SessionResult(
-                stop_reason=str(data.get("stop_reason") or data.get("subtype") or "unknown"),
-                is_error=bool(data.get("is_error", completed.returncode != 0)),
-                cost_usd=float(data.get("total_cost_usd") or 0.0),
-                num_turns=int(data.get("num_turns") or 0),
-                session_id=str(data.get("session_id") or ""),
-                final_text=str(data.get("result") or ""),
-                transcript_path=str(transcript),
-            )
-        except (ValueError, TypeError):
-            # Quirky field types must degrade like any other bad output —
-            # this adapter never raises.
-            log.warning("session output had malformed fields")
-            return SessionResult(
-                stop_reason="unparseable-output",
-                is_error=True,
-                cost_usd=0.0,
-                num_turns=0,
-                session_id="",
-                final_text="",
-                transcript_path=str(transcript),
-            )
+            stderr_tail = redact(stderr, (self.api_key,))[-500:]
+            log.warning("unparseable session output (exit %s): %s", process.returncode, stderr_tail)
+            return _error_result("unparseable-output", transcript_path)
+        # Field-level salvage: a quirky cost value must not cost us the
+        # session id (which resume depends on) or vice versa.
+        return SessionResult(
+            stop_reason=str(data.get("stop_reason") or data.get("subtype") or "unknown"),
+            is_error=bool(data.get("is_error", process.returncode != 0)),
+            cost_usd=_float(data.get("total_cost_usd")),
+            num_turns=_int(data.get("num_turns")),
+            session_id=str(data.get("session_id") or ""),
+            final_text=str(data.get("result") or ""),
+            transcript_path=transcript_path,
+        )
 
 
 def _fresh_path(directory: Path, stem: str, suffix: str) -> Path:
@@ -220,25 +244,29 @@ def _fresh_path(directory: Path, stem: str, suffix: str) -> Path:
 
 
 def _parse_result(stdout: str) -> dict[str, Any] | None:
-    """The result object from the CLI's JSON output, or None."""
+    """The result object from the CLI's JSON output, or None.
+
+    When stdout is not one clean JSON object, prefer a candidate that looks
+    like the CLI's result (carries session_id/total_cost_usd) over whatever
+    happens to sit on the last line — a stray object printed after the result
+    must not substitute its fields into billing and resume.
+    """
     text = stdout.strip()
     if not text:
         return None
-    try:
+    with contextlib.suppress(json.JSONDecodeError):
         data = json.loads(text)
-    except json.JSONDecodeError:
-        # Defensive: the CLI should emit exactly one JSON object, but logs
-        # around it must not cost us a paid-for session. Try the last line,
-        # then the outermost brace span.
-        for candidate in (text.splitlines()[-1], text[text.find("{") : text.rfind("}") + 1]):
-            try:
-                data = json.loads(candidate)
-                break
-            except json.JSONDecodeError:
-                continue
-        else:
-            return None
-    return data if isinstance(data, dict) else None
+        return data if isinstance(data, dict) else None
+    candidates: list[dict[str, Any]] = []
+    for chunk in (*reversed(text.splitlines()), text[text.find("{") : text.rfind("}") + 1]):
+        with contextlib.suppress(json.JSONDecodeError):
+            data = json.loads(chunk)
+            if isinstance(data, dict):
+                candidates.append(data)
+    for candidate in candidates:
+        if "session_id" in candidate or "total_cost_usd" in candidate:
+            return candidate
+    return candidates[0] if candidates else None
 
 
 @dataclass
@@ -247,12 +275,12 @@ class FakeHarness:
 
     result: SessionResult
     script: Any = None  # optional callable(brief_text, workspace) for side effects
-    calls: list[tuple[str, str]] = field(default_factory=list)
+    calls: list[tuple[str, str, str | None]] = field(default_factory=list)
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
-        self.calls.append((brief_text, str(workspace)))
+        self.calls.append((brief_text, str(workspace), resume_session_id))
         if self.script is not None:
             self.script(brief_text, workspace)
         return self.result
