@@ -354,6 +354,30 @@ Scheduler etiquette learned live: `--exclude` is disallowed on Torch and node
 pinning (`-w`) queues behind reservations — the orchestrator requests
 partitions and lets the scheduler place jobs, never nodes.
 
+## Environments and containers (decided with Mengye, 2026-08-06)
+
+Torch supports exactly one container runtime — Apptainer (Singularity); no
+Docker daemon exists ([cluster docs](https://services.rt.nyu.edu/docs/hpc/containers/intro/)).
+Containers are applied where they pay, not uniformly:
+
+| What | Environment | Why |
+| --- | --- | --- |
+| Orchestrator tick | host `uv` venv, deliberately NOT containerized | it exists to drive the host's `sbatch`/`sacct`/`squeue`; binding Slurm binaries, config, and the munge socket into a container is well-known friction, bought for a four-dependency pure-Python loop that needs none of it |
+| Experiments | **per-target Apptainer image, declared in the target's contract** (Mengye's call) | each researched repo owns its dependency world; a pinned image makes the contract's "deterministic and re-runnable" promise stronger (same digest at claim time and at CI re-verification), and GPU runs use the supported `apptainer exec --nv` path. Targets without an image declare none and run in their own uv-managed env |
+| Agent sessions | host binary today; Apptainer `--no-home --bind <workspace>` is the designated hardening step | this is the named mechanism for the threat model's accepted residual risk: a contained session cannot read same-user absolute paths (key files, other runs), closing the gap the per-run HOME redirect only narrows |
+
+The contract grows an optional `environment` block (phase 5):
+
+```yaml
+environment:
+  container: /shared/images/jepa-agent-2026-08.sif   # or docker://... to pull
+```
+
+Image files live on the shared filesystem next to the state root, referenced
+by absolute path (pin by content digest once images churn). The experiment
+launcher wraps the benchmark command in `apptainer exec --nv <image> ...`
+when the block is present, and runs it bare otherwise.
+
 ## Threat model
 
 - **Untrusted text.** Task sources are attacker-writable once target repos are
