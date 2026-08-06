@@ -92,7 +92,7 @@ def update_leader(
 
 
 def _delta(entry: LeaderEntry) -> str:
-    if entry.baseline == 0:
+    if entry.baseline == 0 or entry.best == entry.baseline:
         return "—"
     rel = (entry.best - entry.baseline) / abs(entry.baseline) * 100
     good = rel >= 0 if entry.direction == "max" else rel <= 0
