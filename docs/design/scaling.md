@@ -173,7 +173,9 @@ concurrent seats).
    immediately (promotes to the requested lane).
 2. **Consolidation**: accumulation-triggered on K benchmark-consequential
    merges. Maintenance merges are valuable but don't count toward K — see
-   Part 2b.
+   Part 2b. **Round 2 (2026-08-06): K defaults to 5–10 and the
+   consequential threshold to a 10% relative metric delta (ε) — both
+   contract-configurable, never hard-coded.**
 3. **Credentials**: API keys for now (seats cost more up front); start a seat
    when multi-agent testing is actually ready. The `setup-token` spike waits
    until then.

@@ -61,15 +61,21 @@ standing instruction they supersede — a resumed agent honors stale constraints
 
 ## Phase 4 — Torch tick + compute
 
-- [ ] Wake delivery per the architecture's fail-safe layers: afterany
-      dependency job (mechanism verified live 2026-08-06, incl. on failed
-      experiments) + run lease + tick sweep + deadline floor + `stuck` state
+- [x] Wake delivery per the architecture's fail-safe layers: afterany
+      dependency job (`compute.submit_after`; mechanism verified live
+      2026-08-06, incl. on failed experiments) + expiring run lease with
+      handoff + tick sweep + deadline floor (pending-cancel / gone-on-good-
+      query / defer-on-query-failure) + `stuck` state. Session dispatch
+      behind the `WakeDispatcher` seam (real dispatcher lands with phase 5)
 
-- [ ] The chain: two queued successors, `--dependency=singleton`, absolute
-      `--begin` cadence grid, sbatch retry/backoff
-- [ ] Deploy shim: submit-successors → pull main → `uv sync --locked` → exec;
-      pull uses the bot PAT (bot has a Read collaborator role here; add this
-      repo to the token's selection)
+- [x] The chain: `scripts/tick_chain.sbatch` — successor top-up to depth 2,
+      `--dependency=singleton`, absolute `--begin` cadence grid, sbatch
+      retry/backoff; successors submitted FIRST so nothing below can break
+      the chain
+- [x] Deploy shim (same script): pull main with the bot PAT → `uv sync
+      --locked` → exec tick; every step best-effort (bad merges crash ticks,
+      never the chain). Bot PAT on Torch + repo in the token's selection
+      still owed by Mengye before live deploy
 - [ ] Pause sentinel + lease (compare-and-swap on the state branch); heartbeat at
       tick start; stale-lease reaping
 - [ ] `compute`: sbatch submit / squeue poll, jobs tagged + `--nice`, GPU-hour caps
