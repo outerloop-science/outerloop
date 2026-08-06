@@ -1,0 +1,14 @@
+name: advisory-review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  advisory:
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review.yml@main
+    with:
+      bot_login: agentic-learning-bot
+    secrets:
+      reviewer_api_key: ${{ secrets.REVIEWER_API_KEY }}
