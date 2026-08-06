@@ -92,6 +92,8 @@ the research repos' porting timelines; mistakes are free; adversarial testing
 (injection via issues) is staged here, never on research repos.
 
 - [ ] Bot opt-in on the pilot: Write grant + token scope
+- [ ] Contract `environment.container` (per-target Apptainer image; see
+      architecture "Environments and containers") wired into experiment launch
 - [ ] Task pinning: target SHA + contract hash at task start, re-validated each
       poll; baseline re-run at merge-base
 - [ ] Full loop on the pilot benchmarks; bounded iterations; PR with results
