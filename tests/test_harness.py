@@ -181,6 +181,21 @@ def test_garbage_output_is_an_error_with_transcript(tmp_path: Path) -> None:
     assert "not json" in Path(result.transcript_path).read_text()
 
 
+def test_transcript_write_refuses_symlinks(tmp_path: Path) -> None:
+    """A dangling symlink planted at the transcript name must not redirect
+    the write to another same-user file."""
+    import os as _os
+
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = tmp_path / "victim"
+    _os.symlink(target, tmp_path / "ws-session.json")
+    result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert not target.exists()  # the symlink was not followed
+    assert result.transcript_path.endswith("ws-session-2.json")
+
+
 def test_transcript_is_redacted(tmp_path: Path) -> None:
     """A session that echoes its own key must not leak it into storage."""
     leaked = dict(CANNED, result="the key is sk-leak-me-456 whoops")
@@ -214,8 +229,18 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=str(script), timeout_s=1).run("task", ws)
     assert result.stop_reason == "timeout"
     child = int((tmp_path / "child_pid").read_text().strip())
-    with pytest.raises(ProcessLookupError):
-        _os.kill(child, 0)
+    # the grandchild lingers as a zombie until init reaps it — poll briefly
+    import time
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            _os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"child {child} survived the group kill")
 
 
 def test_transcript_and_home_are_owner_only(tmp_path: Path) -> None:
@@ -228,6 +253,7 @@ def test_transcript_and_home_are_owner_only(tmp_path: Path) -> None:
     assert stat.S_IMODE((tmp_path / "ws-home").stat().st_mode) == 0o700
 
 
+@pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root ignores mode bits")
 def test_unwritable_parent_degrades_not_raises(tmp_path: Path) -> None:
     """The adapter never raises — even when the shared filesystem misbehaves."""
     binary = fake_claude(tmp_path, json.dumps(CANNED))
@@ -248,7 +274,11 @@ def test_unwritable_parent_degrades_not_raises(tmp_path: Path) -> None:
 def test_stray_trailing_json_does_not_hijack_the_result(tmp_path: Path) -> None:
     """An object printed after the CLI's result must not substitute its
     fields into billing and resume."""
-    noisy = json.dumps(CANNED) + "\n" + json.dumps({"unrelated": True, "is_error": True})
+    noisy = (
+        json.dumps(CANNED)
+        + "\n"
+        + json.dumps({"session_id": "evil", "total_cost_usd": 9.99, "is_error": True})
+    )
     binary = fake_claude(tmp_path, noisy)
     ws = tmp_path / "ws"
     ws.mkdir()

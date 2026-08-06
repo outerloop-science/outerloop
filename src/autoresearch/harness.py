@@ -101,18 +101,29 @@ def _error_result(stop_reason: str, transcript_path: str = "") -> SessionResult:
     )
 
 
-def _write_private(path: Path, text: str) -> str:
-    """Write `text` to `path` readable only by the owner (transcripts carry
-    private research text on a shared filesystem). Returns the path written,
-    or "" — storage failures must not crash the adapter."""
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _write_private(directory: Path, stem: str, suffix: str, text: str) -> str:
+    """Atomically create a fresh owner-only file and write `text` to it.
+
+    O_EXCL closes the TOCTOU between name choice and creation, and it also
+    refuses symlinks (a session could plant a dangling link where its own
+    transcript will land, redirecting the write to an arbitrary same-user
+    file). Returns the path written, or "" — storage failures must not crash
+    the adapter."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for n in range(1, 1000):
+        path = directory / (f"{stem}{suffix}" if n == 1 else f"{stem}-{n}{suffix}")
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            log.warning("could not store transcript at %s: %s", path, exc)
+            return ""
         with os.fdopen(fd, "w") as handle:
             handle.write(text)
         return str(path)
-    except OSError as exc:
-        log.warning("could not store transcript at %s: %s", path, exc)
-        return ""
+    log.warning("could not find a free transcript name in %s", directory)
+    return ""
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -157,10 +168,13 @@ class ClaudeCodeHarness:
         # across this run's sessions, never across runs — the orchestrator
         # gives every run a fresh workspace path) is what lets a later wake
         # restore the agent's working context.
-        transcript = _fresh_path(workspace.parent, f"{workspace.name}-session", ".json")
+        transcript_stem = f"{workspace.name}-session"
         session_home = workspace.parent / f"{workspace.name}-home"
         try:
             session_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # mkdir's mode is umask-masked and ignored entirely on reuse;
+            # enforce it either way.
+            os.chmod(session_home, 0o700)
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
@@ -208,13 +222,23 @@ class ClaudeCodeHarness:
         except subprocess.TimeoutExpired:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
-            stdout, _ = process.communicate()
-            path = _write_private(transcript, redact(stdout or "", (self.api_key,)))
+            # Bounded drain: a descendant that left the process group (setsid)
+            # can hold the pipe open past the kill; run() must still return.
+            try:
+                stdout, _ = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout = ""
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    stdout, _ = process.communicate(timeout=5)
+            path = _write_private(
+                workspace.parent, transcript_stem, ".json", redact(stdout or "", (self.api_key,))
+            )
             log.warning("session timed out after %ss in %s", self.timeout_s, workspace)
             return _error_result("timeout", path)
 
         stdout = redact(stdout, (self.api_key,))
-        transcript_path = _write_private(transcript, stdout)
+        transcript_path = _write_private(workspace.parent, transcript_stem, ".json", stdout)
         data = _parse_result(stdout)
         if data is None:
             stderr_tail = redact(stderr, (self.api_key,))[-500:]
@@ -233,23 +257,14 @@ class ClaudeCodeHarness:
         )
 
 
-def _fresh_path(directory: Path, stem: str, suffix: str) -> Path:
-    """A path that does not clobber earlier sessions of the same run."""
-    path = directory / f"{stem}{suffix}"
-    n = 2
-    while path.exists():
-        path = directory / f"{stem}-{n}{suffix}"
-        n += 1
-    return path
-
-
 def _parse_result(stdout: str) -> dict[str, Any] | None:
     """The result object from the CLI's JSON output, or None.
 
-    When stdout is not one clean JSON object, prefer a candidate that looks
-    like the CLI's result (carries session_id/total_cost_usd) over whatever
-    happens to sit on the last line — a stray object printed after the result
-    must not substitute its fields into billing and resume.
+    When stdout is not one clean JSON object, prefer the FIRST candidate that
+    looks like the CLI's result (carries session_id/total_cost_usd): the CLI
+    prints its result before any stray output that follows it, so forward
+    order keeps a trailing look-alike from substituting its fields into
+    billing and resume.
     """
     text = stdout.strip()
     if not text:
@@ -258,7 +273,7 @@ def _parse_result(stdout: str) -> dict[str, Any] | None:
         data = json.loads(text)
         return data if isinstance(data, dict) else None
     candidates: list[dict[str, Any]] = []
-    for chunk in (*reversed(text.splitlines()), text[text.find("{") : text.rfind("}") + 1]):
+    for chunk in (*text.splitlines(), text[text.find("{") : text.rfind("}") + 1]):
         with contextlib.suppress(json.JSONDecodeError):
             data = json.loads(chunk)
             if isinstance(data, dict):
