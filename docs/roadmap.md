@@ -50,6 +50,15 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
 - [ ] `budget`: per-run and weekly caps; session/token proxy metering for the
       subscription backend
 
+Torch pilot findings (2026-08-06, live on compute nodes): the full production
+session path works — redirected per-run HOME with env-key auth, brief on
+stdin, tool use, per-session cost/id in JSON out. Resume restores context
+across sessions AND across nodes (shared-FS state); a 3-tick self-resubmitting
+sbatch chain ran unattended. Two lessons encoded above: sessions never touch
+GPU partitions (utilization floor), and wake prompts must explicitly lift any
+standing instruction they supersede — a resumed agent honors stale constraints
+(observed: it refused a wake task that contradicted its brief).
+
 ## Phase 4 — Torch tick + compute
 
 - [ ] The chain: two queued successors, `--dependency=singleton`, absolute
