@@ -201,3 +201,30 @@ def test_list_comments_paginates(provider: FileTokenProvider) -> None:
     transport = FakeTransport([page1, page2])
     client = GitHubClient(auth=provider, transport=transport)
     assert len(client.list_comments("org/repo", 7)) == 101
+
+
+def test_pull_request_files_paginate(provider: FileTokenProvider) -> None:
+    page1 = [{"filename": f"f{i}.py", "status": "modified"} for i in range(100)]
+    page2 = [{"filename": "last.py", "status": "added"}]
+    transport = FakeTransport([page1, page2])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert len(client.get_pull_request_files("org/repo", 7)) == 101
+
+
+def test_file_content_decodes_base64(provider: FileTokenProvider) -> None:
+    payload = {"encoding": "base64", "content": base64.b64encode(b"hello\nworld").decode()}
+    client = GitHubClient(auth=provider, transport=FakeTransport([payload]))
+    assert client.get_file_content("org/repo", "a/b.py", "sha") == "hello\nworld"
+
+
+def test_file_content_is_none_on_error_or_nonfile(provider: FileTokenProvider) -> None:
+    from autoresearch.github import GitHubError
+
+    def failing(request: urllib.request.Request) -> object:
+        raise GitHubError(404, "/contents", "not found")
+
+    client = GitHubClient(auth=provider, transport=failing)
+    assert client.get_file_content("org/repo", "gone.py", "sha") is None
+
+    directory = GitHubClient(auth=provider, transport=FakeTransport([[{"name": "sub"}]]))
+    assert directory.get_file_content("org/repo", "dir", "sha") is None
