@@ -209,6 +209,11 @@ class ClaudeCodeHarness:
         if resume_session_id:
             claude_argv += ["--resume", resume_session_id]
         if self.container_image:
+            if not os.path.isabs(self.binary):
+                # a relative bind source fails at mount time deep inside
+                # apptainer; catch the misconfiguration here instead
+                log.warning("container sessions need an absolute claude path")
+                return _error_result("config-error")
             command = [
                 self.apptainer_binary,
                 "exec",
@@ -216,14 +221,15 @@ class ClaudeCodeHarness:
                 "--cleanenv",
                 "--bind",
                 f"{workspace}:{workspace}",
-                "--bind",
+                # --home (NOT --env HOME=..., which apptainer silently
+                # refuses): mounts the per-run home at the same path inside
+                # and sets $HOME to it — native resume state survives
+                # contained/uncontained flips and lands on the shared FS,
+                # not a tmpfs that evaporates at session end.
+                "--home",
                 f"{session_home}:{session_home}",
                 "--bind",
                 f"{self.binary}:{self.CONTAINER_CLAUDE}:ro",
-                # HOME inside the container is the same per-run path, so
-                # native resume state survives contained/uncontained flips.
-                "--env",
-                f"HOME={session_home}",
                 "--pwd",
                 str(workspace),
                 self.container_image,

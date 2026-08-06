@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import json
 import logging
-import re
+import math
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 from autoresearch.brief import BriefInputs, BudgetState, Task, build_brief, render
-from autoresearch.contract import Contract, load_contract
+from autoresearch.contract import Contract, load_contract, normalize_path, path_is_forbidden
 from autoresearch.harness import Harness, SessionResult, redact
 
 log = logging.getLogger(__name__)
@@ -47,39 +48,81 @@ class SubprocessEvaluator:
     """Runs the contract's benchmark command and reads `metric` from its
     JSON output (the contract requires commands to print their metrics).
 
-    The command executes agent-written code: no network access is assumed to
-    be needed, the environment is scrubbed, and the run is bounded.
-    """
+    The command executes AGENT-WRITTEN code — it is session-grade untrusted
+    execution and gets session-grade containment: with `container_image` set
+    (the production configuration), the command runs under `apptainer exec
+    --containall` seeing only the workspace, a throwaway tmpfs HOME, and no
+    host environment. Uncontained mode exists for tests and non-cluster dev,
+    with a scrubbed env that NEVER includes the real HOME (the orchestrator
+    account holds the bot PAT under it)."""
 
     timeout_s: int = EVAL_TIMEOUT_S
+    container_image: str = ""
+    apptainer_binary: str = "apptainer"
 
     def evaluate(self, workspace: Path, command: str, metric: str) -> float:
         import os
+        import signal
 
-        env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "TMPDIR") if k in os.environ}
-        try:
-            completed = subprocess.run(
+        if self.container_image:
+            argv = [
+                self.apptainer_binary,
+                "exec",
+                "--containall",
+                "--cleanenv",
+                "--bind",
+                f"{workspace}:{workspace}",
+                "--pwd",
+                str(workspace),
+                self.container_image,
+                "sh",
+                "-c",
                 command,
-                shell=True,
+            ]
+        else:
+            argv = ["sh", "-c", command]
+        env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
+        env["HOME"] = str(workspace)  # never the orchestrator's real home
+        try:
+            # process group, like the harness: a timed-out eval must not
+            # leave orphans mutating a workspace that later gets committed
+            process = subprocess.Popen(
+                argv,
                 cwd=workspace,
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self.timeout_s,
+                start_new_session=True,
             )
+        except OSError as exc:
+            raise EvalError(f"eval could not start: {exc}") from exc
+        try:
+            stdout, stderr = process.communicate(timeout=self.timeout_s)
         except subprocess.TimeoutExpired as exc:
+            import contextlib
+
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.communicate(timeout=10)
             raise EvalError(f"eval timed out after {self.timeout_s}s") from exc
-        if completed.returncode != 0:
-            raise EvalError(f"eval failed ({completed.returncode}): {completed.stderr[-500:]}")
-        value = _metric_from_output(completed.stdout, metric)
+        if process.returncode != 0:
+            raise EvalError(f"eval failed ({process.returncode}): {stderr[-500:]}")
+        value = _metric_from_output(stdout, metric)
         if value is None:
             raise EvalError(f"metric {metric!r} not found in eval output")
+        if not math.isfinite(value):
+            raise EvalError(f"metric {metric!r} is not finite: {value}")
         return value
 
 
 def _metric_from_output(stdout: str, metric: str) -> float | None:
-    """Find `metric` in the command's output: last JSON object wins, with a
-    `metric: value` line-scan fallback."""
+    """The metric from the LAST single-line JSON object that carries it.
+
+    No regex fallback: a fuzzy match that reads the wrong number (a progress
+    line, a prefixed metric name) is worse than a clean failure — the
+    contract requires eval commands to print their metrics as JSON."""
     for line in reversed(stdout.strip().splitlines()):
         line = line.strip()
         if line.startswith("{"):
@@ -92,8 +135,7 @@ def _metric_from_output(stdout: str, metric: str) -> float | None:
                     return float(data[metric])
                 except (TypeError, ValueError):
                     return None
-    match = re.search(rf"{re.escape(metric)}[\s:=]+(-?\d+(?:\.\d+)?)", stdout)
-    return float(match.group(1)) if match else None
+    return None
 
 
 @dataclass(frozen=True)
@@ -112,7 +154,7 @@ class ClimbConfig:
 class ClimbResult:
     """What one attempt produced — the raw material of the run report."""
 
-    outcome: str  # "improved" | "no-improvement" | "session-error" | "eval-error"
+    outcome: str  # improved | no-improvement | session-error | eval-error | scope-violation
     baseline: float | None = None
     candidate: float | None = None
     branch: str = ""
@@ -150,10 +192,36 @@ def _benchmark(contract: Contract, name: str):
     )
 
 
+def out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
+    """Changed paths the contract does not allow the agent to touch.
+
+    Checked BEFORE the candidate eval: an out-of-scope edit could be to the
+    eval harness itself, and measuring a doctored ruler would turn "CI
+    re-verifies independently" into re-running the fraud."""
+    allowed = [normalize_path(entry) for entry in contract.scope.allowed]
+    violations = []
+    for path in paths:
+        if path_is_forbidden(path, contract):
+            violations.append(path)
+            continue
+        try:
+            candidate = normalize_path(path)
+        except Exception:
+            violations.append(path)
+            continue
+        if not any(candidate == a or a in candidate.parents for a in allowed):
+            violations.append(path)
+    return violations
+
+
 def improved(baseline: float, candidate: float, direction: str, min_rel: float) -> bool:
-    """Direction-aware, threshold-clearing improvement."""
+    """Direction-aware, threshold-clearing improvement. Non-finite values
+    never count (the evaluator rejects them; this is defense in depth)."""
+    if not (math.isfinite(baseline) and math.isfinite(candidate)):
+        return False
     if baseline == 0:
-        return (candidate > 0) if direction == "max" else (candidate < 0)
+        # no relative scale exists: apply the threshold absolutely
+        return candidate >= min_rel if direction == "max" else candidate <= -min_rel
     rel = (candidate - baseline) / abs(baseline)
     return rel >= min_rel if direction == "max" else rel <= -min_rel
 
@@ -183,6 +251,7 @@ def climb_once(
     harness: Harness,
     evaluator: Evaluator,
     ruler: str,
+    changed_paths: Callable[[], Sequence[str]],
     lessons: str = "",
     recent_reports: tuple[str, ...] = (),
     created: str = "",
@@ -191,6 +260,9 @@ def climb_once(
 
     The caller owns the git side (clone before, diff/commit/push/PR after) —
     same split as the harness: this function owns the science loop only.
+    `changed_paths` reports every path the session touched (the caller wires
+    it to `git add -A` + staged paths); scope is enforced on it BEFORE the
+    candidate eval runs.
     """
     contract = load_contract(contract_text, config.target)
     bench = _benchmark(contract, config.benchmark)
@@ -224,6 +296,17 @@ def climb_once(
             note=session.stop_reason,
         )
 
+    # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
+    # because the out-of-scope edit could be to the ruler itself.
+    violations = out_of_scope(list(changed_paths()), load_contract(contract_text, config.target))
+    if violations:
+        return ClimbResult(
+            outcome="scope-violation",
+            baseline=baseline,
+            session=session,
+            note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+        )
+
     try:
         candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
     except EvalError as exc:
@@ -250,7 +333,8 @@ def climb_once(
 
 def pr_body(result: ClimbResult, config: ClimbConfig, redact_secrets: tuple[str, ...]) -> str:
     """The PR body for an improved run: results table + the agent's report."""
-    assert result.baseline is not None and result.candidate is not None
+    if result.outcome != "improved" or result.baseline is None or result.candidate is None:
+        raise ValueError("pr_body requires an improved result with both measurements")
     body = "\n".join(
         [
             f"Automated improvement attempt on `{config.benchmark}` "

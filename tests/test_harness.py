@@ -370,12 +370,26 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path) -> None:
     argv = (tmp_path / "seen_argv").read_text()
     assert argv.startswith("exec --containall --cleanenv")
     assert f"--bind {ws}:{ws}" in argv
-    assert f"--bind {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
+    # --home, NOT --env HOME (apptainer silently refuses HOME via --env) and
+    # NOT a plain --bind (per-run state must be $HOME inside the container)
+    assert f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
+    assert "--env" not in argv
     assert "--bind /real/claude:/opt/agent/claude:ro" in argv
     assert "/img/agent.sif /opt/agent/claude -p" in argv
     assert "sk-c" not in argv  # the key travels via env, never argv
     seen_env = (tmp_path / "seen_env").read_text()
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen_env
+
+
+def test_container_requires_absolute_binary(tmp_path: Path) -> None:
+    """A relative bind source fails at mount time deep inside apptainer —
+    catch the misconfiguration before any money is spent."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = ClaudeCodeHarness(api_key="k", binary="claude", container_image="/img/agent.sif")
+    result = harness.run("task", ws)
+    assert result.is_error
+    assert result.stop_reason == "config-error"
 
 
 def test_no_container_means_no_apptainer(tmp_path: Path) -> None:
