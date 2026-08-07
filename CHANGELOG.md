@@ -39,6 +39,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The tick now services in-review runs automatically: PR merge/close ends the
+  run; new qualifying review comments submit a follow-up job that wakes the
+  authoring session (lease-guarded; `followup_job_id` prevents duplicate
+  queueing). The chain passes the PAT path to the tick for GitHub reads;
+  agent sessions remain scrubbed by the harness allowlist.
+
 - `autoresearch.followup`: the in-review path — PR merge/close ends the run;
   qualifying maintainer comments (author-association gate) resume the
   authoring session in its retained workspace, and the reply lands on the

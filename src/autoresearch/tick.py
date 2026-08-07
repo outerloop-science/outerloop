@@ -19,11 +19,21 @@ import os
 import socket
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from autoresearch.compute import GONE, SlurmCompute, SlurmQueryError, is_pending, is_terminal
+from autoresearch.compute import (
+    GONE,
+    JobSpec,
+    SlurmCompute,
+    SlurmError,
+    SlurmQueryError,
+    is_pending,
+    is_terminal,
+    quote_command,
+)
 from autoresearch.runstate import (
     ENDED,
+    IN_REVIEW,
     MAX_WAKE_ATTEMPTS,
     STUCK,
     WAITING,
@@ -31,6 +41,7 @@ from autoresearch.runstate import (
     acquire_lease,
     lease_is_stale,
     list_runs,
+    load_record,
     read_lease,
     reap_lease,
     release_lease,
@@ -85,6 +96,120 @@ class TickReport:
     deferred: tuple[str, ...] = ()  # runs skipped on "Slurm unknown"
     reaped_leases: tuple[str, ...] = ()
     stuck: tuple[str, ...] = ()
+    review_ended: tuple[tuple[str, str], ...] = ()  # (run_id, ending)
+    followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
+
+
+@dataclass(frozen=True)
+class FollowupSpec:
+    """How the tick launches follow-up jobs for in-review runs."""
+
+    account: str
+    partition: str
+    run_root: Path
+    image: str
+    home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
+    bot_login: str = "agentic-learning-bot"
+    time_minutes: int = 60
+    pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
+    key_file: str = ""
+
+
+def service_in_review(
+    root: Path,
+    github: Any,  # GitHubClient (Any keeps tick importable without github deps)
+    compute: SlurmCompute,
+    spec: FollowupSpec,
+    now: float,
+    dry_run: bool = False,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """PR-state transitions + follow-up job submission for in-review runs.
+
+    The tick only READS GitHub here (cheap, every cycle); the session-running
+    work happens in a submitted job, which takes the run lease itself — a
+    duplicate submission no-ops on the lease, and `followup_job_id` keeps the
+    tick from queueing duplicates in the first place.
+    """
+    from autoresearch.followup import close_if_done, has_new_comments
+
+    ended: list[tuple[str, str]] = []
+    submitted: list[tuple[str, str]] = []
+    for record in list_runs(root):
+        if record.state != IN_REVIEW or not record.pr_url:
+            continue
+        try:
+            ending = close_if_done(root, record, github, now)
+            if ending:
+                ended.append((record.run_id, ending))
+                continue
+            if not has_new_comments(record, github, spec.bot_login):
+                continue
+            if record.followup_job_id:
+                try:
+                    state = compute.status(record.followup_job_id)
+                    if not (is_terminal(state) or state == GONE):
+                        continue  # a follow-up job is already queued/running
+                except SlurmQueryError:
+                    continue  # unknown — do not stack another job
+            # the wake-attempt counter caps follow-up retries too: a responder
+            # that cannot advance its cursors must not burn a session per tick
+            if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
+                log.warning(
+                    "run %s: %d follow-up attempts without progress; not resubmitting",
+                    record.run_id,
+                    record.wake_attempts,
+                )
+                continue
+            if dry_run:
+                submitted.append((record.run_id, "dry-run"))
+                continue
+            argv = [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "autoresearch.followup",
+                "--run-root",
+                str(spec.run_root),
+                "--run-id",
+                record.run_id,
+                "--image",
+                spec.image,
+                "--bot-login",
+                spec.bot_login,
+            ]
+            if spec.pat_file:
+                argv += ["--pat-file", spec.pat_file]
+            if spec.key_file:
+                argv += ["--key-file", spec.key_file]
+            command = quote_command(argv)
+            job_id = compute.submit(
+                JobSpec(
+                    job_name=f"followup-{record.run_id}"[:60],
+                    account=spec.account,
+                    partition=spec.partition,
+                    time_minutes=spec.time_minutes,
+                    command=f"cd {quote_command([str(spec.home)])} && {command}",
+                    cpus=4,
+                    mem="8G",
+                )
+            )
+            # read-modify-write on the FRESH record: the submitted job may
+            # already be saving its own fields
+            latest = load_record(root, record.run_id)
+            save_record(
+                root,
+                replace(
+                    latest,
+                    followup_job_id=job_id,
+                    wake_attempts=latest.wake_attempts + 1,
+                ),
+                now,
+            )
+            submitted.append((record.run_id, job_id))
+        except (SlurmError, Exception) as exc:
+            log.warning("in-review service failed for %s: %s", record.run_id, exc)
+    return ended, submitted
 
 
 def write_heartbeat(root: Path, now: float) -> None:
@@ -307,6 +432,9 @@ def tick(
     grace_s: float = DEFAULT_GRACE_S,
     lease_ttl_s: float = DEFAULT_LEASE_TTL_S,
     dry_run: bool = False,
+    github: Any = None,
+    followup_spec: FollowupSpec | None = None,
+    followup_dry_run: bool = False,
 ) -> TickReport:
     """One full tick. Pause sentinel wins over everything: a paused loop
     heartbeats (so the watchdog stays quiet) but touches nothing."""
@@ -314,7 +442,21 @@ def tick(
     if (root / PAUSE_SENTINEL).exists():
         log.info("pause sentinel present; tick is a no-op")
         return TickReport(paused=True)
-    return sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
+    report = sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
+    if github is not None and followup_spec is not None:
+        ended, submitted = service_in_review(
+            root, github, compute, followup_spec, now, dry_run=followup_dry_run
+        )
+        report = replace_report(report, ended, submitted)
+    return report
+
+
+def replace_report(
+    report: TickReport, ended: list[tuple[str, str]], submitted: list[tuple[str, str]]
+) -> TickReport:
+    from dataclasses import replace as dc_replace
+
+    return dc_replace(report, review_ended=tuple(ended), followups_submitted=tuple(submitted))
 
 
 @dataclass
@@ -340,8 +482,40 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     args.root.mkdir(parents=True, exist_ok=True)
-    # dry_run until the phase-5 dispatcher exists: the live loop must not
-    # mutate run state it cannot follow through on.
+    # The waiting-run sweep stays dry until the experiment dispatcher lands;
+    # in-review servicing is LIVE when credentials + image are available in
+    # the chain environment.
+    import os
+
+    github = None
+    followup_spec = None
+    pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
+    account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
+    partition = os.environ.get("AUTORESEARCH_PARTITION", "")
+    image = os.environ.get(
+        "AUTORESEARCH_IMAGE",
+        os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
+    )
+    home = os.environ.get("AUTORESEARCH_HOME", "")
+    if pat_file and account and partition and home and Path(image).is_file():
+        from autoresearch.github import FileTokenProvider, GitHubClient
+
+        try:
+            github = GitHubClient(auth=FileTokenProvider(Path(pat_file)))
+            followup_spec = FollowupSpec(
+                account=account,
+                partition=partition,
+                run_root=args.root,
+                image=image,
+                home=Path(home),
+                pat_file=pat_file,
+                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
+            )
+        except Exception as exc:
+            log.warning("in-review servicing disabled: %s", exc)
+    else:
+        log.info("in-review servicing disabled (missing env/creds/image)")
+
     report = tick(
         args.root,
         SlurmCompute(),
@@ -350,15 +524,21 @@ def main() -> int:
         grace_s=args.grace_s,
         lease_ttl_s=args.lease_ttl_s,
         dry_run=True,
+        github=github,
+        followup_spec=followup_spec,
+        followup_dry_run=False,
     )
     log.info(
-        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d",
+        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
+        "review_ended=%s followups=%s",
         report.paused,
         report.swept,
         len(report.woken),
         len(report.deferred),
         len(report.reaped_leases),
         len(report.stuck),
+        report.review_ended,
+        report.followups_submitted,
     )
     return 0
 

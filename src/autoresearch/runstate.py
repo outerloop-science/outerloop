@@ -68,6 +68,7 @@ class RunRecord:
     last_comment_id: int = 0
     last_review_id: int = 0
     last_review_comment_id: int = 0
+    followup_job_id: str = ""  # slurm job servicing this run's review comments
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
     terminal_seen: float = 0.0  # when the sweep first saw the experiment terminal

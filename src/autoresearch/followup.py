@@ -85,6 +85,41 @@ def qualifying_comments(
     return picked
 
 
+def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
+    """End the run if its PR is merged/closed. Returns the ending or ""."""
+    number = _pr_number(record.pr_url)
+    pr = github.get_pull_request(record.target, number)
+    if pr.get("merged") or pr.get("merged_at"):
+        save_record(run_root, replace(record, state=ENDED, ending=MERGED), now)
+        return MERGED
+    if pr.get("state") == "closed":
+        save_record(
+            run_root,
+            replace(record, state=ENDED, ending=REJECTED, ending_note="PR closed unmerged"),
+            now,
+        )
+        return REJECTED
+    return ""
+
+
+def has_new_comments(record: RunRecord, github: GitHubClient, bot_login: str) -> bool:
+    """Cheap read-only check the tick can afford every cycle."""
+    number = _pr_number(record.pr_url)
+    return bool(
+        qualifying_comments(
+            github.list_comments(record.target, number), bot_login, record.last_comment_id
+        )
+        or qualifying_comments(
+            github.list_pr_reviews(record.target, number), bot_login, record.last_review_id
+        )
+        or qualifying_comments(
+            github.list_pr_review_comments(record.target, number),
+            bot_login,
+            record.last_review_comment_id,
+        )
+    )
+
+
 def respond_once(
     run_root: Path,
     run_id: str,
@@ -304,6 +339,7 @@ def _respond(
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
             resume_session_id=session.session_id or record.resume_session_id,
+            wake_attempts=0,  # progress: the retry cap starts fresh
         ),
         now,
     )

@@ -97,4 +97,7 @@ fi
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
 #        further down in the harness) ---
 cd "$AUTORESEARCH_HOME"
-exec env -u AUTORESEARCH_PAT_FILE uv run python -m autoresearch.tick --root "$AUTORESEARCH_ROOT"
+# The tick keeps AUTORESEARCH_PAT_FILE: it reads GitHub (PR states, review
+# comments) and submits follow-up jobs. Agent sessions remain scrubbed by the
+# harness env allowlist regardless.
+exec uv run python -m autoresearch.tick --root "$AUTORESEARCH_ROOT"
