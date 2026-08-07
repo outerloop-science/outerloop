@@ -60,6 +60,8 @@ class RunRecord:
     experiment_job_id: str = ""
     wake_job_id: str = ""  # the afterany dependency job, when one exists
     resume_session_id: str = ""  # harness session to resume on wake
+    pr_url: str = ""  # the run's open PR, once one exists
+    last_comment_id: int = 0  # newest PR comment already processed
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
     terminal_seen: float = 0.0  # when the sweep first saw the experiment terminal

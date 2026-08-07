@@ -241,7 +241,15 @@ def live_climb(
                 base=base_branch,
                 body=pr_body(result, config, redact_secrets=secrets),
             )
-            final = RunRecord(**{**record.__dict__, "state": IN_REVIEW, "ending_note": pr_url})
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": IN_REVIEW,
+                    "pr_url": pr_url,
+                    "resume_session_id": result.session.session_id if result.session else "",
+                    "ending_note": pr_url,
+                }
+            )
         except Exception as exc:
             log.warning(
                 "publish failed for %s: %s",
