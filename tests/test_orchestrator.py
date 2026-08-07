@@ -289,9 +289,9 @@ def test_eval_home_is_outside_the_clone(tmp_path: Path) -> None:
     SubprocessEvaluator(timeout_s=30).evaluate(
         ws, """touch "$HOME/marker" && printf '{"m": 1}\\n'""", "m"
     )
-    assert not (ws / "marker").exists()
-    markers = list(tmp_path.glob("ws-eval-home-*/marker"))
-    assert markers, "eval home should be a sibling of the clone"
+    assert not (ws / "marker").exists()  # never lands in the clone
+    # and the per-eval home is cleaned up afterward (bounded disk)
+    assert list(tmp_path.glob("ws-eval-home-*")) == []
 
 
 def test_report_redacts_secrets(tmp_path: Path) -> None:

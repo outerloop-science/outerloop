@@ -61,8 +61,6 @@ class SubprocessEvaluator:
     apptainer_binary: str = "apptainer"
 
     def evaluate(self, workspace: Path, command: str, metric: str) -> float:
-        import os
-        import signal
 
         # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
         # (it shelters the PAT), and never the workspace — eval cache/state
@@ -82,6 +80,19 @@ class SubprocessEvaluator:
             )
         except OSError as exc:
             raise EvalError(f"could not create eval home: {exc}") from exc
+        try:
+            return self._measure(workspace, command, metric, eval_home)
+        finally:
+            # bounded disk: each eval's cache dies with it (re-downloading
+            # wheels per eval is the accepted cost of eval isolation)
+            import shutil
+
+            shutil.rmtree(eval_home, ignore_errors=True)
+
+    def _measure(self, workspace: Path, command: str, metric: str, eval_home: Path) -> float:
+        import os
+        import signal
+
         if self.container_image:
             argv = [
                 self.apptainer_binary,
