@@ -821,7 +821,7 @@ def main() -> int:
     )
     log.info(
         "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
-        "review_ended=%s followups=%s",
+        "review_ended=%s followups=%s intake=%s self_initiated=%s",
         report.paused,
         report.swept,
         len(report.woken),
@@ -830,6 +830,8 @@ def main() -> int:
         len(report.stuck),
         report.review_ended,
         report.followups_submitted,
+        report.intake,
+        report.self_initiated,
     )
     return 0
 
