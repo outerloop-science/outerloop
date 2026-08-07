@@ -144,7 +144,13 @@ def live_climb(
             }
         )
         save_record(run_root, failed, now)
-        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
+        report_path = run_dir / "report.md"
+        report_path.write_text(
+            f"# Run report — {config.target} / {config.benchmark}\n"
+            f"Outcome: **climb-error**\n"
+            f"Note: {redact(f'{type(exc).__name__}: {exc}', secrets)[:500]}\n"
+        )
+        return LiveClimbOutcome(run_id=run_id, outcome="climb-error", report_path=str(report_path))
 
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
@@ -152,6 +158,8 @@ def live_climb(
 
     pr_url = ""
     outcome_name = result.outcome
+    branch = ""
+    pushed = False
     if result.outcome == "improved":
         try:
             # The committed tree must be EXACTLY the measured tree: code the
@@ -176,6 +184,18 @@ def live_climb(
             if result.baseline is None or result.candidate is None:
                 raise WorkspaceDrift("improved result missing measurements")
             bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+            prior = load_leader(workspace).get(config.benchmark)
+            if prior is not None:
+                beats = (
+                    result.candidate > prior.best
+                    if bench.direction == "max"
+                    else result.candidate < prior.best
+                )
+                if not beats:
+                    raise WorkspaceDrift(
+                        f"candidate {result.candidate} does not beat the recorded "
+                        f"best {prior.best} (stale clone or eval noise)"
+                    )
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -196,6 +216,7 @@ def live_climb(
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
             ws.push(branch)
+            pushed = True
             pr_url = github.create_pull(
                 config.target,
                 title=f"[agent] {config.benchmark}: {result.baseline} -> {result.candidate}",
@@ -210,11 +231,18 @@ def live_climb(
                 run_id,
                 redact(f"{type(exc).__name__}: {exc}", secrets),
             )
-            # best-effort: do not leave an orphan agent branch with no PR
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                ws.git_network("push", ws.url or ws.remote_url(), "--", f":{branch}")
+            # Only delete a branch THIS attempt pushed and that got no PR —
+            # never a ref that might back existing work. Failures here are
+            # logged, not suppressed: a broken cleanup must be visible.
+            if pushed and branch and not pr_url:
+                try:
+                    ws.git_network("push", ws.url or ws.remote_url(), "--", f":{branch}")
+                except Exception as cleanup_exc:
+                    log.warning(
+                        "orphan-branch cleanup failed for %s: %s",
+                        branch,
+                        redact(str(cleanup_exc), secrets),
+                    )
             outcome_name = "publish-error"
             final = RunRecord(
                 **{

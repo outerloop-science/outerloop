@@ -411,3 +411,85 @@ def test_climb_once_exception_records_aborted(tmp_path, target_repo) -> None:
     assert record.state == "ended"
     assert record.ending == "aborted"
     assert "not in contract" in record.ending_note
+
+
+def test_orphan_branch_is_deleted_after_pr_failure(tmp_path, target_repo) -> None:
+    """The branch this attempt pushed must not linger when PR creation fails."""
+
+    @dataclass
+    class FailingGitHub2:
+        def create_pull(self, *a, **k) -> str:
+            raise RuntimeError("boom")
+
+    live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-orphan",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "q=4\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=FailingGitHub2(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert "tsp-orphan" not in _git(target_repo, "branch", "--list")
+
+
+def test_not_beating_recorded_best_is_rejected_loudly(tmp_path, target_repo) -> None:
+    """Improved vs a stale baseline but worse than the ledger's best: no PR,
+    and the reason is recorded."""
+    import json as _json
+
+    # seed a leader in the origin whose best is better than this run's candidate
+    seed = tmp_path / "leaderseed"
+    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
+    (seed / "results").mkdir(exist_ok=True)
+    (seed / "results" / "leader.json").write_text(
+        _json.dumps(
+            {
+                "tsp": {
+                    "benchmark": "tsp",
+                    "metric": "mean_tour_length",
+                    "direction": "min",
+                    "baseline": 13.876,
+                    "best": 12.0,
+                    "best_run": "r0",
+                    "updated": "d",
+                }
+            }
+        )
+    )
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
+    _git(seed, "push", "-q", "origin", "main")
+
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "w=9\n"},
+        values=[13.876, 13.1],  # improved vs own baseline, worse than best 12.0
+        run_id="tsp-stale",
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    assert (
+        "does not beat the recorded best"
+        in load_record(tmp_path / "state", "tsp-stale").ending_note
+    )
+
+
+def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="chess"),
+        run_root=tmp_path / "state",
+        run_id="chess-2",
+        harness=ScriptedHarness(edits={}),
+        evaluator=QueueEvaluator(values=[1.0]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "climb-error"
+    assert Path(outcome.report_path).read_text().startswith("# Run report")
