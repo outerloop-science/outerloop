@@ -27,6 +27,7 @@ import contextlib
 import errno
 import logging
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,14 +67,25 @@ def probe_writable(path: Path) -> tuple[bool, str]:
 
     fsync is deliberate: quota errors on networked filesystems can be
     deferred until the data is forced out, and a probe that skips the flush
-    reports healthy right up to the crash.
+    reports healthy right up to the crash. mkstemp (random name) rather than
+    a PID-derived one: a stale probe left by a SIGKILLed process must never
+    alias a later PID and read as BLOCKED on healthy storage. Short writes
+    are treated as full: ENOSPC can surface as a short count before the
+    error, and a probe that ignores the count reports healthy on a full
+    mount.
     """
-    probe = path / f"{PROBE_NAME}.{os.getpid()}"
+    probe = ""
     try:
         path.mkdir(parents=True, exist_ok=True)
-        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd, probe = tempfile.mkstemp(dir=path, prefix=f"{PROBE_NAME}.")
         try:
-            os.write(fd, b"autoresearch disk probe\n" * 32)
+            payload = b"autoresearch disk probe\n" * 32
+            written = 0
+            while written < len(payload):
+                count = os.write(fd, payload[written:])
+                if count <= 0:
+                    return False, "short write: filesystem refused data without an error"
+                written += count
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -82,8 +94,9 @@ def probe_writable(path: Path) -> tuple[bool, str]:
         name = errno.errorcode.get(exc.errno, "") if exc.errno else ""
         return False, f"{name or type(exc).__name__}: {exc}"
     finally:
-        with contextlib.suppress(OSError):
-            probe.unlink(missing_ok=True)
+        if probe:
+            with contextlib.suppress(OSError):
+                os.unlink(probe)
 
 
 def free_bytes(path: Path) -> int:

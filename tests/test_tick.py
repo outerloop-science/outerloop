@@ -672,19 +672,41 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
         min_free_bytes=2**62,  # no filesystem passes: forces the block
     )
     assert report.disk and any("BLOCKED" in w for w in report.disk)
+    assert report.launch_blocked is True
     assert report.intake == ("", "") and report.self_initiated == ("", "")
     heartbeat = _json.loads((tmp_path / "heartbeat.json").read_text())
     assert heartbeat["disk"]["launch_ok"] is False
 
 
 def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
-    from autoresearch.tick import tick
+    """Healthy path must actually run the lanes: the report fields are only
+    populated by the github branch, so the test provides one."""
+    from autoresearch.tick import FollowupSpec, tick
 
+    fetched = []
+
+    class G:
+        def get_file_content(self, repo, path, ref):
+            fetched.append(repo)
+            return None  # no contract: self-initiated stops AFTER the gate
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
     report = tick(
         tmp_path,
         FakeSlurm().compute(),
         RecordingDispatcher(),
         now=NOW,
+        github=G(),
+        followup_spec=spec,
         min_free_bytes=1,
     )
-    assert report.disk == ()
+    # both intake and self-initiated fetched the contract: the lanes RAN
+    assert fetched and set(fetched) == {"org/pilot"}
+    assert report.disk == () and report.launch_blocked is False

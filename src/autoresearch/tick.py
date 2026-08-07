@@ -102,7 +102,8 @@ class TickReport:
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
     self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
-    disk: tuple[str, ...] = ()  # preflight warnings; non-empty gated the launch lanes
+    disk: tuple[str, ...] = ()  # preflight warnings (home entries are warn-only)
+    launch_blocked: bool = False  # True when the preflight turned launch lanes off
 
 
 @dataclass(frozen=True)
@@ -467,6 +468,10 @@ def tick(
     still runs — its writes are small, per-record contained, and ending runs
     matters more when storage is failing, not less.
     """
+    # Heartbeat FIRST, before any probe: check_disk touches $HOME (a
+    # different filesystem), and a hung mount there must not starve the
+    # watchdog signal. The disk-annotated heartbeat follows once known.
+    write_heartbeat(root, now)
     disk_health = check_disk(root, min_free_bytes=min_free_bytes)
     write_heartbeat(root, now, disk=disk_health.as_dict())
     for warning in disk_health.warnings():
@@ -511,7 +516,7 @@ def tick(
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
         report = replace_report(
-            report, ended, submitted, intake_job, self_job, disk_health.warnings()
+            report, ended, submitted, intake_job, self_job, disk_health.warnings(), not launch_ok
         )
     return report
 
@@ -523,6 +528,7 @@ def replace_report(
     intake_job: tuple[str, str] | None = None,
     self_job: tuple[str, str] | None = None,
     disk_warnings: list[str] | None = None,
+    launch_blocked: bool = False,
 ) -> TickReport:
     from dataclasses import replace as dc_replace
 
@@ -533,6 +539,7 @@ def replace_report(
         intake=intake_job or ("", ""),
         self_initiated=self_job or ("", ""),
         disk=tuple(disk_warnings or ()),
+        launch_blocked=launch_blocked,
     )
 
 
@@ -871,7 +878,7 @@ def main() -> int:
     )
     log.info(
         "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
-        "review_ended=%s followups=%s intake=%s self_initiated=%s disk=%s",
+        "review_ended=%s followups=%s intake=%s self_initiated=%s disk=%s launch_blocked=%s",
         report.paused,
         report.swept,
         len(report.woken),
@@ -883,6 +890,7 @@ def main() -> int:
         report.intake,
         report.self_initiated,
         report.disk or "ok",
+        report.launch_blocked,
     )
     return 0
 

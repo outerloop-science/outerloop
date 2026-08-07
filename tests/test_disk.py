@@ -77,3 +77,11 @@ def test_blocked_state_root_gates_launches(tmp_path: Path) -> None:
     health = DiskHealth(state_root=check_mount(tmp_path, min_free_bytes=2**62))
     assert not health.launch_ok()
     assert any("BLOCKED" in w for w in health.warnings())
+
+
+def test_stale_probe_file_cannot_alias_a_healthy_mount(tmp_path: Path) -> None:
+    """A probe file left by a SIGKILLed process (even one whose name embeds
+    this very PID) must not make healthy storage read as BLOCKED."""
+    (tmp_path / f".disk-probe.{os.getpid()}").write_text("stale")
+    ok, error = probe_writable(tmp_path)
+    assert ok, error

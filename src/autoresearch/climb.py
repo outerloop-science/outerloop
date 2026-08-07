@@ -472,7 +472,9 @@ def main() -> int:
                     args.target,
                     args.issue,
                     "A run for this issue could not start: the orchestrator's "
-                    "storage failed its disk preflight. It will be retried.",
+                    "storage failed its disk preflight. The claim on this issue "
+                    "stays until a maintainer removes the claim comment "
+                    "(automated claim release is on the roadmap).",
                 ),
             )
         return 3
