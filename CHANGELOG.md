@@ -22,8 +22,9 @@ Versions follow [SemVer](https://semver.org).
 - Post-merge advisory findings on the climb glue: content-fingerprint drift
   check (rewrites during eval, not just new files), leader best never
   regresses, climb exceptions record aborted (never a stale implementing),
-  zero-change improvements rejected, redacted publish logs, orphan-branch
-  cleanup.
+  zero-change improvements rejected, redacted publish logs; pushed
+  branches are never deleted on publish failure — kept and recorded in the
+  run note for a future sweeper (deletion could close a real PR).
 
 - Hardening from the first adversarial review pass: local git runs without
   credentials and with hooks disabled (planted hooks can no longer read the
