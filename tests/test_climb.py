@@ -139,7 +139,7 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
     pr = github.prs[0]
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
-    assert "13.876" in pr["title"]
+    assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
     # run record went in-review with the PR url
     record = load_record(tmp_path / "state", "tsp-1")

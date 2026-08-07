@@ -213,7 +213,8 @@ def live_climb(
             # defense in depth behind climb_once's pre-eval check. The two
             # orchestrator-written progress files are the only exemption.
             ws.commit_all(
-                f"agent: improve {config.benchmark} ({result.baseline} -> {result.candidate})",
+                f"agent: improve {config.benchmark} "
+                f"({result.baseline:.4g} -> {result.candidate:.4g})",
                 author=config.agent_id,
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
@@ -221,7 +222,10 @@ def live_climb(
             pushed = True
             pr_url = github.create_pull(
                 config.target,
-                title=f"[agent] {config.benchmark}: {result.baseline} -> {result.candidate}",
+                # short precision in the title; full precision lives in the
+                # PR body table and the ledger
+                title=f"[agent] {config.benchmark}: "
+                f"{result.baseline:.4g} -> {result.candidate:.4g}",
                 head=branch,
                 base=base_branch,
                 body=pr_body(result, config, redact_secrets=secrets),
