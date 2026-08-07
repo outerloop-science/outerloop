@@ -99,6 +99,8 @@ def live_climb(
     created: str,
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
+    issue_number: int = 0,
+    task_hypothesis: str = "",
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo."""
     run_dir = run_root / "runs" / run_id
@@ -130,8 +132,18 @@ def live_climb(
         state="implementing",
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
+        issue_number=issue_number,
     )
     save_record(run_root, record, now)
+    if issue_number:
+        from autoresearch.intake import CLAIM_MARKER
+
+        github.comment(
+            config.target,
+            issue_number,
+            f"{CLAIM_MARKER}\nPicked up as run `{run_id}` "
+            f"(benchmark `{config.benchmark}`). A report will follow here.",
+        )
 
     try:
         result = climb_once(
@@ -143,6 +155,7 @@ def live_climb(
             ruler=RULER,
             changed_paths=changed_paths,
             created=created,
+            task_hypothesis=task_hypothesis,
         )
     except Exception as exc:
         log.warning(
@@ -318,6 +331,10 @@ def main() -> int:
     parser.add_argument(
         "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
     )
+    parser.add_argument("--issue", type=int, default=0)
+    parser.add_argument(
+        "--hypothesis-b64", default="", help="base64 task hypothesis (issue text, fenced)"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
@@ -346,6 +363,12 @@ def main() -> int:
         now=time.time(),
         created=datetime.now(UTC).isoformat(),
         secrets=(api_key, bot_auth.token()),
+        issue_number=args.issue,
+        task_hypothesis=(
+            __import__("base64").b64decode(args.hypothesis_b64).decode()
+            if args.hypothesis_b64
+            else ""
+        ),
     )
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0

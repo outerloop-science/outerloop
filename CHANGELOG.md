@@ -39,6 +39,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The requested lane: maintainer issues on the target repo become runs. The
+  tick claims at most one qualifying issue per cycle (standing-gated,
+  single-benchmark-named, claim-marker deduped); the issue text enters the
+  brief data-fenced, the PR says "Addresses #N", and the run report lands
+  back on the issue thread.
+
 - The tick now services in-review runs automatically: PR merge/close ends the
   run; new qualifying review comments submit a follow-up job that wakes the
   authoring session (lease-guarded; `followup_job_id` prevents duplicate
