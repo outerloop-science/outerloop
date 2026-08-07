@@ -39,6 +39,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `autoresearch.followup`: the in-review path — PR merge/close ends the run;
+  qualifying maintainer comments (author-association gate) resume the
+  authoring session in its retained workspace, and the reply lands on the
+  thread as the bot, with any code change scope-checked, drift-checked,
+  re-measured, and pushed to the PR branch.
+
 - `autoresearch.climb`: one live climb end to end — bot-auth clone, contract
   from the target tree, contained session + eval, full-scope commit veto,
   push, PR with orchestrator-measured numbers, durable run record and report.

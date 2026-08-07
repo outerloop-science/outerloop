@@ -60,6 +60,14 @@ class RunRecord:
     experiment_job_id: str = ""
     wake_job_id: str = ""  # the afterany dependency job, when one exists
     resume_session_id: str = ""  # harness session to resume on wake
+    pr_url: str = ""  # the run's open PR, once one exists
+    benchmark: str = ""  # contract benchmark this run works on
+    # Per-source comment cursors: issue comments, top-level reviews, and
+    # inline review comments are three REST collections with independent id
+    # sequences — one cursor across them drops comments forever.
+    last_comment_id: int = 0
+    last_review_id: int = 0
+    last_review_comment_id: int = 0
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
     terminal_seen: float = 0.0  # when the sweep first saw the experiment terminal

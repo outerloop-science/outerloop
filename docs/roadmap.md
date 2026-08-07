@@ -108,10 +108,10 @@ the research repos' porting timelines; mistakes are free; adversarial testing
       table, one human code-owner approval per merge
 - [ ] Every run ends with a research report — hypothesis, outcome, takeaways,
       next steps — posted to the PR or the ledger (negative results included)
-- [ ] Run lifecycle per the architecture: `autoresearch:approved` issue intake
-      (report comment closes the loop), `in-review` state with org-member PR
-      comments waking the run to push fixes and reply, five terminal states,
-      workspace GC after PR close
+- [x] `in-review` follow-up (followup.respond_once + CLI): merge/close →
+      endings; org-member comments wake the authoring session (resume, data-
+      fenced, scope/drift/re-measure on changes) → reply as bot. Tick wiring,
+      issue intake, and workspace GC still pending
 - [ ] Staged injection tests against the pilot before any research target
 
 Candidate second target (2026-08-06): a private toy-scale research repo —
