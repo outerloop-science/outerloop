@@ -402,7 +402,7 @@ def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
 
     real_tick = tick_mod.tick
 
-    def spy(root, compute, dispatcher, now, grace_s=0, lease_ttl_s=0, dry_run=False):
+    def spy(root, compute, dispatcher, now, grace_s=0, lease_ttl_s=0, dry_run=False, **kw):
         captured["grace_s"] = grace_s
         return real_tick(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run)
 
@@ -411,3 +411,101 @@ def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--grace-s", "1"])
     assert tick_mod.main() == 0
     assert captured["grace_s"] == 1.0
+
+
+def test_service_in_review_submits_followup_once(tmp_path: Path) -> None:
+    """Comment present → one job submitted, recorded; second tick skips while
+    that job is queued/running."""
+    from autoresearch.compute import CommandResult
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    record = RunRecord(
+        run_id="r-rev",
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state=IN_REVIEW,
+        pr_url="https://github.com/org/pilot/pull/6",
+    )
+    save_record(tmp_path, record, now=NOW)
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 9,
+                    "body": "explain",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    submits = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submits.append(list(argv))
+            return CommandResult(0, "4242\n", "")
+        if argv[0] == "sacct":
+            return CommandResult(0, "RUNNING\n", "")
+        raise AssertionError(argv)
+
+    compute = SlurmCompute(runner=runner)
+    spec = FollowupSpec(
+        account="acct",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=Path("/home/x/autoresearch"),
+    )
+    _ended, submitted = service_in_review(tmp_path, G(), compute, spec, NOW)
+    assert submitted == [("r-rev", "4242")]
+    assert any("autoresearch.followup" in a for a in submits[0])
+    from autoresearch.runstate import load_record as lr
+
+    assert lr(tmp_path, "r-rev").followup_job_id == "4242"
+    # second pass: job RUNNING → no duplicate
+    _ended2, submitted2 = service_in_review(tmp_path, G(), compute, spec, NOW + 60)
+    assert submitted2 == []
+
+
+def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
+    from autoresearch.runstate import IN_REVIEW, RunRecord, load_record, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    record = RunRecord(
+        run_id="r-m",
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state=IN_REVIEW,
+        pr_url="https://github.com/org/pilot/pull/7",
+    )
+    save_record(tmp_path, record, now=NOW)
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "closed", "merged": True}
+
+    spec = FollowupSpec(
+        account="a", partition="p", run_root=tmp_path, image="/i.sif", home=Path("/h")
+    )
+
+    def unused_runner(argv, timeout_s):
+        raise AssertionError("no slurm calls expected")
+
+    ended, _submitted = service_in_review(
+        tmp_path, G(), SlurmCompute(runner=unused_runner), spec, NOW
+    )
+    assert ended == [("r-m", "merged")]
+    assert load_record(tmp_path, "r-m").ending == "merged"
