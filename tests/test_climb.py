@@ -139,7 +139,7 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
     pr = github.prs[0]
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
-    assert "13.876" in pr["title"]
+    assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
     # run record went in-review with the PR url
     record = load_record(tmp_path / "state", "tsp-1")
@@ -496,3 +496,11 @@ def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
     )
     assert outcome.outcome == "climb-error"
     assert Path(outcome.report_path).read_text().startswith("# Run report")
+
+
+def test_title_pair_never_renders_identical() -> None:
+    from autoresearch.climb import _title_pair
+
+    assert _title_pair(13.875696168157484, 10.844662077277105) == "13.88 -> 10.84"
+    assert _title_pair(10.00001, 10.00002) == "10.00001 -> 10.00002"
+    assert " -> " in _title_pair(1e-7, 2e-7)

@@ -53,6 +53,17 @@ class WorkspaceDrift(RuntimeError):
     """The tree changed between measurement and commit."""
 
 
+def _title_pair(a: float, b: float) -> str:
+    """Compact but never ambiguous: widen precision until the two numbers
+    render differently (a title reading '10.00 -> 10.00' looks like no
+    change even when the improvement is real)."""
+    for precision in range(4, 12):
+        fa, fb = f"{a:.{precision}g}", f"{b:.{precision}g}"
+        if fa != fb:
+            return f"{fa} -> {fb}"
+    return f"{a} -> {b}"
+
+
 RULER = (
     "The metric is computed by the contract's eval command over a frozen "
     "instance pool. Your claim is verified by the orchestrator re-running "
@@ -213,7 +224,8 @@ def live_climb(
             # defense in depth behind climb_once's pre-eval check. The two
             # orchestrator-written progress files are the only exemption.
             ws.commit_all(
-                f"agent: improve {config.benchmark} ({result.baseline} -> {result.candidate})",
+                f"agent: improve {config.benchmark} "
+                f"({_title_pair(result.baseline, result.candidate)})",
                 author=config.agent_id,
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
@@ -221,7 +233,10 @@ def live_climb(
             pushed = True
             pr_url = github.create_pull(
                 config.target,
-                title=f"[agent] {config.benchmark}: {result.baseline} -> {result.candidate}",
+                # short precision in the title; full precision lives in the
+                # PR body table and the ledger
+                title=f"[agent] {config.benchmark}: "
+                f"{_title_pair(result.baseline, result.candidate)}",
                 head=branch,
                 base=base_branch,
                 body=pr_body(result, config, redact_secrets=secrets),
