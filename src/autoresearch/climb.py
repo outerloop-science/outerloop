@@ -30,6 +30,7 @@ from autoresearch.orchestrator import (
     out_of_scope,
     pr_body,
 )
+from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
     PROGRESS_PATHS,
     load_leader,
@@ -98,9 +99,15 @@ def live_climb(
     contract_text = contract_path.read_text()
     contract = load_contract(contract_text, config.target)
 
+    tree_hashes: list[str] = []
+
     def changed_paths() -> list[str]:
         ws.git("add", "-A")
         paths = ws.staged_paths()
+        # Content fingerprint of the whole tree: the drift check must catch a
+        # file REWRITTEN during eval (same path set, different bytes), not
+        # only files created or deleted.
+        tree_hashes.append(ws.git("write-tree").strip())
         ws.git("reset")
         return paths
 
@@ -114,16 +121,37 @@ def live_climb(
     )
     save_record(run_root, record, now)
 
-    result = climb_once(
-        config,
-        contract_text,
-        workspace,
-        harness,
-        evaluator,
-        ruler=RULER,
-        changed_paths=changed_paths,
-        created=created,
-    )
+    try:
+        result = climb_once(
+            config,
+            contract_text,
+            workspace,
+            harness,
+            evaluator,
+            ruler=RULER,
+            changed_paths=changed_paths,
+            created=created,
+        )
+    except Exception as exc:
+        log.warning(
+            "climb failed for %s: %s", run_id, redact(f"{type(exc).__name__}: {exc}", secrets)
+        )
+        failed = RunRecord(
+            **{
+                **record.__dict__,
+                "state": ENDED,
+                "ending": ABORTED,
+                "ending_note": redact(f"{type(exc).__name__}: {exc}", secrets)[:500],
+            }
+        )
+        save_record(run_root, failed, now)
+        report_path = run_dir / "report.md"
+        report_path.write_text(
+            f"# Run report — {config.target} / {config.benchmark}\n"
+            f"Outcome: **climb-error**\n"
+            f"Note: {redact(f'{type(exc).__name__}: {exc}', secrets)[:500]}\n"
+        )
+        return LiveClimbOutcome(run_id=run_id, outcome="climb-error", report_path=str(report_path))
 
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
@@ -131,15 +159,28 @@ def live_climb(
 
     pr_url = ""
     outcome_name = result.outcome
+    branch = ""
+    pushed = False
     if result.outcome == "improved":
         try:
             # The committed tree must be EXACTLY the measured tree: code the
             # agent's solver wrote during the candidate eval was neither
             # scope-checked nor measured, so its presence voids the claim.
+            if not result.measured_paths:
+                raise WorkspaceDrift("improved with zero code changes — metric noise, not progress")
             post_eval = set(changed_paths())
             if post_eval != set(result.measured_paths):
                 drift = sorted(post_eval.symmetric_difference(result.measured_paths))
                 raise WorkspaceDrift(f"workspace changed during eval: {drift[:10]}")
+            # Fail CLOSED: two fingerprints must exist (pre-eval from
+            # climb_once's scope check, post-eval from just above) — a
+            # missing one means the drift protection did not run.
+            if len(tree_hashes) < 2:
+                raise WorkspaceDrift("content fingerprints missing; drift check did not run")
+            if tree_hashes[-1] != tree_hashes[-2]:
+                raise WorkspaceDrift(
+                    "file contents changed during eval (same paths, different bytes)"
+                )
             # unique branch per run: a fixed name collides on the second run
             branch = f"{config.branch_prefix}/{run_id}"
             ws.branch(branch)
@@ -149,6 +190,14 @@ def live_climb(
             if result.baseline is None or result.candidate is None:
                 raise WorkspaceDrift("improved result missing measurements")
             bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+            prior = load_leader(workspace).get(config.benchmark)
+            if prior is not None and not orch_improved(
+                prior.best, result.candidate, bench.direction, config.min_relative_improvement
+            ):
+                raise WorkspaceDrift(
+                    f"candidate {result.candidate} does not beat the recorded "
+                    f"best {prior.best} by the noise floor (stale clone or eval noise)"
+                )
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -169,6 +218,7 @@ def live_climb(
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
             ws.push(branch)
+            pushed = True
             pr_url = github.create_pull(
                 config.target,
                 title=f"[agent] {config.benchmark}: {result.baseline} -> {result.candidate}",
@@ -178,14 +228,26 @@ def live_climb(
             )
             final = RunRecord(**{**record.__dict__, "state": IN_REVIEW, "ending_note": pr_url})
         except Exception as exc:
-            log.warning("publish failed for %s: %s: %s", run_id, type(exc).__name__, exc)
+            log.warning(
+                "publish failed for %s: %s",
+                run_id,
+                redact(f"{type(exc).__name__}: {exc}", secrets),
+            )
+            # Never delete the remote branch: an exception from create_pull
+            # does not prove no PR exists (a 422-already-exists or a timeout
+            # after a successful POST both land here), and deleting the ref
+            # would close such a PR and discard the only pushed copy. Leave
+            # it and record it; a sweeper can reap confirmed orphans later.
             outcome_name = "publish-error"
             final = RunRecord(
                 **{
                     **record.__dict__,
                     "state": ENDED,
                     "ending": ABORTED,
-                    "ending_note": redact(f"{type(exc).__name__}: {exc}", secrets)[:500],
+                    "ending_note": (
+                        (f"branch left on remote: {branch}; " if pushed else "")
+                        + redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
+                    ),
                 }
             )
     else:
