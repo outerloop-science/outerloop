@@ -220,6 +220,15 @@ class GitHubClient:
             raise GitHubError(200, path, f"no PR number in response: {data.get('message')}")
         return int(data["number"])
 
+    def get_issue(self, repo: str, number: int) -> dict[str, Any]:
+        path = f"/repos/{urllib.parse.quote(repo)}/issues/{number}"
+        return self._expect_dict(self._request("GET", path), path)
+
+    def list_open_issues(self, repo: str, max_pages: int = 3) -> list[dict[str, Any]]:
+        """Open issues (PRs excluded — the issues API mixes them in)."""
+        items = self._paginate(f"/repos/{urllib.parse.quote(repo)}/issues", max_pages)
+        return [i for i in items if "pull_request" not in i]
+
     def create_pull(
         self, repo: str, title: str, head: str, base: str, body: str, draft: bool = False
     ) -> str:

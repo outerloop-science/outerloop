@@ -98,6 +98,7 @@ class TickReport:
     stuck: tuple[str, ...] = ()
     review_ended: tuple[tuple[str, str], ...] = ()  # (run_id, ending)
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
+    intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ class FollowupSpec:
     time_minutes: int = 60
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
     key_file: str = ""
+    target: str = ""  # the repo the intake pass scans for requested-lane issues
 
 
 def service_in_review(
@@ -447,16 +449,109 @@ def tick(
         ended, submitted = service_in_review(
             root, github, compute, followup_spec, now, dry_run=followup_dry_run
         )
-        report = replace_report(report, ended, submitted)
+        intake_job = service_intake(
+            root, github, compute, followup_spec, now, dry_run=followup_dry_run
+        )
+        report = replace_report(report, ended, submitted, intake_job)
     return report
 
 
 def replace_report(
-    report: TickReport, ended: list[tuple[str, str]], submitted: list[tuple[str, str]]
+    report: TickReport,
+    ended: list[tuple[str, str]],
+    submitted: list[tuple[str, str]],
+    intake_job: tuple[str, str] | None = None,
 ) -> TickReport:
     from dataclasses import replace as dc_replace
 
-    return dc_replace(report, review_ended=tuple(ended), followups_submitted=tuple(submitted))
+    return dc_replace(
+        report,
+        review_ended=tuple(ended),
+        followups_submitted=tuple(submitted),
+        intake=intake_job or ("", ""),
+    )
+
+
+def service_intake(
+    root: Path,
+    github: Any,
+    compute: SlurmCompute,
+    spec: FollowupSpec,
+    now: float,
+    dry_run: bool = False,
+) -> tuple[str, str] | None:
+    """The requested lane: claim at most ONE qualifying issue per tick and
+    submit a climb job for it. The claim comment (posted by the climb job
+    before its session) marks an issue taken; one-per-tick keeps a burst of
+    issues from bursting the budget."""
+    from autoresearch.contract import load_contract
+    from autoresearch.intake import issue_hypothesis, pick_issue
+
+    target = spec.target
+    if not target:
+        return None
+    try:
+        contract_raw = github.get_file_content(target, ".autoresearch.yaml", "main")
+        if contract_raw is None:
+            return None
+        contract = load_contract(contract_raw, target)
+        task = pick_issue(github, target, contract, spec.bot_login)
+        if task is None:
+            return None
+        if dry_run:
+            return (f"issue-{task.number}", "dry-run")
+        # claim BEFORE submit: Slurm queueing can take minutes, and the next
+        # tick must not re-claim the same issue in that window
+        from autoresearch.intake import CLAIM_MARKER
+
+        github.comment(
+            target,
+            task.number,
+            f"{CLAIM_MARKER}\nClaimed for benchmark `{task.benchmark}`; a run "
+            "is queued and a report will follow here.",
+        )
+        import base64 as _b64
+
+        hypothesis_b64 = _b64.b64encode(issue_hypothesis(task).encode()).decode()
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "autoresearch.climb",
+            "--target",
+            target,
+            "--benchmark",
+            task.benchmark,
+            "--run-root",
+            str(spec.run_root),
+            "--image",
+            spec.image,
+            "--issue",
+            str(task.number),
+            "--hypothesis-b64",
+            hypothesis_b64,
+        ]
+        if spec.pat_file:
+            argv += ["--pat-file", spec.pat_file]
+        if spec.key_file:
+            argv += ["--key-file", spec.key_file]
+        job_id = compute.submit(
+            JobSpec(
+                job_name=f"climb-issue-{task.number}",
+                account=spec.account,
+                partition=spec.partition,
+                time_minutes=90,
+                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                cpus=4,
+                mem="8G",
+            )
+        )
+        log.info("issue #%s claimed for climb job %s", task.number, job_id)
+        return (f"issue-{task.number}", job_id)
+    except Exception as exc:  # intake must not break the tick
+        log.warning("intake pass failed: %s", exc)
+        return None
 
 
 @dataclass
@@ -510,6 +605,9 @@ def main() -> int:
                 home=Path(home),
                 pat_file=pat_file,
                 key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
+                target=os.environ.get(
+                    "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
+                ),
             )
         except Exception as exc:
             log.warning("in-review servicing disabled: %s", exc)

@@ -1,0 +1,90 @@
+"""The requested lane: issues become runs, gated and claimed."""
+
+from __future__ import annotations
+
+from autoresearch.contract import load_contract
+from autoresearch.intake import (
+    CLAIM_MARKER,
+    infer_benchmark,
+    issue_hypothesis,
+    pick_issue,
+    qualifying_issue,
+)
+
+CONTRACT = load_contract(
+    """
+benchmarks:
+  - name: tsp
+    command: c1
+    metric: m1
+    direction: min
+  - name: reach
+    command: c2
+    metric: m2
+    direction: max
+budgets: {gpu_hours_per_run: 1, runs_per_week: 10}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+    "org/pilot",
+)
+
+
+def issue(n, title, body="", assoc="MEMBER", author="renmengye"):
+    return {
+        "number": n,
+        "title": title,
+        "body": body,
+        "author_association": assoc,
+        "user": {"login": author},
+    }
+
+
+class G:
+    def __init__(self, issues, claimed=()):
+        self.issues = issues
+        self.claimed = set(claimed)
+
+    def list_open_issues(self, repo, max_pages=3):
+        return self.issues
+
+    def list_comments(self, repo, number, max_pages=20):
+        if number in self.claimed:
+            return [{"body": f"{CLAIM_MARKER}\nPicked up"}]
+        return []
+
+
+def test_gate_and_benchmark_inference() -> None:
+    assert qualifying_issue(issue(1, "improve reach"), "bot")
+    assert not qualifying_issue(issue(2, "drive-by", assoc="NONE"), "bot")
+    assert not qualifying_issue(issue(3, "self", author="bot"), "bot")
+    assert infer_benchmark("the reach solver stalls", CONTRACT) == "reach"
+    assert infer_benchmark("tsp and reach both bad", CONTRACT) == ""  # ambiguous
+    assert infer_benchmark("nothing named", CONTRACT) == ""
+
+
+def test_pick_oldest_unclaimed_with_one_benchmark() -> None:
+    issues = [
+        issue(5, "reach is weak"),
+        issue(3, "improve tsp", assoc="NONE"),  # unqualified
+        issue(4, "fix reach please"),  # oldest qualified... but claimed
+    ]
+    task = pick_issue(G(issues, claimed={4}), "org/pilot", CONTRACT, "bot")
+    assert task is not None
+    assert task.number == 5
+    assert task.benchmark == "reach"
+
+
+def test_hypothesis_fences_issue_text() -> None:
+    task = pick_issue(
+        G([issue(7, "reach: try a better local planner", "the PD controller ```breaks```")]),
+        "org/pilot",
+        CONTRACT,
+        "bot",
+    )
+    assert task is not None
+    text = issue_hypothesis(task)
+    assert "#7" in text
+    assert "@renmengye" in text
+    assert "````" in text  # fence outruns the backticks in the body
+    assert "better local planner" in text

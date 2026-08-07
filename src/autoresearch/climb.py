@@ -99,6 +99,8 @@ def live_climb(
     created: str,
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
+    issue_number: int = 0,
+    task_hypothesis: str = "",
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo."""
     run_dir = run_root / "runs" / run_id
@@ -130,8 +132,23 @@ def live_climb(
         state="implementing",
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
+        issue_number=issue_number,
     )
     save_record(run_root, record, now)
+    if issue_number:
+        from autoresearch.intake import CLAIM_MARKER
+
+        already = any(
+            CLAIM_MARKER in str(c.get("body", ""))
+            for c in github.list_comments(config.target, issue_number)
+        )
+        if not already:  # manual CLI runs claim here; tick-submitted runs claimed at submit
+            github.comment(
+                config.target,
+                issue_number,
+                f"{CLAIM_MARKER}\nPicked up as run `{run_id}` "
+                f"(benchmark `{config.benchmark}`). A report will follow here.",
+            )
 
     try:
         result = climb_once(
@@ -143,6 +160,7 @@ def live_climb(
             ruler=RULER,
             changed_paths=changed_paths,
             created=created,
+            task_hypothesis=task_hypothesis,
         )
     except Exception as exc:
         log.warning(
@@ -233,6 +251,9 @@ def live_climb(
             )
             ws.push(branch)
             pushed = True
+            body = pr_body(result, config, redact_secrets=secrets)
+            if issue_number:
+                body = f"Addresses #{issue_number}.\n\n{body}"
             pr_url = github.create_pull(
                 config.target,
                 # short precision in the title; full precision lives in the
@@ -241,7 +262,7 @@ def live_climb(
                 f"{_title_pair(result.baseline, result.candidate)}",
                 head=branch,
                 base=base_branch,
-                body=pr_body(result, config, redact_secrets=secrets),
+                body=body,
             )
             final = RunRecord(
                 **{
@@ -285,6 +306,17 @@ def live_climb(
             }
         )
     save_record(run_root, final, now)
+    if issue_number:
+        summary = redact(result.report(config, redact_secrets=secrets), secrets)[:8000]
+        link = f"\n\nPull request: {pr_url}" if pr_url else ""
+        try:
+            github.comment(
+                config.target,
+                issue_number,
+                f"Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
+            )
+        except Exception as exc:
+            log.warning("could not report to issue #%s: %s", issue_number, exc)
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return LiveClimbOutcome(
         run_id=run_id,
@@ -318,6 +350,10 @@ def main() -> int:
     parser.add_argument(
         "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
     )
+    parser.add_argument("--issue", type=int, default=0)
+    parser.add_argument(
+        "--hypothesis-b64", default="", help="base64 task hypothesis (issue text, fenced)"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
@@ -346,6 +382,12 @@ def main() -> int:
         now=time.time(),
         created=datetime.now(UTC).isoformat(),
         secrets=(api_key, bot_auth.token()),
+        issue_number=args.issue,
+        task_hypothesis=(
+            __import__("base64").b64decode(args.hypothesis_b64).decode()
+            if args.hypothesis_b64
+            else ""
+        ),
     )
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0

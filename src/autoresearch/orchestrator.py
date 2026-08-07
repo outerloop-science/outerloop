@@ -277,11 +277,14 @@ def improved(baseline: float, candidate: float, direction: str, min_rel: float) 
     return rel >= min_rel if direction == "max" else rel <= -min_rel
 
 
-def make_task(contract: Contract, benchmark_name: str, baseline: float) -> Task:
+def make_task(
+    contract: Contract, benchmark_name: str, baseline: float, hypothesis: str = ""
+) -> Task:
     bench = _benchmark(contract, benchmark_name)
     better = "up" if bench.direction == "max" else "down"
     return Task(
-        hypothesis=(
+        hypothesis=hypothesis
+        or (
             f"The {bench.name} solver can be improved: study the current "
             f"implementation and the evaluation, form ONE concrete hypothesis "
             f"for why it underperforms, and implement it."
@@ -306,6 +309,7 @@ def climb_once(
     lessons: str = "",
     recent_reports: tuple[str, ...] = (),
     created: str = "",
+    task_hypothesis: str = "",
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -326,7 +330,7 @@ def climb_once(
     except EvalError as exc:
         return ClimbResult(outcome="eval-error", note=f"baseline: {exc}")
 
-    task = make_task(contract, config.benchmark, baseline)
+    task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
     brief = build_brief(
         BriefInputs(
             task=task,
