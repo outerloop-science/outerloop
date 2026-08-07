@@ -251,6 +251,8 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path) -> None:
     argv = (tmp_path / "eval_argv").read_text()
     assert "exec --containall --cleanenv" in argv
     assert f"--bind {ws}:{ws}" in argv
+    # a real-disk home: apptainer's tmpfs home is size-capped and uv blows it
+    assert f"--home {tmp_path / 'ws-eval-home'}:{tmp_path / 'ws-eval-home'}" in argv
     assert "/img/pilot.sif sh -c run-the-eval" in argv
 
 

@@ -64,6 +64,14 @@ class SubprocessEvaluator:
         import os
         import signal
 
+        # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
+        # (it shelters the PAT), and never the workspace — eval cache/state
+        # artifacts must not masquerade as agent edits in the diff. The
+        # CONTAINED eval needs it too (--home): apptainer's tmpfs home is
+        # size-capped and uv blows it extracting wheels (seen live: first
+        # climb died at baseline on a full tmpfs).
+        eval_home = workspace.resolve().parent / f"{workspace.name}-eval-home"
+        eval_home.mkdir(parents=True, exist_ok=True)
         if self.container_image:
             argv = [
                 self.apptainer_binary,
@@ -72,6 +80,8 @@ class SubprocessEvaluator:
                 "--cleanenv",
                 "--bind",
                 f"{workspace}:{workspace}",
+                "--home",
+                f"{eval_home}:{eval_home}",
                 "--pwd",
                 str(workspace),
                 self.container_image,
@@ -82,11 +92,6 @@ class SubprocessEvaluator:
         else:
             argv = ["sh", "-c", command]
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
-        # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
-        # (it shelters the PAT), and never the workspace — eval cache/state
-        # artifacts must not masquerade as agent edits in the diff.
-        eval_home = workspace.resolve().parent / f"{workspace.name}-eval-home"
-        eval_home.mkdir(parents=True, exist_ok=True)
         env["HOME"] = str(eval_home)
         try:
             # process group, like the harness: a timed-out eval must not
