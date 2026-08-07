@@ -93,6 +93,7 @@ class SubprocessEvaluator:
         import os
         import signal
 
+        host_tmp = os.environ.get("TMPDIR", "/tmp")
         if self.container_image:
             argv = [
                 self.apptainer_binary,
@@ -103,6 +104,10 @@ class SubprocessEvaluator:
                 f"{workspace}:{workspace}",
                 "--home",
                 f"{eval_home}:{eval_home}",
+                # node-local scratch for uv's cache: the container's own /tmp
+                # is a size-capped tmpfs, and shared-FS caches flake (NFS)
+                "--bind",
+                f"{host_tmp}:{host_tmp}",
                 "--pwd",
                 str(workspace),
                 self.container_image,
@@ -113,6 +118,15 @@ class SubprocessEvaluator:
         else:
             argv = ["sh", "-c", command]
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
+        # uv's cache does heavy small-file IO; on shared filesystems (NFS)
+        # that flakes with stale-handle/copy errors (seen live twice). Keep
+        # the cache on node-local scratch and copy across filesystems.
+        env["UV_CACHE_DIR"] = os.path.join(host_tmp, "uv-cache")
+        env["UV_LINK_MODE"] = "copy"
+        if self.container_image:
+            # --cleanenv drops the host env; APPTAINERENV_* survives it
+            env["APPTAINERENV_UV_CACHE_DIR"] = env["UV_CACHE_DIR"]
+            env["APPTAINERENV_UV_LINK_MODE"] = "copy"
         env["HOME"] = str(eval_home)
         try:
             # process group, like the harness: a timed-out eval must not
