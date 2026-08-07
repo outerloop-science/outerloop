@@ -61,6 +61,35 @@ class SubprocessEvaluator:
     apptainer_binary: str = "apptainer"
 
     def evaluate(self, workspace: Path, command: str, metric: str) -> float:
+
+        # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
+        # (it shelters the PAT), and never the workspace — eval cache/state
+        # artifacts must not masquerade as agent edits in the diff. The
+        # CONTAINED eval needs it too (--home): apptainer's tmpfs home is
+        # size-capped and uv blows it extracting wheels (seen live: first
+        # climb died at baseline on a full tmpfs).
+        # Fresh per-EVAL home (never reused): baseline and candidate cannot
+        # see each other's writes, and nothing survives to any later run.
+        import tempfile
+
+        try:
+            eval_home = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{workspace.name}-eval-home-", dir=workspace.resolve().parent
+                )
+            )
+        except OSError as exc:
+            raise EvalError(f"could not create eval home: {exc}") from exc
+        try:
+            return self._measure(workspace, command, metric, eval_home)
+        finally:
+            # bounded disk: each eval's cache dies with it (re-downloading
+            # wheels per eval is the accepted cost of eval isolation)
+            import shutil
+
+            shutil.rmtree(eval_home, ignore_errors=True)
+
+    def _measure(self, workspace: Path, command: str, metric: str, eval_home: Path) -> float:
         import os
         import signal
 
@@ -72,6 +101,8 @@ class SubprocessEvaluator:
                 "--cleanenv",
                 "--bind",
                 f"{workspace}:{workspace}",
+                "--home",
+                f"{eval_home}:{eval_home}",
                 "--pwd",
                 str(workspace),
                 self.container_image,
@@ -82,11 +113,6 @@ class SubprocessEvaluator:
         else:
             argv = ["sh", "-c", command]
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
-        # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
-        # (it shelters the PAT), and never the workspace — eval cache/state
-        # artifacts must not masquerade as agent edits in the diff.
-        eval_home = workspace.resolve().parent / f"{workspace.name}-eval-home"
-        eval_home.mkdir(parents=True, exist_ok=True)
         env["HOME"] = str(eval_home)
         try:
             # process group, like the harness: a timed-out eval must not

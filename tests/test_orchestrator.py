@@ -251,6 +251,8 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path) -> None:
     argv = (tmp_path / "eval_argv").read_text()
     assert "exec --containall --cleanenv" in argv
     assert f"--bind {ws}:{ws}" in argv
+    # a real-disk home: apptainer's tmpfs home is size-capped and uv blows it
+    assert "--home " in argv and "ws-eval-home-" in argv
     assert "/img/pilot.sif sh -c run-the-eval" in argv
 
 
@@ -287,8 +289,9 @@ def test_eval_home_is_outside_the_clone(tmp_path: Path) -> None:
     SubprocessEvaluator(timeout_s=30).evaluate(
         ws, """touch "$HOME/marker" && printf '{"m": 1}\\n'""", "m"
     )
-    assert not (ws / "marker").exists()
-    assert (tmp_path / "ws-eval-home" / "marker").exists()
+    assert not (ws / "marker").exists()  # never lands in the clone
+    # and the per-eval home is cleaned up afterward (bounded disk)
+    assert list(tmp_path.glob("ws-eval-home-*")) == []
 
 
 def test_report_redacts_secrets(tmp_path: Path) -> None:
