@@ -98,9 +98,15 @@ def live_climb(
     contract_text = contract_path.read_text()
     contract = load_contract(contract_text, config.target)
 
+    tree_hashes: list[str] = []
+
     def changed_paths() -> list[str]:
         ws.git("add", "-A")
         paths = ws.staged_paths()
+        # Content fingerprint of the whole tree: the drift check must catch a
+        # file REWRITTEN during eval (same path set, different bytes), not
+        # only files created or deleted.
+        tree_hashes.append(ws.git("write-tree").strip())
         ws.git("reset")
         return paths
 
@@ -114,16 +120,31 @@ def live_climb(
     )
     save_record(run_root, record, now)
 
-    result = climb_once(
-        config,
-        contract_text,
-        workspace,
-        harness,
-        evaluator,
-        ruler=RULER,
-        changed_paths=changed_paths,
-        created=created,
-    )
+    try:
+        result = climb_once(
+            config,
+            contract_text,
+            workspace,
+            harness,
+            evaluator,
+            ruler=RULER,
+            changed_paths=changed_paths,
+            created=created,
+        )
+    except Exception as exc:
+        log.warning(
+            "climb failed for %s: %s", run_id, redact(f"{type(exc).__name__}: {exc}", secrets)
+        )
+        failed = RunRecord(
+            **{
+                **record.__dict__,
+                "state": ENDED,
+                "ending": ABORTED,
+                "ending_note": redact(f"{type(exc).__name__}: {exc}", secrets)[:500],
+            }
+        )
+        save_record(run_root, failed, now)
+        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
 
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
@@ -136,10 +157,16 @@ def live_climb(
             # The committed tree must be EXACTLY the measured tree: code the
             # agent's solver wrote during the candidate eval was neither
             # scope-checked nor measured, so its presence voids the claim.
+            if not result.measured_paths:
+                raise WorkspaceDrift("improved with zero code changes — metric noise, not progress")
             post_eval = set(changed_paths())
             if post_eval != set(result.measured_paths):
                 drift = sorted(post_eval.symmetric_difference(result.measured_paths))
                 raise WorkspaceDrift(f"workspace changed during eval: {drift[:10]}")
+            if len(tree_hashes) >= 2 and tree_hashes[-1] != tree_hashes[-2]:
+                raise WorkspaceDrift(
+                    "file contents changed during eval (same paths, different bytes)"
+                )
             # unique branch per run: a fixed name collides on the second run
             branch = f"{config.branch_prefix}/{run_id}"
             ws.branch(branch)
@@ -178,7 +205,16 @@ def live_climb(
             )
             final = RunRecord(**{**record.__dict__, "state": IN_REVIEW, "ending_note": pr_url})
         except Exception as exc:
-            log.warning("publish failed for %s: %s: %s", run_id, type(exc).__name__, exc)
+            log.warning(
+                "publish failed for %s: %s",
+                run_id,
+                redact(f"{type(exc).__name__}: {exc}", secrets),
+            )
+            # best-effort: do not leave an orphan agent branch with no PR
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                ws.git_network("push", ws.url or ws.remote_url(), "--", f":{branch}")
             outcome_name = "publish-error"
             final = RunRecord(
                 **{

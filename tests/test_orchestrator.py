@@ -324,3 +324,16 @@ def test_leader_survives_corruption(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True)
     path.write_text("{broken")
     assert load_leader(tmp_path) == {}
+
+
+def test_leader_best_never_regresses() -> None:
+    from autoresearch.progress import update_leader
+
+    entries = update_leader({}, "tsp", "m", "min", 13.876, 13.1, "r1", "d1")
+    # a later run improved vs its own (stale) baseline but is worse than best
+    entries = update_leader(entries, "tsp", "m", "min", 13.876, 13.5, "r2", "d2")
+    assert entries["tsp"].best == 13.1
+    assert entries["tsp"].best_run == "r1"
+    # a genuinely better run still advances it
+    entries = update_leader(entries, "tsp", "m", "min", 13.1, 12.9, "r3", "d3")
+    assert entries["tsp"].best == 12.9

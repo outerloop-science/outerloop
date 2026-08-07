@@ -78,6 +78,12 @@ def update_leader(
     pinned by the FIRST entry and never moves; best follows improvements."""
     existing = entries.get(benchmark)
     pinned_baseline = existing.baseline if existing is not None else baseline
+    # Direction-aware: a run improved vs ITS OWN baseline can still be worse
+    # than the recorded best (stale clone, eval noise) — best never regresses.
+    if existing is not None:
+        beats = candidate > existing.best if direction == "max" else candidate < existing.best
+        if not beats:
+            return dict(entries)
     updated = dict(entries)
     updated[benchmark] = LeaderEntry(
         benchmark=benchmark,

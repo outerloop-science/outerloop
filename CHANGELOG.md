@@ -19,6 +19,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Post-merge advisory findings on the climb glue: content-fingerprint drift
+  check (rewrites during eval, not just new files), leader best never
+  regresses, climb exceptions record aborted (never a stale implementing),
+  zero-change improvements rejected, redacted publish logs, orphan-branch
+  cleanup.
+
 - Hardening from the first adversarial review pass: local git runs without
   credentials and with hooks disabled (planted hooks can no longer read the
   PAT), scope paths are normalized component-wise, self-target matching accepts

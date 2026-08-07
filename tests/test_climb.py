@@ -346,3 +346,68 @@ def test_second_improvement_updates_best_keeps_baseline(tmp_path, target_repo) -
     assert leader["tsp"]["baseline"] == 13.876  # pinned from the FIRST run
     assert leader["tsp"]["best"] == 12.4
     assert leader["tsp"]["best_run"] == "tsp-b"
+
+
+def test_content_rewrite_during_eval_voids_the_claim(tmp_path, target_repo) -> None:
+    """Same path set, different bytes: the fingerprint must catch it."""
+
+    @dataclass
+    class RewritingEvaluator:
+        values: list[float] = field(default_factory=list)
+        calls: int = 0
+
+        def evaluate(self, workspace, command, metric) -> float:
+            self.calls += 1
+            if self.calls == 2:  # during candidate eval: rewrite the SAME file
+                (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text(
+                    "def solve(): return 'unmeasured bytes'\n"
+                )
+            return self.values.pop(0)
+
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-rewrite",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
+        evaluator=RewritingEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    record = load_record(tmp_path / "state", "tsp-rewrite")
+    assert "different bytes" in record.ending_note
+
+
+def test_zero_change_improvement_is_rejected(tmp_path, target_repo) -> None:
+    """Metric noise with no edits must never open a PR."""
+    outcome, github = run_live(
+        tmp_path, target_repo, edits={}, values=[13.876, 13.1], run_id="tsp-noop"
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    assert "zero code changes" in load_record(tmp_path / "state", "tsp-noop").ending_note
+
+
+def test_climb_once_exception_records_aborted(tmp_path, target_repo) -> None:
+    """An unknown benchmark (or any raise) must not strand 'implementing'."""
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="chess"),
+        run_root=tmp_path / "state",
+        run_id="chess-1",
+        harness=ScriptedHarness(edits={}),
+        evaluator=QueueEvaluator(values=[1.0]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "climb-error"
+    record = load_record(tmp_path / "state", "chess-1")
+    assert record.state == "ended"
+    assert record.ending == "aborted"
+    assert "not in contract" in record.ending_note
