@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- CI consolidated to one job (`ci`) — GitHub bills per job rounded up to a
+  minute, so five short jobs cost 5x. The advisory review now runs on PR open
+  and on the `autoresearch:review` label, not on every push.
+
 - **Breaking**: the review CLI reads `ANTHROPIC_REVIEWER_KEY`, no longer
   `ANTHROPIC_API_KEY` (role-named credentials; the harness gets its own key).
   Reusable-workflow callers are unaffected. Direct invokers must export the
