@@ -514,7 +514,19 @@ def main() -> int:
         except Exception as exc:
             log.warning("in-review servicing disabled: %s", exc)
     else:
-        log.info("in-review servicing disabled (missing env/creds/image)")
+        absent = [
+            name
+            for name, value in [
+                ("AUTORESEARCH_PAT_FILE", pat_file),
+                ("AUTORESEARCH_ACCOUNT", account),
+                ("AUTORESEARCH_PARTITION", partition),
+                ("AUTORESEARCH_HOME", home),
+            ]
+            if not value
+        ]
+        if not Path(image).is_file():
+            absent.append(f"image:{image}")
+        log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
 
     report = tick(
         args.root,

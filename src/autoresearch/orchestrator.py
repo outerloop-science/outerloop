@@ -186,6 +186,10 @@ class ClimbConfig:
     benchmark: str  # the ONE benchmark this loop works on
     branch_prefix: str = "feat/auto/agent-01"
     agent_id: str = "agent-01"
+    # Commits are AUTHORED as the bot account (a real GitHub identity):
+    # a bare "agent-01" noreply address links to whoever owns that login.
+    # The agent id lives in a commit trailer instead.
+    bot_login: str = "agentic-learning-bot"
     # relative improvement below this is noise, not a PR (ε is contract-
     # configurable later; this is the loop-side floor)
     min_relative_improvement: float = 0.005
