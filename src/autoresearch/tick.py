@@ -33,6 +33,7 @@ from autoresearch.compute import (
 )
 from autoresearch.runstate import (
     ENDED,
+    IMPLEMENTING,
     IN_REVIEW,
     MAX_WAKE_ATTEMPTS,
     STUCK,
@@ -99,6 +100,7 @@ class TickReport:
     review_ended: tuple[tuple[str, str], ...] = ()  # (run_id, ending)
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
+    self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
 
 
 @dataclass(frozen=True)
@@ -452,7 +454,24 @@ def tick(
         intake_job = service_intake(
             root, github, compute, followup_spec, now, dry_run=followup_dry_run
         )
-        report = replace_report(report, ended, submitted, intake_job)
+        self_job = None
+        if intake_job is None and followup_spec.target:
+            try:
+                from autoresearch.contract import load_contract
+
+                raw = github.get_file_content(followup_spec.target, ".autoresearch.yaml", "main")
+                if raw is not None:
+                    self_job = service_self_initiated(
+                        root,
+                        compute,
+                        followup_spec,
+                        load_contract(raw, followup_spec.target),
+                        now,
+                        dry_run=followup_dry_run,
+                    )
+            except Exception as exc:
+                log.warning("self-initiated selection failed: %s", exc)
+        report = replace_report(report, ended, submitted, intake_job, self_job)
     return report
 
 
@@ -461,6 +480,7 @@ def replace_report(
     ended: list[tuple[str, str]],
     submitted: list[tuple[str, str]],
     intake_job: tuple[str, str] | None = None,
+    self_job: tuple[str, str] | None = None,
 ) -> TickReport:
     from dataclasses import replace as dc_replace
 
@@ -469,7 +489,168 @@ def replace_report(
         review_ended=tuple(ended),
         followups_submitted=tuple(submitted),
         intake=intake_job or ("", ""),
+        self_initiated=self_job or ("", ""),
     )
+
+
+MAX_ACTIVE_RUNS_PER_TARGET = 1
+SELF_INITIATED_COOLDOWN_S = 6 * 3600
+# An implementing run untouched for this long is a crashed climb job (their
+# walltime is 90 min); it must not block the lane forever. Its cooldown
+# entry still applies, so the crashed benchmark isn't immediately retried.
+STRANDED_IMPLEMENTING_S = 6 * 3600
+# A pending marker older than this is dead even if squeue can't be read.
+PENDING_TTL_S = 4 * 3600
+
+
+def pick_self_initiated(
+    records: list[RunRecord],
+    contract: Any,
+    target: str,
+    now: float,
+    pending_attempt: tuple[str, float] | None = None,
+) -> str | None:
+    """The benchmark to climb next on `target`, or None.
+
+    Deliberately boring (the planning agent upgrades this later): serialize
+    to one active run per target, respect the contract's weekly budget and a
+    per-benchmark cooldown, then choose the benchmark least recently
+    attempted — untouched ones first. Only this target's runs count toward
+    any of it. `pending_attempt` is a (benchmark, submitted_at) from a climb
+    job that died before writing a run record — it counts toward cooldown so
+    a crash loop can't resubmit every tick.
+    """
+    mine = [r for r in records if r.target == target]
+
+    def stranded(r: RunRecord) -> bool:
+        return r.state == IMPLEMENTING and now - max(r.updated, r.created) > STRANDED_IMPLEMENTING_S
+
+    active = [r for r in mine if r.state != ENDED and not stranded(r)]
+    if len(active) >= MAX_ACTIVE_RUNS_PER_TARGET:
+        return None
+    week_ago = now - 7 * 24 * 3600
+    if sum(1 for r in mine if r.created >= week_ago) >= contract.budgets.runs_per_week:
+        return None
+    last_attempt: dict[str, float] = {}
+    for r in mine:
+        if r.benchmark:
+            last_attempt[r.benchmark] = max(last_attempt.get(r.benchmark, 0.0), r.created)
+    if pending_attempt is not None and pending_attempt[0]:
+        bench_name, submitted_at = pending_attempt
+        last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
+    candidates = sorted(
+        contract.benchmarks,
+        key=lambda b: (last_attempt.get(b.name, 0.0), b.name),
+    )
+    for bench in candidates:
+        if now - last_attempt.get(bench.name, 0.0) >= SELF_INITIATED_COOLDOWN_S:
+            return str(bench.name)
+    return None
+
+
+def _pending_path(root: Path, target: str) -> Path:
+    return root / "pending" / (target.replace("/", "__") + ".json")
+
+
+def read_pending(root: Path, target: str) -> dict[str, Any] | None:
+    """The submit-time marker for a climb whose run record may not exist yet."""
+    path = _pending_path(root, target)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and "submitted_at" in data else None
+
+
+def write_pending(root: Path, target: str, benchmark: str, job_id: str, now: float) -> None:
+    path = _pending_path(root, target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"benchmark": benchmark, "job_id": job_id, "submitted_at": now}))
+    os.replace(tmp, path)
+
+
+def clear_pending(root: Path, target: str) -> None:
+    _pending_path(root, target).unlink(missing_ok=True)
+
+
+def service_self_initiated(
+    root: Path,
+    compute: SlurmCompute,
+    spec: FollowupSpec,
+    contract: Any,
+    now: float,
+    dry_run: bool = False,
+) -> tuple[str, str] | None:
+    """The default background mode: when nothing else needs doing, climb the
+    least-recently-attempted benchmark.
+
+    A pending marker written at submit time bridges the gap between
+    `compute.submit` and the climb job writing its run record — without it,
+    every tick during Slurm queue latency would launch a duplicate climb.
+    """
+    try:
+        records = list_runs(root)
+        pending = read_pending(root, spec.target)
+        pending_attempt: tuple[str, float] | None = None
+        if pending is not None:
+            submitted_at = float(pending["submitted_at"])
+            landed = any(
+                r.target == spec.target and r.created >= submitted_at - 60 for r in records
+            )
+            expired = now - submitted_at > PENDING_TTL_S
+            if landed:
+                clear_pending(root, spec.target)  # the run record carries it now
+            elif (
+                not expired and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
+            ):
+                return None  # climb queued or starting; its record isn't written yet
+            else:
+                # Died before writing a record. Keep its cooldown so a
+                # crash-at-startup loop can't resubmit every tick.
+                clear_pending(root, spec.target)
+                pending_attempt = (str(pending.get("benchmark", "")), submitted_at)
+        benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
+        if benchmark is None:
+            return None
+        if dry_run:
+            return (benchmark, "dry-run")
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "autoresearch.climb",
+            "--target",
+            spec.target,
+            "--benchmark",
+            benchmark,
+            "--run-root",
+            str(spec.run_root),
+            "--image",
+            spec.image,
+        ]
+        if spec.pat_file:
+            argv += ["--pat-file", spec.pat_file]
+        if spec.key_file:
+            argv += ["--key-file", spec.key_file]
+        job_id = compute.submit(
+            JobSpec(
+                job_name=f"climb-{benchmark}"[:60],
+                account=spec.account,
+                partition=spec.partition,
+                time_minutes=90,
+                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                cpus=4,
+                mem="8G",
+            )
+        )
+        write_pending(root, spec.target, benchmark, job_id, now)
+        log.info("self-initiated climb on %s: job %s", benchmark, job_id)
+        return (benchmark, job_id)
+    except Exception as exc:  # one bad pass must not break the tick
+        log.warning("self-initiated pass failed: %s", exc)
+        return None
 
 
 def service_intake(
