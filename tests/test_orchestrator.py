@@ -340,3 +340,35 @@ def test_leader_best_never_regresses() -> None:
     # a genuinely better run still advances it
     entries = update_leader(entries, "tsp", "m", "min", 13.1, 12.9, "r3", "d3")
     assert entries["tsp"].best == 12.9
+
+
+def test_eval_cache_is_bound_alone_and_cleaned(tmp_path: Path, monkeypatch) -> None:
+    """Only the per-eval cache dir is bound into the container — never the
+    whole host tmp — and it dies with the eval."""
+    import stat as stat_mod
+
+    from autoresearch.orchestrator import SubprocessEvaluator
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    fake = tmp_path / "apptainer"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s " "$@" > {tmp_path}/eval_argv\n'
+        f"env > {tmp_path}/eval_env\n"
+        "printf '{\"m\": 3.5}\\n'\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat_mod.S_IEXEC)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    evaluator = SubprocessEvaluator(
+        timeout_s=30, container_image="/img/pilot.sif", apptainer_binary=str(fake)
+    )
+    assert evaluator.evaluate(ws, "run", "m") == 3.5
+    argv = (tmp_path / "eval_argv").read_text()
+    assert f"--bind {scratch}/uv-cache-" in argv  # the cache dir, specifically
+    assert f"--bind {scratch}:{scratch}" not in argv  # never the whole tmp
+    seen_env = (tmp_path / "eval_env").read_text()
+    assert "APPTAINERENV_UV_CACHE_DIR=" in seen_env
+    assert list(scratch.glob("uv-cache-*")) == []  # cleaned up after

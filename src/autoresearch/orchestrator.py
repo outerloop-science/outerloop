@@ -70,6 +70,7 @@ class SubprocessEvaluator:
         # climb died at baseline on a full tmpfs).
         # Fresh per-EVAL home (never reused): baseline and candidate cannot
         # see each other's writes, and nothing survives to any later run.
+        import os
         import tempfile
 
         try:
@@ -80,20 +81,35 @@ class SubprocessEvaluator:
             )
         except OSError as exc:
             raise EvalError(f"could not create eval home: {exc}") from exc
+        # per-EVAL cache on node-local scratch: local IO (NFS caches flake),
+        # no state crossing evals (agent code runs during the candidate eval
+        # and must not poison later baselines), and only THIS directory is
+        # bound into the container — never the whole host /tmp.
         try:
-            return self._measure(workspace, command, metric, eval_home)
-        finally:
-            # bounded disk: each eval's cache dies with it (re-downloading
-            # wheels per eval is the accepted cost of eval isolation)
+            cache_dir = Path(
+                tempfile.mkdtemp(prefix="uv-cache-", dir=os.environ.get("TMPDIR", "/tmp"))
+            )
+        except OSError as exc:
             import shutil
 
             shutil.rmtree(eval_home, ignore_errors=True)
+            raise EvalError(f"could not create eval cache dir: {exc}") from exc
+        try:
+            return self._measure(workspace, command, metric, eval_home, cache_dir)
+        finally:
+            # bounded disk: each eval's home AND cache die with it
+            # (re-downloading wheels per eval is the accepted isolation cost)
+            import shutil
 
-    def _measure(self, workspace: Path, command: str, metric: str, eval_home: Path) -> float:
+            shutil.rmtree(eval_home, ignore_errors=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    def _measure(
+        self, workspace: Path, command: str, metric: str, eval_home: Path, cache_dir: Path
+    ) -> float:
         import os
         import signal
 
-        host_tmp = os.environ.get("TMPDIR", "/tmp")
         if self.container_image:
             argv = [
                 self.apptainer_binary,
@@ -107,7 +123,7 @@ class SubprocessEvaluator:
                 # node-local scratch for uv's cache: the container's own /tmp
                 # is a size-capped tmpfs, and shared-FS caches flake (NFS)
                 "--bind",
-                f"{host_tmp}:{host_tmp}",
+                f"{cache_dir}:{cache_dir}",
                 "--pwd",
                 str(workspace),
                 self.container_image,
@@ -121,7 +137,7 @@ class SubprocessEvaluator:
         # uv's cache does heavy small-file IO; on shared filesystems (NFS)
         # that flakes with stale-handle/copy errors (seen live twice). Keep
         # the cache on node-local scratch and copy across filesystems.
-        env["UV_CACHE_DIR"] = os.path.join(host_tmp, "uv-cache")
+        env["UV_CACHE_DIR"] = str(cache_dir)
         env["UV_LINK_MODE"] = "copy"
         if self.container_image:
             # --cleanenv drops the host env; APPTAINERENV_* survives it
