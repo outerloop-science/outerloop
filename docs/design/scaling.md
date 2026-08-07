@@ -134,6 +134,43 @@ Rules that fall out:
 Implementation lands with phase 6 (reports); nothing here blocks the live
 climb.
 
+## Part 2d — Verification (decided 2026-08-07)
+
+Three verification regimes, by what the target's metric permits:
+
+1. **Directly verifiable** (the pilot): the frozen eval validates solution
+   structure (invalid output raises, never scores), the metric is
+   deterministic, the orchestrator re-measures, fingerprints pin the tree.
+   No judgment needed.
+2. **Statistically verifiable** (ML targets): protocol replaces proof —
+   frozen held-out evals on frozen config grids, seeds, the noise floor,
+   full-suite reporting, leader-never-regresses, and consolidation runs with
+   leave-one-out ablation, where lucky seeds and flukes die.
+3. **Judgment-verifiable**: a **verification agent** skims the code and the
+   claim for what protocol cannot catch — ruler-gaming inside allowed scope,
+   test-set leakage, seed-fishing, overfitting to frozen instances, claims
+   the diff does not support.
+
+The verification agent is the advisory reviewer's complement, and the two
+never overlap:
+
+| | advisory reviewer | verification agent |
+| --- | --- | --- |
+| runs on | human-authored PRs | **bot-authored PRs only** |
+| hunts | general defects | metric-gaming specifically |
+| inputs | diff + file context | diff + contract + eval code + claimed numbers + run report |
+| output | findings, never approvals | findings, never approvals — and its header states that **absence of findings is not an endorsement** |
+| credential | its own capped key | its own capped key, distinct from both the reviewer's and the harness's |
+
+This stays compatible with the reviewer-influence rule (nothing in the
+pipeline may nudge humans toward merging its own work) because the verifier
+only ever raises suspicions: silence is explicitly meaningless, and its text
+passes the same approval-language sanitization as the reviewer's. It ships
+on the same reusable-workflow chassis (a verifier mode: inverted bot gate,
+gaming-focused prompt) and is **required before the first
+statistically-verifiable target onboards** — judgment is the layer category-2
+targets cannot do without.
+
 ## Part 3 — Multi-agent: identity, isolation, seats
 
 **Why multiple agents at all** (practical, not aesthetic): subscription seats
