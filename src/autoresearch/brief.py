@@ -208,9 +208,14 @@ def render(brief: SessionBrief) -> str:
         "",
         "# Ground rules",
         "Work only within the contract's allowed paths. One hypothesis, one "
-        "change-set. When done (or blocked), write a short research report: "
-        "hypothesis, what you did, outcome with numbers, takeaways, and the "
-        "most promising next step. A negative result reported clearly is a "
+        "change-set. Do NOT commit, push, or open PRs: when your session "
+        "ends, the orchestrator scope-checks your working tree, re-measures "
+        "the benchmark itself, and publishes the branch, PR, and progress "
+        "records (BENCHMARKS.md and the leader ledger — never edit those; "
+        "they update after your session from orchestrator measurements). "
+        "When done (or blocked), write a short research report: hypothesis, "
+        "what you did, outcome with numbers, takeaways, and the most "
+        "promising next step. A negative result reported clearly is a "
         "success.",
     ]
     return "\n".join(parts)
