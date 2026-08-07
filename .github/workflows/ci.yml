@@ -1,5 +1,6 @@
-# Job names (lint, types, test, lock, gitleaks) are required-check contexts in
-# branch protection — renaming a job requires updating scripts/setup_branch_protection.sh.
+# ONE job: GitHub bills per job rounded UP to a full minute, so five 15-second
+# jobs cost five minutes. The job name `ci` is the sole required-check context
+# in branch protection (scripts/setup_branch_protection.sh).
 name: ci
 
 on:
@@ -16,55 +17,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: gitleaks scans it (this repo handles credentials).
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
       - run: uv sync --locked
+      - run: uv lock --check
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-
-  types:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --locked
       - run: uv run mypy
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --locked
-      # addopts in pyproject.toml already excludes the slow/llm/slurm tiers
       - run: uv run pytest
-
-  lock:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv lock --check
-
-  gitleaks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Scan full history — this repo handles bot and API credentials.
-          fetch-depth: 0
-      # Pinned CLI binary instead of gitleaks/gitleaks-action: the action requires a
-      # paid GITLEAKS_LICENSE for organization repos; the CLI is free (MIT).
-      - name: Run gitleaks over full history
+      # Pinned CLI binary instead of gitleaks/gitleaks-action: the action
+      # requires a paid GITLEAKS_LICENSE for org repos; the CLI is free (MIT).
+      - name: gitleaks over full history
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar -xz gitleaks
           ./gitleaks git --no-banner --redact --exit-code 1 .

@@ -152,3 +152,13 @@ open-ended sweep space.
 - [ ] API billing with hard spend caps + the separate reviewer key
 - [ ] Choose the sponsoring Torch account for bot-submitted jobs
 - [ ] Decide transcript retention period and project-space location
+
+
+## Actions economy (decided 2026-08-07)
+
+- [x] Single `ci` job (job-minute rounding was 5x the real usage); advisory
+      review on open + `autoresearch:review` label, never per push
+- [ ] Same consolidation on the target repos' workflows
+- [ ] Mid-term: self-hosted runner on the lab workstation (outbound-only
+      polling; frees private-repo minutes entirely). When repos go public,
+      hosted minutes become free anyway

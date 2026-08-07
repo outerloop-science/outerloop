@@ -28,11 +28,7 @@ gh api --method PUT -H "Accept: application/vnd.github+json" \
   "required_status_checks": {
     "strict": false,
     "checks": [
-      {"context": "lint"},
-      {"context": "types"},
-      {"context": "test"},
-      {"context": "lock"},
-      {"context": "gitleaks"}
+      {"context": "ci"}
     ]
   },
   "enforce_admins": ${ENFORCE_ADMINS},

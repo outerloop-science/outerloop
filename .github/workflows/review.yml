@@ -1,12 +1,17 @@
 name: advisory-review
+# Advisory review runs on OPEN and on demand (label), not on every push —
+# a 2-3 minute model review per synchronize was the minutes burner.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened, labeled]
 permissions:
   contents: read
   pull-requests: write
 jobs:
   advisory:
+    # label events only run the review for the explicit re-request label
+    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
+
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review.yml@main
     with:
       bot_login: agentic-learning-bot
