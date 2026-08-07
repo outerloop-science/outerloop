@@ -247,7 +247,9 @@ def test_enable_auto_merge_arms_via_graphql(provider: FileTokenProvider) -> None
     assert "enablePullRequestAutoMerge" in body["query"]
 
 
-def test_enable_auto_merge_surfaces_graphql_errors(provider: FileTokenProvider) -> None:
+def test_enable_auto_merge_surfaces_graphql_errors_as_status_zero(
+    provider: FileTokenProvider,
+) -> None:
     transport = FakeTransport(
         [
             {"node_id": "PR_node123", "number": 7},
@@ -255,11 +257,45 @@ def test_enable_auto_merge_surfaces_graphql_errors(provider: FileTokenProvider) 
         ]
     )
     client = GitHubClient(auth=provider, transport=transport)
-    with pytest.raises(GitHubError, match="not allowed"):
+    with pytest.raises(GitHubError, match="not allowed") as exc_info:
         client.enable_auto_merge("org/repo", 7)
+    assert exc_info.value.status == 0  # not an HTTP failure; not a success either
+
+
+def test_enable_auto_merge_missing_node_id_is_typed(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([{"number": 7}])
+    with pytest.raises(GitHubError, match="node_id"):
+        GitHubClient(auth=provider, transport=transport).enable_auto_merge("org/repo", 7)
 
 
 def test_enable_auto_merge_dry_run_touches_nothing(provider: FileTokenProvider) -> None:
     transport = FakeTransport([])
     GitHubClient(auth=provider, transport=transport, dry_run=True).enable_auto_merge("o/r", 1)
     assert transport.requests == []
+
+
+def test_arming_guard_requires_a_required_review(provider: FileTokenProvider) -> None:
+    """No required human review between arming and merging -> refuse to arm:
+    the bot-never-merges rule must hold in code, not per-repo config."""
+    transport = FakeTransport([{"data": {"repository": {"pullRequest": {"reviewDecision": None}}}}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.arm_auto_merge_when_review_required("org/repo", 7) is False
+    assert len(transport.requests) == 1  # decision query only; no mutation sent
+
+
+def test_arming_guard_arms_with_repo_allowed_method(provider: FileTokenProvider) -> None:
+    """REVIEW_REQUIRED -> arm, falling back to a merge method the repo
+    actually allows (squash-only self-hosters still get arming)."""
+    transport = FakeTransport(
+        [
+            {"data": {"repository": {"pullRequest": {"reviewDecision": "REVIEW_REQUIRED"}}}},
+            {"allow_merge_commit": False, "allow_squash_merge": True, "allow_rebase_merge": True},
+            {"node_id": "PR_n", "number": 7},
+            {"data": {"enablePullRequestAutoMerge": {"pullRequest": {"number": 7}}}},
+        ]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.arm_auto_merge_when_review_required("org/repo", 7) is True
+    assert isinstance(transport.requests[-1].data, bytes)
+    body = json.loads(transport.requests[-1].data.decode())
+    assert body["variables"]["method"] == "SQUASH"

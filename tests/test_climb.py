@@ -100,10 +100,11 @@ class FakeGitHub:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body))
         return f"https://github.com/{repo}/pull/1"
 
-    def enable_auto_merge(self, repo, number, method="MERGE") -> None:
+    def arm_auto_merge_when_review_required(self, repo, number) -> bool:
         if self.arming_error:
             raise RuntimeError(self.arming_error)
         self.armed.append((repo, number))
+        return True
 
 
 @dataclass
