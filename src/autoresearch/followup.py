@@ -25,12 +25,16 @@ from autoresearch.harness import Harness, redact
 from autoresearch.orchestrator import Evaluator, out_of_scope
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import PROGRESS_PATHS, load_leader, update_leader, write_progress
+from autoresearch.review import APPROVAL_PATTERN, REDACTED
 from autoresearch.runstate import (
     ENDED,
     IN_REVIEW,
     MERGED,
     REJECTED,
+    RunRecord,
+    acquire_lease,
     load_record,
+    release_lease,
     run_dir,
     save_record,
 )
@@ -71,6 +75,8 @@ def qualifying_comments(
         if author.casefold() == bot_login.casefold():
             continue
         body = str(comment.get("body") or "")
+        if not body.strip():
+            continue  # e.g. a review submission with no text
         if REPLY_MARKER in body or "autoresearch:advisory-review" in body:
             continue
         if str(comment.get("author_association", "")) not in QUALIFYING_ASSOCIATIONS:
@@ -88,6 +94,7 @@ def respond_once(
     bot_login: str,
     now: float,
     secrets: tuple[str, ...] = (),
+    created: str = "",
 ) -> FollowupOutcome:
     record = load_record(run_root, run_id)
     if record.state != IN_REVIEW:
@@ -95,6 +102,41 @@ def respond_once(
     if not record.pr_url:
         return FollowupOutcome(run_id, "error", "in-review run has no pr_url")
     number = _pr_number(record.pr_url)
+    # The same lease that serializes experiment wakes serializes follow-ups:
+    # two concurrent responders would double-spend a session and double-reply.
+    if not acquire_lease(run_root, run_id, holder=f"followup:{now}", holder_job_id="", now=now):
+        return FollowupOutcome(run_id, "no-op", "lease held; another responder is active")
+    try:
+        return _respond(
+            run_root,
+            run_id,
+            record,
+            number,
+            harness,
+            evaluator,
+            github,
+            bot_login,
+            now,
+            secrets,
+            created,
+        )
+    finally:
+        release_lease(run_root, run_id)
+
+
+def _respond(
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    number: int,
+    harness: Harness,
+    evaluator: Evaluator,
+    github: GitHubClient,
+    bot_login: str,
+    now: float,
+    secrets: tuple[str, ...],
+    created: str,
+) -> FollowupOutcome:
 
     pr = github.get_pull_request(record.target, number)
     if pr.get("merged") or pr.get("merged_at"):
@@ -108,9 +150,13 @@ def respond_once(
         )
         return FollowupOutcome(run_id, "ended-rejected")
 
-    comments = qualifying_comments(
-        github.list_comments(record.target, number), bot_login, record.last_comment_id
-    )
+    # All three places a maintainer can write: the conversation tab, a
+    # top-level review, and inline Files-changed comments. GitHub ids share
+    # one global space, so a single cursor covers them.
+    sources = list(github.list_comments(record.target, number))
+    sources += list(github.list_pr_reviews(record.target, number))
+    sources += list(github.list_pr_review_comments(record.target, number))
+    comments = qualifying_comments(sources, bot_login, record.last_comment_id)
     if not comments:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     comments = comments[:MAX_COMMENTS_PER_WAKE]
@@ -122,10 +168,11 @@ def respond_once(
     ws = Workspace(root=workspace, auth=github.auth, url=None)
     contract_text = (workspace / ".autoresearch.yaml").read_text()
     contract = load_contract(contract_text, record.target)
-    bench = next(
-        (b for b in contract.benchmarks if record.task_title.endswith(b.name)),
-        contract.benchmarks[0],
-    )
+    bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
+    if bench is None:
+        return FollowupOutcome(
+            run_id, "error", f"benchmark {record.benchmark!r} not in the contract"
+        )
 
     prompt = render_review_wake([(author, body) for _, author, body in comments])
     session = harness.run(prompt, workspace, resume_session_id=record.resume_session_id or None)
@@ -133,7 +180,11 @@ def respond_once(
         # cursor NOT advanced: the next attempt sees the same comments
         return FollowupOutcome(run_id, "error", f"session: {session.stop_reason}")
 
-    reply_body = redact(session.final_text, secrets)[:MAX_REPLY_CHARS]
+    # Same self-approval scrub as the reviewer: the pipeline must never nudge
+    # humans toward merging its own work, even in the author's voice.
+    reply_body = APPROVAL_PATTERN.sub(REDACTED, redact(session.final_text, secrets))[
+        :MAX_REPLY_CHARS
+    ]
     measured_note = ""
 
     changed = _changed_paths(ws)
@@ -178,7 +229,7 @@ def respond_once(
                         baseline=candidate,  # pinned by existing entry if present
                         candidate=candidate,
                         run_id=run_id,
-                        date="",
+                        date=created[:10],
                     )
                     write_progress(workspace, entries, record.target)
                     branch = _current_branch(ws)
@@ -261,6 +312,8 @@ def main() -> int:
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
+    from datetime import UTC, datetime
+
     api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
     outcome = respond_once(
@@ -278,6 +331,7 @@ def main() -> int:
         bot_login=args.bot_login,
         now=time.time(),
         secrets=(api_key, bot_auth.token()),
+        created=datetime.now(UTC).isoformat(),
     )
     print(f"action={outcome.action} note={outcome.note}")
     return 0

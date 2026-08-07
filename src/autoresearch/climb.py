@@ -126,6 +126,7 @@ def live_climb(
         run_id=run_id,
         target=config.target,
         task_title=f"improve {config.benchmark}",
+        benchmark=config.benchmark,
         state="implementing",
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,

@@ -61,6 +61,7 @@ class RunRecord:
     wake_job_id: str = ""  # the afterany dependency job, when one exists
     resume_session_id: str = ""  # harness session to resume on wake
     pr_url: str = ""  # the run's open PR, once one exists
+    benchmark: str = ""  # contract benchmark this run works on
     last_comment_id: int = 0  # newest PR comment already processed
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start

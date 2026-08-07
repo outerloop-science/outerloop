@@ -45,6 +45,8 @@ def member(cid: int, body: str, author: str = "renmengye", assoc: str = "MEMBER"
 class FakeGitHub:
     pr: dict = field(default_factory=lambda: {"state": "open", "merged": False})
     comments: list[dict] = field(default_factory=list)
+    reviews: list[dict] = field(default_factory=list)
+    review_comments: list[dict] = field(default_factory=list)
     posted: list[str] = field(default_factory=list)
     auth: object = None
 
@@ -53,6 +55,12 @@ class FakeGitHub:
 
     def list_comments(self, repo, number, max_pages: int = 20):
         return self.comments
+
+    def list_pr_reviews(self, repo, number, max_pages: int = 10):
+        return self.reviews
+
+    def list_pr_review_comments(self, repo, number, max_pages: int = 10):
+        return self.review_comments
 
     def comment(self, repo, number, body):
         self.posted.append(body)
@@ -119,6 +127,7 @@ def review_run(tmp_path: Path):
         run_id="tsp-r1",
         target="org/pilot",
         task_title="improve tsp",
+        benchmark="tsp",
         state=IN_REVIEW,
         pr_url="https://github.com/org/pilot/pull/9",
         resume_session_id="sess-original",
@@ -247,6 +256,51 @@ def test_session_error_keeps_cursor(review_run) -> None:
     assert outcome.action == "error"
     assert github.posted == []
     assert load_record(root, "tsp-r1").last_comment_id == 100  # unchanged
+
+
+def test_inline_review_comments_also_wake(review_run) -> None:
+    """A maintainer reviewing via Files changed must not be invisible."""
+    root, _ = review_run
+    github = FakeGitHub(review_comments=[member(140, "inline: why the radius prune?")])
+    harness = ResumingHarness()
+    outcome = respond(root, github, harness)
+    assert outcome.action == "replied"
+    assert "radius prune" in harness.calls[0][0]
+    assert load_record(root, "tsp-r1").last_comment_id == 140
+
+
+def test_concurrent_responder_noops_on_held_lease(review_run) -> None:
+    from autoresearch.runstate import acquire_lease
+
+    root, _ = review_run
+    acquire_lease(root, "tsp-r1", holder="other", holder_job_id="", now=NOW)
+    github = FakeGitHub(comments=[member(101, "hello")])
+    outcome = respond(root, github)
+    assert outcome.action == "no-op"
+    assert "lease held" in outcome.note
+    assert github.posted == []
+
+
+def test_reply_scrubs_approval_language(review_run) -> None:
+    root, _ = review_run
+    github = FakeGitHub(comments=[member(101, "thoughts?")])
+    harness = ResumingHarness(text="Fixed. This is safe to merge — approve when ready.")
+    outcome = respond(root, github, harness)
+    assert outcome.action == "replied"
+    lowered = github.posted[0].casefold()
+    assert "safe to merge" not in lowered
+    assert "approve" not in lowered
+    assert "[redacted" in github.posted[0]
+
+
+def test_empty_review_body_does_not_wake() -> None:
+    empty = {
+        "id": 150,
+        "body": None,
+        "user": {"login": "renmengye"},
+        "author_association": "MEMBER",
+    }
+    assert qualifying_comments([empty], BOT, since_id=0) == []
 
 
 def test_no_new_comments_is_noop(review_run) -> None:

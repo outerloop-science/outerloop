@@ -316,6 +316,31 @@ class GitHubClient:
                 break
         return comments
 
+    def list_pr_reviews(self, repo: str, number: int, max_pages: int = 10) -> list[dict[str, Any]]:
+        """Top-level PR reviews (the 'Review changes' submissions)."""
+        return self._paginate(
+            f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/reviews", max_pages
+        )
+
+    def list_pr_review_comments(
+        self, repo: str, number: int, max_pages: int = 10
+    ) -> list[dict[str, Any]]:
+        """Inline (Files changed) review comments."""
+        return self._paginate(
+            f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/comments", max_pages
+        )
+
+    def _paginate(self, base_path: str, max_pages: int) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for page in range(1, max_pages + 1):
+            data = self._request("GET", f"{base_path}?per_page=100&page={page}")
+            if not isinstance(data, list) or not data:
+                break
+            items.extend(item for item in data if isinstance(item, dict))
+            if len(data) < 100:
+                break
+        return items
+
     def upsert_comment(self, repo: str, issue_number: int, marker: str, body: str) -> None:
         """Post the comment, or edit the existing one carrying `marker`.
 
