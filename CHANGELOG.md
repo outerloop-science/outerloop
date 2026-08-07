@@ -39,6 +39,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Self-initiated lane: when the requested lane claims nothing and no run is
+  active, the tick launches a climb on the least-recently-attempted contract
+  benchmark, within the weekly budget and a per-benchmark cooldown. The
+  planning agent later replaces this picker with motivated, vetoable plans.
+
 - The requested lane: maintainer issues on the target repo become runs. The
   tick claims at most one qualifying issue per cycle (standing-gated,
   single-benchmark-named, claim-marker deduped); the issue text enters the

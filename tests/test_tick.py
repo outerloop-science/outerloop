@@ -509,3 +509,87 @@ def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
     )
     assert ended == [("r-m", "merged")]
     assert load_record(tmp_path, "r-m").ending == "merged"
+
+
+def test_self_initiated_selection_rules(tmp_path: Path) -> None:
+    from autoresearch.contract import load_contract
+    from autoresearch.runstate import ENDED, RunRecord, save_record
+    from autoresearch.tick import pick_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+  - {name: denoise, command: c, metric: m, direction: min}
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+
+    def rec(run_id, benchmark, created, state=ENDED, ending="negative-result"):
+        r = RunRecord(
+            run_id=run_id,
+            target="org/pilot",
+            task_title="t",
+            benchmark=benchmark,
+            state=state,
+            ending=ending if state == ENDED else "",
+        )
+        save_record(tmp_path, r, now=created)
+        return r
+
+    # empty history → alphabetically-first untouched benchmark
+    assert pick_self_initiated([], contract, now=NOW) == "denoise"
+    # an ACTIVE run serializes: nothing new
+    rec("r1", "tsp", NOW - 100, state="waiting")
+    # waiting run needs deadline etc — build directly instead
+    records = [
+        RunRecord(
+            run_id="a",
+            target="o/p",
+            task_title="t",
+            benchmark="tsp",
+            state="implementing",
+            created=NOW - 100,
+        ),
+    ]
+    assert pick_self_initiated(records, contract, now=NOW) is None
+    # cooldown: recently-attempted benchmark skipped, next-oldest picked
+    records = [
+        RunRecord(
+            run_id="a",
+            target="o/p",
+            task_title="t",
+            benchmark="denoise",
+            state=ENDED,
+            ending="negative-result",
+            created=NOW - 60,
+        ),
+        RunRecord(
+            run_id="b",
+            target="o/p",
+            task_title="t",
+            benchmark="reach",
+            state=ENDED,
+            ending="merged",
+            created=NOW - 8 * 3600,
+        ),
+    ]
+    assert pick_self_initiated(records, contract, now=NOW) == "tsp"
+    # weekly budget: 3 runs in the window → None
+    records = [
+        RunRecord(
+            run_id=f"r{i}",
+            target="o/p",
+            task_title="t",
+            benchmark="tsp",
+            state=ENDED,
+            ending="negative-result",
+            created=NOW - i * 3600,
+        )
+        for i in range(3)
+    ]
+    assert pick_self_initiated(records, contract, now=NOW) is None

@@ -104,8 +104,11 @@ the research repos' porting timelines; mistakes are free; adversarial testing
       run contained (Apptainer --containall, workspace + run-home binds only,
       key via APPTAINERENV_ env). Git glue (clone/push/PR wiring) + live
       pilot climb next
-- [ ] Full loop live on the pilot: bounded iterations; PR with results
-      table, one human code-owner approval per merge
+- [x] Full loop live on the pilot (2026-08-07): requested lane (issue #7 →
+      PR #8), in-review follow-up (comment → resumed-author reply), and
+      self-initiated selection (least-recently-attempted, budget + cooldown
+      bounded, one active run per target) all exercised; auto-merge armed by
+      approval for bot PRs
 - [ ] Every run ends with a research report — hypothesis, outcome, takeaways,
       next steps — posted to the PR or the ledger (negative results included)
 - [x] `in-review` follow-up (followup.respond_once + CLI): merge/close →

@@ -99,6 +99,7 @@ class TickReport:
     review_ended: tuple[tuple[str, str], ...] = ()  # (run_id, ending)
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
+    self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
 
 
 @dataclass(frozen=True)
@@ -452,7 +453,24 @@ def tick(
         intake_job = service_intake(
             root, github, compute, followup_spec, now, dry_run=followup_dry_run
         )
-        report = replace_report(report, ended, submitted, intake_job)
+        self_job = None
+        if intake_job is None and followup_spec.target:
+            try:
+                from autoresearch.contract import load_contract
+
+                raw = github.get_file_content(followup_spec.target, ".autoresearch.yaml", "main")
+                if raw is not None:
+                    self_job = service_self_initiated(
+                        root,
+                        compute,
+                        followup_spec,
+                        load_contract(raw, followup_spec.target),
+                        now,
+                        dry_run=followup_dry_run,
+                    )
+            except Exception as exc:
+                log.warning("self-initiated selection failed: %s", exc)
+        report = replace_report(report, ended, submitted, intake_job, self_job)
     return report
 
 
@@ -461,6 +479,7 @@ def replace_report(
     ended: list[tuple[str, str]],
     submitted: list[tuple[str, str]],
     intake_job: tuple[str, str] | None = None,
+    self_job: tuple[str, str] | None = None,
 ) -> TickReport:
     from dataclasses import replace as dc_replace
 
@@ -469,7 +488,93 @@ def replace_report(
         review_ended=tuple(ended),
         followups_submitted=tuple(submitted),
         intake=intake_job or ("", ""),
+        self_initiated=self_job or ("", ""),
     )
+
+
+MAX_ACTIVE_RUNS_PER_TARGET = 1
+SELF_INITIATED_COOLDOWN_S = 6 * 3600
+
+
+def pick_self_initiated(records: list[RunRecord], contract: Any, now: float) -> str | None:
+    """The benchmark to climb next, or None.
+
+    Deliberately boring (the planning agent upgrades this later): serialize
+    to one active run per target, respect the contract's weekly budget and a
+    per-benchmark cooldown, then choose the benchmark least recently
+    attempted — untouched ones first.
+    """
+    active = [r for r in records if r.state != ENDED]
+    if len(active) >= MAX_ACTIVE_RUNS_PER_TARGET:
+        return None
+    week_ago = now - 7 * 24 * 3600
+    if sum(1 for r in records if r.created >= week_ago) >= contract.budgets.runs_per_week:
+        return None
+    last_attempt: dict[str, float] = {}
+    for r in records:
+        if r.benchmark:
+            last_attempt[r.benchmark] = max(last_attempt.get(r.benchmark, 0.0), r.created)
+    candidates = sorted(
+        contract.benchmarks,
+        key=lambda b: (last_attempt.get(b.name, 0.0), b.name),
+    )
+    for bench in candidates:
+        if now - last_attempt.get(bench.name, 0.0) >= SELF_INITIATED_COOLDOWN_S:
+            return str(bench.name)
+    return None
+
+
+def service_self_initiated(
+    root: Path,
+    compute: SlurmCompute,
+    spec: FollowupSpec,
+    contract: Any,
+    now: float,
+    dry_run: bool = False,
+) -> tuple[str, str] | None:
+    """The default background mode: when nothing else needs doing, climb the
+    least-recently-attempted benchmark."""
+    try:
+        benchmark = pick_self_initiated(list_runs(root), contract, now)
+        if benchmark is None:
+            return None
+        if dry_run:
+            return (benchmark, "dry-run")
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "autoresearch.climb",
+            "--target",
+            spec.target,
+            "--benchmark",
+            benchmark,
+            "--run-root",
+            str(spec.run_root),
+            "--image",
+            spec.image,
+        ]
+        if spec.pat_file:
+            argv += ["--pat-file", spec.pat_file]
+        if spec.key_file:
+            argv += ["--key-file", spec.key_file]
+        job_id = compute.submit(
+            JobSpec(
+                job_name=f"climb-{benchmark}"[:60],
+                account=spec.account,
+                partition=spec.partition,
+                time_minutes=90,
+                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                cpus=4,
+                mem="8G",
+            )
+        )
+        log.info("self-initiated climb on %s: job %s", benchmark, job_id)
+        return (benchmark, job_id)
+    except Exception as exc:  # one bad pass must not break the tick
+        log.warning("self-initiated pass failed: %s", exc)
+        return None
 
 
 def service_intake(
