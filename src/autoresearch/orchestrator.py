@@ -70,8 +70,18 @@ class SubprocessEvaluator:
         # CONTAINED eval needs it too (--home): apptainer's tmpfs home is
         # size-capped and uv blows it extracting wheels (seen live: first
         # climb died at baseline on a full tmpfs).
-        eval_home = workspace.resolve().parent / f"{workspace.name}-eval-home"
-        eval_home.mkdir(parents=True, exist_ok=True)
+        # Fresh per-EVAL home (never reused): baseline and candidate cannot
+        # see each other's writes, and nothing survives to any later run.
+        import tempfile
+
+        try:
+            eval_home = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{workspace.name}-eval-home-", dir=workspace.resolve().parent
+                )
+            )
+        except OSError as exc:
+            raise EvalError(f"could not create eval home: {exc}") from exc
         if self.container_image:
             argv = [
                 self.apptainer_binary,
