@@ -504,3 +504,40 @@ def test_title_pair_never_renders_identical() -> None:
     assert _title_pair(13.875696168157484, 10.844662077277105) == "13.88 -> 10.84"
     assert _title_pair(10.00001, 10.00002) == "10.00001 -> 10.00002"
     assert " -> " in _title_pair(1e-7, 2e-7)
+
+
+def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> None:
+    """The requested lane's visible loop: claim → Addresses #N → report."""
+
+    @dataclass
+    class CommentingGitHub(FakeGitHub):
+        issue_comments: list = field(default_factory=list)
+
+        def comment(self, repo, number, body):
+            self.issue_comments.append((number, body))
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-iss",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "i=1\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-07T00:00:00Z",
+        issue_number=42,
+        task_hypothesis="A maintainer asked: make tsp faster (fenced text here)",
+    )
+    assert outcome.outcome == "improved"
+    assert "Addresses #42." in github.prs[0]["body"]
+    claim, report = github.issue_comments[0], github.issue_comments[-1]
+    assert claim[0] == 42 and "autoresearch:claimed" in claim[1]
+    assert report[0] == 42 and "finished (improved)" in report[1]
+    assert "pull/1" in report[1]
+    record = load_record(tmp_path / "state", "tsp-iss")
+    assert record.issue_number == 42

@@ -138,12 +138,17 @@ def live_climb(
     if issue_number:
         from autoresearch.intake import CLAIM_MARKER
 
-        github.comment(
-            config.target,
-            issue_number,
-            f"{CLAIM_MARKER}\nPicked up as run `{run_id}` "
-            f"(benchmark `{config.benchmark}`). A report will follow here.",
+        already = any(
+            CLAIM_MARKER in str(c.get("body", ""))
+            for c in github.list_comments(config.target, issue_number)
         )
+        if not already:  # manual CLI runs claim here; tick-submitted runs claimed at submit
+            github.comment(
+                config.target,
+                issue_number,
+                f"{CLAIM_MARKER}\nPicked up as run `{run_id}` "
+                f"(benchmark `{config.benchmark}`). A report will follow here.",
+            )
 
     try:
         result = climb_once(
@@ -246,6 +251,9 @@ def live_climb(
             )
             ws.push(branch)
             pushed = True
+            body = pr_body(result, config, redact_secrets=secrets)
+            if issue_number:
+                body = f"Addresses #{issue_number}.\n\n{body}"
             pr_url = github.create_pull(
                 config.target,
                 # short precision in the title; full precision lives in the
@@ -254,7 +262,7 @@ def live_climb(
                 f"{_title_pair(result.baseline, result.candidate)}",
                 head=branch,
                 base=base_branch,
-                body=pr_body(result, config, redact_secrets=secrets),
+                body=body,
             )
             final = RunRecord(
                 **{
@@ -298,6 +306,17 @@ def live_climb(
             }
         )
     save_record(run_root, final, now)
+    if issue_number:
+        summary = redact(result.report(config, redact_secrets=secrets), secrets)[:8000]
+        link = f"\n\nPull request: {pr_url}" if pr_url else ""
+        try:
+            github.comment(
+                config.target,
+                issue_number,
+                f"Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
+            )
+        except Exception as exc:
+            log.warning("could not report to issue #%s: %s", issue_number, exc)
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return LiveClimbOutcome(
         run_id=run_id,

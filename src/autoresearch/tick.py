@@ -500,6 +500,16 @@ def service_intake(
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
+        # claim BEFORE submit: Slurm queueing can take minutes, and the next
+        # tick must not re-claim the same issue in that window
+        from autoresearch.intake import CLAIM_MARKER
+
+        github.comment(
+            target,
+            task.number,
+            f"{CLAIM_MARKER}\nClaimed for benchmark `{task.benchmark}`; a run "
+            "is queued and a report will follow here.",
+        )
         import base64 as _b64
 
         hypothesis_b64 = _b64.b64encode(issue_hypothesis(task).encode()).decode()
