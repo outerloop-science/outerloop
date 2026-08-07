@@ -413,8 +413,9 @@ def test_climb_once_exception_records_aborted(tmp_path, target_repo) -> None:
     assert "not in contract" in record.ending_note
 
 
-def test_orphan_branch_is_deleted_after_pr_failure(tmp_path, target_repo) -> None:
-    """The branch this attempt pushed must not linger when PR creation fails."""
+def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> None:
+    """create_pull failing does NOT prove no PR exists — the pushed branch is
+    left alone (deleting could close a real PR) and recorded for a sweeper."""
 
     @dataclass
     class FailingGitHub2:
@@ -432,7 +433,9 @@ def test_orphan_branch_is_deleted_after_pr_failure(tmp_path, target_repo) -> Non
         now=1_000_000.0,
         created="t",
     )
-    assert "tsp-orphan" not in _git(target_repo, "branch", "--list")
+    assert "tsp-orphan" in _git(target_repo, "branch", "--list")
+    record = load_record(tmp_path / "state", "tsp-orphan")
+    assert "branch left on remote: feat/auto/agent-01/tsp-orphan" in record.ending_note
 
 
 def test_not_beating_recorded_best_is_rejected_loudly(tmp_path, target_repo) -> None:

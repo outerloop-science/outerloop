@@ -30,6 +30,7 @@ from autoresearch.orchestrator import (
     out_of_scope,
     pr_body,
 )
+from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
     PROGRESS_PATHS,
     load_leader,
@@ -171,7 +172,12 @@ def live_climb(
             if post_eval != set(result.measured_paths):
                 drift = sorted(post_eval.symmetric_difference(result.measured_paths))
                 raise WorkspaceDrift(f"workspace changed during eval: {drift[:10]}")
-            if len(tree_hashes) >= 2 and tree_hashes[-1] != tree_hashes[-2]:
+            # Fail CLOSED: two fingerprints must exist (pre-eval from
+            # climb_once's scope check, post-eval from just above) — a
+            # missing one means the drift protection did not run.
+            if len(tree_hashes) < 2:
+                raise WorkspaceDrift("content fingerprints missing; drift check did not run")
+            if tree_hashes[-1] != tree_hashes[-2]:
                 raise WorkspaceDrift(
                     "file contents changed during eval (same paths, different bytes)"
                 )
@@ -185,17 +191,13 @@ def live_climb(
                 raise WorkspaceDrift("improved result missing measurements")
             bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
             prior = load_leader(workspace).get(config.benchmark)
-            if prior is not None:
-                beats = (
-                    result.candidate > prior.best
-                    if bench.direction == "max"
-                    else result.candidate < prior.best
+            if prior is not None and not orch_improved(
+                prior.best, result.candidate, bench.direction, config.min_relative_improvement
+            ):
+                raise WorkspaceDrift(
+                    f"candidate {result.candidate} does not beat the recorded "
+                    f"best {prior.best} by the noise floor (stale clone or eval noise)"
                 )
-                if not beats:
-                    raise WorkspaceDrift(
-                        f"candidate {result.candidate} does not beat the recorded "
-                        f"best {prior.best} (stale clone or eval noise)"
-                    )
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -242,7 +244,10 @@ def live_climb(
                     **record.__dict__,
                     "state": ENDED,
                     "ending": ABORTED,
-                    "ending_note": redact(f"{type(exc).__name__}: {exc}", secrets)[:500],
+                    "ending_note": (
+                        (f"branch left on remote: {branch}; " if pushed else "")
+                        + redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
+                    ),
                 }
             )
     else:
