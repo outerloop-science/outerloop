@@ -132,6 +132,10 @@ open-ended sweep space.
 
 ## Phase 7 — Research targets & scale-out
 
+- [ ] Verification agent (scaling.md Part 2d): verifier mode on the review
+      chassis — bot-PRs only, metric-gaming prompt, own capped key, silence-is
+      -not-endorsement header. REQUIRED before any statistically-verifiable
+      target onboards
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met
