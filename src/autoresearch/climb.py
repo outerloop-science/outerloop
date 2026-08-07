@@ -226,8 +226,9 @@ def live_climb(
             # orchestrator-written progress files are the only exemption.
             ws.commit_all(
                 f"agent: improve {config.benchmark} "
-                f"({_title_pair(result.baseline, result.candidate)})",
-                author=config.agent_id,
+                f"({_title_pair(result.baseline, result.candidate)})"
+                f"\n\nAgent: {config.agent_id}",
+                author=config.bot_login,
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
             ws.push(branch)

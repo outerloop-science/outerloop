@@ -310,8 +310,9 @@ def _respond(
                     write_progress(workspace, entries, record.target)
                     branch = _current_branch(ws)
                     ws.commit_all(
-                        f"agent: address review feedback ({bench.metric}={candidate:.6g})",
-                        author=record.agent_id,
+                        f"agent: address review feedback ({bench.metric}={candidate:.6g})"
+                        f"\n\nAgent: {record.agent_id}",
+                        author=bot_login,
                         forbidden=lambda p: (
                             p not in PROGRESS_PATHS and bool(out_of_scope([p], contract))
                         ),
