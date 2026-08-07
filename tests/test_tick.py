@@ -633,3 +633,80 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 3600) is None
     assert read_pending(tmp_path, "org/pilot") is None
     assert len(submitted) == 1
+
+
+def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
+    """A failed preflight turns every LAUNCH lane off for the tick (no
+    follow-up submissions, no intake, no self-initiated) but the tick still
+    heartbeats and reports why."""
+    import json as _json
+
+    from autoresearch.tick import FollowupSpec, tick
+
+    class G:
+        def get_file_content(self, repo, path, ref):
+            raise AssertionError("self-initiated must not even fetch the contract")
+
+        def list_issues(self, *a, **k):
+            raise AssertionError("intake must not scan issues")
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+
+    def unused_runner(argv, timeout_s):
+        raise AssertionError("no slurm calls expected")
+
+    report = tick(
+        tmp_path,
+        SlurmCompute(runner=unused_runner),
+        RecordingDispatcher(),
+        now=NOW,
+        github=G(),
+        followup_spec=spec,
+        min_free_bytes=2**62,  # no filesystem passes: forces the block
+    )
+    assert report.disk and any("BLOCKED" in w for w in report.disk)
+    assert report.launch_blocked is True
+    assert report.intake == ("", "") and report.self_initiated == ("", "")
+    heartbeat = _json.loads((tmp_path / "heartbeat.json").read_text())
+    assert heartbeat["disk"]["launch_ok"] is False
+
+
+def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
+    """Healthy path must actually run the lanes: the report fields are only
+    populated by the github branch, so the test provides one."""
+    from autoresearch.tick import FollowupSpec, tick
+
+    fetched = []
+
+    class G:
+        def get_file_content(self, repo, path, ref):
+            fetched.append(repo)
+            return None  # no contract: self-initiated stops AFTER the gate
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+    report = tick(
+        tmp_path,
+        FakeSlurm().compute(),
+        RecordingDispatcher(),
+        now=NOW,
+        github=G(),
+        followup_spec=spec,
+        min_free_bytes=1,
+    )
+    # both intake and self-initiated fetched the contract: the lanes RAN
+    assert fetched and set(fetched) == {"org/pilot"}
+    assert report.disk == () and report.launch_blocked is False

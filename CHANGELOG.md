@@ -39,6 +39,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Disk preflight (`disk` module): quota exhaustion is invisible on some
+  clusters until a write fails, so the tick and the climb now write-probe
+  their storage (plus a statvfs early-warning threshold, `--min-free-gb`)
+  before launching new work. A failed preflight turns the launch lanes off
+  for the tick, surfaces in the heartbeat and the tick summary, and never
+  kills the chain; the climb refuses to start and tells the issue. The
+  chain script defaults `UV_CACHE_DIR` and `APPTAINER_CACHEDIR` under the
+  state root so host-side caches never land in a constrained $HOME.
+
 - Crash containment in live climbs: the run record is saved before any
   network or clone work, the claim block runs inside the contained region,
   and every ending step (record, report, issue post) degrades independently

@@ -31,6 +31,7 @@ from autoresearch.compute import (
     is_terminal,
     quote_command,
 )
+from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from autoresearch.runstate import (
     ENDED,
     IMPLEMENTING,
@@ -101,6 +102,8 @@ class TickReport:
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
     self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
+    disk: tuple[str, ...] = ()  # preflight warnings (home entries are warn-only)
+    launch_blocked: bool = False  # True when the preflight turned launch lanes off
 
 
 @dataclass(frozen=True)
@@ -126,8 +129,13 @@ def service_in_review(
     spec: FollowupSpec,
     now: float,
     dry_run: bool = False,
+    allow_submit: bool = True,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """PR-state transitions + follow-up job submission for in-review runs.
+
+    allow_submit=False (disk preflight failed) keeps the cheap state
+    transitions — ending merged/closed runs still matters — but submits no
+    new session jobs.
 
     The tick only READS GitHub here (cheap, every cycle); the session-running
     work happens in a submitted job, which takes the run lease itself — a
@@ -163,6 +171,9 @@ def service_in_review(
                     record.run_id,
                     record.wake_attempts,
                 )
+                continue
+            if not allow_submit:
+                log.warning("run %s has new comments but disk preflight failed", record.run_id)
                 continue
             if dry_run:
                 submitted.append((record.run_id, "dry-run"))
@@ -216,11 +227,18 @@ def service_in_review(
     return ended, submitted
 
 
-def write_heartbeat(root: Path, now: float) -> None:
-    payload = json.dumps({"ts": now, "host": socket.gethostname(), "pid": os.getpid()})
-    tmp = root / f".{HEARTBEAT_NAME}.tmp"
-    tmp.write_text(payload)
-    os.replace(tmp, root / HEARTBEAT_NAME)
+def write_heartbeat(root: Path, now: float, disk: dict[str, object] | None = None) -> None:
+    """Best-effort: a heartbeat that cannot be written (full disk) must not
+    kill the tick — the tick can still end runs and post to GitHub."""
+    payload: dict[str, object] = {"ts": now, "host": socket.gethostname(), "pid": os.getpid()}
+    if disk is not None:
+        payload["disk"] = disk
+    try:
+        tmp = root / f".{HEARTBEAT_NAME}.tmp"
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, root / HEARTBEAT_NAME)
+    except OSError as exc:
+        log.warning("heartbeat write failed: %s", exc)
 
 
 def _holder_alive(compute: SlurmCompute, lease_job_id: str) -> bool | None:
@@ -439,23 +457,49 @@ def tick(
     github: Any = None,
     followup_spec: FollowupSpec | None = None,
     followup_dry_run: bool = False,
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
 ) -> TickReport:
     """One full tick. Pause sentinel wins over everything: a paused loop
-    heartbeats (so the watchdog stays quiet) but touches nothing."""
+    heartbeats (so the watchdog stays quiet) but touches nothing.
+
+    Disk preflight gates every lane that LAUNCHES new work (follow-up jobs,
+    intake claims, self-initiated climbs): a session started on a full or
+    nearly-full filesystem dies mid-flight in ways that lose data. The sweep
+    still runs — its writes are small, per-record contained, and ending runs
+    matters more when storage is failing, not less.
+    """
+    # Heartbeat FIRST, before any probe: check_disk touches $HOME (a
+    # different filesystem), and a hung mount there must not starve the
+    # watchdog signal. The disk-annotated heartbeat follows once known.
     write_heartbeat(root, now)
+    disk_health = check_disk(root, min_free_bytes=min_free_bytes)
+    write_heartbeat(root, now, disk=disk_health.as_dict())
+    for warning in disk_health.warnings():
+        log.warning("disk: %s", warning)
     if (root / PAUSE_SENTINEL).exists():
         log.info("pause sentinel present; tick is a no-op")
         return TickReport(paused=True)
     report = sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
+    launch_ok = disk_health.launch_ok()
+    if not launch_ok:
+        log.warning("disk preflight failed; launch lanes are OFF this tick")
     if github is not None and followup_spec is not None:
         ended, submitted = service_in_review(
-            root, github, compute, followup_spec, now, dry_run=followup_dry_run
+            root,
+            github,
+            compute,
+            followup_spec,
+            now,
+            dry_run=followup_dry_run,
+            allow_submit=launch_ok,
         )
-        intake_job = service_intake(
-            root, github, compute, followup_spec, now, dry_run=followup_dry_run
+        intake_job = (
+            service_intake(root, github, compute, followup_spec, now, dry_run=followup_dry_run)
+            if launch_ok
+            else None
         )
         self_job = None
-        if intake_job is None and followup_spec.target:
+        if launch_ok and intake_job is None and followup_spec.target:
             try:
                 from autoresearch.contract import load_contract
 
@@ -471,7 +515,9 @@ def tick(
                     )
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
-        report = replace_report(report, ended, submitted, intake_job, self_job)
+        report = replace_report(
+            report, ended, submitted, intake_job, self_job, disk_health.warnings(), not launch_ok
+        )
     return report
 
 
@@ -481,6 +527,8 @@ def replace_report(
     submitted: list[tuple[str, str]],
     intake_job: tuple[str, str] | None = None,
     self_job: tuple[str, str] | None = None,
+    disk_warnings: list[str] | None = None,
+    launch_blocked: bool = False,
 ) -> TickReport:
     from dataclasses import replace as dc_replace
 
@@ -490,6 +538,8 @@ def replace_report(
         followups_submitted=tuple(submitted),
         intake=intake_job or ("", ""),
         self_initiated=self_job or ("", ""),
+        disk=tuple(disk_warnings or ()),
+        launch_blocked=launch_blocked,
     )
 
 
@@ -754,6 +804,12 @@ def main() -> int:
     parser.add_argument("--root", required=True, type=Path, help="state root on the shared FS")
     parser.add_argument("--grace-s", type=float, default=DEFAULT_GRACE_S)
     parser.add_argument("--lease-ttl-s", type=float, default=DEFAULT_LEASE_TTL_S)
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=DEFAULT_MIN_FREE_BYTES / 1024**3,
+        help="skip launching new work when the state filesystem has less free",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -818,10 +874,11 @@ def main() -> int:
         github=github,
         followup_spec=followup_spec,
         followup_dry_run=False,
+        min_free_bytes=int(args.min_free_gb * 1024**3),
     )
     log.info(
         "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
-        "review_ended=%s followups=%s intake=%s self_initiated=%s",
+        "review_ended=%s followups=%s intake=%s self_initiated=%s disk=%s launch_blocked=%s",
         report.paused,
         report.swept,
         len(report.woken),
@@ -832,6 +889,8 @@ def main() -> int:
         report.followups_submitted,
         report.intake,
         report.self_initiated,
+        report.disk or "ok",
+        report.launch_blocked,
     )
     return 0
 

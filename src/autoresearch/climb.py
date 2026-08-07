@@ -438,6 +438,12 @@ def main() -> int:
     )
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=10.0,
+        help="refuse to start when the run root has less free space",
+    )
+    parser.add_argument(
         "--hypothesis-b64", default="", help="base64 task hypothesis (issue text, fenced)"
     )
     args = parser.parse_args()
@@ -450,6 +456,28 @@ def main() -> int:
     bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
+
+    # Disk preflight BEFORE any run state exists: a session started on a
+    # full filesystem dies mid-flight in ways that lose its own evidence
+    # (quota errors are invisible until a write fails on some clusters).
+    from autoresearch.disk import check_mount
+
+    health = check_mount(args.run_root, min_free_bytes=int(args.min_free_gb * 1024**3))
+    if not health.ok():
+        log.error("disk preflight failed: %s — refusing to start a run", health.describe())
+        if args.issue:
+            _best_effort(
+                "issue report",
+                lambda: GitHubClient(auth=bot_auth).comment(
+                    args.target,
+                    args.issue,
+                    "A run for this issue could not start: the orchestrator's "
+                    "storage failed its disk preflight. The claim on this issue "
+                    "stays until a maintainer removes the claim comment "
+                    "(automated claim release is on the roadmap).",
+                ),
+            )
+        return 3
 
     outcome = live_climb(
         config=ClimbConfig(target=args.target, benchmark=args.benchmark),
