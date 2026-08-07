@@ -231,18 +231,11 @@ def live_climb(
                 run_id,
                 redact(f"{type(exc).__name__}: {exc}", secrets),
             )
-            # Only delete a branch THIS attempt pushed and that got no PR —
-            # never a ref that might back existing work. Failures here are
-            # logged, not suppressed: a broken cleanup must be visible.
-            if pushed and branch and not pr_url:
-                try:
-                    ws.git_network("push", ws.url or ws.remote_url(), "--", f":{branch}")
-                except Exception as cleanup_exc:
-                    log.warning(
-                        "orphan-branch cleanup failed for %s: %s",
-                        branch,
-                        redact(str(cleanup_exc), secrets),
-                    )
+            # Never delete the remote branch: an exception from create_pull
+            # does not prove no PR exists (a 422-already-exists or a timeout
+            # after a successful POST both land here), and deleting the ref
+            # would close such a PR and discard the only pushed copy. Leave
+            # it and record it; a sweeper can reap confirmed orphans later.
             outcome_name = "publish-error"
             final = RunRecord(
                 **{
