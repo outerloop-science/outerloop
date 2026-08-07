@@ -92,6 +92,14 @@ if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
     fi
     rm -f "$ASKPASS"
 fi
+# Host-side caches must never land in $HOME: home quotas are tiny on many
+# clusters and invisible until EDQUOT (verified on Torch — a full home took
+# down a live run). Default them under the state root (scratch-class
+# storage); explicit env wins. Submitted jobs inherit these via sbatch.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$AUTORESEARCH_ROOT/cache/uv}"
+export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$AUTORESEARCH_ROOT/cache/apptainer}"
+mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
+
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
 
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
