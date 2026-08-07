@@ -100,6 +100,17 @@ class FakeGitHub:
 
 
 @dataclass
+class CommentingGitHub(FakeGitHub):
+    issue_comments: list = field(default_factory=list)
+
+    def comment(self, repo, number, body):
+        self.issue_comments.append((number, body))
+
+    def list_comments(self, repo, number, max_pages=20):
+        return []
+
+
+@dataclass
 class NoAuth:
     def token(self) -> str:
         return "unused"
@@ -508,17 +519,6 @@ def test_title_pair_never_renders_identical() -> None:
 
 def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> None:
     """The requested lane's visible loop: claim → Addresses #N → report."""
-
-    @dataclass
-    class CommentingGitHub(FakeGitHub):
-        issue_comments: list = field(default_factory=list)
-
-        def comment(self, repo, number, body):
-            self.issue_comments.append((number, body))
-
-        def list_comments(self, repo, number, max_pages=20):
-            return []
-
     github = CommentingGitHub()
     outcome = live_climb(
         config=ClimbConfig(target="org/pilot", benchmark="tsp"),
@@ -541,3 +541,133 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
     assert "pull/1" in report[1]
     record = load_record(tmp_path / "state", "tsp-iss")
     assert record.issue_number == 42
+
+
+def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> None:
+    """A crash BEFORE the contained call (clone/contract/claim) must end the
+    record and surface on the issue — not strand `implementing`."""
+    from autoresearch import climb as climb_mod
+
+    def exploding_clone(url, dest, auth=None, dry_run=False):
+        raise OSError(122, "Disk quota exceeded")
+
+    monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(exploding_clone))
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-clonefail",
+        harness=ScriptedHarness(edits={}),
+        evaluator=QueueEvaluator(values=[]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+        issue_number=7,
+    )
+    assert outcome.outcome == "climb-error"
+    record = load_record(tmp_path / "state", "tsp-clonefail")
+    assert record.state == "ended" and record.ending == "aborted"
+    assert "quota" in record.ending_note
+    assert any("climb-error" in body for _, body in github.issue_comments)
+    # exception DETAIL stays local: redact() only knows the secrets tuple,
+    # so raw messages (paths, embedded tokens) never reach the public issue
+    assert not any("quota" in body for _, body in github.issue_comments)
+
+
+def _save_failing_after_first(monkeypatch):
+    """save_record succeeds once (the implementing record) then raises — the
+    quota-crisis failure mode where the ENDING write is what dies."""
+    from autoresearch import climb as climb_mod
+
+    real_save = climb_mod.save_record
+    calls = {"n": 0}
+
+    def failing(root, record, now):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError(122, "Disk quota exceeded")
+        real_save(root, record, now)
+
+    monkeypatch.setattr(climb_mod, "save_record", failing)
+
+
+def test_ending_steps_degrade_independently(tmp_path, target_repo, monkeypatch) -> None:
+    """A full disk must not block the GitHub failure report (the 2026-08-07
+    stranding: the ending record raised EDQUOT inside the handler and took
+    the report and issue post down with it)."""
+    _save_failing_after_first(monkeypatch)
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="chess"),  # not in contract
+        run_root=tmp_path / "state",
+        run_id="chess-disk",
+        harness=ScriptedHarness(edits={}),
+        evaluator=QueueEvaluator(values=[1.0]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+        issue_number=7,
+    )
+    assert outcome.outcome == "climb-error"  # returned, never raised
+    # the record could not be ended (disk dead) — but the failure is VISIBLE:
+    assert any("climb-error" in body for _, body in github.issue_comments)
+    assert Path(outcome.report_path).exists()
+    assert not any("not in contract" in body for _, body in github.issue_comments)
+
+
+def test_final_record_failure_does_not_lose_pr_or_issue_report(
+    tmp_path, target_repo, monkeypatch
+) -> None:
+    """An improvement whose FINAL record save dies must still open the PR and
+    report back to the issue."""
+    _save_failing_after_first(monkeypatch)
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-finaldisk",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "z=1\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-07T00:00:00Z",
+        issue_number=9,
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs and outcome.pr_url.endswith("/pull/1")
+    assert any("finished (improved)" in body for _, body in github.issue_comments)
+    # the un-saveable record means follow-up servicing is blind to this PR —
+    # the warning lands where the humans are looking
+    assert any(
+        num == 1 and "follow-up servicing is offline" in body for num, body in github.issue_comments
+    )
+
+
+def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypatch) -> None:
+    """If not even the initial record can be written, the run must not
+    proceed invisibly OR crash the caller: climb-error plus an issue post."""
+    from autoresearch import climb as climb_mod
+
+    def always_failing(root, record, now):
+        raise OSError(122, "Disk quota exceeded")
+
+    monkeypatch.setattr(climb_mod, "save_record", always_failing)
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-recfail",
+        harness=ScriptedHarness(edits={}),
+        evaluator=QueueEvaluator(values=[]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+        issue_number=7,
+    )
+    assert outcome.outcome == "climb-error"
+    assert outcome.report_path == ""  # never point at a report that was not written
+    assert any("could not start" in body for _, body in github.issue_comments)

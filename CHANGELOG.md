@@ -39,6 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Crash containment in live climbs: the run record is saved before any
+  network or clone work, the claim block runs inside the contained region,
+  and every ending step (record, report, issue post) degrades independently
+  — a full disk cannot block the GitHub failure report, and a network
+  failure cannot block the record. The tick summary line now reports the
+  intake and self-initiated lanes.
+
 - Self-initiated lane: when the requested lane claims nothing and no run is
   active, the tick launches a climb on the least-recently-attempted contract
   benchmark, within the weekly budget and a per-benchmark cooldown. The

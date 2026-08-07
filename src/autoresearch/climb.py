@@ -12,6 +12,7 @@ has ended; the session sees only its own capped API key inside its container.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,6 +88,23 @@ class LiveClimbOutcome:
     report_path: str = ""
 
 
+def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] = ()) -> bool:
+    """One ending step; a failure is logged, never raised.
+
+    The terminal sequence (record, report, issue post) must degrade
+    independently: a full disk must not block the GitHub post, and a network
+    failure must not block the record. The 2026-08-07 quota crisis stranded a
+    run in `implementing` because the ending record itself hit EDQUOT inside
+    the except handler and took the report and issue post down with it.
+    """
+    try:
+        fn()
+        return True
+    except Exception as exc:
+        log.warning("%s failed: %s", what, redact(f"{type(exc).__name__}: {exc}", secrets))
+        return False
+
+
 def live_climb(
     config: ClimbConfig,
     run_root: Path,
@@ -107,23 +125,10 @@ def live_climb(
     run_dir.mkdir(parents=True, exist_ok=True)
     workspace = run_dir / "ws"
 
-    ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
-    contract_path = workspace / ".autoresearch.yaml"
-    contract_text = contract_path.read_text()
-    contract = load_contract(contract_text, config.target)
-
-    tree_hashes: list[str] = []
-
-    def changed_paths() -> list[str]:
-        ws.git("add", "-A")
-        paths = ws.staged_paths()
-        # Content fingerprint of the whole tree: the drift check must catch a
-        # file REWRITTEN during eval (same path set, different bytes), not
-        # only files created or deleted.
-        tree_hashes.append(ws.git("write-tree").strip())
-        ws.git("reset")
-        return paths
-
+    # The record exists before any network or clone work: every crash from
+    # here on has a record to end. (A run once stranded in `implementing`
+    # because the region between record creation and the contained call
+    # could still raise.)
     record = RunRecord(
         run_id=run_id,
         target=config.target,
@@ -134,23 +139,61 @@ def live_climb(
         deadline=now + 24 * 3600,
         issue_number=issue_number,
     )
-    save_record(run_root, record, now)
-    if issue_number:
-        from autoresearch.intake import CLAIM_MARKER
-
-        already = any(
-            CLAIM_MARKER in str(c.get("body", ""))
-            for c in github.list_comments(config.target, issue_number)
-        )
-        if not already:  # manual CLI runs claim here; tick-submitted runs claimed at submit
-            github.comment(
-                config.target,
-                issue_number,
-                f"{CLAIM_MARKER}\nPicked up as run `{run_id}` "
-                f"(benchmark `{config.benchmark}`). A report will follow here.",
-            )
-
     try:
+        save_record(run_root, record, now)
+    except Exception as exc:
+        # No record could be written, so the run must not proceed invisibly:
+        # nothing would ever end it. Submit-time evidence (the claim comment
+        # or the pending marker) plus this post keep the failure visible.
+        exc_name = type(exc).__name__
+        log.warning(
+            "could not create run record for %s: %s",
+            run_id,
+            redact(f"{exc_name}: {exc}", secrets),
+        )
+        if issue_number:
+            _best_effort(
+                "issue report",
+                lambda: github.comment(
+                    config.target,
+                    issue_number,
+                    f"Run `{run_id}` could not start ({exc_name} while writing its run record).",
+                ),
+                secrets,
+            )
+        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
+
+    tree_hashes: list[str] = []
+    try:
+        ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
+        contract_text = (workspace / ".autoresearch.yaml").read_text()
+        contract = load_contract(contract_text, config.target)
+
+        def changed_paths() -> list[str]:
+            ws.git("add", "-A")
+            paths = ws.staged_paths()
+            # Content fingerprint of the whole tree: the drift check must
+            # catch a file REWRITTEN during eval (same path set, different
+            # bytes), not only files created or deleted.
+            tree_hashes.append(ws.git("write-tree").strip())
+            ws.git("reset")
+            return paths
+
+        if issue_number:
+            from autoresearch.intake import CLAIM_MARKER
+
+            already = any(
+                CLAIM_MARKER in str(c.get("body", ""))
+                for c in github.list_comments(config.target, issue_number)
+            )
+            if not already:  # manual CLI runs claim here; tick runs claimed at submit
+                github.comment(
+                    config.target,
+                    issue_number,
+                    f"{CLAIM_MARKER}\nPicked up as run `{run_id}` "
+                    f"(benchmark `{config.benchmark}`). A report will follow here.",
+                )
+
         result = climb_once(
             config,
             contract_text,
@@ -163,29 +206,53 @@ def live_climb(
             task_hypothesis=task_hypothesis,
         )
     except Exception as exc:
-        log.warning(
-            "climb failed for %s: %s", run_id, redact(f"{type(exc).__name__}: {exc}", secrets)
-        )
+        exc_name = type(exc).__name__
+        note = redact(f"{exc_name}: {exc}", secrets)[:500]
+        log.warning("climb failed for %s: %s", run_id, note)
         failed = RunRecord(
             **{
                 **record.__dict__,
                 "state": ENDED,
                 "ending": ABORTED,
-                "ending_note": redact(f"{type(exc).__name__}: {exc}", secrets)[:500],
+                "ending_note": note,
             }
         )
-        save_record(run_root, failed, now)
         report_path = run_dir / "report.md"
-        report_path.write_text(
-            f"# Run report — {config.target} / {config.benchmark}\n"
-            f"Outcome: **climb-error**\n"
-            f"Note: {redact(f'{type(exc).__name__}: {exc}', secrets)[:500]}\n"
+        _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
+        wrote = _best_effort(
+            "error report",
+            lambda: report_path.write_text(
+                f"# Run report — {config.target} / {config.benchmark}\n"
+                f"Outcome: **climb-error**\n"
+                f"Note: {note}\n"
+            ),
+            secrets,
         )
-        return LiveClimbOutcome(run_id=run_id, outcome="climb-error", report_path=str(report_path))
+        if issue_number:
+            # Exception detail stays in the local record and report: redact()
+            # only knows the secrets it was handed, and raw messages can carry
+            # paths or tokens the tuple does not cover. The issue gets the
+            # exception TYPE only.
+            _best_effort(
+                "issue report",
+                lambda: github.comment(
+                    config.target,
+                    issue_number,
+                    f"Run `{run_id}` finished (climb-error): {exc_name}. "
+                    f"Details are in the run's record and report on the orchestrator.",
+                ),
+                secrets,
+            )
+        return LiveClimbOutcome(
+            run_id=run_id,
+            outcome="climb-error",
+            # an outcome must never point at a report that was not written
+            report_path=str(report_path) if wrote else "",
+        )
 
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
-    report_path.write_text(report)
+    wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
 
     pr_url = ""
     outcome_name = result.outcome
@@ -305,24 +372,43 @@ def live_climb(
                 "ending_note": redact(result.note, secrets),
             }
         )
-    save_record(run_root, final, now)
+    if not _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+        # The on-disk record still says `implementing`, so automated
+        # follow-up servicing will not track this run — and if a PR was
+        # opened, its humans are the only ones who can act. Say so WHERE
+        # they are looking: GitHub is the one store still writable when the
+        # local disk is gone.
+        pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1] if pr_url else ""
+        if pr_number.isdigit():
+            _best_effort(
+                "pr state warning",
+                lambda: github.comment(
+                    config.target,
+                    int(pr_number),
+                    f"State record for run `{run_id}` could not be saved; "
+                    f"automated follow-up servicing is offline for this run. "
+                    f"A maintainer owns any follow-ups on this PR.",
+                ),
+                secrets,
+            )
     if issue_number:
         summary = redact(result.report(config, redact_secrets=secrets), secrets)[:8000]
         link = f"\n\nPull request: {pr_url}" if pr_url else ""
-        try:
-            github.comment(
+        _best_effort(
+            "issue report",
+            lambda: github.comment(
                 config.target,
                 issue_number,
                 f"Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
-            )
-        except Exception as exc:
-            log.warning("could not report to issue #%s: %s", issue_number, exc)
+            ),
+            secrets,
+        )
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return LiveClimbOutcome(
         run_id=run_id,
         outcome=outcome_name,
         pr_url=pr_url,
-        report_path=str(report_path),
+        report_path=str(report_path) if wrote_report else "",
     )
 
 
