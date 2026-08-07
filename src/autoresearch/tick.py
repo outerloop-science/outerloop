@@ -41,6 +41,7 @@ from autoresearch.runstate import (
     acquire_lease,
     lease_is_stale,
     list_runs,
+    load_record,
     read_lease,
     reap_lease,
     release_lease,
@@ -110,6 +111,8 @@ class FollowupSpec:
     home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
     bot_login: str = "agentic-learning-bot"
     time_minutes: int = 60
+    pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
+    key_file: str = ""
 
 
 def service_in_review(
@@ -148,38 +151,61 @@ def service_in_review(
                         continue  # a follow-up job is already queued/running
                 except SlurmQueryError:
                     continue  # unknown — do not stack another job
+            # the wake-attempt counter caps follow-up retries too: a responder
+            # that cannot advance its cursors must not burn a session per tick
+            if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
+                log.warning(
+                    "run %s: %d follow-up attempts without progress; not resubmitting",
+                    record.run_id,
+                    record.wake_attempts,
+                )
+                continue
             if dry_run:
                 submitted.append((record.run_id, "dry-run"))
                 continue
-            command = quote_command(
-                [
-                    "uv",
-                    "run",
-                    "python",
-                    "-m",
-                    "autoresearch.followup",
-                    "--run-root",
-                    str(spec.run_root),
-                    "--run-id",
-                    record.run_id,
-                    "--image",
-                    spec.image,
-                    "--bot-login",
-                    spec.bot_login,
-                ]
-            )
+            argv = [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "autoresearch.followup",
+                "--run-root",
+                str(spec.run_root),
+                "--run-id",
+                record.run_id,
+                "--image",
+                spec.image,
+                "--bot-login",
+                spec.bot_login,
+            ]
+            if spec.pat_file:
+                argv += ["--pat-file", spec.pat_file]
+            if spec.key_file:
+                argv += ["--key-file", spec.key_file]
+            command = quote_command(argv)
             job_id = compute.submit(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=spec.time_minutes,
-                    command=f"cd {spec.home} && {command}",
+                    command=f"cd {quote_command([str(spec.home)])} && {command}",
                     cpus=4,
                     mem="8G",
                 )
             )
-            save_record(root, replace(record, followup_job_id=job_id), now)
+            # read-modify-write on the FRESH record: the submitted job may
+            # already be saving its own fields
+            latest = load_record(root, record.run_id)
+            save_record(
+                root,
+                replace(
+                    latest,
+                    followup_job_id=job_id,
+                    wake_attempts=latest.wake_attempts + 1,
+                ),
+                now,
+            )
             submitted.append((record.run_id, job_id))
         except (SlurmError, Exception) as exc:
             log.warning("in-review service failed for %s: %s", record.run_id, exc)
@@ -482,6 +508,8 @@ def main() -> int:
                 run_root=args.root,
                 image=image,
                 home=Path(home),
+                pat_file=pat_file,
+                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
             )
         except Exception as exc:
             log.warning("in-review servicing disabled: %s", exc)

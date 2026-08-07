@@ -339,6 +339,7 @@ def _respond(
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
             resume_session_id=session.session_id or record.resume_session_id,
+            wake_attempts=0,  # progress: the retry cap starts fresh
         ),
         now,
     )
