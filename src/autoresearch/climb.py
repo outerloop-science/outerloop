@@ -331,6 +331,17 @@ def live_climb(
                 base=base_branch,
                 body=body,
             )
+            # Arm auto-merge, best-effort: arming merges nothing — it hands
+            # the merge to the human approval branch protection requires, so
+            # an approval alone completes the loop. Repos without auto-merge
+            # enabled just log the refusal.
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if pr_number.isdigit():
+                _best_effort(
+                    "auto-merge arming",
+                    lambda: github.enable_auto_merge(config.target, int(pr_number)),
+                    secrets,
+                )
             final = RunRecord(
                 **{
                     **record.__dict__,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
+from autoresearch.github import FileTokenProvider, GitHubClient, GitHubError, Workspace
 
 
 class FakeTransport:
@@ -228,3 +228,38 @@ def test_file_content_is_none_on_error_or_nonfile(provider: FileTokenProvider) -
 
     directory = GitHubClient(auth=provider, transport=FakeTransport([[{"name": "sub"}]]))
     assert directory.get_file_content("org/repo", "dir", "sha") is None
+
+
+def test_enable_auto_merge_arms_via_graphql(provider: FileTokenProvider) -> None:
+    transport = FakeTransport(
+        [
+            {"node_id": "PR_node123", "number": 7},
+            {"data": {"enablePullRequestAutoMerge": {"pullRequest": {"number": 7}}}},
+        ]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    client.enable_auto_merge("org/repo", 7)
+    graphql = transport.requests[-1]
+    assert graphql.full_url.endswith("/graphql")
+    assert isinstance(graphql.data, bytes)
+    body = json.loads(graphql.data.decode())
+    assert body["variables"] == {"pr": "PR_node123", "method": "MERGE"}
+    assert "enablePullRequestAutoMerge" in body["query"]
+
+
+def test_enable_auto_merge_surfaces_graphql_errors(provider: FileTokenProvider) -> None:
+    transport = FakeTransport(
+        [
+            {"node_id": "PR_node123", "number": 7},
+            {"errors": [{"message": "Pull request Auto merge is not allowed"}]},
+        ]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    with pytest.raises(GitHubError, match="not allowed"):
+        client.enable_auto_merge("org/repo", 7)
+
+
+def test_enable_auto_merge_dry_run_touches_nothing(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([])
+    GitHubClient(auth=provider, transport=transport, dry_run=True).enable_auto_merge("o/r", 1)
+    assert transport.requests == []

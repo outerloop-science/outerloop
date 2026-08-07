@@ -250,6 +250,32 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)
 
+    def enable_auto_merge(self, repo: str, number: int, method: str = "MERGE") -> None:
+        """Arm GitHub's auto-merge on a PR (a GraphQL-only capability).
+
+        Arming does not merge anything: it hands the merge to whatever
+        branch protection still requires — for bot PRs, a human approval.
+        The bot-never-merges rule holds; approval is what executes.
+        """
+        if self.dry_run:
+            log.info("[dry-run] arm auto-merge on %s#%d", repo, number)
+            return
+        node_id = str(self.get_pull_request(repo, number)["node_id"])
+        mutation = (
+            "mutation($pr: ID!, $method: PullRequestMergeMethod!) {"
+            " enablePullRequestAutoMerge(input: {pullRequestId: $pr, mergeMethod: $method})"
+            " { pullRequest { number } } }"
+        )
+        data = self._request(
+            "POST",
+            "/graphql",
+            {"query": mutation, "variables": {"pr": node_id, "method": method}},
+        )
+        # GraphQL reports failures as 200 + errors[]; surface them as errors.
+        errors = data.get("errors") if isinstance(data, dict) else None
+        if errors:
+            raise GitHubError(200, "/graphql", str(errors)[:300])
+
     def get_pull_request_diff(self, repo: str, number: int) -> str:
         """Fetch a PR's unified diff (uses the diff media type)."""
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
