@@ -266,7 +266,9 @@ def test_inline_review_comments_also_wake(review_run) -> None:
     outcome = respond(root, github, harness)
     assert outcome.action == "replied"
     assert "radius prune" in harness.calls[0][0]
-    assert load_record(root, "tsp-r1").last_comment_id == 140
+    record = load_record(root, "tsp-r1")
+    assert record.last_review_comment_id == 140  # its OWN cursor
+    assert record.last_comment_id == 100  # other namespaces untouched
 
 
 def test_concurrent_responder_noops_on_held_lease(review_run) -> None:
@@ -307,3 +309,41 @@ def test_no_new_comments_is_noop(review_run) -> None:
     root, _ = review_run
     outcome = respond(root, FakeGitHub(comments=[member(90, "old")]))
     assert outcome.action == "no-op"
+
+
+def test_per_source_cursors_never_cross_namespaces(review_run) -> None:
+    """Three id sequences: a high issue-comment id must not swallow future
+    low-id inline comments (the one-cursor bug)."""
+    root, _ = review_run
+    github = FakeGitHub(
+        comments=[member(5000, "conversation comment")],
+        review_comments=[member(300, "inline comment")],
+    )
+    outcome = respond(root, github)
+    assert outcome.action == "replied"
+    record = load_record(root, "tsp-r1")
+    assert record.last_comment_id == 5000
+    assert record.last_review_comment_id == 300
+    # a LATER inline comment with id 301 still qualifies next round
+    github2 = FakeGitHub(review_comments=[member(301, "second inline")])
+    harness2 = ResumingHarness()
+    outcome2 = respond(root, github2, harness2)
+    assert outcome2.action == "replied"
+    assert "second inline" in harness2.calls[0][0]
+
+
+def test_push_failure_returns_error_not_crash(review_run) -> None:
+    """A commit/push/comment failure after the session must degrade to an
+    error outcome (cursor unadvanced), never a traceback."""
+    root, _ = review_run
+
+    @dataclass
+    class CommentExplodes(FakeGitHub):
+        def comment(self, repo, number, body):
+            raise RuntimeError("secondary rate limit")
+
+    github = CommentExplodes(comments=[member(101, "ping")])
+    outcome = respond(root, github)
+    assert outcome.action == "error"
+    assert "rate limit" in outcome.note
+    assert load_record(root, "tsp-r1").last_comment_id == 100  # will retry

@@ -120,6 +120,11 @@ def respond_once(
             secrets,
             created,
         )
+    except Exception as exc:
+        log.warning("followup failed for %s: %s", run_id, redact(str(exc), secrets))
+        return FollowupOutcome(
+            run_id, "error", redact(f"{type(exc).__name__}: {exc}", secrets)[:300]
+        )
     finally:
         release_lease(run_root, run_id)
 
@@ -150,17 +155,53 @@ def _respond(
         )
         return FollowupOutcome(run_id, "ended-rejected")
 
-    # All three places a maintainer can write: the conversation tab, a
-    # top-level review, and inline Files-changed comments. GitHub ids share
-    # one global space, so a single cursor covers them.
-    sources = list(github.list_comments(record.target, number))
-    sources += list(github.list_pr_reviews(record.target, number))
-    sources += list(github.list_pr_review_comments(record.target, number))
-    comments = qualifying_comments(sources, bot_login, record.last_comment_id)
-    if not comments:
+    # All three places a maintainer can write — three REST collections with
+    # INDEPENDENT id sequences, so each keeps its own cursor.
+    per_source = {
+        "comment": (
+            qualifying_comments(
+                github.list_comments(record.target, number),
+                bot_login,
+                record.last_comment_id,
+            ),
+            record.last_comment_id,
+        ),
+        "review": (
+            qualifying_comments(
+                github.list_pr_reviews(record.target, number),
+                bot_login,
+                record.last_review_id,
+            ),
+            record.last_review_id,
+        ),
+        "review_comment": (
+            qualifying_comments(
+                github.list_pr_review_comments(record.target, number),
+                bot_login,
+                record.last_review_comment_id,
+            ),
+            record.last_review_comment_id,
+        ),
+    }
+    merged = [
+        (source, cid, author, body)
+        for source, (items, _) in per_source.items()
+        for cid, author, body in items
+    ]
+    if not merged:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
-    comments = comments[:MAX_COMMENTS_PER_WAKE]
-    newest_id = max(cid for cid, _, _ in comments)
+    # oldest first WITHIN each source (ids are monotonic per source); cap the
+    # wake, and advance each cursor only to the max id actually processed
+    merged.sort(key=lambda item: item[1])
+    merged = merged[:MAX_COMMENTS_PER_WAKE]
+    cursors = {
+        "comment": record.last_comment_id,
+        "review": record.last_review_id,
+        "review_comment": record.last_review_comment_id,
+    }
+    for source, cid, _, _ in merged:
+        cursors[source] = max(cursors[source], cid)
+    comments = [(cid, author, body) for _, cid, author, body in merged]
 
     workspace = run_dir(run_root, run_id) / "ws"
     if not workspace.is_dir():
@@ -259,7 +300,9 @@ def _respond(
         run_root,
         replace(
             record,
-            last_comment_id=newest_id,
+            last_comment_id=cursors["comment"],
+            last_review_id=cursors["review"],
+            last_review_comment_id=cursors["review_comment"],
             resume_session_id=session.session_id or record.resume_session_id,
         ),
         now,
