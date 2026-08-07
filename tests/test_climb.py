@@ -570,6 +570,9 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
     assert record.state == "ended" and record.ending == "aborted"
     assert "quota" in record.ending_note
     assert any("climb-error" in body for _, body in github.issue_comments)
+    # exception DETAIL stays local: redact() only knows the secrets tuple,
+    # so raw messages (paths, embedded tokens) never reach the public issue
+    assert not any("quota" in body for _, body in github.issue_comments)
 
 
 def _save_failing_after_first(monkeypatch):
@@ -611,6 +614,7 @@ def test_ending_steps_degrade_independently(tmp_path, target_repo, monkeypatch) 
     # the record could not be ended (disk dead) — but the failure is VISIBLE:
     assert any("climb-error" in body for _, body in github.issue_comments)
     assert Path(outcome.report_path).exists()
+    assert not any("not in contract" in body for _, body in github.issue_comments)
 
 
 def test_final_record_failure_does_not_lose_pr_or_issue_report(
@@ -635,3 +639,35 @@ def test_final_record_failure_does_not_lose_pr_or_issue_report(
     assert outcome.outcome == "improved"
     assert github.prs and outcome.pr_url.endswith("/pull/1")
     assert any("finished (improved)" in body for _, body in github.issue_comments)
+    # the un-saveable record means follow-up servicing is blind to this PR —
+    # the warning lands where the humans are looking
+    assert any(
+        num == 1 and "follow-up servicing is offline" in body for num, body in github.issue_comments
+    )
+
+
+def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypatch) -> None:
+    """If not even the initial record can be written, the run must not
+    proceed invisibly OR crash the caller: climb-error plus an issue post."""
+    from autoresearch import climb as climb_mod
+
+    def always_failing(root, record, now):
+        raise OSError(122, "Disk quota exceeded")
+
+    monkeypatch.setattr(climb_mod, "save_record", always_failing)
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-recfail",
+        harness=ScriptedHarness(edits={}),
+        evaluator=QueueEvaluator(values=[]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+        issue_number=7,
+    )
+    assert outcome.outcome == "climb-error"
+    assert outcome.report_path == ""  # never point at a report that was not written
+    assert any("could not start" in body for _, body in github.issue_comments)

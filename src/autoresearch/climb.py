@@ -139,7 +139,29 @@ def live_climb(
         deadline=now + 24 * 3600,
         issue_number=issue_number,
     )
-    save_record(run_root, record, now)
+    try:
+        save_record(run_root, record, now)
+    except Exception as exc:
+        # No record could be written, so the run must not proceed invisibly:
+        # nothing would ever end it. Submit-time evidence (the claim comment
+        # or the pending marker) plus this post keep the failure visible.
+        exc_name = type(exc).__name__
+        log.warning(
+            "could not create run record for %s: %s",
+            run_id,
+            redact(f"{exc_name}: {exc}", secrets),
+        )
+        if issue_number:
+            _best_effort(
+                "issue report",
+                lambda: github.comment(
+                    config.target,
+                    issue_number,
+                    f"Run `{run_id}` could not start ({exc_name} while writing its run record).",
+                ),
+                secrets,
+            )
+        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
 
     tree_hashes: list[str] = []
     try:
@@ -184,7 +206,8 @@ def live_climb(
             task_hypothesis=task_hypothesis,
         )
     except Exception as exc:
-        note = redact(f"{type(exc).__name__}: {exc}", secrets)[:500]
+        exc_name = type(exc).__name__
+        note = redact(f"{exc_name}: {exc}", secrets)[:500]
         log.warning("climb failed for %s: %s", run_id, note)
         failed = RunRecord(
             **{
@@ -196,7 +219,7 @@ def live_climb(
         )
         report_path = run_dir / "report.md"
         _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
-        _best_effort(
+        wrote = _best_effort(
             "error report",
             lambda: report_path.write_text(
                 f"# Run report — {config.target} / {config.benchmark}\n"
@@ -206,20 +229,30 @@ def live_climb(
             secrets,
         )
         if issue_number:
+            # Exception detail stays in the local record and report: redact()
+            # only knows the secrets it was handed, and raw messages can carry
+            # paths or tokens the tuple does not cover. The issue gets the
+            # exception TYPE only.
             _best_effort(
                 "issue report",
                 lambda: github.comment(
                     config.target,
                     issue_number,
-                    f"Run `{run_id}` finished (climb-error).\n\n{note}",
+                    f"Run `{run_id}` finished (climb-error): {exc_name}. "
+                    f"Details are in the run's record and report on the orchestrator.",
                 ),
                 secrets,
             )
-        return LiveClimbOutcome(run_id=run_id, outcome="climb-error", report_path=str(report_path))
+        return LiveClimbOutcome(
+            run_id=run_id,
+            outcome="climb-error",
+            # an outcome must never point at a report that was not written
+            report_path=str(report_path) if wrote else "",
+        )
 
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
-    _best_effort("run report", lambda: report_path.write_text(report), secrets)
+    wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
 
     pr_url = ""
     outcome_name = result.outcome
@@ -339,7 +372,25 @@ def live_climb(
                 "ending_note": redact(result.note, secrets),
             }
         )
-    _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+    if not _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+        # The on-disk record still says `implementing`, so automated
+        # follow-up servicing will not track this run — and if a PR was
+        # opened, its humans are the only ones who can act. Say so WHERE
+        # they are looking: GitHub is the one store still writable when the
+        # local disk is gone.
+        pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1] if pr_url else ""
+        if pr_number.isdigit():
+            _best_effort(
+                "pr state warning",
+                lambda: github.comment(
+                    config.target,
+                    int(pr_number),
+                    f"State record for run `{run_id}` could not be saved; "
+                    f"automated follow-up servicing is offline for this run. "
+                    f"A maintainer owns any follow-ups on this PR.",
+                ),
+                secrets,
+            )
     if issue_number:
         summary = redact(result.report(config, redact_secrets=secrets), secrets)[:8000]
         link = f"\n\nPull request: {pr_url}" if pr_url else ""
@@ -357,7 +408,7 @@ def live_climb(
         run_id=run_id,
         outcome=outcome_name,
         pr_url=pr_url,
-        report_path=str(report_path),
+        report_path=str(report_path) if wrote_report else "",
     )
 
 
