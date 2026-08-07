@@ -331,6 +331,19 @@ def live_climb(
                 base=base_branch,
                 body=body,
             )
+            # Arm auto-merge, best-effort, and ONLY when branch protection
+            # requires a human review — the guard keeps bot-never-merges
+            # enforced in code, not in per-repo config. Repos without
+            # auto-merge enabled just log the refusal.
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if pr_number.isdigit():
+                _best_effort(
+                    "auto-merge arming",
+                    lambda: github.arm_auto_merge_when_review_required(
+                        config.target, int(pr_number)
+                    ),
+                    secrets,
+                )
             final = RunRecord(
                 **{
                     **record.__dict__,

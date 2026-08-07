@@ -39,6 +39,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Improvement PRs arm GitHub auto-merge at publish (best-effort): the bot
+  still never merges — arming hands the merge to the human approval that
+  branch protection requires, so approving is the last human action needed.
+
 - Disk preflight (`disk` module): quota exhaustion is invisible on some
   clusters until a write fails, so the tick and the climb now write-probe
   their storage (plus a statvfs early-warning threshold, `--min-free-gb`)

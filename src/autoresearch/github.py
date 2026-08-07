@@ -250,6 +250,92 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)
 
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        data = self._request("POST", "/graphql", {"query": query, "variables": variables})
+        if not isinstance(data, dict):
+            raise GitHubError(0, "/graphql", f"expected an object, got {type(data).__name__}")
+        # GraphQL reports failures inside a 200; status 0 keeps callers'
+        # retry/permanence classification honest (this is not an HTTP 200
+        # success and not an HTTP error either).
+        if data.get("errors"):
+            raise GitHubError(0, "/graphql", str(data["errors"])[:300])
+        inner = data.get("data")
+        return inner if isinstance(inner, dict) else {}
+
+    def review_decision(self, repo: str, number: int) -> str:
+        """The PR's reviewDecision ("REVIEW_REQUIRED", "APPROVED",
+        "CHANGES_REQUESTED", or "" when the base branch requires no
+        reviews). GraphQL-only; readable with normal read permissions."""
+        owner, _, name = repo.partition("/")
+        query = (
+            "query($owner: String!, $name: String!, $number: Int!) {"
+            " repository(owner: $owner, name: $name) {"
+            " pullRequest(number: $number) { reviewDecision } } }"
+        )
+        data = self._graphql(query, {"owner": owner, "name": name, "number": number})
+        pr = (data.get("repository") or {}).get("pullRequest") or {}
+        return str(pr.get("reviewDecision") or "")
+
+    def allowed_merge_methods(self, repo: str) -> list[str]:
+        """Merge methods the repo permits, in our preference order (merge
+        commits first — trailer/provenance-preserving)."""
+        path = f"/repos/{urllib.parse.quote(repo)}"
+        settings = self._expect_dict(self._request("GET", path), path)
+        order = [
+            ("MERGE", "allow_merge_commit"),
+            ("SQUASH", "allow_squash_merge"),
+            ("REBASE", "allow_rebase_merge"),
+        ]
+        return [m for m, key in order if settings.get(key)]
+
+    def enable_auto_merge(self, repo: str, number: int, method: str = "MERGE") -> None:
+        """Arm GitHub's auto-merge on a PR (a GraphQL-only capability).
+
+        Arming does not merge anything: it hands the merge to whatever
+        branch protection still requires. Callers that must preserve the
+        bot-never-merges rule should use arm_auto_merge_when_review_required
+        instead of calling this directly. Repos that also run the follow-up
+        lane should have dismiss-stale-reviews enabled, so a bot push after
+        arming re-requires a human look instead of merging unseen code.
+        """
+        if self.dry_run:
+            log.info("[dry-run] arm auto-merge on %s#%d", repo, number)
+            return
+        pr_path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        node_id = self.get_pull_request(repo, number).get("node_id")
+        if not node_id:
+            raise GitHubError(0, pr_path, "no node_id in PR payload")
+        mutation = (
+            "mutation($pr: ID!, $method: PullRequestMergeMethod!) {"
+            " enablePullRequestAutoMerge(input: {pullRequestId: $pr, mergeMethod: $method})"
+            " { pullRequest { number } } }"
+        )
+        self._graphql(mutation, {"pr": str(node_id), "method": method})
+
+    def arm_auto_merge_when_review_required(self, repo: str, number: int) -> bool:
+        """Arm auto-merge ONLY when branch protection makes a human review
+        the missing condition (reviewDecision == REVIEW_REQUIRED).
+
+        On a repo without required reviews, arming would merge the bot's own
+        PR the moment CI is green — no human ever acts. That would break the
+        bot-never-merges rule via nothing but per-repo config drift, so the
+        guard lives here, in code. The merge method falls back through what
+        the repo allows (merge-commit preferred: it preserves the Agent
+        trailers and commit sequence as provenance)."""
+        decision = self.review_decision(repo, number)
+        if decision != "REVIEW_REQUIRED":
+            log.warning(
+                "not arming auto-merge on %s#%d: reviewDecision=%r "
+                "(no required human review would stand between arming and merging)",
+                repo,
+                number,
+                decision,
+            )
+            return False
+        methods = self.allowed_merge_methods(repo) or ["MERGE"]
+        self.enable_auto_merge(repo, number, method=methods[0])
+        return True
+
     def get_pull_request_diff(self, repo: str, number: int) -> str:
         """Fetch a PR's unified diff (uses the diff media type)."""
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"

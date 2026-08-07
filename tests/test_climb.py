@@ -93,10 +93,18 @@ class QueueEvaluator:
 @dataclass
 class FakeGitHub:
     prs: list[dict] = field(default_factory=list)
+    armed: list[tuple[str, int]] = field(default_factory=list)
+    arming_error: str = ""
 
     def create_pull(self, repo, title, head, base, body, draft=False) -> str:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body))
         return f"https://github.com/{repo}/pull/1"
+
+    def arm_auto_merge_when_review_required(self, repo, number) -> bool:
+        if self.arming_error:
+            raise RuntimeError(self.arming_error)
+        self.armed.append((repo, number))
+        return True
 
 
 @dataclass
@@ -671,3 +679,37 @@ def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypa
     assert outcome.outcome == "climb-error"
     assert outcome.report_path == ""  # never point at a report that was not written
     assert any("could not start" in body for _, body in github.issue_comments)
+
+
+def test_improvement_arms_auto_merge(tmp_path, target_repo) -> None:
+    """Publish hands the merge to the human approval: auto-merge is armed on
+    the fresh PR, so approving is the last human action needed."""
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "am=1\n"},
+        values=[13.876, 13.1],
+        run_id="tsp-arm",
+    )
+    assert outcome.outcome == "improved"
+    assert github.armed == [("org/pilot", 1)]
+
+
+def test_arming_failure_never_fails_the_publish(tmp_path, target_repo) -> None:
+    """Repos without auto-merge enabled refuse the mutation; the PR must
+    survive that (arming is convenience, not correctness)."""
+    github = FakeGitHub(arming_error="auto merge is not allowed")
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-noarm",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "na=2\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "improved"
+    assert outcome.pr_url.endswith("/pull/1")
+    assert github.armed == []
