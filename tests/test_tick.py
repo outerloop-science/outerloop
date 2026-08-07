@@ -511,12 +511,10 @@ def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
     assert load_record(tmp_path, "r-m").ending == "merged"
 
 
-def test_self_initiated_selection_rules(tmp_path: Path) -> None:
+def _self_contract():
     from autoresearch.contract import load_contract
-    from autoresearch.runstate import ENDED, RunRecord, save_record
-    from autoresearch.tick import pick_self_initiated
 
-    contract = load_contract(
+    return load_contract(
         """
 benchmarks:
   - {name: tsp, command: c, metric: m, direction: min}
@@ -529,67 +527,109 @@ roadmap: docs/roadmap.md
         "org/pilot",
     )
 
-    def rec(run_id, benchmark, created, state=ENDED, ending="negative-result"):
-        r = RunRecord(
-            run_id=run_id,
-            target="org/pilot",
-            task_title="t",
-            benchmark=benchmark,
-            state=state,
-            ending=ending if state == ENDED else "",
-        )
-        save_record(tmp_path, r, now=created)
-        return r
 
-    # empty history → alphabetically-first untouched benchmark
-    assert pick_self_initiated([], contract, now=NOW) == "denoise"
+def _run(run_id, benchmark, created, state=ENDED, ending="negative-result", target="org/pilot"):
+    return RunRecord(
+        run_id=run_id,
+        target=target,
+        task_title="t",
+        benchmark=benchmark,
+        state=state,
+        ending=ending if state == ENDED else "",
+        created=created,
+        updated=created,
+    )
+
+
+def test_self_initiated_selection_rules() -> None:
+    from autoresearch.tick import pick_self_initiated
+
+    contract = _self_contract()
+    pick = lambda records, **kw: pick_self_initiated(records, contract, "org/pilot", now=NOW, **kw)
+
+    # empty history -> alphabetically-first untouched benchmark
+    assert pick([]) == "denoise"
     # an ACTIVE run serializes: nothing new
-    rec("r1", "tsp", NOW - 100, state="waiting")
-    # waiting run needs deadline etc — build directly instead
+    assert pick([_run("a", "tsp", NOW - 100, state="implementing", ending="")]) is None
+    # cooldown: recently-attempted benchmarks skipped, oldest eligible picked
     records = [
-        RunRecord(
-            run_id="a",
-            target="o/p",
-            task_title="t",
-            benchmark="tsp",
-            state="implementing",
-            created=NOW - 100,
-        ),
+        _run("a", "denoise", NOW - 60),
+        _run("b", "reach", NOW - 8 * 3600),
     ]
-    assert pick_self_initiated(records, contract, now=NOW) is None
-    # cooldown: recently-attempted benchmark skipped, next-oldest picked
-    records = [
-        RunRecord(
-            run_id="a",
-            target="o/p",
-            task_title="t",
-            benchmark="denoise",
-            state=ENDED,
-            ending="negative-result",
-            created=NOW - 60,
-        ),
-        RunRecord(
-            run_id="b",
-            target="o/p",
-            task_title="t",
-            benchmark="reach",
-            state=ENDED,
-            ending="merged",
-            created=NOW - 8 * 3600,
-        ),
-    ]
-    assert pick_self_initiated(records, contract, now=NOW) == "tsp"
-    # weekly budget: 3 runs in the window → None
-    records = [
-        RunRecord(
-            run_id=f"r{i}",
-            target="o/p",
-            task_title="t",
-            benchmark="tsp",
-            state=ENDED,
-            ending="negative-result",
-            created=NOW - i * 3600,
-        )
-        for i in range(3)
-    ]
-    assert pick_self_initiated(records, contract, now=NOW) is None
+    assert pick(records) == "tsp"
+    # weekly budget: 3 runs in the window -> None
+    records = [_run(f"r{i}", "tsp", NOW - i * 3600) for i in range(3)]
+    assert pick(records) is None
+    # a pending attempt that died pre-record still counts toward cooldown
+    assert pick([], pending_attempt=("denoise", NOW - 60)) == "reach"
+
+
+def test_self_initiated_scoped_to_target() -> None:
+    from autoresearch.tick import pick_self_initiated
+
+    contract = _self_contract()
+    # active run + full budget on ANOTHER target: neither blocks org/pilot
+    other = [_run(f"o{i}", "tsp", NOW - i * 60, target="org/other") for i in range(3)]
+    other.append(_run("oa", "tsp", NOW - 30, state="implementing", ending="", target="org/other"))
+    assert pick_self_initiated(other, contract, "org/pilot", now=NOW) == "denoise"
+    # while org/other itself is both serialized and over budget
+    assert pick_self_initiated(other, contract, "org/other", now=NOW) is None
+
+
+def test_self_initiated_stranded_implementing_unblocks() -> None:
+    from autoresearch.tick import STRANDED_IMPLEMENTING_S, pick_self_initiated
+
+    contract = _self_contract()
+    stale = STRANDED_IMPLEMENTING_S + 3600
+    dead = _run("d", "tsp", NOW - stale, state="implementing", ending="")
+    # a crashed climb job's record stops counting as active after the window,
+    # but its benchmark keeps its cooldown slot: another one is picked
+    assert pick_self_initiated([dead], contract, "org/pilot", now=NOW) == "denoise"
+    # a FRESH implementing run still serializes
+    fresh = _run("f", "tsp", NOW - 60, state="implementing", ending="")
+    assert pick_self_initiated([fresh], contract, "org/pilot", now=NOW) is None
+
+
+def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None:
+    from autoresearch.tick import (
+        FollowupSpec,
+        read_pending,
+        service_self_initiated,
+    )
+
+    contract = _self_contract()
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="acct",
+        partition="part",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        bot_login="bot",
+    )
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submitted.append(" ".join(argv))
+            return CommandResult(0, "123\n", "")
+        return CommandResult(0, "RUNNING\n", "")  # sacct liveness probe
+
+    compute = SlurmCompute(runner=runner)
+    out = service_self_initiated(tmp_path, compute, spec, contract, NOW)
+    assert out == ("denoise", "123")
+    marker = read_pending(tmp_path, "org/pilot")
+    assert marker is not None and marker["benchmark"] == "denoise"
+    # next tick, record not yet written, job alive -> NO duplicate submit
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 1800) is None
+    assert len(submitted) == 1
+    # once the climb writes its run record, the marker clears and the
+    # active-run serialization (not the marker) is what blocks
+    save_record(
+        tmp_path,
+        _run("r-live", "denoise", NOW + 1900, state="implementing", ending=""),
+        now=NOW + 1900,
+    )
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 3600) is None
+    assert read_pending(tmp_path, "org/pilot") is None
+    assert len(submitted) == 1
