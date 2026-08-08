@@ -39,6 +39,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Review and verification comments read like a colleague, not a legal
+  notice (maintainer feedback): one calm italic header line per role, and
+  findings rendered as prose paragraphs with the reference at the end
+  instead of bullet fragments. The mechanical guard against forged
+  endorsements (approval-language redaction) is unchanged.
+
 - The verifier (`verifier`, `verifier_cli`, reusable workflow
   `verify.yml`): adversarial integrity reads of BOT-authored PRs — the
   advisory reviewer's mirror. Gaming lens (harness exploitation,

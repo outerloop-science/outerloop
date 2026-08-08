@@ -26,11 +26,12 @@ from typing import Any, Literal, Protocol
 log = logging.getLogger(__name__)
 
 MARKER = "<!-- autoresearch:advisory-review -->"
+# One calm line: the mechanical defense against forged endorsements is the
+# approval-language redaction in sanitize(), not header volume. (Softened
+# 2026-08-08 on maintainer feedback — the old header shouted.)
 ADVISORY_HEADER = (
-    "**Advisory review — not an approval.** Automated findings from "
-    "`autoresearch`; a human code owner still owns this PR. Reply to any "
-    "finding you disagree with, or add the opt-out label to silence future "
-    "runs on this PR."
+    "*Advisory findings from `autoresearch` — the code owner decides. "
+    "Reply to disagree; the `autoresearch:no-review` label opts this PR out.*"
 )
 OPT_OUT_LABEL = "autoresearch:no-review"
 MAX_DIFF_CHARS = 200_000
@@ -272,11 +273,15 @@ def format_comment(result: ReviewResult) -> str | None:
     if not result.findings:
         lines.append("No defects found in this diff.")
     else:
+        # Prose paragraphs, not bullet fragments (maintainer preference,
+        # 2026-08-08): the human is the reader who needs readability; a
+        # model relocating references does not.
         order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
             where = f"`{finding.file}`" + (f":{finding.line}" if finding.line else "")
-            lines.append(f"- **{finding.summary}** ({finding.confidence} confidence, {where})")
-            lines.append(f"  {finding.detail}")
+            ref = f"({where}; {finding.confidence} confidence)"
+            lines.append(f"**{finding.summary}.** {finding.detail} {ref}")
+            lines.append("")
     if result.notes:
-        lines += ["", result.notes]
-    return "\n".join(lines)
+        lines += [result.notes]
+    return "\n".join(lines).rstrip() + "\n"

@@ -131,7 +131,7 @@ def test_findings_sorted_by_confidence() -> None:
     }
     body = format_comment(review(make_pr(), FakeCompleter(payload), BOT))
     assert body is not None
-    assert body.index("**H**") < body.index("**M**") < body.index("**L**")
+    assert body.index("**H.**") < body.index("**M.**") < body.index("**L.**")
 
 
 def test_no_findings_still_posts_a_clean_report() -> None:

@@ -105,12 +105,14 @@ def test_human_pr_never_reaches_the_model() -> None:
     assert format_verify_comment(result) is None
 
 
-def test_clean_read_states_silence_is_not_endorsement() -> None:
+def test_clean_read_does_not_certify() -> None:
+    """The header carries the not-a-certification semantics in one calm
+    line (maintainer feedback: the old header shouted)."""
     body = format_verify_comment(ReviewResult(findings=[], notes=""))
     assert body is not None
     assert body.startswith(VERIFY_MARKER)
     assert VERIFY_HEADER in body
-    assert "not an endorsement" in body
+    assert "does not certify" in body
 
 
 def test_ruler_paths_resolved_from_contract_commands() -> None:

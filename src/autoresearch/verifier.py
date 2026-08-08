@@ -42,10 +42,9 @@ log = logging.getLogger(__name__)
 
 VERIFY_MARKER = "<!-- autoresearch:verification-review -->"
 VERIFY_HEADER = (
-    "**Verification review — silence is NOT endorsement.** Automated "
-    "integrity read of a bot-authored PR (gaming, leakage, unsupported "
-    "claims). Findings are leads for the human code owner, who still owns "
-    "this merge; a clean read is not a green light."
+    "*Integrity read of this bot PR (gaming, leakage, unsupported claims). "
+    "Findings are leads for the code owner — a clean read does not certify "
+    "the result.*"
 )
 
 # Verifier-specific context caps: the ruler's source is the load-bearing
@@ -256,16 +255,14 @@ def format_verify_comment(result: ReviewResult) -> str | None:
         return None
     lines = [VERIFY_MARKER, VERIFY_HEADER, ""]
     if not result.findings:
-        lines.append(
-            "No integrity findings from this read. (Silence is not an "
-            "endorsement; the mechanical checks and the human review still apply.)"
-        )
+        lines.append("No integrity findings from this read.")
     else:
         order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
             where = f"`{finding.file}`" + (f":{finding.line}" if finding.line else "")
-            lines.append(f"- **{finding.summary}** ({finding.confidence} confidence, {where})")
-            lines.append(f"  {finding.detail}")
+            ref = f"({where}; {finding.confidence} confidence)"
+            lines.append(f"**{finding.summary}.** {finding.detail} {ref}")
+            lines.append("")
     if result.notes:
-        lines += ["", result.notes]
-    return "\n".join(lines)
+        lines += [result.notes]
+    return "\n".join(lines).rstrip() + "\n"
