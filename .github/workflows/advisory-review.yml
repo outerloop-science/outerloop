@@ -89,7 +89,11 @@ jobs:
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_EFFORT: ${{ inputs.effort }}
-          # the caller's triggering event flows through workflow_call: a
-          # labeled event means a human explicitly re-requested this review
-          REVIEW_EXPLICIT_REQUEST: ${{ github.event.action == 'labeled' }}
+          # The caller's triggering event flows through workflow_call. The
+          # override requires the SPECIFIC re-request label (any-label would
+          # defeat the bot-skip via unrelated triage labels, even though
+          # callers also gate at the job level — defense in depth) and a
+          # sender other than the bot itself (the bot labeling its own PR
+          # must not unlock review of its own work).
+          REVIEW_EXPLICIT_REQUEST: ${{ github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review' && github.event.sender.login != inputs.bot_login }}
         run: uv run --extra review python -m autoresearch.review_cli

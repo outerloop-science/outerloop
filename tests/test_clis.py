@@ -209,3 +209,27 @@ def test_fork_fallback_when_head_repo_lacks_full_name(monkeypatch) -> None:
     _cli_env(monkeypatch)
     assert cli.main() == 0
     assert fake_client.repos_fetched and set(fake_client.repos_fetched) == {"org/repo"}
+
+
+def test_explicit_request_env_reaches_review_for_bot_prs(monkeypatch) -> None:
+    """REVIEW_EXPLICIT_REQUEST=true must flow through main(): the bot PR
+    pays the context fan-out and review() receives explicit_request=True —
+    a misspelled env key or dropped argument leaves this red."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import ReviewResult
+
+    fake_client = FakeReviewClient(author="Some-Bot")
+    seen: dict = {}
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        seen["explicit"] = explicit_request
+        return ReviewResult(findings=[], notes="")
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(cli, "review", fake_review)
+    _cli_env(monkeypatch)
+    monkeypatch.setenv("REVIEW_EXPLICIT_REQUEST", "true")
+    assert cli.main() == 0
+    assert seen["explicit"] is True
+    assert fake_client.content_fetches != []  # explicitly-requested: fan-out paid
