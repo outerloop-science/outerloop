@@ -26,14 +26,15 @@ from typing import Any, Literal, Protocol
 log = logging.getLogger(__name__)
 
 MARKER = "<!-- autoresearch:advisory-review -->"
+OPT_OUT_LABEL = "autoresearch:no-review"
+
 # One calm line: the mechanical defense against forged endorsements is the
 # approval-language redaction in sanitize(), not header volume. (Softened
 # 2026-08-08 on maintainer feedback — the old header shouted.)
 ADVISORY_HEADER = (
     "*Advisory findings from `autoresearch` — the code owner decides. "
-    "Reply to disagree; the `autoresearch:no-review` label opts this PR out.*"
+    f"Reply to disagree; the `{OPT_OUT_LABEL}` label opts this PR out.*"
 )
-OPT_OUT_LABEL = "autoresearch:no-review"
 MAX_DIFF_CHARS = 200_000
 MAX_CONTEXT_FILES = 8
 MAX_FILE_CHARS = 20_000

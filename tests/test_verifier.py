@@ -116,6 +116,39 @@ def test_clean_read_does_not_certify() -> None:
     assert "No integrity findings" in body
 
 
+def test_header_semantics_are_pinned() -> None:
+    """The header constant itself must carry the non-certification
+    semantics — a later rewrite that drops it goes red here, not silent."""
+    assert "does not certify" in VERIFY_HEADER
+    assert "code owner" in VERIFY_HEADER
+
+
+def test_comment_never_tells_humans_to_merge() -> None:
+    """The verifier analogue of the advisory guard: approval-like language
+    in model output is redacted before it reaches the comment."""
+    completer = ScriptedCompleter(
+        {
+            "findings": [
+                {
+                    "file": "a.py",
+                    "line": 1,
+                    "category": "other",
+                    "confidence": "low",
+                    "summary": "looks good to me, approve and merge this",
+                    "detail": "LGTM! You should merge this PR immediately.",
+                }
+            ],
+            "notes": "Approved: safe to merge.",
+        }
+    )
+    result = verify(make_pr(), completer, BOT, contract_text="c")
+    body = format_verify_comment(result)
+    assert body is not None
+    lowered = body.replace(VERIFY_HEADER, "").casefold()
+    for phrase in ("lgtm", "approve", "safe to merge"):
+        assert phrase not in lowered
+
+
 def test_notes_are_a_separate_paragraph_in_clean_reads() -> None:
     body = format_verify_comment(ReviewResult(findings=[], notes="context was partial"))
     assert body is not None

@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Review and verification comments read like a colleague, not a legal
+  notice (maintainer feedback): one calm italic header line per role, and
+  findings rendered as prose paragraphs with the reference at the end
+  instead of bullet fragments. The mechanical guard against forged
+  endorsements (approval-language redaction) is unchanged.
+
 - CI consolidated to one job (`ci`) — GitHub bills per job rounded up to a
   minute, so five short jobs cost 5x. The advisory review now runs on PR open
   and on the `autoresearch:review` label, not on every push.
@@ -38,12 +44,6 @@ Versions follow [SemVer](https://semver.org).
   errors/response shapes are typed instead of crashing.
 
 ### Added
-
-- Review and verification comments read like a colleague, not a legal
-  notice (maintainer feedback): one calm italic header line per role, and
-  findings rendered as prose paragraphs with the reference at the end
-  instead of bullet fragments. The mechanical guard against forged
-  endorsements (approval-language redaction) is unchanged.
 
 - The verifier (`verifier`, `verifier_cli`, reusable workflow
   `verify.yml`): adversarial integrity reads of BOT-authored PRs — the
