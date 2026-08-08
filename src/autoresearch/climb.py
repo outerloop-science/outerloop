@@ -577,9 +577,15 @@ def arm_self_deadline(job_minutes: int, margin_s: float = 120.0) -> int:
     import time as _time
 
     margin = max(60.0, margin_s)
+    now = _time.time()
     start_raw = os.environ.get("SLURM_JOB_START_TIME", "")
-    if start_raw.isdigit():
-        remaining = int(int(start_raw) + job_minutes * 60 - margin - _time.time())
+    # Sanity-bounded: the env can carry a STALE value inherited from the
+    # submitting job (tick jobs sbatch climb jobs). A start time outside
+    # [now - walltime, now] is not this job's — fall back to the process
+    # clock rather than silently disarm (past) or overshoot the wall
+    # (future).
+    if start_raw.isdigit() and now - job_minutes * 60 <= int(start_raw) <= now:
+        remaining = int(int(start_raw) + job_minutes * 60 - margin - now)
     else:
         remaining = int(job_minutes * 60 - margin)
     if remaining < MIN_ARM_S:

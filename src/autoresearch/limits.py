@@ -16,14 +16,18 @@ from typing import Any
 
 # (default, floor, ceiling) per knob. Floors keep a hostile-or-typo'd
 # contract from starving runs into uselessness (a 1-turn session still
-# spends money and reports nothing); ceilings are the spend guarantee.
+# spends money and reports nothing). CEILING == DEFAULT, deliberately:
+# contracts are merged by TARGET-repo maintainers, not by us, so any
+# ceiling above the default would let them raise our spend — the knobs
+# shape strictly downward. Raising a target's budget is an
+# orchestrator-side decision (config we control), not a contract edit.
 _BOUNDS: dict[str, tuple[int, int, int]] = {
-    "session_max_turns": (60, 10, 120),
-    "session_minutes": (60, 10, 120),
+    "session_max_turns": (60, 10, 60),
+    "session_minutes": (60, 10, 60),
     # floor = session floor + overhead + self-deadline margin: even at the
     # floors, a session must fit inside its job with the ending's runway
-    "climb_job_minutes": (90, 40, 240),
-    "followup_job_minutes": (60, 20, 120),
+    "climb_job_minutes": (90, 40, 90),
+    "followup_job_minutes": (60, 20, 60),
 }
 
 # A climb job must outlive its session long enough for the orchestrator's

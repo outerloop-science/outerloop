@@ -43,8 +43,10 @@ Versions follow [SemVer](https://semver.org).
   `session_max_turns`, `session_minutes`, `climb_job_minutes`, and
   `followup_job_minutes`. Contracts are untrusted, so every value is
   clamped into orchestrator-side [floor, ceiling] bounds (`limits` module)
-  — a target can spend less of the orchestrator, never more — and the
-  session is shrunk to fit inside its job. The tick fetches the contract
+  with CEILING == DEFAULT — contracts are merged by target-repo
+  maintainers, so the knobs shape strictly downward; raising a budget is
+  orchestrator-side config — and the session is shrunk to fit inside its
+  job. The tick fetches the contract
   once per cycle and threads the limits through all three launch lanes.
 - Self-deadline: climbs arm a SIGALRM at walltime-minus-margin (default
   120s, floor 60s, `--deadline-margin-s`) raising into the ordinary

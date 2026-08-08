@@ -853,8 +853,8 @@ roadmap: docs/roadmap.md
     out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), spec, contract, NOW)
     assert out == ("tsp", "123")
     sbatch = submitted[0]
-    assert "--time=240" in sbatch  # 100000 clamped to the 240-minute ceiling
+    assert "--time=90" in sbatch  # 100000 clamped to the default-as-ceiling
     wrap = sbatch[-1]
     assert "--max-turns 30" in wrap
     assert "--session-minutes 25" in wrap
-    assert "--job-minutes 240" in wrap  # the job's own walltime, for the alarm
+    assert "--job-minutes 90" in wrap  # the job's own walltime, for the alarm

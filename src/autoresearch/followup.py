@@ -423,6 +423,13 @@ def main() -> int:
                 binary=args.claude_bin,
                 model=args.model,
                 max_turns=args.max_turns,
+                # the session must end before its job does: bound by the
+                # walltime minus the self-deadline margin when one is known
+                timeout_s=(
+                    min(3600, max(300, args.job_minutes * 60 - 300))
+                    if args.job_minutes > 0
+                    else 3600
+                ),
                 container_image=args.image,
             ),
             evaluator=SubprocessEvaluator(container_image=args.image),

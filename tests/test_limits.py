@@ -36,15 +36,14 @@ def test_contract_shapes_spend_downward() -> None:
 
 
 def test_ceilings_cannot_be_raised_by_a_contract() -> None:
-    """The security property: a hostile target may never dial spend UP."""
+    """The security property: contracts are merged by TARGET maintainers,
+    so shaping is strictly downward — asking for more yields the default,
+    on every knob."""
     lim = _limits(
         ", session_max_turns: 100000, session_minutes: 100000"
         ", climb_job_minutes: 100000, followup_job_minutes: 100000"
     )
-    assert lim.session_max_turns == 120
-    assert lim.session_minutes == 120  # its own ceiling (240-min job has room)
-    assert lim.climb_job_minutes == 240
-    assert lim.followup_job_minutes == 120
+    assert lim == effective_limits(None)  # identical to no knobs at all
 
 
 def test_floors_defeat_starvation() -> None:
@@ -59,7 +58,7 @@ def test_floors_defeat_starvation() -> None:
 
 def test_session_is_shrunk_to_fit_inside_the_job() -> None:
     """A session that outlives its job ends as a kill, not a report."""
-    lim = _limits(", session_minutes: 110, climb_job_minutes: 60")
+    lim = _limits(", session_minutes: 60, climb_job_minutes: 60")
     assert lim.climb_job_minutes == 60
     assert lim.session_minutes == 40  # 60 - 20 overhead
 
