@@ -115,6 +115,8 @@ def _cli_env(monkeypatch) -> None:
     monkeypatch.setenv("REVIEW_BOT_LOGIN", "some-bot")
     monkeypatch.setenv("ANTHROPIC_REVIEWER_KEY", "k")
     monkeypatch.setenv("GITHUB_TOKEN", "t")
+    # ambient env must not flip the explicit-request path under a test
+    monkeypatch.delenv("REVIEW_EXPLICIT_REQUEST", raising=False)
 
 
 def test_review_cli_threads_date_and_context(monkeypatch) -> None:

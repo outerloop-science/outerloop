@@ -1,9 +1,12 @@
 """Advisory PR reviewer.
 
 Posts review comments on opted-in repos. It is advisory only: it never
-approves, never blocks, and never comments on bot-authored PRs (the
-architecture's guard against the pipeline nudging humans to merge its own
-work). Maintainers opt a PR out with a label.
+approves, never blocks, and never comments on bot-authored PRs
+AUTOMATICALLY — the guard against the pipeline nudging humans to merge its
+own work. A maintainer's explicit re-request label overrides that one
+skip (a human asking for a machine opinion is not the pipeline nudging
+anyone); the opt-out label always wins. Maintainers opt a PR out with a
+label.
 
 The model call goes through :class:`Completer`, so the review logic is
 testable without an API key and the backend can change without touching

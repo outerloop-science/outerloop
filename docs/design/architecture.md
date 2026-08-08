@@ -43,7 +43,8 @@ always forbidden write paths; the contract is read from the default branch only;
 ## Roles
 
 1. **Advisory reviewer** — comments on PRs in opted-in repos. Constraints: fixed
-   "advisory, not an approval" header; never comments on bot-authored PRs; one
+   "advisory, not an approval" header; never comments on bot-authored PRs
+   automatically (a maintainer's explicit re-request label overrides); one
    review thread per PR; maintainers can opt a PR out by label. Ships first; no
    GPU needed.
 2. **Benchmark climber** — the research loop below.
