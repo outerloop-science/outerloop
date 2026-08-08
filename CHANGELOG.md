@@ -39,6 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Review-until-quiet merge gate documented (CONTRIBUTING, CLAUDE.md):
+  development PRs iterate advisory-review rounds with a judged termination
+  criterion — code PRs stop at no new medium+/behavior-affecting findings,
+  docs/process PRs get one round with nits batched, and a 4-round hard cap
+  escalates to the PI. Contributor docs also updated for the single
+  consolidated `ci` check (stale five-check wording).
+
 - Publish-time freshness: when the base branch moves during a climb, the
   run branch merges the fresh base (merge commit, never rebase), the claim
   is re-measured on the merged tree, and the leader check runs against the
