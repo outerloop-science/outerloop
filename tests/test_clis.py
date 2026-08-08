@@ -266,4 +266,28 @@ def test_each_round_posts_a_new_numbered_comment(monkeypatch) -> None:
     bodies = [c["body"] for c in fake_client.posted]
     assert len(bodies) == 2  # two comments, never an edit
     assert "**Round 1**" in bodies[0] and "**Round 2**" in bodies[1]
-    assert "reviewed head `abc12345" in bodies[0] or "reviewed head `" in bodies[0]
+    # the stamp carries the EXACT reviewed head from the PR payload
+    assert "reviewed head `abc123`" in bodies[0]
+
+
+def test_round_count_failure_never_costs_the_round(monkeypatch) -> None:
+    """Numbering is cosmetic; a listing failure must not suppress the post."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import ReviewResult
+
+    class ListlessClient(FakeReviewClient):
+        def list_comments(self, repo, number, max_pages=20):
+            raise RuntimeError("transient")
+
+    fake_client = ListlessClient()
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None, explicit_request=False: ReviewResult(findings=[], notes="n"),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert len(fake_client.posted) == 1
+    assert "New round" in fake_client.posted[0]["body"]
