@@ -39,6 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Killed climbs now reach a recorded ending: SIGTERM (walltime, preemption,
+  scancel) raises into the climb's ordinary containment inside the KillWait
+  grace, the record stores the climb's own Slurm job id, and a new sweep
+  pass ends `implementing` records whose job is terminal — Slurm truth
+  plus grace, outage never reads as dead. Previously only crashes (Python
+  exceptions) were contained; kills stranded the record forever.
+
 - Adding the `autoresearch:review` label now runs a review on bot-authored
   PRs too: the labeling EVENT (not the label sitting on the PR — re-request
   by removing and re-adding, same as on human PRs) is an explicit ask and

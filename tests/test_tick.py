@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from autoresearch.compute import CommandResult, SlurmCompute
@@ -710,3 +710,105 @@ def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
     # both intake and self-initiated fetched the contract: the lanes RAN
     assert fetched and set(fetched) == {"org/pilot"}
     assert report.disk == () and report.launch_blocked is False
+
+
+def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 0.0) -> None:
+    from autoresearch.runstate import IMPLEMENTING
+
+    save_record(
+        root,
+        RunRecord(
+            run_id=run_id,
+            target="org/pilot",
+            task_title="t",
+            benchmark="tsp",
+            state=IMPLEMENTING,
+            climb_job_id=job_id,
+        ),
+        now=NOW - age_s,
+    )
+
+
+def test_killed_climb_is_ended_after_first_seen_grace(tmp_path: Path) -> None:
+    """Walltime/preemption/scancel leaves no exception to contain. Tick 1
+    only STAMPS first-observed-terminal (during KillWait the job reports
+    terminal while the SIGTERM containment may still be writing); the
+    ending lands a full grace later, with a report."""
+    _implementing_run(tmp_path, "r-killed", job_id="77", age_s=3600)
+    report1, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}))
+    assert report1.implementing_ended == ()  # stamped, not ended
+    # the stamp is a SIDECAR, never a record write: the record is untouched
+    stamped = load_record(tmp_path, "r-killed")
+    assert stamped.state == "implementing" and stamped.terminal_seen == 0.0
+    from autoresearch.tick import _kill_stamp
+
+    assert _kill_stamp(tmp_path, "r-killed").exists()
+
+    report2, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}), now=NOW + GRACE + 1)
+    assert report2.implementing_ended == ("r-killed",)
+    record = load_record(tmp_path, "r-killed")
+    assert record.state == ENDED and record.ending == "aborted"
+    assert "ended TIMEOUT without a verdict" in record.ending_note
+    from autoresearch.runstate import run_dir as _run_dir
+
+    assert "aborted" in (_run_dir(tmp_path, "r-killed") / "report.md").read_text()
+
+
+def test_climb_that_lands_its_own_ending_wins_the_race(tmp_path: Path) -> None:
+    """Between first-seen and grace expiry the climb's honest ending (or a
+    move to waiting) must never be clobbered by the sweep."""
+    _implementing_run(tmp_path, "r-race", job_id="77", age_s=3600)
+    run_tick(tmp_path, FakeSlurm(states={"77": "CANCELLED"}))  # stamps
+    honest = replace(
+        load_record(tmp_path, "r-race"),
+        state=ENDED,
+        ending="negative-result",
+        ending_note="the climb's own containment got there first",
+    )
+    save_record(tmp_path, honest, now=NOW + 30)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "CANCELLED"}), now=NOW + GRACE + 1)
+    assert report.implementing_ended == ()
+    assert load_record(tmp_path, "r-race").ending == "negative-result"
+
+
+def test_live_climb_job_is_left_alone(tmp_path: Path) -> None:
+    _implementing_run(tmp_path, "r-live", job_id="77", age_s=GRACE + 60)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "RUNNING"}))
+    assert report.implementing_ended == ()
+    record = load_record(tmp_path, "r-live")
+    assert record.state == "implementing" and record.terminal_seen == 0.0
+
+
+def test_slurm_outage_never_reads_as_dead_climb(tmp_path: Path) -> None:
+    _implementing_run(tmp_path, "r-out", job_id="77", age_s=GRACE + 60)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "!"}))
+    assert report.implementing_ended == ()
+    from autoresearch.tick import _kill_stamp
+
+    assert not _kill_stamp(tmp_path, "r-out").exists()
+
+
+def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
+    """A climb killed AFTER writing its report keeps that report; the sweep
+    only fills the gap when none exists."""
+    from autoresearch.runstate import run_dir as _run_dir
+
+    _implementing_run(tmp_path, "r-rep", job_id="77", age_s=3600)
+    (_run_dir(tmp_path, "r-rep") / "report.md").write_text("# the climb's own words\n")
+    run_tick(tmp_path, FakeSlurm(states={"77": "FAILED"}))  # stamp
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "FAILED"}), now=NOW + GRACE + 1)
+    assert report.implementing_ended == ("r-rep",)
+    assert (_run_dir(tmp_path, "r-rep") / "report.md").read_text() == "# the climb's own words\n"
+
+
+def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) -> None:
+    """No Slurm evidence -> only the 24h run deadline authors an ending; the
+    6h stranded window frees the picker lane but never writes verdicts."""
+    from autoresearch.tick import STRANDED_IMPLEMENTING_S
+
+    _implementing_run(tmp_path, "r-old", job_id="", age_s=25 * 3600)
+    _implementing_run(tmp_path, "r-stranded", job_id="", age_s=STRANDED_IMPLEMENTING_S + 60)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={}))
+    assert report.implementing_ended == ("r-old",)
+    assert load_record(tmp_path, "r-stranded").state == "implementing"
+    assert "past its run deadline" in load_record(tmp_path, "r-old").ending_note

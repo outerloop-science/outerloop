@@ -161,6 +161,8 @@ def live_climb(
     # here on has a record to end. (A run once stranded in `implementing`
     # because the region between record creation and the contained call
     # could still raise.)
+    import os as _os
+
     record = RunRecord(
         run_id=run_id,
         target=config.target,
@@ -170,6 +172,7 @@ def live_climb(
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
+        climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
         save_record(run_root, record, now)
@@ -543,11 +546,42 @@ def live_climb(
     )
 
 
+class Terminated(Exception):
+    """Slurm sent SIGTERM (walltime, preemption, scancel): raised into the
+    main thread so the ordinary exception containment ends the run inside
+    the KillWait grace window before SIGKILL arrives."""
+
+
+def arm_sigterm_containment() -> None:
+    """Convert the FIRST SIGTERM into a Terminated exception, one-shot.
+
+    Repeats are absorbed by a flag rather than SIG_IGN: a second SIGTERM
+    (repeated scancel, site KillWait re-sends) must not abort the very
+    containment the first one enabled — and SIG_IGN would be inherited
+    across exec by children spawned during containment, leaving them
+    unkillable by TERM. A Python-level handler is reset on exec, so
+    children keep default signal behavior.
+    """
+    import signal
+
+    fired = {"done": False}
+
+    def _on_sigterm(signum: int, frame: object) -> None:
+        if fired["done"]:
+            return  # containment already unwinding; absorb the repeat
+        fired["done"] = True
+        raise Terminated("SIGTERM from Slurm (walltime, preemption, or scancel)")
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+
 def main() -> int:
     import argparse
     import os
     import time
     from datetime import UTC, datetime
+
+    arm_sigterm_containment()
 
     parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
     parser.add_argument("--target", required=True)
