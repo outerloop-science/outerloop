@@ -801,11 +801,14 @@ def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
     assert (_run_dir(tmp_path, "r-rep") / "report.md").read_text() == "# the climb's own words\n"
 
 
-def test_legacy_record_without_job_id_ages_out(tmp_path: Path) -> None:
+def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) -> None:
+    """No Slurm evidence -> only the 24h run deadline authors an ending; the
+    6h stranded window frees the picker lane but never writes verdicts."""
     from autoresearch.tick import STRANDED_IMPLEMENTING_S
 
-    _implementing_run(tmp_path, "r-old", job_id="", age_s=STRANDED_IMPLEMENTING_S + 60)
-    _implementing_run(tmp_path, "r-young", job_id="", age_s=60.0)
+    _implementing_run(tmp_path, "r-old", job_id="", age_s=25 * 3600)
+    _implementing_run(tmp_path, "r-stranded", job_id="", age_s=STRANDED_IMPLEMENTING_S + 60)
     report, _ = run_tick(tmp_path, FakeSlurm(states={}))
     assert report.implementing_ended == ("r-old",)
-    assert load_record(tmp_path, "r-young").state == "implementing"
+    assert load_record(tmp_path, "r-stranded").state == "implementing"
+    assert "past its run deadline" in load_record(tmp_path, "r-old").ending_note

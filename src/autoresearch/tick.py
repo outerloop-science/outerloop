@@ -419,9 +419,15 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
                     continue
                 note = f"climb job {record.climb_job_id} ended {state} without a verdict"
             else:
-                if now - max(record.updated, record.created) < STRANDED_IMPLEMENTING_S:
+                # No Slurm evidence at all (legacy record, or a manual dev
+                # invocation without SLURM_JOB_ID): only the run DEADLINE —
+                # past which nothing legitimately lives — justifies a
+                # terminal verdict; the shorter stranded window merely
+                # frees the picker lane and must not author endings.
+                deadline = record.deadline if record.deadline > 0 else (record.created + 24 * 3600)
+                if now < deadline:
                     continue
-                note = "implementing with no recorded climb job (legacy), aged out"
+                note = "implementing with no recorded climb job, past its run deadline"
             fresh = load_record(root, record.run_id)
             if fresh.state != IMPLEMENTING:
                 continue  # the climb landed its own ending meanwhile
