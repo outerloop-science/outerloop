@@ -34,7 +34,11 @@ uv run pre-commit install
   the head commit — a quiet verdict on an older diff authorizes nothing.
   Findings rejected on rationale get a reply on the PR thread, never
   silence. The habit exists because rounds have repeatedly found real
-  defects in earlier rounds' own fixes.
+  defects in earlier rounds' own fixes. Scope: this gate governs
+  DEVELOPMENT PRs (human- or assistant-authored). Bot improvement PRs sit
+  outside it — the advisory reviewer skips them by design and they arm
+  auto-merge, so there the human code-owner review is the gate and it
+  executes the merge.
 
 ## Style
 
