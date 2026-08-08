@@ -23,8 +23,9 @@ operator's compute, or with a secret exfiltrated.**
   comments, reports) is fenced with computed fences and marked as data, not
   instructions, in briefs and wake prompts.
 - **Sessions are contained**: Apptainer `--containall`, scrubbed env (no
-  PAT, no billing keys), per-run HOME, transcripts secret-scanned and stored
-  off-repo.
+  PAT, no billing keys), per-run HOME; transcripts are key-redacted and
+  stored outside any target clone. (A full secret-scan pass before storage
+  is still open roadmap work — it does NOT count toward this audit yet.)
 - **Claims are orchestrator-measured**: nothing a session asserts is
   trusted; baselines and candidates are re-measured by the orchestrator, and
   target CI re-verifies on GitHub's runners.
@@ -34,7 +35,9 @@ operator's compute, or with a secret exfiltrated.**
 ## The gap that gates the flip: `pull_request_target`
 
 The advisory reviewer runs on `pull_request_target` so it can hold secrets
-(`REVIEWER_API_KEY`, optionally a checkout key). On a public repo that
+(the org secret `REVIEWER_API_KEY`, surfaced to the CLI as
+`ANTHROPIC_REVIEWER_KEY`; optionally a checkout key — grep for both names
+when auditing). On a public repo that
 trigger fires for **fork PRs from strangers** — the classic pwn-request
 shape: privileged context + attacker-influenced event.
 
@@ -54,13 +57,20 @@ workflow files of the repo being flipped, not on memory of them):
    pre-commit on its config).
 3. `permissions:` blocks are minimal (`contents: read`,
    `pull-requests: write`) on caller and reusable workflows alike.
-4. Labels that trigger privileged runs (`autoresearch:review`) require the
-   labeler to hold write access — GitHub enforces label application, but
-   verify no automation applies labels on behalf of unprivileged users.
-5. Prompt-injection resistance re-checked: the reviewer reads attacker-
-   authored diffs/PR text; its output must stay sanitized (approval-language
-   redaction, marker stripping, length caps) so a hostile diff cannot forge
-   an approval or smuggle instructions into the comment a human reads.
+4. Labels that trigger privileged runs (`autoresearch:review`): GitHub
+   allows label application at TRIAGE, not write — so GitHub's own
+   permission model is NOT sufficient gating on a public repo with triage
+   grants. Verify the code-side provenance check (labeler permission via
+   timeline events) covers every label-triggered privileged path, and that
+   no automation applies labels on behalf of unprivileged users.
+5. Prompt-injection resistance re-checked. With the fork gate on, the
+   reviewer sees only same-repo PRs — but same-repo authors can be
+   compromised accounts, PR bodies quote text from anyone's issues, and a
+   self-hoster may deliberately relax the gate for label-approved fork
+   PRs. So the output sanitization (approval-language redaction, marker
+   stripping, length caps) must hold regardless of gate configuration: a
+   hostile diff must not be able to forge an approval or smuggle
+   instructions into the comment a human reads.
 6. Secrets inventory: which workflows can see which secrets, and is each
    scoped to the least repo set (org-level secrets with repo selection, not
    org-wide).
