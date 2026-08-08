@@ -191,6 +191,7 @@ this ecosystem so the battery versions in lockstep with the loop.
        single runs); metrics incl. time-to-first-improvement, improvement
        per dollar/GPU-hour, integrity-veto honesty (seeded gaming must be
        caught)
+   (Roles/flow reference for all of the above: design/roles.md.)
 3. [ ] Progress webpage: static generator over git state (leader.json
        history, reports, plan issues) — charts, run timelines; no server
 4. [ ] Benchmark steward live on the pilot (phase-7 entry above)
