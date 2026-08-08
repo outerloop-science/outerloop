@@ -23,10 +23,11 @@ uv run pre-commit run --all-files
 - Budget caps are load-bearing safety features, not tunables to raise casually.
 - Never commit credentials, transcripts, or run artifacts (SECURITY.md).
 - Merge commits only; never rebase, squash, or force-push.
-- **Review until quiet**: substantive PRs iterate advisory-review rounds
-  (toggle the `autoresearch:review` label to re-run after each fix commit)
-  until a round finds nothing new; merge only on an explicit `ci`
-  conclusion of success AND a quiet round run against the head commit.
-  Read every review before merging — green is not read.
+- **Review until quiet**: substantive PRs — code, and process rules;
+  trivial doc fixes stay lightweight — iterate advisory-review rounds
+  (after each fix commit, remove then re-add the `autoresearch:review`
+  label once the push settles) until a round finds nothing new; merge only
+  on an explicit `ci` conclusion of success AND a quiet round run against
+  the head commit. Read every review before merging — green is not read.
 - Imports are absolute (`from autoresearch...`); deps go in with their code +
   `uv lock`; CHANGELOG under `[Unreleased]`.

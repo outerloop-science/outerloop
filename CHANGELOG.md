@@ -39,6 +39,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Review-until-quiet merge gate documented (CONTRIBUTING, CLAUDE.md):
+  substantive PRs iterate advisory-review rounds until a round on the head
+  commit finds nothing new.
+
 - Improvement PRs arm GitHub auto-merge at publish (best-effort): the bot
   still never merges — arming hands the merge to the human approval that
   branch protection requires, so approving is the last human action needed.

@@ -24,14 +24,17 @@ uv run pre-commit install
   code-owner approval when a second owner joins
   (`scripts/setup_branch_protection.sh <repo> 1`).
 - Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
-- Code PRs iterate adversarial review ROUNDS until a round finds nothing
-  new ("review until quiet", PI rule 2026-08-07). The advisory workflow
-  runs on open; after any fix commit, toggle the `autoresearch:review`
-  label off/on to re-run it. The authorizing quiet round must be the most
-  recent round AND run against the head commit — a quiet verdict on an
-  older diff authorizes nothing. Findings rejected on rationale get a
-  reply on the PR thread, never silence. The habit exists because rounds
-  have repeatedly found real defects in earlier rounds' own fixes.
+- Substantive PRs — code, and process rules like this one; trivial doc
+  fixes stay lightweight — iterate adversarial review ROUNDS until a round
+  finds nothing new ("review until quiet", PI rule 2026-08-07). The
+  advisory workflow runs on open; after any fix commit, REMOVE then RE-ADD
+  the `autoresearch:review` label (the workflow fires on the labeled
+  event; removal alone runs nothing) once the push has settled. The
+  authorizing quiet round must be the most recent round AND run against
+  the head commit — a quiet verdict on an older diff authorizes nothing.
+  Findings rejected on rationale get a reply on the PR thread, never
+  silence. The habit exists because rounds have repeatedly found real
+  defects in earlier rounds' own fixes.
 
 ## Style
 
