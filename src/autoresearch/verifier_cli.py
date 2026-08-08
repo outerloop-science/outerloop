@@ -34,10 +34,12 @@ log = logging.getLogger(__name__)
 _MODULE_FLAG = re.compile(r"-m\s+([A-Za-z_][\w.]*)")
 
 
-# Fan-out is bounded by ATTEMPTS, not successes: a contract whose module
-# guesses mostly 404 (flat layout, `-m pytest`) must not turn into a long
-# sequential request train against the workflow token's rate budget.
-MAX_RULER_FETCH_ATTEMPTS = MAX_RULER_FILES * 2
+# Fan-out is bounded by ATTEMPTS, not successes — and the two sources get
+# SEPARATE budgets: a contract full of 404ing module guesses (`-m pytest`)
+# must neither train requests against the token's rate budget nor starve
+# the tests/ tripwires of theirs.
+MAX_MODULE_FETCH_ATTEMPTS = MAX_RULER_FILES
+MAX_TEST_FETCH_ATTEMPTS = MAX_RULER_FILES
 
 
 def _ruler_paths(contract_text: str) -> list[str]:
@@ -50,9 +52,9 @@ def _ruler_paths(contract_text: str) -> list[str]:
         for candidate in (f"src/{rel}", rel):
             if candidate not in paths:
                 paths.append(candidate)
-        if len(paths) >= MAX_RULER_FETCH_ATTEMPTS:
+        if len(paths) >= MAX_MODULE_FETCH_ATTEMPTS:
             break
-    return paths[:MAX_RULER_FETCH_ATTEMPTS]
+    return paths[:MAX_MODULE_FETCH_ATTEMPTS]
 
 
 def gather_ruler(
@@ -62,22 +64,21 @@ def gather_ruler(
     then test files (the tripwires). Best-effort and bounded — a degraded
     verification beats none."""
     out: list[tuple[str, str]] = []
-    attempts = 0
     try:
-        for path in _ruler_paths(contract_text):
-            if len(out) >= MAX_RULER_FILES or attempts >= MAX_RULER_FETCH_ATTEMPTS:
+        for path in _ruler_paths(contract_text):  # already capped at module budget
+            if len(out) >= MAX_RULER_FILES:
                 return tuple(out)
-            attempts += 1
             content = client.get_file_content(repo, path, base_ref)
             if content is not None:
                 out.append((path, content))
+        test_attempts = 0
         for item in client.list_directory(repo, "tests", base_ref):
-            if len(out) >= MAX_RULER_FILES or attempts >= MAX_RULER_FETCH_ATTEMPTS:
+            if len(out) >= MAX_RULER_FILES or test_attempts >= MAX_TEST_FETCH_ATTEMPTS:
                 break
             name = str(item.get("name", ""))
             path = str(item.get("path", ""))
             if item.get("type") == "file" and name.endswith(".py") and path:
-                attempts += 1
+                test_attempts += 1
                 content = client.get_file_content(repo, path, base_ref)
                 if content is not None:
                     out.append((path, content))

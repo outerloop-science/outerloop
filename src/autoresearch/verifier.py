@@ -121,7 +121,7 @@ VERIFY_SCHEMA: dict[str, Any] = {
                     "summary": {"type": "string"},
                     "detail": {"type": "string"},
                 },
-                "required": ["file", "category", "confidence", "summary", "detail"],
+                "required": ["file", "line", "category", "confidence", "summary", "detail"],
                 "additionalProperties": False,
             },
         },

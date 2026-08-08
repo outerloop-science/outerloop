@@ -53,11 +53,20 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     continue-on-error: true
-    # Fork PRs must not reach the secret; and this role covers the BOT's
-    # PRs only (human PRs belong to the advisory reviewer).
+    # Fork PRs must not reach the secret; this role covers the BOT's PRs
+    # only (human PRs belong to the advisory reviewer); and label events
+    # count only for the SPECIFIC re-request label applied by someone
+    # other than the PR's author — in-workflow defense in depth mirroring
+    # the advisory workflow, so an unrelated triage label (or the bot
+    # relabeling its own PR) cannot bill another round. String comparisons
+    # in Actions expressions are case-insensitive, matching the CLI's
+    # casefold semantics.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.user.login == inputs.bot_login
+      github.event.pull_request.user.login == inputs.bot_login &&
+      (github.event.action != 'labeled' ||
+       (github.event.label.name == 'autoresearch:review' &&
+        github.event.sender.login != github.event.pull_request.user.login))
     steps:
       # Checks out the VERIFIER, never the pull request's code. Nothing
       # from the PR is executed at any point.

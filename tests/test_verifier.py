@@ -158,3 +158,28 @@ def test_gather_ruler_fetches_modules_then_tests() -> None:
     assert paths[0] == "src/pilot/eval.py"  # eval module first
     assert "tests/test_envs.py" in paths and "tests/conftest.py" in paths
     assert "tests/data" not in paths  # dirs skipped
+
+
+def test_module_404s_cannot_starve_the_test_tripwires() -> None:
+    """Module guesses and tests/ have SEPARATE attempt budgets: a contract
+    full of unresolvable -m modules still gets the tripwires fetched."""
+    from autoresearch.verifier_cli import gather_ruler
+
+    fetched: list[str] = []
+
+    class AllModules404:
+        def get_file_content(self, repo, path, ref):
+            fetched.append(path)
+            return "TEST" if path.startswith("tests/") else None
+
+        def list_directory(self, repo, path, ref):
+            return [
+                {"type": "file", "name": f"test_{i}.py", "path": f"tests/test_{i}.py"}
+                for i in range(10)
+            ]
+
+    contract = "\n".join(f"command: python -m mod{i}.eval" for i in range(20))
+    ruler = gather_ruler(AllModules404(), "org/pilot", "main", contract)  # type: ignore[arg-type]
+    paths = [p for p, _ in ruler]
+    assert paths and all(p.startswith("tests/") for p in paths)  # tripwires arrived
+    assert len([p for p in fetched if not p.startswith("tests/")]) <= 6  # module budget held

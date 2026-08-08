@@ -366,18 +366,29 @@ class GitHubClient:
                 break
         return out
 
-    def list_directory(self, repo: str, path: str, ref: str) -> list[dict[str, Any]]:
+    def list_directory(
+        self, repo: str, path: str, ref: str, max_pages: int = 3
+    ) -> list[dict[str, Any]]:
         """Entries of a directory at a ref ([] when absent or not a dir).
-        The contents API returns a JSON array for directories."""
+        Paginated like the other list endpoints: the contents API caps a
+        page and silently truncating a large tree would make WHICH entries
+        callers see arbitrary."""
+        items: list[dict[str, Any]] = []
+        quoted = f"/repos/{urllib.parse.quote(repo)}/contents/{urllib.parse.quote(path)}"
         query = urllib.parse.urlencode({"ref": ref})
-        api_path = f"/repos/{urllib.parse.quote(repo)}/contents/{urllib.parse.quote(path)}?{query}"
-        try:
-            data = self._request("GET", api_path)
-        except GitHubError as exc:
-            if exc.status == 404:
-                return []
-            raise
-        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        for page in range(1, max_pages + 1):
+            try:
+                data = self._request("GET", f"{quoted}?{query}&per_page=100&page={page}")
+            except GitHubError as exc:
+                if exc.status == 404:
+                    return items
+                raise
+            if not isinstance(data, list) or not data:
+                break
+            items.extend(item for item in data if isinstance(item, dict))
+            if len(data) < 100:
+                break
+        return items
 
     def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
         """A file's text at `ref`, or None when it can't be provided.
