@@ -51,7 +51,10 @@ def test_floors_defeat_starvation() -> None:
     lim = _limits(", session_max_turns: 1, session_minutes: 1, climb_job_minutes: 1")
     assert lim.session_max_turns == 10
     assert lim.session_minutes == 10
-    assert lim.climb_job_minutes == 20
+    # floor 40 = session floor (10) + orchestrator overhead (20) + runway:
+    # even the floor combination keeps the session inside the job
+    assert lim.climb_job_minutes == 40
+    assert lim.session_minutes <= lim.climb_job_minutes - 20
 
 
 def test_session_is_shrunk_to_fit_inside_the_job() -> None:

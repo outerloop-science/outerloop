@@ -20,8 +20,10 @@ from typing import Any
 _BOUNDS: dict[str, tuple[int, int, int]] = {
     "session_max_turns": (60, 10, 120),
     "session_minutes": (60, 10, 120),
-    "climb_job_minutes": (90, 20, 240),
-    "followup_job_minutes": (60, 15, 120),
+    # floor = session floor + overhead + self-deadline margin: even at the
+    # floors, a session must fit inside its job with the ending's runway
+    "climb_job_minutes": (90, 40, 240),
+    "followup_job_minutes": (60, 20, 120),
 }
 
 # A climb job must outlive its session long enough for the orchestrator's

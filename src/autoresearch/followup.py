@@ -383,6 +383,12 @@ def main() -> int:
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--bot-login", default="agentic-learning-bot")
+    parser.add_argument(
+        "--job-minutes",
+        type=int,
+        default=0,
+        help="this job's Slurm walltime; arms the self-deadline (0 = off)",
+    )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
         "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
@@ -396,6 +402,16 @@ def main() -> int:
 
     api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
+
+    # Same self-deadline as the climb: Slurm never signals this process,
+    # so walltime deaths must be our own clock's job. respond_once contains
+    # exceptions per-lane, and its lease/cursor rules keep a Terminated
+    # ending honest (cursors un-advanced on failure -> the next tick retries).
+    from autoresearch.climb import arm_self_deadline
+
+    armed = arm_self_deadline(args.job_minutes)
+    if armed:
+        log.info("self-deadline armed: Terminated in %ds", armed)
     outcome = respond_once(
         args.run_root,
         args.run_id,

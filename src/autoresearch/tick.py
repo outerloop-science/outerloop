@@ -197,6 +197,8 @@ def service_in_review(
                 spec.image,
                 "--bot-login",
                 spec.bot_login,
+                "--job-minutes",
+                str(spec.time_minutes),
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
@@ -625,7 +627,12 @@ def tick(
             except Exception as exc:
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
         limits = effective_limits(contract.budgets if contract is not None else None)
-        spec = replace(followup_spec, time_minutes=limits.followup_job_minutes)
+        # The contract's followup walltime only overrides when EXPLICITLY
+        # set: absent, the operator-configured spec value stands (the
+        # limits default is a fallback, not a mandate).
+        spec = followup_spec
+        if contract is not None and contract.budgets.followup_job_minutes is not None:
+            spec = replace(followup_spec, time_minutes=limits.followup_job_minutes)
         ended, submitted = service_in_review(
             root,
             github,

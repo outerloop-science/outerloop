@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -552,6 +553,11 @@ class Terminated(Exception):
     the KillWait grace window before SIGKILL arrives."""
 
 
+# Below this, arming is pointless: the alarm would fire during setup,
+# outside containment, and a job this short cannot finish a climb anyway.
+MIN_ARM_S = 180
+
+
 def arm_self_deadline(job_minutes: int, margin_s: float = 120.0) -> int:
     """Arm our own end-of-walltime alarm; returns the armed seconds (0 = off).
 
@@ -561,15 +567,25 @@ def arm_self_deadline(job_minutes: int, margin_s: float = 120.0) -> int:
     wall is our own clock. SIGALRM fires `margin_s` before the job's
     walltime and raises Terminated into the ordinary containment; the
     margin floor covers the containment's own tail (GitHub calls are 30s
-    timeout x retries).
+    timeout x retries). The walltime clock starts at JOB start, not
+    process start — SLURM_JOB_START_TIME anchors the deadline when
+    present so startup latency erodes the runway, never the margin.
     """
     if job_minutes <= 0:
         return 0
     import signal
+    import time as _time
 
     margin = max(60.0, margin_s)
-    remaining = int(job_minutes * 60 - margin)
-    if remaining <= 0:
+    start_raw = os.environ.get("SLURM_JOB_START_TIME", "")
+    if start_raw.isdigit():
+        remaining = int(int(start_raw) + job_minutes * 60 - margin - _time.time())
+    else:
+        remaining = int(job_minutes * 60 - margin)
+    if remaining < MIN_ARM_S:
+        log.warning(
+            "self-deadline NOT armed: %ds runway is below the %ds floor", remaining, MIN_ARM_S
+        )
         return 0
 
     def _on_alarm(signum: int, frame: object) -> None:
@@ -659,10 +675,6 @@ def main() -> int:
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
-    armed = arm_self_deadline(args.job_minutes, args.deadline_margin_s)
-    if armed:
-        log.info("self-deadline armed: Terminated in %ds", armed)
-
     # same 0600 discipline as the PAT: this key spends real money
     api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
@@ -690,6 +702,12 @@ def main() -> int:
                 ),
             )
         return 3
+
+    # Armed LAST, immediately before the contained region: an alarm that
+    # fired during setup would escape uncaught and die unrecorded.
+    armed = arm_self_deadline(args.job_minutes, args.deadline_margin_s)
+    if armed:
+        log.info("self-deadline armed: Terminated in %ds", armed)
 
     outcome = live_climb(
         config=ClimbConfig(target=args.target, benchmark=args.benchmark),
