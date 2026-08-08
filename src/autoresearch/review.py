@@ -295,7 +295,11 @@ def format_comment(result: ReviewResult) -> str | None:
             safe_file = finding.file.replace("`", "")
             where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
             ref = f"({where}; {finding.confidence} confidence)"
-            lines.append(f"**{finding.summary}.** {finding.detail} {ref}")
+            summary = finding.summary.rstrip(".!?…")  # the template owns the period
+            # an odd backtick in the detail would pair with the reference's
+            # opening backtick and spill the path out of its code span
+            detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
+            lines.append(f"**{summary}.** {detail} {ref}")
             lines.append("")
     if result.notes:
         lines += [result.notes]

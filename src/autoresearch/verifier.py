@@ -273,7 +273,9 @@ def format_verify_comment(result: ReviewResult) -> str | None:
             where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
             tag = f", {finding.category}" if finding.category else ""
             ref = f"({where}; {finding.confidence} confidence{tag})"
-            lines.append(f"**{finding.summary}.** {finding.detail} {ref}")
+            summary = finding.summary.rstrip(".!?…")  # the template owns the period
+            detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
+            lines.append(f"**{summary}.** {detail} {ref}")
             lines.append("")
     if result.notes:
         lines += [result.notes]

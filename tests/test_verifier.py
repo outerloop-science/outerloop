@@ -147,7 +147,9 @@ def test_comment_never_tells_humans_to_merge() -> None:
     result = verify(make_pr(), completer, BOT, contract_text="c")
     body = format_verify_comment(result)
     assert body is not None
-    lowered = body.replace(VERIFY_HEADER, "").casefold()
+    # the WHOLE body, header included — a reworded header must not become
+    # an exempt channel for endorsement language
+    lowered = body.casefold()
     for phrase in ("lgtm", "approve", "safe to merge"):
         assert phrase not in lowered
 
