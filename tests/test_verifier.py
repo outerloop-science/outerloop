@@ -112,7 +112,14 @@ def test_clean_read_does_not_certify() -> None:
     assert body is not None
     assert body.startswith(VERIFY_MARKER)
     assert VERIFY_HEADER in body
-    assert "does not certify" in body
+    # the clean-read BODY (not just the header) must exist and be neutral
+    assert "No integrity findings" in body
+
+
+def test_notes_are_a_separate_paragraph_in_clean_reads() -> None:
+    body = format_verify_comment(ReviewResult(findings=[], notes="context was partial"))
+    assert body is not None
+    assert "\n\ncontext was partial" in body  # blank line before notes
 
 
 def test_ruler_paths_resolved_from_contract_commands() -> None:

@@ -163,9 +163,11 @@ def skip_reason(pr: PullRequest, bot_login: str, explicit_request: bool = False)
 def sanitize(text: str, limit: int) -> str:
     """Make model text safe to render in a comment.
 
-    Collapses newlines (so a finding cannot escape its list item and write
-    top-level markdown), escapes HTML, strips the thread marker, redacts
-    approval-like language, and truncates.
+    Collapses newlines (so attacker text cannot start a fresh line and
+    write top-level markdown — headings, quotes, tables — regardless of
+    whether findings render as list items or prose paragraphs), escapes
+    HTML, strips the thread marker, redacts approval-like language, and
+    truncates.
     """
     flat = " ".join(str(text).split())
     flat = flat.replace(MARKER, "")
@@ -272,6 +274,7 @@ def format_comment(result: ReviewResult) -> str | None:
     lines = [MARKER, ADVISORY_HEADER, ""]
     if not result.findings:
         lines.append("No defects found in this diff.")
+        lines.append("")
     else:
         # Prose paragraphs, not bullet fragments (maintainer preference,
         # 2026-08-08): the human is the reader who needs readability; a

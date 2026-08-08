@@ -50,8 +50,8 @@ Versions follow [SemVer](https://semver.org).
   advisory reviewer's mirror. Gaming lens (harness exploitation,
   ruler-fishing, leakage, overfitting, unsupported claims, measurement
   gaps) with the contract and the frozen ruler's source fetched from the
-  BASE branch into context; findings tagged by category;
-  silence-is-not-endorsement header; its own spend-capped key
+  BASE branch into context; findings tagged by category; a header stating
+  a clean read does not certify the result; its own spend-capped key
   (`ANTHROPIC_VERIFIER_KEY`). The advisory workflow's interim
   bot-PR-on-label override is now opt-in (`review_bot_prs_on_label`,
   default false) for verifier-less self-hosters — with a verifier

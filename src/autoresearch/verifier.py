@@ -11,8 +11,10 @@ instances, claims the evidence does not support).
 Same constitution as the reviewer, inverted population:
 - bot-authored PRs ONLY (a human PR is the advisory reviewer's job);
 - findings-only; never an approval; never blocks CI;
-- header states that SILENCE IS NOT ENDORSEMENT — a clean read must never
-  be mistaken for a green light; the human code owner still decides;
+- the header carries the not-a-certification semantics (formerly the
+  louder "silence is not endorsement" — softened 2026-08-08 on maintainer
+  feedback): a clean read must never be mistaken for a green light; the
+  human code owner still decides;
 - model output sanitized with the same approval-language redaction, so a
   prompt-injected diff cannot forge an endorsement through this channel.
 """
@@ -256,6 +258,7 @@ def format_verify_comment(result: ReviewResult) -> str | None:
     lines = [VERIFY_MARKER, VERIFY_HEADER, ""]
     if not result.findings:
         lines.append("No integrity findings from this read.")
+        lines.append("")
     else:
         order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
