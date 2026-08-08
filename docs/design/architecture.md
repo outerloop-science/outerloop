@@ -42,13 +42,11 @@ always forbidden write paths; the contract is read from the default branch only;
 
 ## Roles
 
-1. **Advisory reviewer** — comments on PRs in opted-in repos. Constraints: fixed
-   "advisory, not an approval" header; never comments on bot-authored PRs
-   automatically (a maintainer's explicit re-request label overrides); one
-   review thread per PR; maintainers can opt a PR out by label. Ships first; no
-   GPU needed.
-2. **Benchmark climber** — the research loop below.
-3. **Maintenance** — CI fixes, issue triage. Later.
+The full cast, authority rules, and end-to-end flow diagrams live in
+**design/roles.md** (one page: who does what, who may never do what).
+Summary: model roles (author sessions, reviewers, verifier, planner,
+steward) propose; code roles (orchestrator, watchdog) enforce; humans
+decide every merge.
 
 ## Scheduling and connectivity
 

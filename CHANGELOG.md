@@ -39,6 +39,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `docs/design/roles.md`: the one-page cast — every role (live, next, and
+  designed) with its authority and its "may never" column, mermaid flow
+  diagrams for the improvement pipeline and review routing, the
+  collusion-separation table, and where state lives. architecture.md's
+  stale three-line Roles section now points there.
+
 - Design docs for the meta track: `docs/design/meta.md` (pilot-vs-meta
   taxonomy, two-tier GitHub simulator, battery + scorecard with paired
   repetitions, sim-only self-improvement, benchmark-steward role) and
