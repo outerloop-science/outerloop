@@ -713,3 +713,120 @@ def test_arming_failure_never_fails_the_publish(tmp_path, target_repo) -> None:
     assert outcome.outcome == "improved"
     assert outcome.pr_url.endswith("/pull/1")
     assert github.armed == []
+
+
+def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str) -> None:
+    """Simulate a concurrent merge: land a commit on the origin's main."""
+    side = tmp_path / f"side-{name}"
+    _git(tmp_path, "clone", "-q", str(target_repo), str(side))
+    p = side / rel_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    _git(side, "-c", "user.name=u", "-c", "user.email=u@u", "add", "-A")
+    _git(side, "-c", "user.name=u", "-c", "user.email=u@u", "commit", "-qm", f"upstream {name}")
+    _git(side, "push", "-q", "origin", "main")
+
+
+@dataclass
+class RacingHarness(ScriptedHarness):
+    """Applies its edits AND lands an upstream commit mid-session."""
+
+    target_repo: object = None
+    tmp_path: object = None
+    upstream_path: str = "docs/roadmap.md"
+    upstream_content: str = "# roadmap moved\n"
+
+    def run(self, brief_text, workspace, resume_session_id=None):
+        _push_upstream(
+            self.target_repo, self.tmp_path, self.upstream_path, self.upstream_content, "race"
+        )
+        return super().run(brief_text, workspace, resume_session_id)
+
+
+def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) -> None:
+    """Main moves during the climb (disjoint file): the branch merges the
+    fresh base (merge commit, never rebase), the claim is RE-MEASURED on the
+    merged tree, and the PR lands with both histories."""
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-race",
+        harness=RacingHarness(
+            edits={"src/pilot/solvers/tsp.py": "r=1\n"},
+            target_repo=target_repo,
+            tmp_path=tmp_path,
+        ),
+        # third value = the re-measurement on the merged tree
+        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-07T00:00:00Z",
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs and github.prs[0]["head"] == "feat/auto/agent-01/tsp-race"
+    # the branch contains the upstream commit (merged, not ignored)
+    branch_files = _git(target_repo, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-race")
+    assert "docs/roadmap.md" in branch_files
+    upstream_on_branch = _git(target_repo, "show", "feat/auto/agent-01/tsp-race:docs/roadmap.md")
+    assert upstream_on_branch == "# roadmap moved\n"
+    # vs the MOVED main, the branch changes only solver + progress files
+    files = set(
+        _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-race").split()
+    )
+    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
+
+
+def test_conflicting_moved_base_is_publish_error_not_a_broken_pr(tmp_path, target_repo) -> None:
+    """Upstream rewrites the SAME file the agent edited: the merge conflicts,
+    nothing is pushed, and the run ends honestly instead of opening an
+    unmergeable PR."""
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-clash",
+        harness=RacingHarness(
+            edits={"src/pilot/solvers/tsp.py": "mine=1\n"},
+            target_repo=target_repo,
+            tmp_path=tmp_path,
+            upstream_path="src/pilot/solvers/tsp.py",
+            upstream_content="theirs=2\n",
+        ),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    assert "feat/auto/agent-01/tsp-clash" not in _git(target_repo, "branch", "--list")
+    record = load_record(tmp_path / "state", "tsp-clash")
+    assert "merge" in record.ending_note and "conflict" in record.ending_note
+
+
+def test_absorbed_improvement_after_merge_is_rejected(tmp_path, target_repo) -> None:
+    """The merged tree no longer beats the baseline (upstream absorbed the
+    win): re-measurement vetoes the push."""
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-absorbed",
+        harness=RacingHarness(
+            edits={"src/pilot/solvers/tsp.py": "a=1\n"},
+            target_repo=target_repo,
+            tmp_path=tmp_path,
+        ),
+        # merged-tree re-measurement says NO improvement
+        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.876]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    assert "no longer beats" in load_record(tmp_path / "state", "tsp-absorbed").ending_note

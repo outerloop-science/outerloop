@@ -11,14 +11,17 @@ has ended; the session sees only its own capped API key inside its container.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from autoresearch.contract import load_contract
 from autoresearch.github import (
     FileTokenProvider,
+    GitError,
     GitHubClient,
     Workspace,
 )
@@ -166,6 +169,7 @@ def live_climb(
     tree_hashes: list[str] = []
     try:
         ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
+        base_sha = ws.git("rev-parse", "HEAD").strip()
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
 
@@ -281,18 +285,70 @@ def live_climb(
             # unique branch per run: a fixed name collides on the second run
             branch = f"{config.branch_prefix}/{run_id}"
             ws.branch(branch)
-            # Progress record (BENCHMARKS.md + results/leader.json), written
-            # by the orchestrator from ITS measurements after the drift check
-            # — the improvement and its human-readable record land in one PR.
             if result.baseline is None or result.candidate is None:
                 raise WorkspaceDrift("improved result missing measurements")
             bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+            baseline, candidate = result.baseline, result.candidate
+
+            # Freshness: the base branch may have MOVED during the climb
+            # (sessions run for many minutes; another PR can merge meanwhile).
+            # Landing the change on the clone's snapshot would open a
+            # conflicted PR — or worse, a clean-merging one whose claim was
+            # never measured against what it actually lands on. So: merge the
+            # moved base INTO the run branch (merge commit — never rebase)
+            # and re-measure on the merged tree before anything is pushed.
+            ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
+            fresh_base = ws.git("rev-parse", "FETCH_HEAD").strip()
+            base_moved = fresh_base != base_sha
+            if base_moved:
+                # the agent's work goes in its own commit first, so the merge
+                # commit stays a pure merge
+                ws.commit_all(
+                    f"agent: improve {config.benchmark}\n\nAgent: {config.agent_id}",
+                    author=config.bot_login,
+                    forbidden=lambda p: bool(out_of_scope([p], contract)),
+                )
+                try:
+                    ws.git(
+                        "-c",
+                        f"user.name={config.bot_login}",
+                        "-c",
+                        f"user.email={config.bot_login}@users.noreply.github.com",
+                        "merge",
+                        "--no-edit",
+                        "FETCH_HEAD",
+                    )
+                except GitError as exc:
+                    with contextlib.suppress(GitError):
+                        ws.git("merge", "--abort")
+                    raise WorkspaceDrift(
+                        f"base branch moved during the climb and the merge "
+                        f"conflicted: {str(exc)[:300]}"
+                    ) from exc
+                # The claim must hold on the tree that actually lands.
+                candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
+                if not orch_improved(
+                    baseline, candidate, bench.direction, config.min_relative_improvement
+                ):
+                    raise WorkspaceDrift(
+                        f"after merging the moved base, candidate {candidate} no "
+                        f"longer beats baseline {baseline} (upstream absorbed "
+                        f"or invalidated the improvement)"
+                    )
+                if ws.git("status", "--porcelain").strip():
+                    raise WorkspaceDrift("re-eval on the merged tree wrote files")
+                result = dc_replace(result, candidate=candidate)
+
+            # Progress record (BENCHMARKS.md + results/leader.json), written
+            # by the orchestrator from ITS measurements after the drift check
+            # — read from the (possibly merged) tree, so the leader check runs
+            # against the FRESH ledger, not the clone's snapshot.
             prior = load_leader(workspace).get(config.benchmark)
             if prior is not None and not orch_improved(
-                prior.best, result.candidate, bench.direction, config.min_relative_improvement
+                prior.best, candidate, bench.direction, config.min_relative_improvement
             ):
                 raise WorkspaceDrift(
-                    f"candidate {result.candidate} does not beat the recorded "
+                    f"candidate {candidate} does not beat the recorded "
                     f"best {prior.best} by the noise floor (stale clone or eval noise)"
                 )
             entries = update_leader(
@@ -300,8 +356,8 @@ def live_climb(
                 benchmark=bench.name,
                 metric=bench.metric,
                 direction=bench.direction,
-                baseline=result.baseline,
-                candidate=result.candidate,
+                baseline=baseline,
+                candidate=candidate,
                 run_id=run_id,
                 date=created[:10],
             )
@@ -309,9 +365,11 @@ def live_climb(
             # The commit veto re-checks FULL scope (allowed + forbidden) as
             # defense in depth behind climb_once's pre-eval check. The two
             # orchestrator-written progress files are the only exemption.
+            # (When the base moved, the agent's work is already committed and
+            # only the progress files remain to stage.)
             ws.commit_all(
                 f"agent: improve {config.benchmark} "
-                f"({_title_pair(result.baseline, result.candidate)})"
+                f"({_title_pair(baseline, candidate)})"
                 f"\n\nAgent: {config.agent_id}",
                 author=config.bot_login,
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
@@ -325,8 +383,7 @@ def live_climb(
                 config.target,
                 # short precision in the title; full precision lives in the
                 # PR body table and the ledger
-                title=f"[agent] {config.benchmark}: "
-                f"{_title_pair(result.baseline, result.candidate)}",
+                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
                 head=branch,
                 base=base_branch,
                 body=body,

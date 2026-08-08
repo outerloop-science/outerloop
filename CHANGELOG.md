@@ -39,6 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Publish-time freshness: when the base branch moves during a climb, the
+  run branch merges the fresh base (merge commit, never rebase), the claim
+  is re-measured on the merged tree, and the leader check runs against the
+  fresh ledger — before anything is pushed. A conflicting merge or an
+  absorbed improvement ends the run honestly instead of opening an
+  unmergeable or unverified PR.
+
 - Improvement PRs arm GitHub auto-merge at publish (best-effort): the bot
   still never merges — arming hands the merge to the human approval that
   branch protection requires, so approving is the last human action needed.
