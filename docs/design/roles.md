@@ -19,7 +19,7 @@ data, not accounts: every commit is authored by the one bot account with an
 |---|---|---|---|---|
 | **Maintainer** (human) | — | live | Merge authority on every code PR; writes contracts and `vision:`; owns budgets and credentials | be replaced by anything below |
 | **Orchestrator** (tick + sweep + climb glue) | code | live | Schedules everything; measures every baseline/candidate itself; enforces scope, drift, budgets, freshness; ends every run in a report; writes the ledger | trust a session's claim; merge; execute non-bot-authored code |
-| **Author session** ("climber") | model | live | One hypothesis per run: reads the brief, edits inside the contract's scope, self-validates, writes the research report | touch the ruler (frozen evals/tests), the contract, progress files; see the PAT; publish anything itself |
+| **Author session** ("climber") | model | live | One hypothesis per run: reads the brief, edits inside the contract's scope, requests experiment batches (any size the budget covers), self-validates, writes the research report | touch the ruler (frozen evals/tests), the contract, progress files; see the PAT; publish anything itself; submit jobs directly |
 | **Follow-up responder** | model | live | The *same* author session resumed when a qualifying human comments on its open PR: replies with evidence, pushes fixes (re-measured by the orchestrator) | anything the author couldn't; resurrect an ended run |
 | **Advisory reviewer** | model | live | Adversarial *correctness* review of human/dev PRs; findings-only, sanitized, never an approval | review bot PRs automatically (echo-chamber guard); block CI; approve |
 | **Verifier** | model | next to build | Adversarial *integrity* review of bot PRs: hunts gaming (harness exploits, ruler-fishing, leakage, unsupported claims) with contract + eval code + numbers + report in context; "silence is not endorsement" header | approve; block; review human PRs |
@@ -87,7 +87,7 @@ the candidate measurement — the runs-span-sessions model:
 ```mermaid
 flowchart LR
     A["author session:<br/>writes code + experiment spec"] --> O["orchestrator validates vs<br/>gpu_hours_per_run, SUBMITS<br/>(sessions cannot sbatch:<br/>no Slurm in the container)"]
-    O --> X["experiment job(s) on GPU<br/>(a sweep = one array job<br/>serving ONE hypothesis)"]
+    O --> X["experiment BATCH on GPU:<br/>uniform array (LR sweep) or a<br/>list of heterogeneous specs —<br/>validated as a SUM vs budget"]
     O --> WT["run -> waiting;<br/>session ENDS, holds nothing"]
     X -->|"afterany wake<br/>(+ sweep backup, deadline floor)"| RES["SAME session resumed<br/>(--resume, cross-node),<br/>results data-fenced in the wake"]
     RES --> NEXT{"round N+1?"}
@@ -96,12 +96,19 @@ flowchart LR
 ```
 
 Rounds are the loop: one persistent conversation spanning N sessions,
-each round = wake → analyze → edit → request → hibernate. Parallelism
-lives WITHIN a round (a request may be one array job — a sweep serving
-the hypothesis); sequence lives ACROSS rounds; one experiment in flight
-per run keeps budgets and wakes simple (concurrent lines = parallel runs,
-the planner's call). Bounded by cumulative gpu_hours_per_run (exhaustion
-forces a concluding wake), the run deadline, and the wake-attempt cap.
+each round = wake → analyze → edit → request → hibernate. A round's
+request is a BATCH: as many parallel experiments as the remaining budget
+covers (maintainer principle 2026-08-09: budget is the constraint, not
+structure) — a uniform array for sweeps, or a list of heterogeneous
+specs, validated as a sum, woken as a unit when ALL are terminal. What a
+round cannot do is adapt MID-batch (launch B off A's partial results
+without a wake) — that would need a live channel; adaptive search maps
+naturally to batches ACROSS rounds instead (successive-halving: broad
+short batch → wake → prune → deep batch), with each pruning decision an
+auditable artifact. One batch in flight per run; concurrent research
+lines = parallel runs, the planner's call. Bounded by cumulative
+gpu_hours_per_run (exhaustion forces a concluding wake), the run
+deadline, and the wake-attempt cap.
 
 Division of labor: the **author** designs the experiment; the
 **orchestrator** launches and meters it (budget enforcement must live where
