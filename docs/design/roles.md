@@ -190,11 +190,11 @@ their own capped budget line.
 flowchart LR
     HPR["PR by human / dev assistant"] --> AR["advisory reviewer<br/>(correctness lens)"]
     BPR["PR by the bot"] --> VF["verifier<br/>(gaming lens) - deploy pending"]
-    BPR -->|"until verifier ships:<br/>explicit label only"| AR
+    BPR -.->|"verifier-less self-hosters only:<br/>opt-in label override"| AR
     AR --> HM{human merges}
     VF --> HM
     L["autoresearch:review label<br/>= one fresh round on the head"] --> AR
-    L -.->|"after verifier: routes by author"| VF
+    L -->|"on bot PRs (once deployed)"| VF
 ```
 
 Review-until-quiet (CONTRIBUTING) governs development PRs: rounds iterate

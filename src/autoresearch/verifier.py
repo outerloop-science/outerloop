@@ -224,20 +224,25 @@ def verify(
         VERIFY_SCHEMA,
     )
     data = json.loads(raw)
+    raw_findings = data.get("findings") if isinstance(data, dict) else None
+    # A degraded response must skip cleanly, not KeyError out of the CLI's
+    # EXPECTED_FAILURES: every field access is defensive even though the
+    # schema marks them required.
     findings = [
         Finding(
-            file=sanitize(item["file"], 200),
+            file=sanitize(str(item.get("file", "")), 200),
             line=item["line"] if isinstance(item.get("line"), int) else None,
             confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
             summary=sanitize(
-                f"[{item.get('category', 'other')}] {item['summary']}", MAX_SUMMARY_CHARS
+                f"[{item.get('category', 'other')}] {item.get('summary', '')}",
+                MAX_SUMMARY_CHARS,
             ),
-            detail=sanitize(item["detail"], MAX_DETAIL_CHARS),
+            detail=sanitize(str(item.get("detail", "")), MAX_DETAIL_CHARS),
         )
-        for item in data.get("findings", [])[:MAX_FINDINGS]
+        for item in (raw_findings if isinstance(raw_findings, list) else [])[:MAX_FINDINGS]
         if isinstance(item, dict) and item.get("summary")
     ]
-    notes = sanitize(data.get("notes", ""), MAX_DETAIL_CHARS)
+    notes = sanitize(data.get("notes", "") if isinstance(data, dict) else "", MAX_DETAIL_CHARS)
     return ReviewResult(findings=findings, notes=notes)
 
 

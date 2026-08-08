@@ -34,17 +34,25 @@ log = logging.getLogger(__name__)
 _MODULE_FLAG = re.compile(r"-m\s+([A-Za-z_][\w.]*)")
 
 
+# Fan-out is bounded by ATTEMPTS, not successes: a contract whose module
+# guesses mostly 404 (flat layout, `-m pytest`) must not turn into a long
+# sequential request train against the workflow token's rate budget.
+MAX_RULER_FETCH_ATTEMPTS = MAX_RULER_FILES * 2
+
+
 def _ruler_paths(contract_text: str) -> list[str]:
     """Best-effort paths of the frozen ruler's source, derived from the
     contract's own eval commands (`python -m pkg.mod` → src/pkg/mod.py) —
-    no repo-layout assumptions beyond src-layout-or-flat."""
+    no repo-layout assumptions beyond src-layout-or-flat. Bounded."""
     paths: list[str] = []
     for module in _MODULE_FLAG.findall(contract_text):
         rel = module.replace(".", "/") + ".py"
         for candidate in (f"src/{rel}", rel):
             if candidate not in paths:
                 paths.append(candidate)
-    return paths
+        if len(paths) >= MAX_RULER_FETCH_ATTEMPTS:
+            break
+    return paths[:MAX_RULER_FETCH_ATTEMPTS]
 
 
 def gather_ruler(
@@ -54,21 +62,25 @@ def gather_ruler(
     then test files (the tripwires). Best-effort and bounded — a degraded
     verification beats none."""
     out: list[tuple[str, str]] = []
+    attempts = 0
     try:
         for path in _ruler_paths(contract_text):
-            if len(out) >= MAX_RULER_FILES:
+            if len(out) >= MAX_RULER_FILES or attempts >= MAX_RULER_FETCH_ATTEMPTS:
                 return tuple(out)
+            attempts += 1
             content = client.get_file_content(repo, path, base_ref)
             if content is not None:
                 out.append((path, content))
         for item in client.list_directory(repo, "tests", base_ref):
-            if len(out) >= MAX_RULER_FILES:
+            if len(out) >= MAX_RULER_FILES or attempts >= MAX_RULER_FETCH_ATTEMPTS:
                 break
             name = str(item.get("name", ""))
-            if item.get("type") == "file" and name.endswith(".py"):
-                content = client.get_file_content(repo, str(item["path"]), base_ref)
+            path = str(item.get("path", ""))
+            if item.get("type") == "file" and name.endswith(".py") and path:
+                attempts += 1
+                content = client.get_file_content(repo, path, base_ref)
                 if content is not None:
-                    out.append((str(item["path"]), content))
+                    out.append((path, content))
     except EXPECTED_FAILURES as exc:
         log.warning("verifying with partial ruler context: %s", exc)
     return tuple(out)
