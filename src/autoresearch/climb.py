@@ -161,6 +161,8 @@ def live_climb(
     # here on has a record to end. (A run once stranded in `implementing`
     # because the region between record creation and the contained call
     # could still raise.)
+    import os as _os
+
     record = RunRecord(
         run_id=run_id,
         target=config.target,
@@ -170,6 +172,7 @@ def live_climb(
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
+        climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
         save_record(run_root, record, now)
@@ -543,11 +546,23 @@ def live_climb(
     )
 
 
+class Terminated(Exception):
+    """Slurm sent SIGTERM (walltime, preemption, scancel): raised into the
+    main thread so the ordinary exception containment ends the run inside
+    the KillWait grace window before SIGKILL arrives."""
+
+
 def main() -> int:
     import argparse
     import os
+    import signal
     import time
     from datetime import UTC, datetime
+
+    def _on_sigterm(signum: int, frame: object) -> None:
+        raise Terminated("SIGTERM from Slurm (walltime, preemption, or scancel)")
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
     parser.add_argument("--target", required=True)

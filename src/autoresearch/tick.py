@@ -33,6 +33,7 @@ from autoresearch.compute import (
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from autoresearch.runstate import (
+    ABORTED,
     ENDED,
     IMPLEMENTING,
     IN_REVIEW,
@@ -98,6 +99,7 @@ class TickReport:
     deferred: tuple[str, ...] = ()  # runs skipped on "Slurm unknown"
     reaped_leases: tuple[str, ...] = ()
     stuck: tuple[str, ...] = ()
+    implementing_ended: tuple[str, ...] = ()  # killed climbs the sweep closed out
     review_ended: tuple[tuple[str, str], ...] = ()  # (run_id, ending)
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
@@ -343,7 +345,63 @@ def sweep(
         deferred=tuple(deferred),
         reaped_leases=tuple(reaped),
         stuck=tuple(stuck),
+        implementing_ended=tuple(_sweep_implementing(root, compute, now, grace_s, dry_run)),
     )
+
+
+def _sweep_implementing(
+    root: Path, compute: SlurmCompute, now: float, grace_s: float, dry_run: bool
+) -> list[str]:
+    """End `implementing` records whose climb job died without a verdict.
+
+    A climb that CRASHES contains its own ending (climb.py); a climb that is
+    KILLED — walltime, preemption, scancel after the SIGTERM grace, node
+    death — leaves no exception to contain, and before this pass its record
+    stranded in `implementing` forever (the picker's stranded guard freed
+    the lane but nothing ever recorded the ending). Slurm truth decides:
+    job terminal or GONE, plus a grace so a just-finished healthy climb can
+    write its own final state first. Outage never reads as dead. Legacy
+    records without a job id age out on the stranded window instead.
+    """
+    ended: list[str] = []
+    for record in list_runs(root):
+        if record.state != IMPLEMENTING:
+            continue
+        try:
+            age = now - max(record.updated, record.created)
+            if record.climb_job_id:
+                try:
+                    state = compute.status(record.climb_job_id)
+                except SlurmQueryError:
+                    continue  # Slurm outage must not read as a dead job
+                if not (is_terminal(state) or state == GONE):
+                    continue  # alive; the climb owns its own record
+                if age < grace_s:
+                    continue  # final write may be in flight
+                note = f"climb job {record.climb_job_id} ended {state} without a verdict"
+            else:
+                if age < STRANDED_IMPLEMENTING_S:
+                    continue
+                note = "implementing with no recorded climb job (legacy), aged out"
+            if not dry_run:
+                save_record(
+                    root,
+                    replace(
+                        record,
+                        state=ENDED,
+                        ending=ABORTED,
+                        ending_note=(
+                            f"{note} — ended by the sweep (a killed climb "
+                            f"leaves no exception to contain)"
+                        ),
+                    ),
+                    now,
+                )
+            log.warning("sweep ended implementing run %s: %s", record.run_id, note)
+            ended.append(record.run_id)
+        except Exception as exc:  # per-record isolation, like the waiting sweep
+            log.warning("implementing-sweep failed on %s: %s", record.run_id, exc)
+    return ended
 
 
 def _sweep_one(
@@ -877,7 +935,7 @@ def main() -> int:
         min_free_bytes=int(args.min_free_gb * 1024**3),
     )
     log.info(
-        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
+        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d impl_ended=%s "
         "review_ended=%s followups=%s intake=%s self_initiated=%s disk=%s launch_blocked=%s",
         report.paused,
         report.swept,
@@ -885,6 +943,7 @@ def main() -> int:
         len(report.deferred),
         len(report.reaped_leases),
         len(report.stuck),
+        report.implementing_ended or "-",
         report.review_ended,
         report.followups_submitted,
         report.intake,

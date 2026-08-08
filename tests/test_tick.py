@@ -710,3 +710,60 @@ def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
     # both intake and self-initiated fetched the contract: the lanes RAN
     assert fetched and set(fetched) == {"org/pilot"}
     assert report.disk == () and report.launch_blocked is False
+
+
+def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 0.0) -> None:
+    from autoresearch.runstate import IMPLEMENTING
+
+    save_record(
+        root,
+        RunRecord(
+            run_id=run_id,
+            target="org/pilot",
+            task_title="t",
+            benchmark="tsp",
+            state=IMPLEMENTING,
+            climb_job_id=job_id,
+        ),
+        now=NOW - age_s,
+    )
+
+
+def test_killed_climb_is_ended_by_the_sweep(tmp_path: Path) -> None:
+    """Walltime/preemption/scancel leaves no exception to contain: Slurm
+    truth plus grace ends the record instead of stranding it forever."""
+    _implementing_run(tmp_path, "r-killed", job_id="77", age_s=GRACE + 60)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}))
+    assert report.implementing_ended == ("r-killed",)
+    record = load_record(tmp_path, "r-killed")
+    assert record.state == ENDED and record.ending == "aborted"
+    assert "ended TIMEOUT without a verdict" in record.ending_note
+
+
+def test_live_climb_job_is_left_alone(tmp_path: Path) -> None:
+    _implementing_run(tmp_path, "r-live", job_id="77", age_s=GRACE + 60)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "RUNNING"}))
+    assert report.implementing_ended == ()
+    assert load_record(tmp_path, "r-live").state == "implementing"
+
+
+def test_slurm_outage_never_reads_as_dead_climb(tmp_path: Path) -> None:
+    _implementing_run(tmp_path, "r-out", job_id="77", age_s=GRACE + 60)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "!"}))
+    assert report.implementing_ended == ()
+
+
+def test_just_finished_climb_gets_grace_for_its_final_write(tmp_path: Path) -> None:
+    _implementing_run(tmp_path, "r-fresh", job_id="77", age_s=10.0)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "COMPLETED"}))
+    assert report.implementing_ended == ()
+
+
+def test_legacy_record_without_job_id_ages_out(tmp_path: Path) -> None:
+    from autoresearch.tick import STRANDED_IMPLEMENTING_S
+
+    _implementing_run(tmp_path, "r-old", job_id="", age_s=STRANDED_IMPLEMENTING_S + 60)
+    _implementing_run(tmp_path, "r-young", job_id="", age_s=60.0)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={}))
+    assert report.implementing_ended == ("r-old",)
+    assert load_record(tmp_path, "r-young").state == "implementing"
