@@ -124,12 +124,17 @@ def main() -> int:
             model=os.environ.get("REVIEW_MODEL") or "claude-opus-5",
             effort=os.environ.get("REVIEW_EFFORT") or "high",
         )
+        # A maintainer-added re-request label is an explicit ask: it
+        # overrides the automatic bot-author skip (see review.skip_reason).
+        explicit = os.environ.get("REVIEW_EXPLICIT_REQUEST", "").strip().lower() == "true"
         # Context is fetched only for PRs that will actually be reviewed —
         # bot-authored and opted-out PRs must not pay the API fan-out.
-        if skip_reason(pr, bot_login) is None:
+        if skip_reason(pr, bot_login, explicit) is None:
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         today = datetime.now(UTC).date().isoformat()
-        body = format_comment(review(pr, completer, bot_login, today=today))
+        body = format_comment(
+            review(pr, completer, bot_login, today=today, explicit_request=explicit)
+        )
         if body is None:
             log.info("nothing to post")
             return 0

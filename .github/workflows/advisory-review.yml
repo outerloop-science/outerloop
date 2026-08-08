@@ -1,7 +1,9 @@
 # Reusable advisory-review workflow. Target repos call this with `uses:`;
 # they never vendor the reviewer code. Constraints enforced here and in
-# autoresearch.review: never reviews bot-authored PRs, never approves, never
-# fails the caller's CI, and never runs with secrets on a fork PR.
+# autoresearch.review: never reviews bot-authored PRs automatically (a
+# maintainer-added re-request label overrides — an explicit human ask is
+# not an echo chamber), never approves, never fails the caller's CI, and
+# never runs with secrets on a fork PR.
 name: advisory-review
 
 on:
@@ -87,4 +89,7 @@ jobs:
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_EFFORT: ${{ inputs.effort }}
+          # the caller's triggering event flows through workflow_call: a
+          # labeled event means a human explicitly re-requested this review
+          REVIEW_EXPLICIT_REQUEST: ${{ github.event.action == 'labeled' }}
         run: uv run --extra review python -m autoresearch.review_cli

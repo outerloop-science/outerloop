@@ -157,3 +157,18 @@ def test_schema_forbids_extra_keys() -> None:
 
 def test_skipped_result_renders_nothing() -> None:
     assert format_comment(ReviewResult(findings=[], notes="", skipped="because")) is None
+
+
+def test_explicit_request_overrides_bot_skip() -> None:
+    """A maintainer-added re-request label reviews a bot PR; the automatic
+    path still never does."""
+    pr = make_pr(author=BOT)
+    assert skip_reason(pr, BOT) is not None  # automatic: skipped
+    assert skip_reason(pr, BOT, explicit_request=True) is None  # asked: reviewed
+
+
+def test_opt_out_still_wins_over_explicit_request() -> None:
+    """Contradictory labels resolve to silence, not to a review."""
+    pr = make_pr(author=BOT, labels=("autoresearch:no-review",))
+    reason = skip_reason(pr, BOT, explicit_request=True)
+    assert reason is not None and "opted out" in reason

@@ -39,6 +39,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The `autoresearch:review` label now works on bot-authored PRs too: a
+  maintainer-added label is an explicit ask and overrides the automatic
+  bot-author skip (which exists to prevent echo chambers, not to refuse
+  humans). The opt-out label still wins over contradictory signals. When
+  the verifier ships, the same gesture will route bot PRs to it instead.
+
 - Review-until-quiet merge gate documented (CONTRIBUTING, CLAUDE.md):
   development PRs iterate advisory-review rounds with a judged termination
   criterion — code PRs stop at no new medium+/behavior-affecting findings,

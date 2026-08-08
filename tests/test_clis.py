@@ -125,7 +125,7 @@ def test_review_cli_threads_date_and_context(monkeypatch) -> None:
     captured: dict = {}
     fake_client = FakeReviewClient()
 
-    def fake_review(pr, completer, bot_login, today=None):
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
         captured["today"] = today
         captured["context"] = tuple(pr.context_files)
         from autoresearch.review import ReviewResult
@@ -168,7 +168,7 @@ def test_context_fetch_stops_at_file_cap(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "review",
-        lambda pr, c, b, today=None: __import__(
+        lambda pr, c, b, today=None, explicit_request=False: __import__(
             "autoresearch.review", fromlist=["ReviewResult"]
         ).ReviewResult(findings=[], notes=""),
     )
@@ -202,7 +202,7 @@ def test_fork_fallback_when_head_repo_lacks_full_name(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "review",
-        lambda pr, c, b, today=None: __import__(
+        lambda pr, c, b, today=None, explicit_request=False: __import__(
             "autoresearch.review", fromlist=["ReviewResult"]
         ).ReviewResult(findings=[], notes=""),
     )
