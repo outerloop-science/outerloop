@@ -18,13 +18,20 @@ uv run pre-commit install
 
 ## Pull requests
 
-- All five CI checks must pass: `lint`, `types`, `test`, `lock`, `gitleaks`.
+- The `ci` check must pass (lint, types, tests, lock, and secret scan run
+  inside it as one job).
 - Solo phase: no required approvals yet; PI review by convention. Raise to 1
   code-owner approval when a second owner joins
   (`scripts/setup_branch_protection.sh <repo> 1`).
 - Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
-- Solo phase: code PRs get an adversarial review-agent pass before merge;
-  findings are fixed or explicitly waived in the PR thread.
+- Code PRs iterate adversarial review ROUNDS until a round finds nothing
+  new ("review until quiet", PI rule 2026-08-07). The advisory workflow runs
+  on open; after any fix commit that introduces a new mechanism (not just
+  line-comment edits), toggle the `autoresearch:review` label off/on to
+  re-run it on the current diff. Merge only after a quiet round; findings
+  rejected on rationale get a reply on the PR thread, never silence. The
+  record so far: every round on a substantive PR has found at least one
+  real defect, including in the previous round's fixes.
 
 ## Style
 
