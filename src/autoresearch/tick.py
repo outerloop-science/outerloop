@@ -13,6 +13,7 @@ independently.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ from autoresearch.compute import (
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from autoresearch.runstate import (
+    ABORTED,
     ENDED,
     IMPLEMENTING,
     IN_REVIEW,
@@ -47,6 +49,7 @@ from autoresearch.runstate import (
     read_lease,
     reap_lease,
     release_lease,
+    run_dir,
     save_record,
     update_lease_holder,
 )
@@ -98,6 +101,7 @@ class TickReport:
     deferred: tuple[str, ...] = ()  # runs skipped on "Slurm unknown"
     reaped_leases: tuple[str, ...] = ()
     stuck: tuple[str, ...] = ()
+    implementing_ended: tuple[str, ...] = ()  # killed climbs the sweep closed out
     review_ended: tuple[tuple[str, str], ...] = ()  # (run_id, ending)
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
@@ -343,7 +347,126 @@ def sweep(
         deferred=tuple(deferred),
         reaped_leases=tuple(reaped),
         stuck=tuple(stuck),
+        # NOT the global dry_run: that flag exists because the WAKE
+        # dispatcher is still a placeholder; ending killed climbs' records
+        # dispatches nothing and must run live even while wakes stay dry.
+        implementing_ended=tuple(_sweep_implementing(root, compute, now, grace_s)),
     )
+
+
+def _kill_stamp(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "climb-terminal-seen"
+
+
+def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: float) -> list[str]:
+    """End `implementing` records whose climb job died without a verdict.
+
+    A climb that CRASHES contains its own ending (climb.py); a climb that is
+    KILLED — walltime, preemption, scancel after the SIGTERM grace, node
+    death — leaves no exception to contain, and before this pass its record
+    stranded in `implementing` forever (the picker's stranded guard freed
+    the lane but nothing ever recorded the ending). Slurm truth decides:
+    job terminal or GONE, plus a grace so a just-finished healthy climb can
+    write its own final state first. Outage never reads as dead. Legacy
+    records without a job id age out on the stranded window instead.
+    """
+    ended: list[str] = []
+    for record in list_runs(root):
+        if record.state != IMPLEMENTING:
+            continue
+        try:
+            if record.climb_job_id:
+                try:
+                    state = compute.status(record.climb_job_id)
+                except SlurmQueryError:
+                    continue  # Slurm outage must not read as a dead job
+                if not (is_terminal(state) or state == GONE):
+                    continue  # alive; the climb owns its own record
+                # Grace runs from FIRST OBSERVED terminal: during Slurm's
+                # KillWait the job already reports terminal while the
+                # SIGTERM containment is still writing its honest ending —
+                # record age would be hours and protect nothing. The stamp
+                # is a write-once SIDECAR file, never a record write: while
+                # the climb may still be alive the sweep must not touch the
+                # record at all (a load-modify-replace here could revert a
+                # concurrently written ending), and the waiting sweep's
+                # terminal_seen field stays reserved for the EXPERIMENT job.
+                stamp = _kill_stamp(root, record.run_id)
+                if not stamp.exists():
+                    try:
+                        fd = os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                        try:
+                            os.write(fd, f"{now}".encode())
+                        finally:
+                            os.close(fd)
+                    except FileExistsError:
+                        pass  # a concurrent tick stamped it; its clock stands
+                    except OSError as exc:
+                        log.warning("kill-stamp write failed for %s: %s", record.run_id, exc)
+                    continue
+                # An empty stamp (write failed after create — the disk-full
+                # case — or a concurrent tick mid-write) must fall back to
+                # mtime, NOT to epoch 0, which would skip the grace outright.
+                try:
+                    raw = stamp.read_text().strip()
+                    seen = float(raw) if raw else stamp.stat().st_mtime
+                except (OSError, ValueError):
+                    try:
+                        seen = stamp.stat().st_mtime
+                    except OSError:
+                        continue  # stamp vanished mid-read; next tick decides
+                if now - seen < grace_s:
+                    continue
+                note = f"climb job {record.climb_job_id} ended {state} without a verdict"
+            else:
+                # No Slurm evidence at all (legacy record, or a manual dev
+                # invocation without SLURM_JOB_ID): only the run DEADLINE —
+                # past which nothing legitimately lives — justifies a
+                # terminal verdict; the shorter stranded window merely
+                # frees the picker lane and must not author endings.
+                deadline = record.deadline if record.deadline > 0 else (record.created + 24 * 3600)
+                if now < deadline:
+                    continue
+                note = "implementing with no recorded climb job, past its run deadline"
+            fresh = load_record(root, record.run_id)
+            if fresh.state != IMPLEMENTING:
+                continue  # the climb landed its own ending meanwhile
+            if fresh.experiment_job_id:
+                # defensive: no current path records an experiment while
+                # still implementing, but an orphan GPU job burning budget
+                # after its run is declared dead must never survive one
+                with contextlib.suppress(Exception):
+                    compute.cancel(fresh.experiment_job_id)
+            save_record(
+                root,
+                replace(
+                    fresh,
+                    state=ENDED,
+                    ending=ABORTED,
+                    ending_note=(
+                        f"{note} — ended by the sweep (a killed climb "
+                        f"leaves no exception to contain)"
+                    ),
+                ),
+                now,
+            )
+            # every ending produces a report — but never clobber one the
+            # climb already wrote before it was killed
+            report_path = run_dir(root, record.run_id) / "report.md"
+            if not report_path.exists():
+                try:
+                    report_path.write_text(
+                        f"# Run report — {record.target} / {record.benchmark}\n"
+                        f"Outcome: **aborted** (climb job killed)\n"
+                        f"Note: {note}\n"
+                    )
+                except OSError as exc:
+                    log.warning("sweep report write failed for %s: %s", record.run_id, exc)
+            log.warning("sweep ended implementing run %s: %s", record.run_id, note)
+            ended.append(record.run_id)
+        except Exception as exc:  # per-record isolation, like the waiting sweep
+            log.warning("implementing-sweep failed on %s: %s", record.run_id, exc)
+    return ended
 
 
 def _sweep_one(
@@ -877,7 +1000,7 @@ def main() -> int:
         min_free_bytes=int(args.min_free_gb * 1024**3),
     )
     log.info(
-        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
+        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d impl_ended=%s "
         "review_ended=%s followups=%s intake=%s self_initiated=%s disk=%s launch_blocked=%s",
         report.paused,
         report.swept,
@@ -885,6 +1008,7 @@ def main() -> int:
         len(report.deferred),
         len(report.reaped_leases),
         len(report.stuck),
+        report.implementing_ended or "-",
         report.review_ended,
         report.followups_submitted,
         report.intake,

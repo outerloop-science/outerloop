@@ -58,6 +58,12 @@ class RunRecord:
     state: str
     agent_id: str = "agent-01"
     experiment_job_id: str = ""
+    climb_job_id: str = ""  # slurm job running the climb itself; lets the
+    # sweep end records whose job was KILLED (walltime/preemption/node
+    # death) rather than crashed — signals leave no exception to contain.
+    # INVARIANT: any future path that re-enters `implementing` from a NEW
+    # job must re-stamp this field, or the sweep will judge the run by a
+    # stale terminal job. (No such path exists today.)
     wake_job_id: str = ""  # the afterany dependency job, when one exists
     resume_session_id: str = ""  # harness session to resume on wake
     pr_url: str = ""  # the run's open PR, once one exists
