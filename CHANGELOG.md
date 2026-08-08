@@ -45,6 +45,12 @@ Versions follow [SemVer](https://semver.org).
   collusion-separation table, and where state lives. architecture.md's
   stale three-line Roles section now points there.
 
+- Design docs for the meta track: `docs/design/meta.md` (pilot-vs-meta
+  taxonomy, two-tier GitHub simulator, battery + scorecard with paired
+  repetitions, sim-only self-improvement, benchmark-steward role) and
+  `docs/design/public-surface.md` (threat model for public target repos;
+  the `pull_request_target` audit checklist that gates any public flip).
+
 - Per-repo budget shaping: a contract's `budgets:` may now set
   `session_max_turns`, `session_minutes`, `climb_job_minutes`, and
   `followup_job_minutes`. Contracts are untrusted, so every value is

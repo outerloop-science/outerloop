@@ -180,9 +180,9 @@ this ecosystem so the battery versions in lockstep with the loop.
        public — `pull_request_target` + secrets + fork PRs is the classic
        exfiltration shape; also: external code never executes on lab
        hardware, and RELEASING gains a hostile-interaction section
-       (design doc: design/public-surface.md, to be written)
-2. [ ] GitHub simulator + meta-benchmark battery (design/meta.md, to be
-       written): tier (a) all-fake (injectable transport, local bare repos,
+       (design doc: design/public-surface.md)
+2. [ ] GitHub simulator + meta-benchmark battery (design/meta.md): tier
+       (a) all-fake (injectable transport, local bare repos,
        programmatic tick driver — CI-runnable orchestration correctness);
        tier (b) sim GitHub + REAL Slurm/sessions for capability tasks (e.g.
        find a better optimizer on a speedrun snapshot). Battery = frozen
