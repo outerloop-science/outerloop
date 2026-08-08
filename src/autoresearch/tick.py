@@ -346,13 +346,18 @@ def sweep(
         deferred=tuple(deferred),
         reaped_leases=tuple(reaped),
         stuck=tuple(stuck),
-        implementing_ended=tuple(_sweep_implementing(root, compute, now, grace_s, dry_run)),
+        # NOT the global dry_run: that flag exists because the WAKE
+        # dispatcher is still a placeholder; ending killed climbs' records
+        # dispatches nothing and must run live even while wakes stay dry.
+        implementing_ended=tuple(_sweep_implementing(root, compute, now, grace_s)),
     )
 
 
-def _sweep_implementing(
-    root: Path, compute: SlurmCompute, now: float, grace_s: float, dry_run: bool
-) -> list[str]:
+def _kill_stamp(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "climb-terminal-seen"
+
+
+def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: float) -> list[str]:
     """End `implementing` records whose climb job died without a verdict.
 
     A climb that CRASHES contains its own ending (climb.py); a climb that is
@@ -376,46 +381,59 @@ def _sweep_implementing(
                     continue  # Slurm outage must not read as a dead job
                 if not (is_terminal(state) or state == GONE):
                     continue  # alive; the climb owns its own record
-                # Grace runs from FIRST OBSERVED terminal, like the waiting
-                # sweep: during Slurm's KillWait the job already reports
-                # terminal while the SIGTERM containment is still writing
-                # its honest ending — record age would be hours and protect
-                # nothing. First sighting stamps the clock; the ending only
-                # lands a full grace later, and only if the record is STILL
-                # implementing then (a climb that wrote its own ending, or
-                # moved to waiting, is skipped by the state check above).
-                if record.terminal_seen <= 0:
-                    if not dry_run:
-                        fresh = load_record(root, record.run_id)
-                        if fresh.state == IMPLEMENTING and fresh.terminal_seen <= 0:
-                            save_record(root, replace(fresh, terminal_seen=now), now)
+                # Grace runs from FIRST OBSERVED terminal: during Slurm's
+                # KillWait the job already reports terminal while the
+                # SIGTERM containment is still writing its honest ending —
+                # record age would be hours and protect nothing. The stamp
+                # is a write-once SIDECAR file, never a record write: while
+                # the climb may still be alive the sweep must not touch the
+                # record at all (a load-modify-replace here could revert a
+                # concurrently written ending), and the waiting sweep's
+                # terminal_seen field stays reserved for the EXPERIMENT job.
+                stamp = _kill_stamp(root, record.run_id)
+                if not stamp.exists():
+                    try:
+                        fd = os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                        try:
+                            os.write(fd, f"{now}".encode())
+                        finally:
+                            os.close(fd)
+                    except FileExistsError:
+                        pass  # a concurrent tick stamped it; its clock stands
+                    except OSError as exc:
+                        log.warning("kill-stamp write failed for %s: %s", record.run_id, exc)
                     continue
-                if now - record.terminal_seen < grace_s:
+                try:
+                    seen = float(stamp.read_text().strip() or 0.0)
+                except (OSError, ValueError):
+                    seen = stamp.stat().st_mtime  # unreadable stamp: mtime truth
+                if now - seen < grace_s:
                     continue
                 note = f"climb job {record.climb_job_id} ended {state} without a verdict"
             else:
                 if now - max(record.updated, record.created) < STRANDED_IMPLEMENTING_S:
                     continue
                 note = "implementing with no recorded climb job (legacy), aged out"
-            if not dry_run:
-                fresh = load_record(root, record.run_id)
-                if fresh.state != IMPLEMENTING:
-                    continue  # the climb landed its own ending meanwhile
-                save_record(
-                    root,
-                    replace(
-                        fresh,
-                        state=ENDED,
-                        ending=ABORTED,
-                        ending_note=(
-                            f"{note} — ended by the sweep (a killed climb "
-                            f"leaves no exception to contain)"
-                        ),
+            fresh = load_record(root, record.run_id)
+            if fresh.state != IMPLEMENTING:
+                continue  # the climb landed its own ending meanwhile
+            save_record(
+                root,
+                replace(
+                    fresh,
+                    state=ENDED,
+                    ending=ABORTED,
+                    ending_note=(
+                        f"{note} — ended by the sweep (a killed climb "
+                        f"leaves no exception to contain)"
                     ),
-                    now,
-                )
-                # every ending produces a report, even one the sweep authors
-                report_path = run_dir(root, record.run_id) / "report.md"
+                ),
+                now,
+            )
+            # every ending produces a report — but never clobber one the
+            # climb already wrote before it was killed
+            report_path = run_dir(root, record.run_id) / "report.md"
+            if not report_path.exists():
                 try:
                     report_path.write_text(
                         f"# Run report — {record.target} / {record.benchmark}\n"

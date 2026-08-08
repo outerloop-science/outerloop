@@ -737,8 +737,12 @@ def test_killed_climb_is_ended_after_first_seen_grace(tmp_path: Path) -> None:
     _implementing_run(tmp_path, "r-killed", job_id="77", age_s=3600)
     report1, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}))
     assert report1.implementing_ended == ()  # stamped, not ended
+    # the stamp is a SIDECAR, never a record write: the record is untouched
     stamped = load_record(tmp_path, "r-killed")
-    assert stamped.state == "implementing" and stamped.terminal_seen == NOW
+    assert stamped.state == "implementing" and stamped.terminal_seen == 0.0
+    from autoresearch.tick import _kill_stamp
+
+    assert _kill_stamp(tmp_path, "r-killed").exists()
 
     report2, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}), now=NOW + GRACE + 1)
     assert report2.implementing_ended == ("r-killed",)
@@ -779,7 +783,22 @@ def test_slurm_outage_never_reads_as_dead_climb(tmp_path: Path) -> None:
     _implementing_run(tmp_path, "r-out", job_id="77", age_s=GRACE + 60)
     report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "!"}))
     assert report.implementing_ended == ()
-    assert load_record(tmp_path, "r-out").terminal_seen == 0.0
+    from autoresearch.tick import _kill_stamp
+
+    assert not _kill_stamp(tmp_path, "r-out").exists()
+
+
+def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
+    """A climb killed AFTER writing its report keeps that report; the sweep
+    only fills the gap when none exists."""
+    from autoresearch.runstate import run_dir as _run_dir
+
+    _implementing_run(tmp_path, "r-rep", job_id="77", age_s=3600)
+    (_run_dir(tmp_path, "r-rep") / "report.md").write_text("# the climb's own words\n")
+    run_tick(tmp_path, FakeSlurm(states={"77": "FAILED"}))  # stamp
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "FAILED"}), now=NOW + GRACE + 1)
+    assert report.implementing_ended == ("r-rep",)
+    assert (_run_dir(tmp_path, "r-rep") / "report.md").read_text() == "# the climb's own words\n"
 
 
 def test_legacy_record_without_job_id_ages_out(tmp_path: Path) -> None:
