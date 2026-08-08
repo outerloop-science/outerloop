@@ -169,7 +169,10 @@ def live_climb(
     tree_hashes: list[str] = []
     try:
         ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
-        base_sha = ws.git("rev-parse", "HEAD").strip()
+        # the BASE BRANCH tip, not HEAD: they differ if the PR base is ever
+        # not the clone's default branch, and the freshness comparison below
+        # must be against the branch the PR will actually land on
+        base_sha = ws.git("rev-parse", f"origin/{base_branch}").strip()
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
 
@@ -325,19 +328,35 @@ def live_climb(
                         f"base branch moved during the climb and the merge "
                         f"conflicted: {str(exc)[:300]}"
                     ) from exc
-                # The claim must hold on the tree that actually lands.
+                # The claim must hold on the tree that actually lands —
+                # BOTH sides of it. Upstream may have changed the metric for
+                # everyone, so comparing a merged-tree candidate against the
+                # pre-merge baseline would describe a delta that never
+                # existed on any single tree (and could push a regression
+                # relative to the fresh base). Baseline: the fresh base
+                # alone, in a detached worktree. Candidate: the merged tree.
+                fresh_dir = run_dir / "fresh-base"
+                ws.git("worktree", "add", "--detach", str(fresh_dir), fresh_base)
+                try:
+                    baseline = evaluator.evaluate(fresh_dir, bench.command, bench.metric)
+                finally:
+                    with contextlib.suppress(GitError):
+                        ws.git("worktree", "remove", "--force", str(fresh_dir))
                 candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
+                # dirty-tree check BEFORE the accept/reject decision, so an
+                # eval that writes files can never influence the verdict
+                # (same add -A visibility as the main drift fingerprints)
+                if ws.git("status", "--porcelain").strip():
+                    raise WorkspaceDrift("re-eval on the merged tree wrote files")
                 if not orch_improved(
                     baseline, candidate, bench.direction, config.min_relative_improvement
                 ):
                     raise WorkspaceDrift(
-                        f"after merging the moved base, candidate {candidate} no "
-                        f"longer beats baseline {baseline} (upstream absorbed "
-                        f"or invalidated the improvement)"
+                        f"candidate {candidate} does not beat the fresh base's "
+                        f"{baseline} after merging the moved base (upstream "
+                        f"absorbed or invalidated the improvement)"
                     )
-                if ws.git("status", "--porcelain").strip():
-                    raise WorkspaceDrift("re-eval on the merged tree wrote files")
-                result = dc_replace(result, candidate=candidate)
+                result = dc_replace(result, baseline=baseline, candidate=candidate)
 
             # Progress record (BENCHMARKS.md + results/leader.json), written
             # by the orchestrator from ITS measurements after the drift check

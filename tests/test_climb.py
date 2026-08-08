@@ -748,6 +748,9 @@ def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) 
     fresh base (merge commit, never rebase), the claim is RE-MEASURED on the
     merged tree, and the PR lands with both histories."""
     github = FakeGitHub()
+    # values: session baseline, session candidate, then the post-merge pair —
+    # fresh-base baseline (worktree of FETCH_HEAD) and merged-tree candidate
+    evaluator = QueueEvaluator(values=[13.876, 13.1, 13.9, 13.2])
     outcome = live_climb(
         config=ClimbConfig(target="org/pilot", benchmark="tsp"),
         run_root=tmp_path / "state",
@@ -757,15 +760,19 @@ def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) 
             target_repo=target_repo,
             tmp_path=tmp_path,
         ),
-        # third value = the re-measurement on the merged tree
-        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.1]),
+        evaluator=evaluator,
         github=github,  # type: ignore[arg-type]
         bot_auth=NoAuth(),  # type: ignore[arg-type]
         now=1_000_000.0,
         created="2026-08-07T00:00:00Z",
     )
     assert outcome.outcome == "improved"
+    assert evaluator.values == []  # both post-merge measurements actually ran
     assert github.prs and github.prs[0]["head"] == "feat/auto/agent-01/tsp-race"
+    # the PR claims the post-merge pair, not the session-time numbers
+    assert "13.9 -> 13.2" in github.prs[0]["title"]
+    # a true merge commit landed (never a rebase)
+    assert _git(target_repo, "log", "--merges", "--oneline", "feat/auto/agent-01/tsp-race")
     # the branch contains the upstream commit (merged, not ignored)
     branch_files = _git(target_repo, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-race")
     assert "docs/roadmap.md" in branch_files
@@ -820,8 +827,9 @@ def test_absorbed_improvement_after_merge_is_rejected(tmp_path, target_repo) -> 
             target_repo=target_repo,
             tmp_path=tmp_path,
         ),
-        # merged-tree re-measurement says NO improvement
-        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.876]),
+        # post-merge: fresh base measures 13.0, merged tree only 13.05 —
+        # upstream absorbed the win; the candidate REGRESSES the fresh base
+        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.0, 13.05]),
         github=github,  # type: ignore[arg-type]
         bot_auth=NoAuth(),  # type: ignore[arg-type]
         now=1_000_000.0,
@@ -829,4 +837,7 @@ def test_absorbed_improvement_after_merge_is_rejected(tmp_path, target_repo) -> 
     )
     assert outcome.outcome == "publish-error"
     assert github.prs == []
-    assert "no longer beats" in load_record(tmp_path / "state", "tsp-absorbed").ending_note
+    assert (
+        "does not beat the fresh base"
+        in load_record(tmp_path / "state", "tsp-absorbed").ending_note
+    )
