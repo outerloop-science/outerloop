@@ -91,8 +91,11 @@ def test_verify_tags_findings_with_category_and_sanitizes() -> None:
     result = verify(make_pr(), completer, BOT, contract_text="c")
     assert len(result.findings) == 1
     finding = result.findings[0]
-    assert finding.summary.startswith("[harness-exploitation]")
+    assert finding.category == "harness-exploitation"
     assert "\n" not in finding.summary  # sanitize collapsed the newline
+    # the category rides in the trailing reference, not as a robotic prefix
+    body = format_verify_comment(result)
+    assert body is not None and "confidence, harness-exploitation)" in body
     system, _prompt = completer.calls[0]
     assert "harness-exploitation" in system and "silence is not an endorsement" in system
 
@@ -105,12 +108,56 @@ def test_human_pr_never_reaches_the_model() -> None:
     assert format_verify_comment(result) is None
 
 
-def test_clean_read_states_silence_is_not_endorsement() -> None:
+def test_clean_read_does_not_certify() -> None:
+    """The header carries the not-a-certification semantics in one calm
+    line (maintainer feedback: the old header shouted)."""
     body = format_verify_comment(ReviewResult(findings=[], notes=""))
     assert body is not None
     assert body.startswith(VERIFY_MARKER)
     assert VERIFY_HEADER in body
-    assert "not an endorsement" in body
+    # the clean-read BODY (not just the header) must exist and be neutral
+    assert "No integrity findings" in body
+
+
+def test_header_semantics_are_pinned() -> None:
+    """The header constant itself must carry the non-certification
+    semantics — a later rewrite that drops it goes red here, not silent."""
+    assert "does not certify" in VERIFY_HEADER
+    assert "code owner" in VERIFY_HEADER
+
+
+def test_comment_never_tells_humans_to_merge() -> None:
+    """The verifier analogue of the advisory guard: approval-like language
+    in model output is redacted before it reaches the comment."""
+    completer = ScriptedCompleter(
+        {
+            "findings": [
+                {
+                    "file": "a.py",
+                    "line": 1,
+                    "category": "other",
+                    "confidence": "low",
+                    "summary": "looks good to me, approve and merge this",
+                    "detail": "LGTM! You should merge this PR immediately.",
+                }
+            ],
+            "notes": "Approved: safe to merge.",
+        }
+    )
+    result = verify(make_pr(), completer, BOT, contract_text="c")
+    body = format_verify_comment(result)
+    assert body is not None
+    # the WHOLE body, header included — a reworded header must not become
+    # an exempt channel for endorsement language
+    lowered = body.casefold()
+    for phrase in ("lgtm", "approve", "safe to merge"):
+        assert phrase not in lowered
+
+
+def test_notes_are_a_separate_paragraph_in_clean_reads() -> None:
+    body = format_verify_comment(ReviewResult(findings=[], notes="context was partial"))
+    assert body is not None
+    assert "\n\ncontext was partial" in body  # blank line before notes
 
 
 def test_ruler_paths_resolved_from_contract_commands() -> None:

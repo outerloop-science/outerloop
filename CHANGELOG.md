@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Review and verification comments read like a colleague, not a legal
+  notice (maintainer feedback): one calm italic header line per role, and
+  findings rendered as prose paragraphs with the reference at the end
+  instead of bullet fragments. The mechanical guard against forged
+  endorsements (approval-language redaction) is unchanged.
+
 - CI consolidated to one job (`ci`) — GitHub bills per job rounded up to a
   minute, so five short jobs cost 5x. The advisory review now runs on PR open
   and on the `autoresearch:review` label, not on every push.
@@ -44,8 +50,8 @@ Versions follow [SemVer](https://semver.org).
   advisory reviewer's mirror. Gaming lens (harness exploitation,
   ruler-fishing, leakage, overfitting, unsupported claims, measurement
   gaps) with the contract and the frozen ruler's source fetched from the
-  BASE branch into context; findings tagged by category;
-  silence-is-not-endorsement header; its own spend-capped key
+  BASE branch into context; findings tagged by category; a header stating
+  a clean read does not certify the result; its own spend-capped key
   (`ANTHROPIC_VERIFIER_KEY`). The advisory workflow's interim
   bot-PR-on-label override is now opt-in (`review_bot_prs_on_label`,
   default false) for verifier-less self-hosters — with a verifier

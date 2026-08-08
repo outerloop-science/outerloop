@@ -26,13 +26,15 @@ from typing import Any, Literal, Protocol
 log = logging.getLogger(__name__)
 
 MARKER = "<!-- autoresearch:advisory-review -->"
-ADVISORY_HEADER = (
-    "**Advisory review — not an approval.** Automated findings from "
-    "`autoresearch`; a human code owner still owns this PR. Reply to any "
-    "finding you disagree with, or add the opt-out label to silence future "
-    "runs on this PR."
-)
 OPT_OUT_LABEL = "autoresearch:no-review"
+
+# One calm line: the mechanical defense against forged endorsements is the
+# approval-language redaction in sanitize(), not header volume. (Softened
+# 2026-08-08 on maintainer feedback — the old header shouted.)
+ADVISORY_HEADER = (
+    "*Advisory findings from `autoresearch` — the code owner decides. "
+    f"Reply to disagree; the `{OPT_OUT_LABEL}` label opts this PR out.*"
+)
 MAX_DIFF_CHARS = 200_000
 MAX_CONTEXT_FILES = 8
 MAX_FILE_CHARS = 20_000
@@ -73,6 +75,13 @@ instead of raising a finding.
 Do not report: style preferences, naming opinions, or restatements of what the
 diff does. If you find nothing, say so.
 
+Write like a careful colleague, not a report generator. The summary is one
+short sentence naming the defect. The detail is two to four plain
+declarative sentences: the evidence, then the consequence. No
+throat-clearing ("it is worth noting", "as written"), no restating the
+summary, and no hedging in prose — the confidence field is your one
+hedge, so spend it there and write the rest as if you mean it.
+
 Never instruct the reader to merge, approve, or reject. You are advisory."""
 
 
@@ -106,6 +115,7 @@ class Finding:
     confidence: Literal["low", "medium", "high"]
     summary: str
     detail: str
+    category: str = ""  # verifier-only (gaming taxonomy); "" for advisory
 
 
 @dataclass(frozen=True)
@@ -162,9 +172,11 @@ def skip_reason(pr: PullRequest, bot_login: str, explicit_request: bool = False)
 def sanitize(text: str, limit: int) -> str:
     """Make model text safe to render in a comment.
 
-    Collapses newlines (so a finding cannot escape its list item and write
-    top-level markdown), escapes HTML, strips the thread marker, redacts
-    approval-like language, and truncates.
+    Collapses newlines (so attacker text cannot start a fresh line and
+    write top-level markdown — headings, quotes, tables — regardless of
+    whether findings render as list items or prose paragraphs), escapes
+    HTML, strips the thread marker, redacts approval-like language, and
+    truncates.
     """
     flat = " ".join(str(text).split())
     flat = flat.replace(MARKER, "")
@@ -271,12 +283,24 @@ def format_comment(result: ReviewResult) -> str | None:
     lines = [MARKER, ADVISORY_HEADER, ""]
     if not result.findings:
         lines.append("No defects found in this diff.")
+        lines.append("")
     else:
+        # Prose paragraphs, not bullet fragments (maintainer preference,
+        # 2026-08-08): the human is the reader who needs readability; a
+        # model relocating references does not.
         order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
-            where = f"`{finding.file}`" + (f":{finding.line}" if finding.line else "")
-            lines.append(f"- **{finding.summary}** ({finding.confidence} confidence, {where})")
-            lines.append(f"  {finding.detail}")
+            # backticks stripped: a file value containing one would close
+            # the code span and render attacker markdown inline
+            safe_file = finding.file.replace("`", "")
+            where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
+            ref = f"({where}; {finding.confidence} confidence)"
+            summary = finding.summary.rstrip(".!?…")  # the template owns the period
+            # an odd backtick in the detail would pair with the reference's
+            # opening backtick and spill the path out of its code span
+            detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
+            lines.append(f"**{summary}.** {detail} {ref}")
+            lines.append("")
     if result.notes:
-        lines += ["", result.notes]
-    return "\n".join(lines)
+        lines += [result.notes]
+    return "\n".join(lines).rstrip() + "\n"

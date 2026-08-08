@@ -11,8 +11,10 @@ instances, claims the evidence does not support).
 Same constitution as the reviewer, inverted population:
 - bot-authored PRs ONLY (a human PR is the advisory reviewer's job);
 - findings-only; never an approval; never blocks CI;
-- header states that SILENCE IS NOT ENDORSEMENT — a clean read must never
-  be mistaken for a green light; the human code owner still decides;
+- the header carries the not-a-certification semantics (formerly the
+  louder "silence is not endorsement" — softened 2026-08-08 on maintainer
+  feedback): a clean read must never be mistaken for a green light; the
+  human code owner still decides;
 - model output sanitized with the same approval-language redaction, so a
   prompt-injected diff cannot forge an endorsement through this channel.
 """
@@ -42,10 +44,9 @@ log = logging.getLogger(__name__)
 
 VERIFY_MARKER = "<!-- autoresearch:verification-review -->"
 VERIFY_HEADER = (
-    "**Verification review — silence is NOT endorsement.** Automated "
-    "integrity read of a bot-authored PR (gaming, leakage, unsupported "
-    "claims). Findings are leads for the human code owner, who still owns "
-    "this merge; a clean read is not a green light."
+    "*Integrity read of this bot PR (gaming, leakage, unsupported claims). "
+    "Findings are leads for the code owner — a clean read does not certify "
+    "the result.*"
 )
 
 # Verifier-specific context caps: the ruler's source is the load-bearing
@@ -104,6 +105,13 @@ Every finding needs evidence you can point to in the provided context, with
 a confidence level. If something material is unverifiable from the context,
 say so in one line in the notes instead of raising a finding. If you find
 nothing, say so plainly — and remember your silence is not an endorsement.
+
+Write like a careful colleague, not a report generator. The summary is one
+short sentence naming the problem. The detail is two to four plain
+declarative sentences: the evidence, then why it undermines the claim. No
+throat-clearing ("whatever one thinks of the merits", "the state of
+affairs is"), no restating the summary, no stacked hedges — the
+confidence field is your one hedge.
 
 Never instruct the reader to merge or reject. You are advisory."""
 
@@ -237,11 +245,9 @@ def verify(
             file=sanitize(str(item.get("file", "")), 200),
             line=item["line"] if type(item.get("line")) is int else None,
             confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
-            summary=sanitize(
-                f"[{item.get('category', 'other')}] {item.get('summary', '')}",
-                MAX_SUMMARY_CHARS,
-            ),
+            summary=sanitize(str(item.get("summary", "")), MAX_SUMMARY_CHARS),
             detail=sanitize(str(item.get("detail", "")), MAX_DETAIL_CHARS),
+            category=sanitize(str(item.get("category", "other")), 40),
         )
         for item in (raw_findings if isinstance(raw_findings, list) else [])[:MAX_FINDINGS]
         if isinstance(item, dict) and item.get("summary")
@@ -256,16 +262,21 @@ def format_verify_comment(result: ReviewResult) -> str | None:
         return None
     lines = [VERIFY_MARKER, VERIFY_HEADER, ""]
     if not result.findings:
-        lines.append(
-            "No integrity findings from this read. (Silence is not an "
-            "endorsement; the mechanical checks and the human review still apply.)"
-        )
+        lines.append("No integrity findings from this read.")
+        lines.append("")
     else:
         order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
-            where = f"`{finding.file}`" + (f":{finding.line}" if finding.line else "")
-            lines.append(f"- **{finding.summary}** ({finding.confidence} confidence, {where})")
-            lines.append(f"  {finding.detail}")
+            # backticks stripped: a file value containing one would close
+            # the code span and render attacker markdown inline
+            safe_file = finding.file.replace("`", "")
+            where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
+            tag = f", {finding.category}" if finding.category else ""
+            ref = f"({where}; {finding.confidence} confidence{tag})"
+            summary = finding.summary.rstrip(".!?…")  # the template owns the period
+            detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
+            lines.append(f"**{summary}.** {detail} {ref}")
+            lines.append("")
     if result.notes:
-        lines += ["", result.notes]
-    return "\n".join(lines)
+        lines += [result.notes]
+    return "\n".join(lines).rstrip() + "\n"
