@@ -552,6 +552,36 @@ class Terminated(Exception):
     the KillWait grace window before SIGKILL arrives."""
 
 
+def arm_self_deadline(job_minutes: int, margin_s: float = 120.0) -> int:
+    """Arm our own end-of-walltime alarm; returns the armed seconds (0 = off).
+
+    Slurm delivers NO signal to our process on Torch before SIGKILL
+    (measured 2026-08-08: scancel and walltime timeout both signal the
+    batch shell only) — so the only way to end a run richly before the
+    wall is our own clock. SIGALRM fires `margin_s` before the job's
+    walltime and raises Terminated into the ordinary containment; the
+    margin floor covers the containment's own tail (GitHub calls are 30s
+    timeout x retries).
+    """
+    if job_minutes <= 0:
+        return 0
+    import signal
+
+    margin = max(60.0, margin_s)
+    remaining = int(job_minutes * 60 - margin)
+    if remaining <= 0:
+        return 0
+
+    def _on_alarm(signum: int, frame: object) -> None:
+        raise Terminated(
+            f"self-deadline: {margin:.0f}s before the job's {job_minutes}-minute walltime"
+        )
+
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(remaining)
+    return remaining
+
+
 def arm_sigterm_containment() -> None:
     """Convert the FIRST SIGTERM into a Terminated exception, one-shot.
 
@@ -597,6 +627,19 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument("--max-turns", type=int, default=60)
+    parser.add_argument("--session-minutes", type=int, default=60)
+    parser.add_argument(
+        "--job-minutes",
+        type=int,
+        default=0,
+        help="this job's Slurm walltime; arms the self-deadline (0 = off)",
+    )
+    parser.add_argument(
+        "--deadline-margin-s",
+        type=float,
+        default=120.0,
+        help="how long before the walltime the self-deadline fires (floor 60)",
+    )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
         "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
@@ -615,6 +658,10 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
+
+    armed = arm_self_deadline(args.job_minutes, args.deadline_margin_s)
+    if armed:
+        log.info("self-deadline armed: Terminated in %ds", armed)
 
     # same 0600 discipline as the PAT: this key spends real money
     api_key = FileTokenProvider(Path(args.key_file)).token()
@@ -653,6 +700,7 @@ def main() -> int:
             binary=args.claude_bin,
             model=args.model,
             max_turns=args.max_turns,
+            timeout_s=args.session_minutes * 60,
             container_image=args.image,
         ),
         evaluator=SubprocessEvaluator(container_image=args.image),

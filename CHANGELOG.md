@@ -39,6 +39,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Per-repo budget shaping: a contract's `budgets:` may now set
+  `session_max_turns`, `session_minutes`, `climb_job_minutes`, and
+  `followup_job_minutes`. Contracts are untrusted, so every value is
+  clamped into orchestrator-side [floor, ceiling] bounds (`limits` module)
+  — a target can spend less of the orchestrator, never more — and the
+  session is shrunk to fit inside its job. The tick fetches the contract
+  once per cycle and threads the limits through all three launch lanes.
+- Self-deadline: climbs arm a SIGALRM at walltime-minus-margin (default
+  120s, floor 60s, `--deadline-margin-s`) raising into the ordinary
+  containment — the only pre-kill warning on clusters that deliver no
+  signals to job processes (measured on Torch 2026-08-08). The tick passes
+  each climb its own walltime via `--job-minutes`.
+
 - The advisory reviewer posts one comment PER ROUND (numbered, stamped
   with the reviewed head SHA) instead of editing a single thread: under
   review-until-quiet, humans must see each round — comment edits fire no

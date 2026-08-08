@@ -79,6 +79,14 @@ class SuiteAggregate(_StrictModel):
 class Budgets(_StrictModel):
     gpu_hours_per_run: float = Field(ge=0)
     runs_per_week: int = Field(gt=0)
+    # Optional per-repo shaping of the orchestrator's session/job limits.
+    # These are WISHES, not grants: limits.effective_limits clamps every
+    # value into orchestrator-side [floor, ceiling] bounds, so a target can
+    # spend less of us, never more. Absent = orchestrator defaults.
+    session_max_turns: int | None = Field(default=None, gt=0)
+    session_minutes: int | None = Field(default=None, gt=0)
+    climb_job_minutes: int | None = Field(default=None, gt=0)
+    followup_job_minutes: int | None = Field(default=None, gt=0)
 
 
 class Scope(_StrictModel):

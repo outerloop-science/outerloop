@@ -929,3 +929,54 @@ def test_climb_job_id_is_stamped_from_slurm_env(tmp_path, target_repo, monkeypat
         run_id="tsp-jid",
     )
     assert load_record(tmp_path / "state", "tsp-jid").climb_job_id == "4242"
+
+
+def test_self_deadline_arms_before_the_walltime() -> None:
+    """The alarm fires margin seconds before the job's walltime — our only
+    pre-kill warning on clusters that never signal our process."""
+    import signal
+
+    from autoresearch.climb import arm_self_deadline
+
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        armed = arm_self_deadline(90, margin_s=120.0)
+        assert armed == 90 * 60 - 120
+        assert signal.alarm(0) > 0  # a real alarm was pending
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
+
+
+def test_self_deadline_margin_floor_and_off_switch() -> None:
+    import signal
+
+    from autoresearch.climb import arm_self_deadline
+
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        assert arm_self_deadline(0) == 0  # off
+        assert arm_self_deadline(1, margin_s=1.0) == 0  # walltime <= floored margin
+        assert arm_self_deadline(10, margin_s=1.0) == 10 * 60 - 60  # floor 60 applies
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
+
+
+def test_self_deadline_raises_terminated_into_containment() -> None:
+    import signal
+
+    import pytest
+
+    from autoresearch.climb import Terminated, arm_self_deadline
+
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        arm_self_deadline(90)
+        handler = signal.getsignal(signal.SIGALRM)
+        assert callable(handler)
+        with pytest.raises(Terminated, match="self-deadline"):
+            handler(signal.SIGALRM, None)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
