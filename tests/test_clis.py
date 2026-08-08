@@ -275,8 +275,11 @@ def test_each_round_posts_a_new_numbered_comment(monkeypatch) -> None:
 
 
 def test_quote_replies_do_not_inflate_round_count(monkeypatch) -> None:
-    """A human quoting the advisory comment copies the marker; only
-    BOT-authored comments count as rounds."""
+    """A human quoting the advisory comment copies the marker, but quoted
+    lines are prefixed — counting is TEXTUAL (marker at line start) and
+    deliberately identity-agnostic, so self-hosters posting with
+    machine-user PATs number correctly. A verbatim unquoted paste would
+    inflate the cosmetic number; accepted."""
     import autoresearch.review_cli as cli
     from autoresearch.review import MARKER, ReviewResult
 

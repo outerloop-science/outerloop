@@ -146,7 +146,8 @@ def main() -> int:
         # bury prior rounds in edit history). The old one-thread upsert
         # guarded against synchronize-triggered spam; runs are now only
         # PR-open or an explicit label request, so volume is human-bounded.
-        head_sha = str((pr_data.get("head") or {}).get("sha", ""))[:8]
+        head = pr_data.get("head")
+        head_sha = str(head.get("sha", ""))[:8] if isinstance(head, dict) else ""
         # The round number is cosmetic: an EXPECTED failure counting prior
         # rounds must never cost the round itself. Programming errors still
         # propagate, per this module's policy.
