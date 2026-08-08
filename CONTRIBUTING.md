@@ -36,9 +36,12 @@ uv run pre-commit install
   silence. The habit exists because rounds have repeatedly found real
   defects in earlier rounds' own fixes. Scope: this gate governs
   DEVELOPMENT PRs (human- or assistant-authored). Bot improvement PRs sit
-  outside it — the advisory reviewer skips them by design and they arm
-  auto-merge, so there the human code-owner review is the gate and it
-  executes the merge.
+  outside it — the advisory reviewer skips them by design, and their gate
+  is the TARGET repo's required human review: the publish step arms
+  auto-merge only when the target's branch protection requires a review
+  (the arming guard refuses otherwise, in code), so that review executes
+  the merge. The "no required approvals" solo-phase note above is about
+  THIS repo's protection; bot PRs land on target repos, never here.
 
 ## Style
 
