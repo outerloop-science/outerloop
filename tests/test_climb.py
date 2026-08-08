@@ -743,6 +743,21 @@ class RacingHarness(ScriptedHarness):
         return super().run(brief_text, workspace, resume_session_id)
 
 
+@dataclass
+class DirCheckingEvaluator(QueueEvaluator):
+    """Pops values like QueueEvaluator but also records, per call, whether
+    the tree it was handed contained the agent's edit — proving the two
+    post-merge measurements ran on the intended PRISTINE trees, not on the
+    session's long-lived workspace."""
+
+    saw_agent_edit: list = field(default_factory=list)
+
+    def evaluate(self, workspace, command, metric) -> float:
+        solver = Path(workspace) / "src" / "pilot" / "solvers" / "tsp.py"
+        self.saw_agent_edit.append(solver.exists() and "r=1" in solver.read_text())
+        return super().evaluate(workspace, command, metric)
+
+
 def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) -> None:
     """Main moves during the climb (disjoint file): the branch merges the
     fresh base (merge commit, never rebase), the claim is RE-MEASURED on the
@@ -750,7 +765,7 @@ def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) 
     github = FakeGitHub()
     # values: session baseline, session candidate, then the post-merge pair —
     # fresh-base baseline (worktree of FETCH_HEAD) and merged-tree candidate
-    evaluator = QueueEvaluator(values=[13.876, 13.1, 13.9, 13.2])
+    evaluator = DirCheckingEvaluator(values=[13.876, 13.1, 13.9, 13.2])
     outcome = live_climb(
         config=ClimbConfig(target="org/pilot", benchmark="tsp"),
         run_root=tmp_path / "state",
@@ -768,6 +783,12 @@ def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) 
     )
     assert outcome.outcome == "improved"
     assert evaluator.values == []  # both post-merge measurements actually ran
+    # call 3 = fresh base WITHOUT the agent edit; call 4 = merged tree WITH it
+    # (calls 1-2 are the session-time pair in the live workspace)
+    assert evaluator.saw_agent_edit[2:] == [False, True]
+    # the worktrees were cleaned up (no disk leak in the run dir)
+    leftovers = [p.name for p in (tmp_path / "state" / "runs" / "tsp-race").iterdir()]
+    assert "measure-fresh-base" not in leftovers and "measure-merged" not in leftovers
     assert github.prs and github.prs[0]["head"] == "feat/auto/agent-01/tsp-race"
     # the PR claims the post-merge pair, not the session-time numbers
     assert "13.9 -> 13.2" in github.prs[0]["title"]

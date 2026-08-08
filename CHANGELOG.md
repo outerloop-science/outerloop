@@ -42,9 +42,11 @@ Versions follow [SemVer](https://semver.org).
 - Publish-time freshness: when the base branch moves during a climb, the
   run branch merges the fresh base (merge commit, never rebase), the claim
   is re-measured on the merged tree, and the leader check runs against the
-  fresh ledger — before anything is pushed. A conflicting merge or an
-  absorbed improvement ends the run honestly instead of opening an
-  unmergeable or unverified PR.
+  fresh ledger — before anything is pushed; both sides are measured in
+  throwaway worktrees of commits (equivalent pristine environments; the
+  shas pin content). A conflicting merge or an absorbed improvement ends
+  the run honestly instead of opening an unmergeable or unverified PR, and
+  a final base re-check before push narrows (not eliminates) the window.
 
 - Improvement PRs arm GitHub auto-merge at publish (best-effort): the bot
   still never merges — arming hands the merge to the human approval that

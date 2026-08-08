@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from pathlib import Path
+from typing import Any
 
 from autoresearch.contract import load_contract
 from autoresearch.github import (
@@ -106,6 +107,30 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
     except Exception as exc:
         log.warning("%s failed: %s", what, redact(f"{type(exc).__name__}: {exc}", secrets))
         return False
+
+
+def _measure_committed(
+    ws: Workspace, evaluator: Evaluator, run_dir: Path, name: str, sha: str, bench: Any
+) -> float:
+    """Measure a COMMITTED tree in a throwaway worktree.
+
+    Both sides of the post-merge comparison run in equivalent pristine
+    environments — the long-lived workspace carries session-created caches
+    and virtualenvs a fresh tree lacks, so measuring one side there would
+    bias the accept/reject decision. Eval writes are discarded with the
+    worktree, and the measured content is exactly the commit: the sha IS
+    the drift fingerprint.
+    """
+    wt = run_dir / f"measure-{name}"
+    ws.git("worktree", "add", "--detach", str(wt), sha)
+    try:
+        return float(evaluator.evaluate(wt, bench.command, bench.metric))
+    finally:
+        removed = _best_effort(
+            "worktree cleanup", lambda: ws.git("worktree", "remove", "--force", str(wt))
+        )
+        if not removed:  # never silent: a leaked worktree is a disk leak
+            _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
 
 
 def live_climb(
@@ -322,32 +347,36 @@ def live_climb(
                         "FETCH_HEAD",
                     )
                 except GitError as exc:
+                    # a content conflict and an infrastructure failure need
+                    # different triage — do not report one as the other
+                    conflicted = False
+                    with contextlib.suppress(GitError):
+                        conflicted = bool(ws.git("ls-files", "-u").strip())
                     with contextlib.suppress(GitError):
                         ws.git("merge", "--abort")
+                    if conflicted:
+                        raise WorkspaceDrift(
+                            f"base branch moved during the climb and the merge "
+                            f"conflicted: {str(exc)[:300]}"
+                        ) from exc
                     raise WorkspaceDrift(
-                        f"base branch moved during the climb and the merge "
-                        f"conflicted: {str(exc)[:300]}"
+                        f"base branch moved and the merge FAILED (not a content "
+                        f"conflict): {str(exc)[:300]}"
                     ) from exc
                 # The claim must hold on the tree that actually lands —
                 # BOTH sides of it. Upstream may have changed the metric for
                 # everyone, so comparing a merged-tree candidate against the
                 # pre-merge baseline would describe a delta that never
                 # existed on any single tree (and could push a regression
-                # relative to the fresh base). Baseline: the fresh base
-                # alone, in a detached worktree. Candidate: the merged tree.
-                fresh_dir = run_dir / "fresh-base"
-                ws.git("worktree", "add", "--detach", str(fresh_dir), fresh_base)
-                try:
-                    baseline = evaluator.evaluate(fresh_dir, bench.command, bench.metric)
-                finally:
-                    with contextlib.suppress(GitError):
-                        ws.git("worktree", "remove", "--force", str(fresh_dir))
-                candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
-                # dirty-tree check BEFORE the accept/reject decision, so an
-                # eval that writes files can never influence the verdict
-                # (same add -A visibility as the main drift fingerprints)
-                if ws.git("status", "--porcelain").strip():
-                    raise WorkspaceDrift("re-eval on the merged tree wrote files")
+                # relative to the fresh base). Both sides are measured in
+                # throwaway worktrees of COMMITS — equivalent pristine
+                # environments, and no dirty-tree check needed: eval writes
+                # are discarded with the worktree and the shas pin content.
+                merged_sha = ws.git("rev-parse", "HEAD").strip()
+                baseline = _measure_committed(
+                    ws, evaluator, run_dir, "fresh-base", fresh_base, bench
+                )
+                candidate = _measure_committed(ws, evaluator, run_dir, "merged", merged_sha, bench)
                 if not orch_improved(
                     baseline, candidate, bench.direction, config.min_relative_improvement
                 ):
@@ -393,6 +422,15 @@ def live_climb(
                 author=config.bot_login,
                 forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
+            # Last-moment re-check: the re-measurement above can take
+            # minutes, and the base can move AGAIN meanwhile. This narrows
+            # the unverified window to seconds; it cannot eliminate it.
+            ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
+            if ws.git("rev-parse", "FETCH_HEAD").strip() != fresh_base:
+                raise WorkspaceDrift(
+                    "base branch moved again during re-measurement; "
+                    "ending without pushing (a later run will retry)"
+                )
             ws.push(branch)
             pushed = True
             body = pr_body(result, config, redact_secrets=secrets)
