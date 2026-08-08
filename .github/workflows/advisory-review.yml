@@ -1,7 +1,9 @@
 # Reusable advisory-review workflow. Target repos call this with `uses:`;
 # they never vendor the reviewer code. Constraints enforced here and in
-# autoresearch.review: never reviews bot-authored PRs, never approves, never
-# fails the caller's CI, and never runs with secrets on a fork PR.
+# autoresearch.review: never reviews bot-authored PRs automatically (a
+# maintainer-added re-request label overrides — an explicit human ask is
+# not an echo chamber), never approves, never fails the caller's CI, and
+# never runs with secrets on a fork PR.
 name: advisory-review
 
 on:
@@ -87,4 +89,13 @@ jobs:
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_EFFORT: ${{ inputs.effort }}
+          # The caller's triggering event flows through workflow_call. The
+          # override requires the SPECIFIC re-request label (any-label would
+          # defeat the bot-skip via unrelated triage labels, even though
+          # callers also gate at the job level — defense in depth) and a
+          # labeler who is NOT the PR's author — "the author must not
+          # unlock review of its own work". Scope honestly stated: other
+          # accounts with triage access are trusted per GitHub's own
+          # permission model; this guard only stops self-unlocking.
+          REVIEW_EXPLICIT_REQUEST: ${{ github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review' && github.event.sender.login != github.event.pull_request.user.login }}
         run: uv run --extra review python -m autoresearch.review_cli

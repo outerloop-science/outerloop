@@ -115,6 +115,8 @@ def _cli_env(monkeypatch) -> None:
     monkeypatch.setenv("REVIEW_BOT_LOGIN", "some-bot")
     monkeypatch.setenv("ANTHROPIC_REVIEWER_KEY", "k")
     monkeypatch.setenv("GITHUB_TOKEN", "t")
+    # ambient env must not flip the explicit-request path under a test
+    monkeypatch.delenv("REVIEW_EXPLICIT_REQUEST", raising=False)
 
 
 def test_review_cli_threads_date_and_context(monkeypatch) -> None:
@@ -125,7 +127,7 @@ def test_review_cli_threads_date_and_context(monkeypatch) -> None:
     captured: dict = {}
     fake_client = FakeReviewClient()
 
-    def fake_review(pr, completer, bot_login, today=None):
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
         captured["today"] = today
         captured["context"] = tuple(pr.context_files)
         from autoresearch.review import ReviewResult
@@ -168,7 +170,7 @@ def test_context_fetch_stops_at_file_cap(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "review",
-        lambda pr, c, b, today=None: __import__(
+        lambda pr, c, b, today=None, explicit_request=False: __import__(
             "autoresearch.review", fromlist=["ReviewResult"]
         ).ReviewResult(findings=[], notes=""),
     )
@@ -202,10 +204,34 @@ def test_fork_fallback_when_head_repo_lacks_full_name(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "review",
-        lambda pr, c, b, today=None: __import__(
+        lambda pr, c, b, today=None, explicit_request=False: __import__(
             "autoresearch.review", fromlist=["ReviewResult"]
         ).ReviewResult(findings=[], notes=""),
     )
     _cli_env(monkeypatch)
     assert cli.main() == 0
     assert fake_client.repos_fetched and set(fake_client.repos_fetched) == {"org/repo"}
+
+
+def test_explicit_request_env_reaches_review_for_bot_prs(monkeypatch) -> None:
+    """REVIEW_EXPLICIT_REQUEST=true must flow through main(): the bot PR
+    pays the context fan-out and review() receives explicit_request=True —
+    a misspelled env key or dropped argument leaves this red."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import ReviewResult
+
+    fake_client = FakeReviewClient(author="Some-Bot")
+    seen: dict = {}
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        seen["explicit"] = explicit_request
+        return ReviewResult(findings=[], notes="")
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(cli, "review", fake_review)
+    _cli_env(monkeypatch)
+    monkeypatch.setenv("REVIEW_EXPLICIT_REQUEST", "true")
+    assert cli.main() == 0
+    assert seen["explicit"] is True
+    assert fake_client.content_fetches != []  # explicitly-requested: fan-out paid
