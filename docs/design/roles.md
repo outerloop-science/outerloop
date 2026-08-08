@@ -40,7 +40,7 @@ flowchart TD
     subgraph sources [Task sources]
         I["Requested lane:<br/>qualifying issue"]
         S["Self-initiated lane:<br/>least-recently-attempted benchmark"]
-        P["Planner (future):<br/>vetoable plan issue"]
+        P["Planner (future):<br/>vetoable plan issue<br/>(loop diagrammed below)"]
     end
 
     subgraph tick [Orchestrator: tick every 30 min]
@@ -107,6 +107,50 @@ any termination, deadlines, resume across nodes, wake prompts) but the
 launch glue — spec validation, GPU-hour accounting, the real wake
 dispatcher — is pending; it gates the first GPU target alongside the
 verifier.
+
+## The planning and stewardship loop (designed; scaling.md, meta.md)
+
+Both future roles act through the SAME governed channel — vetoable plan
+issues — never directly on code or contracts:
+
+```mermaid
+flowchart TD
+    subgraph memory [Research memory]
+        LED["leader.json:<br/>best config per benchmark"]
+        LES["notebook: lessons,<br/>recent run reports"]
+    end
+
+    subgraph planner [Planner - owns the SEARCH]
+        PL["reads leader + lessons + budget;<br/>emits plan: next knob to probe,<br/>motivated twice (hypothesis<br/>+ info per GPU-hour)"]
+    end
+
+    subgraph steward [Steward - owns the RULER]
+        ST["watches saturation, noise,<br/>tripwires, agents' own reports;<br/>proposes env v2 / noise floors /<br/>test-band changes"]
+    end
+
+    LED --> PL
+    LES --> PL
+    LES --> ST
+
+    PL --> PI["plan ISSUE on the target<br/>(vetoable: default wait ~1 day)"]
+    ST --> PI2["env plan ISSUE<br/>(same veto machinery)"]
+
+    PI -->|"autoresearch:stop =<br/>TERMINAL veto, always wins"| DEAD["line closed<br/>(revival = new plan)"]
+    PI -->|"approved label or<br/>window expires"| RUN["runs launch<br/>(the main flow above)"]
+    PI2 -->|human merges the<br/>contract/env PR| ENV["ruler changes;<br/>baselines re-measured;<br/>contract-hash ABORT protects<br/>in-flight runs"]
+    PI2 -->|verifier reads adversarially:<br/>restoring discrimination or<br/>flattering a solver?| PI2
+
+    RUN -->|reports, merges| LED
+    RUN -->|reports| LES
+    ENV -.->|fresh headroom| PL
+```
+
+Constraints that keep this safe: plans move ONE knob from the leader;
+`autoresearch:stop` is terminal and beats any approval; the `vision:` field
+steering both roles is agent-unwritable (changing it takes a human PR);
+steward and solvers never share identity, credentials, or budget; and
+consolidation runs (periodic leave-one-out over the period's merges) have
+their own capped budget line.
 
 ## Review routing: which reviewer reads what
 
