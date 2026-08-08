@@ -82,7 +82,10 @@ def test_completer_failures_are_expected_failures() -> None:
 class FakeReviewClient:
     """Stands in for GitHubClient in review_cli tests; records content fetches."""
 
+    posted: list
+
     def __init__(self, auth: object = None, author: str = "human-dev") -> None:
+        self.posted = []
         self.author = author
         self.content_fetches: list[str] = []
 
@@ -105,8 +108,13 @@ class FakeReviewClient:
         self.content_fetches.append(path)
         return "def f(): pass"
 
-    def upsert_comment(self, repo: str, number: int, marker: str, body: str) -> None:
-        pass
+    def list_comments(self, repo: str, number: int, max_pages: int = 20) -> list[dict]:
+        return list(self.posted)
+
+    def comment(self, repo: str, number: int, body: str) -> None:
+        # deliberately type User: round counting must be identity-agnostic
+        # (self-hosters post reviews with machine-user PATs)
+        self.posted.append({"body": body, "user": {"type": "User"}})
 
 
 def _cli_env(monkeypatch) -> None:
@@ -235,3 +243,82 @@ def test_explicit_request_env_reaches_review_for_bot_prs(monkeypatch) -> None:
     assert cli.main() == 0
     assert seen["explicit"] is True
     assert fake_client.content_fetches != []  # explicitly-requested: fan-out paid
+
+
+def test_each_round_posts_a_new_numbered_comment(monkeypatch) -> None:
+    """Rounds are first-class: every run posts a NEW comment (edits fire no
+    notifications), numbered by counting prior marker comments, stamped with
+    the reviewed head."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import ReviewResult
+
+    fake_client = FakeReviewClient()
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None, explicit_request=False: ReviewResult(
+            findings=[], notes="looked fine"
+        ),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert cli.main() == 0
+    bodies = [c["body"] for c in fake_client.posted]
+    assert len(bodies) == 2  # two comments, never an edit
+    assert "**Round 1**" in bodies[0] and "**Round 2**" in bodies[1]
+    # the stamp carries the EXACT reviewed head from the PR payload
+    assert "reviewed head `abc123`" in bodies[0]
+    # same head twice -> the second round says so
+    assert "(re-run on the same head)" in bodies[1]
+
+
+def test_quote_replies_do_not_inflate_round_count(monkeypatch) -> None:
+    """A human quoting the advisory comment copies the marker, but quoted
+    lines are prefixed — counting is TEXTUAL (marker at line start) and
+    deliberately identity-agnostic, so self-hosters posting with
+    machine-user PATs number correctly. A verbatim unquoted paste would
+    inflate the cosmetic number; accepted."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import MARKER, ReviewResult
+
+    fake_client = FakeReviewClient()
+    # a real quote-reply: every quoted line is prefixed, marker not at start
+    fake_client.posted.append(
+        {"body": f"> {MARKER}\n> old finding\n\nmy reply", "user": {"type": "User"}}
+    )
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None, explicit_request=False: ReviewResult(findings=[], notes="n"),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert "**Round 1**" in fake_client.posted[-1]["body"]
+
+
+def test_round_count_failure_never_costs_the_round(monkeypatch) -> None:
+    """Numbering is cosmetic; a listing failure must not suppress the post."""
+    import autoresearch.review_cli as cli
+    from autoresearch.github import GitHubError
+    from autoresearch.review import ReviewResult
+
+    class ListlessClient(FakeReviewClient):
+        def list_comments(self, repo, number, max_pages=20):
+            raise GitHubError(500, "/comments", "transient")
+
+    fake_client = ListlessClient()
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None, explicit_request=False: ReviewResult(findings=[], notes="n"),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert len(fake_client.posted) == 1
+    assert "New round" in fake_client.posted[0]["body"]

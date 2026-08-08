@@ -39,6 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The advisory reviewer posts one comment PER ROUND (numbered, stamped
+  with the reviewed head SHA) instead of editing a single thread: under
+  review-until-quiet, humans must see each round — comment edits fire no
+  notifications and bury prior rounds in edit history. The upsert guarded
+  against synchronize-era spam; runs are now open- or label-triggered
+  only.
+
 - Killed climbs now reach a recorded ending: SIGTERM (walltime, preemption,
   scancel) raises into the climb's ordinary containment inside the KillWait
   grace, the record stores the climb's own Slurm job id, and a new sweep

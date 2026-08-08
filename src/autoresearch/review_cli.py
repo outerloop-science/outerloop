@@ -1,8 +1,10 @@
 """Entry point for the advisory-review workflow.
 
 Reads the PR from the environment the workflow provides, runs one review, and
-upserts a single comment (one thread per PR). Exits 0 even when it skips or
-fails: an advisory reviewer must never turn a target repo's CI red.
+posts one NEW comment per round — numbered, stamped with the reviewed head —
+so every round notifies and stays visible (edits do neither). Exits 0 even
+when it skips or fails: an advisory reviewer must never turn a target repo's
+CI red.
 """
 
 from __future__ import annotations
@@ -138,8 +140,36 @@ def main() -> int:
         if body is None:
             log.info("nothing to post")
             return 0
-        client.upsert_comment(repo, number, MARKER, body)
-        log.info("posted advisory review on %s#%s", repo, number)
+        # One comment PER ROUND, numbered and stamped with the reviewed
+        # head: rounds are first-class under review-until-quiet, and a
+        # human must see each one (comment EDITS fire no notifications and
+        # bury prior rounds in edit history). The old one-thread upsert
+        # guarded against synchronize-triggered spam; runs are now only
+        # PR-open or an explicit label request, so volume is human-bounded.
+        head = pr_data.get("head")
+        head_sha = str(head.get("sha", ""))[:8] if isinstance(head, dict) else ""
+        # The round number is cosmetic: an EXPECTED failure counting prior
+        # rounds must never cost the round itself. Programming errors still
+        # propagate, per this module's policy.
+        try:
+            prior = [
+                str(c.get("body", ""))
+                for c in client.list_comments(repo, number)
+                # STARTS WITH the marker: a quote-reply prefixes every line
+                # with "> ", so it cannot match — and this stays true for
+                # any posting identity (Actions token, GitHub App, or a
+                # self-hoster's machine-user PAT, which posts as type User)
+                if str(c.get("body", "")).lstrip().startswith(MARKER)
+            ]
+            round_label = f"**Round {len(prior) + 1}**"
+            if head_sha and any(f"reviewed head `{head_sha}`" in b for b in prior):
+                round_label += " (re-run on the same head)"
+        except EXPECTED_FAILURES as exc:
+            log.warning("could not count prior rounds: %s", exc)
+            round_label = "**New round** (prior count unavailable)"
+        stamp = f"{round_label} — reviewed head `{head_sha or 'unknown'}`.\n\n"
+        client.comment(repo, number, body.replace(MARKER, f"{MARKER}\n{stamp}", 1))
+        log.info("posted advisory review (%s) on %s#%s", round_label, repo, number)
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("advisory review did not complete: %s: %s", type(exc).__name__, exc)
     return 0
