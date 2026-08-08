@@ -407,28 +407,33 @@ def main() -> int:
     # so walltime deaths must be our own clock's job. respond_once contains
     # exceptions per-lane, and its lease/cursor rules keep a Terminated
     # ending honest (cursors un-advanced on failure -> the next tick retries).
+    import signal as _signal
+
     from autoresearch.climb import arm_self_deadline
 
     armed = arm_self_deadline(args.job_minutes)
     if armed:
         log.info("self-deadline armed: Terminated in %ds", armed)
-    outcome = respond_once(
-        args.run_root,
-        args.run_id,
-        harness=ClaudeCodeHarness(
-            api_key=api_key,
-            binary=args.claude_bin,
-            model=args.model,
-            max_turns=args.max_turns,
-            container_image=args.image,
-        ),
-        evaluator=SubprocessEvaluator(container_image=args.image),
-        github=GitHubClient(auth=bot_auth),
-        bot_login=args.bot_login,
-        now=time.time(),
-        secrets=(api_key, bot_auth.token()),
-        created=datetime.now(UTC).isoformat(),
-    )
+    try:
+        outcome = respond_once(
+            args.run_root,
+            args.run_id,
+            harness=ClaudeCodeHarness(
+                api_key=api_key,
+                binary=args.claude_bin,
+                model=args.model,
+                max_turns=args.max_turns,
+                container_image=args.image,
+            ),
+            evaluator=SubprocessEvaluator(container_image=args.image),
+            github=GitHubClient(auth=bot_auth),
+            bot_login=args.bot_login,
+            now=time.time(),
+            secrets=(api_key, bot_auth.token()),
+            created=datetime.now(UTC).isoformat(),
+        )
+    finally:
+        _signal.alarm(0)
     print(f"action={outcome.action} note={outcome.note}")
     return 0
 

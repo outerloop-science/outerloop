@@ -703,37 +703,43 @@ def main() -> int:
             )
         return 3
 
-    # Armed LAST, immediately before the contained region: an alarm that
-    # fired during setup would escape uncaught and die unrecorded.
+    # Armed LAST, immediately before the contained region — and DISARMED
+    # right after it: a run finishing inside the margin must not have the
+    # alarm fire during the uncontained epilogue (print/exit).
+    import signal as _signal
+
     armed = arm_self_deadline(args.job_minutes, args.deadline_margin_s)
     if armed:
         log.info("self-deadline armed: Terminated in %ds", armed)
 
-    outcome = live_climb(
-        config=ClimbConfig(target=args.target, benchmark=args.benchmark),
-        run_root=args.run_root,
-        run_id=run_id,
-        harness=ClaudeCodeHarness(
-            api_key=api_key,
-            binary=args.claude_bin,
-            model=args.model,
-            max_turns=args.max_turns,
-            timeout_s=args.session_minutes * 60,
-            container_image=args.image,
-        ),
-        evaluator=SubprocessEvaluator(container_image=args.image),
-        github=GitHubClient(auth=bot_auth),
-        bot_auth=bot_auth,
-        now=time.time(),
-        created=datetime.now(UTC).isoformat(),
-        secrets=(api_key, bot_auth.token()),
-        issue_number=args.issue,
-        task_hypothesis=(
-            __import__("base64").b64decode(args.hypothesis_b64).decode()
-            if args.hypothesis_b64
-            else ""
-        ),
-    )
+    try:
+        outcome = live_climb(
+            config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+            run_root=args.run_root,
+            run_id=run_id,
+            harness=ClaudeCodeHarness(
+                api_key=api_key,
+                binary=args.claude_bin,
+                model=args.model,
+                max_turns=args.max_turns,
+                timeout_s=args.session_minutes * 60,
+                container_image=args.image,
+            ),
+            evaluator=SubprocessEvaluator(container_image=args.image),
+            github=GitHubClient(auth=bot_auth),
+            bot_auth=bot_auth,
+            now=time.time(),
+            created=datetime.now(UTC).isoformat(),
+            secrets=(api_key, bot_auth.token()),
+            issue_number=args.issue,
+            task_hypothesis=(
+                __import__("base64").b64decode(args.hypothesis_b64).decode()
+                if args.hypothesis_b64
+                else ""
+            ),
+        )
+    finally:
+        _signal.alarm(0)
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0
 
