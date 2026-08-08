@@ -40,9 +40,11 @@ Versions follow [SemVer](https://semver.org).
 ### Added
 
 - Review-until-quiet merge gate documented (CONTRIBUTING, CLAUDE.md):
-  substantive development PRs iterate advisory-review rounds until a round
-  on the head commit finds nothing new. Contributor docs also updated for
-  the single consolidated `ci` check (stale five-check wording).
+  development PRs iterate advisory-review rounds with a judged termination
+  criterion — code PRs stop at no new medium+/behavior-affecting findings,
+  docs/process PRs get one round with nits batched, and a 4-round hard cap
+  escalates to the PI. Contributor docs also updated for the single
+  consolidated `ci` check (stale five-check wording).
 
 - Improvement PRs arm GitHub auto-merge at publish (best-effort): the bot
   still never merges — arming hands the merge to the human approval that
