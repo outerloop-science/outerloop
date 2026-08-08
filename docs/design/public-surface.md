@@ -1,0 +1,96 @@
+# The public surface: threat model for open target repos
+
+**Status: v1 (2026-08-08). The audit below GATES any repo carrying our
+workflows going public, alongside the verifier. Written for self-hosters as
+much as for us: if you attach autoresearch to a public repo, this is your
+attack surface.**
+
+## The scenario
+
+A target repo goes public. Strangers can now open issues, comment on PRs,
+open fork PRs, and (with any grant of triage) apply labels. Several of those
+inputs feed systems that hold credentials or submit cluster jobs. The
+headline threat: **a public interaction that ends with code execution on the
+operator's compute, or with a secret exfiltrated.**
+
+## What already holds (defenses in place)
+
+- **Author-association gating**: issue intake and PR-comment wakes qualify
+  only OWNER/MEMBER/COLLABORATOR authors; label-based qualification demands
+  provenance (the labeler's permission verified via timeline events, not
+  label presence). A stranger's issue or comment reaches no session today.
+- **Untrusted text is data**: everything ingested from GitHub (issues,
+  comments, reports) is fenced with computed fences and marked as data, not
+  instructions, in briefs and wake prompts.
+- **Sessions are contained**: Apptainer `--containall`, scrubbed env (no
+  PAT, no billing keys), per-run HOME, transcripts secret-scanned and stored
+  off-repo.
+- **Claims are orchestrator-measured**: nothing a session asserts is
+  trusted; baselines and candidates are re-measured by the orchestrator, and
+  target CI re-verifies on GitHub's runners.
+- **The bot cannot write to this repo** (account-level), and the orchestrator
+  never executes code from PRs it did not author (see invariant below).
+
+## The gap that gates the flip: `pull_request_target`
+
+The advisory reviewer runs on `pull_request_target` so it can hold secrets
+(`REVIEWER_API_KEY`, optionally a checkout key). On a public repo that
+trigger fires for **fork PRs from strangers** — the classic pwn-request
+shape: privileged context + attacker-influenced event.
+
+Current mitigations already in the reusable workflow: the fork gate
+(`head.repo.full_name == github.repository`) sits before any step, the
+workflow checks out the REVIEWER, never the PR head, and nothing from the PR
+is executed — its diff and files are only *read* via the API and fed to a
+model as fenced text.
+
+**Audit checklist before any public flip** (each item verified on the live
+workflow files of the repo being flipped, not on memory of them):
+
+1. The fork gate is present, at the JOB level, on every caller workflow —
+   and its polarity is "same repo only", not an allowlist that can drift.
+2. No step checks out, builds, installs, or executes anything from the PR
+   head (including transitively: no `uv sync` against the PR's lockfile, no
+   pre-commit on its config).
+3. `permissions:` blocks are minimal (`contents: read`,
+   `pull-requests: write`) on caller and reusable workflows alike.
+4. Labels that trigger privileged runs (`autoresearch:review`) require the
+   labeler to hold write access — GitHub enforces label application, but
+   verify no automation applies labels on behalf of unprivileged users.
+5. Prompt-injection resistance re-checked: the reviewer reads attacker-
+   authored diffs/PR text; its output must stay sanitized (approval-language
+   redaction, marker stripping, length caps) so a hostile diff cannot forge
+   an approval or smuggle instructions into the comment a human reads.
+6. Secrets inventory: which workflows can see which secrets, and is each
+   scoped to the least repo set (org-level secrets with repo selection, not
+   org-wide).
+
+## Invariants to keep enforced in code (not convention)
+
+- **External code never executes on operator hardware.** The orchestrator
+  clones and measures only trees its own bot authored; evaluation of
+  stranger contributions belongs to the target's own CI on GitHub-hosted
+  runners. (Worth an explicit assertion at the clone/measure boundary:
+  refuse a workspace whose head commit is not bot-authored.)
+- **Public input can request, never command.** The requested lane's standing
+  gate stays association-based on public repos; a public "issue mode" (if
+  ever wanted) would be a maintainer-approved-label-only lane, and the label
+  provenance check already exists.
+- **The contract is read from the default branch only** — never from a PR —
+  so a fork PR cannot present a doctored contract to any part of the system.
+
+## Release-process changes
+
+- RELEASING.md's go-public checklist gains a **hostile-interaction section**:
+  run this audit, then enable "limit to users with write access" style
+  interaction limits for an initial window, and document the incident path
+  (revoke org secret, pause tick chain via sentinel, rotate PAT).
+- New-repo onboarding docs point here: attaching the reviewer to a public
+  repo inherits this threat model on day one.
+
+## Out of scope (for now)
+
+Multi-tenant hosting, GitHub App identity, and consumer-side experiment
+runners are design/external.md's territory; nothing here assumes them. The
+notebook repo stays permanently private and is unaffected by any target
+going public.
