@@ -832,7 +832,10 @@ def test_conflicting_moved_base_is_publish_error_not_a_broken_pr(tmp_path, targe
     assert github.prs == []
     assert "feat/auto/agent-01/tsp-clash" not in _git(target_repo, "branch", "--list")
     record = load_record(tmp_path / "state", "tsp-clash")
-    assert "merge" in record.ending_note and "conflict" in record.ending_note
+    # pin the TRIAGE branch, not just the topic: this is a content conflict,
+    # and must not be reported through the infrastructure-failure message
+    assert "conflicted" in record.ending_note
+    assert "not a content conflict" not in record.ending_note
 
 
 def test_absorbed_improvement_after_merge_is_rejected(tmp_path, target_repo) -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
@@ -129,7 +130,10 @@ def _measure_committed(
         removed = _best_effort(
             "worktree cleanup", lambda: ws.git("worktree", "remove", "--force", str(wt))
         )
-        if not removed:  # never silent: a leaked worktree is a disk leak
+        if not removed:  # never silent: a leaked worktree is a disk leak —
+            # and prune alone only drops the ADMIN entry, so delete the
+            # directory itself first
+            _best_effort("worktree dir removal", lambda: shutil.rmtree(wt, ignore_errors=True))
             _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
 
 
