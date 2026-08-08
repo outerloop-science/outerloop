@@ -262,7 +262,10 @@ def format_verify_comment(result: ReviewResult) -> str | None:
     else:
         order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
-            where = f"`{finding.file}`" + (f":{finding.line}" if finding.line else "")
+            # backticks stripped: a file value containing one would close
+            # the code span and render attacker markdown inline
+            safe_file = finding.file.replace("`", "")
+            where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
             ref = f"({where}; {finding.confidence} confidence)"
             lines.append(f"**{finding.summary}.** {finding.detail} {ref}")
             lines.append("")

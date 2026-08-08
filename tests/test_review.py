@@ -172,3 +172,36 @@ def test_opt_out_still_wins_over_explicit_request() -> None:
     pr = make_pr(author=BOT, labels=("autoresearch:no-review",))
     reason = skip_reason(pr, BOT, explicit_request=True)
     assert reason is not None and "opted out" in reason
+
+
+def test_advisory_header_semantics_are_pinned() -> None:
+    """Same pin as the verifier's: the constant itself must keep the
+    advisory/code-owner-decides framing through any future rewording."""
+    assert "Advisory" in ADVISORY_HEADER
+    assert "code owner decides" in ADVISORY_HEADER
+    assert OPT_OUT_LABEL in ADVISORY_HEADER  # posted instructions track the constant
+
+
+def test_backticked_filename_cannot_break_the_reference_span() -> None:
+    from autoresearch.review import Finding, ReviewResult
+    from autoresearch.review import format_comment as _fc
+
+    body = _fc(
+        ReviewResult(
+            findings=[
+                Finding(
+                    file="a`](http://evil)`.py",
+                    line=1,
+                    confidence="low",
+                    summary="s",
+                    detail="d",
+                )
+            ],
+            notes="",
+        )
+    )
+    assert body is not None
+    # the injected backtick is gone, so the span cannot be closed early;
+    # whatever remains of the path renders as inert code-span text
+    assert "a](http://evil).py" in body  # inside the span, backtick-free
+    assert "`a](http://evil).py`" in body
