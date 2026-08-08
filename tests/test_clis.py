@@ -268,16 +268,39 @@ def test_each_round_posts_a_new_numbered_comment(monkeypatch) -> None:
     assert "**Round 1**" in bodies[0] and "**Round 2**" in bodies[1]
     # the stamp carries the EXACT reviewed head from the PR payload
     assert "reviewed head `abc123`" in bodies[0]
+    # same head twice -> the second round says so
+    assert "(re-run on the same head)" in bodies[1]
+
+
+def test_quote_replies_do_not_inflate_round_count(monkeypatch) -> None:
+    """A human quoting the advisory comment copies the marker; only
+    BOT-authored comments count as rounds."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import MARKER, ReviewResult
+
+    fake_client = FakeReviewClient()
+    fake_client.posted.append({"body": f"quoting: {MARKER}", "user": {"type": "User"}})
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None, explicit_request=False: ReviewResult(findings=[], notes="n"),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert "**Round 1**" in fake_client.posted[-1]["body"]
 
 
 def test_round_count_failure_never_costs_the_round(monkeypatch) -> None:
     """Numbering is cosmetic; a listing failure must not suppress the post."""
     import autoresearch.review_cli as cli
+    from autoresearch.github import GitHubError
     from autoresearch.review import ReviewResult
 
     class ListlessClient(FakeReviewClient):
         def list_comments(self, repo, number, max_pages=20):
-            raise RuntimeError("transient")
+            raise GitHubError(500, "/comments", "transient")
 
     fake_client = ListlessClient()
     monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)

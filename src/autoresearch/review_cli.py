@@ -146,17 +146,24 @@ def main() -> int:
         # bury prior rounds in edit history). The old one-thread upsert
         # guarded against synchronize-triggered spam; runs are now only
         # PR-open or an explicit label request, so volume is human-bounded.
-        # The round number is cosmetic: a failure counting prior rounds
-        # must never cost the round itself.
+        head_sha = str((pr_data.get("head") or {}).get("sha", ""))[:8]
+        # The round number is cosmetic: an EXPECTED failure counting prior
+        # rounds must never cost the round itself. Programming errors still
+        # propagate, per this module's policy.
         try:
-            prior_rounds = sum(
-                1 for c in client.list_comments(repo, number) if MARKER in str(c.get("body", ""))
-            )
-            round_label = f"**Round {prior_rounds + 1}**"
-        except Exception as exc:
+            prior = [
+                str(c.get("body", ""))
+                for c in client.list_comments(repo, number)
+                # bot-authored only: a human quote-reply copies the marker
+                if MARKER in str(c.get("body", ""))
+                and str((c.get("user") or {}).get("type", "")).casefold() == "bot"
+            ]
+            round_label = f"**Round {len(prior) + 1}**"
+            if head_sha and any(f"reviewed head `{head_sha}`" in b for b in prior):
+                round_label += " (re-run on the same head)"
+        except EXPECTED_FAILURES as exc:
             log.warning("could not count prior rounds: %s", exc)
             round_label = "**New round** (prior count unavailable)"
-        head_sha = str((pr_data.get("head") or {}).get("sha", ""))[:8]
         stamp = f"{round_label} — reviewed head `{head_sha or 'unknown'}`.\n\n"
         client.comment(repo, number, body.replace(MARKER, f"{MARKER}\n{stamp}", 1))
         log.info("posted advisory review (%s) on %s#%s", round_label, repo, number)
