@@ -39,6 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The advisory reviewer posts one comment PER ROUND (numbered, stamped
+  with the reviewed head SHA) instead of editing a single thread: under
+  review-until-quiet, humans must see each round — comment edits fire no
+  notifications and bury prior rounds in edit history. The upsert guarded
+  against synchronize-era spam; runs are now open- or label-triggered
+  only.
+
 - Adding the `autoresearch:review` label now runs a review on bot-authored
   PRs too: the labeling EVENT (not the label sitting on the PR — re-request
   by removing and re-adding, same as on human PRs) is an explicit ask and

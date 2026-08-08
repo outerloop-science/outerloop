@@ -82,7 +82,10 @@ def test_completer_failures_are_expected_failures() -> None:
 class FakeReviewClient:
     """Stands in for GitHubClient in review_cli tests; records content fetches."""
 
+    posted: list
+
     def __init__(self, auth: object = None, author: str = "human-dev") -> None:
+        self.posted = []
         self.author = author
         self.content_fetches: list[str] = []
 
@@ -105,8 +108,11 @@ class FakeReviewClient:
         self.content_fetches.append(path)
         return "def f(): pass"
 
-    def upsert_comment(self, repo: str, number: int, marker: str, body: str) -> None:
-        pass
+    def list_comments(self, repo: str, number: int, max_pages: int = 20) -> list[dict]:
+        return list(self.posted)
+
+    def comment(self, repo: str, number: int, body: str) -> None:
+        self.posted.append({"body": body, "user": {"type": "Bot"}})
 
 
 def _cli_env(monkeypatch) -> None:
@@ -235,3 +241,29 @@ def test_explicit_request_env_reaches_review_for_bot_prs(monkeypatch) -> None:
     assert cli.main() == 0
     assert seen["explicit"] is True
     assert fake_client.content_fetches != []  # explicitly-requested: fan-out paid
+
+
+def test_each_round_posts_a_new_numbered_comment(monkeypatch) -> None:
+    """Rounds are first-class: every run posts a NEW comment (edits fire no
+    notifications), numbered by counting prior marker comments, stamped with
+    the reviewed head."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import ReviewResult
+
+    fake_client = FakeReviewClient()
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    monkeypatch.setattr(
+        cli,
+        "review",
+        lambda pr, c, b, today=None, explicit_request=False: ReviewResult(
+            findings=[], notes="looked fine"
+        ),
+    )
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    assert cli.main() == 0
+    bodies = [c["body"] for c in fake_client.posted]
+    assert len(bodies) == 2  # two comments, never an edit
+    assert "**Round 1**" in bodies[0] and "**Round 2**" in bodies[1]
+    assert "reviewed head `abc12345" in bodies[0] or "reviewed head `" in bodies[0]

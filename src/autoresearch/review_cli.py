@@ -138,8 +138,19 @@ def main() -> int:
         if body is None:
             log.info("nothing to post")
             return 0
-        client.upsert_comment(repo, number, MARKER, body)
-        log.info("posted advisory review on %s#%s", repo, number)
+        # One comment PER ROUND, numbered and stamped with the reviewed
+        # head: rounds are first-class under review-until-quiet, and a
+        # human must see each one (comment EDITS fire no notifications and
+        # bury prior rounds in edit history). The old one-thread upsert
+        # guarded against synchronize-triggered spam; runs are now only
+        # PR-open or an explicit label request, so volume is human-bounded.
+        prior_rounds = sum(
+            1 for c in client.list_comments(repo, number) if MARKER in str(c.get("body", ""))
+        )
+        head_sha = str((pr_data.get("head") or {}).get("sha", ""))[:8]
+        stamp = f"**Round {prior_rounds + 1}** — reviewed head `{head_sha or 'unknown'}`.\n\n"
+        client.comment(repo, number, body.replace(MARKER, f"{MARKER}\n{stamp}", 1))
+        log.info("posted advisory review round %d on %s#%s", prior_rounds + 1, repo, number)
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("advisory review did not complete: %s: %s", type(exc).__name__, exc)
     return 0
