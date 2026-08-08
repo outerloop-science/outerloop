@@ -865,3 +865,53 @@ def test_absorbed_improvement_after_merge_is_rejected(tmp_path, target_repo) -> 
         "does not beat the fresh base"
         in load_record(tmp_path / "state", "tsp-absorbed").ending_note
     )
+
+
+def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
+    """A SIGTERM surfaced as Terminated mid-session must end the run through
+    the ordinary containment: record aborted, report written."""
+    from autoresearch.climb import Terminated
+
+    @dataclass
+    class KilledHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            raise Terminated("SIGTERM from Slurm (walltime, preemption, or scancel)")
+
+    github = CommentingGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-term",
+        harness=KilledHarness(edits={}),
+        evaluator=QueueEvaluator(values=[13.876]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+        issue_number=7,
+    )
+    assert outcome.outcome == "climb-error"
+    record = load_record(tmp_path / "state", "tsp-term")
+    assert record.state == "ended" and record.ending == "aborted"
+    assert "SIGTERM" in record.ending_note
+    assert any("climb-error" in body for _, body in github.issue_comments)
+
+
+def test_sigterm_containment_is_one_shot() -> None:
+    """First SIGTERM raises Terminated; a second must NOT interrupt the
+    containment the first one started."""
+    import os
+    import signal
+
+    import pytest
+
+    from autoresearch.climb import Terminated, arm_sigterm_containment
+
+    original = signal.getsignal(signal.SIGTERM)
+    try:
+        arm_sigterm_containment()
+        with pytest.raises(Terminated):
+            os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGTERM)  # disarmed: must not raise
+    finally:
+        signal.signal(signal.SIGTERM, original)

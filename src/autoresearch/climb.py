@@ -552,17 +552,29 @@ class Terminated(Exception):
     the KillWait grace window before SIGKILL arrives."""
 
 
-def main() -> int:
-    import argparse
-    import os
+def arm_sigterm_containment() -> None:
+    """Convert the FIRST SIGTERM into a Terminated exception, one-shot.
+
+    Disarm happens before the raise: a second SIGTERM (repeated scancel,
+    site KillWait re-sends) must not abort the very containment the first
+    one enabled.
+    """
     import signal
-    import time
-    from datetime import UTC, datetime
 
     def _on_sigterm(signum: int, frame: object) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise Terminated("SIGTERM from Slurm (walltime, preemption, or scancel)")
 
     signal.signal(signal.SIGTERM, _on_sigterm)
+
+
+def main() -> int:
+    import argparse
+    import os
+    import time
+    from datetime import UTC, datetime
+
+    arm_sigterm_containment()
 
     parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
     parser.add_argument("--target", required=True)

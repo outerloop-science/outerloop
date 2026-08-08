@@ -48,6 +48,7 @@ from autoresearch.runstate import (
     read_lease,
     reap_lease,
     release_lease,
+    run_dir,
     save_record,
     update_lease_holder,
 )
@@ -368,7 +369,6 @@ def _sweep_implementing(
         if record.state != IMPLEMENTING:
             continue
         try:
-            age = now - max(record.updated, record.created)
             if record.climb_job_id:
                 try:
                     state = compute.status(record.climb_job_id)
@@ -376,18 +376,35 @@ def _sweep_implementing(
                     continue  # Slurm outage must not read as a dead job
                 if not (is_terminal(state) or state == GONE):
                     continue  # alive; the climb owns its own record
-                if age < grace_s:
-                    continue  # final write may be in flight
+                # Grace runs from FIRST OBSERVED terminal, like the waiting
+                # sweep: during Slurm's KillWait the job already reports
+                # terminal while the SIGTERM containment is still writing
+                # its honest ending — record age would be hours and protect
+                # nothing. First sighting stamps the clock; the ending only
+                # lands a full grace later, and only if the record is STILL
+                # implementing then (a climb that wrote its own ending, or
+                # moved to waiting, is skipped by the state check above).
+                if record.terminal_seen <= 0:
+                    if not dry_run:
+                        fresh = load_record(root, record.run_id)
+                        if fresh.state == IMPLEMENTING and fresh.terminal_seen <= 0:
+                            save_record(root, replace(fresh, terminal_seen=now), now)
+                    continue
+                if now - record.terminal_seen < grace_s:
+                    continue
                 note = f"climb job {record.climb_job_id} ended {state} without a verdict"
             else:
-                if age < STRANDED_IMPLEMENTING_S:
+                if now - max(record.updated, record.created) < STRANDED_IMPLEMENTING_S:
                     continue
                 note = "implementing with no recorded climb job (legacy), aged out"
             if not dry_run:
+                fresh = load_record(root, record.run_id)
+                if fresh.state != IMPLEMENTING:
+                    continue  # the climb landed its own ending meanwhile
                 save_record(
                     root,
                     replace(
-                        record,
+                        fresh,
                         state=ENDED,
                         ending=ABORTED,
                         ending_note=(
@@ -397,6 +414,16 @@ def _sweep_implementing(
                     ),
                     now,
                 )
+                # every ending produces a report, even one the sweep authors
+                report_path = run_dir(root, record.run_id) / "report.md"
+                try:
+                    report_path.write_text(
+                        f"# Run report — {record.target} / {record.benchmark}\n"
+                        f"Outcome: **aborted** (climb job killed)\n"
+                        f"Note: {note}\n"
+                    )
+                except OSError as exc:
+                    log.warning("sweep report write failed for %s: %s", record.run_id, exc)
             log.warning("sweep ended implementing run %s: %s", record.run_id, note)
             ended.append(record.run_id)
         except Exception as exc:  # per-record isolation, like the waiting sweep
