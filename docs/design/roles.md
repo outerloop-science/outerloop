@@ -1,6 +1,6 @@
 # Roles and flow
 
-**Status: living reference (v1, 2026-08-09). One page answering "who does
+**Status: living reference (v1, 2026-08-08). One page answering "who does
 what, who may never do what, and how work flows between them." Details live
 in architecture.md (mechanics), scaling.md (planner/steward/verifier
 design), meta.md (benchmarking the loop itself), and public-surface.md
@@ -26,6 +26,7 @@ data, not accounts: every commit is authored by the one bot account with an
 | **Planner** | model | designed (scaling.md pt 1) | Owns a target's search *program*: reads leader/lessons/reports, emits vetoable plan issues motivated twice (hypothesis + economics) | enact plans (humans/veto-window do); write `vision:` |
 | **Steward** | model | designed (meta.md) | Keeps benchmarks discriminating: restores headroom, proves solvability, sets noise floors — via vetoable plan issues and human-merged env PRs | share identity/credentials/budget with any solver; be scored on solver metrics |
 | **Watchdog** | code | designed | Off-cluster heartbeat monitor: alerts when the tick chain goes quiet | act on the cluster |
+| **Maintenance agent** | model | later | CI fixes, dependency bumps, issue triage on opted-in repos | count toward research budgets; touch benchmarks |
 
 Authority in one line: **model roles propose, code roles enforce, humans
 decide.** Every merge into a target repo is a human decision (bot PRs arm
@@ -50,14 +51,14 @@ flowchart TD
     S --> T
     P -.-> T
 
-    T -->|"submit climb job<br/>(pending marker dedupes)"| C
-
     subgraph climb [Climb job - bounded by contract limits]
         C["clone (bot auth) + record FIRST"] --> B["orchestrator measures baseline"]
         B --> A["author session<br/>(contained, scrubbed env,<br/>self-deadline armed)"]
         A --> E["orchestrator measures candidate<br/>scope + drift fingerprints"]
         E --> F{improved?}
     end
+
+    T -->|"submit climb job<br/>(pending marker dedupes)"| C
 
     F -->|no| R0["run ends: negative result<br/>+ research report"]
     F -->|yes| G["freshness: base moved?<br/>merge + re-measure BOTH sides"]
