@@ -555,14 +555,21 @@ class Terminated(Exception):
 def arm_sigterm_containment() -> None:
     """Convert the FIRST SIGTERM into a Terminated exception, one-shot.
 
-    Disarm happens before the raise: a second SIGTERM (repeated scancel,
-    site KillWait re-sends) must not abort the very containment the first
-    one enabled.
+    Repeats are absorbed by a flag rather than SIG_IGN: a second SIGTERM
+    (repeated scancel, site KillWait re-sends) must not abort the very
+    containment the first one enabled — and SIG_IGN would be inherited
+    across exec by children spawned during containment, leaving them
+    unkillable by TERM. A Python-level handler is reset on exec, so
+    children keep default signal behavior.
     """
     import signal
 
+    fired = {"done": False}
+
     def _on_sigterm(signum: int, frame: object) -> None:
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if fired["done"]:
+            return  # containment already unwinding; absorb the repeat
+        fired["done"] = True
         raise Terminated("SIGTERM from Slurm (walltime, preemption, or scancel)")
 
     signal.signal(signal.SIGTERM, _on_sigterm)

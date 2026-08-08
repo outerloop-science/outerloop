@@ -13,6 +13,7 @@ independently.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -403,10 +404,17 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
                     except OSError as exc:
                         log.warning("kill-stamp write failed for %s: %s", record.run_id, exc)
                     continue
+                # An empty stamp (write failed after create — the disk-full
+                # case — or a concurrent tick mid-write) must fall back to
+                # mtime, NOT to epoch 0, which would skip the grace outright.
                 try:
-                    seen = float(stamp.read_text().strip() or 0.0)
+                    raw = stamp.read_text().strip()
+                    seen = float(raw) if raw else stamp.stat().st_mtime
                 except (OSError, ValueError):
-                    seen = stamp.stat().st_mtime  # unreadable stamp: mtime truth
+                    try:
+                        seen = stamp.stat().st_mtime
+                    except OSError:
+                        continue  # stamp vanished mid-read; next tick decides
                 if now - seen < grace_s:
                     continue
                 note = f"climb job {record.climb_job_id} ended {state} without a verdict"
@@ -417,6 +425,12 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
             fresh = load_record(root, record.run_id)
             if fresh.state != IMPLEMENTING:
                 continue  # the climb landed its own ending meanwhile
+            if fresh.experiment_job_id:
+                # defensive: no current path records an experiment while
+                # still implementing, but an orphan GPU job burning budget
+                # after its run is declared dead must never survive one
+                with contextlib.suppress(Exception):
+                    compute.cancel(fresh.experiment_job_id)
             save_record(
                 root,
                 replace(

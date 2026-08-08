@@ -915,3 +915,17 @@ def test_sigterm_containment_is_one_shot() -> None:
         os.kill(os.getpid(), signal.SIGTERM)  # disarmed: must not raise
     finally:
         signal.signal(signal.SIGTERM, original)
+
+
+def test_climb_job_id_is_stamped_from_slurm_env(tmp_path, target_repo, monkeypatch) -> None:
+    """The sweep's entire kill-detection keys on this field: the record must
+    carry the climb's own SLURM_JOB_ID."""
+    monkeypatch.setenv("SLURM_JOB_ID", "4242")
+    run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "jid=1\n"},
+        values=[13.876, 13.1],
+        run_id="tsp-jid",
+    )
+    assert load_record(tmp_path / "state", "tsp-jid").climb_job_id == "4242"
