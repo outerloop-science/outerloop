@@ -90,8 +90,18 @@ flowchart LR
     O --> X["experiment job(s) on GPU<br/>(a sweep = one array job<br/>serving ONE hypothesis)"]
     O --> WT["run -> waiting;<br/>session ENDS, holds nothing"]
     X -->|"afterany wake<br/>(+ sweep backup, deadline floor)"| RES["SAME session resumed<br/>(--resume, cross-node),<br/>results data-fenced in the wake"]
-    RES --> NEXT["analyze -> iterate, or<br/>conclude -> PR / negative result"]
+    RES --> NEXT{"round N+1?"}
+    NEXT -->|"edit + new request file<br/>(budget re-validated, CUMULATIVE)"| O
+    NEXT -->|"conclude, or budget exhausted<br/>(forced final wake)"| DONE["report -> measure -> PR<br/>or negative result"]
 ```
+
+Rounds are the loop: one persistent conversation spanning N sessions,
+each round = wake → analyze → edit → request → hibernate. Parallelism
+lives WITHIN a round (a request may be one array job — a sweep serving
+the hypothesis); sequence lives ACROSS rounds; one experiment in flight
+per run keeps budgets and wakes simple (concurrent lines = parallel runs,
+the planner's call). Bounded by cumulative gpu_hours_per_run (exhaustion
+forces a concluding wake), the run deadline, and the wake-attempt cap.
 
 Division of labor: the **author** designs the experiment; the
 **orchestrator** launches and meters it (budget enforcement must live where
