@@ -231,7 +231,7 @@ def verify(
     findings = [
         Finding(
             file=sanitize(str(item.get("file", "")), 200),
-            line=item["line"] if isinstance(item.get("line"), int) else None,
+            line=item["line"] if type(item.get("line")) is int else None,
             confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
             summary=sanitize(
                 f"[{item.get('category', 'other')}] {item.get('summary', '')}",

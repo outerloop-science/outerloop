@@ -62,7 +62,11 @@ def gather_ruler(
 ) -> tuple[tuple[str, str], ...]:
     """Fetch ruler source from the BASE branch: resolved eval modules first,
     then test files (the tripwires). Best-effort and bounded — a degraded
-    verification beats none."""
+    verification beats none. Layout assumptions, stated honestly: eval
+    modules resolve src-layout-or-flat; tripwires come from a TOP-LEVEL
+    tests/ directory, non-recursive. Repos with nested or renamed test
+    trees get module context only — the system prompt tells the model to
+    note missing ruler source rather than guess."""
     out: list[tuple[str, str]] = []
     try:
         for path in _ruler_paths(contract_text):  # already capped at module budget
