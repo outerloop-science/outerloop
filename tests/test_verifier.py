@@ -91,8 +91,11 @@ def test_verify_tags_findings_with_category_and_sanitizes() -> None:
     result = verify(make_pr(), completer, BOT, contract_text="c")
     assert len(result.findings) == 1
     finding = result.findings[0]
-    assert finding.summary.startswith("[harness-exploitation]")
+    assert finding.category == "harness-exploitation"
     assert "\n" not in finding.summary  # sanitize collapsed the newline
+    # the category rides in the trailing reference, not as a robotic prefix
+    body = format_verify_comment(result)
+    assert body is not None and "confidence, harness-exploitation)" in body
     system, _prompt = completer.calls[0]
     assert "harness-exploitation" in system and "silence is not an endorsement" in system
 

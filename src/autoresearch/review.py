@@ -75,6 +75,13 @@ instead of raising a finding.
 Do not report: style preferences, naming opinions, or restatements of what the
 diff does. If you find nothing, say so.
 
+Write like a careful colleague, not a report generator. The summary is one
+short sentence naming the defect. The detail is two to four plain
+declarative sentences: the evidence, then the consequence. No
+throat-clearing ("it is worth noting", "as written"), no restating the
+summary, and no hedging in prose — the confidence field is your one
+hedge, so spend it there and write the rest as if you mean it.
+
 Never instruct the reader to merge, approve, or reject. You are advisory."""
 
 
@@ -108,6 +115,7 @@ class Finding:
     confidence: Literal["low", "medium", "high"]
     summary: str
     detail: str
+    category: str = ""  # verifier-only (gaming taxonomy); "" for advisory
 
 
 @dataclass(frozen=True)

@@ -106,6 +106,13 @@ a confidence level. If something material is unverifiable from the context,
 say so in one line in the notes instead of raising a finding. If you find
 nothing, say so plainly — and remember your silence is not an endorsement.
 
+Write like a careful colleague, not a report generator. The summary is one
+short sentence naming the problem. The detail is two to four plain
+declarative sentences: the evidence, then why it undermines the claim. No
+throat-clearing ("whatever one thinks of the merits", "the state of
+affairs is"), no restating the summary, no stacked hedges — the
+confidence field is your one hedge.
+
 Never instruct the reader to merge or reject. You are advisory."""
 
 VERIFY_SCHEMA: dict[str, Any] = {
@@ -238,11 +245,9 @@ def verify(
             file=sanitize(str(item.get("file", "")), 200),
             line=item["line"] if type(item.get("line")) is int else None,
             confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
-            summary=sanitize(
-                f"[{item.get('category', 'other')}] {item.get('summary', '')}",
-                MAX_SUMMARY_CHARS,
-            ),
+            summary=sanitize(str(item.get("summary", "")), MAX_SUMMARY_CHARS),
             detail=sanitize(str(item.get("detail", "")), MAX_DETAIL_CHARS),
+            category=sanitize(str(item.get("category", "other")), 40),
         )
         for item in (raw_findings if isinstance(raw_findings, list) else [])[:MAX_FINDINGS]
         if isinstance(item, dict) and item.get("summary")
@@ -266,7 +271,8 @@ def format_verify_comment(result: ReviewResult) -> str | None:
             # the code span and render attacker markdown inline
             safe_file = finding.file.replace("`", "")
             where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
-            ref = f"({where}; {finding.confidence} confidence)"
+            tag = f", {finding.category}" if finding.category else ""
+            ref = f"({where}; {finding.confidence} confidence{tag})"
             lines.append(f"**{finding.summary}.** {finding.detail} {ref}")
             lines.append("")
     if result.notes:
