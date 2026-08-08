@@ -129,9 +129,16 @@ def main() -> int:
         if verify_skip_reason(pr, bot_login) is None:
             base = pr_data.get("base")
             base_ref = str(base.get("ref", "")) if isinstance(base, dict) else ""
-            contract_text = (
-                client.get_file_content(repo, ".autoresearch.yaml", base_ref or "HEAD") or ""
-            )
+            # Best-effort like the ruler: a transient failure here must
+            # degrade the round (empty contract, model notes the gap), not
+            # silently lose it to the outer handler.
+            try:
+                contract_text = (
+                    client.get_file_content(repo, ".autoresearch.yaml", base_ref or "HEAD") or ""
+                )
+            except EXPECTED_FAILURES as exc:
+                log.warning("verifying without the contract: %s", exc)
+                contract_text = ""
             ruler = gather_ruler(client, repo, base_ref or "HEAD", contract_text)
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         completer = AnthropicCompleter(

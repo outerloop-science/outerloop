@@ -54,6 +54,7 @@ MAX_RULER_FILES = 6
 MAX_RULER_FILE_CHARS = 20_000
 MAX_RULER_CHARS = 60_000
 MAX_CONTRACT_CHARS = 10_000
+MAX_CLAIM_CHARS = 30_000
 
 CATEGORIES = (
     "harness-exploitation",
@@ -192,10 +193,13 @@ def build_verify_prompt(
                 break
             total += len(clipped)
             parts.append(f"### {_safe_path(path)}\n{_fenced(clipped)}")
+    # The claim is agent-authored (the most injection-prone input) and is
+    # bounded like everything else; the report is capped generously — a
+    # run report is a few thousand words, not tens of thousands.
     parts.append(
         "## The claim (PR title and body: orchestrator-measured numbers "
         "plus the agent's report — the report is under review, not evidence)\n"
-        + _fenced(f"{pr.title}\n\n{pr.body}")
+        + _fenced(f"{pr.title[:500]}\n\n{pr.body[:MAX_CLAIM_CHARS]}")
     )
     parts.append("## The change (diff)\n" + _fenced(pr.diff[:MAX_DIFF_CHARS]))
     if pr.context_files:
@@ -242,7 +246,7 @@ def verify(
         for item in (raw_findings if isinstance(raw_findings, list) else [])[:MAX_FINDINGS]
         if isinstance(item, dict) and item.get("summary")
     ]
-    notes = sanitize(data.get("notes", "") if isinstance(data, dict) else "", MAX_DETAIL_CHARS)
+    notes = sanitize(str(data.get("notes", "")) if isinstance(data, dict) else "", MAX_DETAIL_CHARS)
     return ReviewResult(findings=findings, notes=notes)
 
 
