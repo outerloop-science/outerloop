@@ -112,7 +112,9 @@ class FakeReviewClient:
         return list(self.posted)
 
     def comment(self, repo: str, number: int, body: str) -> None:
-        self.posted.append({"body": body, "user": {"type": "Bot"}})
+        # deliberately type User: round counting must be identity-agnostic
+        # (self-hosters post reviews with machine-user PATs)
+        self.posted.append({"body": body, "user": {"type": "User"}})
 
 
 def _cli_env(monkeypatch) -> None:
@@ -279,7 +281,10 @@ def test_quote_replies_do_not_inflate_round_count(monkeypatch) -> None:
     from autoresearch.review import MARKER, ReviewResult
 
     fake_client = FakeReviewClient()
-    fake_client.posted.append({"body": f"quoting: {MARKER}", "user": {"type": "User"}})
+    # a real quote-reply: every quoted line is prefixed, marker not at start
+    fake_client.posted.append(
+        {"body": f"> {MARKER}\n> old finding\n\nmy reply", "user": {"type": "User"}}
+    )
     monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
     monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
     monkeypatch.setattr(

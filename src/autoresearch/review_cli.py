@@ -154,9 +154,11 @@ def main() -> int:
             prior = [
                 str(c.get("body", ""))
                 for c in client.list_comments(repo, number)
-                # bot-authored only: a human quote-reply copies the marker
-                if MARKER in str(c.get("body", ""))
-                and str((c.get("user") or {}).get("type", "")).casefold() == "bot"
+                # STARTS WITH the marker: a quote-reply prefixes every line
+                # with "> ", so it cannot match — and this stays true for
+                # any posting identity (Actions token, GitHub App, or a
+                # self-hoster's machine-user PAT, which posts as type User)
+                if str(c.get("body", "")).lstrip().startswith(MARKER)
             ]
             round_label = f"**Round {len(prior) + 1}**"
             if head_sha and any(f"reviewed head `{head_sha}`" in b for b in prior):
