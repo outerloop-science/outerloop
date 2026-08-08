@@ -383,6 +383,12 @@ def main() -> int:
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--bot-login", default="agentic-learning-bot")
+    parser.add_argument(
+        "--job-minutes",
+        type=int,
+        default=0,
+        help="this job's Slurm walltime; arms the self-deadline (0 = off)",
+    )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
         "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
@@ -396,23 +402,45 @@ def main() -> int:
 
     api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
-    outcome = respond_once(
-        args.run_root,
-        args.run_id,
-        harness=ClaudeCodeHarness(
-            api_key=api_key,
-            binary=args.claude_bin,
-            model=args.model,
-            max_turns=args.max_turns,
-            container_image=args.image,
-        ),
-        evaluator=SubprocessEvaluator(container_image=args.image),
-        github=GitHubClient(auth=bot_auth),
-        bot_login=args.bot_login,
-        now=time.time(),
-        secrets=(api_key, bot_auth.token()),
-        created=datetime.now(UTC).isoformat(),
-    )
+
+    # Same self-deadline as the climb: Slurm never signals this process,
+    # so walltime deaths must be our own clock's job. respond_once contains
+    # exceptions per-lane, and its lease/cursor rules keep a Terminated
+    # ending honest (cursors un-advanced on failure -> the next tick retries).
+    import signal as _signal
+
+    from autoresearch.climb import arm_self_deadline
+
+    armed = arm_self_deadline(args.job_minutes)
+    if armed:
+        log.info("self-deadline armed: Terminated in %ds", armed)
+    try:
+        outcome = respond_once(
+            args.run_root,
+            args.run_id,
+            harness=ClaudeCodeHarness(
+                api_key=api_key,
+                binary=args.claude_bin,
+                model=args.model,
+                max_turns=args.max_turns,
+                # the session must end before its job does: bound by the
+                # walltime minus the self-deadline margin when one is known
+                timeout_s=(
+                    min(3600, max(300, args.job_minutes * 60 - 300))
+                    if args.job_minutes > 0
+                    else 3600
+                ),
+                container_image=args.image,
+            ),
+            evaluator=SubprocessEvaluator(container_image=args.image),
+            github=GitHubClient(auth=bot_auth),
+            bot_login=args.bot_login,
+            now=time.time(),
+            secrets=(api_key, bot_auth.token()),
+            created=datetime.now(UTC).isoformat(),
+        )
+    finally:
+        _signal.alarm(0)
     print(f"action={outcome.action} note={outcome.note}")
     return 0
 

@@ -1,5 +1,7 @@
 # Roadmap
 
+Kept current by whoever lands the change (maintainer rule 2026-08-08: the
+roadmap is updated in the same PR that moves it, not batched later).
 Phases ship in order; each is a reviewed PR. The reviewer role delivers value
 before any target repo has a benchmark harness; the climber needs one
 (jepa-agent roadmap phases 1–3, egolearn evals).
@@ -76,9 +78,10 @@ standing instruction they supersede — a resumed agent honors stale constraints
       --locked` → exec tick; every step best-effort (bad merges crash ticks,
       never the chain). Bot PAT on Torch + repo in the token's selection
       still owed by the maintainer before live deploy
-- [ ] Pause sentinel + lease (compare-and-swap on the state branch); heartbeat at
-      tick start; stale-lease reaping
-- [ ] `compute`: sbatch submit / squeue poll, jobs tagged + `--nice`, GPU-hour caps
+- [x] Pause sentinel, heartbeat at tick start (now with disk preflight
+      payload), stale-lease reaping (TTL + tombstone CAS)
+- [x] `compute`: sbatch submit / sacct status / cancel behind an injectable
+      runner (GPU-hour caps land with the experiment path)
 - [ ] Watchdog Action: stale-heartbeat alert issue + email escalation
 - [ ] Ops runbook: manual restart, `scancel` procedures, PAT rotation calendar
 - [ ] Transcript storage on project space with stated retention
@@ -109,8 +112,16 @@ the research repos' porting timelines; mistakes are free; adversarial testing
       self-initiated selection (least-recently-attempted, budget + cooldown
       bounded, one active run per target) all exercised; auto-merge armed by
       approval for bot PRs
-- [ ] Every run ends with a research report — hypothesis, outcome, takeaways,
-      next steps — posted to the PR or the ledger (negative results included)
+- [x] Every run ends with a research report — hypothesis, outcome, takeaways,
+      next steps — in the PR body and the run dir; requested-lane runs also
+      report to their issue on every terminal path. Hardening series merged
+      2026-08-07/08: crash containment (#43), disk preflight + scratch-first
+      caches (#44), auto-merge armed only when a human review is required
+      (#45), publish-time freshness (moved base merged + re-measured, #46),
+      killed-climb endings (SIGTERM containment + implementing sweep, #49),
+      per-repo budget shaping + self-deadline (#51). Measured on Torch
+      2026-08-08: Slurm delivers NO signal to job processes before SIGKILL —
+      the sweep and the self-deadline are the real teardown paths
 - [x] `in-review` follow-up (followup.respond_once + CLI): merge/close →
       endings; org-member comments wake the authoring session (resume, data-
       fenced, scope/drift/re-measure on changes) → reply as bot. Tick wiring,
@@ -138,12 +149,55 @@ open-ended sweep space.
 - [ ] Verification agent (scaling.md Part 2d): verifier mode on the review
       chassis — bot-PRs only, metric-gaming prompt, own capped key, and the
       silence-is-not-endorsement header. REQUIRED before any statistically-verifiable
-      target onboards
+      target onboards. The `autoresearch:review` label then routes by author:
+      human PRs → advisory reviewer, bot PRs → verifier (today an explicit
+      label on a bot PR runs the advisory reviewer as interim UX, #48)
+- [ ] Benchmark steward role (maintainer direction 2026-08-08): a separate
+      agent identity whose objective is benchmark DISCRIMINATIVE POWER
+      (headroom, solvability, reproducible baselines), never solver score;
+      goal moves only as vetoable plan issues under the agent-unwritable
+      `vision:`, enacted only by human-merged contract PRs; the verifier is
+      the anti-collusion backstop. First work orders, from the agents' own
+      reports: probe v2 (trivially saturable — degree-2 features hit 1.000
+      against the frozen <0.8 band) and a timing-noise floor policy for
+      speedup (±5% machine noise)
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met
 - [ ] egolearn as second research target; second harness backend if volume warrants
 - [ ] API model tiering informed by pilot data; cloud burst if queues block
+
+## Meta: benchmarking autoresearch itself (maintainer direction 2026-08-08)
+
+Sequencing agreed loose — no deadline pressure; item 5 explicitly last.
+Distinction to preserve: the PILOT is the integration canary (system
+feasibility under realistic attachment — foreign repo, real GitHub/Slurm
+friction; stays a separate repo forever), while the META-BENCHMARK is the
+capability instrument (does the decision core improve?) and lives inside
+this ecosystem so the battery versions in lockstep with the loop.
+
+1. [ ] Public-surface security audit before ANY repo with our workflows goes
+       public — `pull_request_target` + secrets + fork PRs is the classic
+       exfiltration shape; also: external code never executes on lab
+       hardware, and RELEASING gains a hostile-interaction section
+       (design doc: design/public-surface.md, to be written)
+2. [ ] GitHub simulator + meta-benchmark battery (design/meta.md, to be
+       written): tier (a) all-fake (injectable transport, local bare repos,
+       programmatic tick driver — CI-runnable orchestration correctness);
+       tier (b) sim GitHub + REAL Slurm/sessions for capability tasks (e.g.
+       find a better optimizer on a speedrun snapshot). Battery = frozen
+       (repo snapshot, contract, baseline) instances; loop changes run A/B
+       against the incumbent with paired repetitions (LLM variance dominates
+       single runs); metrics incl. time-to-first-improvement, improvement
+       per dollar/GPU-hour, integrity-veto honesty (seeded gaming must be
+       caught)
+3. [ ] Progress webpage: static generator over git state (leader.json
+       history, reports, plan issues) — charts, run timelines; no server
+4. [ ] Benchmark steward live on the pilot (phase-7 entry above)
+5. [ ] Self-improvement in the sim (LAST, explicitly unhurried): the live
+       self-target ban stays absolute; inside the simulator the target is a
+       snapshot of autoresearch and the eval is the battery score;
+       improvements return only as human-reviewed development PRs
 
 ## Beyond 1.0 — external-facing (design: design/external.md)
 

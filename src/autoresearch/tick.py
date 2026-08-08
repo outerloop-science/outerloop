@@ -33,6 +33,7 @@ from autoresearch.compute import (
     quote_command,
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
+from autoresearch.limits import EffectiveLimits, effective_limits
 from autoresearch.runstate import (
     ABORTED,
     ENDED,
@@ -196,6 +197,8 @@ def service_in_review(
                 spec.image,
                 "--bot-login",
                 spec.bot_login,
+                "--job-minutes",
+                str(spec.time_minutes),
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
@@ -607,35 +610,61 @@ def tick(
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
     if github is not None and followup_spec is not None:
-        ended, submitted = service_in_review(
-            root,
-            github,
-            compute,
-            followup_spec,
-            now,
-            dry_run=followup_dry_run,
-            allow_submit=launch_ok,
-        )
-        intake_job = (
-            service_intake(root, github, compute, followup_spec, now, dry_run=followup_dry_run)
-            if launch_ok
-            else None
-        )
-        self_job = None
-        if launch_ok and intake_job is None and followup_spec.target:
+        # ONE contract fetch per tick feeds every lane: the requested and
+        # self-initiated lanes need its benchmarks, and all three lanes now
+        # take their session/job limits from its budgets — clamped by our
+        # ceilings (limits.py), so a target shapes spend, never raises it.
+        # A failed fetch leaves in-review servicing running on defaults;
+        # the launch lanes need the contract and sit out this tick.
+        contract = None
+        if followup_spec.target:
             try:
                 from autoresearch.contract import load_contract
 
                 raw = github.get_file_content(followup_spec.target, ".autoresearch.yaml", "main")
                 if raw is not None:
-                    self_job = service_self_initiated(
-                        root,
-                        compute,
-                        followup_spec,
-                        load_contract(raw, followup_spec.target),
-                        now,
-                        dry_run=followup_dry_run,
-                    )
+                    contract = load_contract(raw, followup_spec.target)
+            except Exception as exc:
+                log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
+        limits = effective_limits(contract.budgets if contract is not None else None)
+        # The contract's followup walltime only overrides when EXPLICITLY
+        # set — and only DOWNWARD from the operator's spec value: strictly-
+        # downward shaping must hold against operator config too, not just
+        # against the module defaults.
+        spec = followup_spec
+        if contract is not None and contract.budgets.followup_job_minutes is not None:
+            spec = replace(
+                followup_spec,
+                time_minutes=min(followup_spec.time_minutes, limits.followup_job_minutes),
+            )
+        ended, submitted = service_in_review(
+            root,
+            github,
+            compute,
+            spec,
+            now,
+            dry_run=followup_dry_run,
+            allow_submit=launch_ok,
+        )
+        intake_job = (
+            service_intake(
+                root, github, compute, spec, now, contract, limits, dry_run=followup_dry_run
+            )
+            if launch_ok and contract is not None
+            else None
+        )
+        self_job = None
+        if launch_ok and intake_job is None and contract is not None:
+            try:
+                self_job = service_self_initiated(
+                    root,
+                    compute,
+                    spec,
+                    contract,
+                    now,
+                    limits=limits,
+                    dry_run=followup_dry_run,
+                )
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
         report = replace_report(
@@ -747,12 +776,27 @@ def clear_pending(root: Path, target: str) -> None:
     _pending_path(root, target).unlink(missing_ok=True)
 
 
+def _climb_limit_argv(limits: EffectiveLimits) -> list[str]:
+    """Climb-CLI flags carrying the tick-resolved limits: the job's own
+    walltime rides along so the climb can arm its self-deadline (Slurm
+    delivers no signals to our processes on Torch — measured 2026-08-08)."""
+    return [
+        "--max-turns",
+        str(limits.session_max_turns),
+        "--session-minutes",
+        str(limits.session_minutes),
+        "--job-minutes",
+        str(limits.climb_job_minutes),
+    ]
+
+
 def service_self_initiated(
     root: Path,
     compute: SlurmCompute,
     spec: FollowupSpec,
     contract: Any,
     now: float,
+    limits: EffectiveLimits | None = None,
     dry_run: bool = False,
 ) -> tuple[str, str] | None:
     """The default background mode: when nothing else needs doing, climb the
@@ -762,6 +806,7 @@ def service_self_initiated(
     `compute.submit` and the climb job writing its run record — without it,
     every tick during Slurm queue latency would launch a duplicate climb.
     """
+    limits = limits if limits is not None else effective_limits(getattr(contract, "budgets", None))
     try:
         records = list_runs(root)
         pending = read_pending(root, spec.target)
@@ -802,6 +847,7 @@ def service_self_initiated(
             str(spec.run_root),
             "--image",
             spec.image,
+            *_climb_limit_argv(limits),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -812,7 +858,7 @@ def service_self_initiated(
                 job_name=f"climb-{benchmark}"[:60],
                 account=spec.account,
                 partition=spec.partition,
-                time_minutes=90,
+                time_minutes=limits.climb_job_minutes,
                 command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
                 cpus=4,
                 mem="8G",
@@ -832,12 +878,15 @@ def service_intake(
     compute: SlurmCompute,
     spec: FollowupSpec,
     now: float,
+    contract: Any = None,
+    limits: EffectiveLimits | None = None,
     dry_run: bool = False,
 ) -> tuple[str, str] | None:
     """The requested lane: claim at most ONE qualifying issue per tick and
     submit a climb job for it. The claim comment (posted by the climb job
     before its session) marks an issue taken; one-per-tick keeps a burst of
-    issues from bursting the budget."""
+    issues from bursting the budget. The contract arrives from the tick's
+    single per-target fetch; None (fetch failed) sits the lane out."""
     from autoresearch.contract import load_contract
     from autoresearch.intake import issue_hypothesis, pick_issue
 
@@ -845,10 +894,12 @@ def service_intake(
     if not target:
         return None
     try:
-        contract_raw = github.get_file_content(target, ".autoresearch.yaml", "main")
-        if contract_raw is None:
-            return None
-        contract = load_contract(contract_raw, target)
+        if contract is None:
+            contract_raw = github.get_file_content(target, ".autoresearch.yaml", "main")
+            if contract_raw is None:
+                return None
+            contract = load_contract(contract_raw, target)
+        limits = limits if limits is not None else effective_limits(contract.budgets)
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
@@ -885,6 +936,7 @@ def service_intake(
             str(task.number),
             "--hypothesis-b64",
             hypothesis_b64,
+            *_climb_limit_argv(limits),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -895,7 +947,7 @@ def service_intake(
                 job_name=f"climb-issue-{task.number}",
                 account=spec.account,
                 partition=spec.partition,
-                time_minutes=90,
+                time_minutes=limits.climb_job_minutes,
                 command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
                 cpus=4,
                 mem="8G",

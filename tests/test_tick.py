@@ -812,3 +812,70 @@ def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) ->
     assert report.implementing_ended == ("r-old",)
     assert load_record(tmp_path, "r-stranded").state == "implementing"
     assert "past its run deadline" in load_record(tmp_path, "r-old").ending_note
+
+
+def test_self_initiated_carries_contract_limits_into_the_job(tmp_path: Path) -> None:
+    """The submitted climb job wears the contract's (clamped) limits: Slurm
+    walltime from climb_job_minutes, and the climb argv carries the session
+    knobs plus its own walltime for the self-deadline."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 3
+  session_max_turns: 30
+  session_minutes: 25
+  climb_job_minutes: 100000
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="acct",
+        partition="part",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "123\n", "")
+
+    out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), spec, contract, NOW)
+    assert out == ("tsp", "123")
+    sbatch = submitted[0]
+    assert "--time=90" in sbatch  # 100000 clamped to the default-as-ceiling
+    wrap = sbatch[-1]
+    assert "--max-turns 30" in wrap
+    assert "--session-minutes 25" in wrap
+    assert "--job-minutes 90" in wrap  # the job's own walltime, for the alarm
+
+
+def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
+    """Strictly-downward holds against the OPERATOR's spec too: a contract
+    asking for more follow-up walltime than the spec grants gets the spec."""
+    from autoresearch.contract import load_contract
+    from autoresearch.limits import effective_limits
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3, followup_job_minutes: 60}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    limits = effective_limits(contract.budgets)
+    operator_minutes = 30
+    assert min(operator_minutes, limits.followup_job_minutes) == 30

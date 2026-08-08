@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -552,6 +553,57 @@ class Terminated(Exception):
     the KillWait grace window before SIGKILL arrives."""
 
 
+# Below this, arming is pointless: the alarm would fire during setup,
+# outside containment, and a job this short cannot finish a climb anyway.
+MIN_ARM_S = 180
+
+
+def arm_self_deadline(job_minutes: int, margin_s: float = 120.0) -> int:
+    """Arm our own end-of-walltime alarm; returns the armed seconds (0 = off).
+
+    Slurm delivers NO signal to our process on Torch before SIGKILL
+    (measured 2026-08-08: scancel and walltime timeout both signal the
+    batch shell only) — so the only way to end a run richly before the
+    wall is our own clock. SIGALRM fires `margin_s` before the job's
+    walltime and raises Terminated into the ordinary containment; the
+    margin floor covers the containment's own tail (GitHub calls are 30s
+    timeout x retries). The walltime clock starts at JOB start, not
+    process start — SLURM_JOB_START_TIME anchors the deadline when
+    present so startup latency erodes the runway, never the margin.
+    """
+    if job_minutes <= 0:
+        return 0
+    import signal
+    import time as _time
+
+    margin = max(60.0, margin_s)
+    now = _time.time()
+    start_raw = os.environ.get("SLURM_JOB_START_TIME", "")
+    # Sanity-bounded: the env can carry a STALE value inherited from the
+    # submitting job (tick jobs sbatch climb jobs). A start time outside
+    # [now - walltime, now] is not this job's — fall back to the process
+    # clock rather than silently disarm (past) or overshoot the wall
+    # (future).
+    if start_raw.isdigit() and now - job_minutes * 60 <= int(start_raw) <= now:
+        remaining = int(int(start_raw) + job_minutes * 60 - margin - now)
+    else:
+        remaining = int(job_minutes * 60 - margin)
+    if remaining < MIN_ARM_S:
+        log.warning(
+            "self-deadline NOT armed: %ds runway is below the %ds floor", remaining, MIN_ARM_S
+        )
+        return 0
+
+    def _on_alarm(signum: int, frame: object) -> None:
+        raise Terminated(
+            f"self-deadline: {margin:.0f}s before the job's {job_minutes}-minute walltime"
+        )
+
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(remaining)
+    return remaining
+
+
 def arm_sigterm_containment() -> None:
     """Convert the FIRST SIGTERM into a Terminated exception, one-shot.
 
@@ -597,6 +649,19 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument("--max-turns", type=int, default=60)
+    parser.add_argument("--session-minutes", type=int, default=60)
+    parser.add_argument(
+        "--job-minutes",
+        type=int,
+        default=0,
+        help="this job's Slurm walltime; arms the self-deadline (0 = off)",
+    )
+    parser.add_argument(
+        "--deadline-margin-s",
+        type=float,
+        default=120.0,
+        help="how long before the walltime the self-deadline fires (floor 60)",
+    )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
         "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
@@ -644,30 +709,50 @@ def main() -> int:
             )
         return 3
 
-    outcome = live_climb(
-        config=ClimbConfig(target=args.target, benchmark=args.benchmark),
-        run_root=args.run_root,
-        run_id=run_id,
-        harness=ClaudeCodeHarness(
-            api_key=api_key,
-            binary=args.claude_bin,
-            model=args.model,
-            max_turns=args.max_turns,
-            container_image=args.image,
-        ),
-        evaluator=SubprocessEvaluator(container_image=args.image),
-        github=GitHubClient(auth=bot_auth),
-        bot_auth=bot_auth,
-        now=time.time(),
-        created=datetime.now(UTC).isoformat(),
-        secrets=(api_key, bot_auth.token()),
-        issue_number=args.issue,
-        task_hypothesis=(
-            __import__("base64").b64decode(args.hypothesis_b64).decode()
-            if args.hypothesis_b64
-            else ""
-        ),
-    )
+    # Armed LAST, immediately before the contained region — and DISARMED
+    # right after it: a run finishing inside the margin must not have the
+    # alarm fire during the uncontained epilogue (print/exit).
+    import signal as _signal
+
+    armed = arm_self_deadline(args.job_minutes, args.deadline_margin_s)
+    if armed:
+        log.info("self-deadline armed: Terminated in %ds", armed)
+
+    try:
+        try:
+            outcome = live_climb(
+                config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+                run_root=args.run_root,
+                run_id=run_id,
+                harness=ClaudeCodeHarness(
+                    api_key=api_key,
+                    binary=args.claude_bin,
+                    model=args.model,
+                    max_turns=args.max_turns,
+                    timeout_s=args.session_minutes * 60,
+                    container_image=args.image,
+                ),
+                evaluator=SubprocessEvaluator(container_image=args.image),
+                github=GitHubClient(auth=bot_auth),
+                bot_auth=bot_auth,
+                now=time.time(),
+                created=datetime.now(UTC).isoformat(),
+                secrets=(api_key, bot_auth.token()),
+                issue_number=args.issue,
+                task_hypothesis=(
+                    __import__("base64").b64decode(args.hypothesis_b64).decode()
+                    if args.hypothesis_b64
+                    else ""
+                ),
+            )
+        except Terminated as exc:
+            # Fired in live_climb's microseconds-wide pre-containment window:
+            # any record it saved strands and the sweep ends it from Slurm
+            # truth; here we only avoid dying as an unexplained traceback.
+            log.error("self-deadline fired before containment: %s", exc)
+            return 3
+    finally:
+        _signal.alarm(0)
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0
 

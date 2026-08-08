@@ -929,3 +929,78 @@ def test_climb_job_id_is_stamped_from_slurm_env(tmp_path, target_repo, monkeypat
         run_id="tsp-jid",
     )
     assert load_record(tmp_path / "state", "tsp-jid").climb_job_id == "4242"
+
+
+def test_self_deadline_arms_before_the_walltime(monkeypatch) -> None:
+    """The alarm fires margin seconds before the job's walltime — our only
+    pre-kill warning on clusters that never signal our process. Hermetic:
+    inside a real allocation SLURM_JOB_START_TIME would change the math."""
+    import signal
+
+    from autoresearch.climb import arm_self_deadline
+
+    monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        armed = arm_self_deadline(90, margin_s=120.0)
+        assert armed == 90 * 60 - 120
+        assert signal.alarm(0) > 0  # a real alarm was pending
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
+
+
+def test_self_deadline_anchors_on_slurm_job_start(monkeypatch) -> None:
+    """With SLURM_JOB_START_TIME set, startup latency erodes the runway,
+    never the margin: a job already 10 minutes in arms 10 minutes less."""
+    import signal
+    import time
+
+    from autoresearch.climb import arm_self_deadline
+
+    monkeypatch.setenv("SLURM_JOB_START_TIME", str(int(time.time()) - 600))
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        armed = arm_self_deadline(90, margin_s=120.0)
+        assert abs(armed - (90 * 60 - 600 - 120)) <= 2
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
+
+
+def test_self_deadline_margin_floor_and_off_switch(monkeypatch) -> None:
+    import signal
+
+    from autoresearch.climb import MIN_ARM_S, arm_self_deadline
+
+    monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        assert arm_self_deadline(0) == 0  # off
+        assert arm_self_deadline(1, margin_s=1.0) == 0  # walltime <= floored margin
+        assert arm_self_deadline(3, margin_s=1.0) == 0  # 120s runway < 180s floor
+        armed = arm_self_deadline(10, margin_s=1.0)
+        assert armed == 10 * 60 - 60 and armed >= MIN_ARM_S  # margin floor 60
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
+
+
+def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
+    import signal
+
+    import pytest
+
+    from autoresearch.climb import Terminated, arm_self_deadline
+
+    monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
+    original = signal.getsignal(signal.SIGALRM)
+    try:
+        arm_self_deadline(90)
+        handler = signal.getsignal(signal.SIGALRM)
+        assert callable(handler)
+        with pytest.raises(Terminated, match="self-deadline"):
+            handler(signal.SIGALRM, None)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)

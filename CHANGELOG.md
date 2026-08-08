@@ -39,6 +39,21 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Per-repo budget shaping: a contract's `budgets:` may now set
+  `session_max_turns`, `session_minutes`, `climb_job_minutes`, and
+  `followup_job_minutes`. Contracts are untrusted, so every value is
+  clamped into orchestrator-side [floor, ceiling] bounds (`limits` module)
+  with CEILING == DEFAULT — contracts are merged by target-repo
+  maintainers, so the knobs shape strictly downward; raising a budget is
+  orchestrator-side config — and the session is shrunk to fit inside its
+  job. The tick fetches the contract
+  once per cycle and threads the limits through all three launch lanes.
+- Self-deadline: climbs arm a SIGALRM at walltime-minus-margin (default
+  120s, floor 60s, `--deadline-margin-s`) raising into the ordinary
+  containment — the only pre-kill warning on clusters that deliver no
+  signals to job processes (measured on Torch 2026-08-08). The tick passes
+  each climb its own walltime via `--job-minutes`.
+
 - The advisory reviewer posts one comment PER ROUND (numbered, stamped
   with the reviewed head SHA) instead of editing a single thread: under
   review-until-quiet, humans must see each round — comment edits fire no
@@ -46,12 +61,15 @@ Versions follow [SemVer](https://semver.org).
   against synchronize-era spam; runs are now open- or label-triggered
   only.
 
-- Killed climbs now reach a recorded ending: SIGTERM (walltime, preemption,
-  scancel) raises into the climb's ordinary containment inside the KillWait
-  grace, the record stores the climb's own Slurm job id, and a new sweep
-  pass ends `implementing` records whose job is terminal — Slurm truth
-  plus grace, outage never reads as dead. Previously only crashes (Python
-  exceptions) were contained; kills stranded the record forever.
+- Killed climbs now reach a recorded ending: the record stores the climb's
+  own Slurm job id and a new sweep pass ends `implementing` records whose
+  job is terminal — Slurm truth plus grace, outage never reads as dead.
+  Previously only crashes (Python exceptions) were contained; kills
+  stranded the record forever. A SIGTERM handler also raises into the
+  ordinary containment, but measurement (Torch, 2026-08-08) showed Slurm
+  delivers no signal to job processes there — on such clusters the sweep
+  and the self-deadline (below) are the real teardown paths; the handler
+  covers direct kills and other sites.
 
 - Adding the `autoresearch:review` label now runs a review on bot-authored
   PRs too: the labeling EVENT (not the label sitting on the PR — re-request
