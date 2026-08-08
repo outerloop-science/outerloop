@@ -79,6 +79,35 @@ their issue. Killed jobs (no signal on some clusters) are ended by the
 sweep from Slurm truth, with the self-deadline providing rich endings ahead
 of walltime.
 
+## Experiments and hibernation (GPU targets; mechanisms live, glue pending)
+
+On GPU-bearing targets the diagram grows a detour between the session and
+the candidate measurement — the runs-span-sessions model:
+
+```mermaid
+flowchart LR
+    A["author session:<br/>writes code + experiment spec"] --> O["orchestrator validates vs<br/>gpu_hours_per_run, SUBMITS<br/>(sessions cannot sbatch:<br/>no Slurm in the container)"]
+    O --> X["experiment job(s) on GPU<br/>(a sweep = one array job<br/>serving ONE hypothesis)"]
+    O --> WT["run -> waiting;<br/>session ENDS, holds nothing"]
+    X -->|"afterany wake<br/>(+ sweep backup, deadline floor)"| RES["SAME session resumed<br/>(--resume, cross-node),<br/>results data-fenced in the wake"]
+    RES --> NEXT["analyze -> iterate, or<br/>conclude -> PR / negative result"]
+```
+
+Division of labor: the **author** designs the experiment; the
+**orchestrator** launches and meters it (budget enforcement must live where
+the session cannot reach); the **run record** owns the job id; the
+**planner** (future) owns which experiments are worth their GPU-hours — the
+smoke → small → large ladder, large runs earned by pre-registered
+small-tier results (scaling.md). Sessions never hold GPUs: hibernation is
+the difference between a hypothesis costing days of wall-clock and days of
+compute.
+
+Status: the mechanisms are live-verified (waiting state, afterany wake on
+any termination, deadlines, resume across nodes, wake prompts) but the
+launch glue — spec validation, GPU-hour accounting, the real wake
+dispatcher — is pending; it gates the first GPU target alongside the
+verifier.
+
 ## Review routing: which reviewer reads what
 
 ```mermaid
