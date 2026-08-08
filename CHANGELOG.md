@@ -39,11 +39,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
-- The `autoresearch:review` label now works on bot-authored PRs too: a
-  maintainer-added label is an explicit ask and overrides the automatic
-  bot-author skip (which exists to prevent echo chambers, not to refuse
-  humans). The opt-out label still wins over contradictory signals. When
-  the verifier ships, the same gesture will route bot PRs to it instead.
+- Adding the `autoresearch:review` label now runs a review on bot-authored
+  PRs too: the labeling EVENT (not the label sitting on the PR — re-request
+  by removing and re-adding, same as on human PRs) is an explicit ask and
+  overrides the automatic bot-author skip, which exists to prevent echo
+  chambers, not to refuse humans. The opt-out label still wins over
+  contradictory signals. When the verifier ships, the same gesture will
+  route bot PRs to it instead.
 
 - Review-until-quiet merge gate documented (CONTRIBUTING, CLAUDE.md):
   development PRs iterate advisory-review rounds with a judged termination

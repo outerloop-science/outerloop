@@ -93,8 +93,9 @@ jobs:
           # override requires the SPECIFIC re-request label (any-label would
           # defeat the bot-skip via unrelated triage labels, even though
           # callers also gate at the job level — defense in depth) and a
-          # labeler who is NOT the PR's author — the direct statement of
-          # "the author must not unlock review of its own work", robust to
-          # the bot acting through an app token or a second account.
+          # labeler who is NOT the PR's author — "the author must not
+          # unlock review of its own work". Scope honestly stated: other
+          # accounts with triage access are trusted per GitHub's own
+          # permission model; this guard only stops self-unlocking.
           REVIEW_EXPLICIT_REQUEST: ${{ github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review' && github.event.sender.login != github.event.pull_request.user.login }}
         run: uv run --extra review python -m autoresearch.review_cli
