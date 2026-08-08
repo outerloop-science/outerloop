@@ -1,0 +1,85 @@
+# Reusable verification workflow: integrity reads of BOT-authored PRs (the
+# advisory reviewer's mirror — see docs/design/roles.md). Same constitution:
+# checks out the verifier code, never the PR head; never fails the caller's
+# CI; never runs with secrets on a fork PR; silence is not endorsement.
+name: verification-review
+
+on:
+  workflow_call:
+    inputs:
+      bot_login:
+        description: Login of your bot account — ONLY its PRs are verified. Required.
+        type: string
+        required: true
+      verifier_repo:
+        description: Repo holding the verifier (change this if you forked).
+        type: string
+        required: false
+        default: agentic-learning-ai-lab/autoresearch
+      verifier_ref:
+        description: Ref of the verifier to run. Pin to a tag or SHA in production.
+        type: string
+        required: false
+        default: main
+      model:
+        type: string
+        required: false
+        default: claude-opus-5
+      effort:
+        type: string
+        required: false
+        default: high
+    secrets:
+      verifier_api_key:
+        description: >-
+          The verifier's OWN spend-capped key — never the reviewer's, so one
+          role's budget or compromise cannot silently spend as the other.
+        required: true
+      checkout_ssh_key:
+        description: >-
+          Read-only deploy key for the verifier repo, only while it is
+          private; omit once public.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: verification-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # Fork PRs must not reach the secret; and this role covers the BOT's
+    # PRs only (human PRs belong to the advisory reviewer).
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == inputs.bot_login
+    steps:
+      # Checks out the VERIFIER, never the pull request's code. Nothing
+      # from the PR is executed at any point.
+      - name: Check out the verifier
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.verifier_repo }}
+          ref: ${{ inputs.verifier_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Run verification
+        working-directory: .autoresearch
+        env:
+          ANTHROPIC_VERIFIER_KEY: ${{ secrets.verifier_api_key }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          VERIFY_MODEL: ${{ inputs.model }}
+          VERIFY_EFFORT: ${{ inputs.effort }}
+        run: uv run --extra review python -m autoresearch.verifier_cli

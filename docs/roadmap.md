@@ -146,12 +146,13 @@ open-ended sweep space.
 
 ## Phase 7 — Research targets & scale-out
 
-- [ ] Verification agent (scaling.md Part 2d): verifier mode on the review
-      chassis — bot-PRs only, metric-gaming prompt, own capped key, and the
-      silence-is-not-endorsement header. REQUIRED before any statistically-verifiable
-      target onboards. The `autoresearch:review` label then routes by author:
-      human PRs → advisory reviewer, bot PRs → verifier (today an explicit
-      label on a bot PR runs the advisory reviewer as interim UX, #48)
+- [x] Verification agent CODE (scaling.md Part 2d): verifier on the review
+      chassis — bot-PRs only, gaming prompt with contract + ruler source in
+      context, own capped key, silence-is-not-endorsement header; label
+      routes by author (the #48 interim advisory override is now opt-in for
+      verifier-less self-hosters). DEPLOY still pending: pilot caller
+      workflow + `VERIFIER_API_KEY` org secret (maintainer) — required
+      before any statistically-verifiable target onboards
 - [ ] Benchmark steward role (maintainer direction 2026-08-08): a separate
       agent identity whose objective is benchmark DISCRIMINATIVE POWER
       (headroom, solvability, reproducible baselines), never solver score;

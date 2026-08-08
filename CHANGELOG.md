@@ -39,6 +39,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The verifier (`verifier`, `verifier_cli`, reusable workflow
+  `verify.yml`): adversarial integrity reads of BOT-authored PRs — the
+  advisory reviewer's mirror. Gaming lens (harness exploitation,
+  ruler-fishing, leakage, overfitting, unsupported claims, measurement
+  gaps) with the contract and the frozen ruler's source fetched from the
+  BASE branch into context; findings tagged by category;
+  silence-is-not-endorsement header; its own spend-capped key
+  (`ANTHROPIC_VERIFIER_KEY`). The advisory workflow's interim
+  bot-PR-on-label override is now opt-in (`review_bot_prs_on_label`,
+  default false) for verifier-less self-hosters — with a verifier
+  deployed, the label routes bot PRs to it.
+
 - `docs/design/roles.md`: the one-page cast — every role (live, next, and
   designed) with its authority and its "may never" column, mermaid flow
   diagrams for the improvement pipeline and review routing, the
