@@ -25,13 +25,13 @@ uv run pre-commit install
   (`scripts/setup_branch_protection.sh <repo> 1`).
 - Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
 - Code PRs iterate adversarial review ROUNDS until a round finds nothing
-  new ("review until quiet", PI rule 2026-08-07). The advisory workflow runs
-  on open; after any fix commit that introduces a new mechanism (not just
-  line-comment edits), toggle the `autoresearch:review` label off/on to
-  re-run it on the current diff. Merge only after a quiet round; findings
-  rejected on rationale get a reply on the PR thread, never silence. The
-  record so far: every round on a substantive PR has found at least one
-  real defect, including in the previous round's fixes.
+  new ("review until quiet", PI rule 2026-08-07). The advisory workflow
+  runs on open; after any fix commit, toggle the `autoresearch:review`
+  label off/on to re-run it. The authorizing quiet round must be the most
+  recent round AND run against the head commit — a quiet verdict on an
+  older diff authorizes nothing. Findings rejected on rationale get a
+  reply on the PR thread, never silence. The habit exists because rounds
+  have repeatedly found real defects in earlier rounds' own fixes.
 
 ## Style
 
@@ -50,7 +50,7 @@ uv run pre-commit install
 ## Dependencies
 
 Deps go in with the code that needs them (see the comment in `pyproject.toml`);
-regenerate `uv.lock` (`uv lock`) — the `lock` check enforces it.
+regenerate `uv.lock` (`uv lock`) — the lock step of `ci` enforces it.
 
 ## Confidentiality
 
