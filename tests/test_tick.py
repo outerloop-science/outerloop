@@ -858,3 +858,24 @@ roadmap: docs/roadmap.md
     assert "--max-turns 30" in wrap
     assert "--session-minutes 25" in wrap
     assert "--job-minutes 90" in wrap  # the job's own walltime, for the alarm
+
+
+def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
+    """Strictly-downward holds against the OPERATOR's spec too: a contract
+    asking for more follow-up walltime than the spec grants gets the spec."""
+    from autoresearch.contract import load_contract
+    from autoresearch.limits import effective_limits
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3, followup_job_minutes: 60}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    limits = effective_limits(contract.budgets)
+    operator_minutes = 30
+    assert min(operator_minutes, limits.followup_job_minutes) == 30

@@ -719,31 +719,38 @@ def main() -> int:
         log.info("self-deadline armed: Terminated in %ds", armed)
 
     try:
-        outcome = live_climb(
-            config=ClimbConfig(target=args.target, benchmark=args.benchmark),
-            run_root=args.run_root,
-            run_id=run_id,
-            harness=ClaudeCodeHarness(
-                api_key=api_key,
-                binary=args.claude_bin,
-                model=args.model,
-                max_turns=args.max_turns,
-                timeout_s=args.session_minutes * 60,
-                container_image=args.image,
-            ),
-            evaluator=SubprocessEvaluator(container_image=args.image),
-            github=GitHubClient(auth=bot_auth),
-            bot_auth=bot_auth,
-            now=time.time(),
-            created=datetime.now(UTC).isoformat(),
-            secrets=(api_key, bot_auth.token()),
-            issue_number=args.issue,
-            task_hypothesis=(
-                __import__("base64").b64decode(args.hypothesis_b64).decode()
-                if args.hypothesis_b64
-                else ""
-            ),
-        )
+        try:
+            outcome = live_climb(
+                config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+                run_root=args.run_root,
+                run_id=run_id,
+                harness=ClaudeCodeHarness(
+                    api_key=api_key,
+                    binary=args.claude_bin,
+                    model=args.model,
+                    max_turns=args.max_turns,
+                    timeout_s=args.session_minutes * 60,
+                    container_image=args.image,
+                ),
+                evaluator=SubprocessEvaluator(container_image=args.image),
+                github=GitHubClient(auth=bot_auth),
+                bot_auth=bot_auth,
+                now=time.time(),
+                created=datetime.now(UTC).isoformat(),
+                secrets=(api_key, bot_auth.token()),
+                issue_number=args.issue,
+                task_hypothesis=(
+                    __import__("base64").b64decode(args.hypothesis_b64).decode()
+                    if args.hypothesis_b64
+                    else ""
+                ),
+            )
+        except Terminated as exc:
+            # Fired in live_climb's microseconds-wide pre-containment window:
+            # any record it saved strands and the sweep ends it from Slurm
+            # truth; here we only avoid dying as an unexplained traceback.
+            log.error("self-deadline fired before containment: %s", exc)
+            return 3
     finally:
         _signal.alarm(0)
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")

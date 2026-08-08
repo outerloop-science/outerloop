@@ -628,11 +628,15 @@ def tick(
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
         limits = effective_limits(contract.budgets if contract is not None else None)
         # The contract's followup walltime only overrides when EXPLICITLY
-        # set: absent, the operator-configured spec value stands (the
-        # limits default is a fallback, not a mandate).
+        # set — and only DOWNWARD from the operator's spec value: strictly-
+        # downward shaping must hold against operator config too, not just
+        # against the module defaults.
         spec = followup_spec
         if contract is not None and contract.budgets.followup_job_minutes is not None:
-            spec = replace(followup_spec, time_minutes=limits.followup_job_minutes)
+            spec = replace(
+                followup_spec,
+                time_minutes=min(followup_spec.time_minutes, limits.followup_job_minutes),
+            )
         ended, submitted = service_in_review(
             root,
             github,
