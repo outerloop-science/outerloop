@@ -366,6 +366,25 @@ class GitHubClient:
                 break
         return out
 
+    def list_directory(self, repo: str, path: str, ref: str) -> list[dict[str, Any]]:
+        """Entries of a directory at a ref ([] when absent or not a dir).
+
+        ONE request, deliberately: the contents API returns the whole
+        listing for a directory (capped ~1,000 entries) and IGNORES
+        page/per_page — a pagination loop would re-fetch the same list and
+        accumulate duplicates. Trees larger than the cap need the git
+        trees API; callers here read a handful of entries.
+        """
+        query = urllib.parse.urlencode({"ref": ref})
+        api_path = f"/repos/{urllib.parse.quote(repo)}/contents/{urllib.parse.quote(path)}?{query}"
+        try:
+            data = self._request("GET", api_path)
+        except GitHubError as exc:
+            if exc.status == 404:
+                return []
+            raise
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
     def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
         """A file's text at `ref`, or None when it can't be provided.
 

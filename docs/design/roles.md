@@ -22,7 +22,7 @@ data, not accounts: every commit is authored by the one bot account with an
 | **Author session** ("climber") | model | live | One hypothesis per run: reads the brief, edits inside the contract's scope, requests experiment batches (any size the budget covers), self-validates, writes the research report | touch the ruler (frozen evals/tests), the contract, progress files; see the PAT; publish anything itself; submit jobs directly |
 | **Follow-up responder** | model | live | The *same* author session resumed when a qualifying human comments on its open PR: replies with evidence, pushes fixes (re-measured by the orchestrator) | anything the author couldn't; resurrect an ended run |
 | **Advisory reviewer** | model | live | Adversarial *correctness* review of human/dev PRs; findings-only, sanitized, never an approval | review bot PRs automatically (echo-chamber guard); block CI; approve |
-| **Verifier** | model | next to build | Adversarial *integrity* review of bot PRs: hunts gaming (harness exploits, ruler-fishing, leakage, unsupported claims) with contract + eval code + numbers + report in context; "silence is not endorsement" header | approve; block; review human PRs |
+| **Verifier** | model | built; deploy pending | Adversarial *integrity* review of bot PRs: hunts gaming (harness exploits, ruler-fishing, leakage, unsupported claims) with contract + eval code + numbers + report in context; "silence is not endorsement" header | approve; block; review human PRs |
 | **Planner** | model | designed (scaling.md pt 1) | Owns a target's search *program*: reads leader/lessons/reports, emits vetoable plan issues motivated twice (hypothesis + economics) | enact plans (humans/veto-window do); write `vision:` |
 | **Steward** | model | designed (meta.md) | Keeps benchmarks discriminating: restores headroom, proves solvability, sets noise floors — via vetoable plan issues and human-merged env PRs | share identity/credentials/budget with any solver; be scored on solver metrics |
 | **Watchdog** | code | designed | Off-cluster heartbeat monitor: alerts when the tick chain goes quiet | act on the cluster |
@@ -189,12 +189,12 @@ their own capped budget line.
 ```mermaid
 flowchart LR
     HPR["PR by human / dev assistant"] --> AR["advisory reviewer<br/>(correctness lens)"]
-    BPR["PR by the bot"] --> VF["verifier<br/>(gaming lens) - next to build"]
-    BPR -->|"until verifier ships:<br/>explicit label only"| AR
+    BPR["PR by the bot"] --> VF["verifier<br/>(gaming lens) - deploy pending"]
+    BPR -.->|"verifier-less self-hosters only:<br/>opt-in label override"| AR
     AR --> HM{human merges}
     VF --> HM
     L["autoresearch:review label<br/>= one fresh round on the head"] --> AR
-    L -.->|"after verifier: routes by author"| VF
+    L -->|"on bot PRs (once deployed)"| VF
 ```
 
 Review-until-quiet (CONTRIBUTING) governs development PRs: rounds iterate

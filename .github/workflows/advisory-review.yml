@@ -31,6 +31,15 @@ on:
         type: string
         required: false
         default: high
+      review_bot_prs_on_label:
+        description: >-
+          Self-hosters WITHOUT a verifier deployment may set true so an
+          explicit re-request label reviews bot PRs with the advisory
+          reviewer. Leave false when the verifier is deployed — the label
+          then routes bot PRs to it instead (docs/design/roles.md).
+        type: boolean
+        required: false
+        default: false
     secrets:
       reviewer_api_key:
         required: true
@@ -90,12 +99,13 @@ jobs:
           REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_EFFORT: ${{ inputs.effort }}
           # The caller's triggering event flows through workflow_call. The
-          # override requires the SPECIFIC re-request label (any-label would
-          # defeat the bot-skip via unrelated triage labels, even though
-          # callers also gate at the job level — defense in depth) and a
-          # labeler who is NOT the PR's author — "the author must not
-          # unlock review of its own work". Scope honestly stated: other
-          # accounts with triage access are trusted per GitHub's own
-          # permission model; this guard only stops self-unlocking.
-          REVIEW_EXPLICIT_REQUEST: ${{ github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review' && github.event.sender.login != github.event.pull_request.user.login }}
+          # override requires opting in (verifier-less self-hosters only),
+          # the SPECIFIC re-request label (any-label would defeat the
+          # bot-skip via unrelated triage labels), and a labeler who is NOT
+          # the PR's author — "the author must not unlock review of its own
+          # work". Scope honestly stated: accounts with triage access are
+          # trusted per GitHub's own permission model; this guard only
+          # stops self-unlocking. With a verifier deployed, the label
+          # routes bot PRs there and this stays false.
+          REVIEW_EXPLICIT_REQUEST: ${{ inputs.review_bot_prs_on_label && github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review' && github.event.sender.login != github.event.pull_request.user.login }}
         run: uv run --extra review python -m autoresearch.review_cli

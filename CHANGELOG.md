@@ -39,6 +39,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The verifier (`verifier`, `verifier_cli`, reusable workflow
+  `verify.yml`): adversarial integrity reads of BOT-authored PRs — the
+  advisory reviewer's mirror. Gaming lens (harness exploitation,
+  ruler-fishing, leakage, overfitting, unsupported claims, measurement
+  gaps) with the contract and the frozen ruler's source fetched from the
+  BASE branch into context; findings tagged by category;
+  silence-is-not-endorsement header; its own spend-capped key
+  (`ANTHROPIC_VERIFIER_KEY`). The advisory workflow's interim
+  bot-PR-on-label override is now opt-in (`review_bot_prs_on_label`,
+  default false) for verifier-less self-hosters — with a verifier
+  deployed, the label routes bot PRs to it.
+
 - `docs/design/roles.md`: the one-page cast — every role (live, next, and
   designed) with its authority and its "may never" column, mermaid flow
   diagrams for the improvement pipeline and review routing, the
@@ -83,13 +95,13 @@ Versions follow [SemVer](https://semver.org).
   and the self-deadline (below) are the real teardown paths; the handler
   covers direct kills and other sites.
 
-- Adding the `autoresearch:review` label now runs a review on bot-authored
-  PRs too: the labeling EVENT (not the label sitting on the PR — re-request
-  by removing and re-adding, same as on human PRs) is an explicit ask and
-  overrides the automatic bot-author skip, which exists to prevent echo
-  chambers, not to refuse humans. The opt-out label still wins over
-  contradictory signals. When the verifier ships, the same gesture will
-  route bot PRs to it instead.
+- Adding the `autoresearch:review` label runs a review on bot-authored
+  PRs: the labeling EVENT (re-request by removing and re-adding, same as
+  on human PRs) is an explicit ask. Superseded within this release by the
+  verifier (below): the label now routes bot PRs to the verifier, and the
+  advisory-reviewer override became opt-in (`review_bot_prs_on_label`,
+  default false) for verifier-less self-hosters. The opt-out label still
+  wins over contradictory signals.
 
 - Review-until-quiet merge gate documented (CONTRIBUTING, CLAUDE.md):
   development PRs iterate advisory-review rounds with a judged termination
