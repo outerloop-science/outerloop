@@ -102,11 +102,26 @@ small-tier results (scaling.md). Sessions never hold GPUs: hibernation is
 the difference between a hypothesis costing days of wall-clock and days of
 compute.
 
+**The author⇄orchestrator protocol is turn-based; there is no live
+channel.** The orchestrator speaks only at session start (brief on stdin;
+wake prompt on resume). The author speaks only by exiting: its workspace
+edits, an experiment-request ARTIFACT (a reserved file the commit veto
+excludes — command, resources, expected outcome), its report text, and
+its stop reason are read after the process ends. Slurm tells the
+orchestrator about experiments (afterany + sweep + deadline), never the
+author; the orchestrator summarizes and data-fences results into the next
+wake. Turn-based is load-bearing: the tick may die anytime (files and
+Slurm survive; a held conversation would not), the request is data
+validated by code rather than an action a session takes (sessions cannot
+sbatch — budget enforcement is unavoidable), a session blocked on a
+48-hour job would burn money doing nothing, and every request ever made
+is an auditable artifact in the run dir.
+
 Status: the mechanisms are live-verified (waiting state, afterany wake on
 any termination, deadlines, resume across nodes, wake prompts) but the
-launch glue — spec validation, GPU-hour accounting, the real wake
-dispatcher — is pending; it gates the first GPU target alongside the
-verifier.
+launch glue — the request-artifact format and validation, GPU-hour
+accounting, the real wake dispatcher — is pending; it gates the first GPU
+target alongside the verifier.
 
 ## The planning and stewardship loop (designed; scaling.md, meta.md)
 
