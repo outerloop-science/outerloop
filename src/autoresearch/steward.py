@@ -36,7 +36,13 @@ from autoresearch.climb import (
 from autoresearch.contract import Contract, load_contract
 from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
 from autoresearch.harness import Harness, redact
-from autoresearch.intake import CLAIM_MARKER, IssueTask, infer_benchmark, qualifying_issue
+from autoresearch.intake import (
+    CLAIM_MARKER,
+    STEWARD_LABEL,
+    IssueTask,
+    infer_benchmark,
+    qualifying_issue,
+)
 from autoresearch.orchestrator import steward_out_of_scope
 from autoresearch.progress import (
     PROGRESS_PATHS,
@@ -56,7 +62,6 @@ from autoresearch.runstate import (
 
 log = logging.getLogger(__name__)
 
-STEWARD_LABEL = "autoresearch:steward"
 # posted when a claim could not be backed by a submitted job: a release
 # AFTER the last claim makes the issue claimable again
 RELEASE_MARKER = "<!-- autoresearch:claim-released -->"

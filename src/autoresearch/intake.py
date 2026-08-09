@@ -20,6 +20,9 @@ from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 log = logging.getLogger(__name__)
 
 CLAIM_MARKER = "<!-- autoresearch:claimed -->"
+# steward work orders carry this label; they are the STEWARD lane's,
+# never the solver's (a solver climb cannot touch env paths anyway)
+STEWARD_LABEL = "autoresearch:steward"
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,13 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
     benchmark. At most one — intake is deliberately slow."""
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
+        labels = {
+            str(label.get("name", "")).casefold()
+            for label in issue.get("labels", [])
+            if isinstance(label, dict)
+        }
+        if STEWARD_LABEL in labels:
+            continue  # the steward lane's, never the solver's
         if not qualifying_issue(issue, bot_login):
             continue
         number = int(issue["number"])

@@ -924,8 +924,23 @@ def service_steward(
     # ONE active run per target covers stewardships too: an env rewrite
     # must not fly alongside a solver climb (the drift/freshness machinery
     # does not coordinate them) or alongside another stewardship.
-    if any(r.target == target and r.state != ENDED for r in list_runs(root)):
+    records = list_runs(root)
+    if any(r.target == target and r.state != ENDED for r in records):
         return None
+    # The queue window (submit -> job writes its record) is bridged by the
+    # SAME per-target pending marker the self-initiated lane uses: while a
+    # submitted job is alive without a record, no lane launches.
+    pending = read_pending(root, target)
+    if pending is not None:
+        submitted_at = float(pending.get("submitted_at", 0.0))
+        landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
+        expired = now - submitted_at > PENDING_TTL_S
+        if (
+            not landed
+            and not expired
+            and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
+        ):
+            return None
     try:
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
@@ -992,6 +1007,7 @@ def service_steward(
                     f"a later tick will retry this work order.",
                 )
             raise
+        write_pending(root, target, f"steward:{task.benchmark}", job_id, now)
         log.info("steward issue #%s claimed for job %s", task.number, job_id)
         return (f"steward-issue-{task.number}", job_id)
     except Exception as exc:  # the steward lane must not break the tick

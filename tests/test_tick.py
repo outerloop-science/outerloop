@@ -974,6 +974,14 @@ roadmap: docs/roadmap.md
     github = G()
     out = service_steward(tmp_path, github, compute, spec("/k"), NOW, with_steward, limits)
     assert out == ("steward-issue-21", "321")
+    # the queue window is bridged: pending marker written, second pass no-ops
+    from autoresearch.tick import read_pending
+
+    marker = read_pending(tmp_path, "org/pilot")
+    assert marker is not None and marker["benchmark"] == "steward:tsp"
+    assert (
+        service_steward(tmp_path, G(), compute, spec("/k"), NOW + 60, with_steward, limits) is None
+    )
     assert github.comments_posted and "Claimed by the steward" in github.comments_posted[0][1]
     wrap = submitted[0][-1]
     assert "autoresearch.steward" in wrap
