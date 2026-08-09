@@ -369,6 +369,17 @@ def test_pushed_changes_append_a_body_addendum(review_run) -> None:
     assert "original version" in addendum
 
 
+def test_reverted_change_appends_no_addendum(review_run) -> None:
+    """The addendum gate is the PUSH, not the attempt: an out-of-scope
+    response is reverted, so the body must not claim the solver changed."""
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "also update the eval please")])
+    harness = ResumingHarness(edits={"docs/roadmap.md": "doctored\n"})
+    outcome = respond(root, github, harness)
+    assert outcome.action == "replied"
+    assert not github.body_addenda  # reverted -> body untouched
+
+
 def test_reply_without_changes_leaves_the_body_alone(review_run) -> None:
     root, _bare = review_run
     github = FakeGitHub(comments=[member(101, "convince me you did not game the eval")])

@@ -17,6 +17,7 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.llm import AnthropicCompleter
 from autoresearch.review import PullRequest
@@ -142,6 +143,12 @@ def main() -> int:
                 contract_text = ""
             ruler = gather_ruler(client, repo, base_ref or "HEAD", contract_text)
             try:
+                # Standing gate (mirrors the follow-up lane's): only voices
+                # with standing reach the verifier — maintainers by
+                # association, the accused agent's own replies, and prior
+                # verifier rounds. On a public repo, anyone can comment;
+                # an unprivileged comment framed as a rebuttal must not be
+                # able to steer findings into suppression.
                 thread = tuple(
                     (
                         str((c.get("user") or {}).get("login", "")),
@@ -149,6 +156,12 @@ def main() -> int:
                     )
                     for c in client.list_comments(repo, number)
                     if str(c.get("body") or "").strip()
+                    and (
+                        str(c.get("author_association", "")) in QUALIFYING_ASSOCIATIONS
+                        or str((c.get("user") or {}).get("login", "")).casefold()
+                        == bot_login.casefold()
+                        or str(c.get("body") or "").lstrip().startswith(VERIFY_MARKER)
+                    )
                 )
             except EXPECTED_FAILURES as exc:
                 log.warning("verifying without the discussion thread: %s", exc)

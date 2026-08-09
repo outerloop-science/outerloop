@@ -262,6 +262,7 @@ def _respond(
         :MAX_REPLY_CHARS
     ]
     measured_note = ""
+    change_pushed = False
 
     changed = _changed_paths(ws)
     if changed:
@@ -318,6 +319,7 @@ def _respond(
                         ),
                     )
                     ws.push(branch)
+                    change_pushed = True
                     worse = prior is not None and not orch_improved(
                         prior.best, candidate, bench.direction, 0.0
                     )
@@ -332,7 +334,7 @@ def _respond(
                     )
 
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
-    if measured_note:
+    if change_pushed:
         # Code changed after publish: the body's report now describes an
         # older tree. Mark it edited (maintainer decision 2026-08-09) so no
         # reader — human or verifier — mistakes the original report for the
@@ -341,7 +343,7 @@ def _respond(
             github.append_pull_body(
                 record.target,
                 number,
-                f"---\n**Edit ({created[:10]}, follow-up):** the solver changed "
+                f"---\n**Edit ({created[:10] or 'date unknown'}, follow-up):** the solver changed "
                 f"after review feedback and was re-measured "
                 f"({measured_note.strip().strip('*')}). The report above "
                 f"describes the original version; see the follow-up replies "
