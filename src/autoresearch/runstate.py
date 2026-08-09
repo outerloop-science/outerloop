@@ -49,8 +49,12 @@ OUTAGE_NAME = "outage.json"
 # How long the session-spawning lanes stay paused after an API outage is
 # stamped. 45 minutes skips roughly one tick, so during a sustained outage
 # one canary session per ~hour re-probes the API instead of every lane
-# burning attempts every half hour.
+# burning attempts every half hour. Throttling (429/529) is transient by
+# nature and gets a short pause instead — a momentary spike must not idle
+# the orchestrator for most of an hour (review finding).
 OUTAGE_COOLDOWN_S = 45 * 60
+THROTTLE_COOLDOWN_S = 5 * 60
+_THROTTLE_HINTS = ("rate_limit", "overloaded")
 
 MAX_WAKE_ATTEMPTS = 3
 
@@ -63,19 +67,26 @@ def stamp_outage(root: Path, detail: str, now: float) -> None:
     # install a truncated stamp — an unreadable latch reads as NO pause,
     # which is exactly the failure the latch exists to prevent
     tmp = root / f".{OUTAGE_NAME}.{os.getpid()}.tmp"
-    tmp.write_text(json.dumps({"detail": detail[:300], "time": now}))
+    cooldown = (
+        THROTTLE_COOLDOWN_S
+        if any(hint in detail.casefold() for hint in _THROTTLE_HINTS)
+        else OUTAGE_COOLDOWN_S
+    )
+    tmp.write_text(json.dumps({"detail": detail[:300], "time": now, "cooldown_s": cooldown}))
     os.replace(tmp, root / OUTAGE_NAME)
 
 
-def outage_active(root: Path, now: float, cooldown_s: float = OUTAGE_COOLDOWN_S) -> str:
-    """The stamped detail while the cooldown holds, else "". Unreadable or
-    stale stamps read as inactive — a corrupt latch must never brick the
-    loop, and time moving backwards reads as expired."""
+def outage_active(root: Path, now: float) -> str:
+    """The stamped detail while the cooldown holds, else "". The cooldown
+    lives IN the stamp (decided at stamp time from the failure class);
+    unreadable or stale stamps read as inactive — a corrupt latch must
+    never brick the loop, and time moving backwards reads as expired."""
     path = root / OUTAGE_NAME
     try:
         data = json.loads(path.read_text())
         stamped = float(data["time"])
         detail = str(data.get("detail", ""))
+        cooldown_s = float(data.get("cooldown_s", OUTAGE_COOLDOWN_S))
     except (OSError, ValueError, KeyError, TypeError):
         return ""
     if 0 <= now - stamped < cooldown_s:

@@ -137,11 +137,16 @@ def outage(result: SessionResult) -> bool:
     if not result.is_error:
         return False
     # error_detail is backend error text and always wins; final_text is
-    # consulted ONLY when no detail exists (older CLI error shapes put the
-    # API refusal in the result string). Never both — a turn-exhausted
-    # session carries the agent's own prose in final_text, and a report
-    # that MENTIONS billing must not read as an outage (review finding).
-    surface = (result.error_detail or result.final_text).casefold()
+    # consulted ONLY when no detail exists AND it carries the legacy CLI
+    # error shape ("API Error ..."), never agent prose — a failed session's
+    # report that merely MENTIONS billing or limits must not trip a latch
+    # that pauses every lane (review findings, rounds 1 and 2).
+    surface = result.error_detail.casefold()
+    if not surface:
+        text = result.final_text.strip().casefold()
+        if not text.startswith("api error"):
+            return False
+        surface = text
     return any(pattern in surface for pattern in OUTAGE_PATTERNS)
 
 

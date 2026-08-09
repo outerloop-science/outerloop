@@ -267,7 +267,8 @@ def release_orphaned_claims(
     now: float,
     stale_s: float = 4 * 3600,
     limit: int = 2,
-    bot_login: str = "agentic-learning-bot",
+    *,
+    bot_login: str,
 ) -> int:
     """Post release markers for claimed work orders whose runs are DEAD.
 

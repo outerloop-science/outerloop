@@ -131,7 +131,7 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         comments={
             4: [
                 {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
             ]
         },
@@ -143,15 +143,19 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         comments={
             4: [
                 {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
             ]
         },
     )
     assert pick_steward_issue(github5, "org/pilot", c, BOT) is None
+    # and it is the ATTEMPT COUNT holding, not a lingering claim flag:
+    # the same thread ends released, so only the cap can exclude it
+    released_last = github5.comments[4][-1]
+    assert "claim-released" in released_last["body"]
 
 
 def test_steward_scope_folds_case_against_solver_territory() -> None:
@@ -646,7 +650,9 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         issue_number=7,
     )
     github = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
-    n = release_orphaned_claims(github, "org/pilot", [dead_record], now=2_000_000_000.0)
+    n = release_orphaned_claims(
+        github, "org/pilot", [dead_record], now=2_000_000_000.0, bot_login="agentic-learning-bot"
+    )
     assert n == 1
     assert github.posted and "claim-released" in github.posted[0][1]
     # a LIVE run keeps its claim
@@ -659,10 +665,24 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         issue_number=7,
     )
     github2 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
-    assert release_orphaned_claims(github2, "org/pilot", [live_record], now=2_000_000_000.0) == 0
+    assert (
+        release_orphaned_claims(
+            github2,
+            "org/pilot",
+            [live_record],
+            now=2_000_000_000.0,
+            bot_login="agentic-learning-bot",
+        )
+        == 0
+    )
     # no record + stale claim -> released; fresh claim -> kept
     github3 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
-    assert release_orphaned_claims(github3, "org/pilot", [], now=2_000_000_000.0) == 1
+    assert (
+        release_orphaned_claims(
+            github3, "org/pilot", [], now=2_000_000_000.0, bot_login="agentic-learning-bot"
+        )
+        == 1
+    )
     # now=2e9 is 2033-05-18T03:33Z; a claim 33 minutes old is not stale
     fresh = {
         "body": "<!-- autoresearch:claimed -->",
@@ -670,4 +690,9 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         "user": {"login": "agentic-learning-bot"},
     }
     github4 = G([_issue(7, "re-base the tsp pool")], {7: [fresh]})
-    assert release_orphaned_claims(github4, "org/pilot", [], now=2_000_000_000.0) == 0
+    assert (
+        release_orphaned_claims(
+            github4, "org/pilot", [], now=2_000_000_000.0, bot_login="agentic-learning-bot"
+        )
+        == 0
+    )

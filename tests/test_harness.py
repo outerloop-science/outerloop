@@ -227,6 +227,9 @@ def test_outage_classification_matches_api_refusals_only() -> None:
     )
     assert not outage(result(False, text="Report: cut billing costs by caching the pool."))
     assert not outage(result(True, detail="TypeError: 'NoneType' object is not iterable"))
+    # empty detail: prose is consulted only in the legacy "API Error" shape
+    assert outage(result(True, text="API Error (400): credit balance is too low"))
+    assert not outage(result(True, text="Report: raise the usage limit, cut billing costs."))
 
 
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:

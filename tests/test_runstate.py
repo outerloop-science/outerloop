@@ -10,6 +10,7 @@ from autoresearch.runstate import (
     ENDED,
     OUTAGE_COOLDOWN_S,
     STUCK,
+    THROTTLE_COOLDOWN_S,
     WAITING,
     RunRecord,
     acquire_lease,
@@ -185,6 +186,14 @@ def test_outage_latch_pauses_then_expires(tmp_path) -> None:
     assert "credit balance" in outage_active(tmp_path, now=1000.0 + OUTAGE_COOLDOWN_S - 1)
     assert outage_active(tmp_path, now=1000.0 + OUTAGE_COOLDOWN_S) == ""  # expired
     assert outage_active(tmp_path, now=500.0) == ""  # clock moved backwards: expired
+
+
+def test_throttling_stamps_a_short_pause(tmp_path) -> None:
+    """A 429/529 is transient: the stamp carries its own short cooldown,
+    so one throttled session never idles the lanes for most of an hour."""
+    stamp_outage(tmp_path, "rate_limit_error: Number of requests exceeded", now=1000.0)
+    assert "rate_limit" in outage_active(tmp_path, now=1000.0 + THROTTLE_COOLDOWN_S - 1)
+    assert outage_active(tmp_path, now=1000.0 + THROTTLE_COOLDOWN_S) == ""
 
 
 def test_corrupt_outage_stamp_reads_inactive(tmp_path) -> None:
