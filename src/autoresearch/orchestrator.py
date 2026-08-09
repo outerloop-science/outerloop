@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Protocol
 
 from autoresearch.brief import BriefInputs, BudgetState, Task, build_brief, render
-from autoresearch.contract import Contract, load_contract, normalize_path, path_is_forbidden
+from autoresearch.contract import (
+    Contract,
+    _fold,
+    load_contract,
+    normalize_path,
+    path_is_forbidden,
+)
 from autoresearch.harness import Harness, SessionResult, redact
 
 log = logging.getLogger(__name__)
@@ -107,6 +113,9 @@ class SubprocessEvaluator:
     def _measure(
         self, workspace: Path, command: str, metric: str, eval_home: Path, cache_dir: Path
     ) -> float:
+        return self._parse_measured(self._run(workspace, command, eval_home, cache_dir), metric)
+
+    def _run(self, workspace: Path, command: str, eval_home: Path, cache_dir: Path) -> str:
         import os
         import signal
 
@@ -174,6 +183,33 @@ class SubprocessEvaluator:
             raise EvalError(f"eval timed out after {self.timeout_s}s") from exc
         if process.returncode != 0:
             raise EvalError(f"eval failed ({process.returncode}): {stderr[-500:]}")
+        return stdout
+
+    def check(self, workspace: Path, command: str) -> None:
+        """Run `command` with eval-grade containment, requiring only exit 0.
+
+        The steward's validation suite (pytest, per-benchmark smoke runs)
+        executes STEWARD-written env code — same trust level as agent
+        code, same containment, no metric parsed."""
+        import shutil
+        import tempfile
+
+        try:
+            eval_home = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{workspace.name}-check-home-", dir=workspace.resolve().parent
+                )
+            )
+        except OSError as exc:
+            raise EvalError(f"could not create check home: {exc}") from exc
+        cache_dir = Path(tempfile.mkdtemp(prefix="autoresearch-check-cache-"))
+        try:
+            self._run(workspace, command, eval_home, cache_dir)
+        finally:
+            shutil.rmtree(eval_home, ignore_errors=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    def _parse_measured(self, stdout: str, metric: str) -> float:
         value = _metric_from_output(stdout, metric)
         if value is None:
             raise EvalError(f"metric {metric!r} not found in eval output")
@@ -289,6 +325,40 @@ def out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
             candidate = normalize_path(path)
         except Exception:
             violations.append(path)
+            continue
+        if not any(candidate == a or a in candidate.parents for a in allowed):
+            violations.append(path)
+    return violations
+
+
+def steward_out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
+    """Changed paths the STEWARD may not touch.
+
+    The inversion of `out_of_scope`: the steward edits the env/ruler
+    territory (`contract.steward.allowed`) and may NEVER touch the solver's
+    territory (`contract.scope.allowed`) — the roles' separation is what
+    makes verifier-checked stewardship trustworthy. The always-forbidden
+    set (contract, `.github/`, roadmap) binds here too. No steward section
+    in the contract means everything is out of scope.
+    """
+    if contract.steward is None:
+        return list(paths)
+    allowed = [_fold(normalize_path(entry)) for entry in contract.steward.allowed]
+    solver = [_fold(normalize_path(entry)) for entry in contract.scope.allowed]
+    violations = []
+    for path in paths:
+        if path_is_forbidden(path, contract):
+            violations.append(path)
+            continue
+        try:
+            candidate = _fold(normalize_path(path))
+        except Exception:
+            violations.append(path)
+            continue
+        # case-folded both directions, like path_is_forbidden: on a
+        # case-insensitive checkout, Solvers/ IS solvers/
+        if any(candidate == sp or sp in candidate.parents for sp in solver):
+            violations.append(path)  # solver territory: never the steward's
             continue
         if not any(candidate == a or a in candidate.parents for a in allowed):
             violations.append(path)

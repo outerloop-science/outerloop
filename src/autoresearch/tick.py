@@ -107,6 +107,7 @@ class TickReport:
     followups_submitted: tuple[tuple[str, str], ...] = ()  # (run_id, job_id)
     intake: tuple[str, str] = ("", "")  # (issue tag, job_id) when one was claimed
     self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
+    steward: tuple[str, str] = ("", "")  # (issue tag, job_id) when a stewardship launched
     disk: tuple[str, ...] = ()  # preflight warnings (home entries are warn-only)
     launch_blocked: bool = False  # True when the preflight turned launch lanes off
 
@@ -125,6 +126,9 @@ class FollowupSpec:
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
     key_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
+    # the STEWARD'S OWN key (role separation): the steward lane stays off
+    # until the operator provisions it
+    steward_key_file: str = ""
 
 
 def service_in_review(
@@ -158,6 +162,14 @@ def service_in_review(
             ending = close_if_done(root, record, github, now)
             if ending:
                 ended.append((record.run_id, ending))
+                continue
+            # Steward PRs end via close_if_done like any other, but their
+            # comment servicing is NOT wired yet: the follow-up job would
+            # resume them with the SOLVER'S key and the solver's scope
+            # check — exactly the role separation the steward exists to
+            # keep. Until a steward follow-up path exists, maintainer
+            # comments on steward PRs are answered by humans.
+            if record.agent_id.startswith("steward"):
                 continue
             if not has_new_comments(record, github, spec.bot_login):
                 continue
@@ -653,8 +665,15 @@ def tick(
             if launch_ok and contract is not None
             else None
         )
+        steward_job = (
+            service_steward(
+                root, github, compute, spec, now, contract, limits, dry_run=followup_dry_run
+            )
+            if launch_ok and intake_job is None and contract is not None
+            else None
+        )
         self_job = None
-        if launch_ok and intake_job is None and contract is not None:
+        if launch_ok and intake_job is None and steward_job is None and contract is not None:
             try:
                 self_job = service_self_initiated(
                     root,
@@ -668,7 +687,14 @@ def tick(
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
         report = replace_report(
-            report, ended, submitted, intake_job, self_job, disk_health.warnings(), not launch_ok
+            report,
+            ended,
+            submitted,
+            intake_job,
+            self_job,
+            disk_health.warnings(),
+            not launch_ok,
+            steward_job,
         )
     return report
 
@@ -681,6 +707,7 @@ def replace_report(
     self_job: tuple[str, str] | None = None,
     disk_warnings: list[str] | None = None,
     launch_blocked: bool = False,
+    steward_job: tuple[str, str] | None = None,
 ) -> TickReport:
     from dataclasses import replace as dc_replace
 
@@ -692,6 +719,7 @@ def replace_report(
         self_initiated=self_job or ("", ""),
         disk=tuple(disk_warnings or ()),
         launch_blocked=launch_blocked,
+        steward=steward_job or ("", ""),
     )
 
 
@@ -872,6 +900,125 @@ def service_self_initiated(
         return None
 
 
+def service_steward(
+    root: Path,
+    github: Any,
+    compute: SlurmCompute,
+    spec: FollowupSpec,
+    now: float,
+    contract: Any,
+    limits: EffectiveLimits,
+    dry_run: bool = False,
+) -> tuple[str, str] | None:
+    """The steward lane: claim at most ONE labeled work-order issue per tick
+    and submit a stewardship job. Off until the operator provisions the
+    steward's own key (role separation) and the contract declares a steward
+    scope."""
+    from autoresearch.steward import pick_steward_issue
+
+    target = spec.target
+    if not target or not spec.steward_key_file:
+        return None
+    if getattr(contract, "steward", None) is None:
+        return None
+    try:
+        from autoresearch.steward import release_orphaned_claims
+
+        # ONE active run per target covers stewardships too: an env rewrite
+        # must not fly alongside a solver climb (the drift/freshness
+        # machinery does not coordinate them) or another stewardship.
+        records = list_runs(root)
+        # reconcile first: killed jobs never post their own release
+        release_orphaned_claims(github, target, records, now)
+        if any(r.target == target and r.state != ENDED for r in records):
+            return None
+        # The queue window (submit -> job writes its record) is bridged by
+        # the SAME per-target pending marker the self-initiated lane uses:
+        # while a submitted job is alive without a record, no lane launches.
+        pending = read_pending(root, target)
+        if pending is not None:
+            submitted_at = float(pending.get("submitted_at", 0.0))
+            landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
+            expired = now - submitted_at > PENDING_TTL_S
+            if (
+                not landed
+                and not expired
+                and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
+            ):
+                return None
+        task = pick_steward_issue(github, target, contract, spec.bot_login)
+        if task is None:
+            return None
+        if dry_run:
+            return (f"steward-issue-{task.number}", "dry-run")
+        from autoresearch.intake import CLAIM_MARKER, issue_hypothesis
+
+        github.comment(
+            target,
+            task.number,
+            f"{CLAIM_MARKER}\nClaimed by the steward for benchmark "
+            f"`{task.benchmark}`; a run is queued and a report will follow here.",
+        )
+        import base64 as _b64
+
+        work_order_b64 = _b64.b64encode(issue_hypothesis(task).encode()).decode()
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "autoresearch.steward",
+            "--target",
+            target,
+            "--benchmark",
+            task.benchmark,
+            "--run-root",
+            str(spec.run_root),
+            "--image",
+            spec.image,
+            "--issue",
+            str(task.number),
+            "--work-order-b64",
+            work_order_b64,
+            "--key-file",
+            spec.steward_key_file,
+            *_climb_limit_argv(limits),
+        ]
+        if spec.pat_file:
+            argv += ["--pat-file", spec.pat_file]
+        try:
+            job_id = compute.submit(
+                JobSpec(
+                    job_name=f"steward-issue-{task.number}",
+                    account=spec.account,
+                    partition=spec.partition,
+                    time_minutes=limits.climb_job_minutes,
+                    command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                    cpus=4,
+                    mem="8G",
+                )
+            )
+        except Exception:
+            # release the claim: a claim with no job behind it would orphan
+            # the work order forever (pick skips claimed issues)
+            from autoresearch.steward import RELEASE_MARKER
+
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target,
+                    task.number,
+                    f"{RELEASE_MARKER}\nSubmission failed; claim released — "
+                    f"a later tick will retry this work order.",
+                )
+            raise
+        write_pending(root, target, f"steward:{task.benchmark}", job_id, now)
+        log.info("steward issue #%s claimed for job %s", task.number, job_id)
+        return (f"steward-issue-{task.number}", job_id)
+    except Exception as exc:  # the steward lane must not break the tick
+        log.warning("steward pass failed: %s", exc)
+        return None
+
+
 def service_intake(
     root: Path,
     github: Any,
@@ -1020,6 +1167,7 @@ def main() -> int:
                 target=os.environ.get(
                     "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
                 ),
+                steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
             )
         except Exception as exc:
             log.warning("in-review servicing disabled: %s", exc)
@@ -1053,7 +1201,8 @@ def main() -> int:
     )
     log.info(
         "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d impl_ended=%s "
-        "review_ended=%s followups=%s intake=%s self_initiated=%s disk=%s launch_blocked=%s",
+        "review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s disk=%s "
+        "launch_blocked=%s",
         report.paused,
         report.swept,
         len(report.woken),
@@ -1065,6 +1214,7 @@ def main() -> int:
         report.followups_submitted,
         report.intake,
         report.self_initiated,
+        report.steward,
         report.disk or "ok",
         report.launch_blocked,
     )

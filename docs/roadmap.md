@@ -153,15 +153,16 @@ open-ended sweep space.
       verifier-less self-hosters). DEPLOY still pending: pilot caller
       workflow + `VERIFIER_API_KEY` org secret (maintainer) — required
       before any statistically-verifiable target onboards
-- [ ] Benchmark steward role (maintainer direction 2026-08-08): a separate
-      agent identity whose objective is benchmark DISCRIMINATIVE POWER
-      (headroom, solvability, reproducible baselines), never solver score;
-      goal moves only as vetoable plan issues under the agent-unwritable
-      `vision:`, enacted only by human-merged contract PRs; the verifier is
-      the anti-collusion backstop. First work orders, from the agents' own
-      reports: probe v2 (trivially saturable — degree-2 features hit 1.000
-      against the frozen <0.8 band) and a timing-noise floor policy for
-      speedup (±5% machine noise)
+- [x] Benchmark steward CODE (maintainer direction 2026-08-08/09: the
+      steward agent does env work, not hand edits): separate identity
+      (`steward-01`, own key), territory = the contract's `steward.allowed`
+      with the solver's scope forbidden in code, work orders =
+      standing-gated `autoresearch:steward` issues, validation ruler run by
+      the orchestrator (suite + re-measure + orchestrator-written record
+      resets), verifier reads its PRs adversarially. DEPLOY pending:
+      steward key + pilot contract `steward:` section + the four work-order
+      issues (denoise v2 [PR #18 draft as spec], reach v3, probe v2,
+      speedup noise floor)
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met

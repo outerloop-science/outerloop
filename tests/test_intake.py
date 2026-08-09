@@ -88,3 +88,39 @@ def test_hypothesis_fences_issue_text() -> None:
     assert "@renmengye" in text
     assert "````" in text  # fence outruns the backticks in the body
     assert "better local planner" in text
+
+
+def test_intake_never_claims_steward_work_orders() -> None:
+    """A steward-labeled issue naming one benchmark would otherwise qualify
+    for the requested lane; the label reserves it for the steward."""
+    from autoresearch.contract import load_contract
+    from autoresearch.intake import pick_issue
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 20}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+
+    class G:
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [
+                {
+                    "number": 5,
+                    "title": "tsp: make the pool resample",
+                    "body": "",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                    "labels": [{"name": "autoresearch:steward"}],
+                }
+            ]
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return []
+
+    assert pick_issue(G(), "org/pilot", contract, "agentic-learning-bot") is None
