@@ -21,7 +21,7 @@ from pathlib import Path
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
 from autoresearch.github import GitHubClient, Workspace
-from autoresearch.harness import Harness, redact
+from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import Evaluator, out_of_scope, steward_out_of_scope
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
@@ -44,6 +44,7 @@ from autoresearch.runstate import (
     release_lease,
     run_dir,
     save_record,
+    stamp_outage,
 )
 from autoresearch.verifier import VERIFY_MARKER
 
@@ -382,6 +383,25 @@ def _respond(
         # the run, and "error" is what keeps cursors un-advanced so the next
         # tick retries the reply (wake_attempts caps the spend). The detail
         # string still names the real cause for the log reader.
+        if outage(session):
+            # The API refused us — refund the wake attempt the tick billed
+            # at submit (this responder holds the lease) and stamp the
+            # latch so the lanes pause instead of burning the retry cap
+            # on a dead key every half hour. Best-effort: a full state
+            # disk must degrade to a plain error outcome, not lose the
+            # honest note to an escaping exception.
+            role = "steward" if is_steward else "solver"
+            try:
+                stamp_outage(run_root, session.error_detail[:300], now, role=role)
+                latest = load_record(run_root, run_id)
+                save_record(
+                    run_root, replace(latest, wake_attempts=max(0, latest.wake_attempts - 1)), now
+                )
+            except (OSError, ValueError) as exc:
+                log.warning("outage bookkeeping failed for %s: %s", run_id, exc)
+            return FollowupOutcome(
+                run_id, "error", f"api outage: {session.error_detail or session.stop_reason}"
+            )
         return FollowupOutcome(
             run_id, "error", f"session: {session.error_detail or session.stop_reason}"
         )

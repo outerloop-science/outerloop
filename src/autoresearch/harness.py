@@ -113,6 +113,43 @@ def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "")
     )
 
 
+# Substrings that mean "the API itself is unavailable to us" — credit,
+# limit, auth, throttling. Matched only against error surfaces of an
+# is_error result (backend error text, never agent prose).
+OUTAGE_PATTERNS = (
+    "credit balance",
+    "usage limit",
+    "spending limit",
+    "billing",
+    "authentication_error",
+    "invalid x-api-key",
+    "rate_limit_error",
+    "overloaded_error",
+)
+
+
+def outage(result: SessionResult) -> bool:
+    """True when the session failed because the API refused us — dead
+    credits, spend cap, bad key, throttling — not because of anything in
+    the run. Callers treat this as an infrastructure outage: pause the
+    lanes, and never bill the failure against a run's retry caps or a
+    work order's attempts."""
+    if not result.is_error:
+        return False
+    # error_detail is backend error text and always wins; final_text is
+    # consulted ONLY when no detail exists AND it carries the legacy CLI
+    # error shape ("API Error ..."), never agent prose — a failed session's
+    # report that merely MENTIONS billing or limits must not trip a latch
+    # that pauses every lane (review findings, rounds 1 and 2).
+    surface = result.error_detail.casefold()
+    if not surface:
+        text = result.final_text.strip().casefold()
+        if not text.startswith("api error"):
+            return False
+        surface = text
+    return any(pattern in surface for pattern in OUTAGE_PATTERNS)
+
+
 def budget_exhausted(result: SessionResult) -> bool:
     """True when the session stopped because OUR limits ran out — turns or
     session walltime — rather than because anything failed. Callers report

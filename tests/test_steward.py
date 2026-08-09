@@ -9,9 +9,12 @@ import pytest
 
 from autoresearch.contract import load_contract
 from autoresearch.harness import SessionResult
+from autoresearch.intake import CLAIM_MARKER
 from autoresearch.orchestrator import steward_out_of_scope
-from autoresearch.runstate import load_record
+from autoresearch.runstate import load_record, outage_active
 from autoresearch.steward import (
+    OUTAGE_MARKER,
+    RELEASE_MARKER,
     StewardConfig,
     live_steward,
     pick_steward_issue,
@@ -104,7 +107,7 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
     # claimed issues are skipped
     github2 = FakeIssues(
         [_issue(4, "re-base the tsp pool")],
-        comments={4: [{"body": "<!-- autoresearch:claimed -->\ntaken"}]},
+        comments={4: [{"body": "<!-- autoresearch:claimed -->\ntaken", "user": {"login": BOT}}]},
     )
     assert pick_steward_issue(github2, "org/pilot", c, BOT) is None
     # a released claim makes the order claimable again
@@ -112,8 +115,11 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->\ntaken"},
-                {"body": "<!-- autoresearch:claim-released -->\nsubmission failed"},
+                {"body": "<!-- autoresearch:claimed -->\ntaken", "user": {"login": BOT}},
+                {
+                    "body": "<!-- autoresearch:claim-released -->\nsubmission failed",
+                    "user": {"login": BOT},
+                },
             ]
         },
     )
@@ -124,9 +130,9 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->"},
-                {"body": "<!-- autoresearch:claim-released -->"},
-                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
             ]
         },
     )
@@ -136,16 +142,20 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->"},
-                {"body": "<!-- autoresearch:claim-released -->"},
-                {"body": "<!-- autoresearch:claimed -->"},
-                {"body": "<!-- autoresearch:claim-released -->"},
-                {"body": "<!-- autoresearch:claimed -->"},
-                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
             ]
         },
     )
     assert pick_steward_issue(github5, "org/pilot", c, BOT) is None
+    # and it is the ATTEMPT COUNT holding, not a lingering claim flag:
+    # the same thread ends released, so only the cap can exclude it
+    released_last = github5.comments[4][-1]
+    assert "claim-released" in released_last["body"]
 
 
 def test_steward_scope_folds_case_against_solver_territory() -> None:
@@ -388,6 +398,131 @@ def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path, steward_rep
     )
 
 
+def test_api_outage_releases_claim_without_counting(tmp_path, steward_repo) -> None:
+    """The API refusing us is the orchestrator's failure: the run ends
+    stuck, the release comment carries the outage marker (so the claim
+    does not count toward the cap), and the latch pauses the lanes."""
+
+    @dataclass
+    class RefusedHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=True,
+                cost_usd=0.0,
+                num_turns=1,
+                session_id="",
+                final_text="",
+                transcript_path="",
+                error_detail="error_during_execution: credit balance is too low",
+            )
+
+    github = StewardGitHub()
+    outcome = live_steward(
+        config=StewardConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="steward-tsp-out",
+        harness=RefusedHarness(),
+        evaluator=CheckingEvaluator(values=[14.9]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-09T00:00:00Z",
+        issue_number=21,
+        work_order="w",
+    )
+    assert outcome.outcome == "infra-outage"
+    record = load_record(tmp_path / "state", "steward-tsp-out")
+    assert record.ending == "stuck"
+    assert "credit balance" in record.ending_note
+    (release,) = [b for _, b in github.issue_comments if RELEASE_MARKER in b]
+    assert OUTAGE_MARKER in release and "does NOT count" in release
+    assert "credit balance" in outage_active(
+        tmp_path / "state", now=1_000_000.0 + 60, role="steward"
+    )
+    # and the STEWARD'S dead key never pauses the solver lanes
+    assert outage_active(tmp_path / "state", now=1_000_000.0 + 60, role="solver") == ""
+
+
+def test_outage_releases_do_not_count_toward_the_attempt_cap() -> None:
+    """Three claims, one of them released by an outage: two attempts —
+    the order is still claimable. Three COUNTED claims: capped."""
+
+    def claim(author: str = BOT):
+        return {"body": f"{CLAIM_MARKER}\nworking", "user": {"login": author}}
+
+    def release(outage_kind: bool, author: str = BOT):
+        marker = f"{RELEASE_MARKER}\n{OUTAGE_MARKER}" if outage_kind else RELEASE_MARKER
+        return {"body": f"{marker}\nreleased", "user": {"login": author}}
+
+    issue = {
+        "number": 5,
+        "title": "steward: harden tsp",
+        "body": "the tsp pool is stale",
+        "user": {"login": "renmengye", "type": "User"},
+        "author_association": "OWNER",
+        "labels": [{"name": "autoresearch:steward"}],
+    }
+
+    @dataclass
+    class G:
+        comments: list
+
+        def list_open_issues(self, repo):
+            return [issue]
+
+        def list_comments(self, repo, number):
+            return self.comments
+
+    contract = load_contract(CONTRACT, "org/pilot")
+    thread = [claim(), release(True), claim(), release(False), claim(), release(False)]
+    picked = pick_steward_issue(G(thread), "org/pilot", contract, BOT)
+    assert picked is not None and picked.number == 5  # 2 counted attempts
+    thread += [claim(), release(False)]
+    assert pick_steward_issue(G(thread), "org/pilot", contract, BOT) is None  # 3 counted
+
+
+def test_marker_spoofing_by_strangers_moves_nothing() -> None:
+    """Only the BOT'S comments move claim state (review finding, public-repo
+    threat): a stranger's outage-release must not erase attempts into an
+    unbounded paid retry loop, a stranger's release must not free a live
+    claim, and a stranger's claim must not burn attempts."""
+
+    def marked(body: str, author: str):
+        return {"body": body, "user": {"login": author}}
+
+    issue = {
+        "number": 6,
+        "title": "steward: harden tsp",
+        "body": "the tsp pool is stale",
+        "user": {"login": "renmengye", "type": "User"},
+        "author_association": "OWNER",
+        "labels": [{"name": "autoresearch:steward"}],
+    }
+
+    @dataclass
+    class G:
+        comments: list
+
+        def list_open_issues(self, repo):
+            return [issue]
+
+        def list_comments(self, repo, number):
+            return self.comments
+
+    contract = load_contract(CONTRACT, "org/pilot")
+    # capped order + stranger outage-releases: attempts stay at 3
+    thread = [marked(f"{CLAIM_MARKER}\nx", BOT) for _ in range(3)]
+    thread += [marked(f"{RELEASE_MARKER}\n{OUTAGE_MARKER}\nnice try", "stranger")] * 3
+    assert pick_steward_issue(G(thread), "org/pilot", contract, BOT) is None
+    # live claim + stranger release: still claimed
+    thread2 = [marked(f"{CLAIM_MARKER}\nx", BOT), marked(f"{RELEASE_MARKER}\nfree it", "stranger")]
+    assert pick_steward_issue(G(thread2), "org/pilot", contract, BOT) is None
+    # stranger claims alone: not claimed, no attempts burned
+    thread3 = [marked(f"{CLAIM_MARKER}\nmine now", "stranger")] * 5
+    assert pick_steward_issue(G(thread3), "org/pilot", contract, BOT) is not None
+
+
 def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:
     outcome, github, _ = run_steward(
         tmp_path,
@@ -504,7 +639,11 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         def comment(self, repo, number, body):
             self.posted.append((number, body))
 
-    claimed = {"body": "<!-- autoresearch:claimed -->", "created_at": "2026-08-09T00:00:00Z"}
+    claimed = {
+        "body": "<!-- autoresearch:claimed -->",
+        "created_at": "2026-08-09T00:00:00Z",
+        "user": {"login": "agentic-learning-bot"},
+    }
     dead_record = RunRecord(
         run_id="steward-tsp-9",
         target="org/pilot",
@@ -515,7 +654,9 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         issue_number=7,
     )
     github = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
-    n = release_orphaned_claims(github, "org/pilot", [dead_record], now=2_000_000_000.0)
+    n = release_orphaned_claims(
+        github, "org/pilot", [dead_record], now=2_000_000_000.0, bot_login="agentic-learning-bot"
+    )
     assert n == 1
     assert github.posted and "claim-released" in github.posted[0][1]
     # a LIVE run keeps its claim
@@ -528,11 +669,34 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         issue_number=7,
     )
     github2 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
-    assert release_orphaned_claims(github2, "org/pilot", [live_record], now=2_000_000_000.0) == 0
+    assert (
+        release_orphaned_claims(
+            github2,
+            "org/pilot",
+            [live_record],
+            now=2_000_000_000.0,
+            bot_login="agentic-learning-bot",
+        )
+        == 0
+    )
     # no record + stale claim -> released; fresh claim -> kept
     github3 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
-    assert release_orphaned_claims(github3, "org/pilot", [], now=2_000_000_000.0) == 1
+    assert (
+        release_orphaned_claims(
+            github3, "org/pilot", [], now=2_000_000_000.0, bot_login="agentic-learning-bot"
+        )
+        == 1
+    )
     # now=2e9 is 2033-05-18T03:33Z; a claim 33 minutes old is not stale
-    fresh = {"body": "<!-- autoresearch:claimed -->", "created_at": "2033-05-18T03:00:00Z"}
+    fresh = {
+        "body": "<!-- autoresearch:claimed -->",
+        "created_at": "2033-05-18T03:00:00Z",
+        "user": {"login": "agentic-learning-bot"},
+    }
     github4 = G([_issue(7, "re-base the tsp pool")], {7: [fresh]})
-    assert release_orphaned_claims(github4, "org/pilot", [], now=2_000_000_000.0) == 0
+    assert (
+        release_orphaned_claims(
+            github4, "org/pilot", [], now=2_000_000_000.0, bot_login="agentic-learning-bot"
+        )
+        == 0
+    )

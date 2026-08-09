@@ -47,6 +47,7 @@ from autoresearch.runstate import (
     lease_is_stale,
     list_runs,
     load_record,
+    outage_active,
     read_lease,
     reap_lease,
     release_lease,
@@ -169,6 +170,12 @@ def service_in_review(
             # lane stays human-answered.
             is_steward = record.agent_id.startswith("steward")
             if is_steward and not spec.steward_key_file:
+                continue
+            # per-ROLE outage latch: state transitions above still ran,
+            # only this record's session spawn sits the cooldown out
+            paused = outage_active(root, now, role="steward" if is_steward else "solver")
+            if paused:
+                log.info("follow-up for %s paused (api outage: %s)", record.run_id, paused)
                 continue
             if not has_new_comments(record, github, spec.bot_login):
                 continue
@@ -835,6 +842,10 @@ def service_self_initiated(
     every tick during Slurm queue latency would launch a duplicate climb.
     """
     limits = limits if limits is not None else effective_limits(getattr(contract, "budgets", None))
+    paused = outage_active(root, now, role="solver")
+    if paused:
+        log.info("self-initiated lane paused (api outage: %s)", paused)
+        return None
     try:
         records = list_runs(root)
         pending = read_pending(root, spec.target)
@@ -928,8 +939,15 @@ def service_steward(
         # must not fly alongside a solver climb (the drift/freshness
         # machinery does not coordinate them) or another stewardship.
         records = list_runs(root)
-        # reconcile first: killed jobs never post their own release
-        release_orphaned_claims(github, target, records, now)
+        # reconcile first: killed jobs never post their own release — and
+        # BEFORE the outage pause below, because a claim orphaned by the
+        # very session the outage killed must not stay held all cooldown
+        # (reconciliation is model-free bookkeeping; only spawning pauses)
+        release_orphaned_claims(github, target, records, now, bot_login=spec.bot_login)
+        paused = outage_active(root, now, role="steward")
+        if paused:
+            log.info("steward lane paused (api outage: %s)", paused)
+            return None
         if any(r.target == target and r.state != ENDED for r in records):
             return None
         # The queue window (submit -> job writes its record) is bridged by
@@ -1039,6 +1057,10 @@ def service_intake(
 
     target = spec.target
     if not target:
+        return None
+    paused = outage_active(root, now, role="solver")
+    if paused:
+        log.info("intake lane paused (api outage: %s)", paused)
         return None
     try:
         if contract is None:

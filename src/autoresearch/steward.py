@@ -35,7 +35,7 @@ from autoresearch.climb import (
 )
 from autoresearch.contract import Contract, load_contract
 from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
-from autoresearch.harness import Harness, budget_exhausted, redact
+from autoresearch.harness import Harness, budget_exhausted, outage, redact
 from autoresearch.intake import (
     CLAIM_MARKER,
     STEWARD_LABEL,
@@ -57,8 +57,10 @@ from autoresearch.runstate import (
     ENDED,
     IN_REVIEW,
     NEGATIVE_RESULT,
+    STUCK,
     RunRecord,
     save_record,
+    stamp_outage,
 )
 
 log = logging.getLogger(__name__)
@@ -66,20 +68,33 @@ log = logging.getLogger(__name__)
 # posted when a claim ends without a merged PR (submit failure, aborted
 # run): a release AFTER the last claim makes the issue claimable again
 RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
+# rides WITH the release marker when the run died to an API outage: the
+# claim is released AND does not count toward MAX_STEWARD_ATTEMPTS — the
+# API being down is the orchestrator's failure, not the work order's
+OUTAGE_MARKER = "<!-- autoresearch:outage-release -->"
 # TOTAL claims after which the lane stops retrying a work order: a
 # persistently-failing order must not become a paid retry loop — three
 # sessions is the escalate-to-a-human point
 MAX_STEWARD_ATTEMPTS = 3
+# Outage releases don't count as attempts, but they cannot refund forever:
+# a PERMANENT refusal (revoked key, misconfigured key file) would otherwise
+# oscillate 0->1->0 below the cap and never reach a human (review finding).
+# After this many outage releases the order waits for a human too — the
+# release comments on the thread say exactly why.
+MAX_OUTAGE_RELEASES = 5
 STEWARD_AGENT_ID = "steward-01"
 
 
 class SessionFailure(Exception):
     """The steward's own session failed or ran dry. `budget` separates
-    "our caps ran out" (an honest ending) from a genuine malfunction."""
+    "our caps ran out" (an honest ending) from a genuine malfunction;
+    `outage` separates "the API refused us" from both — an outage is the
+    orchestrator's problem, so it never counts against the work order."""
 
-    def __init__(self, detail: str, budget: bool) -> None:
+    def __init__(self, detail: str, budget: bool, outage: bool = False) -> None:
         super().__init__(detail)
         self.budget = budget
+        self.outage = outage
 
 
 STEWARD_BRANCH_PREFIX = "feat/steward/steward-01"
@@ -197,6 +212,11 @@ def pick_steward_issue(
     """The oldest qualifying, unclaimed issue carrying the steward label and
     naming exactly one benchmark. Maintainer-authored only: the label routes,
     the author's standing authorizes."""
+    if not bot_login.strip():
+        # the identity gate below would see NO claims and re-claim every
+        # tick — an unbounded paid loop; without an identity, fail closed
+        log.warning("steward lane: empty bot_login; refusing to scan claims")
+        return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
         labels = {
@@ -215,15 +235,33 @@ def pick_steward_issue(
         # a human, not a fourth session.
         claimed = False
         attempts = 0
+        outage_releases = 0
         for c in github.list_comments(repo, number):
+            # The markers are the BOT'S protocol: only its own comments
+            # move the claim state. On a public repo, a stranger posting
+            # a release (or an outage release) must be able to neither
+            # free a claimed order, nor burn its attempts, nor erase them
+            # into an unbounded paid retry loop (review finding).
+            author = str((c.get("user") or {}).get("login", ""))
+            if author.casefold() != bot_login.casefold():
+                continue
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
                 claimed = True
                 attempts += 1
             if RELEASE_MARKER in body:
                 claimed = False
+                if OUTAGE_MARKER in body:
+                    # an API outage is our failure, not the order's: the
+                    # claim it released does not count toward the cap —
+                    # but outage releases have their OWN cap, or a
+                    # permanent refusal would retry forever
+                    attempts = max(0, attempts - 1)
+                    outage_releases += 1
         if claimed or attempts >= MAX_STEWARD_ATTEMPTS:
             continue
+        if outage_releases >= MAX_OUTAGE_RELEASES:
+            continue  # persistent refusals escalate to a human too
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)
         if not benchmark:
@@ -240,7 +278,14 @@ def pick_steward_issue(
 
 
 def release_orphaned_claims(
-    github: Any, repo: str, records: list, now: float, stale_s: float = 4 * 3600, limit: int = 2
+    github: Any,
+    repo: str,
+    records: list,
+    now: float,
+    stale_s: float = 4 * 3600,
+    limit: int = 2,
+    *,
+    bot_login: str,
 ) -> int:
     """Post release markers for claimed work orders whose runs are DEAD.
 
@@ -251,6 +296,9 @@ def release_orphaned_claims(
     issue with NO record at all is released once the claim is stale
     (submit succeeded but the job died pre-record). Bounded per tick.
     """
+    if not bot_login.strip():
+        log.warning("reconciliation: empty bot_login; refusing to scan claims")
+        return 0
     released = 0
     for issue in github.list_open_issues(repo):
         if released >= limit:
@@ -266,6 +314,9 @@ def release_orphaned_claims(
         claimed = False
         claim_time = ""
         for c in github.list_comments(repo, number):
+            author = str((c.get("user") or {}).get("login", ""))
+            if author.casefold() != bot_login.casefold():
+                continue  # same identity gate as pick_steward_issue
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
                 claimed = True
@@ -424,7 +475,9 @@ def live_steward(
         )
         if session.is_error:
             raise SessionFailure(
-                session.error_detail or session.stop_reason, budget_exhausted(session)
+                session.error_detail or session.stop_reason,
+                budget_exhausted(session),
+                outage(session),
             )
 
         changed = changed_paths()
@@ -550,16 +603,30 @@ def live_steward(
         # session used its full 120-turn budget" tells the maintainer what
         # to decide; "ValueError: tool_use" told them nothing.
         budget = isinstance(exc, SessionFailure) and exc.budget
+        api_outage = isinstance(exc, SessionFailure) and exc.outage
         exc_name = type(exc).__name__
         cause = redact(str(exc), secrets)[:500]
-        note = cause if budget else f"{exc_name}: {cause}"[:500]
-        outcome_label = "budget-exhausted" if budget else "steward-error"
+        note = cause if (budget or api_outage) else f"{exc_name}: {cause}"[:500]
+        if api_outage:
+            outcome_label = "infra-outage"
+            ending = STUCK  # infrastructure failure, nothing about the run
+            _best_effort(
+                "outage stamp",
+                lambda: stamp_outage(run_root, note, now, role="steward"),
+                secrets,
+            )
+        elif budget:
+            outcome_label = "budget-exhausted"
+            ending = BUDGET_EXHAUSTED
+        else:
+            outcome_label = "steward-error"
+            ending = ABORTED
         log.warning("stewardship failed for %s: %s", run_id, note)
         final = RunRecord(
             **{
                 **record.__dict__,
                 "state": ENDED,
-                "ending": BUDGET_EXHAUSTED if budget else ABORTED,
+                "ending": ending,
                 "ending_note": note,
             }
         )
@@ -574,20 +641,31 @@ def live_steward(
             secrets,
         )
         if issue_number:
-            finished = (
-                f"ran out of its session budget ({note})"
-                if budget
-                else f"finished ({outcome_label}): {note}"
-            )
-            _best_effort(
-                "issue report",
-                lambda: github.comment(
-                    config.target,
-                    issue_number,
+            if api_outage:
+                release = (
+                    f"{RELEASE_MARKER}\n{OUTAGE_MARKER}\nSteward run `{run_id}` "
+                    f"could not run — the API refused the orchestrator "
+                    f"({note}). Claim released; this does NOT count toward "
+                    f"the {MAX_STEWARD_ATTEMPTS}-attempt cap. The lanes pause "
+                    f"and retry after the outage cooldown; after "
+                    f"{MAX_OUTAGE_RELEASES} outage releases this order waits "
+                    f"for a human (persistent refusals need a key fix, not "
+                    f"retries)."
+                )
+            else:
+                finished = (
+                    f"ran out of its session budget ({note})"
+                    if budget
+                    else f"finished ({outcome_label}): {note}"
+                )
+                release = (
                     f"{RELEASE_MARKER}\nSteward run `{run_id}` {finished}. "
                     f"Claim released — the lane retries up to "
-                    f"{MAX_STEWARD_ATTEMPTS} total attempts, then waits for a human.",
-                ),
+                    f"{MAX_STEWARD_ATTEMPTS} total attempts, then waits for a human."
+                )
+            _best_effort(
+                "issue report",
+                lambda: github.comment(config.target, issue_number, release),
                 secrets,
             )
         return LiveClimbOutcome(

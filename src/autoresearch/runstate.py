@@ -45,7 +45,68 @@ ENDINGS = (MERGED, REJECTED, NEGATIVE_RESULT, BUDGET_EXHAUSTED, ABORTED, STUCK)
 RECORD_NAME = "state.json"
 LEASE_NAME = "lease.json"
 
+# How long the session-spawning lanes stay paused after an API outage is
+# stamped. 45 minutes skips roughly one tick, so during a sustained outage
+# one canary session per ~hour re-probes the API instead of every lane
+# burning attempts every half hour. Throttling (429/529) is transient by
+# nature and gets a short pause instead — a momentary spike must not idle
+# the orchestrator for most of an hour (review finding).
+OUTAGE_COOLDOWN_S = 45 * 60
+THROTTLE_COOLDOWN_S = 5 * 60
+_THROTTLE_HINTS = ("rate_limit", "overloaded")
+# Stamps are written on compute nodes and read on other hosts: a stamp a
+# few seconds "in the future" is NTP skew and must count as active, while
+# a far-future timestamp is corruption and must not pause forever.
+MAX_CLOCK_SKEW_S = 5 * 60
+
 MAX_WAKE_ATTEMPTS = 3
+
+
+def _outage_path(root: Path, role: str) -> Path:
+    # per-ROLE latches: roles hold separate keys, and a permanently dead
+    # steward key re-stamping its latch every cooldown must not keep the
+    # solver lanes paused forever (review finding). Role names are ours
+    # ("solver"/"steward"), sanitized only as filename hygiene.
+    safe = "".join(ch for ch in role if ch.isalnum() or ch == "-") or "solver"
+    return root / f"outage-{safe}.json"
+
+
+def stamp_outage(root: Path, detail: str, now: float, role: str = "solver") -> None:
+    """Record that the API refused this ROLE's key (atomic rename)."""
+    root.mkdir(parents=True, exist_ok=True)
+    # pid in the tmp name, like save_record: several lanes' jobs can fail
+    # to the same outage in one window, and interleaved writers must not
+    # install a truncated stamp — an unreadable latch reads as NO pause,
+    # which is exactly the failure the latch exists to prevent
+    path = _outage_path(root, role)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    cooldown = (
+        THROTTLE_COOLDOWN_S
+        if any(hint in detail.casefold() for hint in _THROTTLE_HINTS)
+        else OUTAGE_COOLDOWN_S
+    )
+    tmp.write_text(json.dumps({"detail": detail[:300], "time": now, "cooldown_s": cooldown}))
+    os.replace(tmp, path)
+
+
+def outage_active(root: Path, now: float, role: str = "solver") -> str:
+    """The stamped detail while this role's cooldown holds, else "". The
+    cooldown lives IN the stamp (decided at stamp time from the failure
+    class); unreadable or stale stamps read as inactive — a corrupt latch
+    must never brick the loop; cross-host clock skew within
+    MAX_CLOCK_SKEW_S counts as active, anything further future as
+    corrupt."""
+    path = _outage_path(root, role)
+    try:
+        data = json.loads(path.read_text())
+        stamped = float(data["time"])
+        detail = str(data.get("detail", ""))
+        cooldown_s = float(data.get("cooldown_s", OUTAGE_COOLDOWN_S))
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    if -MAX_CLOCK_SKEW_S <= now - stamped < cooldown_s:
+        return detail or "api outage"
+    return ""
 
 
 @dataclass(frozen=True)

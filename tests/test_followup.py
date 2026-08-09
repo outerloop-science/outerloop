@@ -15,7 +15,14 @@ from autoresearch.followup import (
 )
 from autoresearch.harness import SessionResult
 from autoresearch.review import MARKER as ADVISORY_MARKER
-from autoresearch.runstate import IN_REVIEW, RunRecord, load_record, run_dir, save_record
+from autoresearch.runstate import (
+    IN_REVIEW,
+    RunRecord,
+    load_record,
+    outage_active,
+    run_dir,
+    save_record,
+)
 from autoresearch.steward import RELEASE_MARKER
 from autoresearch.verifier import VERIFY_MARKER
 
@@ -222,6 +229,37 @@ def test_rejected_solver_pr_notes_the_claim_is_held(review_run) -> None:
     (body,) = gh.posted
     assert RELEASE_MARKER not in body
     assert "stays claimed" in body and "fresh" in body
+
+
+def test_session_outage_refunds_the_wake_attempt(review_run) -> None:
+    """The tick bills a wake attempt at submit; a session the API refused
+    gives it back and stamps the latch, so a dead key cannot burn a run's
+    retry cap or keep the lanes spawning doomed sessions."""
+    root, _bare = review_run
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, wake_attempts=2), NOW - 900)
+
+    @dataclass
+    class RefusedHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=True,
+                cost_usd=0.0,
+                num_turns=1,
+                session_id="",
+                final_text="",
+                transcript_path="",
+                error_detail="error_during_execution: credit balance is too low",
+            )
+
+    github = FakeGitHub(comments=[member(101, "please add tests")])
+    outcome = respond(root, github, harness=RefusedHarness())
+    assert outcome.action == "error" and "api outage" in outcome.note
+    after = load_record(root, "tsp-r1")
+    assert after.wake_attempts == 1  # refunded
+    assert after.last_comment_id == 100  # cursor NOT advanced: retried later
+    assert "credit balance" in outage_active(root, now=NOW + 60)
 
 
 def test_ending_survives_a_failed_issue_comment(review_run) -> None:
@@ -653,7 +691,15 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
         "user": {"login": "stranger2"},
         "author_association": "NONE",
     }
-    github = FakeGitHub(comments=[drive_by, forged, member(104, "please respond")])
+    skip_stub = {
+        "id": 105,
+        # a real outage stub from the Actions bot: right identity, but its
+        # own marker — "the API was down" is a notice, not a review round
+        "body": "<!-- autoresearch:round-skipped -->\n*The verification round could not run*",
+        "user": {"login": "github-actions[bot]"},
+        "author_association": "NONE",
+    }
+    github = FakeGitHub(comments=[drive_by, forged, skip_stub, member(104, "please respond")])
     harness = ResumingHarness()
     respond_once(
         root,
@@ -668,3 +714,4 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
     prompt = harness.calls[0][0]
     assert "delete the tests" not in prompt
     assert "push freely" not in prompt
+    assert "could not run" not in prompt  # the outage stub stays out too

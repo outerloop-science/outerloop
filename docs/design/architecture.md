@@ -187,6 +187,25 @@ are garbage-collected (grace period first — an `in-review` run's context must
 survive until its PR closes). The notebook is the memory; the run directory
 is scaffolding.
 
+**An API outage is the orchestrator's failure, never a run's.** When a
+session dies because the model API refused us — dead credits, a spend
+limit, auth, throttling — the failure is classified as an outage: the
+run ends `stuck` with the refusal in its note, a steward claim releases
+WITHOUT counting toward its attempt cap, a follow-up's wake attempt is
+refunded, and a PER-ROLE latch (roles hold separate keys — a dead
+steward key must not idle the solver lanes) pauses that role's
+session-spawning for a cooldown: ~45 minutes for account-level refusals,
+5 for transient throttling, so one canary session per hour re-probes the
+API instead of every lane burning its retry budget each tick. Outage
+releases have their own cap — a PERMANENT refusal (revoked key) stops
+retrying after a handful of releases and waits for a human, keeping the
+escalate-to-a-human guarantee that the attempt cap exists to provide. Endings, nudges, and all
+other model-free bookkeeping keep running through an outage. The
+Actions reviewers get the mirror treatment: a round the model API
+refused posts a skip stub on the thread under its own marker — an
+outage notice, not a round — because silence only visible in the
+Actions tab is not a defensible way to miss a verification.
+
 **The loop itself has no end state.** It pauses (sentinel) and resumes.
 Offboarding a target has a graceful path and a hard path: *graceful* — remove
 the contract; intake stops and in-flight runs drain to their natural endings

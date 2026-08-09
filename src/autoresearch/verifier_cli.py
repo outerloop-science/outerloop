@@ -19,9 +19,14 @@ from datetime import UTC, datetime
 
 from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 from autoresearch.github import EnvTokenProvider, GitHubClient
-from autoresearch.llm import AnthropicCompleter
+from autoresearch.llm import AnthropicCompleter, CompleterError
 from autoresearch.review import PullRequest
-from autoresearch.review_cli import EXPECTED_FAILURES, _gather_context, post_round
+from autoresearch.review_cli import (
+    EXPECTED_FAILURES,
+    _gather_context,
+    post_round,
+    post_skip_stub,
+)
 from autoresearch.verifier import (
     MAX_RULER_FILES,
     VERIFY_MARKER,
@@ -216,6 +221,8 @@ def main() -> int:
         log.info("posted verification (%s) on %s#%s", round_label, repo, number)
     except EXPECTED_FAILURES as exc:  # advisory role: never fail the target's CI
         log.warning("verification did not complete: %s: %s", type(exc).__name__, exc)
+        if isinstance(exc, CompleterError):
+            post_skip_stub(client, repo, number, "verification", exc)
     return 0
 
 

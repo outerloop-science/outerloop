@@ -31,7 +31,7 @@ from autoresearch.contract import (
     normalize_path,
     path_is_forbidden,
 )
-from autoresearch.harness import Harness, SessionResult, budget_exhausted, redact
+from autoresearch.harness import Harness, SessionResult, budget_exhausted, outage, redact
 
 log = logging.getLogger(__name__)
 
@@ -279,7 +279,7 @@ class ClimbResult:
     """What one attempt produced — the raw material of the run report."""
 
     # improved | no-improvement | session-error | session-budget |
-    # eval-error | scope-violation
+    # session-outage | eval-error | scope-violation
     outcome: str
     baseline: float | None = None
     candidate: float | None = None
@@ -458,9 +458,16 @@ def climb_once(
     )
     session = harness.run(render(brief), workspace)
     if session.is_error:
+        # our caps running out is a budget ending, not a malfunction; the
+        # API refusing us is an outage — neither is the run's own failure
+        if outage(session):
+            kind = "session-outage"
+        elif budget_exhausted(session):
+            kind = "session-budget"
+        else:
+            kind = "session-error"
         return ClimbResult(
-            # our caps running out is a budget ending, not a malfunction
-            outcome="session-budget" if budget_exhausted(session) else "session-error",
+            outcome=kind,
             baseline=baseline,
             session=session,
             note=session.error_detail or session.stop_reason,

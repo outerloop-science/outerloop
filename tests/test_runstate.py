@@ -8,17 +8,22 @@ import pytest
 
 from autoresearch.runstate import (
     ENDED,
+    MAX_CLOCK_SKEW_S,
+    OUTAGE_COOLDOWN_S,
     STUCK,
+    THROTTLE_COOLDOWN_S,
     WAITING,
     RunRecord,
     acquire_lease,
     lease_is_stale,
     list_runs,
     load_record,
+    outage_active,
     read_lease,
     release_lease,
     run_dir,
     save_record,
+    stamp_outage,
     update_lease_holder,
 )
 
@@ -174,3 +179,41 @@ def test_unreadable_lease_synthesizes_mtime_timestamp(tmp_path: Path) -> None:
     assert lease is not None
     assert lease.holder == "unreadable"
     assert lease.acquired == 500.0
+
+
+def test_outage_latch_pauses_then_expires(tmp_path) -> None:
+    assert outage_active(tmp_path, now=1000.0) == ""  # no stamp: inactive
+    stamp_outage(tmp_path, "credit balance is too low", now=1000.0)
+    assert "credit balance" in outage_active(tmp_path, now=1000.0 + OUTAGE_COOLDOWN_S - 1)
+    assert outage_active(tmp_path, now=1000.0 + OUTAGE_COOLDOWN_S) == ""  # expired
+    assert outage_active(tmp_path, now=500.0) == ""  # clock moved backwards: expired
+
+
+def test_throttling_stamps_a_short_pause(tmp_path) -> None:
+    """A 429/529 is transient: the stamp carries its own short cooldown,
+    so one throttled session never idles the lanes for most of an hour."""
+    stamp_outage(tmp_path, "rate_limit_error: Number of requests exceeded", now=1000.0)
+    assert "rate_limit" in outage_active(tmp_path, now=1000.0 + THROTTLE_COOLDOWN_S - 1)
+    assert outage_active(tmp_path, now=1000.0 + THROTTLE_COOLDOWN_S) == ""
+
+
+def test_corrupt_outage_stamp_reads_inactive(tmp_path) -> None:
+    """A bad latch must never brick the loop. The path must be the one the
+    reader actually consults (review finding: a stale filename made this
+    vacuous) — prove it by planting a VALID stamp at the same path first."""
+    latch = tmp_path / "outage-solver.json"
+    stamp_outage(tmp_path, "credit balance", now=1000.0)
+    assert latch.exists() and outage_active(tmp_path, now=1000.0) != ""
+    latch.write_text("not json")
+    assert outage_active(tmp_path, now=1000.0) == ""
+    latch.write_text('{"detail": "x"}')  # no time field
+    assert outage_active(tmp_path, now=1000.0) == ""
+
+
+def test_future_stamp_within_skew_is_active(tmp_path) -> None:
+    """Stamps are written on compute nodes and read by the tick on another
+    host: small NTP skew must not void the pause, while a far-future
+    timestamp (corrupt) reads as inactive."""
+    stamp_outage(tmp_path, "credit balance", now=1000.0)
+    assert outage_active(tmp_path, now=1000.0 - 60) != ""  # reader behind writer
+    assert outage_active(tmp_path, now=1000.0 - MAX_CLOCK_SKEW_S - 1) == ""

@@ -8,6 +8,21 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- API outages are contained instead of billed to runs: a session the
+  model API refuses (credit balance, usage/spend limit, auth,
+  throttling) ends the run `stuck` with the refusal named, releases a
+  steward claim without counting it toward the attempt cap, refunds the
+  follow-up wake attempt, and stamps a latch that pauses all
+  that role's session-spawning lanes (per-role latches: a dead steward
+  key never idles the solver lanes) for a 45-minute cooldown — 5 minutes
+  for transient throttling — so one canary per hour re-probes instead of
+  every lane burning retries each tick. Persistent refusals escalate:
+  after 5 outage releases a work order waits for a human. The
+  advisory reviewer and verifier post a skip stub on the PR thread
+  (own marker; never counts as a round, never rides as wake context)
+  when the model API refuses their round, so a missing review is
+  visible on the thread rather than only in the Actions tab.
+
 - Session budgets raised (60/60/90/60 → 120-turn sessions, 90-minute
   session walltime, 120-minute climb jobs, 90-minute follow-up jobs):
   the first steward work order to BUILD an environment burned its full
