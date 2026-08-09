@@ -256,7 +256,9 @@ class GitHubClient:
     # \r-tolerant: a human web-UI edit can normalize the body to CRLF
     _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|\r?$", re.MULTILINE)
 
-    def update_candidate_row(self, repo: str, number: int, candidate: float) -> bool:
+    def update_candidate_row(
+        self, repo: str, number: int, candidate: float, digits: int | None = None
+    ) -> bool:
         """Rewrite the results table's candidate row in place (PATCH).
 
         The row is orchestrator-owned and mechanical — the ONE part of the
@@ -277,7 +279,11 @@ class GitHubClient:
         head, sep, tail = current.partition("## Research report")
         if not self._CANDIDATE_ROW.search(head):
             return False
-        head = self._CANDIDATE_ROW.sub(f"| candidate | {candidate} |", head, count=1)
+        from autoresearch.progress import fmt_metric
+
+        head = self._CANDIDATE_ROW.sub(
+            f"| candidate | {fmt_metric(candidate, digits)} |", head, count=1
+        )
         self._request("PATCH", path, {"body": f"{head}{sep}{tail}"})
         return True
 

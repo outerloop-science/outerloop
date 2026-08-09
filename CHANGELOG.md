@@ -45,6 +45,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Display precision follows convention, not float repr (maintainer
+  decision): human surfaces — PR tables, BENCHMARKS.md, the rewritten
+  candidate row — render at the benchmark's `display_digits` (contract
+  knob, 2–12 significant digits, default 6); full precision lives only in
+  `results/leader.json`, and every comparison runs on full floats, so
+  display can never hide or fake an improvement.
 - Follow-up pushes rewrite the PR body's measured candidate row in place
   (the one mechanical, orchestrator-owned number that must never go
   stale), scoped to the preamble so report text with a lookalike row is

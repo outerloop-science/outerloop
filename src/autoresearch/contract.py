@@ -66,6 +66,12 @@ class Benchmark(_StrictModel):
     command: str = Field(min_length=1)
     metric: str = Field(min_length=1)
     direction: Literal["min", "max"]
+    # Significant digits for HUMAN surfaces (PR tables, BENCHMARKS.md,
+    # replies) per the benchmark's community convention. Full precision
+    # lives only in results/leader.json, the machine ledger (maintainer
+    # decision 2026-08-09). Display-only: comparisons always use full
+    # floats, so this can never hide or fake an improvement.
+    display_digits: int | None = Field(default=None, ge=2, le=12)
 
 
 class SuiteAggregate(_StrictModel):

@@ -70,7 +70,7 @@ class FakeGitHub:
     def append_pull_body(self, repo, number, addendum):
         self.body_addenda.append(addendum)
 
-    def update_candidate_row(self, repo, number, candidate):
+    def update_candidate_row(self, repo, number, candidate, digits=None):
         self.row_updates.append(candidate)
         return True
 

@@ -417,7 +417,12 @@ def live_climb(
                 run_id=run_id,
                 date=created[:10],
             )
-            write_progress(workspace, entries, config.target)
+            write_progress(
+                workspace,
+                entries,
+                config.target,
+                digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+            )
             # The commit veto re-checks FULL scope (allowed + forbidden) as
             # defense in depth behind climb_once's pre-eval check. The two
             # orchestrator-written progress files are the only exemption.
@@ -441,7 +446,9 @@ def live_climb(
                 )
             ws.push(branch)
             pushed = True
-            body = pr_body(result, config, redact_secrets=secrets)
+            body = pr_body(
+                result, config, redact_secrets=secrets, display_digits=bench.display_digits
+            )
             if issue_number:
                 body = f"Addresses #{issue_number}.\n\n{body}"
             pr_url = github.create_pull(

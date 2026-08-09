@@ -308,7 +308,16 @@ def _respond(
                         run_id=run_id,
                         date=created[:10],
                     )
-                    write_progress(workspace, entries, record.target)
+                    write_progress(
+                        workspace,
+                        entries,
+                        record.target,
+                        digits={
+                            b.name: b.display_digits
+                            for b in contract.benchmarks
+                            if b.display_digits
+                        },
+                    )
                     branch = _current_branch(ws)
                     ws.commit_all(
                         f"agent: address review feedback ({bench.metric}={candidate:.6g})"
@@ -338,7 +347,9 @@ def _respond(
         try:
             # the measured table is rewritten in place; the narrative is
             # never rewritten (the Edit block below points at the replies)
-            github.update_candidate_row(record.target, number, candidate)
+            github.update_candidate_row(
+                record.target, number, candidate, digits=bench.display_digits
+            )
         except Exception as exc:
             log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
         # Code changed after publish: the body's report now describes an
