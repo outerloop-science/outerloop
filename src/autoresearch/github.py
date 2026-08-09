@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.parse
@@ -251,6 +252,45 @@ class GitHubClient:
         return self._expect_dict(self._request("GET", path), path)
 
     BODY_EDIT_MARKER = "<!-- autoresearch:body-edit -->"
+    # the orchestrator-owned candidate row in pr_body's results table
+    # \r-tolerant: a human web-UI edit can normalize the body to CRLF
+    _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|(\r?)$", re.MULTILINE)
+
+    def update_candidate_row(
+        self, repo: str, number: int, candidate: float, digits: int | None = None
+    ) -> bool:
+        """Rewrite the results table's candidate row in place (PATCH).
+
+        The row is orchestrator-owned and mechanical — the ONE part of the
+        body that must never go stale when a follow-up push re-measures
+        (maintainer decision 2026-08-09: rewrite the measured numbers,
+        never the narrative). Returns False when the row is not found
+        (older body formats), in which case the Edit addendum still
+        carries the number.
+        """
+        if self.dry_run:
+            log.info("[dry-run] update candidate row %s#%d -> %s", repo, number, candidate)
+            return True
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        current = str(self._expect_dict(self._request("GET", path), path).get("body") or "")
+        # only the FIRST match, and only in the orchestrator's preamble
+        # (before the report section) — agent report text could contain a
+        # lookalike row, and it must stay untouched
+        head, sep, tail = current.partition("## Research report")
+        if not sep:
+            # No report heading -> the preamble boundary is gone (human
+            # body edit?): fail CLOSED rather than rewrite report text —
+            # the Edit addendum already carries the number.
+            return False
+        if not self._CANDIDATE_ROW.search(head):
+            return False
+        from autoresearch.progress import fmt_metric
+
+        head = self._CANDIDATE_ROW.sub(
+            rf"| candidate | {fmt_metric(candidate, digits)} |\1", head, count=1
+        )
+        self._request("PATCH", path, {"body": f"{head}{sep}{tail}"})
+        return True
 
     def append_pull_body(self, repo: str, number: int, addendum: str) -> None:
         """Upsert an EDIT addendum onto a PR body (read-modify-write PATCH).

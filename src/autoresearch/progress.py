@@ -105,7 +105,22 @@ def _delta(entry: LeaderEntry) -> str:
     return f"{'▲' if good else '▼'} {rel:+.1f}%"
 
 
-def render_markdown(entries: dict[str, LeaderEntry], target: str) -> str:
+DEFAULT_DISPLAY_DIGITS = 6
+
+
+def fmt_metric(value: float, digits: int | None = None) -> str:
+    """Render a measurement for a HUMAN surface at the benchmark's
+    conventional precision. The ledger keeps the full float; every
+    comparison (improvement thresholds, leader monotonicity) runs on full
+    floats — this is presentation only."""
+    return f"{value:.{digits or DEFAULT_DISPLAY_DIGITS}g}"
+
+
+def render_markdown(
+    entries: dict[str, LeaderEntry],
+    target: str,
+    digits: dict[str, int] | None = None,
+) -> str:
     lines = [
         "# Benchmark progress",
         "",
@@ -120,9 +135,10 @@ def render_markdown(entries: dict[str, LeaderEntry], target: str) -> str:
     for name in sorted(entries):
         e = entries[name]
         arrow = "↓" if e.direction == "min" else "↑"
+        d = (digits or {}).get(e.benchmark)
         lines.append(
-            f"| {e.benchmark} | `{e.metric}` {arrow} | {e.baseline:g} | "
-            f"{e.best:g} | {_delta(e)} | {e.updated} | `{e.best_run}` |"
+            f"| {e.benchmark} | `{e.metric}` {arrow} | {fmt_metric(e.baseline, d)} | "
+            f"{fmt_metric(e.best, d)} | {_delta(e)} | {e.updated} | `{e.best_run}` |"
         )
     lines += [
         "",
@@ -133,10 +149,16 @@ def render_markdown(entries: dict[str, LeaderEntry], target: str) -> str:
     return "\n".join(lines)
 
 
-def write_progress(workspace: Path, entries: dict[str, LeaderEntry], target: str) -> None:
+def write_progress(
+    workspace: Path,
+    entries: dict[str, LeaderEntry],
+    target: str,
+    digits: dict[str, int] | None = None,
+) -> None:
     leader_path = workspace / LEADER_FILE
     leader_path.parent.mkdir(parents=True, exist_ok=True)
+    # the ledger keeps FULL precision — it feeds comparisons, never eyes
     leader_path.write_text(
         json.dumps({name: asdict(e) for name, e in sorted(entries.items())}, indent=2) + "\n"
     )
-    (workspace / PROGRESS_FILE).write_text(render_markdown(entries, target))
+    (workspace / PROGRESS_FILE).write_text(render_markdown(entries, target, digits))

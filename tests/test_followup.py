@@ -49,6 +49,7 @@ class FakeGitHub:
     review_comments: list[dict] = field(default_factory=list)
     posted: list[str] = field(default_factory=list)
     body_addenda: list[str] = field(default_factory=list)
+    row_updates: list[float] = field(default_factory=list)
     auth: object = None
 
     def get_pull_request(self, repo, number):
@@ -68,6 +69,10 @@ class FakeGitHub:
 
     def append_pull_body(self, repo, number, addendum):
         self.body_addenda.append(addendum)
+
+    def update_candidate_row(self, repo, number, candidate, digits=None):
+        self.row_updates.append(candidate)
+        return True
 
 
 @dataclass
@@ -367,6 +372,8 @@ def test_pushed_changes_append_a_body_addendum(review_run) -> None:
     assert addendum.startswith("---")
     assert "**Edit (" in addendum and "follow-up" in addendum
     assert "original version" in addendum
+    # the measured table is rewritten in place with the re-measured value
+    assert github.row_updates == [10.2]
 
 
 def test_reverted_change_appends_no_addendum(review_run) -> None:
@@ -378,6 +385,7 @@ def test_reverted_change_appends_no_addendum(review_run) -> None:
     outcome = respond(root, github, harness)
     assert outcome.action == "replied"
     assert not github.body_addenda  # reverted -> body untouched
+    assert not github.row_updates
 
 
 def test_reply_without_changes_leaves_the_body_alone(review_run) -> None:

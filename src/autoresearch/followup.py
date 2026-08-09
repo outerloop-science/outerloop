@@ -24,7 +24,13 @@ from autoresearch.github import GitHubClient, Workspace
 from autoresearch.harness import Harness, redact
 from autoresearch.orchestrator import Evaluator, out_of_scope
 from autoresearch.orchestrator import improved as orch_improved
-from autoresearch.progress import PROGRESS_PATHS, load_leader, update_leader, write_progress
+from autoresearch.progress import (
+    PROGRESS_PATHS,
+    fmt_metric,
+    load_leader,
+    update_leader,
+    write_progress,
+)
 from autoresearch.review import APPROVAL_PATTERN, REDACTED
 from autoresearch.runstate import (
     ENDED,
@@ -308,10 +314,20 @@ def _respond(
                         run_id=run_id,
                         date=created[:10],
                     )
-                    write_progress(workspace, entries, record.target)
+                    write_progress(
+                        workspace,
+                        entries,
+                        record.target,
+                        digits={
+                            b.name: b.display_digits
+                            for b in contract.benchmarks
+                            if b.display_digits
+                        },
+                    )
                     branch = _current_branch(ws)
                     ws.commit_all(
-                        f"agent: address review feedback ({bench.metric}={candidate:.6g})"
+                        f"agent: address review feedback "
+                        f"({bench.metric}={fmt_metric(candidate, bench.display_digits)})"
                         f"\n\nAgent: {record.agent_id}",
                         author=bot_login,
                         forbidden=lambda p: (
@@ -325,7 +341,7 @@ def _respond(
                     )
                     measured_note = (
                         f"\n\n**Re-measured after this change: `{bench.metric}` = "
-                        f"{candidate:.6g}**"
+                        f"{fmt_metric(candidate, bench.display_digits)}**"
                         + (
                             " — worse than the PR's previous number, stated plainly."
                             if worse
@@ -335,6 +351,14 @@ def _respond(
 
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
     if change_pushed:
+        try:
+            # the measured table is rewritten in place; the narrative is
+            # never rewritten (the Edit block below points at the replies)
+            github.update_candidate_row(
+                record.target, number, candidate, digits=bench.display_digits
+            )
+        except Exception as exc:
+            log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
         # Code changed after publish: the body's report now describes an
         # older tree. Mark it edited (maintainer decision 2026-08-09) so no
         # reader — human or verifier — mistakes the original report for the

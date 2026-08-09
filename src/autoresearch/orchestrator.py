@@ -418,8 +418,20 @@ def climb_once(
     )
 
 
-def pr_body(result: ClimbResult, config: ClimbConfig, redact_secrets: tuple[str, ...]) -> str:
-    """The PR body for an improved run: results table + the agent's report."""
+def pr_body(
+    result: ClimbResult,
+    config: ClimbConfig,
+    redact_secrets: tuple[str, ...],
+    display_digits: int | None = None,
+) -> str:
+    """The PR body for an improved run: results table + the agent's report.
+
+    Human surfaces render at the benchmark's conventional precision
+    (maintainer decision 2026-08-09); full precision lives only in
+    results/leader.json, and every comparison runs on full floats.
+    """
+    from autoresearch.progress import fmt_metric
+
     if result.outcome != "improved" or result.baseline is None or result.candidate is None:
         raise ValueError("pr_body requires an improved result with both measurements")
     body = "\n".join(
@@ -429,8 +441,8 @@ def pr_body(result: ClimbResult, config: ClimbConfig, redact_secrets: tuple[str,
             "",
             "| | value |",
             "| --- | --- |",
-            f"| baseline ({config.benchmark}) | {result.baseline} |",
-            f"| candidate | {result.candidate} |",
+            f"| baseline ({config.benchmark}) | {fmt_metric(result.baseline, display_digits)} |",
+            f"| candidate | {fmt_metric(result.candidate, display_digits)} |",
             "",
             "Both numbers were measured by the orchestrator re-running the "
             "contract's eval command — not taken from the session. CI "

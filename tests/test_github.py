@@ -299,3 +299,40 @@ def test_arming_guard_arms_with_repo_allowed_method(provider: FileTokenProvider)
     assert isinstance(transport.requests[-1].data, bytes)
     body = json.loads(transport.requests[-1].data.decode())
     assert body["variables"]["method"] == "SQUASH"
+
+
+def test_candidate_row_rewrite_touches_only_the_preamble(provider: FileTokenProvider) -> None:
+    """The report can contain a lookalike row; only the orchestrator's
+    table row (before the report section) is rewritten."""
+    body = (
+        "intro\n| | value |\n| --- | --- |\n| baseline (tsp) | 13.88 |\n"
+        "| candidate | 13.1 |\n\n## Research report\n\nprose "
+        "with a lookalike:\n| candidate | 999 |\n"
+    )
+    transport = FakeTransport([{"body": body}, None])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.update_candidate_row("org/repo", 9, 10.2) is True
+    payload = transport.requests[-1].data
+    assert isinstance(payload, bytes)
+    patched = json.loads(payload.decode())["body"]
+    assert "| candidate | 10.2 |" in patched
+    assert "| candidate | 999 |" in patched  # the report's lookalike untouched
+    assert "| candidate | 13.1 |" not in patched
+
+
+def test_candidate_row_rewrite_fails_closed_without_report_heading(
+    provider: FileTokenProvider,
+) -> None:
+    """No report heading -> no preamble boundary -> no rewrite (the row
+    found could be inside agent text)."""
+    transport = FakeTransport([{"body": "| candidate | 13.1 |\nno heading here"}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.update_candidate_row("org/repo", 9, 10.2) is False
+    assert len(transport.requests) == 1
+
+
+def test_candidate_row_rewrite_reports_missing_row(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([{"body": "no table here\n\n## Research report\nx"}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.update_candidate_row("org/repo", 9, 10.2) is False
+    assert len(transport.requests) == 1  # GET only, no PATCH
