@@ -46,6 +46,7 @@ from autoresearch.progress import (
 )
 from autoresearch.runstate import (
     ABORTED,
+    BUDGET_EXHAUSTED,
     ENDED,
     IN_REVIEW,
     NEGATIVE_RESULT,
@@ -81,6 +82,7 @@ RULER = (
 _ENDINGS_BY_OUTCOME = {
     "no-improvement": NEGATIVE_RESULT,
     "session-error": ABORTED,
+    "session-budget": BUDGET_EXHAUSTED,
     "eval-error": ABORTED,
     "scope-violation": ABORTED,
 }

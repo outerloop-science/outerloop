@@ -378,7 +378,13 @@ def _respond(
     session = harness.run(prompt, workspace, resume_session_id=record.resume_session_id or None)
     if session.is_error:
         # cursor NOT advanced: the next attempt sees the same comments
-        return FollowupOutcome(run_id, "error", f"session: {session.stop_reason}")
+        # Deliberately NOT a budget-exhausted ending: follow-ups never end
+        # the run, and "error" is what keeps cursors un-advanced so the next
+        # tick retries the reply (wake_attempts caps the spend). The detail
+        # string still names the real cause for the log reader.
+        return FollowupOutcome(
+            run_id, "error", f"session: {session.error_detail or session.stop_reason}"
+        )
 
     # Same self-approval scrub as the reviewer: the pipeline must never nudge
     # humans toward merging its own work, even in the author's voice.

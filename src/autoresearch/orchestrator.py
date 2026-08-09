@@ -31,7 +31,7 @@ from autoresearch.contract import (
     normalize_path,
     path_is_forbidden,
 )
-from autoresearch.harness import Harness, SessionResult, redact
+from autoresearch.harness import Harness, SessionResult, budget_exhausted, redact
 
 log = logging.getLogger(__name__)
 
@@ -278,7 +278,9 @@ class ClimbConfig:
 class ClimbResult:
     """What one attempt produced — the raw material of the run report."""
 
-    outcome: str  # improved | no-improvement | session-error | eval-error | scope-violation
+    # improved | no-improvement | session-error | session-budget |
+    # eval-error | scope-violation
+    outcome: str
     baseline: float | None = None
     candidate: float | None = None
     branch: str = ""
@@ -457,10 +459,11 @@ def climb_once(
     session = harness.run(render(brief), workspace)
     if session.is_error:
         return ClimbResult(
-            outcome="session-error",
+            # our caps running out is a budget ending, not a malfunction
+            outcome="session-budget" if budget_exhausted(session) else "session-error",
             baseline=baseline,
             session=session,
-            note=session.stop_reason,
+            note=session.error_detail or session.stop_reason,
         )
 
     # Scope BEFORE measurement: an out-of-scope tree is never evaluated,

@@ -122,7 +122,7 @@ class FollowupSpec:
     image: str
     home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
     bot_login: str = "agentic-learning-bot"
-    time_minutes: int = 60
+    time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
     key_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues

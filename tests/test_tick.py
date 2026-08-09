@@ -853,11 +853,11 @@ roadmap: docs/roadmap.md
     out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), spec, contract, NOW)
     assert out == ("tsp", "123")
     sbatch = submitted[0]
-    assert "--time=90" in sbatch  # 100000 clamped to the default-as-ceiling
+    assert "--time=120" in sbatch  # 100000 clamped to the default-as-ceiling
     wrap = sbatch[-1]
     assert "--max-turns 30" in wrap
     assert "--session-minutes 25" in wrap
-    assert "--job-minutes 90" in wrap  # the job's own walltime, for the alarm
+    assert "--job-minutes 120" in wrap  # the job's own walltime, for the alarm
 
 
 def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
@@ -986,7 +986,7 @@ roadmap: docs/roadmap.md
     wrap = submitted[0][-1]
     assert "autoresearch.steward" in wrap
     assert "--key-file /k" in wrap
-    assert "--job-minutes 90" in wrap
+    assert "--job-minutes 120" in wrap
 
 
 def test_followup_key_routing_by_role(tmp_path: Path) -> None:

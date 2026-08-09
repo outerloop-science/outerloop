@@ -344,6 +344,50 @@ def test_stewardship_rebased_env_lands_with_orchestrator_records(tmp_path, stewa
     assert "| re-based baseline (current solver, new env) | 14.9 |" in body
 
 
+def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path, steward_repo) -> None:
+    """Turns running out is one of the six honest deaths: the record says
+    budget-exhausted with the real cause, and the work order hears "ran
+    out of its session budget" — not "ValueError: tool_use"."""
+
+    @dataclass
+    class DryHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            return SessionResult(
+                stop_reason="tool_use",
+                is_error=True,
+                cost_usd=2.0,
+                num_turns=120,
+                session_id="steward-sess",
+                final_text="",
+                transcript_path="",
+                error_detail="error_max_turns: Reached maximum number of turns (120)",
+            )
+
+    github = StewardGitHub()
+    outcome = live_steward(
+        config=StewardConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="steward-tsp-dry",
+        harness=DryHarness(),
+        evaluator=CheckingEvaluator(values=[14.9]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-09T00:00:00Z",
+        issue_number=21,
+        work_order="the pool is exploitable; re-base it",
+    )
+    assert outcome.outcome == "budget-exhausted"
+    record = load_record(tmp_path / "state", "steward-tsp-dry")
+    assert record.ending == "budget-exhausted"
+    assert "maximum number of turns" in record.ending_note
+    assert "ValueError" not in record.ending_note
+    assert any(
+        "claim-released" in body and "ran out of its session budget" in body
+        for _, body in github.issue_comments
+    )
+
+
 def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:
     outcome, github, _ = run_steward(
         tmp_path,
