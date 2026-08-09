@@ -34,10 +34,12 @@ log = logging.getLogger(__name__)
 # OS-level sandboxing lands.)
 SESSION_ENV_ALLOWLIST = ("PATH", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
-DEFAULT_TIMEOUT_S = 3600
-# Fallback only — every orchestrated path threads effective_limits in
-# explicitly. Kept at the session ceiling so a site that forgets still
-# grants the intended budget rather than silently undercutting it.
+# Fallbacks only — every orchestrated path threads effective_limits in
+# explicitly (climb/steward CLIs pass turns and minutes; the follow-up CLI
+# derives its timeout from the job walltime). Kept at the session ceilings
+# so a site that forgets still grants the intended budget rather than
+# silently undercutting it.
+DEFAULT_TIMEOUT_S = 5400
 DEFAULT_MAX_TURNS = 120
 
 
@@ -102,7 +104,7 @@ def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "")
     return SessionResult(
         stop_reason=stop_reason,
         is_error=True,
-        error_detail=detail or stop_reason,
+        error_detail=(detail or stop_reason)[:500],
         cost_usd=0.0,
         num_turns=0,
         session_id="",
@@ -322,6 +324,8 @@ class ClaudeCodeHarness:
         errors = data.get("errors")
         messages = "; ".join(str(e) for e in errors if e) if isinstance(errors, list) else ""
         detail = f"{subtype}: {messages}" if subtype and messages else (subtype or messages)
+        # bounded here so every downstream note/report/comment inherits it
+        detail = detail[:500]
         return SessionResult(
             stop_reason=str(data.get("stop_reason") or data.get("subtype") or "unknown"),
             is_error=is_error,
