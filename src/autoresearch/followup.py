@@ -489,8 +489,20 @@ def _respond(
                         # sub-floor delta over the recorded best is pool
                         # luck and must not ratchet the ledger (round-1
                         # review finding)
-                        if prior is not None and not clears_min_delta(
-                            prior.best, candidate, bench.direction, bench.min_delta
+                        # The floor explains only a delta that WOULD have
+                        # improved: an outright regression must read as a
+                        # regression (the `worse` flag), never as noise.
+                        beats_prior = prior is not None and (
+                            candidate > prior.best
+                            if bench.direction == "max"
+                            else candidate < prior.best
+                        )
+                        if (
+                            prior is not None
+                            and beats_prior
+                            and not clears_min_delta(
+                                prior.best, candidate, bench.direction, bench.min_delta
+                            )
                         ):
                             # named on the thread, like the climb's ending
                             # note — a silently unchanged ledger row reads

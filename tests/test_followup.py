@@ -272,6 +272,18 @@ def test_followup_row_update_respects_the_cross_seed_floor(review_run) -> None:
     (reply,) = github.posted
     assert "noise floor" in reply and "ledger row is unchanged" in reply
 
+    # an outright REGRESSION is reported as one — never blamed on the floor
+    record_r = load_record(root, "tsp-r1")
+    save_record(root, replace(record_r, followup_job_id=""), NOW)
+    github_r = FakeGitHub(comments=[member(150, "hm, try again")])
+    harness_r = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2r\n"})
+    respond(root, github_r, harness=harness_r, evaluator=QueueEvaluator(values=[20.0]))
+    (reply_r,) = github_r.posted
+    assert "worse than" in reply_r
+    assert "noise floor" not in reply_r
+    row_r = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
+    assert row_r["best"] == 12.0  # best never regresses
+
     # a second round that CLEARS the floor moves the row and records the seed
     record = load_record(root, "tsp-r1")
     save_record(root, replace(record, followup_job_id=""), NOW)

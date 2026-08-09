@@ -47,7 +47,9 @@ PROTECTED_EVAL_ENV = frozenset({"HOME", "PATH", "TMPDIR", "LANG", "VIRTUAL_ENV"}
 # APPTAINERENV_* is translated into the CONTAINER's environment by apptainer
 # (APPTAINERENV_HOME becomes HOME inside), so exact-name checks cannot
 # enumerate them (review finding).
-PROTECTED_ENV_PREFIXES = ("UV_", "APPTAINERENV_")
+# APPTAINER_* configures the HOST-side apptainer CLI (bind paths, home,
+# containment) — same family logic, different side of the boundary.
+PROTECTED_ENV_PREFIXES = ("UV_", "APPTAINERENV_", "APPTAINER_")
 
 
 def managed_eval_env(name: str) -> bool:

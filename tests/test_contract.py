@@ -177,6 +177,7 @@ roadmap: docs/roadmap.md
         "VIRTUAL_ENV",
         "APPTAINERENV_HOME",  # apptainer translates it INSIDE the container
         "UV_ANYTHING_FUTURE",  # whole families, not enumerable names
+        "APPTAINER_BINDPATH",  # host-side apptainer CLI configuration
     ):
         with pytest.raises(ValueError):
             load_contract(base % managed, "org/pilot")
