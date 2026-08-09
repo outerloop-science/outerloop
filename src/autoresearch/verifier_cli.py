@@ -92,6 +92,50 @@ def gather_ruler(
     return tuple(out)
 
 
+# The verifier's own rounds post via the Actions workflow token — this
+# identity, which no ordinary account can assume. Marker text alone is
+# forgeable (it appears verbatim in every posted round); identity is not.
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+
+
+def _standing(comment: dict, bot_login: str) -> bool:
+    """Only voices with standing reach the verifier: maintainers by
+    association, the accused agent's own replies, and prior verifier
+    rounds identified by POSTING IDENTITY plus marker (marker alone can be
+    forged by any commenter on a public repo)."""
+    body = str(comment.get("body") or "")
+    if not body.strip():
+        return False
+    login = str((comment.get("user") or {}).get("login", ""))
+    if str(comment.get("author_association", "")) in QUALIFYING_ASSOCIATIONS:
+        return True
+    if login.casefold() == bot_login.casefold():
+        return True
+    return login.casefold() == ACTIONS_BOT_LOGIN.casefold() and body.lstrip().startswith(
+        VERIFY_MARKER
+    )
+
+
+def gather_thread(
+    client: GitHubClient, repo: str, number: int, bot_login: str
+) -> tuple[tuple[str, str], ...]:
+    """The gated discussion, from ALL THREE places maintainers write —
+    issue comments, review bodies, inline review comments (the follow-up
+    lane learned this the hard way: independent collections, and feedback
+    lands in any of them)."""
+    sources = (
+        client.list_comments(repo, number),
+        client.list_pr_reviews(repo, number),
+        client.list_pr_review_comments(repo, number),
+    )
+    return tuple(
+        (str((c.get("user") or {}).get("login", "")), str(c.get("body") or ""))
+        for comments in sources
+        for c in comments
+        if _standing(c, bot_login)
+    )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     repo = os.environ["PR_REPO"]
@@ -143,26 +187,7 @@ def main() -> int:
                 contract_text = ""
             ruler = gather_ruler(client, repo, base_ref or "HEAD", contract_text)
             try:
-                # Standing gate (mirrors the follow-up lane's): only voices
-                # with standing reach the verifier — maintainers by
-                # association, the accused agent's own replies, and prior
-                # verifier rounds. On a public repo, anyone can comment;
-                # an unprivileged comment framed as a rebuttal must not be
-                # able to steer findings into suppression.
-                thread = tuple(
-                    (
-                        str((c.get("user") or {}).get("login", "")),
-                        str(c.get("body") or ""),
-                    )
-                    for c in client.list_comments(repo, number)
-                    if str(c.get("body") or "").strip()
-                    and (
-                        str(c.get("author_association", "")) in QUALIFYING_ASSOCIATIONS
-                        or str((c.get("user") or {}).get("login", "")).casefold()
-                        == bot_login.casefold()
-                        or str(c.get("body") or "").lstrip().startswith(VERIFY_MARKER)
-                    )
-                )
+                thread = gather_thread(client, repo, number, bot_login)
             except EXPECTED_FAILURES as exc:
                 log.warning("verifying without the discussion thread: %s", exc)
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
