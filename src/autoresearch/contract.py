@@ -99,9 +99,17 @@ class Scope(_StrictModel):
     allowed: list[str] = Field(min_length=1)
 
 
+# The orchestrator's ledger: no agent scope — solver OR steward — may
+# contain these; their numbers carry orchestrator provenance only.
+RECORD_PATHS = ("BENCHMARKS.md", "results/leader.json")
+
+
 class StewardScope(_StrictModel):
-    """Paths the BENCHMARK STEWARD may edit (env generators, eval harness,
-    tests, record files). The solver's `scope.allowed` is implicitly
+    """Paths the BENCHMARK STEWARD may edit: env generators, the eval
+    harness, tests, and reference data — NEVER the record ledger
+    (BENCHMARKS.md, results/leader.json; the orchestrator writes those
+    with its own measurements, and load_contract rejects a steward scope
+    that includes them). The solver's `scope.allowed` is implicitly
     forbidden to the steward — the roles' territories must not overlap
     (collusion structure, design/meta.md) — and the always-forbidden set
     (this contract, `.github/`, the roadmap) binds the steward too."""
@@ -216,6 +224,7 @@ def load_contract(text: str, target_repo: str) -> Contract:
         # malformed or colliding entry is a contract error, never a
         # mid-run surprise
         solver = [normalize_path(entry) for entry in contract.scope.allowed]
+        records = [PurePosixPath(p) for p in RECORD_PATHS]
         for entry in contract.steward.allowed:
             allowed = normalize_path(entry)
             for path in forbidden:
@@ -224,4 +233,10 @@ def load_contract(text: str, target_repo: str) -> Contract:
             for sp in solver:
                 if _overlaps(allowed, sp):
                     raise ScopeError(f"steward path {entry!r} overlaps solver scope {str(sp)!r}")
+            for rp in records:
+                if _overlaps(allowed, rp):
+                    raise ScopeError(
+                        f"steward path {entry!r} overlaps the record ledger "
+                        f"{str(rp)!r} (orchestrator-owned)"
+                    )
     return contract

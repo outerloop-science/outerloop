@@ -172,6 +172,72 @@ def pick_steward_issue(
     return None
 
 
+def release_orphaned_claims(
+    github: Any, repo: str, records: list, now: float, stale_s: float = 4 * 3600, limit: int = 2
+) -> int:
+    """Post release markers for claimed work orders whose runs are DEAD.
+
+    A killed steward job never comments (no signal reaches processes on
+    some clusters; the sweep ends the record from Slurm truth) — so the
+    tick reconciles: a claimed, steward-labeled issue whose newest matching
+    run record is ENDED-without-merge gets its claim released; a claimed
+    issue with NO record at all is released once the claim is stale
+    (submit succeeded but the job died pre-record). Bounded per tick.
+    """
+    released = 0
+    for issue in github.list_open_issues(repo):
+        if released >= limit:
+            break
+        labels = {
+            str(label.get("name", "")).casefold()
+            for label in issue.get("labels", [])
+            if isinstance(label, dict)
+        }
+        if STEWARD_LABEL not in labels:
+            continue
+        number = int(issue.get("number", 0))
+        claimed = False
+        claim_time = ""
+        for c in github.list_comments(repo, number):
+            body = str(c.get("body", ""))
+            if CLAIM_MARKER in body:
+                claimed = True
+                claim_time = str(c.get("created_at", ""))
+            if RELEASE_MARKER in body:
+                claimed = False
+        if not claimed:
+            continue
+        mine = [r for r in records if r.issue_number == number and r.agent_id.startswith("steward")]
+        dead = (
+            bool(mine)
+            and all(r.state == ENDED for r in mine)
+            and not any(r.ending == "merged" for r in mine)
+        )
+        stale_no_record = not mine and _older_than(claim_time, now, stale_s)
+        if dead or stale_no_record:
+            github.comment(
+                repo,
+                number,
+                f"{RELEASE_MARKER}\nThe claiming run ended without a merged PR "
+                f"(killed or crashed); claim released for retry "
+                f"(up to {MAX_STEWARD_ATTEMPTS} total attempts).",
+            )
+            released += 1
+    return released
+
+
+def _older_than(iso_timestamp: str, now: float, seconds: float) -> bool:
+    """Best-effort staleness from an ISO-8601 GitHub timestamp; unparseable
+    reads as NOT stale (never release on bad data)."""
+    from datetime import datetime
+
+    try:
+        then = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return False
+    return now - then > seconds
+
+
 def steward_brief(contract_text: str, contract: Contract, work_order: str, benchmark: str) -> str:
     from autoresearch.brief import _cap, _fence
 

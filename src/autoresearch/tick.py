@@ -922,10 +922,14 @@ def service_steward(
     if getattr(contract, "steward", None) is None:
         return None
     try:
+        from autoresearch.steward import release_orphaned_claims
+
         # ONE active run per target covers stewardships too: an env rewrite
         # must not fly alongside a solver climb (the drift/freshness
         # machinery does not coordinate them) or another stewardship.
         records = list_runs(root)
+        # reconcile first: killed jobs never post their own release
+        release_orphaned_claims(github, target, records, now)
         if any(r.target == target and r.state != ENDED for r in records):
             return None
         # The queue window (submit -> job writes its record) is bridged by

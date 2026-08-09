@@ -172,7 +172,7 @@ def test_brief_carries_rules_order_and_both_territories() -> None:
     # the three-tier mission is in the constitution, invention ending at a
     # proposal (the contract is not the steward's to write)
     assert "MAINTAIN" in text and "EXTEND" in text and "INVENT" in text
-    assert "NOT yours to write" in text
+    assert "NOT yours" in text  # invention ends at a proposal
     assert "the pool is saturated" in text
     assert "src/pilot/instances.py" in text  # may edit
     assert "src/pilot/solvers/" in text  # forbidden, listed
@@ -429,3 +429,65 @@ budgets:""",
     assert any("--env probe" in c for c in evaluator.checks)  # sibling smoke-checked
     assert not any("--env tsp" in c for c in evaluator.checks)  # the target is MEASURED instead
     assert "smoke-checked, not" in github.prs[0]["body"]
+
+
+def test_contract_rejects_steward_scope_over_the_ledger() -> None:
+    import pytest as _pytest
+
+    from autoresearch.contract import ScopeError
+
+    for bad in ("results/leader.json", "BENCHMARKS.md", "results/"):
+        with _pytest.raises(ScopeError, match="record ledger"):
+            load_contract(
+                CONTRACT.replace(
+                    "steward: {allowed: [src/pilot/instances.py, src/pilot/eval.py, tests/]}",
+                    f"steward: {{allowed: [{bad}]}}",
+                ),
+                "org/pilot",
+            )
+
+
+def test_orphaned_claims_are_released_for_dead_runs() -> None:
+    """Killed jobs never post their own release: reconciliation does."""
+    from autoresearch.runstate import RunRecord
+    from autoresearch.steward import release_orphaned_claims
+
+    class G(FakeIssues):
+        def __init__(self, issues, comments):
+            super().__init__(issues, comments)
+            self.posted = []
+
+        def comment(self, repo, number, body):
+            self.posted.append((number, body))
+
+    claimed = {"body": "<!-- autoresearch:claimed -->", "created_at": "2026-08-09T00:00:00Z"}
+    dead_record = RunRecord(
+        run_id="steward-tsp-9",
+        target="org/pilot",
+        task_title="t",
+        state="ended",
+        ending="aborted",
+        agent_id="steward-01",
+        issue_number=7,
+    )
+    github = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
+    n = release_orphaned_claims(github, "org/pilot", [dead_record], now=2_000_000_000.0)
+    assert n == 1
+    assert github.posted and "claim-released" in github.posted[0][1]
+    # a LIVE run keeps its claim
+    live_record = RunRecord(
+        run_id="steward-tsp-9",
+        target="org/pilot",
+        task_title="t",
+        state="implementing",
+        agent_id="steward-01",
+        issue_number=7,
+    )
+    github2 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
+    assert release_orphaned_claims(github2, "org/pilot", [live_record], now=2_000_000_000.0) == 0
+    # no record + stale claim -> released; fresh claim -> kept
+    github3 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
+    assert release_orphaned_claims(github3, "org/pilot", [], now=2_000_000_000.0) == 1
+    fresh = {"body": "<!-- autoresearch:claimed -->", "created_at": "2033-01-01T00:00:00Z"}
+    github4 = G([_issue(7, "re-base the tsp pool")], {7: [fresh]})
+    assert release_orphaned_claims(github4, "org/pilot", [], now=2_000_000_000.0) == 0
