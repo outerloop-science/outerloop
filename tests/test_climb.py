@@ -232,6 +232,41 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
     assert github.prs == []
 
 
+def test_exhausted_live_climb_ends_budget_exhausted(tmp_path, target_repo) -> None:
+    """The session-budget outcome flows through the ending map on a LIVE
+    climb: the record says budget-exhausted with the real cause."""
+
+    @dataclass
+    class DryHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            return SessionResult(
+                stop_reason="tool_use",
+                is_error=True,
+                cost_usd=2.0,
+                num_turns=120,
+                session_id="",
+                final_text="",
+                transcript_path="",
+                error_detail="error_max_turns: Reached maximum number of turns (120)",
+            )
+
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-dry",
+        harness=DryHarness(),
+        evaluator=QueueEvaluator(values=[13.876]),
+        github=FakeGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "session-budget"
+    record = load_record(tmp_path / "state", "tsp-dry")
+    assert record.ending == "budget-exhausted"
+    assert "maximum number of turns" in record.ending_note
+
+
 def test_second_run_gets_its_own_branch(tmp_path, target_repo) -> None:
     """A fixed branch name would non-fast-forward on run two."""
     edits = {"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}
