@@ -45,6 +45,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Follow-up pushes rewrite the PR body's measured candidate row in place
+  (the one mechanical, orchestrator-owned number that must never go
+  stale), scoped to the preamble so report text with a lookalike row is
+  untouched; the narrative is never rewritten — the Edit block points at
+  the replies.
+
 - The roles now read each other (both gaps found live on the first
   verifier exchange): the verifier's context includes the PR discussion —
   bounded, with its own prior rounds marked as its own findings to

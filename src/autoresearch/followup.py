@@ -335,6 +335,12 @@ def _respond(
 
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
     if change_pushed:
+        try:
+            # the measured table is rewritten in place; the narrative is
+            # never rewritten (the Edit block below points at the replies)
+            github.update_candidate_row(record.target, number, candidate)
+        except Exception as exc:
+            log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
         # Code changed after publish: the body's report now describes an
         # older tree. Mark it edited (maintainer decision 2026-08-09) so no
         # reader — human or verifier — mistakes the original report for the
