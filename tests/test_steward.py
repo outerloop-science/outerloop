@@ -169,6 +169,10 @@ def test_contract_rejects_steward_solver_overlap() -> None:
 def test_brief_carries_rules_order_and_both_territories() -> None:
     text = steward_brief(CONTRACT, contract(), "the pool is saturated", "tsp")
     assert "BENCHMARK STEWARD" in text
+    # the three-tier mission is in the constitution, invention ending at a
+    # proposal (the contract is not the steward's to write)
+    assert "MAINTAIN" in text and "EXTEND" in text and "INVENT" in text
+    assert "NOT yours to write" in text
     assert "the pool is saturated" in text
     assert "src/pilot/instances.py" in text  # may edit
     assert "src/pilot/solvers/" in text  # forbidden, listed

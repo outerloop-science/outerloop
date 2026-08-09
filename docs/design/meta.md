@@ -110,6 +110,17 @@ First work orders exist from the agents' own reports (see roadmap): probe v2
 (trivially saturable), a timing-noise floor for speedup. These validate the
 role on real demand before any automation.
 
+**Growth path (maintainer direction 2026-08-09)**: the steward's mission is
+tiered — maintain (headroom, exploits, noise floors) → extend (harder
+metrics, new metrics on existing tasks, evaluation protocols adopted from
+the literature, cited) → invent (new benchmarks designed within the
+target's `vision:`, like a research scientist would). Invention ends at a
+proposal by construction: the steward implements env/eval/tests inside its
+territory, but the contract's benchmark list is agent-unwritable, so its
+PR carries a ready-to-paste contract entry and the human enacts it. Each
+tier uses the same governed channel — standing-gated work orders (later:
+vetoable self-proposed plans), verifier's adversarial read, human merge.
+
 ## Progress webpage
 
 Everything is already in git: `results/leader.json` history, run reports,
