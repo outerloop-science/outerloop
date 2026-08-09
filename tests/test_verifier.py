@@ -230,3 +230,29 @@ def test_module_404s_cannot_starve_the_test_tripwires() -> None:
     paths = [p for p, _ in ruler]
     assert paths and all(p.startswith("tests/") for p in paths)  # tripwires arrived
     assert len([p for p in fetched if not p.startswith("tests/")]) <= 6  # module budget held
+
+
+def test_thread_reaches_the_prompt_with_reread_instruction() -> None:
+    prompt = build_verify_prompt(
+        make_pr(),
+        contract_text="c",
+        thread=(
+            ("github-actions[bot]", "Round 1 findings: caches across calls"),
+            ("agentic-learning-bot", "Fixed: held-out seeds 1-15 = 960/960"),
+        ),
+    )
+    assert "## The discussion so far" in prompt
+    assert "960/960" in prompt  # the rebuttal's evidence is visible
+    assert "your OWN earlier findings" in prompt
+    # the discussion precedes the diff so the model reads claims before code
+    assert prompt.index("discussion so far") < prompt.index("## The change")
+
+
+def test_thread_is_bounded_to_the_most_recent_comments() -> None:
+    from autoresearch.verifier import MAX_THREAD_COMMENTS
+
+    thread = tuple((f"user{i}", f"comment-{i}") for i in range(30))
+    prompt = build_verify_prompt(make_pr(), contract_text="c", thread=thread)
+    assert "comment-29" in prompt  # newest kept
+    assert "comment-0" not in prompt  # oldest dropped
+    assert prompt.count("### user") == MAX_THREAD_COMMENTS

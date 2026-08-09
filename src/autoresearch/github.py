@@ -250,6 +250,21 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)
 
+    def append_pull_body(self, repo: str, number: int, addendum: str) -> None:
+        """Append an addendum to a PR body (read-modify-write PATCH).
+
+        Follow-up commits desync the report frozen into the body at publish
+        (found live on the first verifier exchange: round 2 reviewed a body
+        describing code the follow-up had already replaced). The addendum
+        marks the body EDITED rather than rewriting history in place.
+        """
+        if self.dry_run:
+            log.info("[dry-run] append to PR body %s#%d (%d chars)", repo, number, len(addendum))
+            return
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
+        current = str(self._expect_dict(self._request("GET", path), path).get("body") or "")
+        self._request("PATCH", path, {"body": f"{current}\n\n{addendum}"})
+
     def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         data = self._request("POST", "/graphql", {"query": query, "variables": variables})
         if not isinstance(data, dict):

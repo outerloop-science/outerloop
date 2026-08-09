@@ -124,6 +124,7 @@ def main() -> int:
         )
         contract_text = ""
         ruler: tuple[tuple[str, str], ...] = ()
+        thread: tuple[tuple[str, str], ...] = ()
         # Context is fetched only for PRs that will actually be verified —
         # human-authored and opted-out PRs must not pay the API fan-out.
         if verify_skip_reason(pr, bot_login) is None:
@@ -140,6 +141,17 @@ def main() -> int:
                 log.warning("verifying without the contract: %s", exc)
                 contract_text = ""
             ruler = gather_ruler(client, repo, base_ref or "HEAD", contract_text)
+            try:
+                thread = tuple(
+                    (
+                        str((c.get("user") or {}).get("login", "")),
+                        str(c.get("body") or ""),
+                    )
+                    for c in client.list_comments(repo, number)
+                    if str(c.get("body") or "").strip()
+                )
+            except EXPECTED_FAILURES as exc:
+                log.warning("verifying without the discussion thread: %s", exc)
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         completer = AnthropicCompleter(
             api_key=os.environ["ANTHROPIC_VERIFIER_KEY"],
@@ -148,7 +160,7 @@ def main() -> int:
         )
         today = datetime.now(UTC).date().isoformat()
         body = format_verify_comment(
-            verify(pr, completer, bot_login, contract_text, ruler, today=today)
+            verify(pr, completer, bot_login, contract_text, ruler, today=today, thread=thread)
         )
         if body is None:
             log.info("nothing to post")

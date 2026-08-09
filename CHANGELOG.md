@@ -45,6 +45,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The roles now read each other (both gaps found live on the first
+  verifier exchange): the verifier's context includes the PR discussion —
+  bounded, with its own prior rounds marked as its own findings to
+  re-check — and a follow-up that pushes code appends an **Edit** addendum
+  to the PR body, so the report frozen at publish is never mistaken for
+  the current state.
+
 - The verifier (`verifier`, `verifier_cli`, reusable workflow
   `verify.yml`): adversarial integrity reads of BOT-authored PRs — the
   advisory reviewer's mirror. Gaming lens (harness exploitation,
