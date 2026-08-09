@@ -394,3 +394,153 @@ def test_reply_without_changes_leaves_the_body_alone(review_run) -> None:
     outcome = respond(root, github, ResumingHarness())  # no edits -> no push
     assert outcome.action == "replied"
     assert not github.body_addenda
+
+
+STEWARD_CONTRACT = """\
+benchmarks:
+  - name: tsp
+    command: uv run python -m pilot.eval --env tsp --json
+    metric: mean_tour_length
+    direction: min
+budgets: {gpu_hours_per_run: 1, runs_per_week: 10}
+scope: {allowed: [src/pilot/solvers/]}
+steward: {allowed: [src/pilot/instances.py, tests/]}
+roadmap: docs/roadmap.md
+"""
+
+
+@pytest.fixture
+def steward_review_run(tmp_path: Path):
+    """An in-review STEWARD run with a retained workspace on a branch."""
+    seed = tmp_path / "seed"
+    (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
+    (seed / "docs").mkdir()
+    (seed / "results").mkdir()
+    (seed / ".autoresearch.yaml").write_text(STEWARD_CONTRACT)
+    (seed / "docs" / "roadmap.md").write_text("# roadmap\n")
+    (seed / "src" / "pilot" / "solvers" / "tsp.py").write_text("v1\n")
+    (seed / "src" / "pilot" / "instances.py").write_text("SEED = 1\n")
+    (seed / "results" / "leader.json").write_text(
+        '{"tsp": {"benchmark": "tsp", "metric": "mean_tour_length", "direction": "min",'
+        ' "baseline": 14.9, "best": 14.9, "best_run": "baseline-s1", "updated": "2026-08-09"}}\n'
+    )
+    _git(seed, "init", "-q", "-b", "main")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed")
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(seed), str(bare))
+
+    root = tmp_path / "state"
+    ws = run_dir(root, "steward-tsp-r1") / "ws"
+    ws.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", str(bare), str(ws))
+    _git(ws, "switch", "-qc", "feat/steward/steward-01/steward-tsp-r1")
+
+    record = RunRecord(
+        run_id="steward-tsp-r1",
+        target="org/pilot",
+        task_title="steward: tsp",
+        benchmark="tsp",
+        state=IN_REVIEW,
+        agent_id="steward-01",
+        pr_url="https://github.com/org/pilot/pull/25",
+        resume_session_id="steward-sess",
+        last_comment_id=100,
+    )
+    save_record(root, record, NOW - 1000)
+    return root, bare
+
+
+class StewardEvaluatorFake:
+    def __init__(self, value: float):
+        self.value = value
+        self.checks: list[str] = []
+
+    def check(self, workspace, command) -> None:
+        self.checks.append(command)
+
+    def evaluate(self, workspace, command, metric) -> float:
+        return self.value
+
+
+def test_steward_followup_revalidates_and_rebases(steward_review_run) -> None:
+    """A comment on a steward PR wakes the STEWARD flow: steward scope on
+    the change, the validation ruler (suite runs), and an orchestrator
+    re-based row — never the solver's improvement math."""
+    root, bare = steward_review_run
+    github = FakeGitHub(comments=[member(101, "address the verifier findings")])
+    harness = ResumingHarness(edits={"src/pilot/instances.py": "SEED = 'per-run'\n"})
+    evaluator = StewardEvaluatorFake(value=15.2)
+    outcome = respond_once(
+        root,
+        "steward-tsp-r1",
+        harness,
+        evaluator,
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+    )
+    assert outcome.action == "replied"
+    assert "uv run pytest -q" in evaluator.checks  # the steward ruler ran
+    leader = _git(bare, "show", "feat/steward/steward-01/steward-tsp-r1:results/leader.json")
+    assert '"baseline": 15.2' in leader and '"best": 15.2' in leader  # re-based, not "improved"
+    log_msg = _git(bare, "log", "feat/steward/steward-01/steward-tsp-r1", "-1", "--format=%B")
+    assert log_msg.startswith("steward: address review feedback")
+    assert "Agent: steward-01" in log_msg
+    # the resumed session got the steward preamble
+    assert "BENCHMARK STEWARD" in harness.calls[0][0]
+
+
+def test_steward_followup_rejects_solver_territory(steward_review_run) -> None:
+    root, bare = steward_review_run
+    github = FakeGitHub(comments=[member(101, "please tweak the solver too")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "rigged\n"})
+    outcome = respond_once(
+        root,
+        "steward-tsp-r1",
+        harness,
+        StewardEvaluatorFake(15.0),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=(),
+    )
+    assert outcome.action == "replied"
+    assert "outside" in github.posted[0]
+    # nothing was pushed at all: the branch never reached the origin
+    assert "steward-tsp-r1" not in _git(bare, "branch", "--list")
+
+
+def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
+    """The verifier's findings (no standing) never trigger a wake but DO
+    travel in it when a qualifying comment arrives — no human relay."""
+    root, _bare = review_run
+    verifier_comment = {
+        "id": 102,
+        "body": "<!-- autoresearch:verification-review -->\nRound 1: caches across calls",
+        "user": {"login": "github-actions[bot]"},
+        "author_association": "NONE",
+    }
+    github = FakeGitHub(comments=[verifier_comment, member(103, "address the findings above")])
+    harness = ResumingHarness()
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        harness,
+        QueueEvaluator(values=[10.5]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=(),
+    )
+    assert outcome.action == "replied"
+    prompt = harness.calls[0][0]
+    assert "caches across calls" in prompt  # the findings arrived
+    assert "context only" in prompt and "not" in prompt  # marked as data
+    # a verifier-only thread does NOT wake anyone
+    github2 = FakeGitHub(comments=[verifier_comment])
+    from autoresearch.followup import has_new_comments
+    from autoresearch.runstate import load_record as _lr
+
+    assert not has_new_comments(_lr(root, "tsp-r1"), github2, BOT)  # type: ignore[arg-type]
