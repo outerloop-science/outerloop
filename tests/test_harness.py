@@ -16,6 +16,7 @@ from autoresearch.harness import (
     FakeHarness,
     SessionResult,
     budget_exhausted,
+    outage,
     redact,
     session_env,
 )
@@ -193,6 +194,32 @@ def test_timeout_is_budget_exhaustion_with_walltime_detail(tmp_path: Path) -> No
     result = ClaudeCodeHarness(api_key="k", binary=binary, timeout_s=1).run("task", ws)
     assert budget_exhausted(result)
     assert "walltime" in result.error_detail
+
+
+def test_outage_classification_matches_api_refusals_only() -> None:
+    """Dead credits, spend caps, auth, throttling — and nothing else. An
+    agent REPORT that mentions billing must never read as an outage
+    (outage() only looks at error surfaces of is_error results)."""
+
+    def result(is_error: bool, detail: str = "", text: str = "") -> SessionResult:
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=is_error,
+            cost_usd=0.0,
+            num_turns=1,
+            session_id="",
+            final_text=text,
+            transcript_path="",
+            error_detail=detail,
+        )
+
+    assert outage(result(True, detail="error_during_execution: credit balance is too low"))
+    assert outage(result(True, text="API Error (400): You have reached your usage limit."))
+    assert outage(result(True, detail="authentication_error: invalid x-api-key"))
+    assert outage(result(True, detail="rate_limit_error: Number of requests..."))
+    assert not outage(result(True, detail="error_max_turns: Reached maximum number of turns"))
+    assert not outage(result(False, text="Report: cut billing costs by caching the pool."))
+    assert not outage(result(True, detail="TypeError: 'NoneType' object is not iterable"))
 
 
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:

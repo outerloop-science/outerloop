@@ -50,8 +50,10 @@ from autoresearch.runstate import (
     ENDED,
     IN_REVIEW,
     NEGATIVE_RESULT,
+    STUCK,
     RunRecord,
     save_record,
+    stamp_outage,
 )
 
 log = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ _ENDINGS_BY_OUTCOME = {
     "no-improvement": NEGATIVE_RESULT,
     "session-error": ABORTED,
     "session-budget": BUDGET_EXHAUSTED,
+    "session-outage": STUCK,  # infrastructure failure, nothing about the run
     "eval-error": ABORTED,
     "scope-violation": ABORTED,
 }
@@ -508,6 +511,12 @@ def live_climb(
                 }
             )
     else:
+        if result.outcome == "session-outage":
+            _best_effort(
+                "outage stamp",
+                lambda: stamp_outage(run_root, redact(result.note, secrets)[:300], now),
+                secrets,
+            )
         final = RunRecord(
             **{
                 **record.__dict__,

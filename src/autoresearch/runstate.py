@@ -44,8 +44,39 @@ ENDINGS = (MERGED, REJECTED, NEGATIVE_RESULT, BUDGET_EXHAUSTED, ABORTED, STUCK)
 
 RECORD_NAME = "state.json"
 LEASE_NAME = "lease.json"
+OUTAGE_NAME = "outage.json"
+
+# How long the session-spawning lanes stay paused after an API outage is
+# stamped. 45 minutes skips roughly one tick, so during a sustained outage
+# one canary session per ~hour re-probes the API instead of every lane
+# burning attempts every half hour.
+OUTAGE_COOLDOWN_S = 45 * 60
 
 MAX_WAKE_ATTEMPTS = 3
+
+
+def stamp_outage(root: Path, detail: str, now: float) -> None:
+    """Record that the API refused us (atomic rename, like the records)."""
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / f".{OUTAGE_NAME}.tmp"
+    tmp.write_text(json.dumps({"detail": detail[:300], "time": now}))
+    os.replace(tmp, root / OUTAGE_NAME)
+
+
+def outage_active(root: Path, now: float, cooldown_s: float = OUTAGE_COOLDOWN_S) -> str:
+    """The stamped detail while the cooldown holds, else "". Unreadable or
+    stale stamps read as inactive — a corrupt latch must never brick the
+    loop, and time moving backwards reads as expired."""
+    path = root / OUTAGE_NAME
+    try:
+        data = json.loads(path.read_text())
+        stamped = float(data["time"])
+        detail = str(data.get("detail", ""))
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    if 0 <= now - stamped < cooldown_s:
+        return detail or "api outage"
+    return ""
 
 
 @dataclass(frozen=True)

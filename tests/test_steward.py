@@ -9,9 +9,12 @@ import pytest
 
 from autoresearch.contract import load_contract
 from autoresearch.harness import SessionResult
+from autoresearch.intake import CLAIM_MARKER
 from autoresearch.orchestrator import steward_out_of_scope
-from autoresearch.runstate import load_record
+from autoresearch.runstate import load_record, outage_active
 from autoresearch.steward import (
+    OUTAGE_MARKER,
+    RELEASE_MARKER,
     StewardConfig,
     live_steward,
     pick_steward_issue,
@@ -386,6 +389,86 @@ def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path, steward_rep
         "claim-released" in body and "ran out of its session budget" in body
         for _, body in github.issue_comments
     )
+
+
+def test_api_outage_releases_claim_without_counting(tmp_path, steward_repo) -> None:
+    """The API refusing us is the orchestrator's failure: the run ends
+    stuck, the release comment carries the outage marker (so the claim
+    does not count toward the cap), and the latch pauses the lanes."""
+
+    @dataclass
+    class RefusedHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=True,
+                cost_usd=0.0,
+                num_turns=1,
+                session_id="",
+                final_text="",
+                transcript_path="",
+                error_detail="error_during_execution: credit balance is too low",
+            )
+
+    github = StewardGitHub()
+    outcome = live_steward(
+        config=StewardConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="steward-tsp-out",
+        harness=RefusedHarness(),
+        evaluator=CheckingEvaluator(values=[14.9]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-09T00:00:00Z",
+        issue_number=21,
+        work_order="w",
+    )
+    assert outcome.outcome == "infra-outage"
+    record = load_record(tmp_path / "state", "steward-tsp-out")
+    assert record.ending == "stuck"
+    assert "credit balance" in record.ending_note
+    (release,) = [b for _, b in github.issue_comments if RELEASE_MARKER in b]
+    assert OUTAGE_MARKER in release and "does NOT count" in release
+    assert "credit balance" in outage_active(tmp_path / "state", now=1_000_000.0 + 60)
+
+
+def test_outage_releases_do_not_count_toward_the_attempt_cap() -> None:
+    """Three claims, one of them released by an outage: two attempts —
+    the order is still claimable. Three COUNTED claims: capped."""
+
+    def claim():
+        return {"body": f"{CLAIM_MARKER}\nworking"}
+
+    def release(outage_kind: bool):
+        marker = f"{RELEASE_MARKER}\n{OUTAGE_MARKER}" if outage_kind else RELEASE_MARKER
+        return {"body": f"{marker}\nreleased"}
+
+    issue = {
+        "number": 5,
+        "title": "steward: harden tsp",
+        "body": "the tsp pool is stale",
+        "user": {"login": "renmengye", "type": "User"},
+        "author_association": "OWNER",
+        "labels": [{"name": "autoresearch:steward"}],
+    }
+
+    @dataclass
+    class G:
+        comments: list
+
+        def list_open_issues(self, repo):
+            return [issue]
+
+        def list_comments(self, repo, number):
+            return self.comments
+
+    contract = load_contract(CONTRACT, "org/pilot")
+    thread = [claim(), release(True), claim(), release(False), claim(), release(False)]
+    picked = pick_steward_issue(G(thread), "org/pilot", contract, "bot")
+    assert picked is not None and picked.number == 5  # 2 counted attempts
+    thread += [claim(), release(False)]
+    assert pick_steward_issue(G(thread), "org/pilot", contract, "bot") is None  # 3 counted
 
 
 def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:

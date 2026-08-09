@@ -881,6 +881,96 @@ roadmap: docs/roadmap.md
     assert min(operator_minutes, limits.followup_job_minutes) == 30
 
 
+def test_outage_latch_pauses_spawning_lanes_but_not_endings(tmp_path: Path) -> None:
+    """A stamped outage sits every session-spawning lane out for the
+    cooldown — steward claims, self-initiated climbs, follow-up
+    submissions — while PR-state transitions (endings) keep running."""
+    from autoresearch.contract import load_contract
+    from autoresearch.limits import effective_limits
+    from autoresearch.runstate import stamp_outage
+    from autoresearch.tick import (
+        FollowupSpec,
+        service_in_review,
+        service_self_initiated,
+        service_steward,
+    )
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 20}
+scope: {allowed: [src/pilot/solvers/]}
+steward: {allowed: [src/pilot/instances.py]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    limits = effective_limits(contract.budgets)
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "77\n", "")
+
+    compute = SlurmCompute(runner=runner)
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        key_file="/k",
+        steward_key_file="/k",
+    )
+
+    class G:
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [
+                {
+                    "number": 21,
+                    "title": "re-base the tsp pool",
+                    "body": "",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                    "labels": [{"name": "autoresearch:steward"}],
+                }
+            ]
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return []
+
+        def comment(self, repo, number, body):
+            pass
+
+        def get_pull_request(self, repo, number):
+            return {"state": "closed", "merged": True}
+
+    stamp_outage(tmp_path, "credit balance is too low", now=NOW - 60)
+    assert service_steward(tmp_path, G(), compute, spec, NOW, contract, limits) is None
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW, limits) is None
+    # an in-review record: the merged ending still lands, no job submitted
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="rev-1",
+            target="org/pilot",
+            task_title="t",
+            state="in-review",
+            pr_url="https://github.com/org/pilot/pull/9",
+        ),
+        now=NOW - 5000,
+    )
+    ended, followups = service_in_review(tmp_path, G(), compute, spec, NOW)
+    assert ended == [("rev-1", "merged")]
+    assert submitted == [] and followups == []
+    # cooldown over: the lanes wake back up (steward claims and submits)
+    late = NOW + 45 * 60 + 1
+    out = service_steward(tmp_path, G(), compute, spec, late, contract, limits)
+    assert out is not None and submitted
+
+
 def test_steward_lane_gates_on_key_and_contract_scope(tmp_path: Path) -> None:
     """Off without the steward's own key; off without a contract steward
     section; claims + submits when both exist."""

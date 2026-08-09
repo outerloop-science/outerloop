@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from autoresearch.contract_cli import main as contract_main
+from autoresearch.llm import CompleterError
 from autoresearch.review_cli import main as review_main
 
 GOOD = """
@@ -125,6 +126,49 @@ def _cli_env(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     # ambient env must not flip the explicit-request path under a test
     monkeypatch.delenv("REVIEW_EXPLICIT_REQUEST", raising=False)
+
+
+def test_review_cli_posts_a_skip_stub_when_the_model_api_refuses(monkeypatch) -> None:
+    """A missing round must not be invisible: when the completer dies to an
+    API refusal (credits, auth), the thread gets a stub — under its OWN
+    marker, so it never counts as a round and never rides as context."""
+    import autoresearch.review_cli as cli
+
+    fake_client = FakeReviewClient()
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        raise CompleterError("BadRequestError: credit balance is too low")
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "review", fake_review)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    _cli_env(monkeypatch)
+    assert cli.main() == 0  # still never fails the target's CI
+    (stub,) = [c["body"] for c in fake_client.posted]
+    assert stub.lstrip().startswith(cli.SKIP_MARKER)
+    assert "could not run" in stub and "credit balance" in stub
+    from autoresearch.review import MARKER
+    from autoresearch.verifier import VERIFY_MARKER
+
+    assert MARKER not in stub and VERIFY_MARKER not in stub
+
+
+def test_skip_stub_posting_failure_is_swallowed(monkeypatch, caplog) -> None:
+    import autoresearch.review_cli as cli
+    from autoresearch.github import GitHubError
+
+    class RefusingClient(FakeReviewClient):
+        def comment(self, repo, number, body):
+            raise GitHubError(403, "/repos/org/repo", "forbidden")
+
+    cli.post_skip_stub(
+        RefusingClient(),  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        "advisory review",
+        CompleterError("x"),
+    )
+    assert "could not post the skip stub" in caplog.text
 
 
 def test_review_cli_threads_date_and_context(monkeypatch) -> None:

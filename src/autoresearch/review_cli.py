@@ -124,6 +124,30 @@ def post_round(
     return round_label
 
 
+SKIP_MARKER = "<!-- autoresearch:round-skipped -->"
+
+
+def post_skip_stub(client: GitHubClient, repo: str, number: int, role: str, exc: Exception) -> None:
+    """Silence is invisible: when the model API refuses a round (dead
+    credits, spend cap, auth), say so on the thread instead of leaving a
+    gap only the Actions tab can see. A DIFFERENT marker than a real
+    round, deliberately — a stub never counts toward round numbering and
+    never rides as follow-up wake context (both match on their own
+    markers)."""
+    note = str(exc)[:200]
+    try:
+        client.comment(
+            repo,
+            number,
+            f"{SKIP_MARKER}\n*The {role} round could not run — the model API "
+            f"refused the request ({type(exc).__name__}: {note}). Treat this "
+            f"as an outage, not a clean read; re-add the review label to "
+            f"re-request once the API recovers.*",
+        )
+    except EXPECTED_FAILURES as post_exc:
+        log.warning("could not post the skip stub: %s", post_exc)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     repo = os.environ["PR_REPO"]
@@ -180,6 +204,8 @@ def main() -> int:
         log.info("posted advisory review (%s) on %s#%s", round_label, repo, number)
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("advisory review did not complete: %s: %s", type(exc).__name__, exc)
+        if isinstance(exc, CompleterError):
+            post_skip_stub(client, repo, number, "advisory review", exc)
     return 0
 
 

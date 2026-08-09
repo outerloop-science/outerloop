@@ -47,6 +47,7 @@ from autoresearch.runstate import (
     lease_is_stale,
     list_runs,
     load_record,
+    outage_active,
     read_lease,
     reap_lease,
     release_lease,
@@ -153,6 +154,10 @@ def service_in_review(
     """
     from autoresearch.followup import close_if_done, has_new_comments
 
+    paused = outage_active(root, now)
+    if paused and allow_submit:
+        log.info("follow-up submissions paused (api outage: %s)", paused)
+        allow_submit = False  # state transitions below still run
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
     for record in list_runs(root):
@@ -835,6 +840,10 @@ def service_self_initiated(
     every tick during Slurm queue latency would launch a duplicate climb.
     """
     limits = limits if limits is not None else effective_limits(getattr(contract, "budgets", None))
+    paused = outage_active(root, now)
+    if paused:
+        log.info("self-initiated lane paused (api outage: %s)", paused)
+        return None
     try:
         records = list_runs(root)
         pending = read_pending(root, spec.target)
@@ -920,6 +929,10 @@ def service_steward(
     if not target or not spec.steward_key_file:
         return None
     if getattr(contract, "steward", None) is None:
+        return None
+    paused = outage_active(root, now)
+    if paused:
+        log.info("steward lane paused (api outage: %s)", paused)
         return None
     try:
         from autoresearch.steward import release_orphaned_claims
@@ -1039,6 +1052,10 @@ def service_intake(
 
     target = spec.target
     if not target:
+        return None
+    paused = outage_active(root, now)
+    if paused:
+        log.info("intake lane paused (api outage: %s)", paused)
         return None
     try:
         if contract is None:

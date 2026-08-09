@@ -8,6 +8,7 @@ import pytest
 
 from autoresearch.runstate import (
     ENDED,
+    OUTAGE_COOLDOWN_S,
     STUCK,
     WAITING,
     RunRecord,
@@ -15,10 +16,12 @@ from autoresearch.runstate import (
     lease_is_stale,
     list_runs,
     load_record,
+    outage_active,
     read_lease,
     release_lease,
     run_dir,
     save_record,
+    stamp_outage,
     update_lease_holder,
 )
 
@@ -174,3 +177,19 @@ def test_unreadable_lease_synthesizes_mtime_timestamp(tmp_path: Path) -> None:
     assert lease is not None
     assert lease.holder == "unreadable"
     assert lease.acquired == 500.0
+
+
+def test_outage_latch_pauses_then_expires(tmp_path) -> None:
+    assert outage_active(tmp_path, now=1000.0) == ""  # no stamp: inactive
+    stamp_outage(tmp_path, "credit balance is too low", now=1000.0)
+    assert "credit balance" in outage_active(tmp_path, now=1000.0 + OUTAGE_COOLDOWN_S - 1)
+    assert outage_active(tmp_path, now=1000.0 + OUTAGE_COOLDOWN_S) == ""  # expired
+    assert outage_active(tmp_path, now=500.0) == ""  # clock moved backwards: expired
+
+
+def test_corrupt_outage_stamp_reads_inactive(tmp_path) -> None:
+    """A bad latch must never brick the loop."""
+    (tmp_path / "outage.json").write_text("not json")
+    assert outage_active(tmp_path, now=1000.0) == ""
+    (tmp_path / "outage.json").write_text('{"detail": "x"}')  # no time field
+    assert outage_active(tmp_path, now=1000.0) == ""
