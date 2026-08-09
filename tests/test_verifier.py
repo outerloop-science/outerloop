@@ -301,6 +301,7 @@ def test_thread_gate_excludes_unprivileged_voices(monkeypatch) -> None:
                     "user": {"login": "renmengye"},
                     "body": "address the findings",
                     "author_association": "OWNER",
+                    "created_at": "2026-08-08T02:00:00Z",
                 },
                 {
                     "user": {"login": BOT},
@@ -327,11 +328,14 @@ def test_thread_gate_excludes_unprivileged_voices(monkeypatch) -> None:
             ]
 
         def list_pr_reviews(self, repo, number, max_pages=10):
+            # submitted_at BEFORE the issue comments' created_at: the sort
+            # must interleave sources chronologically, not concatenate
             return [
                 {
                     "user": {"login": "renmengye"},
                     "body": "review-body feedback: fresh seeds please",
                     "author_association": "OWNER",
+                    "submitted_at": "2026-08-08T00:00:00Z",
                 }
             ]
 
@@ -357,3 +361,7 @@ def test_thread_gate_excludes_unprivileged_voices(monkeypatch) -> None:
     assert "forger" not in authors  # marker text alone must not admit
     assert "github-actions[bot]" in authors  # the real prior round does
     assert any("review-body feedback" in b for b in bodies)  # reviews included
+    # chronological interleaving: the review (00:00) precedes the comment (02:00)
+    idx_review = next(i for i, b in enumerate(bodies) if "review-body feedback" in b)
+    idx_comment = next(i for i, b in enumerate(bodies) if "address the findings" in b)
+    assert idx_review < idx_comment

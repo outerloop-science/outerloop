@@ -128,12 +128,21 @@ def gather_thread(
         client.list_pr_reviews(repo, number),
         client.list_pr_review_comments(repo, number),
     )
-    return tuple(
-        (str((c.get("user") or {}).get("login", "")), str(c.get("body") or ""))
+    # Chronological across ALL sources: the prompt keeps the most recent
+    # tail, and a per-source concatenation would let a long inline-review
+    # thread silently evict the issue comments (rebuttals, prior rounds).
+    gated = [
+        (
+            str(c.get("submitted_at") or c.get("created_at") or ""),
+            str((c.get("user") or {}).get("login", "")),
+            str(c.get("body") or ""),
+        )
         for comments in sources
         for c in comments
         if _standing(c, bot_login)
-    )
+    ]
+    gated.sort(key=lambda item: item[0])  # ISO-8601 sorts lexicographically
+    return tuple((author, body) for _, author, body in gated)
 
 
 def main() -> int:
