@@ -154,10 +154,11 @@ class SubprocessEvaluator:
         # venv another process just wrote races NFS close-to-open
         # consistency (seen live: the first steward validation spawned a
         # pytest whose binary was not yet visible). The eval builds its own
-        # environment from the LOCKFILE into its throwaway home — no shared
-        # mutable state, and the orchestrator never executes
-        # session-authored entrypoints.
-        env["UV_PROJECT_ENVIRONMENT"] = str(eval_home / "venv")
+        # environment from the LOCKFILE on NODE-LOCAL scratch (beside the
+        # uv cache: fast IO, zero NFS in the venv path, dies with the
+        # eval) — no shared mutable state, and the orchestrator never
+        # executes session-authored entrypoints.
+        env["UV_PROJECT_ENVIRONMENT"] = str(cache_dir / "venv")
         if self.container_image:
             # --cleanenv drops the host env; APPTAINERENV_* survives it
             env["APPTAINERENV_UV_CACHE_DIR"] = env["UV_CACHE_DIR"]

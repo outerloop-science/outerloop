@@ -371,6 +371,10 @@ def test_eval_cache_is_bound_alone_and_cleaned(tmp_path: Path, monkeypatch) -> N
     assert f"--bind {scratch}:{scratch}" not in argv  # never the whole tmp
     seen_env = (tmp_path / "eval_env").read_text()
     assert "APPTAINERENV_UV_CACHE_DIR=" in seen_env
+    # the private env crosses --cleanenv too, or the container's uv would
+    # silently fall back to the workspace venv — the raced, session-built
+    # state this design removes
+    assert "APPTAINERENV_UV_PROJECT_ENVIRONMENT=" in seen_env
     assert list(scratch.glob("uv-cache-*")) == []  # cleaned up after
 
 
@@ -383,7 +387,7 @@ def test_subprocess_evaluator_env_is_private_per_eval(tmp_path: Path) -> None:
 
     command = (
         """printf '{"m": %s}\\n' """
-        '''"$(echo "$UV_PROJECT_ENVIRONMENT" | grep -c "eval-home")"'''
+        '''"$(echo "$UV_PROJECT_ENVIRONMENT" | grep -c "cache")"'''
     )
     evaluator = SubprocessEvaluator(timeout_s=30)
     assert evaluator.evaluate(tmp_path, command, "m") == 1.0
