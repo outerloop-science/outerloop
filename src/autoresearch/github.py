@@ -254,7 +254,7 @@ class GitHubClient:
     BODY_EDIT_MARKER = "<!-- autoresearch:body-edit -->"
     # the orchestrator-owned candidate row in pr_body's results table
     # \r-tolerant: a human web-UI edit can normalize the body to CRLF
-    _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|\r?$", re.MULTILINE)
+    _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|(\r?)$", re.MULTILINE)
 
     def update_candidate_row(
         self, repo: str, number: int, candidate: float, digits: int | None = None
@@ -287,7 +287,7 @@ class GitHubClient:
         from autoresearch.progress import fmt_metric
 
         head = self._CANDIDATE_ROW.sub(
-            f"| candidate | {fmt_metric(candidate, digits)} |", head, count=1
+            rf"| candidate | {fmt_metric(candidate, digits)} |\1", head, count=1
         )
         self._request("PATCH", path, {"body": f"{head}{sep}{tail}"})
         return True
