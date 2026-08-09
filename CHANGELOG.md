@@ -45,6 +45,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The benchmark steward (`steward` module + tick lane): maintainer-filed
+  work orders (issues labeled `autoresearch:steward`, standing-gated) run
+  a session whose territory is the solver's INVERSE — the contract's new
+  `steward.allowed` paths (env generators, eval harness, tests), with the
+  solver's scope and the always-forbidden set blocked in code. Its ruler
+  is validation, not improvement: the orchestrator runs the target's test
+  suite contained, re-measures the named benchmark with the CURRENT
+  solver, and writes the reset record rows from its own measurement.
+  Steward PRs are bot-authored, so the verifier reads them adversarially;
+  identity is `steward-01` with its own key
+  (`AUTORESEARCH_STEWARD_KEY_FILE`; the lane stays off until
+  provisioned).
+
 - Display precision follows convention, not float repr (maintainer
   decision): human surfaces — PR tables, BENCHMARKS.md, the rewritten
   candidate row — render at the benchmark's `display_digits` (contract

@@ -24,7 +24,7 @@ data, not accounts: every commit is authored by the one bot account with an
 | **Advisory reviewer** | model | live | Adversarial *correctness* review of human/dev PRs; findings-only, sanitized, never an approval | review bot PRs automatically (echo-chamber guard); block CI; approve |
 | **Verifier** | model | built; deploy pending | Adversarial *integrity* review of bot PRs: hunts gaming (harness exploits, ruler-fishing, leakage, unsupported claims) with contract + eval code + numbers + report in context; "silence is not endorsement" header | approve; block; review human PRs |
 | **Planner** | model | designed (scaling.md pt 1) | Owns a target's search *program*: reads leader/lessons/reports, emits vetoable plan issues motivated twice (hypothesis + economics) | enact plans (humans/veto-window do); write `vision:` |
-| **Steward** | model | designed (meta.md) | Keeps benchmarks discriminating: restores headroom, proves solvability, sets noise floors — via vetoable plan issues and human-merged env PRs | share identity/credentials/budget with any solver; be scored on solver metrics |
+| **Steward** | model | built; deploy pending | Keeps benchmarks discriminating: restores headroom, proves solvability, sets noise floors — via vetoable plan issues and human-merged env PRs | share identity/credentials/budget with any solver; be scored on solver metrics |
 | **Watchdog** | code | designed | Off-cluster heartbeat monitor: alerts when the tick chain goes quiet | act on the cluster |
 | **Maintenance agent** | model | later | CI fixes, dependency bumps, issue triage on opted-in repos | count toward research budgets; touch benchmarks |
 

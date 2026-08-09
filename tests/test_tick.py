@@ -879,3 +879,80 @@ roadmap: docs/roadmap.md
     limits = effective_limits(contract.budgets)
     operator_minutes = 30
     assert min(operator_minutes, limits.followup_job_minutes) == 30
+
+
+def test_steward_lane_gates_on_key_and_contract_scope(tmp_path: Path) -> None:
+    """Off without the steward's own key; off without a contract steward
+    section; claims + submits when both exist."""
+    from autoresearch.contract import load_contract
+    from autoresearch.limits import effective_limits
+    from autoresearch.tick import FollowupSpec, service_steward
+
+    base_contract = """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 20}
+scope: {allowed: [src/pilot/solvers/]}
+%s
+roadmap: docs/roadmap.md
+"""
+    with_steward = load_contract(
+        base_contract % "steward: {allowed: [src/pilot/instances.py]}", "org/pilot"
+    )
+    without_steward = load_contract(base_contract % "", "org/pilot")
+    limits = effective_limits(with_steward.budgets)
+
+    class G:
+        def __init__(self):
+            self.comments_posted = []
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [
+                {
+                    "number": 21,
+                    "title": "re-base the tsp pool",
+                    "body": "",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                    "labels": [{"name": "autoresearch:steward"}],
+                }
+            ]
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return []
+
+        def comment(self, repo, number, body):
+            self.comments_posted.append((number, body))
+
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "321\n", "")
+
+    def spec(key: str) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            steward_key_file=key,
+        )
+
+    compute = SlurmCompute(runner=runner)
+    # no key -> lane off, not even an issue scan
+    assert service_steward(tmp_path, G(), compute, spec(""), NOW, with_steward, limits) is None
+    # no steward section -> lane off
+    assert service_steward(tmp_path, G(), compute, spec("/k"), NOW, without_steward, limits) is None
+    assert submitted == []
+    # both present -> claim BEFORE submit, job carries the steward module + key
+    github = G()
+    out = service_steward(tmp_path, github, compute, spec("/k"), NOW, with_steward, limits)
+    assert out == ("steward-issue-21", "321")
+    assert github.comments_posted and "Claimed by the steward" in github.comments_posted[0][1]
+    wrap = submitted[0][-1]
+    assert "autoresearch.steward" in wrap
+    assert "--key-file /k" in wrap
+    assert "--job-minutes 90" in wrap

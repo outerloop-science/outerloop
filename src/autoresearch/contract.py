@@ -99,12 +99,23 @@ class Scope(_StrictModel):
     allowed: list[str] = Field(min_length=1)
 
 
+class StewardScope(_StrictModel):
+    """Paths the BENCHMARK STEWARD may edit (env generators, eval harness,
+    tests, record files). The solver's `scope.allowed` is implicitly
+    forbidden to the steward — the roles' territories must not overlap
+    (collusion structure, design/meta.md) — and the always-forbidden set
+    (this contract, `.github/`, the roadmap) binds the steward too."""
+
+    allowed: list[str] = Field(min_length=1)
+
+
 class Contract(_StrictModel):
     benchmarks: list[Benchmark] = Field(min_length=1)
     budgets: Budgets
     scope: Scope
     roadmap: str = Field(min_length=1)
     suite: SuiteAggregate | None = None
+    steward: StewardScope | None = None
 
 
 _HOST_PREFIX = re.compile(r"^(?:[a-z+]+://)?(?:[^@/]*@)?(?:www\.)?github\.com[:/]+")
