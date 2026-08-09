@@ -131,6 +131,21 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         },
     )
     assert pick_steward_issue(github4, "org/pilot", c, BOT) is None
+    # attempt cap: three total claims -> a human's turn, even if released
+    github5 = FakeIssues(
+        [_issue(4, "re-base the tsp pool")],
+        comments={
+            4: [
+                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claim-released -->"},
+            ]
+        },
+    )
+    assert pick_steward_issue(github5, "org/pilot", c, BOT) is None
 
 
 def test_steward_scope_folds_case_against_solver_territory() -> None:
@@ -340,6 +355,10 @@ def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:
     assert record.ending == "aborted"
     assert "outside its territory" in record.ending_note
     assert "solvers/tsp.py" in record.ending_note
+    # the failure RELEASES the claim so the order is not orphaned
+    assert any(
+        "claim-released" in body and "steward-error" in body for _, body in github.issue_comments
+    )
 
 
 def test_validation_suite_failure_is_aborted(tmp_path, steward_repo) -> None:

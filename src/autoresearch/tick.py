@@ -921,27 +921,27 @@ def service_steward(
         return None
     if getattr(contract, "steward", None) is None:
         return None
-    # ONE active run per target covers stewardships too: an env rewrite
-    # must not fly alongside a solver climb (the drift/freshness machinery
-    # does not coordinate them) or alongside another stewardship.
-    records = list_runs(root)
-    if any(r.target == target and r.state != ENDED for r in records):
-        return None
-    # The queue window (submit -> job writes its record) is bridged by the
-    # SAME per-target pending marker the self-initiated lane uses: while a
-    # submitted job is alive without a record, no lane launches.
-    pending = read_pending(root, target)
-    if pending is not None:
-        submitted_at = float(pending.get("submitted_at", 0.0))
-        landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
-        expired = now - submitted_at > PENDING_TTL_S
-        if (
-            not landed
-            and not expired
-            and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
-        ):
-            return None
     try:
+        # ONE active run per target covers stewardships too: an env rewrite
+        # must not fly alongside a solver climb (the drift/freshness
+        # machinery does not coordinate them) or another stewardship.
+        records = list_runs(root)
+        if any(r.target == target and r.state != ENDED for r in records):
+            return None
+        # The queue window (submit -> job writes its record) is bridged by
+        # the SAME per-target pending marker the self-initiated lane uses:
+        # while a submitted job is alive without a record, no lane launches.
+        pending = read_pending(root, target)
+        if pending is not None:
+            submitted_at = float(pending.get("submitted_at", 0.0))
+            landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
+            expired = now - submitted_at > PENDING_TTL_S
+            if (
+                not landed
+                and not expired
+                and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
+            ):
+                return None
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None

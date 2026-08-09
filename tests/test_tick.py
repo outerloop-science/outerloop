@@ -956,7 +956,7 @@ roadmap: docs/roadmap.md
             task_title="t",
             state="implementing",
         ),
-        now=NOW,
+        now=NOW - 5000,
     )
     assert service_steward(tmp_path, G(), compute, spec("/k"), NOW, with_steward, limits) is None
     save_record(
@@ -968,7 +968,7 @@ roadmap: docs/roadmap.md
             state="ended",
             ending="aborted",
         ),
-        now=NOW,
+        now=NOW - 5000,
     )
     # both present -> claim BEFORE submit, job carries the steward module + key
     github = G()

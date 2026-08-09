@@ -62,9 +62,13 @@ from autoresearch.runstate import (
 
 log = logging.getLogger(__name__)
 
-# posted when a claim could not be backed by a submitted job: a release
-# AFTER the last claim makes the issue claimable again
+# posted when a claim ends without a merged PR (submit failure, aborted
+# run): a release AFTER the last claim makes the issue claimable again
 RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
+# TOTAL claims after which the lane stops retrying a work order: a
+# persistently-failing order must not become a paid retry loop — three
+# sessions is the escalate-to-a-human point
+MAX_STEWARD_ATTEMPTS = 3
 STEWARD_AGENT_ID = "steward-01"
 STEWARD_BRANCH_PREFIX = "feat/steward/steward-01"
 # The validation suite the orchestrator runs after steward edits. A
@@ -124,15 +128,19 @@ def pick_steward_issue(
             continue
         number = int(issue["number"])
         # last marker wins (comments arrive in creation order): the issue is
-        # claimed iff the most recent claim/release event is a claim
+        # claimed iff the most recent claim/release event is a claim. Total
+        # claims cap retries: released-but-thrice-attempted orders wait for
+        # a human, not a fourth session.
         claimed = False
+        attempts = 0
         for c in github.list_comments(repo, number):
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
                 claimed = True
+                attempts += 1
             if RELEASE_MARKER in body:
                 claimed = False
-        if claimed:
+        if claimed or attempts >= MAX_STEWARD_ATTEMPTS:
             continue
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)
@@ -223,8 +231,8 @@ def live_steward(
                 lambda: github.comment(
                     config.target,
                     issue_number,
-                    f"Steward run `{run_id}` could not start "
-                    f"({exc_name} while writing its run record).",
+                    f"{RELEASE_MARKER}\nSteward run `{run_id}` could not start "
+                    f"({exc_name} while writing its run record). Claim released.",
                 ),
                 secrets,
             )
@@ -436,8 +444,10 @@ def live_steward(
                 lambda: github.comment(
                     config.target,
                     issue_number,
-                    f"Steward run `{run_id}` finished (steward-error): "
-                    f"{exc_name}. Details are in the run's record.",
+                    f"{RELEASE_MARKER}\nSteward run `{run_id}` finished "
+                    f"(steward-error): {exc_name}. Details are in the run's "
+                    f"record. Claim released — the lane retries up to "
+                    f"{MAX_STEWARD_ATTEMPTS} total attempts, then waits for a human.",
                 ),
                 secrets,
             )
