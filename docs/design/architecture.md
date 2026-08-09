@@ -355,6 +355,22 @@ partitions and lets the scheduler place jobs, never nodes.
 
 ## Environments and containers (decided 2026-08-06)
 
+**One writer per environment (rule, 2026-08-09).** A Python environment is
+single-client state: two processes consuming a venv that another process
+recently wrote race NFS close-to-open consistency (seen live — the first
+steward validation spawned a binary that was not yet visible). So no venv
+is ever shared across process boundaries: orchestrator evals and
+validation runs each build a private `UV_PROJECT_ENVIRONMENT` on
+node-local scratch from the lockfile (also keeping session-authored
+entrypoints out of the orchestrator's execution path); a session's
+`ws/.venv` is that session's alone (safe today because a session is one
+job — sequential subprocesses, one NFS client); and the future experiment
+path MUST give every batch job its own env built from the committed tree
+— parallel experiment jobs sharing a workspace venv would reintroduce
+exactly this race at scale. Locking was considered and rejected: locks on
+NFS are their own failure mode, and not-sharing is strictly better here.
+
+
 Torch supports exactly one container runtime — Apptainer (Singularity); no
 Docker daemon exists ([cluster docs](https://services.rt.nyu.edu/docs/hpc/containers/intro/)).
 Containers are applied where they pay, not uniformly:

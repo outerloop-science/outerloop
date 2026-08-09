@@ -148,10 +148,22 @@ class SubprocessEvaluator:
         # the cache on node-local scratch and copy across filesystems.
         env["UV_CACHE_DIR"] = str(cache_dir)
         env["UV_LINK_MODE"] = "copy"
+        # PRIVATE project env per eval (maintainer decision 2026-08-09:
+        # "either not share, or have a lock" — we don't share): the session
+        # builds ws/.venv for its own use, and a second process consuming a
+        # venv another process just wrote races NFS close-to-open
+        # consistency (seen live: the first steward validation spawned a
+        # pytest whose binary was not yet visible). The eval builds its own
+        # environment from the LOCKFILE on NODE-LOCAL scratch (beside the
+        # uv cache: fast IO, zero NFS in the venv path, dies with the
+        # eval) — no shared mutable state, and the orchestrator never
+        # executes session-authored entrypoints.
+        env["UV_PROJECT_ENVIRONMENT"] = str(cache_dir / "venv")
         if self.container_image:
             # --cleanenv drops the host env; APPTAINERENV_* survives it
             env["APPTAINERENV_UV_CACHE_DIR"] = env["UV_CACHE_DIR"]
             env["APPTAINERENV_UV_LINK_MODE"] = "copy"
+            env["APPTAINERENV_UV_PROJECT_ENVIRONMENT"] = env["UV_PROJECT_ENVIRONMENT"]
         env["HOME"] = str(eval_home)
         try:
             # process group, like the harness: a timed-out eval must not
