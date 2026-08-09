@@ -17,6 +17,7 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.llm import AnthropicCompleter
 from autoresearch.review import PullRequest
@@ -91,6 +92,59 @@ def gather_ruler(
     return tuple(out)
 
 
+# The verifier's own rounds post via the Actions workflow token — this
+# identity, which no ordinary account can assume. Marker text alone is
+# forgeable (it appears verbatim in every posted round); identity is not.
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+
+
+def _standing(comment: dict, bot_login: str) -> bool:
+    """Only voices with standing reach the verifier: maintainers by
+    association, the accused agent's own replies, and prior verifier
+    rounds identified by POSTING IDENTITY plus marker (marker alone can be
+    forged by any commenter on a public repo)."""
+    body = str(comment.get("body") or "")
+    if not body.strip():
+        return False
+    login = str((comment.get("user") or {}).get("login", ""))
+    if str(comment.get("author_association", "")) in QUALIFYING_ASSOCIATIONS:
+        return True
+    if login.casefold() == bot_login.casefold():
+        return True
+    return login.casefold() == ACTIONS_BOT_LOGIN.casefold() and body.lstrip().startswith(
+        VERIFY_MARKER
+    )
+
+
+def gather_thread(
+    client: GitHubClient, repo: str, number: int, bot_login: str
+) -> tuple[tuple[str, str], ...]:
+    """The gated discussion, from ALL THREE places maintainers write —
+    issue comments, review bodies, inline review comments (the follow-up
+    lane learned this the hard way: independent collections, and feedback
+    lands in any of them)."""
+    sources = (
+        client.list_comments(repo, number),
+        client.list_pr_reviews(repo, number),
+        client.list_pr_review_comments(repo, number),
+    )
+    # Chronological across ALL sources: the prompt keeps the most recent
+    # tail, and a per-source concatenation would let a long inline-review
+    # thread silently evict the issue comments (rebuttals, prior rounds).
+    gated = [
+        (
+            str(c.get("submitted_at") or c.get("created_at") or ""),
+            str((c.get("user") or {}).get("login", "")),
+            str(c.get("body") or ""),
+        )
+        for comments in sources
+        for c in comments
+        if _standing(c, bot_login)
+    ]
+    gated.sort(key=lambda item: item[0])  # ISO-8601 sorts lexicographically
+    return tuple((author, body) for _, author, body in gated)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     repo = os.environ["PR_REPO"]
@@ -124,6 +178,7 @@ def main() -> int:
         )
         contract_text = ""
         ruler: tuple[tuple[str, str], ...] = ()
+        thread: tuple[tuple[str, str], ...] = ()
         # Context is fetched only for PRs that will actually be verified —
         # human-authored and opted-out PRs must not pay the API fan-out.
         if verify_skip_reason(pr, bot_login) is None:
@@ -140,6 +195,10 @@ def main() -> int:
                 log.warning("verifying without the contract: %s", exc)
                 contract_text = ""
             ruler = gather_ruler(client, repo, base_ref or "HEAD", contract_text)
+            try:
+                thread = gather_thread(client, repo, number, bot_login)
+            except EXPECTED_FAILURES as exc:
+                log.warning("verifying without the discussion thread: %s", exc)
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         completer = AnthropicCompleter(
             api_key=os.environ["ANTHROPIC_VERIFIER_KEY"],
@@ -148,7 +207,7 @@ def main() -> int:
         )
         today = datetime.now(UTC).date().isoformat()
         body = format_verify_comment(
-            verify(pr, completer, bot_login, contract_text, ruler, today=today)
+            verify(pr, completer, bot_login, contract_text, ruler, today=today, thread=thread)
         )
         if body is None:
             log.info("nothing to post")

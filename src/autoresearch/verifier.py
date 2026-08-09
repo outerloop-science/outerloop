@@ -56,6 +56,11 @@ MAX_RULER_FILE_CHARS = 20_000
 MAX_RULER_CHARS = 60_000
 MAX_CONTRACT_CHARS = 10_000
 MAX_CLAIM_CHARS = 30_000
+# The discussion is context the verifier must not be blind to (found live:
+# round 2 raised "no reported numbers" while the author's rebuttal upthread
+# carried them) — most recent comments, bounded.
+MAX_THREAD_COMMENTS = 12
+MAX_THREAD_COMMENT_CHARS = 4_000
 
 CATEGORIES = (
     "harness-exploitation",
@@ -178,6 +183,7 @@ def build_verify_prompt(
     contract_text: str,
     ruler_files: tuple[tuple[str, str], ...] = (),
     today: str | None = None,
+    thread: tuple[tuple[str, str], ...] = (),
 ) -> str:
     """Assemble the verifier's context. Order: rules, ruler, claim, change."""
     parts: list[str] = []
@@ -209,6 +215,17 @@ def build_verify_prompt(
         "plus the agent's report — the report is under review, not evidence)\n"
         + _fenced(f"{pr.title[:500]}\n\n{pr.body[:MAX_CLAIM_CHARS]}")
     )
+    if thread:
+        parts.append(
+            "## The discussion so far (most recent comments; the agent's "
+            "replies are claims under the same review as the report, prior "
+            "verification rounds are your OWN earlier findings — re-check "
+            "what they claim was fixed, and drop findings the evidence here "
+            "already answers)"
+        )
+        for author, body in thread[-MAX_THREAD_COMMENTS:]:
+            safe_author = " ".join(str(author).split()).replace("`", "")[:100]
+            parts.append(f"### {safe_author}\n{_fenced(body[:MAX_THREAD_COMMENT_CHARS])}")
     parts.append("## The change (diff)\n" + _fenced(pr.diff[:MAX_DIFF_CHARS]))
     if pr.context_files:
         parts.append("## Current head contents of changed files")
@@ -224,6 +241,7 @@ def verify(
     contract_text: str,
     ruler_files: tuple[tuple[str, str], ...] = (),
     today: str | None = None,
+    thread: tuple[tuple[str, str], ...] = (),
 ) -> ReviewResult:
     """Run one verification. Skips (rather than raises) when constraints say so."""
     skip = verify_skip_reason(pr, bot_login)
@@ -232,7 +250,7 @@ def verify(
         return ReviewResult(findings=[], notes="", skipped=skip)
     raw = completer.complete(
         VERIFY_SYSTEM_PROMPT,
-        build_verify_prompt(pr, contract_text, ruler_files, today),
+        build_verify_prompt(pr, contract_text, ruler_files, today, thread),
         VERIFY_SCHEMA,
     )
     data = json.loads(raw)

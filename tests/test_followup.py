@@ -48,6 +48,7 @@ class FakeGitHub:
     reviews: list[dict] = field(default_factory=list)
     review_comments: list[dict] = field(default_factory=list)
     posted: list[str] = field(default_factory=list)
+    body_addenda: list[str] = field(default_factory=list)
     auth: object = None
 
     def get_pull_request(self, repo, number):
@@ -64,6 +65,9 @@ class FakeGitHub:
 
     def comment(self, repo, number, body):
         self.posted.append(body)
+
+    def append_pull_body(self, repo, number, addendum):
+        self.body_addenda.append(addendum)
 
 
 @dataclass
@@ -347,3 +351,38 @@ def test_push_failure_returns_error_not_crash(review_run) -> None:
     assert outcome.action == "error"
     assert "rate limit" in outcome.note
     assert load_record(root, "tsp-r1").last_comment_id == 100  # will retry
+
+
+def test_pushed_changes_append_a_body_addendum(review_run) -> None:
+    """Follow-up commits desync the report frozen into the body at publish;
+    the addendum marks the body edited so no reader mistakes the original
+    report for the current state (maintainer decision 2026-08-09)."""
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "the kick looks too aggressive")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gentler kick\n"})
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert github.body_addenda, "no addendum appended"
+    addendum = github.body_addenda[-1]
+    assert addendum.startswith("---")
+    assert "**Edit (" in addendum and "follow-up" in addendum
+    assert "original version" in addendum
+
+
+def test_reverted_change_appends_no_addendum(review_run) -> None:
+    """The addendum gate is the PUSH, not the attempt: an out-of-scope
+    response is reverted, so the body must not claim the solver changed."""
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "also update the eval please")])
+    harness = ResumingHarness(edits={"docs/roadmap.md": "doctored\n"})
+    outcome = respond(root, github, harness)
+    assert outcome.action == "replied"
+    assert not github.body_addenda  # reverted -> body untouched
+
+
+def test_reply_without_changes_leaves_the_body_alone(review_run) -> None:
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "convince me you did not game the eval")])
+    outcome = respond(root, github, ResumingHarness())  # no edits -> no push
+    assert outcome.action == "replied"
+    assert not github.body_addenda
