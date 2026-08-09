@@ -32,6 +32,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import APPROVAL_PATTERN, REDACTED
+from autoresearch.review import MARKER as ADVISORY_MARKER
 from autoresearch.runstate import (
     ENDED,
     IN_REVIEW,
@@ -44,6 +45,7 @@ from autoresearch.runstate import (
     run_dir,
     save_record,
 )
+from autoresearch.verifier import VERIFY_MARKER
 
 log = logging.getLogger(__name__)
 
@@ -74,15 +76,16 @@ MAX_CONTEXT_COMMENT_CHARS = 4_000
 
 # Our own machine reviewers post via the Actions workflow token — an
 # identity no ordinary account can assume. Marker text alone is public and
-# forgeable; identity + marker together are not.
+# forgeable; identity + marker together are not. The markers are the
+# renderers' own constants: if a renderer's format drifts, this breaks
+# loudly at import review, not silently at match time. Both renderers post
+# marker-first ISSUE comments (github.upsert_comment), which is why this
+# reads one collection and matches at the start of the body.
 ACTIONS_BOT_LOGIN = "github-actions[bot]"
-MACHINE_ROUND_MARKERS = (
-    "<!-- autoresearch:verification-review -->",
-    "<!-- autoresearch:advisory-review -->",
-)
+MACHINE_ROUND_MARKERS = (VERIFY_MARKER, ADVISORY_MARKER)
 
 
-def context_comments(comments: list[dict], bot_login: str, since_id: int) -> list[tuple[str, str]]:
+def context_comments(comments: list[dict], since_id: int) -> list[tuple[str, str]]:
     """(author, body) for NEW machine review rounds — verifier and advisory
     — identified by POSTING IDENTITY plus marker. They never trigger a wake
     and never steer; they ride along as data-fenced CONTEXT so a woken
@@ -356,9 +359,7 @@ def _respond(
         prompt = STEWARD_WAKE_PREAMBLE + prompt
     # Comments WITHOUT standing (verifier rounds, advisory rounds) ride
     # along as fenced context — never as triggers, never as instructions.
-    ctx = context_comments(
-        github.list_comments(record.target, number), bot_login, record.last_comment_id
-    )
+    ctx = context_comments(github.list_comments(record.target, number), record.last_comment_id)
     if ctx:
         from autoresearch.brief import _fence
 
