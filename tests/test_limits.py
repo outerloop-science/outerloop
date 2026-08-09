@@ -20,10 +20,10 @@ def _limits(budget_extra: str = "") -> EffectiveLimits:
 
 def test_absent_knobs_yield_the_standing_defaults() -> None:
     assert _limits() == EffectiveLimits(
-        session_max_turns=60,
-        session_minutes=60,
-        climb_job_minutes=90,
-        followup_job_minutes=60,
+        session_max_turns=120,
+        session_minutes=90,
+        climb_job_minutes=120,
+        followup_job_minutes=90,
     )
     assert effective_limits(None) == _limits()  # no contract at all
 

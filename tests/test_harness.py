@@ -15,6 +15,7 @@ from autoresearch.harness import (
     ClaudeCodeHarness,
     FakeHarness,
     SessionResult,
+    budget_exhausted,
     redact,
     session_env,
 )
@@ -163,6 +164,45 @@ def test_timeout_returns_error_result_not_exception(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=binary, timeout_s=1).run("task", ws)
     assert result.is_error
     assert result.stop_reason == "timeout"
+
+
+def test_exhausted_turns_carry_an_honest_detail(tmp_path: Path) -> None:
+    """A session that dies at max turns reports WHY on the result — the
+    subtype and the backend's message — and classifies as budget
+    exhaustion, because stop_reason alone reads as noise ("tool_use")."""
+    payload = dict(CANNED)
+    payload.update(
+        is_error=True,
+        stop_reason="tool_use",
+        subtype="error_max_turns",
+        errors=["Reached maximum number of turns (120)"],
+    )
+    binary = fake_claude(tmp_path, json.dumps(payload))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert result.is_error
+    assert result.error_detail == "error_max_turns: Reached maximum number of turns (120)"
+    assert budget_exhausted(result)
+
+
+def test_timeout_is_budget_exhaustion_with_walltime_detail(tmp_path: Path) -> None:
+    binary = fake_claude(tmp_path, json.dumps(CANNED), sleep=30)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = ClaudeCodeHarness(api_key="k", binary=binary, timeout_s=1).run("task", ws)
+    assert budget_exhausted(result)
+    assert "walltime" in result.error_detail
+
+
+def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ok = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert ok.error_detail == "" and not budget_exhausted(ok)
+    dead = ClaudeCodeHarness(api_key="k", binary=str(tmp_path / "nope")).run("task", tmp_path)
+    assert not budget_exhausted(dead)
 
 
 def test_missing_binary_returns_spawn_error(tmp_path: Path) -> None:

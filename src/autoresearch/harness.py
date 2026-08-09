@@ -56,6 +56,12 @@ class SessionResult:
     session_id: str
     final_text: str  # the agent's closing message (the research report draft)
     transcript_path: str  # raw backend output, api-key-redacted, on disk
+    # human-readable cause when is_error: the backend's error subtype and
+    # messages (e.g. "error_max_turns: Reached maximum number of turns
+    # (60)"), or our own explanation on the timeout path. This is what
+    # reports and issue comments show — stop_reason alone reads as noise
+    # ("tool_use") when a session dies mid-tool-call.
+    error_detail: str = ""
 
 
 class Harness(Protocol):
@@ -89,16 +95,25 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
     return text
 
 
-def _error_result(stop_reason: str, transcript_path: str = "") -> SessionResult:
+def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "") -> SessionResult:
     return SessionResult(
         stop_reason=stop_reason,
         is_error=True,
+        error_detail=detail or stop_reason,
         cost_usd=0.0,
         num_turns=0,
         session_id="",
         final_text="",
         transcript_path=transcript_path,
     )
+
+
+def budget_exhausted(result: SessionResult) -> bool:
+    """True when the session stopped because OUR limits ran out — turns or
+    session walltime — rather than because anything failed. Callers report
+    this as the budget-exhausted ending, never as an error: "caps hit
+    mid-run" is one of the six honest deaths, not a malfunction."""
+    return result.stop_reason == "timeout" or result.error_detail.startswith("error_max_turns")
 
 
 def _write_private(directory: Path, stem: str, suffix: str, text: str) -> str:
@@ -284,7 +299,11 @@ class ClaudeCodeHarness:
                 workspace.parent, transcript_stem, ".json", redact(stdout or "", (self.api_key,))
             )
             log.warning("session timed out after %ss in %s", self.timeout_s, workspace)
-            return _error_result("timeout", path)
+            return _error_result(
+                "timeout",
+                path,
+                detail=f"session hit its {self.timeout_s}s walltime and was killed",
+            )
 
         stdout = redact(stdout, (self.api_key,))
         transcript_path = _write_private(workspace.parent, transcript_stem, ".json", stdout)
@@ -295,9 +314,15 @@ class ClaudeCodeHarness:
             return _error_result("unparseable-output", transcript_path)
         # Field-level salvage: a quirky cost value must not cost us the
         # session id (which resume depends on) or vice versa.
+        is_error = bool(data.get("is_error", process.returncode != 0))
+        subtype = str(data.get("subtype") or "")
+        errors = data.get("errors")
+        messages = "; ".join(str(e) for e in errors if e) if isinstance(errors, list) else ""
+        detail = f"{subtype}: {messages}" if subtype and messages else (subtype or messages)
         return SessionResult(
             stop_reason=str(data.get("stop_reason") or data.get("subtype") or "unknown"),
-            is_error=bool(data.get("is_error", process.returncode != 0)),
+            is_error=is_error,
+            error_detail=detail if is_error else "",
             cost_usd=_float(data.get("total_cost_usd")),
             num_turns=_int(data.get("num_turns")),
             session_id=str(data.get("session_id") or ""),

@@ -378,7 +378,9 @@ def _respond(
     session = harness.run(prompt, workspace, resume_session_id=record.resume_session_id or None)
     if session.is_error:
         # cursor NOT advanced: the next attempt sees the same comments
-        return FollowupOutcome(run_id, "error", f"session: {session.stop_reason}")
+        return FollowupOutcome(
+            run_id, "error", f"session: {session.error_detail or session.stop_reason}"
+        )
 
     # Same self-approval scrub as the reviewer: the pipeline must never nudge
     # humans toward merging its own work, even in the author's voice.

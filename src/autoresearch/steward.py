@@ -35,7 +35,7 @@ from autoresearch.climb import (
 )
 from autoresearch.contract import Contract, load_contract
 from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
-from autoresearch.harness import Harness, redact
+from autoresearch.harness import Harness, budget_exhausted, redact
 from autoresearch.intake import (
     CLAIM_MARKER,
     STEWARD_LABEL,
@@ -53,6 +53,7 @@ from autoresearch.progress import (
 )
 from autoresearch.runstate import (
     ABORTED,
+    BUDGET_EXHAUSTED,
     ENDED,
     IN_REVIEW,
     NEGATIVE_RESULT,
@@ -70,6 +71,17 @@ RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
 # sessions is the escalate-to-a-human point
 MAX_STEWARD_ATTEMPTS = 3
 STEWARD_AGENT_ID = "steward-01"
+
+
+class SessionFailure(Exception):
+    """The steward's own session failed or ran dry. `budget` separates
+    "our caps ran out" (an honest ending) from a genuine malfunction."""
+
+    def __init__(self, detail: str, budget: bool) -> None:
+        super().__init__(detail)
+        self.budget = budget
+
+
 STEWARD_BRANCH_PREFIX = "feat/steward/steward-01"
 # The validation suite the orchestrator runs after steward edits. A
 # contract-declared command can replace this later; every current target is
@@ -411,7 +423,9 @@ def live_steward(
             steward_brief(contract_text, contract, work_order, config.benchmark), workspace
         )
         if session.is_error:
-            raise ValueError(f"steward session error: {session.stop_reason}")
+            raise SessionFailure(
+                session.error_detail or session.stop_reason, budget_exhausted(session)
+            )
 
         changed = changed_paths()
         if not changed:
@@ -530,14 +544,22 @@ def live_steward(
         )
         outcome_name = "stewarded"
     except (Exception, Terminated) as exc:
+        # Running out of budget is one of the six honest deaths, not a
+        # malfunction: name it, and put the real cause in every surface a
+        # human reads (record note, report, work-order comment) — "the
+        # session used its full 120-turn budget" tells the maintainer what
+        # to decide; "ValueError: tool_use" told them nothing.
+        budget = isinstance(exc, SessionFailure) and exc.budget
         exc_name = type(exc).__name__
-        note = redact(f"{exc_name}: {exc}", secrets)[:500]
+        cause = redact(str(exc), secrets)[:500]
+        note = cause if budget else f"{exc_name}: {cause}"[:500]
+        outcome_label = "budget-exhausted" if budget else "steward-error"
         log.warning("stewardship failed for %s: %s", run_id, note)
         final = RunRecord(
             **{
                 **record.__dict__,
                 "state": ENDED,
-                "ending": ABORTED,
+                "ending": BUDGET_EXHAUSTED if budget else ABORTED,
                 "ending_note": note,
             }
         )
@@ -547,26 +569,30 @@ def live_steward(
             "error report",
             lambda: report_path.write_text(
                 f"# Steward report — {config.target} / {config.benchmark}\n"
-                f"Outcome: **steward-error**\nNote: {note}\n"
+                f"Outcome: **{outcome_label}**\nNote: {note}\n"
             ),
             secrets,
         )
         if issue_number:
+            finished = (
+                f"ran out of its session budget ({note})"
+                if budget
+                else f"finished ({outcome_label}): {note}"
+            )
             _best_effort(
                 "issue report",
                 lambda: github.comment(
                     config.target,
                     issue_number,
-                    f"{RELEASE_MARKER}\nSteward run `{run_id}` finished "
-                    f"(steward-error): {exc_name}. Details are in the run's "
-                    f"record. Claim released — the lane retries up to "
+                    f"{RELEASE_MARKER}\nSteward run `{run_id}` {finished}. "
+                    f"Claim released — the lane retries up to "
                     f"{MAX_STEWARD_ATTEMPTS} total attempts, then waits for a human.",
                 ),
                 secrets,
             )
         return LiveClimbOutcome(
             run_id=run_id,
-            outcome="steward-error",
+            outcome=outcome_label,
             report_path=str(report_path) if wrote else "",
         )
 

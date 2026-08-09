@@ -8,6 +8,21 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Session budgets raised (60/60/90/60 → 120-turn sessions, 90-minute
+  session walltime, 120-minute climb jobs, 90-minute follow-up jobs):
+  the first steward work order to BUILD an environment burned its full
+  60-turn budget mid-work — budgets sized for solver tweaks starve
+  construction work. Ceilings still equal defaults, so contracts shape
+  spend strictly downward.
+
+- A session that runs out of turns or walltime now ends as
+  budget-exhausted — one of the six honest deaths — instead of an
+  error, and every surface a human reads carries the real cause: the
+  record's ending note, the run report, the work-order comment ("ran
+  out of its session budget: Reached maximum number of turns (120)"),
+  where before all three said `ValueError: steward session error:
+  tool_use`.
+
 - Review and verification comments read like a colleague, not a legal
   notice (maintainer feedback): one calm italic header line per role, and
   findings rendered as prose paragraphs with the reference at the end

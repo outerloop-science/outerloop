@@ -110,7 +110,7 @@ def test_noise_below_threshold_is_no_improvement(tmp_path: Path) -> None:
 
 def test_session_error_short_circuits_before_second_eval(tmp_path: Path) -> None:
     bad = SessionResult(
-        stop_reason="timeout",
+        stop_reason="spawn-error",
         is_error=True,
         cost_usd=0.0,
         num_turns=0,
@@ -122,6 +122,28 @@ def test_session_error_short_circuits_before_second_eval(tmp_path: Path) -> None
     assert result.outcome == "session-error"
     assert len(evaluator.calls) == 1  # baseline only
     assert result.baseline == 13.876
+
+
+def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path: Path) -> None:
+    """Turns or walltime running out is 'caps hit mid-run' — the outcome
+    names it, and the note carries the real cause, not a stop reason."""
+    for stop, detail in (
+        ("timeout", "session hit its 90-minute walltime and was killed"),
+        ("tool_use", "error_max_turns: Reached maximum number of turns (120)"),
+    ):
+        dry = SessionResult(
+            stop_reason=stop,
+            is_error=True,
+            cost_usd=1.0,
+            num_turns=120,
+            session_id="",
+            final_text="",
+            transcript_path="",
+            error_detail=detail,
+        )
+        result, _, _evaluator = run_climb(tmp_path, [13.876, 999.0], session=dry)
+        assert result.outcome == "session-budget"
+        assert result.note == detail
 
 
 def test_baseline_eval_failure_never_starts_a_session(tmp_path: Path) -> None:

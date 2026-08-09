@@ -207,7 +207,7 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
     class DeadHarness:
         def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
             return SessionResult(
-                stop_reason="timeout",
+                stop_reason="spawn-error",
                 is_error=True,
                 cost_usd=0.0,
                 num_turns=0,
