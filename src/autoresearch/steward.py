@@ -118,6 +118,61 @@ Hard rules:
   to look like."""
 
 
+def validate_and_measure(workspace: Path, contract: Contract, bench: Any, evaluator: Any) -> float:
+    """The steward's ruler, run by the ORCHESTRATOR: the full suite and the
+    target benchmark must work on the edited env — and every OTHER
+    benchmark's eval must still run (the steward may edit a shared harness;
+    a broken sibling eval must fail here, not on the next climb). Siblings
+    are smoke-checked, not re-measured."""
+    evaluator.check(workspace, VALIDATION_COMMAND)
+    for sibling in contract.benchmarks:
+        if sibling.name != bench.name:
+            evaluator.check(workspace, sibling.command)
+    return float(evaluator.evaluate(workspace, bench.command, bench.metric))
+
+
+def rebase_leader_row(
+    workspace: Path,
+    contract: Contract,
+    benchmark: str,
+    bench: Any,
+    measured: float,
+    run_id: str,
+    created: str,
+    target: str,
+) -> float:
+    """Reset the benchmark's ledger row to the orchestrator's measurement;
+    returns the PRIOR best (captured before the overwrite)."""
+    entries = load_leader(workspace)
+    prior_entry = entries.get(benchmark)
+    prior_best = prior_entry.best if prior_entry is not None else float("nan")
+    entries[benchmark] = LeaderEntry(
+        benchmark=benchmark,
+        metric=bench.metric,
+        direction=bench.direction,
+        baseline=measured,
+        best=measured,
+        best_run=f"baseline-{run_id}",
+        updated=created[:10],
+    )
+    write_progress(
+        workspace,
+        entries,
+        target,
+        digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+    )
+    return prior_best
+
+
+# A short role reminder prefixed to steward WAKE prompts: the resumed
+# session must keep its constitution without re-sending the whole brief.
+STEWARD_WAKE_PREAMBLE = (
+    "You are the BENCHMARK STEWARD (env/eval/tests territory only; solver "
+    "directories and the record ledger remain forbidden; the orchestrator "
+    "re-validates and re-bases records after any change you make).\n\n"
+)
+
+
 class StewardEvaluator(Protocol):
     def evaluate(self, workspace: Path, command: str, metric: str) -> float: ...
 
@@ -399,17 +454,9 @@ def live_steward(
                 f"steward touched paths outside its territory: {sorted(violations)[:10]}"
             )
 
-        # The steward's ruler, run by the ORCHESTRATOR: the full suite and
-        # the target benchmark must work on the edited env — and every
-        # OTHER benchmark's eval must still run (the steward may edit a
-        # shared harness; a broken sibling eval must fail here, not on the
-        # next climb). Siblings are smoke-checked, not re-measured: their
-        # rows keep old-env numbers, stated in the PR body for the humans.
-        evaluator.check(workspace, VALIDATION_COMMAND)
-        for sibling in contract.benchmarks:
-            if sibling.name != config.benchmark:
-                evaluator.check(workspace, sibling.command)
-        measured = evaluator.evaluate(workspace, bench.command, bench.metric)
+        # The steward's ruler, run by the ORCHESTRATOR (shared with the
+        # steward follow-up path).
+        measured = validate_and_measure(workspace, contract, bench, evaluator)
 
         # drift protection identical to the climb: the committed tree must
         # be exactly the validated tree
@@ -424,23 +471,8 @@ def live_steward(
 
         # Orchestrator-authored record reset: the re-based benchmark's row
         # carries the orchestrator's own measurement, never a pasted number.
-        entries = load_leader(workspace)
-        prior_entry = entries.get(config.benchmark)
-        prior_best = prior_entry.best if prior_entry is not None else float("nan")
-        entries[config.benchmark] = LeaderEntry(
-            benchmark=config.benchmark,
-            metric=bench.metric,
-            direction=bench.direction,
-            baseline=measured,
-            best=measured,
-            best_run=f"baseline-{run_id}",
-            updated=created[:10],
-        )
-        write_progress(
-            workspace,
-            entries,
-            config.target,
-            digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+        prior_best = rebase_leader_row(
+            workspace, contract, config.benchmark, bench, measured, run_id, created, config.target
         )
 
         branch = f"{STEWARD_BRANCH_PREFIX}/{run_id}"

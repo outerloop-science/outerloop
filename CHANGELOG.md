@@ -53,6 +53,22 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Steward follow-ups: comments on a steward PR resume the steward session
+  with ITS key and ITS scope check, and pushed changes run the steward
+  ruler (suite + sibling smoke-checks + re-measure) with an
+  orchestrator-re-based ledger row — never the solver's improvement math.
+  And in every follow-up wake, comments WITHOUT standing (verifier and
+  advisory rounds) now ride along data-fenced as context — they still
+  never trigger or steer, but the woken agent finally sees what "address
+  the findings" refers to without a human relaying the text.
+
+- Run endings talk back to the work order: when a run that started from an
+  issue ends by PR merge, the issue gets a closing nudge (the claim stays
+  held, so an open order queues nothing — closing is the human's call);
+  a steward PR closed unmerged releases its claim right there with honest
+  wording instead of the reconciliation pass calling a deliberate "no" a
+  crash.
+
 - The benchmark steward (`steward` module + tick lane): maintainer-filed
   work orders (issues labeled `autoresearch:steward`, standing-gated) run
   a session whose territory is the solver's INVERSE — the contract's new

@@ -163,13 +163,12 @@ def service_in_review(
             if ending:
                 ended.append((record.run_id, ending))
                 continue
-            # Steward PRs end via close_if_done like any other, but their
-            # comment servicing is NOT wired yet: the follow-up job would
-            # resume them with the SOLVER'S key and the solver's scope
-            # check — exactly the role separation the steward exists to
-            # keep. Until a steward follow-up path exists, maintainer
-            # comments on steward PRs are answered by humans.
-            if record.agent_id.startswith("steward"):
+            # Steward records are serviced with the STEWARD'S key and the
+            # steward scope check (respond_once derives the mode from the
+            # record's agent id); without a provisioned steward key the
+            # lane stays human-answered.
+            is_steward = record.agent_id.startswith("steward")
+            if is_steward and not spec.steward_key_file:
                 continue
             if not has_new_comments(record, github, spec.bot_login):
                 continue
@@ -214,8 +213,9 @@ def service_in_review(
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
-            if spec.key_file:
-                argv += ["--key-file", spec.key_file]
+            key_file = spec.steward_key_file if is_steward else spec.key_file
+            if key_file:
+                argv += ["--key-file", key_file]
             command = quote_command(argv)
             job_id = compute.submit(
                 JobSpec(
