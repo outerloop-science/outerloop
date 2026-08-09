@@ -387,12 +387,18 @@ def _respond(
             # The API refused us — refund the wake attempt the tick billed
             # at submit (this responder holds the lease) and stamp the
             # latch so the lanes pause instead of burning the retry cap
-            # on a dead key every half hour.
-            stamp_outage(run_root, session.error_detail[:300], now)
-            latest = load_record(run_root, run_id)
-            save_record(
-                run_root, replace(latest, wake_attempts=max(0, latest.wake_attempts - 1)), now
-            )
+            # on a dead key every half hour. Best-effort: a full state
+            # disk must degrade to a plain error outcome, not lose the
+            # honest note to an escaping exception.
+            role = "steward" if is_steward else "solver"
+            try:
+                stamp_outage(run_root, session.error_detail[:300], now, role=role)
+                latest = load_record(run_root, run_id)
+                save_record(
+                    run_root, replace(latest, wake_attempts=max(0, latest.wake_attempts - 1)), now
+                )
+            except (OSError, ValueError) as exc:
+                log.warning("outage bookkeeping failed for %s: %s", run_id, exc)
             return FollowupOutcome(
                 run_id, "error", f"api outage: {session.error_detail or session.stop_reason}"
             )

@@ -192,9 +192,14 @@ session dies because the model API refused us — dead credits, a spend
 limit, auth, throttling — the failure is classified as an outage: the
 run ends `stuck` with the refusal in its note, a steward claim releases
 WITHOUT counting toward its attempt cap, a follow-up's wake attempt is
-refunded, and a latch pauses every session-spawning lane for a cooldown
-(~45 min), so one canary session per hour re-probes the API instead of
-every lane burning its retry budget each tick. Endings, nudges, and all
+refunded, and a PER-ROLE latch (roles hold separate keys — a dead
+steward key must not idle the solver lanes) pauses that role's
+session-spawning for a cooldown: ~45 minutes for account-level refusals,
+5 for transient throttling, so one canary session per hour re-probes the
+API instead of every lane burning its retry budget each tick. Outage
+releases have their own cap — a PERMANENT refusal (revoked key) stops
+retrying after a handful of releases and waits for a human, keeping the
+escalate-to-a-human guarantee that the attempt cap exists to provide. Endings, nudges, and all
 other model-free bookkeeping keep running through an outage. The
 Actions reviewers get the mirror treatment: a round the model API
 refused posts a skip stub on the thread under its own marker — an

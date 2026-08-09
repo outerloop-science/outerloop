@@ -437,7 +437,11 @@ def test_api_outage_releases_claim_without_counting(tmp_path, steward_repo) -> N
     assert "credit balance" in record.ending_note
     (release,) = [b for _, b in github.issue_comments if RELEASE_MARKER in b]
     assert OUTAGE_MARKER in release and "does NOT count" in release
-    assert "credit balance" in outage_active(tmp_path / "state", now=1_000_000.0 + 60)
+    assert "credit balance" in outage_active(
+        tmp_path / "state", now=1_000_000.0 + 60, role="steward"
+    )
+    # and the STEWARD'S dead key never pauses the solver lanes
+    assert outage_active(tmp_path / "state", now=1_000_000.0 + 60, role="solver") == ""
 
 
 def test_outage_releases_do_not_count_toward_the_attempt_cap() -> None:

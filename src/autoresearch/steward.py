@@ -76,6 +76,12 @@ OUTAGE_MARKER = "<!-- autoresearch:outage-release -->"
 # persistently-failing order must not become a paid retry loop — three
 # sessions is the escalate-to-a-human point
 MAX_STEWARD_ATTEMPTS = 3
+# Outage releases don't count as attempts, but they cannot refund forever:
+# a PERMANENT refusal (revoked key, misconfigured key file) would otherwise
+# oscillate 0->1->0 below the cap and never reach a human (review finding).
+# After this many outage releases the order waits for a human too — the
+# release comments on the thread say exactly why.
+MAX_OUTAGE_RELEASES = 5
 STEWARD_AGENT_ID = "steward-01"
 
 
@@ -224,6 +230,7 @@ def pick_steward_issue(
         # a human, not a fourth session.
         claimed = False
         attempts = 0
+        outage_releases = 0
         for c in github.list_comments(repo, number):
             # The markers are the BOT'S protocol: only its own comments
             # move the claim state. On a public repo, a stranger posting
@@ -241,10 +248,15 @@ def pick_steward_issue(
                 claimed = False
                 if OUTAGE_MARKER in body:
                     # an API outage is our failure, not the order's: the
-                    # claim it released does not count toward the cap
+                    # claim it released does not count toward the cap —
+                    # but outage releases have their OWN cap, or a
+                    # permanent refusal would retry forever
                     attempts = max(0, attempts - 1)
+                    outage_releases += 1
         if claimed or attempts >= MAX_STEWARD_ATTEMPTS:
             continue
+        if outage_releases >= MAX_OUTAGE_RELEASES:
+            continue  # persistent refusals escalate to a human too
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)
         if not benchmark:
@@ -590,7 +602,11 @@ def live_steward(
         if api_outage:
             outcome_label = "infra-outage"
             ending = STUCK  # infrastructure failure, nothing about the run
-            _best_effort("outage stamp", lambda: stamp_outage(run_root, note, now), secrets)
+            _best_effort(
+                "outage stamp",
+                lambda: stamp_outage(run_root, note, now, role="steward"),
+                secrets,
+            )
         elif budget:
             outcome_label = "budget-exhausted"
             ending = BUDGET_EXHAUSTED
@@ -623,7 +639,10 @@ def live_steward(
                     f"could not run — the API refused the orchestrator "
                     f"({note}). Claim released; this does NOT count toward "
                     f"the {MAX_STEWARD_ATTEMPTS}-attempt cap. The lanes pause "
-                    f"and retry after the outage cooldown."
+                    f"and retry after the outage cooldown; after "
+                    f"{MAX_OUTAGE_RELEASES} outage releases this order waits "
+                    f"for a human (persistent refusals need a key fix, not "
+                    f"retries)."
                 )
             else:
                 finished = (

@@ -18,6 +18,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from autoresearch.github import EnvTokenProvider, GitHubClient, GitHubError
+from autoresearch.harness import redact
 from autoresearch.llm import AnthropicCompleter, CompleterError, RefusalError, TruncatedError
 from autoresearch.review import (
     MARKER,
@@ -134,7 +135,17 @@ def post_skip_stub(client: GitHubClient, repo: str, number: int, role: str, exc:
     round, deliberately — a stub never counts toward round numbering and
     never rides as follow-up wake context (both match on their own
     markers)."""
-    note = str(exc)[:200]
+    # the reviewer/verifier keys are the only secrets this process holds;
+    # auth errors are exactly the class that can echo request material
+    secrets = tuple(
+        v
+        for v in (
+            os.environ.get("ANTHROPIC_REVIEWER_KEY", ""),
+            os.environ.get("ANTHROPIC_VERIFIER_KEY", ""),
+        )
+        if v
+    )
+    note = redact(str(exc), secrets)[:200]
     try:
         client.comment(
             repo,

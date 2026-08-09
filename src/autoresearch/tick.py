@@ -154,10 +154,6 @@ def service_in_review(
     """
     from autoresearch.followup import close_if_done, has_new_comments
 
-    paused = outage_active(root, now)
-    if paused and allow_submit:
-        log.info("follow-up submissions paused (api outage: %s)", paused)
-        allow_submit = False  # state transitions below still run
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
     for record in list_runs(root):
@@ -174,6 +170,12 @@ def service_in_review(
             # lane stays human-answered.
             is_steward = record.agent_id.startswith("steward")
             if is_steward and not spec.steward_key_file:
+                continue
+            # per-ROLE outage latch: state transitions above still ran,
+            # only this record's session spawn sits the cooldown out
+            paused = outage_active(root, now, role="steward" if is_steward else "solver")
+            if paused:
+                log.info("follow-up for %s paused (api outage: %s)", record.run_id, paused)
                 continue
             if not has_new_comments(record, github, spec.bot_login):
                 continue
@@ -840,7 +842,7 @@ def service_self_initiated(
     every tick during Slurm queue latency would launch a duplicate climb.
     """
     limits = limits if limits is not None else effective_limits(getattr(contract, "budgets", None))
-    paused = outage_active(root, now)
+    paused = outage_active(root, now, role="solver")
     if paused:
         log.info("self-initiated lane paused (api outage: %s)", paused)
         return None
@@ -942,7 +944,7 @@ def service_steward(
         # very session the outage killed must not stay held all cooldown
         # (reconciliation is model-free bookkeeping; only spawning pauses)
         release_orphaned_claims(github, target, records, now, bot_login=spec.bot_login)
-        paused = outage_active(root, now)
+        paused = outage_active(root, now, role="steward")
         if paused:
             log.info("steward lane paused (api outage: %s)", paused)
             return None
@@ -1056,7 +1058,7 @@ def service_intake(
     target = spec.target
     if not target:
         return None
-    paused = outage_active(root, now)
+    paused = outage_active(root, now, role="solver")
     if paused:
         log.info("intake lane paused (api outage: %s)", paused)
         return None

@@ -947,9 +947,13 @@ roadmap: docs/roadmap.md
         def get_pull_request(self, repo, number):
             return {"state": "closed", "merged": True}
 
-    stamp_outage(tmp_path, "credit balance is too low", now=NOW - 60)
-    assert service_steward(tmp_path, G(), compute, spec, NOW, contract, limits) is None
+    # per-role latches: each role's stamp pauses only its own lanes (the
+    # cross-role isolation itself is pinned in test_steward via
+    # outage_active role separation)
+    stamp_outage(tmp_path, "credit balance is too low", now=NOW - 60, role="solver")
+    stamp_outage(tmp_path, "credit balance is too low", now=NOW - 60, role="steward")
     assert service_self_initiated(tmp_path, compute, spec, contract, NOW, limits) is None
+    assert service_steward(tmp_path, G(), compute, spec, NOW, contract, limits) is None
     # an in-review record: the merged ending still lands, no job submitted
     save_record(
         tmp_path,
