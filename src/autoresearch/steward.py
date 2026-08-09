@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from secrets import randbits
 from typing import Any, Protocol
 
 from autoresearch.climb import (
@@ -44,7 +43,7 @@ from autoresearch.intake import (
     infer_benchmark,
     qualifying_issue,
 )
-from autoresearch.orchestrator import steward_out_of_scope
+from autoresearch.orchestrator import draw_run_seed, steward_out_of_scope
 from autoresearch.progress import (
     PROGRESS_PATHS,
     LeaderEntry,
@@ -530,7 +529,7 @@ def live_steward(
         # The steward's ruler, run by the ORCHESTRATOR (shared with the
         # steward follow-up path). One fresh seed for the measurement,
         # recorded in the re-based row: the new baseline is re-derivable.
-        run_seed = randbits(31) if getattr(bench, "seed_env", None) else 0
+        run_seed = draw_run_seed() if bench.seed_env else 0
         measured = validate_and_measure(workspace, contract, bench, evaluator, run_seed=run_seed)
 
         # drift protection identical to the climb: the committed tree must

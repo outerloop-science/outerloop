@@ -17,13 +17,18 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from secrets import randbits
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
 from autoresearch.github import GitHubClient, Workspace
 from autoresearch.harness import Harness, outage, redact
-from autoresearch.orchestrator import Evaluator, out_of_scope, steward_out_of_scope
+from autoresearch.orchestrator import (
+    Evaluator,
+    clears_min_delta,
+    draw_run_seed,
+    out_of_scope,
+    steward_out_of_scope,
+)
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
     PROGRESS_PATHS,
@@ -430,7 +435,7 @@ def _respond(
             pre_eval_tree = _tree_hash(ws)
             # one fresh seed for this re-measure, recorded with the row —
             # same pairing/reproducibility rule as the climb and steward
-            run_seed = randbits(31) if bench.seed_env else 0
+            run_seed = draw_run_seed() if bench.seed_env else 0
             seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
             try:
                 if is_steward:
@@ -478,27 +483,35 @@ def _respond(
                         )
                     else:
                         prior = load_leader(workspace).get(bench.name)
-                        entries = update_leader(
-                            load_leader(workspace),
-                            benchmark=bench.name,
-                            metric=bench.metric,
-                            direction=bench.direction,
-                            baseline=candidate,  # pinned by existing entry if present
-                            candidate=candidate,
-                            run_id=run_id,
-                            date=created[:10],
-                            run_seed=run_seed,
-                        )
-                        write_progress(
-                            workspace,
-                            entries,
-                            record.target,
-                            digits={
-                                b.name: b.display_digits
-                                for b in contract.benchmarks
-                                if b.display_digits
-                            },
-                        )
+                        # cross-seed floor, same rule as the climb's publish
+                        # path: this re-measure ran under a FRESH seed, so a
+                        # sub-floor delta over the recorded best is pool
+                        # luck and must not ratchet the ledger (round-1
+                        # review finding)
+                        if prior is None or clears_min_delta(
+                            prior.best, candidate, bench.direction, bench.min_delta
+                        ):
+                            entries = update_leader(
+                                load_leader(workspace),
+                                benchmark=bench.name,
+                                metric=bench.metric,
+                                direction=bench.direction,
+                                baseline=candidate,  # pinned by existing entry
+                                candidate=candidate,
+                                run_id=run_id,
+                                date=created[:10],
+                                run_seed=run_seed,
+                            )
+                            write_progress(
+                                workspace,
+                                entries,
+                                record.target,
+                                digits={
+                                    b.name: b.display_digits
+                                    for b in contract.benchmarks
+                                    if b.display_digits
+                                },
+                            )
                     branch = _current_branch(ws)
                     verb = "steward" if is_steward else "agent"
                     ws.commit_all(

@@ -268,6 +268,29 @@ def test_improved_rejects_nonfinite_and_zero_baseline_uses_absolute() -> None:
     assert improved(0.0, 0.01, "max", 0.005)
 
 
+def test_draw_run_seed_never_returns_the_sentinel() -> None:
+    from autoresearch.orchestrator import draw_run_seed
+
+    for _ in range(64):
+        seed = draw_run_seed()
+        assert 1 <= seed <= 2**30  # 0 stays the "no seed recorded" sentinel
+
+
+def test_extra_env_cannot_override_managed_isolation_vars(tmp_path: Path) -> None:
+    """HOME/UV_* are the eval's isolation; a colliding injection is dropped
+    (the contract validator rejects such seed_env names — this is depth)."""
+    from autoresearch.orchestrator import SubprocessEvaluator
+
+    value = SubprocessEvaluator(timeout_s=30).evaluate(
+        tmp_path,
+        'if [ "$HOME" = "/tmp/hijack" ]; then printf \'{"m": 1}\'; '
+        'else printf \'{"m": %s}\' "$M_SEED"; fi',
+        "m",
+        extra_env={"HOME": "/tmp/hijack", "M_SEED": "7"},
+    )
+    assert value == 7.0
+
+
 def test_subprocess_evaluator_injects_extra_env(tmp_path: Path) -> None:
     """The seed reaches the eval subprocess (the base env is a scrubbed
     allowlist, so injection must be explicit and is tested for real)."""

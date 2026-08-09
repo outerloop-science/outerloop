@@ -18,7 +18,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SELF_REPO = "agentic-learning-ai-lab/autoresearch"
 ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", ".autoresearch.yaml")
@@ -77,8 +77,22 @@ class Benchmark(_StrictModel):
     # fresh seed per measurement pass and pins BOTH sides of a comparison
     # to it (paired, common random numbers), then records it in the ledger
     # row — the number becomes re-derivable instead of pool luck. Strict
-    # env-var shape: this string reaches a subprocess environment.
+    # env-var shape: this string reaches a subprocess environment. RULER
+    # INVARIANT the eval must uphold: emit the seed to stdout only, never
+    # persist it into the tree — a seed artifact in the workspace would be
+    # readable by the solver session that runs between the paired evals
+    # (the verifier's ruler read covers this).
     seed_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+
+    @field_validator("seed_env")
+    @classmethod
+    def _seed_env_never_managed(cls, value: str | None) -> str | None:
+        from autoresearch.orchestrator import PROTECTED_EVAL_ENV
+
+        if value is not None and value in PROTECTED_EVAL_ENV:
+            raise ValueError(f"seed_env must not name the evaluator's managed variable {value!r}")
+        return value
+
     # Cross-seed noise floor in ABSOLUTE metric units (a resampled pool
     # re-rolls between runs; the steward's stated stderr belongs here,
     # e.g. ~2x). Comparisons against the RECORDED best — measured under a

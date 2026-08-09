@@ -231,6 +231,55 @@ def test_rejected_solver_pr_notes_the_claim_is_held(review_run) -> None:
     assert "stays claimed" in body and "fresh" in body
 
 
+def test_followup_row_update_respects_the_cross_seed_floor(review_run) -> None:
+    """A follow-up re-measure runs under a FRESH seed: beating the recorded
+    best by less than min_delta is pool luck and must not ratchet the
+    ledger (round-1 finding) — while a clearing delta still moves the row
+    and records the seed it was measured under."""
+    import json as _json
+
+    root, _bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    floored = CONTRACT.replace(
+        "    direction: min\n",
+        "    direction: min\n    seed_env: PILOT_TSP_SEED\n    min_delta: 0.5\n",
+        1,
+    )
+    (ws / ".autoresearch.yaml").write_text(floored)
+    (ws / "results").mkdir(exist_ok=True)
+    prior_row = {
+        "tsp": {
+            "benchmark": "tsp",
+            "metric": "mean_tour_length",
+            "direction": "min",
+            "baseline": 13.876,
+            "best": 12.0,
+            "best_run": "r0",
+            "updated": "d",
+        }
+    }
+    (ws / "results" / "leader.json").write_text(_json.dumps(prior_row))
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "floor setup")
+
+    github = FakeGitHub(comments=[member(101, "try tightening the kick")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"})
+    outcome = respond(root, github, harness=harness, evaluator=QueueEvaluator(values=[11.8]))
+    assert outcome.action == "replied"
+    row = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
+    assert row["best"] == 12.0  # 0.2 inside the 0.5 floor: unchanged
+
+    # a second round that CLEARS the floor moves the row and records the seed
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, followup_job_id=""), NOW)
+    github2 = FakeGitHub(comments=[member(200, "one more push")])
+    harness2 = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"})
+    outcome2 = respond(root, github2, harness=harness2, evaluator=QueueEvaluator(values=[11.4]))
+    assert outcome2.action == "replied"
+    row2 = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
+    assert row2["best"] == 11.4 and row2["run_seed"] > 0
+
+
 def test_session_outage_refunds_the_wake_attempt(review_run) -> None:
     """The tick bills a wake attempt at submit; a session the API refused
     gives it back and stamps the latch, so a dead key cannot burn a run's

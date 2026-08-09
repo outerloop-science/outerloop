@@ -40,6 +40,13 @@ EVAL_TIMEOUT_S = 1800
 MAX_REPORT_BODY = 20_000
 
 
+# Environment keys the evaluator manages itself; a contract's seed_env may
+# never name one (validated at load; filtered again at injection).
+PROTECTED_EVAL_ENV = frozenset(
+    {"HOME", "PATH", "TMPDIR", "LANG", "UV_CACHE_DIR", "UV_LINK_MODE", "UV_PROJECT_ENVIRONMENT"}
+)
+
+
 class EvalError(RuntimeError):
     """The benchmark command failed or produced no readable metric."""
 
@@ -187,10 +194,16 @@ class SubprocessEvaluator:
         env["HOME"] = str(eval_home)
         if extra_env:
             # explicit injections only (the base env is a scrubbed
-            # allowlist): today this carries the benchmark's run seed
-            env.update(extra_env)
-            if self.container_image:
-                for key, value in extra_env.items():
+            # allowlist): today this carries the benchmark's run seed.
+            # Managed keys are dropped, never overwritten — the contract
+            # validator already rejects them, this is defense in depth
+            # (an injected HOME/UV_* would defeat per-eval isolation)
+            for key, value in extra_env.items():
+                if key in PROTECTED_EVAL_ENV:
+                    log.warning("refusing extra_env override of managed %s", key)
+                    continue
+                env[key] = value
+                if self.container_image:
                     env[f"APPTAINERENV_{key}"] = value
         try:
             # process group, like the harness: a timed-out eval must not
@@ -409,6 +422,12 @@ def steward_out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
     return violations
 
 
+def draw_run_seed() -> int:
+    """A fresh measurement seed, never 0 — zero is the ledger's "no seed
+    recorded" sentinel, and the injection guards key off truthiness."""
+    return 1 + randbits(30)
+
+
 def clears_min_delta(
     prior_best: float, candidate: float, direction: str, min_delta: float | None
 ) -> bool:
@@ -485,7 +504,7 @@ def climb_once(
     # (architecture: "baseline re-run at the merge-base, not a trusted
     # static file").
     try:
-        run_seed = randbits(31) if bench.seed_env else 0
+        run_seed = draw_run_seed() if bench.seed_env else 0
         seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env else None
         baseline = evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env)
     except EvalError as exc:

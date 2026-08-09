@@ -153,3 +153,22 @@ roadmap: docs/roadmap.md
 
     with pytest.raises(ValueError):
         load_contract(base % "-0.1", "org/pilot")
+
+
+def test_seed_env_rejects_the_evaluators_managed_names() -> None:
+    """seed_env: UV_PROJECT_ENVIRONMENT (or HOME) would defeat per-eval
+    isolation; contracts are untrusted input, so the loader refuses."""
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max, seed_env: %s}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    import pytest
+
+    for managed in ("HOME", "UV_PROJECT_ENVIRONMENT", "PATH", "UV_CACHE_DIR"):
+        with pytest.raises(ValueError):
+            load_contract(base % managed, "org/pilot")
