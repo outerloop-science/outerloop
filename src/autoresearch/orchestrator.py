@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Protocol
 
 from autoresearch.brief import BriefInputs, BudgetState, Task, build_brief, render
-from autoresearch.contract import Contract, load_contract, normalize_path, path_is_forbidden
+from autoresearch.contract import (
+    Contract,
+    _fold,
+    load_contract,
+    normalize_path,
+    path_is_forbidden,
+)
 from autoresearch.harness import Harness, SessionResult, redact
 
 log = logging.getLogger(__name__)
@@ -337,18 +343,20 @@ def steward_out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
     """
     if contract.steward is None:
         return list(paths)
-    allowed = [normalize_path(entry) for entry in contract.steward.allowed]
-    solver = [normalize_path(entry) for entry in contract.scope.allowed]
+    allowed = [_fold(normalize_path(entry)) for entry in contract.steward.allowed]
+    solver = [_fold(normalize_path(entry)) for entry in contract.scope.allowed]
     violations = []
     for path in paths:
         if path_is_forbidden(path, contract):
             violations.append(path)
             continue
         try:
-            candidate = normalize_path(path)
+            candidate = _fold(normalize_path(path))
         except Exception:
             violations.append(path)
             continue
+        # case-folded both directions, like path_is_forbidden: on a
+        # case-insensitive checkout, Solvers/ IS solvers/
         if any(candidate == sp or sp in candidate.parents for sp in solver):
             violations.append(path)  # solver territory: never the steward's
             continue

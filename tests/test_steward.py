@@ -107,6 +107,36 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         comments={4: [{"body": "<!-- autoresearch:claimed -->\ntaken"}]},
     )
     assert pick_steward_issue(github2, "org/pilot", c, BOT) is None
+    # a released claim makes the order claimable again
+    github3 = FakeIssues(
+        [_issue(4, "re-base the tsp pool")],
+        comments={
+            4: [
+                {"body": "<!-- autoresearch:claimed -->\ntaken"},
+                {"body": "<!-- autoresearch:claim-released -->\nsubmission failed"},
+            ]
+        },
+    )
+    picked = pick_steward_issue(github3, "org/pilot", c, BOT)
+    assert picked is not None and picked.number == 4
+
+
+def test_steward_scope_folds_case_against_solver_territory() -> None:
+    c = contract()
+    assert steward_out_of_scope(["src/pilot/Solvers/tsp.py"], c)
+
+
+def test_contract_rejects_steward_solver_overlap() -> None:
+    import pytest as _pytest
+
+    from autoresearch.contract import ScopeError
+
+    overlapping = CONTRACT.replace(
+        "steward: {allowed: [src/pilot/instances.py, src/pilot/eval.py, tests/]}",
+        "steward: {allowed: [src/pilot/]}",
+    )
+    with _pytest.raises(ScopeError, match="overlaps solver scope"):
+        load_contract(overlapping, "org/pilot")
 
 
 def test_brief_carries_rules_order_and_both_territories() -> None:
@@ -272,9 +302,13 @@ def test_stewardship_rebased_env_lands_with_orchestrator_records(tmp_path, stewa
     assert "Agent: steward-01" in log_out
     record = load_record(tmp_path / "state", "steward-tsp-1")
     assert record.state == "in-review" and record.agent_id == "steward-01"
-    # PR body: measured provenance stated, report present
-    assert "measured by the orchestrator" in github.prs[0]["body"]
-    assert "Addresses #21" in github.prs[0]["body"]
+    # PR body: measured provenance stated, report present — and the
+    # previous best is the PRIOR ledger value, not the fresh overwrite
+    body = github.prs[0]["body"]
+    assert "measured by the orchestrator" in body
+    assert "Addresses #21" in body
+    assert "| previous leader best | 10.84 |" in body
+    assert "| re-based baseline (current solver, new env) | 14.9 |" in body
 
 
 def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:

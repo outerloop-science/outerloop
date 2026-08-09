@@ -947,6 +947,29 @@ roadmap: docs/roadmap.md
     # no steward section -> lane off
     assert service_steward(tmp_path, G(), compute, spec("/k"), NOW, without_steward, limits) is None
     assert submitted == []
+    # an ACTIVE run for the target serializes the lane
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="busy",
+            target="org/pilot",
+            task_title="t",
+            state="implementing",
+        ),
+        now=NOW,
+    )
+    assert service_steward(tmp_path, G(), compute, spec("/k"), NOW, with_steward, limits) is None
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="busy",
+            target="org/pilot",
+            task_title="t",
+            state="ended",
+            ending="aborted",
+        ),
+        now=NOW,
+    )
     # both present -> claim BEFORE submit, job carries the steward module + key
     github = G()
     out = service_steward(tmp_path, github, compute, spec("/k"), NOW, with_steward, limits)

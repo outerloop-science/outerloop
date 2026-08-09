@@ -661,7 +661,7 @@ def tick(
             service_steward(
                 root, github, compute, spec, now, contract, limits, dry_run=followup_dry_run
             )
-            if launch_ok and contract is not None
+            if launch_ok and intake_job is None and contract is not None
             else None
         )
         self_job = None
@@ -913,6 +913,11 @@ def service_steward(
         return None
     if getattr(contract, "steward", None) is None:
         return None
+    # ONE active run per target covers stewardships too: an env rewrite
+    # must not fly alongside a solver climb (the drift/freshness machinery
+    # does not coordinate them) or alongside another stewardship.
+    if any(r.target == target and r.state != ENDED for r in list_runs(root)):
+        return None
     try:
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
@@ -954,17 +959,31 @@ def service_steward(
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        job_id = compute.submit(
-            JobSpec(
-                job_name=f"steward-issue-{task.number}",
-                account=spec.account,
-                partition=spec.partition,
-                time_minutes=limits.climb_job_minutes,
-                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
-                cpus=4,
-                mem="8G",
+        try:
+            job_id = compute.submit(
+                JobSpec(
+                    job_name=f"steward-issue-{task.number}",
+                    account=spec.account,
+                    partition=spec.partition,
+                    time_minutes=limits.climb_job_minutes,
+                    command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                    cpus=4,
+                    mem="8G",
+                )
             )
-        )
+        except Exception:
+            # release the claim: a claim with no job behind it would orphan
+            # the work order forever (pick skips claimed issues)
+            from autoresearch.steward import RELEASE_MARKER
+
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target,
+                    task.number,
+                    f"{RELEASE_MARKER}\nSubmission failed; claim released — "
+                    f"a later tick will retry this work order.",
+                )
+            raise
         log.info("steward issue #%s claimed for job %s", task.number, job_id)
         return (f"steward-issue-{task.number}", job_id)
     except Exception as exc:  # the steward lane must not break the tick

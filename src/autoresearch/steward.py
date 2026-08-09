@@ -57,6 +57,9 @@ from autoresearch.runstate import (
 log = logging.getLogger(__name__)
 
 STEWARD_LABEL = "autoresearch:steward"
+# posted when a claim could not be backed by a submitted job: a release
+# AFTER the last claim makes the issue claimable again
+RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
 STEWARD_AGENT_ID = "steward-01"
 STEWARD_BRANCH_PREFIX = "feat/steward/steward-01"
 # The validation suite the orchestrator runs after steward edits. A
@@ -115,7 +118,14 @@ def pick_steward_issue(
         if not qualifying_issue(issue, bot_login):
             continue
         number = int(issue["number"])
-        if any(CLAIM_MARKER in str(c.get("body", "")) for c in github.list_comments(repo, number)):
+        claimed = 0
+        for c in github.list_comments(repo, number):
+            body = str(c.get("body", ""))
+            if CLAIM_MARKER in body:
+                claimed += 1
+            if RELEASE_MARKER in body:
+                claimed -= 1
+        if claimed > 0:
             continue
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)
@@ -312,6 +322,8 @@ def live_steward(
         # Orchestrator-authored record reset: the re-based benchmark's row
         # carries the orchestrator's own measurement, never a pasted number.
         entries = load_leader(workspace)
+        prior_entry = entries.get(config.benchmark)
+        prior_best = prior_entry.best if prior_entry is not None else float("nan")
         entries[config.benchmark] = LeaderEntry(
             benchmark=config.benchmark,
             metric=bench.metric,
@@ -346,7 +358,7 @@ def live_steward(
             + (f"\n\nAddresses #{issue_number}." if issue_number else "")
             + "\n\n| | value |\n| --- | --- |\n"
             f"| previous leader best | "
-            f"{fmt_metric(load_leader_best(workspace, config.benchmark), bench.display_digits)} |\n"
+            f"{fmt_metric(prior_best, bench.display_digits)} |\n"
             f"| re-based baseline (current solver, new env) | "
             f"{fmt_metric(measured, bench.display_digits)} |\n\n"
             "The baseline was measured by the orchestrator running the contract's "
@@ -444,11 +456,6 @@ def live_steward(
     return LiveClimbOutcome(
         run_id=run_id, outcome=outcome_name, pr_url=pr_url, report_path=str(report_path)
     )
-
-
-def load_leader_best(workspace: Path, benchmark: str) -> float:
-    entry = load_leader(workspace).get(benchmark)
-    return entry.best if entry is not None else float("nan")
 
 
 def main() -> int:

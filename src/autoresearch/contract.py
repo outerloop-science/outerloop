@@ -210,4 +210,18 @@ def load_contract(text: str, target_repo: str) -> Contract:
         for path in forbidden:
             if _overlaps(allowed, path):
                 raise ScopeError(f"allowed path {entry!r} overlaps forbidden {str(path)!r}")
+    if contract.steward is not None:
+        # same rigor as the solver scope, plus the role-separation invariant:
+        # steward and solver territories must not overlap AT LOAD TIME — a
+        # malformed or colliding entry is a contract error, never a
+        # mid-run surprise
+        solver = [normalize_path(entry) for entry in contract.scope.allowed]
+        for entry in contract.steward.allowed:
+            allowed = normalize_path(entry)
+            for path in forbidden:
+                if _overlaps(allowed, path):
+                    raise ScopeError(f"steward path {entry!r} overlaps forbidden {str(path)!r}")
+            for sp in solver:
+                if _overlaps(allowed, sp):
+                    raise ScopeError(f"steward path {entry!r} overlaps solver scope {str(sp)!r}")
     return contract
