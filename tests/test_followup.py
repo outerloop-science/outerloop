@@ -268,6 +268,9 @@ def test_followup_row_update_respects_the_cross_seed_floor(review_run) -> None:
     assert outcome.action == "replied"
     row = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
     assert row["best"] == 12.0  # 0.2 inside the 0.5 floor: unchanged
+    # ...and the thread says WHY the row did not move (round-2 finding)
+    (reply,) = github.posted
+    assert "noise floor" in reply and "ledger row is unchanged" in reply
 
     # a second round that CLEARS the floor moves the row and records the seed
     record = load_record(root, "tsp-r1")

@@ -42,9 +42,17 @@ MAX_REPORT_BODY = 20_000
 
 # Environment keys the evaluator manages itself; a contract's seed_env may
 # never name one (validated at load; filtered again at injection).
-PROTECTED_EVAL_ENV = frozenset(
-    {"HOME", "PATH", "TMPDIR", "LANG", "UV_CACHE_DIR", "UV_LINK_MODE", "UV_PROJECT_ENVIRONMENT"}
-)
+PROTECTED_EVAL_ENV = frozenset({"HOME", "PATH", "TMPDIR", "LANG", "VIRTUAL_ENV"})
+# ...and whole families: any UV_* steers uv's env/cache resolution, and any
+# APPTAINERENV_* is translated into the CONTAINER's environment by apptainer
+# (APPTAINERENV_HOME becomes HOME inside), so exact-name checks cannot
+# enumerate them (review finding).
+PROTECTED_ENV_PREFIXES = ("UV_", "APPTAINERENV_")
+
+
+def managed_eval_env(name: str) -> bool:
+    """True when injecting `name` could disturb the eval's own isolation."""
+    return name in PROTECTED_EVAL_ENV or name.startswith(PROTECTED_ENV_PREFIXES)
 
 
 class EvalError(RuntimeError):
@@ -199,7 +207,7 @@ class SubprocessEvaluator:
             # validator already rejects them, this is defense in depth
             # (an injected HOME/UV_* would defeat per-eval isolation)
             for key, value in extra_env.items():
-                if key in PROTECTED_EVAL_ENV:
+                if managed_eval_env(key):
                     log.warning("refusing extra_env override of managed %s", key)
                     continue
                 env[key] = value

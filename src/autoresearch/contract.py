@@ -87,10 +87,12 @@ class Benchmark(_StrictModel):
     @field_validator("seed_env")
     @classmethod
     def _seed_env_never_managed(cls, value: str | None) -> str | None:
-        from autoresearch.orchestrator import PROTECTED_EVAL_ENV
+        from autoresearch.orchestrator import managed_eval_env
 
-        if value is not None and value in PROTECTED_EVAL_ENV:
-            raise ValueError(f"seed_env must not name the evaluator's managed variable {value!r}")
+        if value is not None and managed_eval_env(value):
+            raise ValueError(
+                f"seed_env must not name or prefix the evaluator's managed environment ({value!r})"
+            )
         return value
 
     # Cross-seed noise floor in ABSOLUTE metric units (a resampled pool

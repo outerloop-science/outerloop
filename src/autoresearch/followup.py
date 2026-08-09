@@ -466,6 +466,7 @@ def _respond(
                         "changed during measurement, so it was not applied.)_"
                     )
                 else:
+                    floor_note = ""
                     if is_steward:
                         from autoresearch.steward import rebase_leader_row
 
@@ -488,9 +489,18 @@ def _respond(
                         # sub-floor delta over the recorded best is pool
                         # luck and must not ratchet the ledger (round-1
                         # review finding)
-                        if prior is None or clears_min_delta(
+                        if prior is not None and not clears_min_delta(
                             prior.best, candidate, bench.direction, bench.min_delta
                         ):
+                            # named on the thread, like the climb's ending
+                            # note — a silently unchanged ledger row reads
+                            # as a bug (review finding)
+                            floor_note = (
+                                f" — within the cross-seed noise floor "
+                                f"(min_delta={bench.min_delta}) of the recorded "
+                                f"best {prior.best}, so the ledger row is unchanged"
+                            )
+                        if not floor_note:
                             entries = update_leader(
                                 load_leader(workspace),
                                 benchmark=bench.name,
@@ -536,6 +546,7 @@ def _respond(
                             if worse
                             else ""
                         )
+                        + floor_note
                     )
 
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")

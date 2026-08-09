@@ -169,6 +169,14 @@ roadmap: docs/roadmap.md
 """
     import pytest
 
-    for managed in ("HOME", "UV_PROJECT_ENVIRONMENT", "PATH", "UV_CACHE_DIR"):
+    for managed in (
+        "HOME",
+        "UV_PROJECT_ENVIRONMENT",
+        "PATH",
+        "UV_CACHE_DIR",
+        "VIRTUAL_ENV",
+        "APPTAINERENV_HOME",  # apptainer translates it INSIDE the container
+        "UV_ANYTHING_FUTURE",  # whole families, not enumerable names
+    ):
         with pytest.raises(ValueError):
             load_contract(base % managed, "org/pilot")
