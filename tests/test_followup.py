@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ from autoresearch.followup import (
 )
 from autoresearch.harness import SessionResult
 from autoresearch.runstate import IN_REVIEW, RunRecord, load_record, run_dir, save_record
+from autoresearch.steward import RELEASE_MARKER
 
 CONTRACT = """\
 benchmarks:
@@ -48,6 +49,7 @@ class FakeGitHub:
     reviews: list[dict] = field(default_factory=list)
     review_comments: list[dict] = field(default_factory=list)
     posted: list[str] = field(default_factory=list)
+    posted_to: list[int] = field(default_factory=list)
     body_addenda: list[str] = field(default_factory=list)
     row_updates: list[float] = field(default_factory=list)
     auth: object = None
@@ -66,6 +68,7 @@ class FakeGitHub:
 
     def comment(self, repo, number, body):
         self.posted.append(body)
+        self.posted_to.append(number)
 
     def append_pull_body(self, repo, number, addendum):
         self.body_addenda.append(addendum)
@@ -171,6 +174,65 @@ def test_closed_pr_ends_rejected(review_run) -> None:
     outcome = respond(root, FakeGitHub(pr={"state": "closed", "merged": False}))
     assert outcome.action == "ended-rejected"
     assert load_record(root, "tsp-r1").ending == "rejected"
+
+
+def _link_issue(root, number: int, agent_id: str = "agent-01") -> None:
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, issue_number=number, agent_id=agent_id), NOW - 900)
+
+
+def test_merged_pr_without_issue_stays_silent(review_run) -> None:
+    root, _ = review_run
+    gh = FakeGitHub(pr={"state": "closed", "merged": True})
+    respond(root, gh)
+    assert gh.posted == []
+
+
+def test_merged_pr_tells_the_requesting_issue(review_run) -> None:
+    root, _ = review_run
+    _link_issue(root, 21)
+    gh = FakeGitHub(pr={"state": "closed", "merged": True})
+    outcome = respond(root, gh)
+    assert outcome.action == "ended-merged"
+    assert gh.posted_to == [21]
+    (body,) = gh.posted
+    assert "merged" in body and "Close this issue" in body
+    assert "fresh issue" in body  # leaving it open queues nothing
+    assert RELEASE_MARKER not in body  # merged claims stay held: never re-picked
+
+
+def test_rejected_steward_pr_releases_its_claim(review_run) -> None:
+    root, _ = review_run
+    _link_issue(root, 22, agent_id="steward-01")
+    gh = FakeGitHub(pr={"state": "closed", "merged": False})
+    outcome = respond(root, gh)
+    assert outcome.action == "ended-rejected"
+    (body,) = gh.posted
+    assert body.startswith(RELEASE_MARKER)
+    assert "closed without merging" in body
+
+
+def test_rejected_solver_pr_notes_the_claim_is_held(review_run) -> None:
+    root, _ = review_run
+    _link_issue(root, 23)
+    gh = FakeGitHub(pr={"state": "closed", "merged": False})
+    respond(root, gh)
+    (body,) = gh.posted
+    assert RELEASE_MARKER not in body
+    assert "stays claimed" in body and "fresh" in body
+
+
+def test_ending_survives_a_failed_issue_comment(review_run) -> None:
+    root, _ = review_run
+    _link_issue(root, 24)
+
+    class RefusingGitHub(FakeGitHub):
+        def comment(self, repo, number, body):
+            raise RuntimeError("boom")
+
+    outcome = respond(root, RefusingGitHub(pr={"state": "closed", "merged": True}))
+    assert outcome.action == "ended-merged"
+    assert load_record(root, "tsp-r1").ending == "merged"
 
 
 def test_comment_gate() -> None:

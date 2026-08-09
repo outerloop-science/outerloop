@@ -135,19 +135,69 @@ def qualifying_comments(
     return picked
 
 
+def _ending_comment(record: RunRecord, ending: str) -> str:
+    """What the requesting issue is told when its run's PR merges or closes.
+
+    Claims are what make an open issue inert: intake never re-picks a
+    claimed issue, and the steward lane re-claims only after a release
+    marker. So a merge says "close when satisfied — fresh work needs a
+    fresh issue", and a human-closed steward PR posts its OWN release
+    (honest wording; otherwise reconciliation would release it later
+    as "killed or crashed").
+    """
+    from autoresearch.steward import MAX_STEWARD_ATTEMPTS, RELEASE_MARKER
+
+    if ending == MERGED:
+        return (
+            f"Pull request {record.pr_url} was merged; run `{record.run_id}` is "
+            "complete. Close this issue when the request is satisfied. Leaving "
+            "it open queues nothing — a claimed issue is never picked up again, "
+            "so further work needs a fresh issue."
+        )
+    if record.agent_id.startswith("steward"):
+        return (
+            f"{RELEASE_MARKER}\nPull request {record.pr_url} was closed without "
+            f"merging; run `{record.run_id}` ended. Claim released — the lane "
+            f"retries up to {MAX_STEWARD_ATTEMPTS} total attempts, then waits "
+            "for a human."
+        )
+    return (
+        f"Pull request {record.pr_url} was closed without merging; run "
+        f"`{record.run_id}` ended. This issue stays claimed — file a fresh "
+        "issue to request another attempt."
+    )
+
+
+def _end_run(
+    run_root: Path, record: RunRecord, github: GitHubClient, ending: str, note: str, now: float
+) -> None:
+    """Flip the record to ended, then tell the requesting issue (best effort:
+    the state transition is load-bearing, the comment is a courtesy — a
+    comment failure logs and is never retried)."""
+    save_record(run_root, replace(record, state=ENDED, ending=ending, ending_note=note), now)
+    if not record.issue_number:
+        return
+    try:
+        github.comment(record.target, record.issue_number, _ending_comment(record, ending))
+    except Exception as exc:
+        log.warning(
+            "ending comment on %s#%s failed for %s: %s",
+            record.target,
+            record.issue_number,
+            record.run_id,
+            type(exc).__name__,
+        )
+
+
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
     """End the run if its PR is merged/closed. Returns the ending or ""."""
     number = _pr_number(record.pr_url)
     pr = github.get_pull_request(record.target, number)
     if pr.get("merged") or pr.get("merged_at"):
-        save_record(run_root, replace(record, state=ENDED, ending=MERGED), now)
+        _end_run(run_root, record, github, MERGED, "", now)
         return MERGED
     if pr.get("state") == "closed":
-        save_record(
-            run_root,
-            replace(record, state=ENDED, ending=REJECTED, ending_note="PR closed unmerged"),
-            now,
-        )
+        _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
         return REJECTED
     return ""
 
@@ -230,14 +280,10 @@ def _respond(
 
     pr = github.get_pull_request(record.target, number)
     if pr.get("merged") or pr.get("merged_at"):
-        save_record(run_root, replace(record, state=ENDED, ending=MERGED), now)
+        _end_run(run_root, record, github, MERGED, "", now)
         return FollowupOutcome(run_id, "ended-merged")
     if pr.get("state") == "closed":
-        save_record(
-            run_root,
-            replace(record, state=ENDED, ending=REJECTED, ending_note="PR closed unmerged"),
-            now,
-        )
+        _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
         return FollowupOutcome(run_id, "ended-rejected")
 
     # All three places a maintainer can write — three REST collections with

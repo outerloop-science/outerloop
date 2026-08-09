@@ -62,6 +62,13 @@ Versions follow [SemVer](https://semver.org).
   never trigger or steer, but the woken agent finally sees what "address
   the findings" refers to without a human relaying the text.
 
+- Run endings talk back to the work order: when a run that started from an
+  issue ends by PR merge, the issue gets a closing nudge (the claim stays
+  held, so an open order queues nothing — closing is the human's call);
+  a steward PR closed unmerged releases its claim right there with honest
+  wording instead of the reconciliation pass calling a deliberate "no" a
+  crash.
+
 - The benchmark steward (`steward` module + tick lane): maintainer-filed
   work orders (issues labeled `autoresearch:steward`, standing-gated) run
   a session whose territory is the solver's INVERSE — the contract's new

@@ -173,6 +173,15 @@ the bot identity. Review-response sessions are bounded like everything else
 | Aborted | task invalidated (contract hash or pinned SHA changed under the run), sentinel-initiated stop, or hard offboarding | what was in flight and why it stopped |
 | Stuck | N failed wake attempts | infrastructure failure, transcripts attached |
 
+Runs that began from an issue tell it how they ended. A merge posts a
+closing nudge on the work order — the claim stays held, so leaving the issue
+open queues nothing and further work needs a fresh issue; closing it is the
+human's judgment that the order is satisfied, which is why merge never
+auto-closes ("Addresses", not "Closes": one order may take several PRs). A
+steward PR closed unmerged releases its claim at the point of rejection with
+honest wording, rather than waiting for the orphan-reconciliation pass to
+mislabel a deliberate "no" as a crash.
+
 After the report is distilled into `lessons/`, the workspace and per-run HOME
 are garbage-collected (grace period first — an `in-review` run's context must
 survive until its PR closes). The notebook is the memory; the run directory
