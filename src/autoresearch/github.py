@@ -268,7 +268,14 @@ class GitHubClient:
             return
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         current = str(self._expect_dict(self._request("GET", path), path).get("body") or "")
-        base = current.split(self.BODY_EDIT_MARKER, 1)[0].rstrip()
+        # Strip ONLY a previous addendum of ours: marker followed by our
+        # exact format. Agent-authored report text could contain the marker
+        # string (it is public), and splitting on it blindly would truncate
+        # the frozen report — the history this method exists to preserve.
+        base = current
+        idx = current.rfind(self.BODY_EDIT_MARKER)
+        if idx != -1 and current[idx + len(self.BODY_EDIT_MARKER) :].lstrip().startswith("---"):
+            base = current[:idx].rstrip()
         self._request("PATCH", path, {"body": f"{base}\n\n{self.BODY_EDIT_MARKER}\n{addendum}"})
 
     def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
