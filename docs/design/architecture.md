@@ -135,14 +135,19 @@ sides of every comparison to it (paired, common random numbers — baseline
 vs candidate, and both sides of the freshness re-measure), and records it
 in the ledger row (`run_seed` in results/leader.json), so the recorded
 number is re-derivable instead of pool luck. Comparisons against the
-RECORDED best are the one place two different seeds meet, so they must
-additionally clear the benchmark's `min_delta` — an absolute cross-seed
-noise floor (the steward's stated stderr, times a safety factor). A
-candidate inside that floor is an honest negative result ("within the
-noise floor"), never a PR and never an abort. The seed is drawn by the
+RECORDED best are the one place two different seeds meet, so on a
+benchmark that declares `min_delta` — an absolute cross-seed noise floor
+(the steward's stated stderr, times a safety factor) — EVERY sub-floor
+delta over the recorded best, including one below the relative
+threshold, is an honest negative result ("does not clear the noise
+floor"), never a PR and never an abort; the stale-clone abort remains
+the semantics for fixed-pool benchmarks only. The seed is drawn by the
 orchestrator at measurement time — never knowable when the solver wrote
-its code — which is what makes a resampled pool tuning-proof while
-staying reproducible.
+its code — and the baseline is measured in a throwaway worktree of the
+pre-session commit, so even an eval that persists artifacts cannot leak
+the pinned seed or the sampled pool into the tree the solver session
+sees. That combination is what makes a resampled pool tuning-proof
+while staying reproducible.
 
 ## The life of a run
 

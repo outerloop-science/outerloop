@@ -42,14 +42,30 @@ MAX_REPORT_BODY = 20_000
 
 # Environment keys the evaluator manages itself; a contract's seed_env may
 # never name one (validated at load; filtered again at injection).
-PROTECTED_EVAL_ENV = frozenset({"HOME", "PATH", "TMPDIR", "LANG", "VIRTUAL_ENV"})
+PROTECTED_EVAL_ENV = frozenset(
+    {
+        "HOME",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "VIRTUAL_ENV",
+        # interpreter/loader steering: a random-integer value cannot carry a
+        # payload, but a contract naming one of these would silently break
+        # every eval in a way that reads as measurement failure
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+    }
+)
 # ...and whole families: any UV_* steers uv's env/cache resolution, and any
 # APPTAINERENV_* is translated into the CONTAINER's environment by apptainer
 # (APPTAINERENV_HOME becomes HOME inside), so exact-name checks cannot
 # enumerate them (review finding).
 # APPTAINER_* configures the HOST-side apptainer CLI (bind paths, home,
 # containment) — same family logic, different side of the boundary.
-PROTECTED_ENV_PREFIXES = ("UV_", "APPTAINERENV_", "APPTAINER_")
+# LD_/DYLD_ steer the dynamic loader; GIT_ redirects repo resolution.
+# (PYTHONHASHSEED stays allowed — it IS a seed, and a legitimate seed_env.)
+PROTECTED_ENV_PREFIXES = ("UV_", "APPTAINERENV_", "APPTAINER_", "LD_", "DYLD_", "GIT_")
 
 
 def managed_eval_env(name: str) -> bool:
@@ -498,6 +514,7 @@ def climb_once(
     recent_reports: tuple[str, ...] = (),
     created: str = "",
     task_hypothesis: str = "",
+    baseline_workspace: Path | None = None,
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -516,7 +533,13 @@ def climb_once(
     try:
         run_seed = draw_run_seed() if bench.seed_env else 0
         seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env else None
-        baseline = evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env)
+        # measured in the caller's pristine snapshot when one is given: any
+        # artifact the eval persists (a seed file, sampled instances) lands
+        # OUTSIDE the workspace the solver session sees next, so a pinned
+        # seed cannot become pool foreknowledge (round-4 review finding)
+        baseline = evaluator.evaluate(
+            baseline_workspace or workspace, bench.command, bench.metric, extra_env=seed_env
+        )
     except EvalError as exc:
         return ClimbResult(outcome="eval-error", note=f"baseline: {exc}")
 

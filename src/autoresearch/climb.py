@@ -252,17 +252,34 @@ def live_climb(
                     f"(benchmark `{config.benchmark}`). A report will follow here.",
                 )
 
-        result = climb_once(
-            config,
-            contract_text,
-            workspace,
-            harness,
-            evaluator,
-            ruler=RULER,
-            changed_paths=changed_paths,
-            created=created,
-            task_hypothesis=task_hypothesis,
-        )
+        # The baseline is measured in a throwaway worktree of the pre-session
+        # commit — the session never sees the directory the baseline eval ran
+        # in, so eval artifacts (even gitignored ones) cannot leak the run
+        # seed or the sampled pool into the solver's view.
+        baseline_wt = run_dir / "measure-baseline"
+        ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
+        try:
+            result = climb_once(
+                config,
+                contract_text,
+                workspace,
+                harness,
+                evaluator,
+                ruler=RULER,
+                changed_paths=changed_paths,
+                created=created,
+                task_hypothesis=task_hypothesis,
+                baseline_workspace=baseline_wt,
+            )
+        finally:
+            if not _best_effort(
+                "baseline worktree cleanup",
+                lambda: ws.git("worktree", "remove", "--force", str(baseline_wt)),
+            ):
+                import shutil
+
+                shutil.rmtree(baseline_wt, ignore_errors=True)
+                _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
     except Exception as exc:
         exc_name = type(exc).__name__
         note = redact(f"{exc_name}: {exc}", secrets)[:500]
@@ -425,23 +442,31 @@ def live_climb(
             # — read from the (possibly merged) tree, so the leader check runs
             # against the FRESH ledger, not the clone's snapshot.
             prior = load_leader(workspace).get(config.benchmark)
-            if prior is not None and not orch_improved(
-                prior.best, candidate, bench.direction, config.min_relative_improvement
-            ):
-                raise WorkspaceDrift(
-                    f"candidate {candidate} does not beat the recorded "
-                    f"best {prior.best} by the noise floor (stale clone or eval noise)"
+            if prior is not None:
+                rel_ok = orch_improved(
+                    prior.best, candidate, bench.direction, config.min_relative_improvement
                 )
-            if prior is not None and not clears_min_delta(
-                prior.best, candidate, bench.direction, bench.min_delta
-            ):
-                # the recorded best was measured under a DIFFERENT seed:
-                # inside the declared floor, this delta is pool luck
-                raise NoiseFloored(
-                    f"candidate {candidate} is within the benchmark's cross-seed "
-                    f"noise floor (min_delta={bench.min_delta}) of the recorded "
-                    f"best {prior.best}"
-                )
+                if bench.min_delta:
+                    # A resampled pool re-rolls between runs, so ANY
+                    # sub-floor delta over the recorded best — including
+                    # one below the relative threshold — is an expected
+                    # honest negative, never an anomaly (round-4 review
+                    # finding: the abort band contradicted the promise).
+                    if not rel_ok or not clears_min_delta(
+                        prior.best, candidate, bench.direction, bench.min_delta
+                    ):
+                        raise NoiseFloored(
+                            f"candidate {candidate} does not clear the recorded "
+                            f"best {prior.best} beyond the cross-seed noise "
+                            f"floor (min_delta={bench.min_delta})"
+                        )
+                elif not rel_ok:
+                    # fixed pool: the ledger says this run's own baseline
+                    # was stale — an anomaly worth a loud ending
+                    raise WorkspaceDrift(
+                        f"candidate {candidate} does not beat the recorded "
+                        f"best {prior.best} by the noise floor (stale clone or eval noise)"
+                    )
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,

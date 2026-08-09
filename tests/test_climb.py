@@ -85,8 +85,10 @@ class ScriptedHarness:
 @dataclass
 class QueueEvaluator:
     values: list[float] = field(default_factory=list)
+    seen_dirs: list = field(default_factory=list)
 
     def evaluate(self, workspace, command, metric, extra_env=None) -> float:
+        self.seen_dirs.append(Path(workspace))
         return self.values.pop(0)
 
 
@@ -590,6 +592,81 @@ def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None
     record = load_record(tmp_path / "state", "tsp-floor")
     assert record.ending == "negative-result"
     assert "noise floor" in record.ending_note and "min_delta" in record.ending_note
+
+
+def test_sub_threshold_delta_on_floored_benchmark_is_negative_not_abort(
+    tmp_path, target_repo
+) -> None:
+    """Round-4 finding: with min_delta declared, EVERY sub-floor delta over
+    the recorded best — including one below the relative threshold — is an
+    honest negative, not a stale-clone abort."""
+    import json as _json
+
+    _push_contract(
+        tmp_path,
+        target_repo,
+        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
+        "subrel",
+    )
+    seed = tmp_path / "leaderseed2"
+    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
+    (seed / "results").mkdir(exist_ok=True)
+    (seed / "results" / "leader.json").write_text(
+        _json.dumps(
+            {
+                "tsp": {
+                    "benchmark": "tsp",
+                    "metric": "mean_tour_length",
+                    "direction": "min",
+                    "baseline": 13.876,
+                    "best": 12.0,
+                    "best_run": "r0",
+                    "updated": "d",
+                }
+            }
+        )
+    )
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
+    _git(seed, "push", "-q", "origin", "main")
+
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "w=11\n"},
+        values=[13.876, 11.999],  # 0.001 over best: below rel threshold AND floor
+        run_id="tsp-subrel",
+    )
+    assert outcome.outcome == "no-improvement"
+    assert github.prs == []
+    record = load_record(tmp_path / "state", "tsp-subrel")
+    assert record.ending == "negative-result"
+    assert "noise floor" in record.ending_note
+
+
+def test_baseline_eval_runs_outside_the_session_workspace(tmp_path, target_repo) -> None:
+    """The baseline is measured in a throwaway worktree of the pre-session
+    commit: eval artifacts (even gitignored) never land in the tree the
+    solver session sees, so a pinned seed cannot leak the pool."""
+    github = FakeGitHub()
+    evaluator = QueueEvaluator(values=[13.876, 13.1])
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-iso",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "w=5\n"}),
+        evaluator=evaluator,
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "improved"
+    ws = tmp_path / "state" / "runs" / "tsp-iso" / "ws"
+    baseline_dir, candidate_dir = evaluator.seen_dirs
+    assert baseline_dir.name == "measure-baseline" and baseline_dir != ws
+    assert candidate_dir == ws
+    assert not baseline_dir.exists()  # cleaned up with the run
 
 
 def test_seeded_climb_records_the_seed_in_the_ledger(tmp_path, target_repo) -> None:

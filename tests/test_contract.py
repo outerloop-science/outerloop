@@ -178,6 +178,9 @@ roadmap: docs/roadmap.md
         "APPTAINERENV_HOME",  # apptainer translates it INSIDE the container
         "UV_ANYTHING_FUTURE",  # whole families, not enumerable names
         "APPTAINER_BINDPATH",  # host-side apptainer CLI configuration
+        "PYTHONPATH",
+        "LD_PRELOAD",
+        "GIT_DIR",
     ):
         with pytest.raises(ValueError):
             load_contract(base % managed, "org/pilot")
