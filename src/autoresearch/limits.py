@@ -21,7 +21,7 @@ from typing import Any
 # ceiling above the default would let them raise our spend — the knobs
 # shape strictly downward. Raising a target's budget is an
 # orchestrator-side decision (config we control), not a contract edit.
-# Raised from 60/60/90/60 on 2026-08-10 (maintainer decision): the first
+# Raised from 60/60/90/60 on 2026-08-09 (maintainer decision): the first
 # steward work order to BUILD an env burned its full 60-turn budget mid-
 # work — session budgets sized for solver tweaks starve construction work.
 _BOUNDS: dict[str, tuple[int, int, int]] = {

@@ -35,7 +35,10 @@ log = logging.getLogger(__name__)
 SESSION_ENV_ALLOWLIST = ("PATH", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
 DEFAULT_TIMEOUT_S = 3600
-DEFAULT_MAX_TURNS = 80
+# Fallback only — every orchestrated path threads effective_limits in
+# explicitly. Kept at the session ceiling so a site that forgets still
+# grants the intended budget rather than silently undercutting it.
+DEFAULT_MAX_TURNS = 120
 
 
 @dataclass(frozen=True)

@@ -19,9 +19,9 @@ Versions follow [SemVer](https://semver.org).
   budget-exhausted — one of the six honest deaths — instead of an
   error, and every surface a human reads carries the real cause: the
   record's ending note, the run report, the work-order comment ("ran
-  out of its session budget: Reached maximum number of turns (120)"),
-  where before all three said `ValueError: steward session error:
-  tool_use`.
+  out of its session budget (error_max_turns: Reached maximum number
+  of turns (120))"), where before all three said `ValueError: steward
+  session error: tool_use`.
 
 - Review and verification comments read like a colleague, not a legal
   notice (maintainer feedback): one calm italic header line per role, and
