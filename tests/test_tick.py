@@ -987,3 +987,85 @@ roadmap: docs/roadmap.md
     assert "autoresearch.steward" in wrap
     assert "--key-file /k" in wrap
     assert "--job-minutes 90" in wrap
+
+
+def test_followup_key_routing_by_role(tmp_path: Path) -> None:
+    """Steward records get the STEWARD'S key in the follow-up job; without
+    one the steward record is skipped while solver servicing continues."""
+    from autoresearch.runstate import IN_REVIEW
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    for run_id, agent in (("tsp-r1", "agent-01"), ("steward-tsp-r1", "steward-01")):
+        save_record(
+            tmp_path,
+            RunRecord(
+                run_id=run_id,
+                target="org/pilot",
+                task_title="t",
+                benchmark="tsp",
+                state=IN_REVIEW,
+                agent_id=agent,
+                pr_url=f"https://github.com/org/pilot/pull/{1 if agent == 'agent-01' else 2}",
+                resume_session_id="s",
+            ),
+            now=NOW - 100,
+        )
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 900,
+                    "body": "please respond",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(" ".join(argv))
+        return CommandResult(0, "77\n", "")
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        key_file="/solver-key",
+        steward_key_file="/steward-key",
+    )
+    _, subs = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec, NOW)
+    assert len(subs) == 2
+    solver_cmd = next(c for c in submitted if "followup-tsp-r1" in c)
+    steward_cmd = next(c for c in submitted if "steward-tsp-r1" in c)
+    assert "--key-file /solver-key" in solver_cmd
+    assert "--key-file /steward-key" in steward_cmd
+    # no steward key -> steward record skipped, solver still serviced
+    submitted.clear()
+    spec_nokey = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        key_file="/solver-key",
+    )
+    for run_id in ("tsp-r1", "steward-tsp-r1"):
+        rec = load_record(tmp_path, run_id)
+        save_record(tmp_path, replace(rec, followup_job_id="", wake_attempts=0), now=NOW)
+    _, subs2 = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec_nokey, NOW)
+    assert len(subs2) == 1 and subs2[0][0] == "tsp-r1"

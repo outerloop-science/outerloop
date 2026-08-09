@@ -72,27 +72,40 @@ MAX_CONTEXT_COMMENTS = 3
 MAX_CONTEXT_COMMENT_CHARS = 4_000
 
 
+# Our own machine reviewers post via the Actions workflow token — an
+# identity no ordinary account can assume. Marker text alone is public and
+# forgeable; identity + marker together are not.
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+MACHINE_ROUND_MARKERS = (
+    "<!-- autoresearch:verification-review -->",
+    "<!-- autoresearch:advisory-review -->",
+)
+
+
 def context_comments(comments: list[dict], bot_login: str, since_id: int) -> list[tuple[str, str]]:
-    """(author, body) for NEW comments WITHOUT standing — verifier and
-    advisory rounds, drive-by remarks. They never trigger a wake and never
-    steer; they ride along as data-fenced CONTEXT so a woken agent can see
-    what a maintainer's one-line 'address the findings' refers to, without
-    a human having to relay the text by hand (which is what actually
-    happened on the first verifier exchange). The bot's own replies are
-    excluded."""
+    """(author, body) for NEW machine review rounds — verifier and advisory
+    — identified by POSTING IDENTITY plus marker. They never trigger a wake
+    and never steer; they ride along as data-fenced CONTEXT so a woken
+    agent can see what a maintainer's one-line 'address the findings'
+    refers to, without a human relaying the text by hand.
+
+    Deliberately NOTHING else qualifies: on a public repo, arbitrary
+    commenters would otherwise get their text injected into a session with
+    push access, guarded only by advisory fencing (review finding on this
+    change). A drive-by comment worth the agent's attention is a
+    maintainer's to quote — quoting is the human act that grants standing.
+    """
     picked: list[tuple[str, str]] = []
     for comment in comments:
         cid = comment.get("id")
         if not isinstance(cid, int) or cid <= since_id:
             continue
         author = str((comment.get("user") or {}).get("login", ""))
-        if author.casefold() == bot_login.casefold():
+        if author.casefold() != ACTIONS_BOT_LOGIN.casefold():
             continue
         body = str(comment.get("body") or "")
-        if not body.strip() or REPLY_MARKER in body:
+        if not any(body.lstrip().startswith(m) for m in MACHINE_ROUND_MARKERS):
             continue
-        if str(comment.get("author_association", "")) in QUALIFYING_ASSOCIATIONS:
-            continue  # qualifying comments steer; this list is context only
         picked.append((author, body[:MAX_CONTEXT_COMMENT_CHARS]))
     return picked[-MAX_CONTEXT_COMMENTS:]
 
