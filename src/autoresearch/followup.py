@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
+from secrets import randbits
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
@@ -427,13 +428,21 @@ def _respond(
             )
         else:
             pre_eval_tree = _tree_hash(ws)
+            # one fresh seed for this re-measure, recorded with the row —
+            # same pairing/reproducibility rule as the climb and steward
+            run_seed = randbits(31) if bench.seed_env else 0
+            seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
             try:
                 if is_steward:
                     from autoresearch.steward import validate_and_measure
 
-                    candidate = validate_and_measure(workspace, contract, bench, evaluator)
+                    candidate = validate_and_measure(
+                        workspace, contract, bench, evaluator, run_seed=run_seed
+                    )
                 else:
-                    candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
+                    candidate = evaluator.evaluate(
+                        workspace, bench.command, bench.metric, extra_env=seed_env
+                    )
             except Exception as exc:
                 ws.git("checkout", "--", ".")
                 ws.git("clean", "-fdq")
@@ -465,6 +474,7 @@ def _respond(
                             run_id,
                             created,
                             record.target,
+                            run_seed=run_seed,
                         )
                     else:
                         prior = load_leader(workspace).get(bench.name)
@@ -477,6 +487,7 @@ def _respond(
                             candidate=candidate,
                             run_id=run_id,
                             date=created[:10],
+                            run_seed=run_seed,
                         )
                         write_progress(
                             workspace,

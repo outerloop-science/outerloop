@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Ledger numbers on resampled pools are re-derivable and noise-honest
+  (verifier finding on the first reach re-base): a benchmark declaring
+  `seed_env` gets one orchestrator-drawn seed per measurement pass,
+  injected into BOTH sides of every comparison (paired) and recorded as
+  `run_seed` in results/leader.json — by the climb, the steward re-base,
+  and both follow-up re-measure paths. A new `min_delta` contract knob
+  (absolute units) sets the cross-seed noise floor: candidates that beat
+  the recorded best by less end as honest negative results ("within the
+  noise floor"), not PRs and not aborts.
+
 - API outages are contained instead of billed to runs: a session the
   model API refuses (credit balance, usage/spend limit, auth,
   throttling) ends the run `stuck` with the refusal named, releases a

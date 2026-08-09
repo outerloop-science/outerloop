@@ -86,7 +86,7 @@ class ScriptedHarness:
 class QueueEvaluator:
     values: list[float] = field(default_factory=list)
 
-    def evaluate(self, workspace, command, metric) -> float:
+    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
         return self.values.pop(0)
 
 
@@ -288,7 +288,7 @@ def test_files_written_during_eval_void_the_claim(tmp_path, target_repo) -> None
         values: list[float] = field(default_factory=list)
         calls: int = 0
 
-        def evaluate(self, workspace, command, metric) -> float:
+        def evaluate(self, workspace, command, metric, extra_env=None) -> float:
             self.calls += 1
             if self.calls == 2:  # during the candidate eval
                 (workspace / "src" / "pilot" / "solvers" / "planted.py").write_text("x=1\n")
@@ -410,7 +410,7 @@ def test_content_rewrite_during_eval_voids_the_claim(tmp_path, target_repo) -> N
         values: list[float] = field(default_factory=list)
         calls: int = 0
 
-        def evaluate(self, workspace, command, metric) -> float:
+        def evaluate(self, workspace, command, metric, extra_env=None) -> float:
             self.calls += 1
             if self.calls == 2:  # during candidate eval: rewrite the SAME file
                 (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text(
@@ -533,6 +533,90 @@ def test_not_beating_recorded_best_is_rejected_loudly(tmp_path, target_repo) -> 
         "does not beat the recorded best"
         in load_record(tmp_path / "state", "tsp-stale").ending_note
     )
+
+
+def _push_contract(tmp_path, target_repo, contract_text: str, name: str) -> None:
+    seed = tmp_path / f"contract-{name}"
+    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
+    (seed / ".autoresearch.yaml").write_text(contract_text)
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name)
+    _git(seed, "push", "-q", "origin", "main")
+
+
+def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None:
+    """Beats the recorded best, but by less than min_delta: the recorded
+    best was measured under a DIFFERENT seed, so the delta is pool luck —
+    an honest negative result, never a PR and never an abort."""
+    import json as _json
+
+    _push_contract(
+        tmp_path,
+        target_repo,
+        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
+        "floor",
+    )
+    seed = tmp_path / "leaderseed"
+    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
+    (seed / "results").mkdir(exist_ok=True)
+    (seed / "results" / "leader.json").write_text(
+        _json.dumps(
+            {
+                "tsp": {
+                    "benchmark": "tsp",
+                    "metric": "mean_tour_length",
+                    "direction": "min",
+                    "baseline": 13.876,
+                    "best": 12.0,
+                    "best_run": "r0",
+                    "updated": "d",
+                }
+            }
+        )
+    )
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
+    _git(seed, "push", "-q", "origin", "main")
+
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "w=9\n"},
+        values=[13.876, 11.8],  # beats best 12.0, but only by 0.2 < 0.5
+        run_id="tsp-floor",
+    )
+    assert outcome.outcome == "no-improvement"
+    assert github.prs == []
+    record = load_record(tmp_path / "state", "tsp-floor")
+    assert record.ending == "negative-result"
+    assert "noise floor" in record.ending_note and "min_delta" in record.ending_note
+
+
+def test_seeded_climb_records_the_seed_in_the_ledger(tmp_path, target_repo) -> None:
+    """The ledger row carries the seed the best was measured under: the
+    number becomes re-derivable instead of pool luck."""
+    import json as _json
+
+    _push_contract(
+        tmp_path,
+        target_repo,
+        CONTRACT.replace(
+            "    direction: min\n", "    direction: min\n    seed_env: PILOT_TSP_SEED\n", 1
+        ),
+        "seeded",
+    )
+    outcome, _github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "w=8\n"},
+        values=[13.876, 13.1, 13.876, 13.1],  # climb pair + freshness pair
+        run_id="tsp-seeded",
+    )
+    assert outcome.outcome == "improved"
+    leader = _json.loads(
+        _git(target_repo, "show", "feat/auto/agent-01/tsp-seeded:results/leader.json")
+    )
+    assert leader["tsp"]["run_seed"] > 0
 
 
 def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
@@ -787,7 +871,7 @@ class DirCheckingEvaluator(QueueEvaluator):
 
     saw_agent_edit: list = field(default_factory=list)
 
-    def evaluate(self, workspace, command, metric) -> float:
+    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
         solver = Path(workspace) / "src" / "pilot" / "solvers" / "tsp.py"
         self.saw_agent_edit.append(solver.exists() and "r=1" in solver.read_text())
         return super().evaluate(workspace, command, metric)

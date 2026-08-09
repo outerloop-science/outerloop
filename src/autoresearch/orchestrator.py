@@ -21,6 +21,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from secrets import randbits
 from typing import Protocol
 
 from autoresearch.brief import BriefInputs, BudgetState, Task, build_brief, render
@@ -46,7 +47,9 @@ class EvalError(RuntimeError):
 class Evaluator(Protocol):
     """Runs a benchmark command in a workspace, returns the metric value."""
 
-    def evaluate(self, workspace: Path, command: str, metric: str) -> float: ...
+    def evaluate(
+        self, workspace: Path, command: str, metric: str, extra_env: dict[str, str] | None = None
+    ) -> float: ...
 
 
 @dataclass
@@ -66,7 +69,9 @@ class SubprocessEvaluator:
     container_image: str = ""
     apptainer_binary: str = "apptainer"
 
-    def evaluate(self, workspace: Path, command: str, metric: str) -> float:
+    def evaluate(
+        self, workspace: Path, command: str, metric: str, extra_env: dict[str, str] | None = None
+    ) -> float:
 
         # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
         # (it shelters the PAT), and never the workspace — eval cache/state
@@ -101,7 +106,7 @@ class SubprocessEvaluator:
             shutil.rmtree(eval_home, ignore_errors=True)
             raise EvalError(f"could not create eval cache dir: {exc}") from exc
         try:
-            return self._measure(workspace, command, metric, eval_home, cache_dir)
+            return self._measure(workspace, command, metric, eval_home, cache_dir, extra_env)
         finally:
             # bounded disk: each eval's home AND cache die with it
             # (re-downloading wheels per eval is the accepted isolation cost)
@@ -111,11 +116,26 @@ class SubprocessEvaluator:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
     def _measure(
-        self, workspace: Path, command: str, metric: str, eval_home: Path, cache_dir: Path
+        self,
+        workspace: Path,
+        command: str,
+        metric: str,
+        eval_home: Path,
+        cache_dir: Path,
+        extra_env: dict[str, str] | None = None,
     ) -> float:
-        return self._parse_measured(self._run(workspace, command, eval_home, cache_dir), metric)
+        return self._parse_measured(
+            self._run(workspace, command, eval_home, cache_dir, extra_env), metric
+        )
 
-    def _run(self, workspace: Path, command: str, eval_home: Path, cache_dir: Path) -> str:
+    def _run(
+        self,
+        workspace: Path,
+        command: str,
+        eval_home: Path,
+        cache_dir: Path,
+        extra_env: dict[str, str] | None = None,
+    ) -> str:
         import os
         import signal
 
@@ -165,6 +185,13 @@ class SubprocessEvaluator:
             env["APPTAINERENV_UV_LINK_MODE"] = "copy"
             env["APPTAINERENV_UV_PROJECT_ENVIRONMENT"] = env["UV_PROJECT_ENVIRONMENT"]
         env["HOME"] = str(eval_home)
+        if extra_env:
+            # explicit injections only (the base env is a scrubbed
+            # allowlist): today this carries the benchmark's run seed
+            env.update(extra_env)
+            if self.container_image:
+                for key, value in extra_env.items():
+                    env[f"APPTAINERENV_{key}"] = value
         try:
             # process group, like the harness: a timed-out eval must not
             # leave orphans mutating a workspace that later gets committed
@@ -289,6 +316,9 @@ class ClimbResult:
     measured_paths: tuple[str, ...] = ()
     session: SessionResult | None = None
     note: str = ""
+    # the seed both measurements ran under (0 = benchmark has no seed_env):
+    # recorded in the ledger row so the number is re-derivable
+    run_seed: int = 0
 
     def report(self, config: ClimbConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
@@ -379,6 +409,21 @@ def steward_out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
     return violations
 
 
+def clears_min_delta(
+    prior_best: float, candidate: float, direction: str, min_delta: float | None
+) -> bool:
+    """Cross-seed comparisons on a resampled pool must clear the
+    benchmark's ABSOLUTE noise floor: the recorded best was measured under
+    a different seed, so a delta inside the floor is pool luck, not
+    progress. Same-seed paired comparisons never call this."""
+    if not min_delta:
+        return True
+    if not (math.isfinite(prior_best) and math.isfinite(candidate)):
+        return False
+    delta = candidate - prior_best if direction == "max" else prior_best - candidate
+    return delta > min_delta
+
+
 def improved(baseline: float, candidate: float, direction: str, min_rel: float) -> bool:
     """Direction-aware, threshold-clearing improvement. Non-finite values
     never count (the evaluator rejects them; this is defense in depth)."""
@@ -440,7 +485,9 @@ def climb_once(
     # (architecture: "baseline re-run at the merge-base, not a trusted
     # static file").
     try:
-        baseline = evaluator.evaluate(workspace, bench.command, bench.metric)
+        run_seed = randbits(31) if bench.seed_env else 0
+        seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env else None
+        baseline = evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env)
     except EvalError as exc:
         return ClimbResult(outcome="eval-error", note=f"baseline: {exc}")
 
@@ -486,7 +533,11 @@ def climb_once(
         )
 
     try:
-        candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
+        # SAME seed as the baseline: paired measurement (common random
+        # numbers) — the improvement claim compares like against like even
+        # on a resampled pool, and the seed is fresh per climb so nothing
+        # about the pool was knowable when the solver wrote its code
+        candidate = evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env)
     except EvalError as exc:
         return ClimbResult(
             outcome="eval-error", baseline=baseline, session=session, note=f"candidate: {exc}"
@@ -500,6 +551,7 @@ def climb_once(
             session=session,
             branch=f"{config.branch_prefix}/{config.benchmark}",
             measured_paths=measured,
+            run_seed=run_seed,
         )
     return ClimbResult(
         outcome="no-improvement",
@@ -507,6 +559,7 @@ def climb_once(
         candidate=candidate,
         session=session,
         note="a negative result reported clearly is a success",
+        run_seed=run_seed,
     )
 
 

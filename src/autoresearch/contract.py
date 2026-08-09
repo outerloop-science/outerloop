@@ -72,6 +72,19 @@ class Benchmark(_StrictModel):
     # decision 2026-08-09). Display-only: comparisons always use full
     # floats, so this can never hide or fake an improvement.
     display_digits: int | None = Field(default=None, ge=2, le=12)
+    # Resampled-pool benchmarks: the env var the eval reads its run seed
+    # from (e.g. PILOT_REACH_SEED). When set, the orchestrator draws ONE
+    # fresh seed per measurement pass and pins BOTH sides of a comparison
+    # to it (paired, common random numbers), then records it in the ledger
+    # row — the number becomes re-derivable instead of pool luck. Strict
+    # env-var shape: this string reaches a subprocess environment.
+    seed_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+    # Cross-seed noise floor in ABSOLUTE metric units (a resampled pool
+    # re-rolls between runs; the steward's stated stderr belongs here,
+    # e.g. ~2x). Comparisons against the RECORDED best — measured under a
+    # different seed — must clear it on top of the relative threshold;
+    # same-seed paired comparisons are exempt by construction.
+    min_delta: float | None = Field(default=None, ge=0)
 
 
 class SuiteAggregate(_StrictModel):

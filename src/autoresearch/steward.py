@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from secrets import randbits
 from typing import Any, Protocol
 
 from autoresearch.climb import (
@@ -145,7 +146,9 @@ Hard rules:
   to look like."""
 
 
-def validate_and_measure(workspace: Path, contract: Contract, bench: Any, evaluator: Any) -> float:
+def validate_and_measure(
+    workspace: Path, contract: Contract, bench: Any, evaluator: Any, run_seed: int = 0
+) -> float:
     """The steward's ruler, run by the ORCHESTRATOR: the full suite and the
     target benchmark must work on the edited env — and every OTHER
     benchmark's eval must still run (the steward may edit a shared harness;
@@ -155,7 +158,8 @@ def validate_and_measure(workspace: Path, contract: Contract, bench: Any, evalua
     for sibling in contract.benchmarks:
         if sibling.name != bench.name:
             evaluator.check(workspace, sibling.command)
-    return float(evaluator.evaluate(workspace, bench.command, bench.metric))
+    seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
+    return float(evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env))
 
 
 def rebase_leader_row(
@@ -167,6 +171,7 @@ def rebase_leader_row(
     run_id: str,
     created: str,
     target: str,
+    run_seed: int = 0,
 ) -> float:
     """Reset the benchmark's ledger row to the orchestrator's measurement;
     returns the PRIOR best (captured before the overwrite)."""
@@ -181,6 +186,7 @@ def rebase_leader_row(
         best=measured,
         best_run=f"baseline-{run_id}",
         updated=created[:10],
+        run_seed=run_seed,
     )
     write_progress(
         workspace,
@@ -522,8 +528,10 @@ def live_steward(
             )
 
         # The steward's ruler, run by the ORCHESTRATOR (shared with the
-        # steward follow-up path).
-        measured = validate_and_measure(workspace, contract, bench, evaluator)
+        # steward follow-up path). One fresh seed for the measurement,
+        # recorded in the re-based row: the new baseline is re-derivable.
+        run_seed = randbits(31) if getattr(bench, "seed_env", None) else 0
+        measured = validate_and_measure(workspace, contract, bench, evaluator, run_seed=run_seed)
 
         # drift protection identical to the climb: the committed tree must
         # be exactly the validated tree
@@ -539,7 +547,15 @@ def live_steward(
         # Orchestrator-authored record reset: the re-based benchmark's row
         # carries the orchestrator's own measurement, never a pasted number.
         prior_best = rebase_leader_row(
-            workspace, contract, config.benchmark, bench, measured, run_id, created, config.target
+            workspace,
+            contract,
+            config.benchmark,
+            bench,
+            measured,
+            run_id,
+            created,
+            config.target,
+            run_seed=run_seed,
         )
 
         branch = f"{STEWARD_BRANCH_PREFIX}/{run_id}"

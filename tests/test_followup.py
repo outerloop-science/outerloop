@@ -116,7 +116,7 @@ class ResumingHarness:
 class QueueEvaluator:
     values: list = field(default_factory=list)
 
-    def evaluate(self, workspace, command, metric) -> float:
+    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
         value = self.values.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -561,7 +561,7 @@ class StewardEvaluatorFake:
     def check(self, workspace, command) -> None:
         self.checks.append(command)
 
-    def evaluate(self, workspace, command, metric) -> float:
+    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
         return self.value
 
 

@@ -269,7 +269,7 @@ class CheckingEvaluator:
 
             raise EvalError(self.check_error)
 
-    def evaluate(self, workspace, command, metric) -> float:
+    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
         return self.values.pop(0)
 
 
@@ -700,3 +700,28 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         )
         == 0
     )
+
+
+def test_rebase_row_records_the_measurement_seed(tmp_path) -> None:
+    """A re-based baseline on a resampled pool is re-derivable: the row
+    carries the seed the orchestrator measured under."""
+    import json as _json
+
+    from autoresearch.steward import rebase_leader_row
+
+    contract = load_contract(CONTRACT, "org/pilot")
+    bench = contract.benchmarks[0]
+    rebase_leader_row(
+        tmp_path,
+        contract,
+        bench.name,
+        bench,
+        14.9,
+        "steward-tsp-s",
+        "2026-08-09",
+        "org/pilot",
+        run_seed=987654321,
+    )
+    raw = _json.loads((tmp_path / "results" / "leader.json").read_text())
+    assert raw[bench.name]["run_seed"] == 987654321
+    assert raw[bench.name]["best_run"] == "baseline-steward-tsp-s"

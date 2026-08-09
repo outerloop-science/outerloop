@@ -128,6 +128,22 @@ tick → pick task (benchmark gap / roadmap item / approved issue)
 → weekly digest issue: tried / worked / cost
 ```
 
+**Measurement on resampled pools (seeds and noise floors).** A benchmark
+whose instance pool re-rolls per run declares `seed_env` in the contract:
+the orchestrator draws ONE fresh seed per measurement pass, pins both
+sides of every comparison to it (paired, common random numbers — baseline
+vs candidate, and both sides of the freshness re-measure), and records it
+in the ledger row (`run_seed` in results/leader.json), so the recorded
+number is re-derivable instead of pool luck. Comparisons against the
+RECORDED best are the one place two different seeds meet, so they must
+additionally clear the benchmark's `min_delta` — an absolute cross-seed
+noise floor (the steward's stated stderr, times a safety factor). A
+candidate inside that floor is an honest negative result ("within the
+noise floor"), never a PR and never an abort. The seed is drawn by the
+orchestrator at measurement time — never knowable when the solver wrote
+its code — which is what makes a resampled pool tuning-proof while
+staying reproducible.
+
 ## The life of a run
 
 Explicit lifecycle: where work comes from, how humans steer it in flight, and

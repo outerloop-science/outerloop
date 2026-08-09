@@ -33,6 +33,7 @@ from autoresearch.orchestrator import (
     ClimbConfig,
     Evaluator,
     SubprocessEvaluator,
+    clears_min_delta,
     climb_once,
     out_of_scope,
     pr_body,
@@ -57,6 +58,12 @@ from autoresearch.runstate import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class NoiseFloored(RuntimeError):
+    """The candidate beat the recorded best, but by less than the
+    benchmark's cross-seed noise floor — pool luck, not progress. An
+    honest negative result, never an abort."""
 
 
 class WorkspaceDrift(RuntimeError):
@@ -117,7 +124,13 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 def _measure_committed(
-    ws: Workspace, evaluator: Evaluator, run_dir: Path, name: str, sha: str, bench: Any
+    ws: Workspace,
+    evaluator: Evaluator,
+    run_dir: Path,
+    name: str,
+    sha: str,
+    bench: Any,
+    extra_env: dict[str, str] | None = None,
 ) -> float:
     """Measure a COMMITTED tree in a throwaway worktree.
 
@@ -131,7 +144,7 @@ def _measure_committed(
     wt = run_dir / f"measure-{name}"
     ws.git("worktree", "add", "--detach", str(wt), sha)
     try:
-        return float(evaluator.evaluate(wt, bench.command, bench.metric))
+        return float(evaluator.evaluate(wt, bench.command, bench.metric, extra_env=extra_env))
     finally:
         removed = _best_effort(
             "worktree cleanup", lambda: ws.git("worktree", "remove", "--force", str(wt))
@@ -386,10 +399,17 @@ def live_climb(
                 # environments, and no dirty-tree check needed: eval writes
                 # are discarded with the worktree and the shas pin content.
                 merged_sha = ws.git("rev-parse", "HEAD").strip()
-                baseline = _measure_committed(
-                    ws, evaluator, run_dir, "fresh-base", fresh_base, bench
+                seed_env = (
+                    {bench.seed_env: str(result.run_seed)}
+                    if bench.seed_env and result.run_seed
+                    else None
                 )
-                candidate = _measure_committed(ws, evaluator, run_dir, "merged", merged_sha, bench)
+                baseline = _measure_committed(
+                    ws, evaluator, run_dir, "fresh-base", fresh_base, bench, seed_env
+                )
+                candidate = _measure_committed(
+                    ws, evaluator, run_dir, "merged", merged_sha, bench, seed_env
+                )
                 if not orch_improved(
                     baseline, candidate, bench.direction, config.min_relative_improvement
                 ):
@@ -412,6 +432,16 @@ def live_climb(
                     f"candidate {candidate} does not beat the recorded "
                     f"best {prior.best} by the noise floor (stale clone or eval noise)"
                 )
+            if prior is not None and not clears_min_delta(
+                prior.best, candidate, bench.direction, bench.min_delta
+            ):
+                # the recorded best was measured under a DIFFERENT seed:
+                # inside the declared floor, this delta is pool luck
+                raise NoiseFloored(
+                    f"candidate {candidate} is within the benchmark's cross-seed "
+                    f"noise floor (min_delta={bench.min_delta}) of the recorded "
+                    f"best {prior.best}"
+                )
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -421,6 +451,7 @@ def live_climb(
                 candidate=candidate,
                 run_id=run_id,
                 date=created[:10],
+                run_seed=result.run_seed,
             )
             write_progress(
                 workspace,
@@ -485,6 +516,19 @@ def live_climb(
                     "pr_url": pr_url,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
+                }
+            )
+        except NoiseFloored as exc:
+            # honest negative: the work was fine, the delta is not evidence
+            outcome_name = "no-improvement"
+            result = dc_replace(result, outcome="no-improvement", note=str(exc))
+            log.info("noise-floored for %s: %s", run_id, exc)
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": NEGATIVE_RESULT,
+                    "ending_note": redact(str(exc), secrets)[:480],
                 }
             )
         except Exception as exc:
