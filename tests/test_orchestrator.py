@@ -382,7 +382,7 @@ def test_subprocess_evaluator_env_is_private_per_eval(tmp_path: Path) -> None:
     """The eval never consumes a workspace venv (no shared mutable state
     with the session, no NFS close-to-open race, no session-authored
     entrypoints in the orchestrator's path): UV_PROJECT_ENVIRONMENT points
-    into the eval's own throwaway home, a different path every eval."""
+    at node-local scratch beside the uv cache, unique per eval."""
     from autoresearch.orchestrator import SubprocessEvaluator
 
     command = (
