@@ -488,6 +488,7 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
     # no record + stale claim -> released; fresh claim -> kept
     github3 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
     assert release_orphaned_claims(github3, "org/pilot", [], now=2_000_000_000.0) == 1
-    fresh = {"body": "<!-- autoresearch:claimed -->", "created_at": "2033-01-01T00:00:00Z"}
+    # now=2e9 is 2033-05-18T03:33Z; a claim 33 minutes old is not stale
+    fresh = {"body": "<!-- autoresearch:claimed -->", "created_at": "2033-05-18T03:00:00Z"}
     github4 = G([_issue(7, "re-base the tsp pool")], {7: [fresh]})
     assert release_orphaned_claims(github4, "org/pilot", [], now=2_000_000_000.0) == 0
