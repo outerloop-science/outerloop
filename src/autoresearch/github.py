@@ -253,7 +253,8 @@ class GitHubClient:
 
     BODY_EDIT_MARKER = "<!-- autoresearch:body-edit -->"
     # the orchestrator-owned candidate row in pr_body's results table
-    _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|$", re.MULTILINE)
+    # \r-tolerant: a human web-UI edit can normalize the body to CRLF
+    _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|\r?$", re.MULTILINE)
 
     def update_candidate_row(self, repo: str, number: int, candidate: float) -> bool:
         """Rewrite the results table's candidate row in place (PATCH).
