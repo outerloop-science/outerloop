@@ -8,6 +8,7 @@ import pytest
 
 from autoresearch.runstate import (
     ENDED,
+    MAX_CLOCK_SKEW_S,
     OUTAGE_COOLDOWN_S,
     STUCK,
     THROTTLE_COOLDOWN_S,
@@ -197,8 +198,22 @@ def test_throttling_stamps_a_short_pause(tmp_path) -> None:
 
 
 def test_corrupt_outage_stamp_reads_inactive(tmp_path) -> None:
-    """A bad latch must never brick the loop."""
-    (tmp_path / "outage.json").write_text("not json")
+    """A bad latch must never brick the loop. The path must be the one the
+    reader actually consults (review finding: a stale filename made this
+    vacuous) — prove it by planting a VALID stamp at the same path first."""
+    latch = tmp_path / "outage-solver.json"
+    stamp_outage(tmp_path, "credit balance", now=1000.0)
+    assert latch.exists() and outage_active(tmp_path, now=1000.0) != ""
+    latch.write_text("not json")
     assert outage_active(tmp_path, now=1000.0) == ""
-    (tmp_path / "outage.json").write_text('{"detail": "x"}')  # no time field
+    latch.write_text('{"detail": "x"}')  # no time field
     assert outage_active(tmp_path, now=1000.0) == ""
+
+
+def test_future_stamp_within_skew_is_active(tmp_path) -> None:
+    """Stamps are written on compute nodes and read by the tick on another
+    host: small NTP skew must not void the pause, while a far-future
+    timestamp (corrupt) reads as inactive."""
+    stamp_outage(tmp_path, "credit balance", now=1000.0)
+    assert outage_active(tmp_path, now=1000.0 - 60) != ""  # reader behind writer
+    assert outage_active(tmp_path, now=1000.0 - MAX_CLOCK_SKEW_S - 1) == ""

@@ -212,6 +212,11 @@ def pick_steward_issue(
     """The oldest qualifying, unclaimed issue carrying the steward label and
     naming exactly one benchmark. Maintainer-authored only: the label routes,
     the author's standing authorizes."""
+    if not bot_login.strip():
+        # the identity gate below would see NO claims and re-claim every
+        # tick — an unbounded paid loop; without an identity, fail closed
+        log.warning("steward lane: empty bot_login; refusing to scan claims")
+        return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
         labels = {
@@ -291,6 +296,9 @@ def release_orphaned_claims(
     issue with NO record at all is released once the claim is stale
     (submit succeeded but the job died pre-record). Bounded per tick.
     """
+    if not bot_login.strip():
+        log.warning("reconciliation: empty bot_login; refusing to scan claims")
+        return 0
     released = 0
     for issue in github.list_open_issues(repo):
         if released >= limit:

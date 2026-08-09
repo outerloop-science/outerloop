@@ -54,6 +54,10 @@ LEASE_NAME = "lease.json"
 OUTAGE_COOLDOWN_S = 45 * 60
 THROTTLE_COOLDOWN_S = 5 * 60
 _THROTTLE_HINTS = ("rate_limit", "overloaded")
+# Stamps are written on compute nodes and read on other hosts: a stamp a
+# few seconds "in the future" is NTP skew and must count as active, while
+# a far-future timestamp is corruption and must not pause forever.
+MAX_CLOCK_SKEW_S = 5 * 60
 
 MAX_WAKE_ATTEMPTS = 3
 
@@ -89,8 +93,9 @@ def outage_active(root: Path, now: float, role: str = "solver") -> str:
     """The stamped detail while this role's cooldown holds, else "". The
     cooldown lives IN the stamp (decided at stamp time from the failure
     class); unreadable or stale stamps read as inactive — a corrupt latch
-    must never brick the loop, and time moving backwards reads as
-    expired."""
+    must never brick the loop; cross-host clock skew within
+    MAX_CLOCK_SKEW_S counts as active, anything further future as
+    corrupt."""
     path = _outage_path(root, role)
     try:
         data = json.loads(path.read_text())
@@ -99,7 +104,7 @@ def outage_active(root: Path, now: float, role: str = "solver") -> str:
         cooldown_s = float(data.get("cooldown_s", OUTAGE_COOLDOWN_S))
     except (OSError, ValueError, KeyError, TypeError):
         return ""
-    if 0 <= now - stamped < cooldown_s:
+    if -MAX_CLOCK_SKEW_S <= now - stamped < cooldown_s:
         return detail or "api outage"
     return ""
 
