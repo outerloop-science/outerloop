@@ -320,6 +320,17 @@ def test_candidate_row_rewrite_touches_only_the_preamble(provider: FileTokenProv
     assert "| candidate | 13.1 |" not in patched
 
 
+def test_candidate_row_rewrite_fails_closed_without_report_heading(
+    provider: FileTokenProvider,
+) -> None:
+    """No report heading -> no preamble boundary -> no rewrite (the row
+    found could be inside agent text)."""
+    transport = FakeTransport([{"body": "| candidate | 13.1 |\nno heading here"}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.update_candidate_row("org/repo", 9, 10.2) is False
+    assert len(transport.requests) == 1
+
+
 def test_candidate_row_rewrite_reports_missing_row(provider: FileTokenProvider) -> None:
     transport = FakeTransport([{"body": "no table here\n\n## Research report\nx"}])
     client = GitHubClient(auth=provider, transport=transport)

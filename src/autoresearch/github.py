@@ -277,6 +277,11 @@ class GitHubClient:
         # (before the report section) — agent report text could contain a
         # lookalike row, and it must stay untouched
         head, sep, tail = current.partition("## Research report")
+        if not sep:
+            # No report heading -> the preamble boundary is gone (human
+            # body edit?): fail CLOSED rather than rewrite report text —
+            # the Edit addendum already carries the number.
+            return False
         if not self._CANDIDATE_ROW.search(head):
             return False
         from autoresearch.progress import fmt_metric

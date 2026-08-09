@@ -24,7 +24,13 @@ from autoresearch.github import GitHubClient, Workspace
 from autoresearch.harness import Harness, redact
 from autoresearch.orchestrator import Evaluator, out_of_scope
 from autoresearch.orchestrator import improved as orch_improved
-from autoresearch.progress import PROGRESS_PATHS, load_leader, update_leader, write_progress
+from autoresearch.progress import (
+    PROGRESS_PATHS,
+    fmt_metric,
+    load_leader,
+    update_leader,
+    write_progress,
+)
 from autoresearch.review import APPROVAL_PATTERN, REDACTED
 from autoresearch.runstate import (
     ENDED,
@@ -320,7 +326,8 @@ def _respond(
                     )
                     branch = _current_branch(ws)
                     ws.commit_all(
-                        f"agent: address review feedback ({bench.metric}={candidate:.6g})"
+                        f"agent: address review feedback "
+                        f"({bench.metric}={fmt_metric(candidate, bench.display_digits)})"
                         f"\n\nAgent: {record.agent_id}",
                         author=bot_login,
                         forbidden=lambda p: (
@@ -334,7 +341,7 @@ def _respond(
                     )
                     measured_note = (
                         f"\n\n**Re-measured after this change: `{bench.metric}` = "
-                        f"{candidate:.6g}**"
+                        f"{fmt_metric(candidate, bench.display_digits)}**"
                         + (
                             " — worse than the PR's previous number, stated plainly."
                             if worse
