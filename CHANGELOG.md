@@ -29,6 +29,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Evals and validation runs build a PRIVATE environment per eval
+  (`UV_PROJECT_ENVIRONMENT` in the throwaway eval home) instead of
+  consuming the workspace venv the session built: no shared mutable state
+  across processes (the first live steward validation lost a race to NFS
+  close-to-open consistency on a venv another process had just written),
+  and the orchestrator never executes session-authored entrypoints.
+
 - Post-merge advisory findings on the climb glue: content-fingerprint drift
   check (rewrites during eval, not just new files), leader best never
   regresses, climb exceptions record aborted (never a stale implementing),
