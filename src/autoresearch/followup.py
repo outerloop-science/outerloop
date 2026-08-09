@@ -77,10 +77,12 @@ MAX_CONTEXT_COMMENT_CHARS = 4_000
 # Our own machine reviewers post via the Actions workflow token — an
 # identity no ordinary account can assume. Marker text alone is public and
 # forgeable; identity + marker together are not. The markers are the
-# renderers' own constants: if a renderer's format drifts, this breaks
-# loudly at import review, not silently at match time. Both renderers post
-# marker-first ISSUE comments (github.upsert_comment), which is why this
-# reads one collection and matches at the start of the body.
+# renderers' own constants, and marker-first is their tested shape: both
+# render bodies starting with the marker (asserted in their render tests)
+# and publish through review_cli.post_round, which inserts the round stamp
+# AFTER the marker — always as ISSUE comments. That is why this reads one
+# collection and matches at the start of the body; a quote-reply prefixes
+# every line with "> ", so quoted rounds can never re-qualify.
 ACTIONS_BOT_LOGIN = "github-actions[bot]"
 MACHINE_ROUND_MARKERS = (VERIFY_MARKER, ADVISORY_MARKER)
 

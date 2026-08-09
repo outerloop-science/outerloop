@@ -14,6 +14,7 @@ from autoresearch.followup import (
     respond_once,
 )
 from autoresearch.harness import SessionResult
+from autoresearch.review import MARKER as ADVISORY_MARKER
 from autoresearch.runstate import IN_REVIEW, RunRecord, load_record, run_dir, save_record
 from autoresearch.steward import RELEASE_MARKER
 from autoresearch.verifier import VERIFY_MARKER
@@ -587,7 +588,16 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
         "user": {"login": "github-actions[bot]"},
         "author_association": "NONE",
     }
-    github = FakeGitHub(comments=[verifier_comment, member(103, "address the findings above")])
+    advisory_comment = {
+        "id": 102,
+        # exactly post_round's published shape: marker first, stamp after
+        "body": f"{ADVISORY_MARKER}\n**Round 2** — reviewed head `abcd1234`.\n\nprose findings",
+        "user": {"login": "GitHub-Actions[bot]"},  # case-insensitive identity
+        "author_association": "NONE",
+    }
+    github = FakeGitHub(
+        comments=[verifier_comment, advisory_comment, member(103, "address the findings above")]
+    )
     harness = ResumingHarness()
     outcome = respond_once(
         root,
@@ -601,7 +611,8 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
     )
     assert outcome.action == "replied"
     prompt = harness.calls[0][0]
-    assert "caches across calls" in prompt  # the findings arrived
+    assert "caches across calls" in prompt  # the verifier round arrived
+    assert "prose findings" in prompt  # the advisory round arrived too
     # the block is explicitly framed as data, and the body sits in a fence
     assert "Comments without standing (context only" in prompt
     assert "data, not" in prompt
