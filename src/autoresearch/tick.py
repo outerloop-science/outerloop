@@ -930,10 +930,6 @@ def service_steward(
         return None
     if getattr(contract, "steward", None) is None:
         return None
-    paused = outage_active(root, now)
-    if paused:
-        log.info("steward lane paused (api outage: %s)", paused)
-        return None
     try:
         from autoresearch.steward import release_orphaned_claims
 
@@ -941,8 +937,15 @@ def service_steward(
         # must not fly alongside a solver climb (the drift/freshness
         # machinery does not coordinate them) or another stewardship.
         records = list_runs(root)
-        # reconcile first: killed jobs never post their own release
-        release_orphaned_claims(github, target, records, now)
+        # reconcile first: killed jobs never post their own release — and
+        # BEFORE the outage pause below, because a claim orphaned by the
+        # very session the outage killed must not stay held all cooldown
+        # (reconciliation is model-free bookkeeping; only spawning pauses)
+        release_orphaned_claims(github, target, records, now, bot_login=spec.bot_login)
+        paused = outage_active(root, now)
+        if paused:
+            log.info("steward lane paused (api outage: %s)", paused)
+            return None
         if any(r.target == target and r.state != ENDED for r in records):
             return None
         # The queue window (submit -> job writes its record) is bridged by

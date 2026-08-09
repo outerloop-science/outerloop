@@ -225,6 +225,14 @@ def pick_steward_issue(
         claimed = False
         attempts = 0
         for c in github.list_comments(repo, number):
+            # The markers are the BOT'S protocol: only its own comments
+            # move the claim state. On a public repo, a stranger posting
+            # a release (or an outage release) must be able to neither
+            # free a claimed order, nor burn its attempts, nor erase them
+            # into an unbounded paid retry loop (review finding).
+            author = str((c.get("user") or {}).get("login", ""))
+            if author.casefold() != bot_login.casefold():
+                continue
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
                 claimed = True
@@ -253,7 +261,13 @@ def pick_steward_issue(
 
 
 def release_orphaned_claims(
-    github: Any, repo: str, records: list, now: float, stale_s: float = 4 * 3600, limit: int = 2
+    github: Any,
+    repo: str,
+    records: list,
+    now: float,
+    stale_s: float = 4 * 3600,
+    limit: int = 2,
+    bot_login: str = "agentic-learning-bot",
 ) -> int:
     """Post release markers for claimed work orders whose runs are DEAD.
 
@@ -279,6 +293,9 @@ def release_orphaned_claims(
         claimed = False
         claim_time = ""
         for c in github.list_comments(repo, number):
+            author = str((c.get("user") or {}).get("login", ""))
+            if author.casefold() != bot_login.casefold():
+                continue  # same identity gate as pick_steward_issue
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
                 claimed = True

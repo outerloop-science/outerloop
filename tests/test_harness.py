@@ -218,6 +218,13 @@ def test_outage_classification_matches_api_refusals_only() -> None:
     assert outage(result(True, detail="authentication_error: invalid x-api-key"))
     assert outage(result(True, detail="rate_limit_error: Number of requests..."))
     assert not outage(result(True, detail="error_max_turns: Reached maximum number of turns"))
+    assert not outage(  # agent prose never consulted when backend detail exists
+        result(
+            True,
+            detail="error_max_turns: Reached maximum number of turns",
+            text="Report: we should raise the usage limit and cut billing costs.",
+        )
+    )
     assert not outage(result(False, text="Report: cut billing costs by caching the pool."))
     assert not outage(result(True, detail="TypeError: 'NoneType' object is not iterable"))
 

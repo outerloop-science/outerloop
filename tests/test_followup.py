@@ -691,7 +691,15 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
         "user": {"login": "stranger2"},
         "author_association": "NONE",
     }
-    github = FakeGitHub(comments=[drive_by, forged, member(104, "please respond")])
+    skip_stub = {
+        "id": 105,
+        # a real outage stub from the Actions bot: right identity, but its
+        # own marker — "the API was down" is a notice, not a review round
+        "body": "<!-- autoresearch:round-skipped -->\n*The verification round could not run*",
+        "user": {"login": "github-actions[bot]"},
+        "author_association": "NONE",
+    }
+    github = FakeGitHub(comments=[drive_by, forged, skip_stub, member(104, "please respond")])
     harness = ResumingHarness()
     respond_once(
         root,

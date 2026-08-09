@@ -107,7 +107,7 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
     # claimed issues are skipped
     github2 = FakeIssues(
         [_issue(4, "re-base the tsp pool")],
-        comments={4: [{"body": "<!-- autoresearch:claimed -->\ntaken"}]},
+        comments={4: [{"body": "<!-- autoresearch:claimed -->\ntaken", "user": {"login": BOT}}]},
     )
     assert pick_steward_issue(github2, "org/pilot", c, BOT) is None
     # a released claim makes the order claimable again
@@ -115,8 +115,11 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->\ntaken"},
-                {"body": "<!-- autoresearch:claim-released -->\nsubmission failed"},
+                {"body": "<!-- autoresearch:claimed -->\ntaken", "user": {"login": BOT}},
+                {
+                    "body": "<!-- autoresearch:claim-released -->\nsubmission failed",
+                    "user": {"login": BOT},
+                },
             ]
         },
     )
@@ -127,9 +130,9 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claim-released -->"},
-                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
             ]
         },
     )
@@ -139,11 +142,11 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claim-released -->"},
-                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claim-released -->"},
-                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
                 {"body": "<!-- autoresearch:claim-released -->"},
             ]
         },
@@ -437,12 +440,12 @@ def test_outage_releases_do_not_count_toward_the_attempt_cap() -> None:
     """Three claims, one of them released by an outage: two attempts —
     the order is still claimable. Three COUNTED claims: capped."""
 
-    def claim():
-        return {"body": f"{CLAIM_MARKER}\nworking"}
+    def claim(author: str = BOT):
+        return {"body": f"{CLAIM_MARKER}\nworking", "user": {"login": author}}
 
-    def release(outage_kind: bool):
+    def release(outage_kind: bool, author: str = BOT):
         marker = f"{RELEASE_MARKER}\n{OUTAGE_MARKER}" if outage_kind else RELEASE_MARKER
-        return {"body": f"{marker}\nreleased"}
+        return {"body": f"{marker}\nreleased", "user": {"login": author}}
 
     issue = {
         "number": 5,
@@ -465,10 +468,51 @@ def test_outage_releases_do_not_count_toward_the_attempt_cap() -> None:
 
     contract = load_contract(CONTRACT, "org/pilot")
     thread = [claim(), release(True), claim(), release(False), claim(), release(False)]
-    picked = pick_steward_issue(G(thread), "org/pilot", contract, "bot")
+    picked = pick_steward_issue(G(thread), "org/pilot", contract, BOT)
     assert picked is not None and picked.number == 5  # 2 counted attempts
     thread += [claim(), release(False)]
-    assert pick_steward_issue(G(thread), "org/pilot", contract, "bot") is None  # 3 counted
+    assert pick_steward_issue(G(thread), "org/pilot", contract, BOT) is None  # 3 counted
+
+
+def test_marker_spoofing_by_strangers_moves_nothing() -> None:
+    """Only the BOT'S comments move claim state (review finding, public-repo
+    threat): a stranger's outage-release must not erase attempts into an
+    unbounded paid retry loop, a stranger's release must not free a live
+    claim, and a stranger's claim must not burn attempts."""
+
+    def marked(body: str, author: str):
+        return {"body": body, "user": {"login": author}}
+
+    issue = {
+        "number": 6,
+        "title": "steward: harden tsp",
+        "body": "the tsp pool is stale",
+        "user": {"login": "renmengye", "type": "User"},
+        "author_association": "OWNER",
+        "labels": [{"name": "autoresearch:steward"}],
+    }
+
+    @dataclass
+    class G:
+        comments: list
+
+        def list_open_issues(self, repo):
+            return [issue]
+
+        def list_comments(self, repo, number):
+            return self.comments
+
+    contract = load_contract(CONTRACT, "org/pilot")
+    # capped order + stranger outage-releases: attempts stay at 3
+    thread = [marked(f"{CLAIM_MARKER}\nx", BOT) for _ in range(3)]
+    thread += [marked(f"{RELEASE_MARKER}\n{OUTAGE_MARKER}\nnice try", "stranger")] * 3
+    assert pick_steward_issue(G(thread), "org/pilot", contract, BOT) is None
+    # live claim + stranger release: still claimed
+    thread2 = [marked(f"{CLAIM_MARKER}\nx", BOT), marked(f"{RELEASE_MARKER}\nfree it", "stranger")]
+    assert pick_steward_issue(G(thread2), "org/pilot", contract, BOT) is None
+    # stranger claims alone: not claimed, no attempts burned
+    thread3 = [marked(f"{CLAIM_MARKER}\nmine now", "stranger")] * 5
+    assert pick_steward_issue(G(thread3), "org/pilot", contract, BOT) is not None
 
 
 def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:
@@ -587,7 +631,11 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         def comment(self, repo, number, body):
             self.posted.append((number, body))
 
-    claimed = {"body": "<!-- autoresearch:claimed -->", "created_at": "2026-08-09T00:00:00Z"}
+    claimed = {
+        "body": "<!-- autoresearch:claimed -->",
+        "created_at": "2026-08-09T00:00:00Z",
+        "user": {"login": "agentic-learning-bot"},
+    }
     dead_record = RunRecord(
         run_id="steward-tsp-9",
         target="org/pilot",
@@ -616,6 +664,10 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
     github3 = G([_issue(7, "re-base the tsp pool")], {7: [claimed]})
     assert release_orphaned_claims(github3, "org/pilot", [], now=2_000_000_000.0) == 1
     # now=2e9 is 2033-05-18T03:33Z; a claim 33 minutes old is not stale
-    fresh = {"body": "<!-- autoresearch:claimed -->", "created_at": "2033-05-18T03:00:00Z"}
+    fresh = {
+        "body": "<!-- autoresearch:claimed -->",
+        "created_at": "2033-05-18T03:00:00Z",
+        "user": {"login": "agentic-learning-bot"},
+    }
     github4 = G([_issue(7, "re-base the tsp pool")], {7: [fresh]})
     assert release_orphaned_claims(github4, "org/pilot", [], now=2_000_000_000.0) == 0

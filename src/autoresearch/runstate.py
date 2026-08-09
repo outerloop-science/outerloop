@@ -58,7 +58,11 @@ MAX_WAKE_ATTEMPTS = 3
 def stamp_outage(root: Path, detail: str, now: float) -> None:
     """Record that the API refused us (atomic rename, like the records)."""
     root.mkdir(parents=True, exist_ok=True)
-    tmp = root / f".{OUTAGE_NAME}.tmp"
+    # pid in the tmp name, like save_record: several lanes' jobs can fail
+    # to the same outage in one window, and interleaved writers must not
+    # install a truncated stamp — an unreadable latch reads as NO pause,
+    # which is exactly the failure the latch exists to prevent
+    tmp = root / f".{OUTAGE_NAME}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps({"detail": detail[:300], "time": now}))
     os.replace(tmp, root / OUTAGE_NAME)
 

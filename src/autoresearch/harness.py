@@ -136,7 +136,12 @@ def outage(result: SessionResult) -> bool:
     work order's attempts."""
     if not result.is_error:
         return False
-    surface = f"{result.error_detail}\n{result.final_text}".casefold()
+    # error_detail is backend error text and always wins; final_text is
+    # consulted ONLY when no detail exists (older CLI error shapes put the
+    # API refusal in the result string). Never both — a turn-exhausted
+    # session carries the agent's own prose in final_text, and a report
+    # that MENTIONS billing must not read as an outage (review finding).
+    surface = (result.error_detail or result.final_text).casefold()
     return any(pattern in surface for pattern in OUTAGE_PATTERNS)
 
 
