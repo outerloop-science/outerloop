@@ -163,6 +163,14 @@ def service_in_review(
             if ending:
                 ended.append((record.run_id, ending))
                 continue
+            # Steward PRs end via close_if_done like any other, but their
+            # comment servicing is NOT wired yet: the follow-up job would
+            # resume them with the SOLVER'S key and the solver's scope
+            # check — exactly the role separation the steward exists to
+            # keep. Until a steward follow-up path exists, maintainer
+            # comments on steward PRs are answered by humans.
+            if record.agent_id.startswith("steward"):
+                continue
             if not has_new_comments(record, github, spec.bot_login):
                 continue
             if record.followup_job_id:

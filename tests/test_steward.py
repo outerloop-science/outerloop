@@ -119,6 +119,18 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
     )
     picked = pick_steward_issue(github3, "org/pilot", c, BOT)
     assert picked is not None and picked.number == 4
+    # last marker wins: re-claimed after a release stays claimed
+    github4 = FakeIssues(
+        [_issue(4, "re-base the tsp pool")],
+        comments={
+            4: [
+                {"body": "<!-- autoresearch:claimed -->"},
+                {"body": "<!-- autoresearch:claim-released -->"},
+                {"body": "<!-- autoresearch:claimed -->"},
+            ]
+        },
+    )
+    assert pick_steward_issue(github4, "org/pilot", c, BOT) is None
 
 
 def test_steward_scope_folds_case_against_solver_territory() -> None:
@@ -283,7 +295,9 @@ def test_stewardship_rebased_env_lands_with_orchestrator_records(tmp_path, stewa
         tmp_path, edits={"src/pilot/instances.py": "POOL_SEED = 'per-run'\n"}
     )
     assert outcome.outcome == "stewarded"
-    assert evaluator.checks == ["uv run pytest -q"]  # validation suite ran, contained
+    # validation suite AND the (only) benchmark's siblings smoke-checked —
+    # this contract has one benchmark, so just the suite here
+    assert evaluator.checks == ["uv run pytest -q"]
     assert github.armed  # approval remains the last human action
     # the branch carries env edit + the ORCHESTRATOR-written record reset
     files = set(
@@ -348,3 +362,47 @@ def test_no_change_session_is_a_negative_result(tmp_path, steward_repo) -> None:
     assert record.state == "ended" and record.ending == "negative-result"
     # the issue still hears the outcome
     assert any("no-change" in body for _, body in github.issue_comments)
+
+
+def test_sibling_evals_are_smoke_checked(tmp_path, steward_repo, monkeypatch) -> None:
+    """A steward edit to a shared harness must not break sibling benchmarks:
+    every other eval command runs (exit-0) on the new env."""
+    two_bench = CONTRACT.replace(
+        "budgets:",
+        """  - name: probe
+    command: "uv run python -m pilot.eval --env probe --json"
+    metric: val_accuracy
+    direction: max
+budgets:""",
+    )
+    # rewrite the contract in the seed so the clone carries two benchmarks
+    import subprocess as sp
+
+    work = tmp_path / "rewrite"
+    sp.run(["git", "clone", "-q", str(steward_repo), str(work)], check=True)
+    (work / ".autoresearch.yaml").write_text(two_bench)
+    sp.run(
+        [
+            "git",
+            "-C",
+            str(work),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-aqm",
+            "two bench",
+        ],
+        check=True,
+    )
+    sp.run(["git", "-C", str(work), "push", "-q", "origin", "main"], check=True)
+
+    outcome, github, evaluator = run_steward(
+        tmp_path, edits={"src/pilot/eval.py": "def eval(): ...  # v2\n"}, run_id="steward-tsp-5"
+    )
+    assert outcome.outcome == "stewarded"
+    assert "uv run pytest -q" in evaluator.checks
+    assert any("--env probe" in c for c in evaluator.checks)  # sibling smoke-checked
+    assert not any("--env tsp" in c for c in evaluator.checks)  # the target is MEASURED instead
+    assert "smoke-checked, not" in github.prs[0]["body"]

@@ -118,14 +118,16 @@ def pick_steward_issue(
         if not qualifying_issue(issue, bot_login):
             continue
         number = int(issue["number"])
-        claimed = 0
+        # last marker wins (comments arrive in creation order): the issue is
+        # claimed iff the most recent claim/release event is a claim
+        claimed = False
         for c in github.list_comments(repo, number):
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
-                claimed += 1
+                claimed = True
             if RELEASE_MARKER in body:
-                claimed -= 1
-        if claimed > 0:
+                claimed = False
+        if claimed:
             continue
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)
@@ -304,8 +306,15 @@ def live_steward(
             )
 
         # The steward's ruler, run by the ORCHESTRATOR: the full suite and
-        # the target benchmark must work on the edited env.
+        # the target benchmark must work on the edited env — and every
+        # OTHER benchmark's eval must still run (the steward may edit a
+        # shared harness; a broken sibling eval must fail here, not on the
+        # next climb). Siblings are smoke-checked, not re-measured: their
+        # rows keep old-env numbers, stated in the PR body for the humans.
         evaluator.check(workspace, VALIDATION_COMMAND)
+        for sibling in contract.benchmarks:
+            if sibling.name != config.benchmark:
+                evaluator.check(workspace, sibling.command)
         measured = evaluator.evaluate(workspace, bench.command, bench.metric)
 
         # drift protection identical to the climb: the committed tree must
@@ -363,7 +372,10 @@ def live_steward(
             f"{fmt_metric(measured, bench.display_digits)} |\n\n"
             "The baseline was measured by the orchestrator running the contract's "
             f"eval command on the NEW env with the CURRENT solver; the validation "
-            f"suite (`{VALIDATION_COMMAND}`) passed contained.\n\n"
+            f"suite (`{VALIDATION_COMMAND}`) and every sibling benchmark's eval "
+            f"command passed contained. Sibling rows were smoke-checked, not "
+            f"re-measured — if this change altered a shared harness, re-base "
+            f"them with their own work orders.\n\n"
             f"## Stewardship report\n\n{redact(session.final_text, secrets)[:20000]}"
         )
         pr_url = github.create_pull(
