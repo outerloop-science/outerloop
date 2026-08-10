@@ -937,6 +937,45 @@ def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
     assert followups and "--max-turns 25" in submitted[0][-1]
 
 
+def test_shape_followup_spec_clamps_strictly_downward() -> None:
+    """The clamp itself, against untrusted contract values (round-1
+    finding: the argv test alone left the tick's clamp unverified)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.limits import effective_limits
+    from autoresearch.tick import FollowupSpec, shape_followup_spec
+
+    base = """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 20%s}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=Path("/tmp"),
+        image="i",
+        home=Path("/tmp"),
+    )
+    # contract asking for MORE turns than the ceiling gets the ceiling
+    greedy = load_contract(base % ", session_max_turns: 100000", "org/pilot")
+    shaped = shape_followup_spec(spec, effective_limits(greedy.budgets), greedy)
+    assert shaped.max_turns == 120 and shaped.time_minutes == 90
+    # contract shrinking turns shrinks follow-ups too, walltime untouched
+    frugal = load_contract(base % ", session_max_turns: 15", "org/pilot")
+    shaped = shape_followup_spec(spec, effective_limits(frugal.budgets), frugal)
+    assert shaped.max_turns == 15 and shaped.time_minutes == 90
+    # explicit followup walltime shrinks walltime
+    tight = load_contract(base % ", followup_job_minutes: 30", "org/pilot")
+    shaped = shape_followup_spec(spec, effective_limits(tight.budgets), tight)
+    assert shaped.time_minutes == 30
+    # no contract at all: pure defaults, nothing raised
+    shaped = shape_followup_spec(spec, effective_limits(None), None)
+    assert shaped.max_turns == 120 and shaped.time_minutes == 90
+
+
 def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
     """Strictly-downward holds against the OPERATOR's spec too: a contract
     asking for more follow-up walltime than the spec grants gets the spec."""
