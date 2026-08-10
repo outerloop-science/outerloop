@@ -124,6 +124,7 @@ class FollowupSpec:
     home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
     bot_login: str = "agentic-learning-bot"
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
+    max_turns: int = 120  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
     key_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
@@ -217,6 +218,8 @@ def service_in_review(
                 spec.bot_login,
                 "--job-minutes",
                 str(spec.time_minutes),
+                "--max-turns",
+                str(spec.max_turns),
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
@@ -650,11 +653,16 @@ def tick(
         # set — and only DOWNWARD from the operator's spec value: strictly-
         # downward shaping must hold against operator config too, not just
         # against the module defaults.
-        spec = followup_spec
+        # turn budget clamps unconditionally (strictly-downward, like all
+        # limits); walltime keeps its explicit-only override semantics
+        spec = replace(
+            followup_spec,
+            max_turns=min(followup_spec.max_turns, limits.session_max_turns),
+        )
         if contract is not None and contract.budgets.followup_job_minutes is not None:
             spec = replace(
-                followup_spec,
-                time_minutes=min(followup_spec.time_minutes, limits.followup_job_minutes),
+                spec,
+                time_minutes=min(spec.time_minutes, limits.followup_job_minutes),
             )
         ended, submitted = service_in_review(
             root,

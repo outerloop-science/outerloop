@@ -626,7 +626,7 @@ def main() -> int:
     import time
 
     from autoresearch.github import FileTokenProvider
-    from autoresearch.harness import ClaudeCodeHarness
+    from autoresearch.harness import DEFAULT_MAX_TURNS, ClaudeCodeHarness
     from autoresearch.orchestrator import SubprocessEvaluator
 
     parser = argparse.ArgumentParser(description="Service one in-review run.")
@@ -636,7 +636,10 @@ def main() -> int:
     parser.add_argument("--uncontained", action="store_true")
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument("--model", default="claude-opus-5")
-    parser.add_argument("--max-turns", type=int, default=40)
+    # the tick passes the effective limit explicitly; this fallback follows
+    # the harness ceiling so a bare CLI run is never silently starved (a
+    # 40-turn default cost a live steward follow-up its whole session)
+    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--bot-login", default="agentic-learning-bot")
     parser.add_argument(
         "--job-minutes",
