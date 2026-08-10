@@ -860,6 +860,126 @@ roadmap: docs/roadmap.md
     assert "--job-minutes 120" in wrap  # the job's own walltime, for the alarm
 
 
+def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
+    """The 40-turn CLI default silently starved a live steward follow-up
+    ($6 of session, zero output): the tick now passes --max-turns
+    explicitly, clamped by the contract's session_max_turns."""
+    from autoresearch.followup import REPLY_MARKER  # noqa: F401 (import sanity)
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="rev-t",
+            target="org/pilot",
+            task_title="t",
+            state="in-review",
+            pr_url="https://github.com/org/pilot/pull/9",
+        ),
+        now=NOW - 5000,
+    )
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False}
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return [
+                {
+                    "id": 101,
+                    "body": "please fix",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages: int = 10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages: int = 10):
+            return []
+
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "55\n", "")
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        key_file="/k",
+    )
+    _, followups = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec, NOW)
+    assert followups
+    wrap = submitted[0][-1]
+    assert "--max-turns 120" in wrap  # spec default = harness ceiling
+    # a spec shrunk by the tick's clamp is what lands in argv
+    submitted.clear()
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="rev-t",
+            target="org/pilot",
+            task_title="t",
+            state="in-review",
+            pr_url="https://github.com/org/pilot/pull/9",
+        ),
+        now=NOW - 5000,
+    )
+    _, followups = service_in_review(
+        tmp_path, G(), SlurmCompute(runner=runner), replace(spec, max_turns=25), NOW
+    )
+    assert followups and "--max-turns 25" in submitted[0][-1]
+
+
+def test_shape_followup_spec_clamps_strictly_downward() -> None:
+    """The clamp itself, against untrusted contract values (round-1
+    finding: the argv test alone left the tick's clamp unverified)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.limits import effective_limits
+    from autoresearch.tick import FollowupSpec, shape_followup_spec
+
+    base = """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 20%s}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=Path("/tmp"),
+        image="i",
+        home=Path("/tmp"),
+    )
+    # contract asking for MORE turns than the ceiling gets the ceiling
+    greedy = load_contract(base % ", session_max_turns: 100000", "org/pilot")
+    shaped = shape_followup_spec(spec, effective_limits(greedy.budgets), greedy)
+    assert shaped.max_turns == 120 and shaped.time_minutes == 90
+    # a contract SILENT on turns never reduces deliberate operator config
+    silent = load_contract(base % "", "org/pilot")
+    raised = replace(spec, max_turns=200)
+    assert shape_followup_spec(raised, effective_limits(silent.budgets), silent).max_turns == 200
+    # contract shrinking turns shrinks follow-ups too, walltime untouched
+    frugal = load_contract(base % ", session_max_turns: 15", "org/pilot")
+    shaped = shape_followup_spec(spec, effective_limits(frugal.budgets), frugal)
+    assert shaped.max_turns == 15 and shaped.time_minutes == 90
+    # explicit followup walltime shrinks walltime
+    tight = load_contract(base % ", followup_job_minutes: 30", "org/pilot")
+    shaped = shape_followup_spec(spec, effective_limits(tight.budgets), tight)
+    assert shaped.time_minutes == 30
+    # no contract at all: pure defaults, nothing raised
+    shaped = shape_followup_spec(spec, effective_limits(None), None)
+    assert shaped.max_turns == 120 and shaped.time_minutes == 90
+
+
 def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
     """Strictly-downward holds against the OPERATOR's spec too: a contract
     asking for more follow-up walltime than the spec grants gets the spec."""

@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Follow-up sessions now receive the raised turn budget: the tick passes
+  `--max-turns` (clamped by the contract's `session_max_turns`) to
+  follow-up jobs, and the CLI's fallback follows the harness ceiling
+  instead of a stale 40. A live steward follow-up burned its whole
+  session against the old default and produced nothing.
+
 ### Changed
 
 - Ledger numbers on resampled pools are re-derivable and noise-honest

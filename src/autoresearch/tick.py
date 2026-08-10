@@ -33,6 +33,7 @@ from autoresearch.compute import (
     quote_command,
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
+from autoresearch.harness import DEFAULT_MAX_TURNS
 from autoresearch.limits import EffectiveLimits, effective_limits
 from autoresearch.runstate import (
     ABORTED,
@@ -124,12 +125,30 @@ class FollowupSpec:
     home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
     bot_login: str = "agentic-learning-bot"
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
+    max_turns: int = DEFAULT_MAX_TURNS  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
     key_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
     steward_key_file: str = ""
+
+
+def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
+    """Clamp the operator's follow-up spec by the contract's effective
+    limits. Both knobs clamp only when the contract EXPLICITLY sets them:
+    a contract shapes spend downward, but an operator's deliberate config
+    is never silently reduced by defaults (raising budgets is operator
+    territory)."""
+    if contract is None:
+        return spec
+    # direct attribute access: Budgets is our typed model, and a rename
+    # must fail loudly here, not silently stop shaping spend downward
+    if contract.budgets.session_max_turns is not None:
+        spec = replace(spec, max_turns=min(spec.max_turns, limits.session_max_turns))
+    if contract.budgets.followup_job_minutes is not None:
+        spec = replace(spec, time_minutes=min(spec.time_minutes, limits.followup_job_minutes))
+    return spec
 
 
 def service_in_review(
@@ -217,6 +236,8 @@ def service_in_review(
                 spec.bot_login,
                 "--job-minutes",
                 str(spec.time_minutes),
+                "--max-turns",
+                str(spec.max_turns),
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
@@ -650,12 +671,7 @@ def tick(
         # set — and only DOWNWARD from the operator's spec value: strictly-
         # downward shaping must hold against operator config too, not just
         # against the module defaults.
-        spec = followup_spec
-        if contract is not None and contract.budgets.followup_job_minutes is not None:
-            spec = replace(
-                followup_spec,
-                time_minutes=min(followup_spec.time_minutes, limits.followup_job_minutes),
-            )
+        spec = shape_followup_spec(followup_spec, limits, contract)
         ended, submitted = service_in_review(
             root,
             github,
