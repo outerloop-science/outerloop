@@ -38,6 +38,10 @@ class LeaderEntry:
     best: float  # current best orchestrator-measured value
     best_run: str  # run id that set the best
     updated: str  # ISO date
+    # seed the best was measured under (0 = none recorded / fixed pool):
+    # with resampled pools, a bare scalar is not re-derivable — this plus
+    # the eval's seed_env makes the ledger number reproducible
+    run_seed: int = 0
 
 
 def load_leader(workspace: Path) -> dict[str, LeaderEntry]:
@@ -73,6 +77,7 @@ def update_leader(
     candidate: float,
     run_id: str,
     date: str,
+    run_seed: int = 0,
 ) -> dict[str, LeaderEntry]:
     """A new ledger with this run's improvement folded in. The baseline is
     pinned by the FIRST entry and never moves; best follows improvements."""
@@ -93,6 +98,7 @@ def update_leader(
         best=candidate,
         best_run=run_id,
         updated=date,
+        run_seed=run_seed,
     )
     return updated
 

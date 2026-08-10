@@ -53,9 +53,11 @@ class FakeEvaluator:
 
     values: list[float] = field(default_factory=list)
     calls: list[tuple[str, str]] = field(default_factory=list)
+    seen_env: list = field(default_factory=list)
 
-    def evaluate(self, workspace: Path, command: str, metric: str) -> float:
+    def evaluate(self, workspace: Path, command: str, metric: str, extra_env=None) -> float:
         self.calls.append((command, metric))
+        self.seen_env.append(dict(extra_env) if extra_env else None)
         value = self.values.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -106,6 +108,54 @@ def test_direction_min_regression_is_no_improvement(tmp_path: Path) -> None:
 def test_noise_below_threshold_is_no_improvement(tmp_path: Path) -> None:
     result, _, _ = run_climb(tmp_path, [100.0, 99.9])  # 0.1% < 0.5% floor
     assert result.outcome == "no-improvement"
+
+
+SEEDED_CONTRACT = CONTRACT.replace(
+    "    direction: min\n",
+    "    direction: min\n    seed_env: PILOT_TSP_SEED\n    min_delta: 0.5\n",
+    1,
+)
+
+
+def test_seeded_benchmark_measures_both_sides_under_one_fresh_seed(tmp_path: Path) -> None:
+    """seed_env: the orchestrator draws ONE seed per climb, pins baseline
+    and candidate to it (paired), and reports it on the result for the
+    ledger — nothing about the pool was knowable when the solver wrote."""
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=[13.876, 13.10])
+    result = climb_once(
+        CONFIG,
+        SEEDED_CONTRACT,
+        tmp_path,
+        harness,
+        evaluator,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="2026-08-09T00:00:00Z",
+    )
+    assert result.outcome == "improved"
+    first, second = evaluator.seen_env
+    assert first is not None and set(first) == {"PILOT_TSP_SEED"}
+    assert first == second  # paired: common random numbers
+    assert result.run_seed == int(first["PILOT_TSP_SEED"]) > 0
+
+
+def test_unseeded_benchmark_injects_nothing(tmp_path: Path) -> None:
+    result, _, evaluator = run_climb(tmp_path, [13.876, 13.10])
+    assert evaluator.seen_env == [None, None]
+    assert result.run_seed == 0
+
+
+def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
+    from autoresearch.orchestrator import clears_min_delta
+
+    assert clears_min_delta(12.0, 11.4, "min", 0.5)  # 0.6 > 0.5
+    assert not clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor
+    assert clears_min_delta(0.54, 0.65, "max", 0.10)
+    assert not clears_min_delta(0.54, 0.60, "max", 0.10)  # inside pool luck
+    assert clears_min_delta(12.0, 11.9, "min", None)  # no floor declared
+    assert clears_min_delta(12.0, 11.9, "min", 0)  # zero floor = no floor
+    assert not clears_min_delta(float("nan"), 11.9, "min", 0.5)
 
 
 def test_session_error_short_circuits_before_second_eval(tmp_path: Path) -> None:
@@ -216,6 +266,43 @@ def test_improved_rejects_nonfinite_and_zero_baseline_uses_absolute() -> None:
     assert not improved(1.0, float("inf"), "max", 0.005)
     assert not improved(0.0, 1e-12, "max", 0.005)  # absolute threshold at 0
     assert improved(0.0, 0.01, "max", 0.005)
+
+
+def test_draw_run_seed_never_returns_the_sentinel() -> None:
+    from autoresearch.orchestrator import draw_run_seed
+
+    for _ in range(64):
+        seed = draw_run_seed()
+        assert 1 <= seed <= 2**30  # 0 stays the "no seed recorded" sentinel
+
+
+def test_extra_env_cannot_override_managed_isolation_vars(tmp_path: Path) -> None:
+    """HOME/UV_* are the eval's isolation; a colliding injection is dropped
+    (the contract validator rejects such seed_env names — this is depth)."""
+    from autoresearch.orchestrator import SubprocessEvaluator
+
+    value = SubprocessEvaluator(timeout_s=30).evaluate(
+        tmp_path,
+        'if [ "$HOME" = "/tmp/hijack" ]; then printf \'{"m": 1}\'; '
+        'else printf \'{"m": %s}\' "$M_SEED"; fi',
+        "m",
+        extra_env={"HOME": "/tmp/hijack", "M_SEED": "7"},
+    )
+    assert value == 7.0
+
+
+def test_subprocess_evaluator_injects_extra_env(tmp_path: Path) -> None:
+    """The seed reaches the eval subprocess (the base env is a scrubbed
+    allowlist, so injection must be explicit and is tested for real)."""
+    from autoresearch.orchestrator import SubprocessEvaluator
+
+    value = SubprocessEvaluator(timeout_s=30).evaluate(
+        tmp_path,
+        'printf \'{"m": %s}\\n\' "$PILOT_TSP_SEED"',
+        "m",
+        extra_env={"PILOT_TSP_SEED": "42"},
+    )
+    assert value == 42.0
 
 
 def test_subprocess_evaluator_real_run(tmp_path: Path) -> None:

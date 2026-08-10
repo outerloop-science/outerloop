@@ -116,3 +116,71 @@ def test_empty_benchmarks_refused() -> None:
                 "roadmap": "README.md",
             }
         )
+
+
+def test_seed_env_accepts_env_var_names_only() -> None:
+    """seed_env reaches a subprocess environment: strict shape."""
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max, seed_env: %s}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    ok = load_contract(base % "PILOT_REACH_SEED", "org/pilot")
+    assert ok.benchmarks[0].seed_env == "PILOT_REACH_SEED"
+    import pytest
+
+    for bad in ("pilot_seed", "1SEED", '"SEED; rm -rf /"', '"A B"'):
+        with pytest.raises(ValueError):
+            load_contract(base % bad, "org/pilot")
+
+
+def test_min_delta_must_be_non_negative() -> None:
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max, min_delta: %s}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    assert load_contract(base % "0.10", "org/pilot").benchmarks[0].min_delta == 0.10
+    import pytest
+
+    with pytest.raises(ValueError):
+        load_contract(base % "-0.1", "org/pilot")
+
+
+def test_seed_env_rejects_the_evaluators_managed_names() -> None:
+    """seed_env: UV_PROJECT_ENVIRONMENT (or HOME) would defeat per-eval
+    isolation; contracts are untrusted input, so the loader refuses."""
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max, seed_env: %s}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    import pytest
+
+    for managed in (
+        "HOME",
+        "UV_PROJECT_ENVIRONMENT",
+        "PATH",
+        "UV_CACHE_DIR",
+        "VIRTUAL_ENV",
+        "APPTAINERENV_HOME",  # apptainer translates it INSIDE the container
+        "UV_ANYTHING_FUTURE",  # whole families, not enumerable names
+        "APPTAINER_BINDPATH",  # host-side apptainer CLI configuration
+        "PYTHONPATH",
+        "LD_PRELOAD",
+        "GIT_DIR",
+    ):
+        with pytest.raises(ValueError):
+            load_contract(base % managed, "org/pilot")

@@ -22,7 +22,13 @@ from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
 from autoresearch.github import GitHubClient, Workspace
 from autoresearch.harness import Harness, outage, redact
-from autoresearch.orchestrator import Evaluator, out_of_scope, steward_out_of_scope
+from autoresearch.orchestrator import (
+    Evaluator,
+    clears_min_delta,
+    draw_run_seed,
+    out_of_scope,
+    steward_out_of_scope,
+)
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
     PROGRESS_PATHS,
@@ -427,13 +433,21 @@ def _respond(
             )
         else:
             pre_eval_tree = _tree_hash(ws)
+            # one fresh seed for this re-measure, recorded with the row —
+            # same pairing/reproducibility rule as the climb and steward
+            run_seed = draw_run_seed() if bench.seed_env else 0
+            seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
             try:
                 if is_steward:
                     from autoresearch.steward import validate_and_measure
 
-                    candidate = validate_and_measure(workspace, contract, bench, evaluator)
+                    candidate = validate_and_measure(
+                        workspace, contract, bench, evaluator, run_seed=run_seed
+                    )
                 else:
-                    candidate = evaluator.evaluate(workspace, bench.command, bench.metric)
+                    candidate = evaluator.evaluate(
+                        workspace, bench.command, bench.metric, extra_env=seed_env
+                    )
             except Exception as exc:
                 ws.git("checkout", "--", ".")
                 ws.git("clean", "-fdq")
@@ -452,6 +466,7 @@ def _respond(
                         "changed during measurement, so it was not applied.)_"
                     )
                 else:
+                    floor_note = ""
                     if is_steward:
                         from autoresearch.steward import rebase_leader_row
 
@@ -465,29 +480,60 @@ def _respond(
                             run_id,
                             created,
                             record.target,
+                            run_seed=run_seed,
                         )
                     else:
                         prior = load_leader(workspace).get(bench.name)
-                        entries = update_leader(
-                            load_leader(workspace),
-                            benchmark=bench.name,
-                            metric=bench.metric,
-                            direction=bench.direction,
-                            baseline=candidate,  # pinned by existing entry if present
-                            candidate=candidate,
-                            run_id=run_id,
-                            date=created[:10],
+                        # cross-seed floor, same rule as the climb's publish
+                        # path: this re-measure ran under a FRESH seed, so a
+                        # sub-floor delta over the recorded best is pool
+                        # luck and must not ratchet the ledger (round-1
+                        # review finding)
+                        # The floor explains only a delta that WOULD have
+                        # improved: an outright regression must read as a
+                        # regression (the `worse` flag), never as noise.
+                        beats_prior = prior is not None and (
+                            candidate > prior.best
+                            if bench.direction == "max"
+                            else candidate < prior.best
                         )
-                        write_progress(
-                            workspace,
-                            entries,
-                            record.target,
-                            digits={
-                                b.name: b.display_digits
-                                for b in contract.benchmarks
-                                if b.display_digits
-                            },
-                        )
+                        if (
+                            prior is not None
+                            and beats_prior
+                            and not clears_min_delta(
+                                prior.best, candidate, bench.direction, bench.min_delta
+                            )
+                        ):
+                            # named on the thread, like the climb's ending
+                            # note — a silently unchanged ledger row reads
+                            # as a bug (review finding)
+                            floor_note = (
+                                f" — within the cross-seed noise floor "
+                                f"(min_delta={bench.min_delta}) of the recorded "
+                                f"best {prior.best}, so the ledger row is unchanged"
+                            )
+                        if not floor_note:
+                            entries = update_leader(
+                                load_leader(workspace),
+                                benchmark=bench.name,
+                                metric=bench.metric,
+                                direction=bench.direction,
+                                baseline=candidate,  # pinned by existing entry
+                                candidate=candidate,
+                                run_id=run_id,
+                                date=created[:10],
+                                run_seed=run_seed,
+                            )
+                            write_progress(
+                                workspace,
+                                entries,
+                                record.target,
+                                digits={
+                                    b.name: b.display_digits
+                                    for b in contract.benchmarks
+                                    if b.display_digits
+                                },
+                            )
                     branch = _current_branch(ws)
                     verb = "steward" if is_steward else "agent"
                     ws.commit_all(
@@ -512,6 +558,7 @@ def _respond(
                             if worse
                             else ""
                         )
+                        + floor_note
                     )
 
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")

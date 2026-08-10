@@ -33,6 +33,7 @@ from autoresearch.orchestrator import (
     ClimbConfig,
     Evaluator,
     SubprocessEvaluator,
+    clears_min_delta,
     climb_once,
     out_of_scope,
     pr_body,
@@ -57,6 +58,12 @@ from autoresearch.runstate import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class NoiseFloored(RuntimeError):
+    """The candidate beat the recorded best, but by less than the
+    benchmark's cross-seed noise floor — pool luck, not progress. An
+    honest negative result, never an abort."""
 
 
 class WorkspaceDrift(RuntimeError):
@@ -117,7 +124,13 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 def _measure_committed(
-    ws: Workspace, evaluator: Evaluator, run_dir: Path, name: str, sha: str, bench: Any
+    ws: Workspace,
+    evaluator: Evaluator,
+    run_dir: Path,
+    name: str,
+    sha: str,
+    bench: Any,
+    extra_env: dict[str, str] | None = None,
 ) -> float:
     """Measure a COMMITTED tree in a throwaway worktree.
 
@@ -131,7 +144,7 @@ def _measure_committed(
     wt = run_dir / f"measure-{name}"
     ws.git("worktree", "add", "--detach", str(wt), sha)
     try:
-        return float(evaluator.evaluate(wt, bench.command, bench.metric))
+        return float(evaluator.evaluate(wt, bench.command, bench.metric, extra_env=extra_env))
     finally:
         removed = _best_effort(
             "worktree cleanup", lambda: ws.git("worktree", "remove", "--force", str(wt))
@@ -239,17 +252,34 @@ def live_climb(
                     f"(benchmark `{config.benchmark}`). A report will follow here.",
                 )
 
-        result = climb_once(
-            config,
-            contract_text,
-            workspace,
-            harness,
-            evaluator,
-            ruler=RULER,
-            changed_paths=changed_paths,
-            created=created,
-            task_hypothesis=task_hypothesis,
-        )
+        # The baseline is measured in a throwaway worktree of the pre-session
+        # commit — the session never sees the directory the baseline eval ran
+        # in, so eval artifacts (even gitignored ones) cannot leak the run
+        # seed or the sampled pool into the solver's view.
+        baseline_wt = run_dir / "measure-baseline"
+        ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
+        try:
+            result = climb_once(
+                config,
+                contract_text,
+                workspace,
+                harness,
+                evaluator,
+                ruler=RULER,
+                changed_paths=changed_paths,
+                created=created,
+                task_hypothesis=task_hypothesis,
+                baseline_workspace=baseline_wt,
+            )
+        finally:
+            if not _best_effort(
+                "baseline worktree cleanup",
+                lambda: ws.git("worktree", "remove", "--force", str(baseline_wt)),
+            ):
+                import shutil
+
+                shutil.rmtree(baseline_wt, ignore_errors=True)
+                _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
     except Exception as exc:
         exc_name = type(exc).__name__
         note = redact(f"{exc_name}: {exc}", secrets)[:500]
@@ -386,10 +416,17 @@ def live_climb(
                 # environments, and no dirty-tree check needed: eval writes
                 # are discarded with the worktree and the shas pin content.
                 merged_sha = ws.git("rev-parse", "HEAD").strip()
-                baseline = _measure_committed(
-                    ws, evaluator, run_dir, "fresh-base", fresh_base, bench
+                seed_env = (
+                    {bench.seed_env: str(result.run_seed)}
+                    if bench.seed_env and result.run_seed
+                    else None
                 )
-                candidate = _measure_committed(ws, evaluator, run_dir, "merged", merged_sha, bench)
+                baseline = _measure_committed(
+                    ws, evaluator, run_dir, "fresh-base", fresh_base, bench, seed_env
+                )
+                candidate = _measure_committed(
+                    ws, evaluator, run_dir, "merged", merged_sha, bench, seed_env
+                )
                 if not orch_improved(
                     baseline, candidate, bench.direction, config.min_relative_improvement
                 ):
@@ -405,13 +442,31 @@ def live_climb(
             # — read from the (possibly merged) tree, so the leader check runs
             # against the FRESH ledger, not the clone's snapshot.
             prior = load_leader(workspace).get(config.benchmark)
-            if prior is not None and not orch_improved(
-                prior.best, candidate, bench.direction, config.min_relative_improvement
-            ):
-                raise WorkspaceDrift(
-                    f"candidate {candidate} does not beat the recorded "
-                    f"best {prior.best} by the noise floor (stale clone or eval noise)"
+            if prior is not None:
+                rel_ok = orch_improved(
+                    prior.best, candidate, bench.direction, config.min_relative_improvement
                 )
+                if bench.min_delta:
+                    # A resampled pool re-rolls between runs, so ANY
+                    # sub-floor delta over the recorded best — including
+                    # one below the relative threshold — is an expected
+                    # honest negative, never an anomaly (round-4 review
+                    # finding: the abort band contradicted the promise).
+                    if not rel_ok or not clears_min_delta(
+                        prior.best, candidate, bench.direction, bench.min_delta
+                    ):
+                        raise NoiseFloored(
+                            f"candidate {candidate} does not clear the recorded "
+                            f"best {prior.best} beyond the cross-seed noise "
+                            f"floor (min_delta={bench.min_delta})"
+                        )
+                elif not rel_ok:
+                    # fixed pool: the ledger says this run's own baseline
+                    # was stale — an anomaly worth a loud ending
+                    raise WorkspaceDrift(
+                        f"candidate {candidate} does not beat the recorded "
+                        f"best {prior.best} by the noise floor (stale clone or eval noise)"
+                    )
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -421,6 +476,7 @@ def live_climb(
                 candidate=candidate,
                 run_id=run_id,
                 date=created[:10],
+                run_seed=result.run_seed,
             )
             write_progress(
                 workspace,
@@ -485,6 +541,19 @@ def live_climb(
                     "pr_url": pr_url,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
+                }
+            )
+        except NoiseFloored as exc:
+            # honest negative: the work was fine, the delta is not evidence
+            outcome_name = "no-improvement"
+            result = dc_replace(result, outcome="no-improvement", note=str(exc))
+            log.info("noise-floored for %s: %s", run_id, exc)
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": NEGATIVE_RESULT,
+                    "ending_note": redact(str(exc), secrets)[:480],
                 }
             )
         except Exception as exc:
