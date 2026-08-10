@@ -140,9 +140,13 @@ def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: A
     a contract shapes spend downward, but an operator's deliberate config
     is never silently reduced by defaults (raising budgets is operator
     territory)."""
-    if contract is not None and getattr(contract.budgets, "session_max_turns", None) is not None:
+    if contract is None:
+        return spec
+    # direct attribute access: Budgets is our typed model, and a rename
+    # must fail loudly here, not silently stop shaping spend downward
+    if contract.budgets.session_max_turns is not None:
         spec = replace(spec, max_turns=min(spec.max_turns, limits.session_max_turns))
-    if contract is not None and getattr(contract.budgets, "followup_job_minutes", None) is not None:
+    if contract.budgets.followup_job_minutes is not None:
         spec = replace(spec, time_minutes=min(spec.time_minutes, limits.followup_job_minutes))
     return spec
 
