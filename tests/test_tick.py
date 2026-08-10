@@ -963,6 +963,10 @@ roadmap: docs/roadmap.md
     greedy = load_contract(base % ", session_max_turns: 100000", "org/pilot")
     shaped = shape_followup_spec(spec, effective_limits(greedy.budgets), greedy)
     assert shaped.max_turns == 120 and shaped.time_minutes == 90
+    # a contract SILENT on turns never reduces deliberate operator config
+    silent = load_contract(base % "", "org/pilot")
+    raised = replace(spec, max_turns=200)
+    assert shape_followup_spec(raised, effective_limits(silent.budgets), silent).max_turns == 200
     # contract shrinking turns shrinks follow-ups too, walltime untouched
     frugal = load_contract(base % ", session_max_turns: 15", "org/pilot")
     shaped = shape_followup_spec(spec, effective_limits(frugal.budgets), frugal)

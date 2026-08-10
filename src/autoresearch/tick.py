@@ -136,9 +136,12 @@ class FollowupSpec:
 
 def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
     """Clamp the operator's follow-up spec by the contract's effective
-    limits. Turn budget clamps unconditionally (strictly-downward, like
-    all limits); walltime keeps its explicit-only override semantics."""
-    spec = replace(spec, max_turns=min(spec.max_turns, limits.session_max_turns))
+    limits. Both knobs clamp only when the contract EXPLICITLY sets them:
+    a contract shapes spend downward, but an operator's deliberate config
+    is never silently reduced by defaults (raising budgets is operator
+    territory)."""
+    if contract is not None and getattr(contract.budgets, "session_max_turns", None) is not None:
+        spec = replace(spec, max_turns=min(spec.max_turns, limits.session_max_turns))
     if contract is not None and getattr(contract.budgets, "followup_job_minutes", None) is not None:
         spec = replace(spec, time_minutes=min(spec.time_minutes, limits.followup_job_minutes))
     return spec
