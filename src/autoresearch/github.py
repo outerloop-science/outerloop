@@ -576,6 +576,28 @@ class GitHubClient:
             payload,
         )
 
+    def create_issue(self, repo: str, title: str, body: str) -> int:
+        """Open an issue; returns its number (0 in dry-run)."""
+        if self.dry_run:
+            log.info("[dry-run] issue on %s: %s", repo, title)
+            return 0
+        data = self._request(
+            "POST",
+            f"/repos/{urllib.parse.quote(repo)}/issues",
+            {"title": title, "body": body},
+        )
+        return int(data.get("number", 0)) if isinstance(data, dict) else 0
+
+    def close_issue(self, repo: str, number: int) -> None:
+        if self.dry_run:
+            log.info("[dry-run] close issue %s#%s", repo, number)
+            return
+        self._request(
+            "PATCH",
+            f"/repos/{urllib.parse.quote(repo)}/issues/{number}",
+            {"state": "closed"},
+        )
+
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:
             log.info("[dry-run] comment on %s#%s (%d chars)", repo, issue_number, len(body))

@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 from collections.abc import Sequence
@@ -36,7 +37,7 @@ from autoresearch.compute import (
     quote_command,
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
-from autoresearch.harness import DEFAULT_MAX_TURNS
+from autoresearch.harness import DEFAULT_MAX_TURNS, redact
 from autoresearch.limits import EffectiveLimits, effective_limits
 from autoresearch.runstate import (
     ABORTED,
@@ -246,6 +247,124 @@ def reap_flights(
             else:
                 log.warning("could not reap flight %s", entry.name)
     return reaped
+
+
+CONTRACT_ALARM_MARKER = "<!-- autoresearch:contract-alarm -->"
+CONTRACT_ALARM_AFTER = 3  # consecutive failing ticks (~1.5 h) before alarming
+
+
+def contract_alarm(
+    root: Path,
+    github: Any,
+    target: str,
+    error: str | None,
+    now: float,
+    bot_login: str = "agentic-learning-bot",
+) -> None:
+    """Persistent contract failure must surface where humans look.
+
+    A rejected or unfetchable contract silently idles every launch lane
+    (this cost 36 hours once — the only signal was a log line on the
+    cluster). After CONTRACT_ALARM_AFTER consecutive failing ticks this
+    opens ONE issue on the target repo; the next successful load closes
+    it and says so. Alarm plumbing is best-effort by construction: it
+    must never break the tick it reports for."""
+    state_path = root / "contract-alarm.json"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    if error is None:
+        open_alarm = int(state.get("issue", 0))
+        if not open_alarm and state:
+            # creation may have landed without a recorded number (dry-run,
+            # odd response, lost state file): search so recovery can still
+            # close it. Only ticks that follow SOME failure signal pay the
+            # search; total state loss + instant recovery leaves the issue
+            # for the next alarm cycle's search to adopt and close.
+            with contextlib.suppress(Exception):
+                open_alarm = _find_alarm_issue(github, target, bot_login)
+        if open_alarm:
+            try:
+                github.close_issue(target, open_alarm)
+            except Exception as exc:
+                # keep the state so the NEXT healthy tick retries the close;
+                # unlinking here would orphan the open alarm forever — and
+                # no comment yet, or every retry would repeat it
+                log.warning("could not close contract alarm #%s: %s", open_alarm, exc)
+                return
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target, open_alarm, "The contract loads again; launch lanes resume this tick."
+                )
+        if state:
+            with contextlib.suppress(OSError):
+                state_path.unlink()
+        return
+    count = int(state.get("count", 0)) + 1
+    state["count"] = count
+    # redacted (the client's own token is the one secret this process
+    # holds) and fenced with a run longer than any backtick run inside —
+    # transport errors can echo request material, loader errors can echo
+    # contract content, and both are untrusted for a public issue body
+    safe_error = redact(error, _client_secrets(github))[:600]
+    # A recorded issue a human closed by hand stays closed: closing the
+    # alarm is the maintainer's "I know" — re-opening or re-creating it
+    # every threshold would be alarm spam, and recovery still clears state.
+    if count >= CONTRACT_ALARM_AFTER and not state.get("issue"):
+        # search open issues first: state loss must not spawn duplicates
+        try:
+            number = _find_alarm_issue(github, target, bot_login) or github.create_issue(
+                target,
+                "autoresearch: contract failed to load — launch lanes are paused",
+                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has been unable to "
+                f"load `.autoresearch.yaml` for {count} consecutive ticks; "
+                f"intake, steward, and self-initiated lanes sit out until it "
+                f"loads. The error below says whether the contract itself was "
+                f"rejected or the fetch is failing.\n\n"
+                f"{_fence(safe_error)}\n{safe_error}\n{_fence(safe_error)}\n\n"
+                f"This issue closes itself when the contract loads again.",
+            )
+            if number:
+                state["issue"] = number
+        except Exception as exc:
+            log.warning("contract alarm could not post to %s: %s", target, exc)
+    with contextlib.suppress(OSError):
+        tmp = state_path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(state))
+        os.replace(tmp, state_path)
+
+
+def _client_secrets(github: Any) -> tuple[str, ...]:
+    try:
+        token = github.auth.token()
+        if token:
+            return (token,)
+    except Exception as exc:
+        # degraded redaction must not be silent: the error text goes to a
+        # public issue, and a renamed auth surface would no-op the redact
+        log.warning("alarm redaction has no client token (%s)", exc)
+    return ()
+
+
+def _fence(content: str) -> str:
+    longest = max((len(run) for run in re.findall(r"`+", content)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _find_alarm_issue(github: Any, target: str, bot_login: str) -> int:
+    """Only the BOT'S own marker'd issue counts: the marker is a public
+    string, and adopting a stranger's issue would let anyone suppress the
+    real alarm or get their issue closed by the bot."""
+    return next(
+        (
+            int(issue.get("number", 0))
+            for issue in github.list_open_issues(target, max_pages=10)
+            if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
+            and str((issue.get("user") or {}).get("login", "")).casefold() == bot_login.casefold()
+        ),
+        0,
+    )
 
 
 def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
@@ -787,14 +906,28 @@ def tick(
         # the launch lanes need the contract and sit out this tick.
         contract = None
         if followup_spec.target:
+            contract_error: str | None = "contract file missing on main"
             try:
                 from autoresearch.contract import load_contract
 
                 raw = github.get_file_content(followup_spec.target, ".autoresearch.yaml", "main")
                 if raw is not None:
                     contract = load_contract(raw, followup_spec.target)
+                    contract_error = None
             except Exception as exc:
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
+                contract_error = f"{type(exc).__name__}: {exc}"
+            try:
+                contract_alarm(
+                    root,
+                    github,
+                    followup_spec.target,
+                    contract_error,
+                    now,
+                    bot_login=followup_spec.bot_login,
+                )
+            except Exception as exc:
+                log.warning("contract alarm failed: %s", exc)
         limits = effective_limits(contract.budgets if contract is not None else None)
         # The contract's followup walltime only overrides when EXPLICITLY
         # set — and only DOWNWARD from the operator's spec value: strictly-

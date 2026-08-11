@@ -1043,6 +1043,179 @@ def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None
     assert all(m != home for m in made)
 
 
+def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> None:
+    """Three consecutive failures open ONE issue on the target; recovery
+    comments and closes it. State loss must not spawn duplicates."""
+    from autoresearch.tick import CONTRACT_ALARM_MARKER, contract_alarm
+
+    class G:
+        def __init__(self):
+            self.issues: list[dict] = []
+            self.comments: list[tuple[int, str]] = []
+            self.closed: list[int] = []
+            self.next = 7
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [i for i in self.issues if i["number"] not in self.closed]
+
+        def create_issue(self, repo, title, body):
+            self.issues.append(
+                {
+                    "number": self.next,
+                    "title": title,
+                    "body": body,
+                    "user": {"login": "agentic-learning-bot"},
+                }
+            )
+            return self.next
+
+        def comment(self, repo, number, body):
+            self.comments.append((number, body))
+
+        def close_issue(self, repo, number):
+            self.closed.append(number)
+
+    g = G()
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    assert g.issues == []  # below the threshold: log-only
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    (issue,) = g.issues
+    assert CONTRACT_ALARM_MARKER in issue["body"] and "overlaps forbidden" in issue["body"]
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    assert len(g.issues) == 1  # never a duplicate while open
+    # state loss: the open-issue search still prevents a duplicate
+    (tmp_path / "contract-alarm.json").unlink()
+    for _ in range(3):
+        contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    assert len(g.issues) == 1
+    # recovery: comment + close + state cleared
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)
+    assert g.closed == [7]
+    assert any("loads again" in body for _, body in g.comments)
+    assert not (tmp_path / "contract-alarm.json").exists()
+    # healthy steady state: no writes at all
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)
+    assert g.closed == [7] and len(g.comments) == 1
+
+
+def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> None:
+    """A failed close must not orphan the open alarm: state survives so
+    the next healthy tick retries — and a lost issue number is recovered
+    by the marker search."""
+    from autoresearch.tick import contract_alarm
+
+    class G:
+        def __init__(self):
+            self.issues: list[dict] = []
+            self.closed: list[int] = []
+            self.refuse_close = True
+            self.next = 9
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [i for i in self.issues if i["number"] not in self.closed]
+
+        def create_issue(self, repo, title, body):
+            self.issues.append(
+                {
+                    "number": self.next,
+                    "title": title,
+                    "body": body,
+                    "user": {"login": "agentic-learning-bot"},
+                }
+            )
+            return self.next
+
+        def comment(self, repo, number, body):
+            pass
+
+        def close_issue(self, repo, number):
+            if self.refuse_close:
+                raise RuntimeError("403")
+            self.closed.append(number)
+
+    g = G()
+    for _ in range(3):
+        contract_alarm(tmp_path, g, "org/pilot", "boom", NOW)
+    assert len(g.issues) == 1
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)  # close refused
+    assert g.closed == [] and (tmp_path / "contract-alarm.json").exists()
+    g.refuse_close = False
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)  # retried and closed
+    assert g.closed == [9] and not (tmp_path / "contract-alarm.json").exists()
+
+    # lost issue number (e.g. dry-run created nothing recordable): the
+    # recovery path still finds an open alarm by marker and closes it
+    g2 = G()
+    g2.refuse_close = False
+    for _ in range(3):
+        contract_alarm(tmp_path, g2, "org/pilot", "boom", NOW)
+    (tmp_path / "contract-alarm.json").write_text('{"count": 3}')  # number lost
+    contract_alarm(tmp_path, g2, "org/pilot", None, NOW)
+    assert g2.closed == [9]
+
+    # a stranger's issue carrying the (public) marker is never adopted:
+    # the bot must not close third-party issues or let them suppress the
+    # real alarm
+    g3 = G()
+    g3.refuse_close = False
+    g3.issues.append(
+        {
+            "number": 1,
+            "title": "spoof",
+            "body": "<!-- autoresearch:contract-alarm -->\nmine now",
+            "user": {"login": "stranger"},
+        }
+    )
+    for _ in range(3):
+        contract_alarm(tmp_path, g3, "org/pilot", "boom", NOW)
+    assert [i["number"] for i in g3.issues] == [1, 9]  # real alarm created
+    contract_alarm(tmp_path, g3, "org/pilot", None, NOW)
+    assert g3.closed == [9]  # the stranger's issue is untouched
+
+
+def test_contract_alarm_redacts_and_fences_the_error(tmp_path: Path) -> None:
+    """Transport errors can echo request material; loader errors echo
+    contract content. Neither may leak a token or escape the fence."""
+    from autoresearch.tick import contract_alarm
+
+    class Auth:
+        def token(self):
+            return "tok-fixture-98765"
+
+    class G:
+        def __init__(self):
+            self.auth = Auth()
+            self.issues: list[dict] = []
+            self.next = 3
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return self.issues
+
+        def create_issue(self, repo, title, body):
+            self.issues.append(
+                {
+                    "number": self.next,
+                    "title": title,
+                    "body": body,
+                    "user": {"login": "agentic-learning-bot"},
+                }
+            )
+            return self.next
+
+    g = G()
+    nasty = "401 fetching contract; request carried tok-fixture-98765\n```\nescape attempt"
+    for _ in range(3):
+        contract_alarm(tmp_path, g, "org/pilot", nasty, NOW)
+    (issue,) = g.issues
+    assert "tok-fixture-98765" not in issue["body"]
+    # the fence around the error is longer than any backtick run inside
+    import re as _re
+
+    runs = sorted(_re.findall(r"`+", issue["body"]), key=len, reverse=True)
+    assert len(runs[0]) >= 4  # widened past the embedded ```
+
+
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
     """The clamp itself, against untrusted contract values (round-1
     finding: the argv test alone left the tick's clamp unverified)."""
