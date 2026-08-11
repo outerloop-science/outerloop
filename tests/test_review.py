@@ -205,3 +205,58 @@ def test_backticked_filename_cannot_break_the_reference_span() -> None:
     # whatever remains of the path renders as inert code-span text
     assert "a](http://evil).py" in body  # inside the span, backtick-free
     assert "`a](http://evil).py`" in body
+
+
+DIFF = """\
+--- a/src/x.py
++++ b/src/x.py
+@@ -10,3 +10,4 @@
+ context_line_ten
+-removed_eleven
++added_eleven
++added_twelve
+ context_thirteen
+"""
+
+
+def test_commentable_lines_maps_the_new_side() -> None:
+    from autoresearch.review import commentable_lines
+
+    lines = commentable_lines(DIFF)
+    # new side: 10 (context), 11-12 (added), 13 (context); nothing else
+    assert lines == {"src/x.py": {10, 11, 12, 13}}
+
+
+def test_format_review_splits_anchored_from_body() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    anchored = Finding(
+        file="src/x.py", line=11, confidence="high", summary="Bad add", detail="It breaks."
+    )
+    off_diff = Finding(
+        file="src/other.py", line=5, confidence="low", summary="Stale doc", detail="Old text."
+    )
+    no_line = Finding(
+        file="src/x.py", line=None, confidence="medium", summary="Global", detail="Everywhere."
+    )
+    rendered = format_review(ReviewResult([anchored, off_diff, no_line], notes=""), DIFF)
+    assert rendered is not None
+    body, inline = rendered
+    (item,) = inline
+    assert item["path"] == "src/x.py" and item["line"] == 11 and item["side"] == "RIGHT"
+    assert "Bad add" in item["body"] and "high confidence" in item["body"]
+    # the un-anchorable findings stay in the body, references intact
+    assert "Stale doc" in body and "`src/other.py`:5" in body
+    assert "Global" in body and "Bad add" not in body
+    assert body.lstrip().startswith(MARKER)
+
+
+def test_format_review_all_anchored_says_so() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    f = Finding(file="src/x.py", line=12, confidence="low", summary="Nit", detail="Tiny.")
+    rendered = format_review(ReviewResult([f], notes=""), DIFF)
+    assert rendered is not None
+    body, inline = rendered
+    assert len(inline) == 1
+    assert "attached to the lines they concern" in body

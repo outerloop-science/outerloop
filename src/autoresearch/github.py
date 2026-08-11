@@ -544,6 +544,38 @@ class GitHubClient:
                 return
         self.comment(repo, issue_number, body)
 
+    def create_pr_review(
+        self,
+        repo: str,
+        number: int,
+        body: str,
+        comments: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Post a PR review with optional inline comments.
+
+        The event is hard-coded to COMMENT: this client must never be able
+        to approve or request changes — a Write-role bot review that blocks
+        or endorses would hand a model role the exact powers the
+        constitution denies it.
+        """
+        if self.dry_run:
+            log.info(
+                "[dry-run] review on %s#%s (%d chars, %d inline)",
+                repo,
+                number,
+                len(body),
+                len(comments or []),
+            )
+            return
+        payload: dict[str, Any] = {"body": body, "event": "COMMENT"}
+        if comments:
+            payload["comments"] = comments
+        self._request(
+            "POST",
+            f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/reviews",
+            payload,
+        )
+
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:
             log.info("[dry-run] comment on %s#%s (%d chars)", repo, issue_number, len(body))

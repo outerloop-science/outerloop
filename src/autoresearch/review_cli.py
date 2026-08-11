@@ -25,6 +25,7 @@ from autoresearch.review import (
     MAX_CONTEXT_FILES,
     PullRequest,
     format_comment,
+    format_review,
     pick_context_files,
     review,
     skip_reason,
@@ -99,29 +100,59 @@ def post_round(
     synchronize-triggered spam; runs are now only PR-open or an explicit
     label request, so volume is human-bounded.
     """
+    stamp, round_label = _round_stamp(client, repo, number, marker, pr_data)
+    client.comment(repo, number, body.replace(marker, f"{marker}\n{stamp}", 1))
+    return round_label
+
+
+def _round_stamp(
+    client: GitHubClient, repo: str, number: int, marker: str, pr_data: dict
+) -> tuple[str, str]:
+    """(stamp line, round label): prior rounds are counted across BOTH
+    issue comments and review bodies, so switching a role between posting
+    styles never resets its numbering."""
     head = pr_data.get("head")
     head_sha = str(head.get("sha", ""))[:8] if isinstance(head, dict) else ""
     # The round number is cosmetic: an EXPECTED failure counting prior
     # rounds must never cost the round itself. Programming errors still
     # propagate, per this module's policy.
     try:
-        prior = [
-            str(c.get("body", ""))
-            for c in client.list_comments(repo, number)
-            # STARTS WITH the marker: a quote-reply prefixes every line
-            # with "> ", so it cannot match — and this stays true for
-            # any posting identity (Actions token, GitHub App, or a
-            # self-hoster's machine-user PAT, which posts as type User)
-            if str(c.get("body", "")).lstrip().startswith(marker)
-        ]
+        bodies = [str(c.get("body", "")) for c in client.list_comments(repo, number)]
+        bodies += [str(r.get("body", "")) for r in client.list_pr_reviews(repo, number)]
+        # STARTS WITH the marker: a quote-reply prefixes every line with
+        # "> ", so it cannot match — and this stays true for any posting
+        # identity (Actions token, GitHub App, or a self-hoster's
+        # machine-user PAT, which posts as type User)
+        prior = [b for b in bodies if b.lstrip().startswith(marker)]
         round_label = f"**Round {len(prior) + 1}**"
         if head_sha and any(f"reviewed head `{head_sha}`" in b for b in prior):
             round_label += " (re-run on the same head)"
     except EXPECTED_FAILURES as exc:
         log.warning("could not count prior rounds: %s", exc)
         round_label = "**New round** (prior count unavailable)"
-    stamp = f"{round_label} — reviewed head `{head_sha or 'unknown'}`.\n\n"
-    client.comment(repo, number, body.replace(marker, f"{marker}\n{stamp}", 1))
+    return f"{round_label} — reviewed head `{head_sha or 'unknown'}`.\n\n", round_label
+
+
+def post_round_review(
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    marker: str,
+    body: str,
+    inline: list[dict],
+    pr_data: dict,
+) -> str:
+    """The Reviews-API sibling of post_round: body summary plus anchored
+    inline comments, event COMMENT always (the client hard-codes it). A
+    posting failure falls back to a plain issue comment — anchor problems
+    must not cost the round."""
+    stamp, round_label = _round_stamp(client, repo, number, marker, pr_data)
+    stamped = body.replace(marker, f"{marker}\n{stamp}", 1)
+    try:
+        client.create_pr_review(repo, number, stamped, inline)
+    except EXPECTED_FAILURES as exc:
+        log.warning("inline review failed (%s); falling back to a comment", exc)
+        client.comment(repo, number, stamped)
     return round_label
 
 
@@ -205,13 +236,25 @@ def main() -> int:
         if skip_reason(pr, bot_login, explicit) is None:
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         today = datetime.now(UTC).date().isoformat()
-        body = format_comment(
-            review(pr, completer, bot_login, today=today, explicit_request=explicit)
-        )
-        if body is None:
-            log.info("nothing to post")
-            return 0
-        round_label = post_round(client, repo, number, MARKER, body, pr_data)
+        result = review(pr, completer, bot_login, today=today, explicit_request=explicit)
+        # Human PRs get inline findings (resolvable threads, auto-outdated
+        # on push). Explicit rounds on BOT PRs stay issue comments: those
+        # ride into follow-up wakes as context, and the wake plumbing
+        # reads the issue-comment collection.
+        bot_authored = pr.author.strip().casefold() == bot_login.strip().casefold()
+        if bot_authored or os.environ.get("REVIEW_INLINE", "").strip().lower() == "false":
+            body = format_comment(result)
+            if body is None:
+                log.info("nothing to post")
+                return 0
+            round_label = post_round(client, repo, number, MARKER, body, pr_data)
+        else:
+            rendered = format_review(result, diff)
+            if rendered is None:
+                log.info("nothing to post")
+                return 0
+            body, inline = rendered
+            round_label = post_round_review(client, repo, number, MARKER, body, inline, pr_data)
         log.info("posted advisory review (%s) on %s#%s", round_label, repo, number)
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("advisory review did not complete: %s: %s", type(exc).__name__, exc)

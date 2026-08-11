@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- The advisory reviewer posts human PRs as a GitHub review: findings
+  anchored to diff lines become resolvable inline threads (auto-marked
+  outdated on push), the marker/header/notes and any un-anchorable
+  findings stay in the review body, and the event is hard-coded COMMENT
+  — the client cannot approve or request changes. Explicit rounds on
+  bot PRs remain issue comments so they can ride into follow-up wakes;
+  round numbering spans both styles. REVIEW_INLINE=false restores the
+  single-comment style.
+
 ### Fixed
 
 - Follow-up sessions now receive the raised turn budget: the tick passes

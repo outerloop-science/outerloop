@@ -276,6 +276,91 @@ def review(
     return ReviewResult(findings=findings, notes=sanitize(data.get("notes", ""), MAX_DETAIL_CHARS))
 
 
+def commentable_lines(diff: str) -> dict[str, set[int]]:
+    """(file -> new-side line numbers present in the diff's hunks): the only
+    positions GitHub accepts inline review comments on. Findings outside
+    this map fall back to the review body instead of 422-ing the round."""
+    lines: dict[str, set[int]] = {}
+    current: str | None = None
+    new_line = 0
+    for raw in diff.splitlines():
+        if raw.startswith("+++ b/"):
+            current = raw[6:]
+            lines.setdefault(current, set())
+        elif raw.startswith("+++ "):
+            current = None  # /dev/null (deleted file): no new side
+        elif raw.startswith("@@") and current is not None:
+            try:
+                new_line = int(raw.split("+", 1)[1].split(",")[0].split(" ")[0])
+            except (IndexError, ValueError):
+                current = None
+                continue
+        elif current is not None and raw.startswith("+"):
+            lines[current].add(new_line)
+            new_line += 1
+        elif current is not None and not raw.startswith(("-", "\\")):
+            lines[current].add(new_line)  # context lines are commentable too
+            new_line += 1
+    return lines
+
+
+def _finding_paragraph(finding: Finding, with_ref: bool = True) -> str:
+    # backticks stripped: a file value containing one would close the code
+    # span and render attacker markdown inline
+    safe_file = finding.file.replace("`", "")
+    where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
+    ref = f" ({where}; {finding.confidence} confidence)" if with_ref else ""
+    summary = finding.summary.rstrip(".!?…")  # the template owns the period
+    # an odd backtick in the detail would pair with the reference's opening
+    # backtick and spill the path out of its code span
+    detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
+    return f"**{summary}.** {detail}{ref}"
+
+
+_CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def format_review(result: ReviewResult, diff: str) -> tuple[str, list[dict[str, Any]]] | None:
+    """(review body, inline comments) for the Reviews API, or None.
+
+    Findings that anchor to a (file, line) present in the diff become
+    inline comments — resolvable threads that GitHub marks outdated when
+    the line changes; the rest stay in the body with their reference. The
+    body always carries the marker, header, and notes.
+    """
+    if result.skipped is not None:
+        return None
+    anchors = commentable_lines(diff)
+    inline: list[dict[str, Any]] = []
+    body_findings: list[Finding] = []
+    for finding in sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence]):
+        if finding.line and finding.line in anchors.get(finding.file, ()):
+            inline.append(
+                {
+                    "path": finding.file,
+                    "line": finding.line,
+                    "side": "RIGHT",
+                    "body": f"{_finding_paragraph(finding, with_ref=False)}\n\n"
+                    f"*({finding.confidence} confidence)*",
+                }
+            )
+        else:
+            body_findings.append(finding)
+    lines = [MARKER, ADVISORY_HEADER, ""]
+    if not result.findings:
+        lines.append("No defects found in this diff.")
+        lines.append("")
+    elif inline and not body_findings:
+        lines.append("Findings are attached to the lines they concern.")
+        lines.append("")
+    for finding in body_findings:
+        lines.append(_finding_paragraph(finding))
+        lines.append("")
+    if result.notes:
+        lines += [result.notes]
+    return "\n".join(lines).rstrip() + "\n", inline
+
+
 def format_comment(result: ReviewResult) -> str | None:
     """Render the comment body, or None when there is nothing to post."""
     if result.skipped is not None:
@@ -288,18 +373,8 @@ def format_comment(result: ReviewResult) -> str | None:
         # Prose paragraphs, not bullet fragments (maintainer preference,
         # 2026-08-08): the human is the reader who needs readability; a
         # model relocating references does not.
-        order = {"high": 0, "medium": 1, "low": 2}
-        for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
-            # backticks stripped: a file value containing one would close
-            # the code span and render attacker markdown inline
-            safe_file = finding.file.replace("`", "")
-            where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
-            ref = f"({where}; {finding.confidence} confidence)"
-            summary = finding.summary.rstrip(".!?…")  # the template owns the period
-            # an odd backtick in the detail would pair with the reference's
-            # opening backtick and spill the path out of its code span
-            detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
-            lines.append(f"**{summary}.** {detail} {ref}")
+        for finding in sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence]):
+            lines.append(_finding_paragraph(finding))
             lines.append("")
     if result.notes:
         lines += [result.notes]
