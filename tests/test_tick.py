@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -44,6 +45,8 @@ class FakeSlurm:
         if argv[0] == "scancel":
             self.cancelled.append(argv[1])
             return CommandResult(0, "", "")
+        if argv[0] == "squeue":
+            return CommandResult(0, "", "")  # no live jobs
         raise AssertionError(f"unexpected command {argv}")
 
     def compute(self) -> SlurmCompute:
@@ -502,6 +505,8 @@ def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
     )
 
     def unused_runner(argv, timeout_s):
+        if argv[0] == "squeue":  # the flight reaper's liveness query
+            return CommandResult(0, "", "")
         raise AssertionError("no slurm calls expected")
 
     ended, _submitted = service_in_review(
@@ -660,6 +665,8 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
     )
 
     def unused_runner(argv, timeout_s):
+        if argv[0] == "squeue":  # the flight reaper's liveness query
+            return CommandResult(0, "", "")
         raise AssertionError("no slurm calls expected")
 
     report = tick(
@@ -935,6 +942,105 @@ def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
         tmp_path, G(), SlurmCompute(runner=runner), replace(spec, max_turns=25), NOW
     )
     assert followups and "--max-turns 25" in submitted[0][-1]
+
+
+def _git_home(tmp_path: Path) -> Path:
+    home = tmp_path / "checkout"
+    home.mkdir()
+    (home / "marker.txt").write_text("v1\n")
+    subprocess.run(["git", "-C", str(home), "init", "-q", "-b", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(home), "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(home), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "s"],
+        check=True,
+    )
+    return home
+
+
+def test_flight_snapshot_survives_a_deploy_reset(tmp_path: Path) -> None:
+    """A submitted job runs the tree that SUBMITTED it: the shared checkout
+    is reset --hard at every deploy, and the flight must not move with it."""
+    from autoresearch.tick import _flight_command, flight_checkout
+
+    home = _git_home(tmp_path)
+    cmd = _flight_command(home, "climb-tsp", NOW, ["echo", "hi"])
+    assert "flights/climb-tsp-" in cmd and "echo hi" in cmd
+    flight = next((home.parent / "flights").iterdir())
+    assert (flight / "marker.txt").read_text() == "v1\n"
+    # deploy rewrites the shared checkout; the flight keeps its tree
+    (home / "marker.txt").write_text("v2\n")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(home),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-aqm",
+            "d",
+        ],
+        check=True,
+    )
+    assert (flight / "marker.txt").read_text() == "v1\n"
+    # a same-tick name collision gets its own tree, not a silent fallback
+    second = flight_checkout(home, "climb-tsp", NOW)
+    assert second != flight and second.name.endswith("-2") and second.exists()
+    # and failure falls back to the shared checkout, never grounding the job
+    bare = tmp_path / "notarepo"
+    bare.mkdir()
+    assert flight_checkout(bare, "x", NOW) == bare
+
+
+def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
+    from autoresearch.tick import FLIGHT_TTL_S, flight_checkout, reap_flights
+
+    home = _git_home(tmp_path)
+    import os as _os
+
+    old_flight = flight_checkout(home, "old", NOW)
+    old_collided = flight_checkout(home, "old", NOW)  # -2 suffix
+    fresh = flight_checkout(home, "fresh", NOW)
+    queued = flight_checkout(home, "climb-nav", NOW)
+    stale = NOW - FLIGHT_TTL_S - 10
+    for d in (old_flight, old_collided, queued):
+        _os.utime(d, (stale, stale))  # age is mtime, not name parsing
+    (home.parent / "flights" / "not-a-flight").mkdir()  # ignored: fresh mtime
+    # a PENDING/RUNNING job's flight is immune regardless of age: GPU
+    # queues can pend past any TTL, and age alone must never strand a job
+    assert reap_flights(home, NOW, live_job_names=["climb-nav"]) == 2
+    assert not old_flight.exists() and not old_collided.exists()
+    assert fresh.exists() and queued.exists()
+
+
+def test_reap_clears_non_worktree_debris(tmp_path: Path) -> None:
+    """A half-created flight (not a registered worktree) must still go
+    away instead of warning forever."""
+    import os as _os
+
+    from autoresearch.tick import FLIGHT_TTL_S, reap_flights
+
+    home = _git_home(tmp_path)
+    debris = home.parent / "flights" / "climb-x-123"
+    debris.mkdir(parents=True)
+    stale = NOW - FLIGHT_TTL_S - 10
+    _os.utime(debris, (stale, stale))
+    assert reap_flights(home, NOW) == 1
+    assert not debris.exists()
+
+
+def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None:
+    from autoresearch.tick import flight_checkout
+
+    home = _git_home(tmp_path)
+    made = [flight_checkout(home, "same", NOW) for _ in range(7)]
+    assert len({str(m) for m in made}) == 7  # no silent fallback to home
+    assert all(m != home for m in made)
 
 
 def test_shape_followup_spec_clamps_strictly_downward() -> None:

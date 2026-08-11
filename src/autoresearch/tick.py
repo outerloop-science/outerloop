@@ -18,9 +18,12 @@ import json
 import logging
 import os
 import socket
+import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from autoresearch.compute import (
     GONE,
@@ -134,6 +137,117 @@ class FollowupSpec:
     steward_key_file: str = ""
 
 
+# Generous vs the ~2 h job walltimes plus queue wait, tight enough that
+# full trees + per-flight venvs cannot pile up for days (review finding);
+# same-day forensics is the norm, and the disk preflight is the backstop.
+FLIGHT_TTL_S = 24 * 3600
+
+
+def flight_checkout(home: Path, name: str, now: float) -> Path:
+    """A detached git worktree of the checkout's HEAD commit, for one
+    submitted job to run from. The shared checkout is reset --hard at
+    every tick's deploy, so a queued job that cd's into it can have its
+    code swapped mid-flight; a flight pins the deployed commit, and the
+    tree survives for forensics after a crash. HEAD, deliberately:
+    uncommitted hand-edits in the shared checkout do not fly — only
+    deployed code does. Failures fall back to the shared checkout — a
+    snapshot must never ground the fleet."""
+    flights = home.parent / "flights"
+    try:
+        flights.mkdir(parents=True, exist_ok=True)
+        # same name in the same tick (e.g. two orders on one benchmark, or
+        # truncation collisions) must get its own tree, not a silent
+        # fallback: suffix until free, with a unique tail as the backstop
+        target = flights / f"{name}-{int(now)}"
+        for attempt in range(2, 6):
+            if not target.exists():
+                break
+            target = flights / f"{name}-{int(now)}-{attempt}"
+        if target.exists():
+            target = flights / f"{name}-{int(now)}-{uuid4().hex[:8]}"
+        subprocess.run(
+            ["git", "-C", str(home), "worktree", "add", "--detach", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return target
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("flight snapshot failed for %s (%s); using the shared checkout", name, exc)
+        return home
+
+
+def _flight_command(home: Path, job_name: str, now: float, argv: list[str]) -> str:
+    """The job's shell command, cd'ing into a fresh flight snapshot.
+
+    The flight is named FROM the job name (one truncation rule, here) so
+    the reaper's pending-job immunity — live job name prefixes flight
+    name — holds by construction at every submit site. argv must contain
+    absolute paths only; every spec path is absolute by construction, and
+    a relative path would resolve inside a tree that is reaped later."""
+    flight = flight_checkout(home, job_name[:40], now)
+    return f"cd {quote_command([str(flight)])} && {quote_command(argv)}"
+
+
+def reap_flights(
+    home: Path,
+    now: float,
+    ttl_s: float = FLIGHT_TTL_S,
+    live_job_names: Sequence[str] = (),
+) -> int:
+    """Remove flight worktrees older than the TTL — age by directory
+    mtime, no name parsing — UNLESS a pending or running job's NAME
+    prefixes the flight's (flights are named after their job). Queue wait
+    is unbounded (GPU partitions can pend for days), so age alone must
+    never delete a tree a job will cd into; the TTL is purely the
+    forensics-retention window for flights whose job is gone. Name
+    matching is conservative: one live job name protects every flight it
+    prefixes. Best-effort: a stubborn flight is logged, not fatal."""
+    flights = home.parent / "flights"
+    if not flights.is_dir():
+        return 0
+    reaped = 0
+    for entry in flights.iterdir():
+        if any(name and entry.name.startswith(name[:40]) for name in live_job_names):
+            continue  # a queued or running job still needs this tree
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age < ttl_s:
+            continue
+        try:
+            subprocess.run(
+                ["git", "-C", str(home), "worktree", "remove", "--force", str(entry)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            reaped += 1
+        except (OSError, subprocess.SubprocessError):
+            # not a registered worktree (a half-created flight, or debris):
+            # remove the directory itself and prune the registry, or the
+            # entry warns forever without ever going away
+            import shutil
+
+            shutil.rmtree(entry, ignore_errors=True)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["git", "-C", str(home), "worktree", "prune"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            if not entry.exists():
+                reaped += 1
+            else:
+                log.warning("could not reap flight %s", entry.name)
+    return reaped
+
+
 def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
     """Clamp the operator's follow-up spec by the contract's effective
     limits. Both knobs clamp only when the contract EXPLICITLY sets them:
@@ -244,14 +358,13 @@ def service_in_review(
             key_file = spec.steward_key_file if is_steward else spec.key_file
             if key_file:
                 argv += ["--key-file", key_file]
-            command = quote_command(argv)
             job_id = compute.submit(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=spec.time_minutes,
-                    command=f"cd {quote_command([str(spec.home)])} && {command}",
+                    command=_flight_command(spec.home, f"followup-{record.run_id}"[:60], now, argv),
                     cpus=4,
                     mem="8G",
                 )
@@ -650,6 +763,22 @@ def tick(
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
     if github is not None and followup_spec is not None:
+        # expired flight snapshots die with their TTL, not with a human.
+        # One home suffices: every lane's spec derives from followup_spec
+        # via replace(), so all flights share this checkout's flights/ dir.
+        # Blind means delete nothing — but only QUERY failures count as
+        # blindness; a compute backend missing the method is a programming
+        # error and propagates.
+        try:
+            live_names = compute.active_job_names()
+        except SlurmQueryError as exc:
+            log.warning("cannot list live jobs (%s); reaping no flights this tick", exc)
+            live_names = None
+        if live_names is not None:
+            with contextlib.suppress(Exception):
+                reaped = reap_flights(followup_spec.home, now, live_job_names=live_names)
+                if reaped:
+                    log.info("reaped %d expired flight snapshot(s)", reaped)
         # ONE contract fetch per tick feeds every lane: the requested and
         # self-initiated lanes need its benchmarks, and all three lanes now
         # take their session/job limits from its budgets — clamped by our
@@ -914,7 +1043,7 @@ def service_self_initiated(
                 account=spec.account,
                 partition=spec.partition,
                 time_minutes=limits.climb_job_minutes,
-                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
                 cpus=4,
                 mem="8G",
             )
@@ -1027,7 +1156,7 @@ def service_steward(
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=limits.climb_job_minutes,
-                    command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                    command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
                 )
@@ -1133,7 +1262,7 @@ def service_intake(
                 account=spec.account,
                 partition=spec.partition,
                 time_minutes=limits.climb_job_minutes,
-                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
                 cpus=4,
                 mem="8G",
             )
