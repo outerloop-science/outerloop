@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -134,6 +135,67 @@ class FollowupSpec:
     steward_key_file: str = ""
 
 
+FLIGHT_TTL_S = 72 * 3600
+
+
+def flight_checkout(home: Path, name: str, now: float) -> Path:
+    """A detached git worktree of the checkout as it is RIGHT NOW, for one
+    submitted job to run from. The shared checkout is reset --hard at every
+    tick's deploy, so a queued job that cd's into it can have its code
+    swapped mid-flight; a flight runs the exact tree that submitted it, and
+    the tree survives for forensics after a crash. Failures fall back to
+    the shared checkout — a snapshot must never ground the fleet."""
+    flights = home.parent / "flights"
+    target = flights / f"{name}-{int(now)}"
+    try:
+        flights.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(home), "worktree", "add", "--detach", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return target
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("flight snapshot failed for %s (%s); using the shared checkout", name, exc)
+        return home
+
+
+def _flight_command(home: Path, name: str, now: float, argv: list[str]) -> str:
+    """The job's shell command, cd'ing into a fresh flight snapshot."""
+    flight = flight_checkout(home, name, now)
+    return f"cd {quote_command([str(flight)])} && {quote_command(argv)}"
+
+
+def reap_flights(home: Path, now: float, ttl_s: float = FLIGHT_TTL_S) -> int:
+    """Remove flight worktrees older than the TTL (their timestamp is in the
+    directory name). Best-effort: a stubborn flight is logged, not fatal."""
+    flights = home.parent / "flights"
+    if not flights.is_dir():
+        return 0
+    reaped = 0
+    for entry in flights.iterdir():
+        try:
+            stamp = int(entry.name.rsplit("-", 1)[-1])
+        except ValueError:
+            continue
+        if now - stamp < ttl_s:
+            continue
+        try:
+            subprocess.run(
+                ["git", "-C", str(home), "worktree", "remove", "--force", str(entry)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            reaped += 1
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("could not reap flight %s: %s", entry.name, exc)
+    return reaped
+
+
 def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
     """Clamp the operator's follow-up spec by the contract's effective
     limits. Both knobs clamp only when the contract EXPLICITLY sets them:
@@ -244,14 +306,13 @@ def service_in_review(
             key_file = spec.steward_key_file if is_steward else spec.key_file
             if key_file:
                 argv += ["--key-file", key_file]
-            command = quote_command(argv)
             job_id = compute.submit(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=spec.time_minutes,
-                    command=f"cd {quote_command([str(spec.home)])} && {command}",
+                    command=_flight_command(spec.home, f"followup-{record.run_id}"[:40], now, argv),
                     cpus=4,
                     mem="8G",
                 )
@@ -650,6 +711,11 @@ def tick(
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
     if github is not None and followup_spec is not None:
+        # expired flight snapshots die with their TTL, not with a human
+        with contextlib.suppress(Exception):
+            reaped = reap_flights(followup_spec.home, now)
+            if reaped:
+                log.info("reaped %d expired flight snapshot(s)", reaped)
         # ONE contract fetch per tick feeds every lane: the requested and
         # self-initiated lanes need its benchmarks, and all three lanes now
         # take their session/job limits from its budgets — clamped by our
@@ -914,7 +980,7 @@ def service_self_initiated(
                 account=spec.account,
                 partition=spec.partition,
                 time_minutes=limits.climb_job_minutes,
-                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                command=_flight_command(spec.home, f"climb-{benchmark}"[:40], now, argv),
                 cpus=4,
                 mem="8G",
             )
@@ -1027,7 +1093,7 @@ def service_steward(
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=limits.climb_job_minutes,
-                    command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                    command=_flight_command(spec.home, f"steward-{task.benchmark}"[:40], now, argv),
                     cpus=4,
                     mem="8G",
                 )
@@ -1133,7 +1199,7 @@ def service_intake(
                 account=spec.account,
                 partition=spec.partition,
                 time_minutes=limits.climb_job_minutes,
-                command=f"cd {quote_command([str(spec.home)])} && {quote_command(argv)}",
+                command=_flight_command(spec.home, f"issue-{task.number}", now, argv),
                 cpus=4,
                 mem="8G",
             )

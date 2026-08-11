@@ -227,6 +227,15 @@ refused posts a skip stub on the thread under its own marker — an
 outage notice, not a round — because silence only visible in the
 Actions tab is not a defensible way to miss a verification.
 
+**Every flight has a snapshot.** Submitted jobs do not run from the
+shared checkout — the deploy step resets it at every tick, so a queued
+job could have its code swapped mid-flight. Each submission gets a
+detached worktree of the checkout as it was at submit time (`flights/`,
+beside the checkout); the job runs exactly the tree that submitted it,
+the tree survives for forensics after a crash or kill, and expired
+flights are reaped on a TTL. Snapshot failure falls back to the shared
+checkout — a snapshot must never ground the fleet.
+
 **The loop itself has no end state.** It pauses (sentinel) and resumes.
 Offboarding a target has a graceful path and a hard path: *graceful* — remove
 the contract; intake stops and in-flight runs drain to their natural endings

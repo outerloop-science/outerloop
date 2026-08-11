@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -935,6 +936,67 @@ def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
         tmp_path, G(), SlurmCompute(runner=runner), replace(spec, max_turns=25), NOW
     )
     assert followups and "--max-turns 25" in submitted[0][-1]
+
+
+def _git_home(tmp_path: Path) -> Path:
+    home = tmp_path / "checkout"
+    home.mkdir()
+    (home / "marker.txt").write_text("v1\n")
+    subprocess.run(["git", "-C", str(home), "init", "-q", "-b", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(home), "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(home), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "s"],
+        check=True,
+    )
+    return home
+
+
+def test_flight_snapshot_survives_a_deploy_reset(tmp_path: Path) -> None:
+    """A submitted job runs the tree that SUBMITTED it: the shared checkout
+    is reset --hard at every deploy, and the flight must not move with it."""
+    from autoresearch.tick import _flight_command, flight_checkout
+
+    home = _git_home(tmp_path)
+    cmd = _flight_command(home, "climb-tsp", NOW, ["echo", "hi"])
+    assert "flights/climb-tsp-" in cmd and "echo hi" in cmd
+    flight = next((home.parent / "flights").iterdir())
+    assert (flight / "marker.txt").read_text() == "v1\n"
+    # deploy rewrites the shared checkout; the flight keeps its tree
+    (home / "marker.txt").write_text("v2\n")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(home),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-aqm",
+            "d",
+        ],
+        check=True,
+    )
+    assert (flight / "marker.txt").read_text() == "v1\n"
+    # and failure falls back to the shared checkout, never grounding the job
+    bare = tmp_path / "notarepo"
+    bare.mkdir()
+    assert flight_checkout(bare, "x", NOW) == bare
+
+
+def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
+    from autoresearch.tick import FLIGHT_TTL_S, flight_checkout, reap_flights
+
+    home = _git_home(tmp_path)
+    old_flight = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)
+    fresh = flight_checkout(home, "fresh", NOW)
+    (home.parent / "flights" / "not-a-flight").mkdir()  # bad name: ignored
+    assert reap_flights(home, NOW) == 1
+    assert not old_flight.exists() and fresh.exists()
 
 
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
