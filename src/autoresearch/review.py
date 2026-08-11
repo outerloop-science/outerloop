@@ -283,24 +283,31 @@ def commentable_lines(diff: str) -> dict[str, set[int]]:
     lines: dict[str, set[int]] = {}
     current: str | None = None
     new_line = 0
+    remaining = 0  # new-side lines left in the open hunk: counting stops
+    # when the hunk is consumed, so inter-file headers ("diff --git",
+    # "index ...") can never inflate the previous file's anchor set
     for raw in diff.splitlines():
-        if raw.startswith("+++ b/"):
+        if raw.startswith("diff --git"):
+            current = None
+            remaining = 0
+        elif raw.startswith("+++ b/"):
             current = raw[6:]
             lines.setdefault(current, set())
+            remaining = 0
         elif raw.startswith("+++ "):
             current = None  # /dev/null (deleted file): no new side
         elif raw.startswith("@@") and current is not None:
             try:
-                new_line = int(raw.split("+", 1)[1].split(",")[0].split(" ")[0])
+                seg = raw.split("+", 1)[1].split(" ", 1)[0]
+                new_line = int(seg.split(",")[0])
+                remaining = int(seg.split(",")[1]) if "," in seg else 1
             except (IndexError, ValueError):
                 current = None
-                continue
-        elif current is not None and raw.startswith("+"):
-            lines[current].add(new_line)
+                remaining = 0
+        elif current is not None and remaining > 0 and not raw.startswith(("-", "\\")):
+            lines[current].add(new_line)  # added and context lines alike
             new_line += 1
-        elif current is not None and not raw.startswith(("-", "\\")):
-            lines[current].add(new_line)  # context lines are commentable too
-            new_line += 1
+            remaining -= 1
     return lines
 
 

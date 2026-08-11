@@ -260,3 +260,26 @@ def test_format_review_all_anchored_says_so() -> None:
     body, inline = rendered
     assert len(inline) == 1
     assert "attached to the lines they concern" in body
+
+
+def test_commentable_lines_stops_at_file_boundaries() -> None:
+    """Inter-file headers must not inflate the previous file's anchors
+    (review finding: they read as context lines past the last hunk)."""
+    from autoresearch.review import commentable_lines
+
+    two_files = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " kept\n"
+        "+added\n"
+        "diff --git a/b.py b/b.py\n"
+        "index 123..456 100644\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -5,1 +5,1 @@\n"
+        "+only\n"
+    )
+    lines = commentable_lines(two_files)
+    assert lines == {"a.py": {1, 2}, "b.py": {5}}  # headers counted nowhere

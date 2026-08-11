@@ -141,18 +141,20 @@ def post_round_review(
     body: str,
     inline: list[dict],
     pr_data: dict,
+    fallback_body: str,
 ) -> str:
     """The Reviews-API sibling of post_round: body summary plus anchored
     inline comments, event COMMENT always (the client hard-codes it). A
-    posting failure falls back to a plain issue comment — anchor problems
-    must not cost the round."""
+    posting failure falls back to a plain issue comment carrying
+    fallback_body — the FULL single-comment rendering, because the review
+    body alone may say no more than "findings are attached" while the
+    findings live in the rejected inline payload."""
     stamp, round_label = _round_stamp(client, repo, number, marker, pr_data)
-    stamped = body.replace(marker, f"{marker}\n{stamp}", 1)
     try:
-        client.create_pr_review(repo, number, stamped, inline)
+        client.create_pr_review(repo, number, body.replace(marker, f"{marker}\n{stamp}", 1), inline)
     except EXPECTED_FAILURES as exc:
         log.warning("inline review failed (%s); falling back to a comment", exc)
-        client.comment(repo, number, stamped)
+        client.comment(repo, number, fallback_body.replace(marker, f"{marker}\n{stamp}", 1))
     return round_label
 
 
@@ -250,11 +252,14 @@ def main() -> int:
             round_label = post_round(client, repo, number, MARKER, body, pr_data)
         else:
             rendered = format_review(result, diff)
-            if rendered is None:
+            full = format_comment(result)
+            if rendered is None or full is None:
                 log.info("nothing to post")
                 return 0
             body, inline = rendered
-            round_label = post_round_review(client, repo, number, MARKER, body, inline, pr_data)
+            round_label = post_round_review(
+                client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+            )
         log.info("posted advisory review (%s) on %s#%s", round_label, repo, number)
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("advisory review did not complete: %s: %s", type(exc).__name__, exc)

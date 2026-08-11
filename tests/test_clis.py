@@ -210,6 +210,37 @@ def test_human_pr_review_is_inline_and_comment_event_only(monkeypatch) -> None:
     assert "Round 1" in posted["body"]
 
 
+def test_review_fallback_carries_the_full_findings(monkeypatch) -> None:
+    """If the Reviews API rejects the post, the fallback comment must carry
+    the findings themselves — not a body that says they are attached to
+    lines they never reached (round-1 finding)."""
+    import autoresearch.review_cli as cli
+    from autoresearch.github import GitHubError
+    from autoresearch.review import Finding, ReviewResult
+
+    class RefusingReviews(FakeReviewClient):
+        def create_pr_review(self, repo, number, body, comments=None):
+            raise GitHubError(422, "/reviews", "line outside diff")
+
+    fake_client = RefusingReviews()
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        return ReviewResult(
+            [Finding(file="x.py", line=2, confidence="high", summary="Bug", detail="Real.")],
+            notes="",
+        )
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "review", fake_review)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    (posted,) = fake_client.posted
+    assert posted.get("kind") != "review"  # plain comment fallback
+    assert "Bug" in posted["body"] and "`x.py`:2" in posted["body"]
+    assert "attached to the lines" not in posted["body"]
+
+
 def test_bot_pr_explicit_round_stays_an_issue_comment(monkeypatch) -> None:
     import autoresearch.review_cli as cli
     from autoresearch.review import Finding, ReviewResult
