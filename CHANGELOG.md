@@ -13,9 +13,7 @@ Versions follow [SemVer](https://semver.org).
   it was at submit time instead of the shared checkout the deploy step
   resets every tick — no more code swaps under queued jobs, and crashed
   flights leave their exact tree for forensics. Expired flights are
-  reaped after 72 h; snapshot failure falls back to the shared checkout.
-
-### Changed
+  reaped after 24 h; snapshot failure falls back to the shared checkout.
 
 - The advisory reviewer posts human PRs as a GitHub review: findings
   anchored to diff lines become resolvable inline threads (auto-marked

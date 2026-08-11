@@ -135,7 +135,10 @@ class FollowupSpec:
     steward_key_file: str = ""
 
 
-FLIGHT_TTL_S = 72 * 3600
+# Generous vs the ~2 h job walltimes plus queue wait, tight enough that
+# full trees + per-flight venvs cannot pile up for days (review finding);
+# same-day forensics is the norm, and the disk preflight is the backstop.
+FLIGHT_TTL_S = 24 * 3600
 
 
 def flight_checkout(home: Path, name: str, now: float) -> Path:
@@ -146,9 +149,16 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
     the tree survives for forensics after a crash. Failures fall back to
     the shared checkout — a snapshot must never ground the fleet."""
     flights = home.parent / "flights"
-    target = flights / f"{name}-{int(now)}"
     try:
         flights.mkdir(parents=True, exist_ok=True)
+        # same name in the same tick (e.g. two orders on one benchmark, or
+        # truncation collisions) must get its own tree, not a silent
+        # fallback: suffix until free
+        target = flights / f"{name}-{int(now)}"
+        for attempt in range(2, 6):
+            if not target.exists():
+                break
+            target = flights / f"{name}-{int(now)}-{attempt}"
         subprocess.run(
             ["git", "-C", str(home), "worktree", "add", "--detach", str(target)],
             check=True,
@@ -176,10 +186,14 @@ def reap_flights(home: Path, now: float, ttl_s: float = FLIGHT_TTL_S) -> int:
         return 0
     reaped = 0
     for entry in flights.iterdir():
-        try:
-            stamp = int(entry.name.rsplit("-", 1)[-1])
-        except ValueError:
+        # name is <label>-<stamp> or <label>-<stamp>-<n>: the collision
+        # suffix is a single digit (2..5), so when the last two pieces are
+        # both numeric the larger-form second-to-last is the stamp
+        parts = entry.name.split("-")
+        digits = [piece for piece in parts if piece.isdigit()]
+        if not digits:
             continue
+        stamp = int(digits[-2]) if len(digits) >= 2 and int(digits[-1]) < 100 else int(digits[-1])
         if now - stamp < ttl_s:
             continue
         try:
@@ -711,7 +725,9 @@ def tick(
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
     if github is not None and followup_spec is not None:
-        # expired flight snapshots die with their TTL, not with a human
+        # expired flight snapshots die with their TTL, not with a human.
+        # One home suffices: every lane's spec derives from followup_spec
+        # via replace(), so all flights share this checkout's flights/ dir.
         with contextlib.suppress(Exception):
             reaped = reap_flights(followup_spec.home, now)
             if reaped:

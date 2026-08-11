@@ -982,6 +982,9 @@ def test_flight_snapshot_survives_a_deploy_reset(tmp_path: Path) -> None:
         check=True,
     )
     assert (flight / "marker.txt").read_text() == "v1\n"
+    # a same-tick name collision gets its own tree, not a silent fallback
+    second = flight_checkout(home, "climb-tsp", NOW)
+    assert second != flight and second.name.endswith("-2") and second.exists()
     # and failure falls back to the shared checkout, never grounding the job
     bare = tmp_path / "notarepo"
     bare.mkdir()
@@ -993,10 +996,11 @@ def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
 
     home = _git_home(tmp_path)
     old_flight = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)
+    old_collided = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)  # -2 suffix
     fresh = flight_checkout(home, "fresh", NOW)
     (home.parent / "flights" / "not-a-flight").mkdir()  # bad name: ignored
-    assert reap_flights(home, NOW) == 1
-    assert not old_flight.exists() and fresh.exists()
+    assert reap_flights(home, NOW) == 2
+    assert not old_flight.exists() and not old_collided.exists() and fresh.exists()
 
 
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
