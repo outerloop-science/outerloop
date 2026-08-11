@@ -1059,7 +1059,14 @@ def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> Non
             return [i for i in self.issues if i["number"] not in self.closed]
 
         def create_issue(self, repo, title, body):
-            self.issues.append({"number": self.next, "title": title, "body": body})
+            self.issues.append(
+                {
+                    "number": self.next,
+                    "title": title,
+                    "body": body,
+                    "user": {"login": "agentic-learning-bot"},
+                }
+            )
             return self.next
 
         def comment(self, repo, number, body):
@@ -1109,7 +1116,14 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
             return [i for i in self.issues if i["number"] not in self.closed]
 
         def create_issue(self, repo, title, body):
-            self.issues.append({"number": self.next, "title": title, "body": body})
+            self.issues.append(
+                {
+                    "number": self.next,
+                    "title": title,
+                    "body": body,
+                    "user": {"login": "agentic-learning-bot"},
+                }
+            )
             return self.next
 
         def comment(self, repo, number, body):
@@ -1139,6 +1153,67 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
     (tmp_path / "contract-alarm.json").write_text('{"count": 3}')  # number lost
     contract_alarm(tmp_path, g2, "org/pilot", None, NOW)
     assert g2.closed == [9]
+
+    # a stranger's issue carrying the (public) marker is never adopted:
+    # the bot must not close third-party issues or let them suppress the
+    # real alarm
+    g3 = G()
+    g3.refuse_close = False
+    g3.issues.append(
+        {
+            "number": 1,
+            "title": "spoof",
+            "body": "<!-- autoresearch:contract-alarm -->\nmine now",
+            "user": {"login": "stranger"},
+        }
+    )
+    for _ in range(3):
+        contract_alarm(tmp_path, g3, "org/pilot", "boom", NOW)
+    assert [i["number"] for i in g3.issues] == [1, 9]  # real alarm created
+    contract_alarm(tmp_path, g3, "org/pilot", None, NOW)
+    assert g3.closed == [9]  # the stranger's issue is untouched
+
+
+def test_contract_alarm_redacts_and_fences_the_error(tmp_path: Path) -> None:
+    """Transport errors can echo request material; loader errors echo
+    contract content. Neither may leak a token or escape the fence."""
+    from autoresearch.tick import contract_alarm
+
+    class Auth:
+        def token(self):
+            return "tok-fixture-98765"
+
+    class G:
+        def __init__(self):
+            self.auth = Auth()
+            self.issues: list[dict] = []
+            self.next = 3
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return self.issues
+
+        def create_issue(self, repo, title, body):
+            self.issues.append(
+                {
+                    "number": self.next,
+                    "title": title,
+                    "body": body,
+                    "user": {"login": "agentic-learning-bot"},
+                }
+            )
+            return self.next
+
+    g = G()
+    nasty = "401 fetching contract; request carried tok-fixture-98765\n```\nescape attempt"
+    for _ in range(3):
+        contract_alarm(tmp_path, g, "org/pilot", nasty, NOW)
+    (issue,) = g.issues
+    assert "tok-fixture-98765" not in issue["body"]
+    # the fence around the error is longer than any backtick run inside
+    import re as _re
+
+    runs = sorted(_re.findall(r"`+", issue["body"]), key=len, reverse=True)
+    assert len(runs[0]) >= 4  # widened past the embedded ```
 
 
 def test_shape_followup_spec_clamps_strictly_downward() -> None:

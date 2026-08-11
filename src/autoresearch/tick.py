@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 from collections.abc import Sequence
@@ -36,7 +37,7 @@ from autoresearch.compute import (
     quote_command,
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
-from autoresearch.harness import DEFAULT_MAX_TURNS
+from autoresearch.harness import DEFAULT_MAX_TURNS, redact
 from autoresearch.limits import EffectiveLimits, effective_limits
 from autoresearch.runstate import (
     ABORTED,
@@ -252,7 +253,14 @@ CONTRACT_ALARM_MARKER = "<!-- autoresearch:contract-alarm -->"
 CONTRACT_ALARM_AFTER = 3  # consecutive failing ticks (~1.5 h) before alarming
 
 
-def contract_alarm(root: Path, github: Any, target: str, error: str | None, now: float) -> None:
+def contract_alarm(
+    root: Path,
+    github: Any,
+    target: str,
+    error: str | None,
+    now: float,
+    bot_login: str = "agentic-learning-bot",
+) -> None:
     """Persistent contract failure must surface where humans look.
 
     A rejected or unfetchable contract silently idles every launch lane
@@ -268,33 +276,42 @@ def contract_alarm(root: Path, github: Any, target: str, error: str | None, now:
         state = {}
     if error is None:
         open_alarm = int(state.get("issue", 0))
-        if not open_alarm and state.get("count", 0) >= CONTRACT_ALARM_AFTER:
+        if not open_alarm and state:
             # creation may have landed without a recorded number (dry-run,
-            # odd response): search so recovery can still close it
+            # odd response, lost state file): search so recovery can still
+            # close it. Only ticks that follow SOME failure signal pay the
+            # search; total state loss + instant recovery leaves the issue
+            # for the next alarm cycle's search to adopt and close.
             with contextlib.suppress(Exception):
-                open_alarm = _find_alarm_issue(github, target)
+                open_alarm = _find_alarm_issue(github, target, bot_login)
         if open_alarm:
-            with contextlib.suppress(Exception):
-                github.comment(
-                    target, open_alarm, "The contract loads again; launch lanes resume this tick."
-                )
             try:
                 github.close_issue(target, open_alarm)
             except Exception as exc:
                 # keep the state so the NEXT healthy tick retries the close;
-                # unlinking here would orphan the open alarm forever
+                # unlinking here would orphan the open alarm forever — and
+                # no comment yet, or every retry would repeat it
                 log.warning("could not close contract alarm #%s: %s", open_alarm, exc)
                 return
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target, open_alarm, "The contract loads again; launch lanes resume this tick."
+                )
         if state:
             with contextlib.suppress(OSError):
                 state_path.unlink()
         return
     count = int(state.get("count", 0)) + 1
     state["count"] = count
+    # redacted (the client's own token is the one secret this process
+    # holds) and fenced with a run longer than any backtick run inside —
+    # transport errors can echo request material, loader errors can echo
+    # contract content, and both are untrusted for a public issue body
+    safe_error = redact(error, _client_secrets(github))[:600]
     if count >= CONTRACT_ALARM_AFTER and not state.get("issue"):
         # search open issues first: state loss must not spawn duplicates
         try:
-            number = _find_alarm_issue(github, target) or github.create_issue(
+            number = _find_alarm_issue(github, target, bot_login) or github.create_issue(
                 target,
                 "autoresearch: contract failed to load — launch lanes are paused",
                 f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has been unable to "
@@ -302,7 +319,7 @@ def contract_alarm(root: Path, github: Any, target: str, error: str | None, now:
                 f"intake, steward, and self-initiated lanes sit out until it "
                 f"loads. The error below says whether the contract itself was "
                 f"rejected or the fetch is failing.\n\n"
-                f"```\n{error[:600]}\n```\n\n"
+                f"{_fence(safe_error)}\n{safe_error}\n{_fence(safe_error)}\n\n"
                 f"This issue closes itself when the contract loads again.",
             )
             if number:
@@ -315,12 +332,29 @@ def contract_alarm(root: Path, github: Any, target: str, error: str | None, now:
         os.replace(tmp, state_path)
 
 
-def _find_alarm_issue(github: Any, target: str) -> int:
+def _client_secrets(github: Any) -> tuple[str, ...]:
+    with contextlib.suppress(Exception):
+        token = github.auth.token()
+        if token:
+            return (token,)
+    return ()
+
+
+def _fence(content: str) -> str:
+    longest = max((len(run) for run in re.findall(r"`+", content)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _find_alarm_issue(github: Any, target: str, bot_login: str) -> int:
+    """Only the BOT'S own marker'd issue counts: the marker is a public
+    string, and adopting a stranger's issue would let anyone suppress the
+    real alarm or get their issue closed by the bot."""
     return next(
         (
             int(issue.get("number", 0))
             for issue in github.list_open_issues(target)
             if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
+            and str((issue.get("user") or {}).get("login", "")).casefold() == bot_login.casefold()
         ),
         0,
     )
@@ -877,7 +911,14 @@ def tick(
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
                 contract_error = f"{type(exc).__name__}: {exc}"
             try:
-                contract_alarm(root, github, followup_spec.target, contract_error, now)
+                contract_alarm(
+                    root,
+                    github,
+                    followup_spec.target,
+                    contract_error,
+                    now,
+                    bot_login=followup_spec.bot_login,
+                )
             except Exception as exc:
                 log.warning("contract alarm failed: %s", exc)
         limits = effective_limits(contract.budgets if contract is not None else None)
