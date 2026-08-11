@@ -308,6 +308,9 @@ def contract_alarm(
     # transport errors can echo request material, loader errors can echo
     # contract content, and both are untrusted for a public issue body
     safe_error = redact(error, _client_secrets(github))[:600]
+    # A recorded issue a human closed by hand stays closed: closing the
+    # alarm is the maintainer's "I know" — re-opening or re-creating it
+    # every threshold would be alarm spam, and recovery still clears state.
     if count >= CONTRACT_ALARM_AFTER and not state.get("issue"):
         # search open issues first: state loss must not spawn duplicates
         try:
@@ -333,10 +336,14 @@ def contract_alarm(
 
 
 def _client_secrets(github: Any) -> tuple[str, ...]:
-    with contextlib.suppress(Exception):
+    try:
         token = github.auth.token()
         if token:
             return (token,)
+    except Exception as exc:
+        # degraded redaction must not be silent: the error text goes to a
+        # public issue, and a renamed auth surface would no-op the redact
+        log.warning("alarm redaction has no client token (%s)", exc)
     return ()
 
 
@@ -352,7 +359,7 @@ def _find_alarm_issue(github: Any, target: str, bot_login: str) -> int:
     return next(
         (
             int(issue.get("number", 0))
-            for issue in github.list_open_issues(target)
+            for issue in github.list_open_issues(target, max_pages=10)
             if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
             and str((issue.get("user") or {}).get("login", "")).casefold() == bot_login.casefold()
         ),
