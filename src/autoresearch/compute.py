@@ -169,6 +169,20 @@ class SlurmCompute:
         state = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
         return state if state else GONE
 
+    def active_commands(self) -> list[str]:
+        """The submit commands of this user's PENDING and RUNNING jobs.
+        Raises SlurmQueryError on failure — callers that delete things
+        keyed on this must treat blindness as "delete nothing"."""
+        try:
+            result = self.runner(
+                ["squeue", "--me", "--noheader", "-o", "%o"], self.command_timeout_s
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"squeue did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
     def cancel(self, job_id: str) -> None:
         """Cancel; idempotent (cancelling a finished job is not an error)."""
         if not job_id.isdigit():

@@ -19,9 +19,11 @@ import logging
 import os
 import socket
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from autoresearch.compute import (
     GONE,
@@ -153,12 +155,14 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
         flights.mkdir(parents=True, exist_ok=True)
         # same name in the same tick (e.g. two orders on one benchmark, or
         # truncation collisions) must get its own tree, not a silent
-        # fallback: suffix until free
+        # fallback: suffix until free, with a unique tail as the backstop
         target = flights / f"{name}-{int(now)}"
         for attempt in range(2, 6):
             if not target.exists():
                 break
             target = flights / f"{name}-{int(now)}-{attempt}"
+        if target.exists():
+            target = flights / f"{name}-{int(now)}-{uuid4().hex[:8]}"
         subprocess.run(
             ["git", "-C", str(home), "worktree", "add", "--detach", str(target)],
             check=True,
@@ -178,14 +182,26 @@ def _flight_command(home: Path, name: str, now: float, argv: list[str]) -> str:
     return f"cd {quote_command([str(flight)])} && {quote_command(argv)}"
 
 
-def reap_flights(home: Path, now: float, ttl_s: float = FLIGHT_TTL_S) -> int:
-    """Remove flight worktrees older than the TTL (their timestamp is in the
-    directory name). Best-effort: a stubborn flight is logged, not fatal."""
+def reap_flights(
+    home: Path,
+    now: float,
+    ttl_s: float = FLIGHT_TTL_S,
+    live_commands: Sequence[str] = (),
+) -> int:
+    """Remove flight worktrees older than the TTL (their timestamp is in
+    the directory name) — UNLESS a pending or running job still references
+    the flight in its command. Queue wait is unbounded (GPU partitions can
+    pend for days), so age alone must never delete a tree a job will cd
+    into; the TTL is purely the forensics-retention window for flights no
+    job references anymore. Best-effort: a stubborn flight is logged, not
+    fatal."""
     flights = home.parent / "flights"
     if not flights.is_dir():
         return 0
     reaped = 0
     for entry in flights.iterdir():
+        if any(str(entry) in cmd for cmd in live_commands):
+            continue  # a queued or running job still needs this tree
         # name is <label>-<stamp> or <label>-<stamp>-<n>: the collision
         # suffix is a single digit (2..5), so when the last two pieces are
         # both numeric the larger-form second-to-last is the stamp
@@ -728,8 +744,10 @@ def tick(
         # expired flight snapshots die with their TTL, not with a human.
         # One home suffices: every lane's spec derives from followup_spec
         # via replace(), so all flights share this checkout's flights/ dir.
+        # Blind means delete nothing: if Slurm cannot list live jobs, no
+        # flight is reaped this tick.
         with contextlib.suppress(Exception):
-            reaped = reap_flights(followup_spec.home, now)
+            reaped = reap_flights(followup_spec.home, now, live_commands=compute.active_commands())
             if reaped:
                 log.info("reaped %d expired flight snapshot(s)", reaped)
         # ONE contract fetch per tick feeds every lane: the requested and

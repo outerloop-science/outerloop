@@ -998,9 +998,23 @@ def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
     old_flight = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)
     old_collided = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)  # -2 suffix
     fresh = flight_checkout(home, "fresh", NOW)
+    queued = flight_checkout(home, "queued", NOW - FLIGHT_TTL_S - 999)
     (home.parent / "flights" / "not-a-flight").mkdir()  # bad name: ignored
-    assert reap_flights(home, NOW) == 2
-    assert not old_flight.exists() and not old_collided.exists() and fresh.exists()
+    # a PENDING/RUNNING job's flight is immune regardless of age: GPU
+    # queues can pend past any TTL, and age alone must never strand a job
+    live = [f"cd {queued} && uv run python -m autoresearch.climb ..."]
+    assert reap_flights(home, NOW, live_commands=live) == 2
+    assert not old_flight.exists() and not old_collided.exists()
+    assert fresh.exists() and queued.exists()
+
+
+def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None:
+    from autoresearch.tick import flight_checkout
+
+    home = _git_home(tmp_path)
+    made = [flight_checkout(home, "same", NOW) for _ in range(7)]
+    assert len({str(m) for m in made}) == 7  # no silent fallback to home
+    assert all(m != home for m in made)
 
 
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
