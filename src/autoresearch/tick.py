@@ -248,6 +248,65 @@ def reap_flights(
     return reaped
 
 
+CONTRACT_ALARM_MARKER = "<!-- autoresearch:contract-alarm -->"
+CONTRACT_ALARM_AFTER = 3  # consecutive failing ticks (~1.5 h) before alarming
+
+
+def contract_alarm(root: Path, github: Any, target: str, error: str | None, now: float) -> None:
+    """Persistent contract failure must surface where humans look.
+
+    A rejected or unfetchable contract silently idles every launch lane
+    (this cost 36 hours once — the only signal was a log line on the
+    cluster). After CONTRACT_ALARM_AFTER consecutive failing ticks this
+    opens ONE issue on the target repo; the next successful load closes
+    it and says so. Alarm plumbing is best-effort by construction: it
+    must never break the tick it reports for."""
+    state_path = root / "contract-alarm.json"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    if error is None:
+        if state.get("issue"):
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target,
+                    int(state["issue"]),
+                    "The contract loads again; launch lanes resume this tick.",
+                )
+                github.close_issue(target, int(state["issue"]))
+        if state:
+            with contextlib.suppress(OSError):
+                state_path.unlink()
+        return
+    count = int(state.get("count", 0)) + 1
+    state["count"] = count
+    if count >= CONTRACT_ALARM_AFTER and not state.get("issue"):
+        # search open issues first: state loss must not spawn duplicates
+        with contextlib.suppress(Exception):
+            existing = next(
+                (
+                    int(issue.get("number", 0))
+                    for issue in github.list_open_issues(target)
+                    if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
+                ),
+                0,
+            )
+            state["issue"] = existing or github.create_issue(
+                target,
+                "autoresearch: contract rejected — launch lanes are paused",
+                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has failed to load "
+                f"`.autoresearch.yaml` for {count} consecutive ticks; intake, "
+                f"steward, and self-initiated lanes sit out until it loads.\n\n"
+                f"Loader says:\n\n```\n{error[:600]}\n```\n\n"
+                f"This issue closes itself when the contract loads again.",
+            )
+    with contextlib.suppress(OSError):
+        tmp = state_path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(state))
+        os.replace(tmp, state_path)
+
+
 def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
     """Clamp the operator's follow-up spec by the contract's effective
     limits. Both knobs clamp only when the contract EXPLICITLY sets them:
@@ -787,14 +846,19 @@ def tick(
         # the launch lanes need the contract and sit out this tick.
         contract = None
         if followup_spec.target:
+            contract_error: str | None = "contract file missing on main"
             try:
                 from autoresearch.contract import load_contract
 
                 raw = github.get_file_content(followup_spec.target, ".autoresearch.yaml", "main")
                 if raw is not None:
                     contract = load_contract(raw, followup_spec.target)
+                    contract_error = None
             except Exception as exc:
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
+                contract_error = f"{type(exc).__name__}: {exc}"
+            with contextlib.suppress(Exception):
+                contract_alarm(root, github, followup_spec.target, contract_error, now)
         limits = effective_limits(contract.budgets if contract is not None else None)
         # The contract's followup walltime only overrides when EXPLICITLY
         # set — and only DOWNWARD from the operator's spec value: strictly-

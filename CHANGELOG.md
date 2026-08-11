@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- Persistent contract failure alarms on GitHub: after three consecutive
+  ticks unable to load the target's `.autoresearch.yaml`, the tick opens
+  one issue on the target repo with the loader's error (marker-deduped,
+  survives state loss); the next successful load comments and closes it.
+  A rejected contract silently idled every launch lane for 36 hours once
+  — the only signal was a log line on the cluster.
+
 ### Changed
 
 - Every flight has a snapshot: submitted jobs (climbs, stewardships,

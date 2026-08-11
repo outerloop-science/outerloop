@@ -1043,6 +1043,55 @@ def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None
     assert all(m != home for m in made)
 
 
+def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> None:
+    """Three consecutive failures open ONE issue on the target; recovery
+    comments and closes it. State loss must not spawn duplicates."""
+    from autoresearch.tick import CONTRACT_ALARM_MARKER, contract_alarm
+
+    class G:
+        def __init__(self):
+            self.issues: list[dict] = []
+            self.comments: list[tuple[int, str]] = []
+            self.closed: list[int] = []
+            self.next = 7
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [i for i in self.issues if i["number"] not in self.closed]
+
+        def create_issue(self, repo, title, body):
+            self.issues.append({"number": self.next, "title": title, "body": body})
+            return self.next
+
+        def comment(self, repo, number, body):
+            self.comments.append((number, body))
+
+        def close_issue(self, repo, number):
+            self.closed.append(number)
+
+    g = G()
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    assert g.issues == []  # below the threshold: log-only
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    (issue,) = g.issues
+    assert CONTRACT_ALARM_MARKER in issue["body"] and "overlaps forbidden" in issue["body"]
+    contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    assert len(g.issues) == 1  # never a duplicate while open
+    # state loss: the open-issue search still prevents a duplicate
+    (tmp_path / "contract-alarm.json").unlink()
+    for _ in range(3):
+        contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
+    assert len(g.issues) == 1
+    # recovery: comment + close + state cleared
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)
+    assert g.closed == [7]
+    assert any("loads again" in body for _, body in g.comments)
+    assert not (tmp_path / "contract-alarm.json").exists()
+    # healthy steady state: no writes at all
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)
+    assert g.closed == [7] and len(g.comments) == 1
+
+
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
     """The clamp itself, against untrusted contract values (round-1
     finding: the argv test alone left the tick's clamp unverified)."""
