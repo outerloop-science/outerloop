@@ -267,14 +267,24 @@ def contract_alarm(root: Path, github: Any, target: str, error: str | None, now:
     except (OSError, ValueError):
         state = {}
     if error is None:
-        if state.get("issue"):
+        open_alarm = int(state.get("issue", 0))
+        if not open_alarm and state.get("count", 0) >= CONTRACT_ALARM_AFTER:
+            # creation may have landed without a recorded number (dry-run,
+            # odd response): search so recovery can still close it
+            with contextlib.suppress(Exception):
+                open_alarm = _find_alarm_issue(github, target)
+        if open_alarm:
             with contextlib.suppress(Exception):
                 github.comment(
-                    target,
-                    int(state["issue"]),
-                    "The contract loads again; launch lanes resume this tick.",
+                    target, open_alarm, "The contract loads again; launch lanes resume this tick."
                 )
-                github.close_issue(target, int(state["issue"]))
+            try:
+                github.close_issue(target, open_alarm)
+            except Exception as exc:
+                # keep the state so the NEXT healthy tick retries the close;
+                # unlinking here would orphan the open alarm forever
+                log.warning("could not close contract alarm #%s: %s", open_alarm, exc)
+                return
         if state:
             with contextlib.suppress(OSError):
                 state_path.unlink()
@@ -283,28 +293,37 @@ def contract_alarm(root: Path, github: Any, target: str, error: str | None, now:
     state["count"] = count
     if count >= CONTRACT_ALARM_AFTER and not state.get("issue"):
         # search open issues first: state loss must not spawn duplicates
-        with contextlib.suppress(Exception):
-            existing = next(
-                (
-                    int(issue.get("number", 0))
-                    for issue in github.list_open_issues(target)
-                    if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
-                ),
-                0,
-            )
-            state["issue"] = existing or github.create_issue(
+        try:
+            number = _find_alarm_issue(github, target) or github.create_issue(
                 target,
-                "autoresearch: contract rejected — launch lanes are paused",
-                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has failed to load "
-                f"`.autoresearch.yaml` for {count} consecutive ticks; intake, "
-                f"steward, and self-initiated lanes sit out until it loads.\n\n"
-                f"Loader says:\n\n```\n{error[:600]}\n```\n\n"
+                "autoresearch: contract failed to load — launch lanes are paused",
+                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has been unable to "
+                f"load `.autoresearch.yaml` for {count} consecutive ticks; "
+                f"intake, steward, and self-initiated lanes sit out until it "
+                f"loads. The error below says whether the contract itself was "
+                f"rejected or the fetch is failing.\n\n"
+                f"```\n{error[:600]}\n```\n\n"
                 f"This issue closes itself when the contract loads again.",
             )
+            if number:
+                state["issue"] = number
+        except Exception as exc:
+            log.warning("contract alarm could not post to %s: %s", target, exc)
     with contextlib.suppress(OSError):
         tmp = state_path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(state))
         os.replace(tmp, state_path)
+
+
+def _find_alarm_issue(github: Any, target: str) -> int:
+    return next(
+        (
+            int(issue.get("number", 0))
+            for issue in github.list_open_issues(target)
+            if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
+        ),
+        0,
+    )
 
 
 def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: Any) -> FollowupSpec:
@@ -857,8 +876,10 @@ def tick(
             except Exception as exc:
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
                 contract_error = f"{type(exc).__name__}: {exc}"
-            with contextlib.suppress(Exception):
+            try:
                 contract_alarm(root, github, followup_spec.target, contract_error, now)
+            except Exception as exc:
+                log.warning("contract alarm failed: %s", exc)
         limits = effective_limits(contract.budgets if contract is not None else None)
         # The contract's followup walltime only overrides when EXPLICITLY
         # set — and only DOWNWARD from the operator's spec value: strictly-

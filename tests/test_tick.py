@@ -1092,6 +1092,55 @@ def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> Non
     assert g.closed == [7] and len(g.comments) == 1
 
 
+def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> None:
+    """A failed close must not orphan the open alarm: state survives so
+    the next healthy tick retries — and a lost issue number is recovered
+    by the marker search."""
+    from autoresearch.tick import contract_alarm
+
+    class G:
+        def __init__(self):
+            self.issues: list[dict] = []
+            self.closed: list[int] = []
+            self.refuse_close = True
+            self.next = 9
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [i for i in self.issues if i["number"] not in self.closed]
+
+        def create_issue(self, repo, title, body):
+            self.issues.append({"number": self.next, "title": title, "body": body})
+            return self.next
+
+        def comment(self, repo, number, body):
+            pass
+
+        def close_issue(self, repo, number):
+            if self.refuse_close:
+                raise RuntimeError("403")
+            self.closed.append(number)
+
+    g = G()
+    for _ in range(3):
+        contract_alarm(tmp_path, g, "org/pilot", "boom", NOW)
+    assert len(g.issues) == 1
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)  # close refused
+    assert g.closed == [] and (tmp_path / "contract-alarm.json").exists()
+    g.refuse_close = False
+    contract_alarm(tmp_path, g, "org/pilot", None, NOW)  # retried and closed
+    assert g.closed == [9] and not (tmp_path / "contract-alarm.json").exists()
+
+    # lost issue number (e.g. dry-run created nothing recordable): the
+    # recovery path still finds an open alarm by marker and closes it
+    g2 = G()
+    g2.refuse_close = False
+    for _ in range(3):
+        contract_alarm(tmp_path, g2, "org/pilot", "boom", NOW)
+    (tmp_path / "contract-alarm.json").write_text('{"count": 3}')  # number lost
+    contract_alarm(tmp_path, g2, "org/pilot", None, NOW)
+    assert g2.closed == [9]
+
+
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
     """The clamp itself, against untrusted contract values (round-1
     finding: the argv test alone left the tick's clamp unverified)."""
