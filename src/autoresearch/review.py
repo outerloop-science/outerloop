@@ -276,6 +276,105 @@ def review(
     return ReviewResult(findings=findings, notes=sanitize(data.get("notes", ""), MAX_DETAIL_CHARS))
 
 
+def commentable_lines(diff: str) -> dict[str, set[int]]:
+    """(file -> new-side line numbers present in the diff's hunks): the only
+    positions GitHub accepts inline review comments on. Findings outside
+    this map fall back to the review body instead of 422-ing the round."""
+    lines: dict[str, set[int]] = {}
+    current: str | None = None
+    new_line = 0
+    remaining = 0  # new-side lines left in the open hunk: counting stops
+    # when the hunk is consumed, so inter-file headers ("diff --git",
+    # "index ...") can never inflate the previous file's anchor set
+    for raw in diff.splitlines():
+        if current is not None and remaining > 0:
+            # INSIDE a hunk every line is +/-/context/backslash, so headers
+            # are parsed only between hunks — an added line whose content
+            # begins with "++ b/" (arriving as "+++ b/...") cannot rebind
+            # the file mid-hunk (review finding: contributor-controlled)
+            if not raw.startswith(("-", "\\")):
+                lines[current].add(new_line)  # added and context lines alike
+                new_line += 1
+                remaining -= 1
+            continue
+        if raw.startswith("diff --git"):
+            current = None
+        elif raw.startswith("+++ b/"):
+            current = raw[6:]
+            lines.setdefault(current, set())
+        elif raw.startswith("+++ "):
+            current = None  # /dev/null (deleted file): no new side
+        elif raw.startswith("@@") and current is not None:
+            try:
+                seg = raw.split("+", 1)[1].split(" ", 1)[0]
+                new_line = int(seg.split(",")[0])
+                remaining = int(seg.split(",")[1]) if "," in seg else 1
+            except (IndexError, ValueError):
+                current = None
+                remaining = 0
+    return lines
+
+
+def _finding_paragraph(finding: Finding, with_ref: bool = True) -> str:
+    # backticks stripped: a file value containing one would close the code
+    # span and render attacker markdown inline
+    safe_file = finding.file.replace("`", "")
+    where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
+    ref = f" ({where}; {finding.confidence} confidence)" if with_ref else ""
+    summary = finding.summary.rstrip(".!?…")  # the template owns the period
+    # an odd backtick in the detail would pair with the reference's opening
+    # backtick and spill the path out of its code span
+    detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
+    return f"**{summary}.** {detail}{ref}"
+
+
+_CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def format_review(result: ReviewResult, diff: str) -> tuple[str, list[dict[str, Any]]] | None:
+    """(review body, inline comments) for the Reviews API, or None.
+
+    Findings that anchor to a (file, line) present in the diff become
+    inline comments — resolvable threads that GitHub marks outdated when
+    the line changes; the rest stay in the body with their reference. The
+    body always carries the marker, header, and notes.
+    """
+    if result.skipped is not None:
+        return None
+    anchors = commentable_lines(diff)
+    inline: list[dict[str, Any]] = []
+    body_findings: list[Finding] = []
+    for finding in sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence]):
+        if finding.line and finding.line in anchors.get(finding.file, ()):
+            inline.append(
+                {
+                    "path": finding.file,
+                    "line": finding.line,
+                    "side": "RIGHT",
+                    "body": f"{_finding_paragraph(finding, with_ref=False)}\n\n"
+                    f"*({finding.confidence} confidence)*",
+                }
+            )
+        else:
+            body_findings.append(finding)
+    lines = [MARKER, ADVISORY_HEADER, ""]
+    if not result.findings:
+        lines.append("No defects found in this diff.")
+        lines.append("")
+    elif inline:
+        n = len(inline)
+        note = f"{n} finding{'s are' if n != 1 else ' is'} attached inline to the lines concerned"
+        note += "; the rest follow." if body_findings else "."
+        lines.append(note)
+        lines.append("")
+    for finding in body_findings:
+        lines.append(_finding_paragraph(finding))
+        lines.append("")
+    if result.notes:
+        lines += [result.notes]
+    return "\n".join(lines).rstrip() + "\n", inline
+
+
 def format_comment(result: ReviewResult) -> str | None:
     """Render the comment body, or None when there is nothing to post."""
     if result.skipped is not None:
@@ -288,18 +387,8 @@ def format_comment(result: ReviewResult) -> str | None:
         # Prose paragraphs, not bullet fragments (maintainer preference,
         # 2026-08-08): the human is the reader who needs readability; a
         # model relocating references does not.
-        order = {"high": 0, "medium": 1, "low": 2}
-        for finding in sorted(result.findings, key=lambda f: order[f.confidence]):
-            # backticks stripped: a file value containing one would close
-            # the code span and render attacker markdown inline
-            safe_file = finding.file.replace("`", "")
-            where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
-            ref = f"({where}; {finding.confidence} confidence)"
-            summary = finding.summary.rstrip(".!?…")  # the template owns the period
-            # an odd backtick in the detail would pair with the reference's
-            # opening backtick and spill the path out of its code span
-            detail = finding.detail + ("`" if finding.detail.count("`") % 2 else "")
-            lines.append(f"**{summary}.** {detail} {ref}")
+        for finding in sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence]):
+            lines.append(_finding_paragraph(finding))
             lines.append("")
     if result.notes:
         lines += [result.notes]

@@ -205,3 +205,102 @@ def test_backticked_filename_cannot_break_the_reference_span() -> None:
     # whatever remains of the path renders as inert code-span text
     assert "a](http://evil).py" in body  # inside the span, backtick-free
     assert "`a](http://evil).py`" in body
+
+
+DIFF = """\
+--- a/src/x.py
++++ b/src/x.py
+@@ -10,3 +10,4 @@
+ context_line_ten
+-removed_eleven
++added_eleven
++added_twelve
+ context_thirteen
+"""
+
+
+def test_commentable_lines_maps_the_new_side() -> None:
+    from autoresearch.review import commentable_lines
+
+    lines = commentable_lines(DIFF)
+    # new side: 10 (context), 11-12 (added), 13 (context); nothing else
+    assert lines == {"src/x.py": {10, 11, 12, 13}}
+
+
+def test_format_review_splits_anchored_from_body() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    anchored = Finding(
+        file="src/x.py", line=11, confidence="high", summary="Bad add", detail="It breaks."
+    )
+    off_diff = Finding(
+        file="src/other.py", line=5, confidence="low", summary="Stale doc", detail="Old text."
+    )
+    no_line = Finding(
+        file="src/x.py", line=None, confidence="medium", summary="Global", detail="Everywhere."
+    )
+    rendered = format_review(ReviewResult([anchored, off_diff, no_line], notes=""), DIFF)
+    assert rendered is not None
+    body, inline = rendered
+    (item,) = inline
+    assert item["path"] == "src/x.py" and item["line"] == 11 and item["side"] == "RIGHT"
+    assert "Bad add" in item["body"] and "high confidence" in item["body"]
+    # the un-anchorable findings stay in the body, references intact
+    assert "Stale doc" in body and "`src/other.py`:5" in body
+    assert "Global" in body and "Bad add" not in body
+    assert "1 finding is attached inline to the lines concerned; the rest follow." in body
+    assert body.lstrip().startswith(MARKER)
+
+
+def test_commentable_lines_survives_header_lookalike_content() -> None:
+    """An added line whose CONTENT starts with '++ b/' arrives as
+    '+++ b/...' and must not rebind the file mid-hunk (review finding:
+    file content is contributor-controlled)."""
+    from autoresearch.review import commentable_lines
+
+    tricky = (
+        "diff --git a/real.py b/real.py\n"
+        "--- a/real.py\n"
+        "+++ b/real.py\n"
+        "@@ -1,1 +1,3 @@\n"
+        " kept\n"
+        "+++ b/fake.py\n"  # added content: '++ b/fake.py'
+        "+normal\n"
+    )
+    lines = commentable_lines(tricky)
+    assert lines == {"real.py": {1, 2, 3}}
+    assert "fake.py" not in lines
+
+
+def test_format_review_all_anchored_says_so() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    f = Finding(file="src/x.py", line=12, confidence="low", summary="Nit", detail="Tiny.")
+    rendered = format_review(ReviewResult([f], notes=""), DIFF)
+    assert rendered is not None
+    body, inline = rendered
+    assert len(inline) == 1
+    assert "1 finding is attached inline to the lines concerned." in body
+
+
+def test_commentable_lines_stops_at_file_boundaries() -> None:
+    """Inter-file headers must not inflate the previous file's anchors
+    (review finding: they read as context lines past the last hunk)."""
+    from autoresearch.review import commentable_lines
+
+    two_files = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " kept\n"
+        "+added\n"
+        "diff --git a/b.py b/b.py\n"
+        "index 123..456 100644\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -5,1 +5,1 @@\n"
+        "+only\n"
+    )
+    lines = commentable_lines(two_files)
+    assert lines == {"a.py": {1, 2}, "b.py": {5}}  # headers counted nowhere

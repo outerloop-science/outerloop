@@ -100,7 +100,7 @@ class FakeReviewClient:
         }
 
     def get_pull_request_diff(self, repo: str, number: int) -> str:
-        return "--- a/x.py\n+++ b/x.py\n"
+        return "--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,3 @@\n line1\n+line2\n line3\n"
 
     def get_pull_request_files(self, repo: str, number: int, max_pages: int = 5) -> list[dict]:
         return [{"filename": "x.py", "status": "modified"}]
@@ -110,12 +110,25 @@ class FakeReviewClient:
         return "def f(): pass"
 
     def list_comments(self, repo: str, number: int, max_pages: int = 20) -> list[dict]:
-        return list(self.posted)
+        return [c for c in self.posted if c.get("kind") != "review"]
+
+    def list_pr_reviews(self, repo: str, number: int, max_pages: int = 10) -> list[dict]:
+        return [c for c in self.posted if c.get("kind") == "review"]
 
     def comment(self, repo: str, number: int, body: str) -> None:
         # deliberately type User: round counting must be identity-agnostic
         # (self-hosters post reviews with machine-user PATs)
         self.posted.append({"body": body, "user": {"type": "User"}})
+
+    def create_pr_review(self, repo: str, number: int, body: str, comments=None) -> None:
+        self.posted.append(
+            {
+                "body": body,
+                "user": {"type": "User"},
+                "kind": "review",
+                "inline": list(comments or []),
+            }
+        )
 
 
 def _cli_env(monkeypatch) -> None:
@@ -169,6 +182,107 @@ def test_skip_stub_posting_failure_is_swallowed(monkeypatch, caplog) -> None:
         CompleterError("x"),
     )
     assert "could not post the skip stub" in caplog.text
+
+
+def test_human_pr_review_is_inline_and_comment_event_only(monkeypatch) -> None:
+    """Human PRs get the Reviews-API round (body summary + anchored inline
+    findings); bot PRs under an explicit label stay issue comments so the
+    round can ride into follow-up wakes as context."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import Finding, ReviewResult
+
+    fake_client = FakeReviewClient()
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        return ReviewResult(
+            [Finding(file="x.py", line=2, confidence="high", summary="Bug", detail="Real.")],
+            notes="",
+        )
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "review", fake_review)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    (posted,) = fake_client.posted
+    assert posted["kind"] == "review"  # Reviews API, event hard-coded COMMENT
+    assert posted["inline"] and posted["inline"][0]["path"] == "x.py"
+    assert "Round 1" in posted["body"]
+
+
+def test_review_fallback_carries_the_full_findings(monkeypatch) -> None:
+    """If the Reviews API rejects the post, the fallback comment must carry
+    the findings themselves — not a body that says they are attached to
+    lines they never reached (round-1 finding)."""
+    import autoresearch.review_cli as cli
+    from autoresearch.github import GitHubError
+    from autoresearch.review import Finding, ReviewResult
+
+    class RefusingReviews(FakeReviewClient):
+        def create_pr_review(self, repo, number, body, comments=None):
+            raise GitHubError(422, "/reviews", "line outside diff")
+
+    fake_client = RefusingReviews()
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        return ReviewResult(
+            [Finding(file="x.py", line=2, confidence="high", summary="Bug", detail="Real.")],
+            notes="",
+        )
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "review", fake_review)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    _cli_env(monkeypatch)
+    assert cli.main() == 0
+    (posted,) = fake_client.posted
+    assert posted.get("kind") != "review"  # plain comment fallback
+    assert "Bug" in posted["body"] and "`x.py`:2" in posted["body"]
+    assert "attached inline" not in posted["body"]
+
+
+def test_bot_pr_explicit_round_stays_an_issue_comment(monkeypatch) -> None:
+    import autoresearch.review_cli as cli
+    from autoresearch.review import Finding, ReviewResult
+
+    fake_client = FakeReviewClient(author="some-bot")  # PR author == bot login
+
+    def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
+        return ReviewResult(
+            [Finding(file="x.py", line=2, confidence="high", summary="Bug", detail="Real.")],
+            notes="",
+        )
+
+    monkeypatch.setattr(cli, "GitHubClient", lambda auth: fake_client)
+    monkeypatch.setattr(cli, "review", fake_review)
+    monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
+    _cli_env(monkeypatch)
+    monkeypatch.setenv("REVIEW_EXPLICIT_REQUEST", "true")
+    assert cli.main() == 0
+    (posted,) = fake_client.posted
+    assert posted.get("kind") != "review"  # plain comment: wake context reads these
+
+
+def test_round_numbering_spans_comments_and_reviews(monkeypatch) -> None:
+    """Switching posting styles must not reset the round counter."""
+    import autoresearch.review_cli as cli
+    from autoresearch.review import MARKER
+
+    fake_client = FakeReviewClient()
+    fake_client.posted.append(
+        {"body": f"{MARKER}\nold round", "user": {"type": "User"}}  # issue-comment round
+    )
+    fake_client.posted.append(
+        {"body": f"{MARKER}\nolder", "user": {"type": "User"}, "kind": "review", "inline": []}
+    )
+    _stamp, label = cli._round_stamp(
+        fake_client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        MARKER,
+        {"head": {"sha": "abc"}},
+    )
+    assert label == "**Round 3**"
 
 
 def test_review_cli_threads_date_and_context(monkeypatch) -> None:
