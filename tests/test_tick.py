@@ -995,15 +995,19 @@ def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
     from autoresearch.tick import FLIGHT_TTL_S, flight_checkout, reap_flights
 
     home = _git_home(tmp_path)
-    old_flight = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)
-    old_collided = flight_checkout(home, "old", NOW - FLIGHT_TTL_S - 10)  # -2 suffix
+    import os as _os
+
+    old_flight = flight_checkout(home, "old", NOW)
+    old_collided = flight_checkout(home, "old", NOW)  # -2 suffix
     fresh = flight_checkout(home, "fresh", NOW)
-    queued = flight_checkout(home, "queued", NOW - FLIGHT_TTL_S - 999)
-    (home.parent / "flights" / "not-a-flight").mkdir()  # bad name: ignored
+    queued = flight_checkout(home, "climb-nav", NOW)
+    stale = NOW - FLIGHT_TTL_S - 10
+    for d in (old_flight, old_collided, queued):
+        _os.utime(d, (stale, stale))  # age is mtime, not name parsing
+    (home.parent / "flights" / "not-a-flight").mkdir()  # ignored: fresh mtime
     # a PENDING/RUNNING job's flight is immune regardless of age: GPU
     # queues can pend past any TTL, and age alone must never strand a job
-    live = [f"cd {queued} && uv run python -m autoresearch.climb ..."]
-    assert reap_flights(home, NOW, live_commands=live) == 2
+    assert reap_flights(home, NOW, live_job_names=["climb-nav"]) == 2
     assert not old_flight.exists() and not old_collided.exists()
     assert fresh.exists() and queued.exists()
 

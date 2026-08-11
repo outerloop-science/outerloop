@@ -144,12 +144,14 @@ FLIGHT_TTL_S = 24 * 3600
 
 
 def flight_checkout(home: Path, name: str, now: float) -> Path:
-    """A detached git worktree of the checkout as it is RIGHT NOW, for one
-    submitted job to run from. The shared checkout is reset --hard at every
-    tick's deploy, so a queued job that cd's into it can have its code
-    swapped mid-flight; a flight runs the exact tree that submitted it, and
-    the tree survives for forensics after a crash. Failures fall back to
-    the shared checkout — a snapshot must never ground the fleet."""
+    """A detached git worktree of the checkout's HEAD commit, for one
+    submitted job to run from. The shared checkout is reset --hard at
+    every tick's deploy, so a queued job that cd's into it can have its
+    code swapped mid-flight; a flight pins the deployed commit, and the
+    tree survives for forensics after a crash. HEAD, deliberately:
+    uncommitted hand-edits in the shared checkout do not fly — only
+    deployed code does. Failures fall back to the shared checkout — a
+    snapshot must never ground the fleet."""
     flights = home.parent / "flights"
     try:
         flights.mkdir(parents=True, exist_ok=True)
@@ -186,31 +188,28 @@ def reap_flights(
     home: Path,
     now: float,
     ttl_s: float = FLIGHT_TTL_S,
-    live_commands: Sequence[str] = (),
+    live_job_names: Sequence[str] = (),
 ) -> int:
-    """Remove flight worktrees older than the TTL (their timestamp is in
-    the directory name) — UNLESS a pending or running job still references
-    the flight in its command. Queue wait is unbounded (GPU partitions can
-    pend for days), so age alone must never delete a tree a job will cd
-    into; the TTL is purely the forensics-retention window for flights no
-    job references anymore. Best-effort: a stubborn flight is logged, not
-    fatal."""
+    """Remove flight worktrees older than the TTL — age by directory
+    mtime, no name parsing — UNLESS a pending or running job's NAME
+    prefixes the flight's (flights are named after their job). Queue wait
+    is unbounded (GPU partitions can pend for days), so age alone must
+    never delete a tree a job will cd into; the TTL is purely the
+    forensics-retention window for flights whose job is gone. Name
+    matching is conservative: one live job name protects every flight it
+    prefixes. Best-effort: a stubborn flight is logged, not fatal."""
     flights = home.parent / "flights"
     if not flights.is_dir():
         return 0
     reaped = 0
     for entry in flights.iterdir():
-        if any(str(entry) in cmd for cmd in live_commands):
+        if any(name and entry.name.startswith(name[:40]) for name in live_job_names):
             continue  # a queued or running job still needs this tree
-        # name is <label>-<stamp> or <label>-<stamp>-<n>: the collision
-        # suffix is a single digit (2..5), so when the last two pieces are
-        # both numeric the larger-form second-to-last is the stamp
-        parts = entry.name.split("-")
-        digits = [piece for piece in parts if piece.isdigit()]
-        if not digits:
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
             continue
-        stamp = int(digits[-2]) if len(digits) >= 2 and int(digits[-1]) < 100 else int(digits[-1])
-        if now - stamp < ttl_s:
+        if age < ttl_s:
             continue
         try:
             subprocess.run(
@@ -747,7 +746,9 @@ def tick(
         # Blind means delete nothing: if Slurm cannot list live jobs, no
         # flight is reaped this tick.
         with contextlib.suppress(Exception):
-            reaped = reap_flights(followup_spec.home, now, live_commands=compute.active_commands())
+            reaped = reap_flights(
+                followup_spec.home, now, live_job_names=compute.active_job_names()
+            )
             if reaped:
                 log.info("reaped %d expired flight snapshot(s)", reaped)
         # ONE contract fetch per tick feeds every lane: the requested and
