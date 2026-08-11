@@ -287,13 +287,21 @@ def commentable_lines(diff: str) -> dict[str, set[int]]:
     # when the hunk is consumed, so inter-file headers ("diff --git",
     # "index ...") can never inflate the previous file's anchor set
     for raw in diff.splitlines():
+        if current is not None and remaining > 0:
+            # INSIDE a hunk every line is +/-/context/backslash, so headers
+            # are parsed only between hunks — an added line whose content
+            # begins with "++ b/" (arriving as "+++ b/...") cannot rebind
+            # the file mid-hunk (review finding: contributor-controlled)
+            if not raw.startswith(("-", "\\")):
+                lines[current].add(new_line)  # added and context lines alike
+                new_line += 1
+                remaining -= 1
+            continue
         if raw.startswith("diff --git"):
             current = None
-            remaining = 0
         elif raw.startswith("+++ b/"):
             current = raw[6:]
             lines.setdefault(current, set())
-            remaining = 0
         elif raw.startswith("+++ "):
             current = None  # /dev/null (deleted file): no new side
         elif raw.startswith("@@") and current is not None:
@@ -304,10 +312,6 @@ def commentable_lines(diff: str) -> dict[str, set[int]]:
             except (IndexError, ValueError):
                 current = None
                 remaining = 0
-        elif current is not None and remaining > 0 and not raw.startswith(("-", "\\")):
-            lines[current].add(new_line)  # added and context lines alike
-            new_line += 1
-            remaining -= 1
     return lines
 
 
@@ -357,8 +361,11 @@ def format_review(result: ReviewResult, diff: str) -> tuple[str, list[dict[str, 
     if not result.findings:
         lines.append("No defects found in this diff.")
         lines.append("")
-    elif inline and not body_findings:
-        lines.append("Findings are attached to the lines they concern.")
+    elif inline:
+        n = len(inline)
+        note = f"{n} finding{'s are' if n != 1 else ' is'} attached inline to the lines concerned"
+        note += "; the rest follow." if body_findings else "."
+        lines.append(note)
         lines.append("")
     for finding in body_findings:
         lines.append(_finding_paragraph(finding))

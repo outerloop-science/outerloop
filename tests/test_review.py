@@ -248,7 +248,28 @@ def test_format_review_splits_anchored_from_body() -> None:
     # the un-anchorable findings stay in the body, references intact
     assert "Stale doc" in body and "`src/other.py`:5" in body
     assert "Global" in body and "Bad add" not in body
+    assert "1 finding is attached inline to the lines concerned; the rest follow." in body
     assert body.lstrip().startswith(MARKER)
+
+
+def test_commentable_lines_survives_header_lookalike_content() -> None:
+    """An added line whose CONTENT starts with '++ b/' arrives as
+    '+++ b/...' and must not rebind the file mid-hunk (review finding:
+    file content is contributor-controlled)."""
+    from autoresearch.review import commentable_lines
+
+    tricky = (
+        "diff --git a/real.py b/real.py\n"
+        "--- a/real.py\n"
+        "+++ b/real.py\n"
+        "@@ -1,1 +1,3 @@\n"
+        " kept\n"
+        "+++ b/fake.py\n"  # added content: '++ b/fake.py'
+        "+normal\n"
+    )
+    lines = commentable_lines(tricky)
+    assert lines == {"real.py": {1, 2, 3}}
+    assert "fake.py" not in lines
 
 
 def test_format_review_all_anchored_says_so() -> None:
@@ -259,7 +280,7 @@ def test_format_review_all_anchored_says_so() -> None:
     assert rendered is not None
     body, inline = rendered
     assert len(inline) == 1
-    assert "attached to the lines they concern" in body
+    assert "1 finding is attached inline to the lines concerned." in body
 
 
 def test_commentable_lines_stops_at_file_boundaries() -> None:

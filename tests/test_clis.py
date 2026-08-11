@@ -238,7 +238,7 @@ def test_review_fallback_carries_the_full_findings(monkeypatch) -> None:
     (posted,) = fake_client.posted
     assert posted.get("kind") != "review"  # plain comment fallback
     assert "Bug" in posted["body"] and "`x.py`:2" in posted["body"]
-    assert "attached to the lines" not in posted["body"]
+    assert "attached inline" not in posted["body"]
 
 
 def test_bot_pr_explicit_round_stays_an_issue_comment(monkeypatch) -> None:
