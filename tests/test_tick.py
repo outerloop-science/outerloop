@@ -45,6 +45,8 @@ class FakeSlurm:
         if argv[0] == "scancel":
             self.cancelled.append(argv[1])
             return CommandResult(0, "", "")
+        if argv[0] == "squeue":
+            return CommandResult(0, "", "")  # no live jobs
         raise AssertionError(f"unexpected command {argv}")
 
     def compute(self) -> SlurmCompute:
@@ -503,6 +505,8 @@ def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
     )
 
     def unused_runner(argv, timeout_s):
+        if argv[0] == "squeue":  # the flight reaper's liveness query
+            return CommandResult(0, "", "")
         raise AssertionError("no slurm calls expected")
 
     ended, _submitted = service_in_review(
@@ -661,6 +665,8 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
     )
 
     def unused_runner(argv, timeout_s):
+        if argv[0] == "squeue":  # the flight reaper's liveness query
+            return CommandResult(0, "", "")
         raise AssertionError("no slurm calls expected")
 
     report = tick(
@@ -1010,6 +1016,22 @@ def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
     assert reap_flights(home, NOW, live_job_names=["climb-nav"]) == 2
     assert not old_flight.exists() and not old_collided.exists()
     assert fresh.exists() and queued.exists()
+
+
+def test_reap_clears_non_worktree_debris(tmp_path: Path) -> None:
+    """A half-created flight (not a registered worktree) must still go
+    away instead of warning forever."""
+    import os as _os
+
+    from autoresearch.tick import FLIGHT_TTL_S, reap_flights
+
+    home = _git_home(tmp_path)
+    debris = home.parent / "flights" / "climb-x-123"
+    debris.mkdir(parents=True)
+    stale = NOW - FLIGHT_TTL_S - 10
+    _os.utime(debris, (stale, stale))
+    assert reap_flights(home, NOW) == 1
+    assert not debris.exists()
 
 
 def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None:

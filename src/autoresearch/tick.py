@@ -178,9 +178,15 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
         return home
 
 
-def _flight_command(home: Path, name: str, now: float, argv: list[str]) -> str:
-    """The job's shell command, cd'ing into a fresh flight snapshot."""
-    flight = flight_checkout(home, name, now)
+def _flight_command(home: Path, job_name: str, now: float, argv: list[str]) -> str:
+    """The job's shell command, cd'ing into a fresh flight snapshot.
+
+    The flight is named FROM the job name (one truncation rule, here) so
+    the reaper's pending-job immunity — live job name prefixes flight
+    name — holds by construction at every submit site. argv must contain
+    absolute paths only; every spec path is absolute by construction, and
+    a relative path would resolve inside a tree that is reaped later."""
+    flight = flight_checkout(home, job_name[:40], now)
     return f"cd {quote_command([str(flight)])} && {quote_command(argv)}"
 
 
@@ -220,8 +226,25 @@ def reap_flights(
                 timeout=60,
             )
             reaped += 1
-        except (OSError, subprocess.SubprocessError) as exc:
-            log.warning("could not reap flight %s: %s", entry.name, exc)
+        except (OSError, subprocess.SubprocessError):
+            # not a registered worktree (a half-created flight, or debris):
+            # remove the directory itself and prune the registry, or the
+            # entry warns forever without ever going away
+            import shutil
+
+            shutil.rmtree(entry, ignore_errors=True)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["git", "-C", str(home), "worktree", "prune"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            if not entry.exists():
+                reaped += 1
+            else:
+                log.warning("could not reap flight %s", entry.name)
     return reaped
 
 
@@ -341,7 +364,7 @@ def service_in_review(
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=spec.time_minutes,
-                    command=_flight_command(spec.home, f"followup-{record.run_id}"[:40], now, argv),
+                    command=_flight_command(spec.home, f"followup-{record.run_id}"[:60], now, argv),
                     cpus=4,
                     mem="8G",
                 )
@@ -743,14 +766,19 @@ def tick(
         # expired flight snapshots die with their TTL, not with a human.
         # One home suffices: every lane's spec derives from followup_spec
         # via replace(), so all flights share this checkout's flights/ dir.
-        # Blind means delete nothing: if Slurm cannot list live jobs, no
-        # flight is reaped this tick.
-        with contextlib.suppress(Exception):
-            reaped = reap_flights(
-                followup_spec.home, now, live_job_names=compute.active_job_names()
-            )
-            if reaped:
-                log.info("reaped %d expired flight snapshot(s)", reaped)
+        # Blind means delete nothing — but only QUERY failures count as
+        # blindness; a compute backend missing the method is a programming
+        # error and propagates.
+        try:
+            live_names = compute.active_job_names()
+        except SlurmQueryError as exc:
+            log.warning("cannot list live jobs (%s); reaping no flights this tick", exc)
+            live_names = None
+        if live_names is not None:
+            with contextlib.suppress(Exception):
+                reaped = reap_flights(followup_spec.home, now, live_job_names=live_names)
+                if reaped:
+                    log.info("reaped %d expired flight snapshot(s)", reaped)
         # ONE contract fetch per tick feeds every lane: the requested and
         # self-initiated lanes need its benchmarks, and all three lanes now
         # take their session/job limits from its budgets — clamped by our
@@ -1015,7 +1043,7 @@ def service_self_initiated(
                 account=spec.account,
                 partition=spec.partition,
                 time_minutes=limits.climb_job_minutes,
-                command=_flight_command(spec.home, f"climb-{benchmark}"[:40], now, argv),
+                command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
                 cpus=4,
                 mem="8G",
             )
@@ -1128,7 +1156,7 @@ def service_steward(
                     account=spec.account,
                     partition=spec.partition,
                     time_minutes=limits.climb_job_minutes,
-                    command=_flight_command(spec.home, f"steward-{task.benchmark}"[:40], now, argv),
+                    command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
                 )
@@ -1234,7 +1262,7 @@ def service_intake(
                 account=spec.account,
                 partition=spec.partition,
                 time_minutes=limits.climb_job_minutes,
-                command=_flight_command(spec.home, f"issue-{task.number}", now, argv),
+                command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
                 cpus=4,
                 mem="8G",
             )
