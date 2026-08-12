@@ -146,6 +146,26 @@ def test_unseeded_benchmark_injects_nothing(tmp_path: Path) -> None:
     assert result.run_seed == 0
 
 
+def test_relative_floor_scales_with_the_level() -> None:
+    from autoresearch.orchestrator import benchmark_floor, clears_min_delta
+
+    # 13% relative floor: at level 500 the floor is 65, at 550 it is 71.5
+    assert benchmark_floor(500.0, None, 0.13) == 65.0
+    assert benchmark_floor(550.0, None, 0.13) == 71.5
+    # a max benchmark must beat the recorded best by more than the scaled floor
+    assert clears_min_delta(500.0, 566.0, "max", None, 0.13)  # +66 > 65
+    assert not clears_min_delta(500.0, 564.0, "max", None, 0.13)  # +64 < 65
+    # both set: the more conservative (max) applies
+    assert benchmark_floor(500.0, 100.0, 0.13) == 100.0  # abs 100 > rel 65
+    assert benchmark_floor(500.0, 40.0, 0.13) == 65.0  # rel 65 > abs 40
+    # neither: no floor
+    assert benchmark_floor(500.0, None, None) == 0.0
+    assert clears_min_delta(500.0, 500.001, "max", None, None)
+    # a declared floor with a non-finite recorded best fails closed, not open
+    assert not clears_min_delta(float("nan"), 600.0, "max", None, 0.13)
+    assert not clears_min_delta(float("inf"), 600.0, "max", 5.0, None)
+
+
 def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
     from autoresearch.orchestrator import clears_min_delta
 

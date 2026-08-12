@@ -454,19 +454,45 @@ def draw_run_seed() -> int:
     return 1 + randbits(30)
 
 
+def benchmark_floor(
+    prior_best: float, min_delta: float | None, min_delta_rel: float | None
+) -> float:
+    """The effective absolute cross-seed floor for a comparison against the
+    recorded best. The larger of the absolute floor and the relative floor
+    scaled to the level, so a benchmark that sets both gets the more
+    conservative one. Returns 0.0 when no floor is declared.
+
+    A relative-only floor scales to 0 at a recorded level of 0, which means
+    no floor. That is a real limit of a relative floor, not a bug: a metric
+    that can sit at 0 should pair min_delta_rel with a small absolute
+    min_delta as a backstop. Unbounded metrics that use a relative floor
+    (wall-clock timing) do not reach 0."""
+    floors = []
+    if min_delta:
+        floors.append(min_delta)
+    if min_delta_rel and math.isfinite(prior_best):
+        floors.append(min_delta_rel * abs(prior_best))
+    return max(floors) if floors else 0.0
+
+
 def clears_min_delta(
-    prior_best: float, candidate: float, direction: str, min_delta: float | None
+    prior_best: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None,
+    min_delta_rel: float | None = None,
 ) -> bool:
     """Cross-seed comparisons on a resampled pool must clear the
-    benchmark's ABSOLUTE noise floor: the recorded best was measured under
-    a different seed, so a delta inside the floor is pool luck, not
-    progress. Same-seed paired comparisons never call this."""
-    if not min_delta:
-        return True
+    benchmark's noise floor: the recorded best was measured under a
+    different seed, so a delta inside the floor is pool luck, not progress.
+    Same-seed paired comparisons never call this."""
+    if not (min_delta or min_delta_rel):
+        return True  # no floor declared
     if not (math.isfinite(prior_best) and math.isfinite(candidate)):
-        return False
+        return False  # a declared floor with non-finite inputs fails closed
+    floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
     delta = candidate - prior_best if direction == "max" else prior_best - candidate
-    return delta > min_delta
+    return delta > floor
 
 
 def improved(baseline: float, candidate: float, direction: str, min_rel: float) -> bool:

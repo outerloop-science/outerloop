@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Benchmarks can declare a relative cross-seed noise floor
+  (`min_delta_rel`), a fraction of the recorded level, alongside or
+  instead of the absolute `min_delta`. This is the right floor for an
+  unbounded metric such as wall-clock timing, whose level drifts with
+  hardware so a fixed absolute number goes stale. Both set means the
+  more conservative applies.
+
 - Persistent contract failure alarms on GitHub: after three consecutive
   ticks unable to load the target's `.autoresearch.yaml`, the tick opens
   one issue on the target repo with the loader's error (marker-deduped,

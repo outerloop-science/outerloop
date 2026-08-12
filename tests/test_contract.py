@@ -184,3 +184,22 @@ roadmap: docs/roadmap.md
     ):
         with pytest.raises(ValueError):
             load_contract(base % managed, "org/pilot")
+
+
+def test_min_delta_rel_is_optional_and_non_negative() -> None:
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: speedup, command: c, metric: m, direction: max, min_delta_rel: %s}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    assert load_contract(base % "0.13", "org/pilot").benchmarks[0].min_delta_rel == 0.13
+    import pytest
+
+    with pytest.raises(ValueError):
+        load_contract(base % "-0.1", "org/pilot")
+    with pytest.raises(ValueError):
+        load_contract(base % "13", "org/pilot")  # 13 meaning 13% is a typo, not 13x

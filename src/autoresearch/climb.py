@@ -33,6 +33,7 @@ from autoresearch.orchestrator import (
     ClimbConfig,
     Evaluator,
     SubprocessEvaluator,
+    benchmark_floor,
     clears_min_delta,
     climb_once,
     out_of_scope,
@@ -41,6 +42,7 @@ from autoresearch.orchestrator import (
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
     PROGRESS_PATHS,
+    fmt_metric,
     load_leader,
     update_leader,
     write_progress,
@@ -446,19 +448,29 @@ def live_climb(
                 rel_ok = orch_improved(
                     prior.best, candidate, bench.direction, config.min_relative_improvement
                 )
-                if bench.min_delta:
+                if bench.min_delta or bench.min_delta_rel:
                     # A resampled pool re-rolls between runs, so ANY
                     # sub-floor delta over the recorded best — including
                     # one below the relative threshold — is an expected
                     # honest negative, never an anomaly (round-4 review
                     # finding: the abort band contradicted the promise).
-                    if not rel_ok or not clears_min_delta(
-                        prior.best, candidate, bench.direction, bench.min_delta
-                    ):
+                    floored = not clears_min_delta(
+                        prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
+                    )
+                    if not rel_ok or floored:
+                        # name the check that actually failed, not just
+                        # whichever floor happens to exist
+                        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
+                        if floored and floor > 0:
+                            shown = fmt_metric(floor, bench.display_digits)
+                            why = f"the cross-seed noise floor ({shown})"
+                        elif floored:
+                            why = f"a usable baseline (recorded best {prior.best})"
+                        else:
+                            why = "the relative-improvement threshold"
                         raise NoiseFloored(
                             f"candidate {candidate} does not clear the recorded "
-                            f"best {prior.best} beyond the cross-seed noise "
-                            f"floor (min_delta={bench.min_delta})"
+                            f"best {prior.best} beyond {why}"
                         )
                 elif not rel_ok:
                     # fixed pool: the ledger says this run's own baseline

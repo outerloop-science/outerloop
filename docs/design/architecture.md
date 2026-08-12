@@ -136,8 +136,9 @@ vs candidate, and both sides of the freshness re-measure), and records it
 in the ledger row (`run_seed` in results/leader.json), so the recorded
 number is re-derivable instead of pool luck. Comparisons against the
 RECORDED best are the one place two different seeds meet, so on a
-benchmark that declares `min_delta` — an absolute cross-seed noise floor
-(the steward's stated stderr, times a safety factor) — EVERY sub-floor
+benchmark that declares a noise floor — `min_delta` in absolute units for
+a bounded metric, or `min_delta_rel` as a fraction of the level for an
+unbounded one like wall-clock timing — EVERY sub-floor
 delta over the recorded best, including one below the relative
 threshold, is an honest negative result ("does not clear the noise
 floor"), never a PR and never an abort; the stale-clone abort remains

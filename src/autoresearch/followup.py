@@ -24,6 +24,7 @@ from autoresearch.github import GitHubClient, Workspace
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
     Evaluator,
+    benchmark_floor,
     clears_min_delta,
     draw_run_seed,
     out_of_scope,
@@ -501,15 +502,27 @@ def _respond(
                             prior is not None
                             and beats_prior
                             and not clears_min_delta(
-                                prior.best, candidate, bench.direction, bench.min_delta
+                                prior.best,
+                                candidate,
+                                bench.direction,
+                                bench.min_delta,
+                                bench.min_delta_rel,
                             )
                         ):
                             # named on the thread, like the climb's ending
                             # note — a silently unchanged ledger row reads
                             # as a bug (review finding)
+                            floor = benchmark_floor(
+                                prior.best, bench.min_delta, bench.min_delta_rel
+                            )
+                            where = (
+                                f"the cross-seed noise floor "
+                                f"({fmt_metric(floor, bench.display_digits)})"
+                                if floor > 0
+                                else f"a usable baseline (recorded best {prior.best})"
+                            )
                             floor_note = (
-                                f" — within the cross-seed noise floor "
-                                f"(min_delta={bench.min_delta}) of the recorded "
+                                f" — within {where} of the recorded "
                                 f"best {prior.best}, so the ledger row is unchanged"
                             )
                         if not floor_note:
