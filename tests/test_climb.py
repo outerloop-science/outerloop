@@ -591,7 +591,7 @@ def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None
     assert github.prs == []
     record = load_record(tmp_path / "state", "tsp-floor")
     assert record.ending == "negative-result"
-    assert "noise floor" in record.ending_note and "min_delta" in record.ending_note
+    assert "noise floor" in record.ending_note and "0.5" in record.ending_note
 
 
 def test_sub_threshold_delta_on_floored_benchmark_is_negative_not_abort(

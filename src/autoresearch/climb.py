@@ -33,6 +33,7 @@ from autoresearch.orchestrator import (
     ClimbConfig,
     Evaluator,
     SubprocessEvaluator,
+    benchmark_floor,
     clears_min_delta,
     climb_once,
     out_of_scope,
@@ -446,19 +447,20 @@ def live_climb(
                 rel_ok = orch_improved(
                     prior.best, candidate, bench.direction, config.min_relative_improvement
                 )
-                if bench.min_delta:
+                if bench.min_delta or bench.min_delta_rel:
                     # A resampled pool re-rolls between runs, so ANY
                     # sub-floor delta over the recorded best — including
                     # one below the relative threshold — is an expected
                     # honest negative, never an anomaly (round-4 review
                     # finding: the abort band contradicted the promise).
                     if not rel_ok or not clears_min_delta(
-                        prior.best, candidate, bench.direction, bench.min_delta
+                        prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
                     ):
+                        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
                         raise NoiseFloored(
                             f"candidate {candidate} does not clear the recorded "
                             f"best {prior.best} beyond the cross-seed noise "
-                            f"floor (min_delta={bench.min_delta})"
+                            f"floor ({floor:.6g})"
                         )
                 elif not rel_ok:
                     # fixed pool: the ledger says this run's own baseline
