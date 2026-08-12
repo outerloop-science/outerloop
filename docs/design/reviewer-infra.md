@@ -81,12 +81,19 @@ API call.
 
 The `retrieve` tool does not reach the internet directly. It calls a broker
 we run. The runner can reach the broker and nothing else. The broker fetches
-from an allowlist of permitted destinations and refuses to send data
-outward.
+only from an allowlist of destinations.
 
-This keeps the property we want. The agent can search, but the runner has no
-open path to exfiltrate a secret. The control lives at the tool boundary,
-which is cleaner than trusting a step that runs before the agent.
+An allowlist narrows where requests go. It does not by itself stop data from
+leaving, because a fetch still carries agent-chosen bytes outbound in the
+query string, the URL path, or the search terms. An injected agent could
+encode a secret into a Brave query or an allowlisted URL. So the broker's
+job is two-sided: limit the destinations, and constrain and log the outbound
+request contents. State the guarantee that way, not as "no egress," or an
+implementer will build the weaker thing and believe it is the stronger one.
+
+The other half of the defense is that the agent holds nothing worth
+exfiltrating in the first place (see Security). The broker limits the
+channel; the split workflow limits what is on the runner to leak.
 
 Owning the broker has a cost. It is a service we run and secure. If it is
 compromised, it is an egress hole. This is the price of not depending on a
@@ -136,23 +143,30 @@ the key.
 
 Two facts make this manageable.
 
-First, reading the base tree is safe. The base is what the workflow already
-checks out and trusts. An agent that greps and reads the base to trace a
-claim runs no untrusted code. Only running the PR's own code is dangerous,
-and that is a small part of what a reviewer does.
+First, reading is not running. Reading the base tree is safe: it is code the
+workflow already checks out and trusts. Running code is the dangerous act,
+and it is a small part of what a reviewer does. The read-only reviewer never
+runs anything.
 
-Second, the agent holds no write token. In the split-workflow pattern, the
-agent runs sandboxed with no secrets beyond a spend-capped API key and
-writes its findings to an artifact. A separate, minimal step with the write
-token posts them. If the agent is prompt-injected, there is nothing
-privileged to steal, and a poisoned result can at most produce a wrong
-finding that a human filters out.
+Second, the split workflow keeps the blast radius small, not zero. The agent
+runs sandboxed with no write token and no secret beyond a spend-capped API
+key. It writes findings to an artifact, and a separate minimal step with the
+write token posts them. Two residual risks remain, and both are bounded. The
+spend-capped key is still a credential; if it leaks, the loss is capped and
+the fix is to rotate it. And the artifact is posted through a trusted
+channel, so injected text can reach a repo comment. The posting step must
+treat the artifact as data, not instructions, and findings are read by a
+human, so the worst case is a wrong comment, not a merge or a real leak.
 
-Today this is not even active. `verify.yml` only runs on same-repo,
-bot-authored branches, so no untrusted PR reaches the reviewer. An agentic
-reviewer that reads files and runs the eval is safe right now for internal
-PRs. The sandbox and split-workflow work is what gates accepting fork PRs
-after the repo goes public. See `public-surface.md` for that threat model.
+What is safe today, precisely. `verify.yml` runs only on same-repo,
+bot-authored branches, so no fork PR reaches the reviewer. That makes an
+agentic reviewer that only reads safe to run now. It does not make running
+the PR's code safe. Bot-authored code is model-generated, which is the exact
+thing this note says not to run next to a secret. So even on internal PRs,
+executing the eval uses the guarded `run-candidate` path, never a direct
+run. Reading is what today's setup licenses; running is always guarded. The
+sandbox and split-workflow work is what gates accepting fork PRs after the
+repo goes public. See `public-surface.md` for that threat model.
 
 ## Sequencing
 
