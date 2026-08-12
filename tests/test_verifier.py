@@ -117,7 +117,7 @@ def test_clean_read_does_not_certify() -> None:
     assert body.startswith(VERIFY_MARKER)
     assert VERIFY_HEADER in body
     # the clean-read BODY carries the verdict line, neutral
-    assert "no defects found" in body.lower()
+    assert "no integrity findings" in body  # neutral: a clean read certifies nothing
 
 
 def test_header_semantics_are_pinned() -> None:

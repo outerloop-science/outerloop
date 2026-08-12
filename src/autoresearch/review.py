@@ -122,8 +122,8 @@ class Finding:
     confidence: Literal["low", "medium", "high"]
     summary: str
     detail: str
-    blocking: bool = False  # a confirmed defect that should gate merge
     category: str = ""  # verifier-only (gaming taxonomy); "" for advisory
+    blocking: bool = False  # a confirmed defect that should gate merge
 
 
 @dataclass(frozen=True)
@@ -341,10 +341,12 @@ def _finding_paragraph(finding: Finding, with_ref: bool = True) -> str:
 _CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
-def verdict_line(findings: list[Finding]) -> str:
-    """One line the reader can stop at: blocking vs advisory counts."""
+def verdict_line(findings: list[Finding], clean_text: str = "no defects found") -> str:
+    """One line the reader can stop at: blocking vs advisory counts.
+    `findings` must be the FULL set, not a body-only subset, or the counts
+    lie when blocking findings are shown inline instead."""
     if not findings:
-        return "**Verdict: no defects found.**"
+        return f"**Verdict: {clean_text}.**"
     blocking = sum(1 for f in findings if f.blocking)
     advisory = len(findings) - blocking
     if not blocking:
@@ -354,21 +356,33 @@ def verdict_line(findings: list[Finding]) -> str:
 
 
 def _finding_brief(finding: Finding) -> str:
-    """A compact one-line bullet for a non-blocking finding."""
+    """A compact one-line bullet for a non-blocking finding. Summary is
+    model text shaped by the diff, so an odd backtick must be balanced or
+    it pairs with the reference's opening backtick and spills the path."""
     safe_file = finding.file.replace("`", "")
     where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
     summary = finding.summary.rstrip(".!?…")
+    if summary.count("`") % 2:
+        summary += "`"
     return f"- {summary} ({where}; {finding.confidence})"
 
 
-def _render_body(marker: str, header: str, result: ReviewResult, inline_count: int = 0) -> str:
+def _render_body(
+    marker: str,
+    header: str,
+    result: ReviewResult,
+    inline_count: int = 0,
+    all_findings: list[Finding] | None = None,
+) -> str:
     """Shared body: verdict, blocking findings in full, advisory as a
     compact list. inline_count > 0 means some blocking findings are
-    attached to their lines instead of shown here."""
+    attached to their lines instead of shown here; all_findings is the
+    FULL set for the verdict when the body list is a subset."""
     ordered = sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence])
     blocking = [f for f in ordered if f.blocking]
     advisory = [f for f in ordered if not f.blocking]
-    lines = [marker, header, "", verdict_line(result.findings), ""]
+    verdict = verdict_line(all_findings if all_findings is not None else result.findings)
+    lines = [marker, header, "", verdict, ""]
     if inline_count:
         n = inline_count
         lines.append(f"{n} blocking finding{'s' if n != 1 else ''} attached to the lines below.")
@@ -413,7 +427,13 @@ def format_review(result: ReviewResult, diff: str) -> tuple[str, list[dict[str, 
             )
         else:
             remaining.append(finding)
-    body = _render_body(MARKER, ADVISORY_HEADER, replace(result, findings=remaining), len(inline))
+    body = _render_body(
+        MARKER,
+        ADVISORY_HEADER,
+        replace(result, findings=remaining),
+        len(inline),
+        all_findings=result.findings,
+    )
     return body, inline
 
 

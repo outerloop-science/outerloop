@@ -298,7 +298,14 @@ def format_verify_comment(result: ReviewResult) -> str | None:
     ordered = sorted(result.findings, key=lambda f: order[f.confidence])
     blocking = [f for f in ordered if f.blocking]
     advisory = [f for f in ordered if not f.blocking]
-    lines = [VERIFY_MARKER, VERIFY_HEADER, "", verdict_line(result.findings), ""]
+    # neutral clean text: a clean read certifies nothing (the role's stance)
+    lines = [
+        VERIFY_MARKER,
+        VERIFY_HEADER,
+        "",
+        verdict_line(result.findings, clean_text="no integrity findings from this read"),
+        "",
+    ]
     for finding in blocking:
         safe_file = finding.file.replace("`", "")
         where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
@@ -314,7 +321,10 @@ def format_verify_comment(result: ReviewResult) -> str | None:
             safe_file = finding.file.replace("`", "")
             where = f"`{safe_file}`" + (f":{finding.line}" if finding.line else "")
             tag = f"; {finding.category}" if finding.category else ""
-            lines.append(f"- {finding.summary.rstrip('.!?…')} ({where}; {finding.confidence}{tag})")
+            summary = finding.summary.rstrip(".!?…")
+            if summary.count("`") % 2:
+                summary += "`"  # balance or the path spills its code span
+            lines.append(f"- {summary} ({where}; {finding.confidence}{tag})")
         lines.append("")
     if result.notes:
         lines += [result.notes]
