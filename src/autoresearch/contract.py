@@ -104,7 +104,12 @@ class Benchmark(_StrictModel):
     # drifts with hardware, so an absolute number goes stale. Set either or
     # both; both means the more conservative of the two applies.
     min_delta: float | None = Field(default=None, ge=0)
-    min_delta_rel: float | None = Field(default=None, ge=0)
+    # capped at 1.0: a noise floor is a small fraction (e.g. 0.13), so a
+    # value above the level itself is a typo (13 meaning 13%), and a floor
+    # of 13x would freeze the benchmark. A relative floor assumes a
+    # non-zero level; pair it with a small absolute min_delta as a backstop
+    # for a metric that can reach 0.
+    min_delta_rel: float | None = Field(default=None, ge=0, le=1.0)
 
 
 class SuiteAggregate(_StrictModel):

@@ -201,3 +201,5 @@ roadmap: docs/roadmap.md
 
     with pytest.raises(ValueError):
         load_contract(base % "-0.1", "org/pilot")
+    with pytest.raises(ValueError):
+        load_contract(base % "13", "org/pilot")  # 13 meaning 13% is a typo, not 13x

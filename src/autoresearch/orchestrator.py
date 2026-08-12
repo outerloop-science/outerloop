@@ -460,7 +460,13 @@ def benchmark_floor(
     """The effective absolute cross-seed floor for a comparison against the
     recorded best. The larger of the absolute floor and the relative floor
     scaled to the level, so a benchmark that sets both gets the more
-    conservative one. Returns 0.0 when no floor is declared."""
+    conservative one. Returns 0.0 when no floor is declared.
+
+    A relative-only floor scales to 0 at a recorded level of 0, which means
+    no floor. That is a real limit of a relative floor, not a bug: a metric
+    that can sit at 0 should pair min_delta_rel with a small absolute
+    min_delta as a backstop. Unbounded metrics that use a relative floor
+    (wall-clock timing) do not reach 0."""
     floors = []
     if min_delta:
         floors.append(min_delta)
