@@ -38,15 +38,21 @@ data + skills:
   scope, output schema
 - a **result-policy** — what the kernel does with the role's output (author:
   measure+floor+PR; reviewer: post findings, blocking gates merge; steward:
-  validate+PR). Trust-critical policies are deterministic by design.
+  validate+PR). These are trust-critical *kernel* code and form a small, reused
+  set — see the invariant below.
 
 ## The design invariant
 
-> Adding a new role, backend, or benchmark requires **zero kernel changes.**
+> Adding a new role, backend, or benchmark requires **zero kernel changes** —
+> as long as it reuses an existing result-policy.
 
-If any of them forces a kernel edit, an app has leaked into the OS — which is
-exactly how the accretion happened. This is the health check for every change
-under this plan.
+Most new roles do: another judge reuses "post findings, blocking gates merge";
+another climb-like role reuses "measure + floor + PR". A role that needs a
+genuinely *new* result-policy is the honest exception — a result-policy is
+trust-critical kernel code (it measures, gates, acts), so a new one is a new
+kernel primitive, added deliberately and rarely. The health check still bites:
+if a *routine* new role, backend, or benchmark forces a kernel edit, an app has
+leaked into the OS — which is exactly how the accretion happened.
 
 ## The kernel never judges
 

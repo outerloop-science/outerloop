@@ -73,7 +73,7 @@ per tiny thing is the accretion trap in a new costume.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | session / resume | working context, agent notes | one run | one run | the session | the session |
 | 2 | run reports (episodic) | hypothesis + outcome per run | persistent | per target | role session | brief (recent N) |
-| 3 | lessons (semantic) | distilled do / don't | persistent, curated | per target | curator role | brief |
+| 3 | lessons (semantic) | distilled do / don't | persistent, curated | per target | curator drafts → human PR | brief |
 | 4 | **human feedback (new)** | maintainer comments + the merge/close **delta** | persistent → distilled | per target | capture step | brief |
 | 5 | ledger / leaderboard (factual) | verified best, seeds, floor | persistent | per benchmark | **kernel only** | brief + humans |
 | 6 | skills store (procedural) | the skills above | persistent, versioned | global/role/target | humans (PR-gated) | brief |
@@ -96,8 +96,9 @@ rung human-gated:
    metric, a banal PR).
 2. **Capture** — into human-feedback memory (layer 4): the comment plus the
    merge/close delta.
-3. **Distill** — the curator turns it into a per-target lesson (layer 3). Small,
-   deduped.
+3. **Distill** — the curator *drafts* a per-target lesson (layer 3), small and
+   deduped, which lands through a human-reviewed PR — never auto-applied (see
+   Boundaries).
 4. **Promote** — a lesson that recurs across runs or targets graduates to a skill
    (layer 6) or a global standing rule. This is where a one-off correction
    becomes house policy.
@@ -121,6 +122,12 @@ rule.
 - **Authored, then gated** — skills and lessons are human-authored now; an agent
   may *propose* one, but it lands through a human-reviewed PR, never silent
   self-modification.
+- **Untrusted content is data, not instructions** — PR/issue text, retriever
+  results, and the target's own files are untrusted. The harness data-fences
+  them and a role treats them as material to judge, never as commands. This is
+  the prompt-injection boundary for the read tools (pr-context-read, retriever)
+  and for anything a session reads in the workspace (`architecture.md` already
+  data-fences wake prompts by the same rule).
 
 ## Harness: the loading substrate
 
@@ -138,6 +145,12 @@ role-runner and kernel.
 | tool restriction | honor `allowed_tools` | if it can't restrict, it's ineligible for read-only judge roles |
 | cost / turn accounting | from backend output | session/token proxy |
 
+Editing-role **scope** (the write allowlist) is not a backend capability: the
+kernel enforces it on the captured diff after the session, rejecting any write
+outside `scope` regardless of backend (`contract.path_is_forbidden`). Tool
+restriction above is the read-only *judge* boundary; scope is the *editing*
+boundary. Both are kernel-owned.
+
 **Tools: native vs harness-provided.**
 - *native* (from the backend): repo-read, edit, bash — gated by `allowed_tools`.
 - *harness-provided* (one MCP surface, uniform across backends): retriever,
@@ -146,9 +159,10 @@ role-runner and kernel.
 
 **Two orthogonal axes.** Backend (what drives the session: Claude Code / Codex /
 Hermes) is separate from execution environment (where it runs: apptainer on Torch
-/ GH runner / local / Docker). The RoleSpec picks both. Reviewer = Claude Code on
-a GH runner, read-only; author = Claude Code or Codex in apptainer on Torch.
-Hermes's Singularity backend maps onto apptainer directly.
+/ GH runner / local / Docker). The RoleSpec picks both. The read-only
+reviewer on a GH runner is where we first prove an alternate backend (Codex) —
+a judge that never executes is the safe place to swap; the author runs in
+apptainer on Torch. Hermes's Singularity backend maps onto apptainer directly.
 
 **One seam.** The old one-shot `Completer` becomes a degenerate RoleSpec — no
 tools, no edit, `output_schema` set — a one-turn session on the same adapter.
@@ -156,8 +170,9 @@ Cheap fast-pass, no second seam.
 
 ## RoleSpec: the app manifest
 
-Data, not code. Adding a role is a new RoleSpec + its skills + a result-policy —
-zero kernel change (the invariant).
+Data, not code. Adding a role is a new RoleSpec + its skills, reusing an existing
+result-policy — zero kernel change (the invariant; a genuinely new result-policy
+is the rare exception).
 
 | Field | Meaning |
 | --- | --- |
