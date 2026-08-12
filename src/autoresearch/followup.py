@@ -515,9 +515,13 @@ def _respond(
                             floor = benchmark_floor(
                                 prior.best, bench.min_delta, bench.min_delta_rel
                             )
+                            where = (
+                                f"the cross-seed noise floor ({floor:.6g})"
+                                if floor > 0
+                                else "the relative-improvement threshold"
+                            )
                             floor_note = (
-                                f" — within the cross-seed noise floor "
-                                f"({floor:.6g}) of the recorded "
+                                f" — within {where} of the recorded "
                                 f"best {prior.best}, so the ledger row is unchanged"
                             )
                         if not floor_note:

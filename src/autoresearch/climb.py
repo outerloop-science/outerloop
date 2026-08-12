@@ -457,10 +457,14 @@ def live_climb(
                         prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
                     ):
                         floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
+                        reason = (
+                            f"the cross-seed noise floor ({floor:.6g})"
+                            if floor > 0
+                            else "the relative-improvement threshold"
+                        )
                         raise NoiseFloored(
                             f"candidate {candidate} does not clear the recorded "
-                            f"best {prior.best} beyond the cross-seed noise "
-                            f"floor ({floor:.6g})"
+                            f"best {prior.best} beyond {reason}"
                         )
                 elif not rel_ok:
                     # fixed pool: the ledger says this run's own baseline

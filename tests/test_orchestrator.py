@@ -161,6 +161,9 @@ def test_relative_floor_scales_with_the_level() -> None:
     # neither: no floor
     assert benchmark_floor(500.0, None, None) == 0.0
     assert clears_min_delta(500.0, 500.001, "max", None, None)
+    # a declared floor with a non-finite recorded best fails closed, not open
+    assert not clears_min_delta(float("nan"), 600.0, "max", None, 0.13)
+    assert not clears_min_delta(float("inf"), 600.0, "max", 5.0, None)
 
 
 def test_clears_min_delta_is_direction_aware_and_absolute() -> None:

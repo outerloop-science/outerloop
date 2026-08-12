@@ -480,11 +480,11 @@ def clears_min_delta(
     benchmark's noise floor: the recorded best was measured under a
     different seed, so a delta inside the floor is pool luck, not progress.
     Same-seed paired comparisons never call this."""
-    floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
-    if not floor:
-        return True
+    if not (min_delta or min_delta_rel):
+        return True  # no floor declared
     if not (math.isfinite(prior_best) and math.isfinite(candidate)):
-        return False
+        return False  # a declared floor with non-finite inputs fails closed
+    floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
     delta = candidate - prior_best if direction == "max" else prior_best - candidate
     return delta > floor
 

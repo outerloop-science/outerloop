@@ -15,8 +15,6 @@ Versions follow [SemVer](https://semver.org).
   hardware so a fixed absolute number goes stale. Both set means the
   more conservative applies.
 
-### Added
-
 - Persistent contract failure alarms on GitHub: after three consecutive
   ticks unable to load the target's `.autoresearch.yaml`, the tick opens
   one issue on the target repo with the loader's error (marker-deduped,
