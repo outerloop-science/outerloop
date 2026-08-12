@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- Reviews are shorter and lead with a verdict. Every advisory and
+  verification round now opens with one line — blocking vs advisory
+  counts — then shows blocking findings in full and the rest as a
+  compact list. Findings carry a `blocking` flag; only blocking ones
+  should gate a merge or trigger another round. The review bar is
+  "materially sound", not "no finding survives".
+- Every model role (reviewer, verifier, author, steward) writes in plain
+  simple technical English, from one shared style instruction.
+
 ### Added
 
 - Benchmarks can declare a relative cross-seed noise floor

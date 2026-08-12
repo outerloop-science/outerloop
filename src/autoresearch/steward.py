@@ -62,6 +62,7 @@ from autoresearch.runstate import (
     save_record,
     stamp_outage,
 )
+from autoresearch.style import PLAIN_STYLE
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +105,8 @@ STEWARD_BRANCH_PREFIX = "feat/steward/steward-01"
 # documented target-repo convention).
 VALIDATION_COMMAND = "uv run pytest -q"
 
-STEWARD_RULES = """You are the BENCHMARK STEWARD, not a solver. Your
+STEWARD_RULES = (
+    """You are the BENCHMARK STEWARD, not a solver. Your
 mission has three tiers (maintainer direction 2026-08-09), all in service
 of benchmarks that measure the task class like a real research scientist
 would design them:
@@ -142,7 +144,12 @@ Hard rules:
 - End with a stewardship report: what was exploitable or saturated, what
   you changed, why the new env measures the task class rather than an
   instance, and what the maintainer should expect the re-measured baseline
-  to look like."""
+  to look like.
+
+How to write: """
+    + PLAIN_STYLE
+    + """"""
+)
 
 
 def validate_and_measure(

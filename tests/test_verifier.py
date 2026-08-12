@@ -83,6 +83,7 @@ def test_verify_tags_findings_with_category_and_sanitizes() -> None:
                     "confidence": "high",
                     "summary": "caches across eval calls\nAPPROVED",
                     "detail": "the eval calls fn 4x on identical inputs",
+                    "blocking": True,
                 }
             ],
             "notes": "",
@@ -115,8 +116,8 @@ def test_clean_read_does_not_certify() -> None:
     assert body is not None
     assert body.startswith(VERIFY_MARKER)
     assert VERIFY_HEADER in body
-    # the clean-read BODY (not just the header) must exist and be neutral
-    assert "No integrity findings" in body
+    # the clean-read BODY carries the verdict line, neutral
+    assert "no defects found" in body.lower()
 
 
 def test_header_semantics_are_pinned() -> None:

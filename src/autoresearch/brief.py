@@ -18,6 +18,8 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 
+from autoresearch.style import PLAIN_STYLE
+
 # Bounds are part of the brief's contract: a brief that grows without limit
 # stops being an experiment variable and starts being noise.
 MAX_LESSONS_CHARS = 8_000
@@ -217,11 +219,15 @@ def render(brief: SessionBrief) -> str:
         "what you did, outcome with numbers, takeaways, and the most "
         "promising next step. A negative result reported clearly is a "
         "success.",
+        "",
+        "# How to write",
+        PLAIN_STYLE,
     ]
     return "\n".join(parts)
 
 
 MAX_COMMENT_CHARS = 6_000
+_STYLE_NOTE = "# How to write\n" + PLAIN_STYLE
 
 
 def render_review_wake(comments: list[tuple[str, str]]) -> str:
@@ -247,5 +253,7 @@ def render_review_wake(comments: list[tuple[str, str]]) -> str:
         "paths. Finish with a reply to post on the PR: what you changed (or "
         "why you did not), plainly. If you changed solver code, the "
         "orchestrator will re-measure and append the number to your reply.",
+        "",
+        _STYLE_NOTE,
     ]
     return "\n".join(parts)
