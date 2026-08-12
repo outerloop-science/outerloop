@@ -453,18 +453,22 @@ def live_climb(
                     # one below the relative threshold — is an expected
                     # honest negative, never an anomaly (round-4 review
                     # finding: the abort band contradicted the promise).
-                    if not rel_ok or not clears_min_delta(
+                    floored = not clears_min_delta(
                         prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
-                    ):
+                    )
+                    if not rel_ok or floored:
+                        # name the check that actually failed, not just
+                        # whichever floor happens to exist
                         floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
-                        reason = (
-                            f"the cross-seed noise floor ({floor:.6g})"
-                            if floor > 0
-                            else "the relative-improvement threshold"
-                        )
+                        if floored and floor > 0:
+                            why = f"the cross-seed noise floor ({floor:.6g})"
+                        elif floored:
+                            why = f"a usable baseline (recorded best {prior.best})"
+                        else:
+                            why = "the relative-improvement threshold"
                         raise NoiseFloored(
                             f"candidate {candidate} does not clear the recorded "
-                            f"best {prior.best} beyond {reason}"
+                            f"best {prior.best} beyond {why}"
                         )
                 elif not rel_ok:
                     # fixed pool: the ledger says this run's own baseline

@@ -518,7 +518,7 @@ def _respond(
                             where = (
                                 f"the cross-seed noise floor ({floor:.6g})"
                                 if floor > 0
-                                else "the relative-improvement threshold"
+                                else f"a usable baseline (recorded best {prior.best})"
                             )
                             floor_note = (
                                 f" — within {where} of the recorded "
