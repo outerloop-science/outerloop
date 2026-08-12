@@ -38,11 +38,25 @@ other.
 
 ### 3. The tools
 
-Define the agent's tools as MCP servers, not as harness-specific code. The
-tools are `grep`, `read`, and `retrieve`. If they are MCP, they keep working
-when we change the model or the harness. If we write them against one
-harness's tool API instead, we have traded model lock-in for harness
-lock-in.
+Split tools by whether they cross a trust boundary.
+
+Standard local operations are not custom tools. Reading a file, grep, find,
+and listing directories are the harness's built-in file tools, or a single
+sandboxed shell over the base tree. Every harness ships these, so there is
+no portability problem to solve and no reason to wrap them in MCP.
+
+Custom tools are the ones no harness ships and that cross a boundary. There
+are two. `retrieve` reaches outside the runner, through the broker.
+`run-candidate` runs PR code in an isolated runner, and comes later. Give
+these a stable contract, MCP if convenient, so they survive a change of
+model or harness.
+
+For the local work, give the agent one sandboxed shell over the base tree:
+read-only, no network. That covers grep, find, and sed without listing them.
+It is safe because the base tree is trusted code. The two things the shell
+must not do are handled outside it. It has no network, so the broker is the
+only outward path. And it never runs the PR's code, which stays on the
+split-workflow path.
 
 ## Retrieval is a tool, not context
 
@@ -119,12 +133,12 @@ after the repo goes public. See `public-surface.md` for that threat model.
 
 ## Sequencing
 
-1. Define the MCP tool contracts: `grep`, `read`, `retrieve`.
-2. Stand up the harness with the read-only base-tree tools only. These need
-   no broker, because reading the trusted base is safe.
-3. Add the `retrieve` tool and the broker later, without changing the
-   harness.
-4. Before making the agentic reviewer the default, score it against the
+1. Stand up the harness with a sandboxed, read-only shell over the base
+   tree. This needs no broker and no custom tools, because reading the
+   trusted base is safe.
+2. Define the `retrieve` tool contract and the broker, and add them without
+   changing the harness.
+3. Before making the agentic reviewer the default, score it against the
    single-pass version on the meta-benchmark. The metric is whether it
    catches more seeded gaming per dollar. "Feels better" and "is better,
    safely" can differ, so measure it.
