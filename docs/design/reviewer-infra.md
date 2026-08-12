@@ -80,8 +80,10 @@ API call.
 ## The broker
 
 The `retrieve` tool does not reach the internet directly. It calls a broker
-we run. The runner can reach the broker and nothing else. The broker fetches
-only from an allowlist of destinations.
+we run. Where egress can be enforced, the runner should reach the broker and
+nothing else. On a GitHub-hosted runner that cannot be enforced, so there
+the containment leans on the other two defenses below rather than on network
+isolation. The broker fetches only from an allowlist of destinations.
 
 An allowlist narrows where requests go. It does not by itself stop data from
 leaving, because a fetch still carries agent-chosen bytes outbound in the
@@ -151,12 +153,13 @@ runs anything.
 Second, the split workflow keeps the blast radius small, not zero. The agent
 runs sandboxed with no write token and no secret beyond a spend-capped API
 key. It writes findings to an artifact, and a separate minimal step with the
-write token posts them. Two residual risks remain, and both are bounded. The
-spend-capped key is still a credential; if it leaks, the loss is capped and
-the fix is to rotate it. And the artifact is posted through a trusted
-channel, so injected text can reach a repo comment. The posting step must
-treat the artifact as data, not instructions, and findings are read by a
-human, so the worst case is a wrong comment, not a merge or a real leak.
+write token posts them. Two residual risks remain, and each has a bounded
+worst case. If the spend-capped key leaks, the worst case is capped spend
+until we rotate it, not an open-ended credential loss. If the agent is
+prompt-injected, the injected text reaches a repo comment through the
+posting step, so the worst case there is a wrong comment, not a merge. The
+posting step must treat the artifact as data, not instructions, and findings
+are read by a human.
 
 What is safe today, precisely. `verify.yml` runs only on same-repo,
 bot-authored branches, so no fork PR reaches the reviewer. That makes an
