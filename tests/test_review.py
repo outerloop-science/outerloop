@@ -123,9 +123,30 @@ def test_comment_never_tells_humans_to_merge(word: str) -> None:
 def test_findings_sorted_by_confidence() -> None:
     payload = {
         "findings": [
-            {"file": "a", "line": 1, "confidence": "low", "summary": "L", "detail": "d"},
-            {"file": "b", "line": 2, "confidence": "high", "summary": "H", "detail": "d"},
-            {"file": "c", "line": 3, "confidence": "medium", "summary": "M", "detail": "d"},
+            {
+                "file": "a",
+                "line": 1,
+                "confidence": "low",
+                "summary": "L",
+                "detail": "d",
+                "blocking": True,
+            },
+            {
+                "file": "b",
+                "line": 2,
+                "confidence": "high",
+                "summary": "H",
+                "detail": "d",
+                "blocking": True,
+            },
+            {
+                "file": "c",
+                "line": 3,
+                "confidence": "medium",
+                "summary": "M",
+                "detail": "d",
+                "blocking": True,
+            },
         ],
         "notes": "",
     }
@@ -134,10 +155,60 @@ def test_findings_sorted_by_confidence() -> None:
     assert body.index("**H.**") < body.index("**M.**") < body.index("**L.**")
 
 
+def test_verdict_leads_and_blocking_split_from_advisory() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_comment
+
+    r = ReviewResult(
+        findings=[
+            Finding(
+                file="a.py",
+                line=3,
+                confidence="high",
+                summary="Real bug",
+                detail="Skips a row.",
+                blocking=True,
+            ),
+            Finding(
+                file="b.py",
+                line=None,
+                confidence="low",
+                summary="Stale comment",
+                detail="Says v1.",
+                blocking=False,
+            ),
+        ],
+        notes="",
+    )
+    body = format_comment(r)
+    assert body is not None
+    # verdict leads
+    assert "**Verdict: 1 blocking, 1 advisory.**" in body
+    # blocking shown in full, advisory as a compact bullet under its own heading
+    assert "**Real bug.** Skips a row." in body
+    assert "**Advisory (non-blocking):**" in body
+    assert "- Stale comment (`b.py`; low)" in body
+
+
+def test_verdict_says_mergeable_when_nothing_blocks() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_comment
+
+    r = ReviewResult(
+        findings=[
+            Finding(
+                file="a.py", line=1, confidence="low", summary="Nit", detail="x.", blocking=False
+            )
+        ],
+        notes="",
+    )
+    body = format_comment(r)
+    assert body is not None
+    assert "nothing blocking" in body and "1 advisory note" in body
+
+
 def test_no_findings_still_posts_a_clean_report() -> None:
     body = format_comment(review(make_pr(), FakeCompleter({"findings": [], "notes": ""}), BOT))
     assert body is not None
-    assert "No defects found" in body
+    assert "no defects found" in body.lower()
 
 
 def test_large_diffs_are_truncated_and_flagged() -> None:
@@ -231,7 +302,12 @@ def test_format_review_splits_anchored_from_body() -> None:
     from autoresearch.review import Finding, ReviewResult, format_review
 
     anchored = Finding(
-        file="src/x.py", line=11, confidence="high", summary="Bad add", detail="It breaks."
+        file="src/x.py",
+        line=11,
+        confidence="high",
+        summary="Bad add",
+        detail="It breaks.",
+        blocking=True,
     )
     off_diff = Finding(
         file="src/other.py", line=5, confidence="low", summary="Stale doc", detail="Old text."
@@ -242,14 +318,15 @@ def test_format_review_splits_anchored_from_body() -> None:
     rendered = format_review(ReviewResult([anchored, off_diff, no_line], notes=""), DIFF)
     assert rendered is not None
     body, inline = rendered
+    # only the blocking finding anchors inline
     (item,) = inline
     assert item["path"] == "src/x.py" and item["line"] == 11 and item["side"] == "RIGHT"
     assert "Bad add" in item["body"] and "high confidence" in item["body"]
-    # the un-anchorable findings stay in the body, references intact
+    # advisory findings stay in the body as a compact list, references intact
     assert "Stale doc" in body and "`src/other.py`:5" in body
     assert "Global" in body and "Bad add" not in body
-    assert "1 finding is attached inline to the lines concerned; the rest follow." in body
-    assert body.lstrip().startswith(MARKER)
+    assert "1 blocking finding attached to the lines below." in body
+    assert "Verdict:" in body and body.lstrip().startswith(MARKER)
 
 
 def test_commentable_lines_survives_header_lookalike_content() -> None:
@@ -275,12 +352,19 @@ def test_commentable_lines_survives_header_lookalike_content() -> None:
 def test_format_review_all_anchored_says_so() -> None:
     from autoresearch.review import Finding, ReviewResult, format_review
 
-    f = Finding(file="src/x.py", line=12, confidence="low", summary="Nit", detail="Tiny.")
+    f = Finding(
+        file="src/x.py",
+        line=12,
+        confidence="high",
+        summary="Real",
+        detail="Breaks.",
+        blocking=True,
+    )
     rendered = format_review(ReviewResult([f], notes=""), DIFF)
     assert rendered is not None
     body, inline = rendered
     assert len(inline) == 1
-    assert "1 finding is attached inline to the lines concerned." in body
+    assert "1 blocking finding attached to the lines below." in body
 
 
 def test_commentable_lines_stops_at_file_boundaries() -> None:

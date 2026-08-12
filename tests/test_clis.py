@@ -195,7 +195,16 @@ def test_human_pr_review_is_inline_and_comment_event_only(monkeypatch) -> None:
 
     def fake_review(pr, completer, bot_login, today=None, explicit_request=False):
         return ReviewResult(
-            [Finding(file="x.py", line=2, confidence="high", summary="Bug", detail="Real.")],
+            [
+                Finding(
+                    file="x.py",
+                    line=2,
+                    confidence="high",
+                    summary="Bug",
+                    detail="Real.",
+                    blocking=True,
+                )
+            ],
             notes="",
         )
 

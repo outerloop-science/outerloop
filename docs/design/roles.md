@@ -197,9 +197,15 @@ flowchart LR
     L -->|"on bot PRs (once deployed)"| VF
 ```
 
-Review-until-quiet (CONTRIBUTING) governs development PRs: rounds iterate
-until one on the head commit finds nothing new — judged termination, docs
-get one round, hard cap 4 then escalate.
+Rounds iterate only on BLOCKING findings — a confirmed correctness,
+security, resource, or gaming defect. Advisory findings (edge cases,
+wording, low-confidence notes) are posted once, recorded, and filed as
+follow-up work; they never trigger another round. Each review leads with a
+one-line verdict (blocking vs advisory counts) so the decision is one
+glance. Steward and feature PRs get a hard cap of 2 rounds, then merge if
+nothing blocks and file the rest; docs get one round; the loop's own core
+and security PRs may go further. Merge when materially sound, not when no
+finding survives.
 
 ## Separation rules (the collusion table)
 
