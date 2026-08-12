@@ -516,7 +516,8 @@ def _respond(
                                 prior.best, bench.min_delta, bench.min_delta_rel
                             )
                             where = (
-                                f"the cross-seed noise floor ({floor:.6g})"
+                                f"the cross-seed noise floor "
+                                f"({fmt_metric(floor, bench.display_digits)})"
                                 if floor > 0
                                 else f"a usable baseline (recorded best {prior.best})"
                             )

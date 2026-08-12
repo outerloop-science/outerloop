@@ -42,6 +42,7 @@ from autoresearch.orchestrator import (
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.progress import (
     PROGRESS_PATHS,
+    fmt_metric,
     load_leader,
     update_leader,
     write_progress,
@@ -461,7 +462,8 @@ def live_climb(
                         # whichever floor happens to exist
                         floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
                         if floored and floor > 0:
-                            why = f"the cross-seed noise floor ({floor:.6g})"
+                            shown = fmt_metric(floor, bench.display_digits)
+                            why = f"the cross-seed noise floor ({shown})"
                         elif floored:
                             why = f"a usable baseline (recorded best {prior.best})"
                         else:
