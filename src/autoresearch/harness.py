@@ -415,8 +415,10 @@ def _codex_command(
 
     The prompt is NOT an argument: `codex exec` reads it from stdin when no
     positional prompt is given, keeping the brief out of world-readable /proc
-    argv (the same rule as the Claude adapter). Flags follow the Codex docs and
-    must be checked against `codex exec --help` on the cluster.
+    argv (the same rule as the Claude adapter). Flags verified against
+    codex-cli 0.130.0 (`codex exec --help`): exec/resume, --json, --model,
+    --sandbox read-only, --cd, --output-last-message, --skip-git-repo-check,
+    and the stdin prompt behavior.
     """
     head = [binary, "exec", "resume", resume_session_id] if resume_session_id else [binary, "exec"]
     return [
@@ -441,11 +443,11 @@ def _parse_codex_result(
     """Best-effort SessionResult from `codex exec --json` output.
 
     `final_text` comes from the --output-last-message file, which is reliable.
-    `session_id` is pulled from the JSONL events defensively; the exact event
-    schema must be confirmed against a live `--json` run, so until then resume
-    may be unavailable. Cost is left at 0 (these backends are subscription or
-    token metered; the budget layer meters them by a session/token proxy).
-    Never raises.
+    `session_id` is pulled from the JSONL events defensively; the CLI flags are
+    verified (codex-cli 0.130.0), but the exact `--json` event field names still
+    need a live authed run, so resume may be unavailable until then. Cost is left
+    at 0 (these backends are subscription or token metered; the budget layer
+    meters them by a session/token proxy). Never raises.
     """
     session_id = ""
     saw_error = False
@@ -495,11 +497,10 @@ class CodexHarness:
 
     Stage 1's swappability proof, first used for the read-only reviewer
     (docs/design/consolidation.md): Codex's own `--sandbox read-only` plus a
-    judge RoleSpec's tool set. Flags and the JSONL event schema follow the Codex
-    docs and MUST be verified against `codex exec --help` and a live `--json`
-    run on the cluster before production; `session_id` and cost parsing are
-    best-effort until then. No apptainer wrapper yet (the reviewer runs
-    read-only); the author-on-Codex path adds one later.
+    judge RoleSpec's tool set. CLI flags are verified against codex-cli 0.130.0;
+    the `--json` event field names still need a live authed run, so `session_id`
+    and cost parsing are best-effort until then. No apptainer wrapper yet (the
+    reviewer runs read-only); the author-on-Codex path adds one later.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
