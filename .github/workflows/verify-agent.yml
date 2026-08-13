@@ -1,0 +1,115 @@
+# Reusable agent-session verifier: integrity reads of BOT-authored PRs (the
+# agent reviewer's mirror). It checks out TWO trees read-only — the PR head
+# (the change under review) and the base branch (the trusted contract and
+# ruler) — and runs the verifier as an agent that reads them (no Bash/Write:
+# nothing from the PR is ever executed). Same constitution as the completer it
+# replaces: never fails the caller's CI, never runs with secrets on a fork PR,
+# silence is not endorsement. Claude only on GitHub-hosted runners (codex's
+# sandbox cannot init there; codex verification runs via the cluster harness).
+name: verification-review-agent
+
+on:
+  workflow_call:
+    inputs:
+      bot_login:
+        description: Login of your bot account — ONLY its PRs are verified. Required.
+        type: string
+        required: true
+      verifier_repo:
+        description: Repo holding the verifier (change this if you forked).
+        type: string
+        required: false
+        default: agentic-learning-ai-lab/autoresearch
+      verifier_ref:
+        description: Ref of the verifier to run. Pin to a tag or SHA in production.
+        type: string
+        required: false
+        default: main
+    secrets:
+      anthropic_verifier_key:
+        description: >-
+          The verifier's OWN spend-capped key — never the reviewer's, so one
+          role's budget or compromise cannot silently spend as the other.
+        required: true
+      checkout_ssh_key:
+        description: >-
+          Read-only deploy key for the verifier repo, only while it is
+          private; omit once public.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One verification at a time per PR. Do NOT cancel in progress: a running
+# session is a paid model call, so queue a second dispatch behind it.
+concurrency:
+  group: verification-review-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # Advisory role: an infrastructure failure must never red the caller's PR.
+    continue-on-error: true
+    # Backstop a hung session; the harness kills at its own walltime first.
+    timeout-minutes: 40
+    # Fork PRs must not reach the secret; this role covers the BOT's PRs only
+    # (human PRs belong to the advisory reviewer); and label events count only
+    # for the SPECIFIC re-request label applied by someone other than the PR's
+    # author, so an unrelated triage label (or the bot relabeling its own PR)
+    # cannot bill another round.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == inputs.bot_login &&
+      (github.event.action != 'labeled' ||
+       (github.event.label.name == 'autoresearch:review' &&
+        github.event.sender.login != github.event.pull_request.user.login))
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # Checks out the VERIFIER code; the PR's code is checked out below but
+      # never executed (the session has no execute or write tools).
+      - name: Check out the verifier
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.verifier_repo }}
+          ref: ${{ inputs.verifier_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - name: Check out the PR head (read-only; never executed)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          path: pr-head
+          persist-credentials: false
+      # The base tree carries the TRUSTED contract and ruler — the brief
+      # directs all ruler reads here, never at the PR head.
+      - name: Check out the base branch (trusted contract + ruler)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: base
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      # Native binary, pinned to the validated version — bump deliberately.
+      - name: Install the Claude CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run the agent verification
+        working-directory: .autoresearch
+        env:
+          ANTHROPIC_VERIFIER_KEY: ${{ secrets.anthropic_verifier_key }}
+          # The caller's own workflow token — the bot PAT is never used here.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          # The parent of the two checkouts (pr-head/ and base/).
+          VERIFY_CHECKOUT: ${{ github.workspace }}
+        run: uv run --extra review python -m autoresearch.verify_agent_cli
