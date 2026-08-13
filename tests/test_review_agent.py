@@ -231,3 +231,12 @@ def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     assert "reviewing a pull request" in brief.lower()
     assert "input_gain" in brief  # the diff is embedded
     assert "2026-08-13" in brief
+
+
+def test_reviewer_harness_uses_read_only_permission_mode() -> None:
+    # defense in depth: a read-only harness must not auto-accept edits
+    from autoresearch.review_agent import build_reviewer_harness
+
+    h = build_reviewer_harness("k")
+    mutating = {"Write", "Edit", "Bash"}.intersection(h.allowed_tools)
+    assert not mutating  # sanity: it's read-only

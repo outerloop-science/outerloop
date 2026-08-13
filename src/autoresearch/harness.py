@@ -245,6 +245,11 @@ class ClaudeCodeHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
+        # A read-only session (no mutating tool) gets a permission mode that
+        # denies edits rather than auto-accepting them — defense in depth
+        # behind the tool allowlist, so a stray edit tool cannot auto-apply.
+        mutating = {"Write", "Edit", "Bash"}.intersection(self.allowed_tools)
+        permission_mode = "acceptEdits" if mutating else "default"
         claude_argv = [
             self.CONTAINER_CLAUDE if self.container_image else self.binary,
             "-p",
@@ -260,7 +265,7 @@ class ClaudeCodeHarness:
             "--allowedTools",
             ",".join(self.allowed_tools),
             "--permission-mode",
-            "acceptEdits",
+            permission_mode,
             *self.extra_args,
         ]
         if resume_session_id:
@@ -550,6 +555,12 @@ class CodexHarness:
             return _error_result("codex-login-error", detail=detail or "codex login failed")
         return None
 
+    def _purge_auth(self, session_home: Path) -> None:
+        """Delete the API key that `codex login` wrote to auth.json, so it does
+        not persist on disk past the session."""
+        with contextlib.suppress(OSError):
+            (session_home / ".codex" / "auth.json").unlink()
+
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
@@ -598,6 +609,7 @@ class CodexHarness:
             )
         except OSError as exc:
             log.warning("could not spawn %s: %s", self.binary, exc)
+            self._purge_auth(session_home)
             return _error_result("spawn-error")
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
@@ -616,6 +628,7 @@ class CodexHarness:
             )
             with contextlib.suppress(OSError):
                 last_message_path.unlink()  # clean up on the timeout path too
+            self._purge_auth(session_home)
             log.warning("codex session timed out after %ss in %s", self.timeout_s, workspace)
             return _error_result(
                 "timeout",
@@ -633,6 +646,7 @@ class CodexHarness:
         # file so model output is not left behind.
         with contextlib.suppress(OSError):
             last_message_path.unlink()
+        self._purge_auth(session_home)
         return _parse_codex_result(
             stdout,
             last_message,

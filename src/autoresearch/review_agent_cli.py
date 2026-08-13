@@ -35,9 +35,15 @@ def main() -> int:
     if not api_key:
         log.warning("ANTHROPIC_REVIEWER_KEY is unset or empty; skipping review")
         return 0
-    # The workflow checks out the PR head read-only into this directory; the
-    # agent reads it but never executes it (read-only tool set).
-    workspace = Path(os.environ.get("REVIEW_CHECKOUT", ".")).resolve()
+    # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
+    # agent reads it but never executes it (read-only tool set). Fail closed:
+    # defaulting to cwd would silently review the wrong tree (the reviewer's
+    # own repo) if the checkout step were misconfigured.
+    checkout = os.environ.get("REVIEW_CHECKOUT", "").strip()
+    if not checkout:
+        log.warning("REVIEW_CHECKOUT is unset; skipping (won't review the wrong tree)")
+        return 0
+    workspace = Path(checkout).resolve()
     explicit = os.environ.get("REVIEW_EXPLICIT_REQUEST", "").strip().lower() == "true"
 
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))

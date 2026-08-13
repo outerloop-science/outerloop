@@ -55,3 +55,11 @@ def test_missing_key_skips(monkeypatch: Any) -> None:
     calls = _patch(monkeypatch, env)
     assert cli.main() == 0
     assert calls == {}
+
+
+def test_missing_checkout_fails_closed(monkeypatch: Any) -> None:
+    env = _base_env()
+    del env["REVIEW_CHECKOUT"]  # would otherwise default to cwd (wrong tree)
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls == {}
