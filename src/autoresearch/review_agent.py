@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import ClaudeCodeHarness, CodexHarness, Harness, outage
+from autoresearch.harness import ClaudeCodeHarness, CodexHarness, Harness, budget_exhausted, outage
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -89,7 +89,41 @@ def build_reviewer_harness(
         timeout_s=spec.budget.walltime_s,
         allowed_tools=allowed,
         container_image=container_image,
+        # A judge's cwd contains an untrusted checkout: never load its
+        # CLAUDE.md / hooks / project settings as instructions.
+        bare=True,
     )
+
+
+# Files an agent harness may auto-load as INSTRUCTIONS from a checkout. In an
+# untrusted tree they are attack surface (a PR-authored CLAUDE.md, or
+# .claude/settings.json hooks that execute commands), so the CLIs rename them
+# before any session starts. Renamed — not deleted — so a judge can still read
+# them as data. Backend-agnostic defense in depth behind claude's --bare.
+INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", ".claude", ".mcp.json")
+SANITIZED_SUFFIX = ".pr-data"
+
+
+def sanitize_checkout(tree: Path) -> tuple[int, int]:
+    """Rename instruction-bearing files/dirs anywhere under `tree` so no agent
+    backend auto-loads untrusted content as instructions. Returns
+    (renamed, failed). A non-zero `failed` means an instruction file is still
+    live (e.g. a crafted name collision blocking the rename) — callers must
+    FAIL CLOSED and skip the session rather than judge an unsanitized tree.
+    Never raises."""
+    renamed = failed = 0
+    if not tree.is_dir():
+        return 0, 0
+    # bottom-up so a renamed directory doesn't orphan paths found beneath it
+    for path in sorted(tree.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.name in INSTRUCTION_FILES:
+            try:
+                path.rename(path.with_name(path.name + SANITIZED_SUFFIX))
+                renamed += 1
+            except OSError as exc:
+                log.warning("could not sanitize %s: %s", path, exc)
+                failed += 1
+    return renamed, failed
 
 
 def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullRequest, dict]:
@@ -142,12 +176,12 @@ def run_agent_review(
         role_result = run_role(spec, harness, build_agent_brief(pr, today), workspace)
         review = review_result_from_role(role_result)
         if review is None:
-            # No verdict: an errored or refused session, not a clean read.
-            # Say so on the thread only for an outage (API refused us); other
-            # failures are logged, advisory-silent.
+            # No verdict: an errored or refused session, not a clean read. An
+            # API outage or a budget-exhausted session (walltime/turns) says so
+            # on the thread; other failures are logged, advisory-silent.
             detail = role_result.error or role_result.session.stop_reason
             log.warning("agent review produced no verdict on %s#%s: %s", repo, number, detail)
-            if outage(role_result.session):
+            if outage(role_result.session) or budget_exhausted(role_result.session):
                 post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
 

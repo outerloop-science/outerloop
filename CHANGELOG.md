@@ -8,6 +8,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The verifier can now run as an agent session over TWO read-only checkouts:
+  the PR head (the change under review) and the base branch (the trusted
+  contract and ruler — all ruler reads are directed there, never at the PR).
+  Same constitution as the one-call verifier it will replace: bot PRs only,
+  advisory, silence is never endorsement. The completer verifier stays the
+  live default until the caller workflows swap.
+- Agent judge sessions are hardened against instruction smuggling: the Claude
+  CLI runs with `--bare` (no hooks, no CLAUDE.md auto-discovery, key-only
+  auth), and the CLIs rename instruction-bearing files (`CLAUDE.md`,
+  `AGENTS.md`, `.claude/`, `.mcp.json`) inside the untrusted checkout before
+  any session starts, so PR content can be read as data but never loaded as
+  instructions.
 - The advisory reviewer now runs as an agent session that reads the PR head
   (read-only — no execute), instead of a single model call over the diff. It
   investigates the surrounding code, callers, and tests, so it finds defects a
