@@ -393,8 +393,28 @@ def verdict_line(findings: list[Finding], clean_text: str = "no defects found") 
     return f"**Verdict: {blocking} blocking, {advisory} advisory.**"
 
 
+# Findings that anchor inline: the ones the reader can act on right at the
+# line. Blocking findings anchor too (they gate the merge, so they are always
+# actionable), which keeps them inline regardless of `kind`.
+_INLINE_KINDS = ("change", "suggestion")
+# Body-bullet labels that surface intent for the kinds kept in the body.
+_BRIEF_LABEL = {"question": "Question: ", "suggestion": "Suggestion: "}
+
+
+def _inlines(finding: Finding) -> bool:
+    return finding.blocking or finding.kind in _INLINE_KINDS
+
+
+def _inline_comment(finding: Finding) -> str:
+    """The inline thread body for a local, actionable finding. A suggestion is
+    marked as optional; a change (or blocking defect) reads as itself."""
+    paragraph = _finding_paragraph(finding, with_ref=False)
+    lead = "**Suggestion.** " if finding.kind == "suggestion" and not finding.blocking else ""
+    return f"{lead}{paragraph}\n\n*({finding.confidence} confidence)*"
+
+
 def _finding_brief(finding: Finding) -> str:
-    """A compact one-line bullet for a non-blocking finding. Summary is
+    """A compact one-line bullet for a finding kept in the body. Summary is
     model text shaped by the diff, so an odd backtick must be balanced or
     it pairs with the reference's opening backtick and spills the path."""
     safe_file = finding.file.replace("`", "")
@@ -402,7 +422,8 @@ def _finding_brief(finding: Finding) -> str:
     summary = finding.summary.rstrip(".!?…")
     if summary.count("`") % 2:
         summary += "`"
-    return f"- {summary} ({where}; {finding.confidence})"
+    label = _BRIEF_LABEL.get(finding.kind, "")
+    return f"- {label}{summary} ({where}; {finding.confidence})"
 
 
 def _render_body(
@@ -423,7 +444,7 @@ def _render_body(
     lines = [marker, header, "", verdict, ""]
     if inline_count:
         n = inline_count
-        lines.append(f"{n} blocking finding{'s' if n != 1 else ''} attached to the lines below.")
+        lines.append(f"{n} finding{'s' if n != 1 else ''} attached to the lines below.")
         lines.append("")
     for f in blocking:  # only the ones not shown inline reach here
         lines.append(_finding_paragraph(f))
@@ -450,17 +471,17 @@ def format_review(result: ReviewResult, diff: str) -> tuple[str, list[dict[str, 
     anchors = commentable_lines(diff)
     inline: list[dict[str, Any]] = []
     remaining: list[Finding] = []
-    # Only blocking findings anchor inline (they are what the reader must
-    # act on); advisory findings stay as a compact list in the body.
+    # Actionable findings (blocking, or kind change/suggestion) anchor inline
+    # where the reader acts; questions and notes stay a compact body list, so
+    # local FYI findings do not flood the diff with threads.
     for finding in sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence]):
-        if finding.blocking and finding.line and finding.line in anchors.get(finding.file, ()):
+        if _inlines(finding) and finding.line and finding.line in anchors.get(finding.file, ()):
             inline.append(
                 {
                     "path": finding.file,
                     "line": finding.line,
                     "side": "RIGHT",
-                    "body": f"{_finding_paragraph(finding, with_ref=False)}\n\n"
-                    f"*({finding.confidence} confidence)*",
+                    "body": _inline_comment(finding),
                 }
             )
         else:
