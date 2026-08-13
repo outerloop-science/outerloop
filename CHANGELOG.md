@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The advisory reviewer now runs as an agent session that reads the PR head
+  (read-only — no execute), instead of a single model call over the diff. It
+  investigates the surrounding code, callers, and tests, so it finds defects a
+  diff-only pass cannot. It runs on the same triggers (PR open/reopen and the
+  `autoresearch:review` label), keeps the same fork gate (same-repo PRs only),
+  and never executes PR code. The reusable workflow is
+  `advisory-review-agent.yml`; the completer reusable remains until the other
+  lab repos migrate, then it is removed. Backends are pluggable (claude on
+  GitHub-hosted runners; codex on a namespace-capable host).
 - Review findings carry a `kind` — change, suggestion, question, or note —
   saying what the reader is asked to do, separate from whether the finding
   gates the merge. Placement follows it: actionable findings (a blocking
