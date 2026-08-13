@@ -37,9 +37,16 @@ def main() -> int:
     if not bot_login:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
         return 0
-    api_key = os.environ.get("ANTHROPIC_REVIEWER_KEY", "").strip()
+    # Backend is a deployment choice, not baked in: pick the harness and its
+    # key by REVIEW_BACKEND (claude | codex), consistent with the Harness seam.
+    backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
+    key_var = {"claude": "ANTHROPIC_REVIEWER_KEY", "codex": "OPENAI_REVIEWER_KEY"}.get(backend)
+    if key_var is None:
+        log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
+        return 0
+    api_key = os.environ.get(key_var, "").strip()
     if not api_key:
-        log.warning("ANTHROPIC_REVIEWER_KEY is unset or empty; skipping review")
+        log.warning("%s is unset or empty; skipping review", key_var)
         return 0
     # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
     # agent reads it but never executes it (read-only tool set). Fail closed:
@@ -55,7 +62,8 @@ def main() -> int:
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
     harness = build_reviewer_harness(
         api_key,
-        binary=os.environ.get("CLAUDE_BINARY", "claude"),
+        backend=backend,
+        binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
         model=os.environ.get("REVIEW_MODEL") or None,
     )
     run_agent_review(

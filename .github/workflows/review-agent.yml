@@ -1,0 +1,90 @@
+name: advisory-review-agent
+# The agent-session reviewer, run manually (workflow_dispatch) to validate it on
+# a real runner beside the live completer (review.yml). It checks out the PR head
+# READ-ONLY and never executes it — the reviewer's tool set has no Bash/Write, so
+# untrusted PR code is only read. Non-destructive: this does not replace
+# review.yml. The swap + completer sunset is a later change once this is proven.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        type: string
+        required: true
+      backend:
+        description: Which agent backend drives the review
+        type: choice
+        options: [claude, codex]
+        default: claude
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One review at a time per PR. Do NOT cancel in progress: a running session is a
+# paid model call, so queue a second dispatch behind it rather than kill it.
+concurrency:
+  group: advisory-review-agent-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  agent-review:
+    runs-on: ubuntu-latest
+    # Backstop a hung session so it cannot burn the 360-min default runner
+    # budget; the harness kills the session at its own walltime well before
+    # this. No continue-on-error: this is a manual workflow, not a PR check, so
+    # a failure never reds a PR — and masking install failures would hide them.
+    timeout-minutes: 40
+    steps:
+      # The reviewer code runs from here; the PR head is only ever read.
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          path: .autoresearch
+          persist-credentials: false
+      - name: Check out the PR head (read-only; never executed)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          path: pr-head
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          # the reviewer is checked out under a dot-path; point the cache key at
+          # its lockfile or the default glob would miss it and never invalidate
+          cache-dependency-glob: .autoresearch/uv.lock
+      # Both CLIs are PINNED to the versions validated on cluster0 — bump them
+      # deliberately (and re-validate), since the codex adapter in particular
+      # parses codex-cli's --json event schema. Claude installs as a native
+      # binary (the npm wrapper's native-binary spawn is fragile — macOS
+      # quarantines it); its installer takes a version arg. Codex ships via npm
+      # on Linux. Either way the binary lands on PATH, which the harness passes
+      # through to the scrubbed session env.
+      - name: Install the ${{ inputs.backend }} CLI
+        env:
+          # via env, not interpolated into the script (avoids the injection shape)
+          BACKEND: ${{ inputs.backend }}
+        # pipefail so a failed curl fails the step instead of piping empty to bash
+        run: |
+          set -euo pipefail
+          if [ "$BACKEND" = "codex" ]; then
+            npm install -g @openai/codex@0.130.0
+          else
+            curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Run the agent review
+        working-directory: .autoresearch
+        env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          # The CLI reads only the key for the chosen backend; the other is unset.
+          ANTHROPIC_REVIEWER_KEY: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
+          OPENAI_REVIEWER_KEY: ${{ secrets.OPENAI_REVIEWER_KEY }}
+          # The workflow token, not the bot PAT — the PAT never reaches a session.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEW_BOT_LOGIN: agentic-learning-bot
+          REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
+        run: uv run --extra review python -m autoresearch.review_agent_cli

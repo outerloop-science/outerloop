@@ -194,15 +194,35 @@ def test_malformed_output_posts_nothing() -> None:
 
 
 def test_build_reviewer_harness_is_read_only() -> None:
+    from autoresearch.harness import ClaudeCodeHarness
     from autoresearch.review_agent import build_reviewer_harness
 
     harness = build_reviewer_harness("k")
+    assert isinstance(harness, ClaudeCodeHarness)  # default backend
     # the read-only boundary binds the session: no execute/write tools
     assert "Bash" not in harness.allowed_tools
     assert "Write" not in harness.allowed_tools and "Edit" not in harness.allowed_tools
     assert set(harness.allowed_tools) == {"Read", "Grep", "Glob"}
     # budget comes from the RoleSpec
     assert harness.max_turns == 40 and harness.timeout_s == 1800
+
+
+def test_build_reviewer_harness_codex_backend() -> None:
+    from autoresearch.harness import CodexHarness
+    from autoresearch.review_agent import build_reviewer_harness
+
+    h = build_reviewer_harness("k", backend="codex")
+    assert isinstance(h, CodexHarness)
+    assert h.sandbox == "read-only"  # read-only judge boundary via the sandbox
+
+
+def test_build_reviewer_harness_rejects_unknown_backend() -> None:
+    import pytest
+
+    from autoresearch.review_agent import build_reviewer_harness
+
+    with pytest.raises(ValueError, match="unknown reviewer backend"):
+        build_reviewer_harness("k", backend="hermes")
 
 
 def test_build_reviewer_harness_rejects_execute_role() -> None:
