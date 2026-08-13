@@ -35,17 +35,21 @@ operator's compute, or with a secret exfiltrated.**
 ## The gap that gates the flip: `pull_request_target`
 
 The advisory reviewer runs on `pull_request_target` so it can hold secrets
-(the org secret `REVIEWER_API_KEY`, surfaced to the CLI as
-`ANTHROPIC_REVIEWER_KEY`; optionally a checkout key — grep for both names
-when auditing). On a public repo that
+(per-repo `ANTHROPIC_REVIEWER_KEY`; optionally a checkout key — grep for
+both names when auditing; the legacy org secret `REVIEWER_API_KEY` is being
+retired with the completer). On a public repo that
 trigger fires for **fork PRs from strangers** — the classic pwn-request
 shape: privileged context + attacker-influenced event.
 
-Current mitigations already in the reusable workflow: the fork gate
-(`head.repo.full_name == github.repository`) sits before any step, the
-workflow checks out the REVIEWER, never the PR head, and nothing from the PR
-is executed — its diff and files are only *read* via the API and fed to a
-model as fenced text.
+Current mitigations already in the reusable workflow
+(`advisory-review-agent.yml`): the fork gate
+(`head.repo.full_name == github.repository`) sits before any step, and
+nothing from the PR is ever executed. Since the agent-reviewer swap the
+workflow DOES check out the PR head — read-only, `persist-credentials:
+false` — and the session that reads it has no execute or write tools and a
+scrubbed environment (no workflow token), so PR content can only inform the
+model as data, never run or exfiltrate. Fork-PR review remains out of scope
+until it gets its own design.
 
 **Audit checklist before any public flip** (each item verified on the live
 workflow files of the repo being flipped, not on memory of them):
