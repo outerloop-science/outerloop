@@ -38,9 +38,13 @@ def main() -> int:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
         return 0
     # Backend is a deployment choice, not baked in: pick the harness and its
-    # key by REVIEW_BACKEND (claude | codex), consistent with the Harness seam.
+    # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
     backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
-    key_var = {"claude": "ANTHROPIC_REVIEWER_KEY", "codex": "OPENAI_REVIEWER_KEY"}.get(backend)
+    key_var = {
+        "claude": "ANTHROPIC_REVIEWER_KEY",
+        "codex": "OPENAI_REVIEWER_KEY",
+        "hermes": "OPENROUTER_API_KEY",
+    }.get(backend)
     if key_var is None:
         log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
         return 0
@@ -48,6 +52,25 @@ def main() -> int:
     if not api_key:
         log.warning("%s is unset or empty; skipping review", key_var)
         return 0
+    # Backend-specific deployment config, resolved from env so the workflow
+    # (which knows the host) supplies it, never the pure builder:
+    #   codex on GitHub-hosted needs the Landlock sandbox — the default bwrap
+    #     cannot init there (verified 2026-08-13), so the workflow opts in.
+    #   hermes needs its pinned clone and a provider to seed ~/.hermes/config.
+    sandbox_extra: tuple[str, ...] = ()
+    if backend == "codex" and os.environ.get(
+        "REVIEW_CODEX_LEGACY_LANDLOCK", ""
+    ).strip().lower() in ("1", "true", "yes"):
+        sandbox_extra = ("-c", "use_legacy_landlock=true")
+    hermes_repo: Path | None = None
+    provider = ""
+    if backend == "hermes":
+        hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+        if not hermes_repo_env:
+            log.warning("REVIEW_HERMES_REPO is unset; skipping (hermes needs its pinned clone)")
+            return 0
+        hermes_repo = Path(hermes_repo_env).resolve()
+        provider = os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter").strip()
     # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
     # agent reads it but never executes it (read-only tool set). Fail closed:
     # defaulting to cwd would silently review the wrong tree (the reviewer's
@@ -74,6 +97,9 @@ def main() -> int:
         backend=backend,
         binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
         model=os.environ.get("REVIEW_MODEL") or None,
+        hermes_repo=hermes_repo,
+        provider=provider,
+        sandbox_extra=sandbox_extra,
     )
     run_agent_review(
         client,

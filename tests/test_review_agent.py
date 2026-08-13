@@ -214,6 +214,39 @@ def test_build_reviewer_harness_codex_backend() -> None:
     h = build_reviewer_harness("k", backend="codex")
     assert isinstance(h, CodexHarness)
     assert h.sandbox == "read-only"  # read-only judge boundary via the sandbox
+    assert h.extra_args == ()  # no host-specific sandbox config by default
+
+
+def test_build_reviewer_harness_codex_sandbox_extra_passthrough() -> None:
+    from autoresearch.harness import CodexHarness
+    from autoresearch.review_agent import build_reviewer_harness
+
+    # The deployment (workflow) opts into the Landlock sandbox on GitHub-hosted;
+    # the builder threads it verbatim to codex's argv.
+    h = build_reviewer_harness("k", backend="codex", sandbox_extra=("-c", "use_legacy_landlock=true"))
+    assert isinstance(h, CodexHarness)
+    assert h.extra_args == ("-c", "use_legacy_landlock=true")
+
+
+def test_build_reviewer_harness_hermes_backend(tmp_path: Path) -> None:
+    from autoresearch.harness import HermesHarness
+    from autoresearch.review_agent import build_reviewer_harness
+
+    h = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="openrouter")
+    assert isinstance(h, HermesHarness)
+    assert h.repo_dir == tmp_path and h.provider == "openrouter"
+    # Read-only-ish judge shape: file toolset only, terminal (shell) disabled.
+    assert h.enabled_toolsets == ("file",)
+    assert "terminal" in h.disabled_toolsets
+
+
+def test_build_reviewer_harness_hermes_requires_repo() -> None:
+    import pytest
+
+    from autoresearch.review_agent import build_reviewer_harness
+
+    with pytest.raises(ValueError, match="hermes_repo"):
+        build_reviewer_harness("k", backend="hermes")
 
 
 def test_build_reviewer_harness_rejects_unknown_backend() -> None:
@@ -222,7 +255,7 @@ def test_build_reviewer_harness_rejects_unknown_backend() -> None:
     from autoresearch.review_agent import build_reviewer_harness
 
     with pytest.raises(ValueError, match="unknown reviewer backend"):
-        build_reviewer_harness("k", backend="hermes")
+        build_reviewer_harness("k", backend="gemini-cli")
 
 
 def test_build_reviewer_harness_rejects_execute_role() -> None:

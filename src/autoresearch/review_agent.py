@@ -24,7 +24,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import ClaudeCodeHarness, CodexHarness, Harness, budget_exhausted, outage
+from autoresearch.harness import (
+    ClaudeCodeHarness,
+    CodexHarness,
+    Harness,
+    HermesHarness,
+    budget_exhausted,
+    outage,
+)
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -59,12 +66,28 @@ def build_reviewer_harness(
     binary: str | None = None,
     model: str | None = None,
     container_image: str = "",
+    hermes_repo: Path | None = None,
+    provider: str = "",
+    sandbox_extra: tuple[str, ...] = (),
 ) -> Harness:
     """Construct a read-only harness for the reviewer from its RoleSpec, for the
     chosen backend — the deployment wiring the role-runner assumes (docs: "the
-    harness is assumed already constructed for the role"). The read-only
-    boundary binds the session regardless of backend: Claude via a native
-    read-only tool set (no Write/Edit/Bash), Codex via --sandbox read-only.
+    harness is assumed already constructed for the role").
+
+    How the read-only boundary is enforced differs by backend, and that
+    difference is a trust difference, not a detail:
+    - Claude: a native read-only tool set (no Write/Edit/Bash). A tool-set
+      boundary — the strongest, and the trusted default.
+    - Codex: reads by executing shell, so it needs an OS jail (`--sandbox
+      read-only`, plus `sandbox_extra` for host-specific config such as
+      `-c use_legacy_landlock=true` on GitHub-hosted runners). Even jailed it
+      can read a parent's env via /proc, so it is not run next to a token.
+    - Hermes: no read-only tool set at all — `file` bundles write, and
+      `approvals.deny` gates only shell. Its safety as a judge is ENVIRONMENTAL,
+      not tool-set: `terminal` is disabled (no shell, no /proc reach) and its
+      writes are inert on an ephemeral runner (nothing to push, scrubbed env).
+      Experimental only, and valid ONLY where writes cannot persist.
+
     Budget: Claude gets max_turns and walltime; Codex is bounded by walltime
     only (no per-turn cap yet) and does not use container_image."""
     spec = spec or reviewer_spec()
@@ -76,6 +99,21 @@ def build_reviewer_harness(
             binary=binary or "codex",
             model=model or "",  # codex's configured default
             sandbox="read-only",
+            timeout_s=spec.budget.walltime_s,
+            extra_args=sandbox_extra,
+        )
+    if backend == "hermes":
+        if hermes_repo is None:
+            raise ValueError("hermes reviewer backend needs hermes_repo (the pinned clone)")
+        # Defaults already encode the judge shape: file toolset only, terminal
+        # and every other executing/egress toolset disabled. Read-only rests on
+        # that config plus the ephemeral runner (see the docstring above).
+        return HermesHarness(
+            api_key=api_key,
+            repo_dir=hermes_repo,
+            provider=provider,
+            model=model or "",  # OpenRouter provider/model; empty -> hermes default
+            max_turns=spec.budget.max_turns,
             timeout_s=spec.budget.walltime_s,
         )
     if backend != "claude":

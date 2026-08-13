@@ -759,10 +759,18 @@ class HermesHarness:
     """Headless hermes-agent (Nous Research, MIT) — the OSS backend behind the
     Harness seam, driven via `uv run <repo>/run_agent.py` from a pinned clone.
 
-    ELIGIBILITY: author-side / experimental only. Hermes has no native
-    read-only toolset (its `file` toolset bundles write_file and patch), so it
-    must NOT be wired as a judge until its `approvals.deny` config route is
-    verified live — the judge boundary is the tool set, never the prompt.
+    ELIGIBILITY: author-side, or an EXPERIMENTAL judge on an ephemeral runner —
+    never a trusted judge. Hermes has no native read-only toolset (its `file`
+    toolset bundles write_file and patch, and `approvals.deny` gates only shell),
+    so it cannot enforce read-only at the tool set the way Claude does. As a
+    judge its safety is therefore ENVIRONMENTAL, not tool-set: `terminal` is
+    disabled (no shell -> no /proc reach to a parent's token) and its writes are
+    inert on an ephemeral GitHub-hosted runner (nothing to push, scrubbed env,
+    container discarded). That boundary holds ONLY where writes cannot persist —
+    valid on the throwaway runner, NOT on the cluster or any reused workspace. A
+    tool-set boundary is strictly stronger, so Claude stays the trusted default
+    and hermes-as-judge stays experimental until an upstream read/write toolset
+    split or an OS read-only bind-mount gives it a real boundary.
     Instruction-file surface: hermes auto-loads AGENTS.md from the workspace,
     which sanitize_checkout already neutralizes in untrusted trees. No session
     resume in the headless seam, so run_role's repair pass is unavailable.
