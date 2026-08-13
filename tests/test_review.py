@@ -106,6 +106,11 @@ def test_result_from_data_drops_malformed_items_without_crashing() -> None:
     assert [f.file for f in result.findings] == ["x.py"]
     assert result.notes == ""
 
+    # findings null or a non-list must not raise, either
+    assert result_from_data({"findings": None, "notes": ""}).findings == []
+    assert result_from_data({"findings": 7, "notes": ""}).findings == []
+    assert result_from_data({}).findings == []
+
 
 def test_bot_authored_prs_are_never_reviewed() -> None:
     pr = make_pr(author=BOT)

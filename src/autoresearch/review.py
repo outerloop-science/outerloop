@@ -242,8 +242,10 @@ AGENT_INVESTIGATION = (
     "Grep, and Glob to investigate beyond the diff: the surrounding code, callers, "
     "and tests. The checked-out code is part of your evidence, so you may cite file "
     "contents you read. You have no execute or write tools; do not run code.\n\n"
-    "When done, reply with ONLY the JSON object of findings (keys: `findings`, "
-    "`notes`) and nothing else."
+    "When done, reply with ONLY a JSON object and nothing else: `findings` (a "
+    "list) and `notes` (a string). Each finding has `file`, `line` (or null), "
+    "`confidence` (low, medium, or high), `summary`, `detail`, `blocking` (true "
+    "or false), and `kind` (change, suggestion, question, or note)."
 )
 
 
@@ -313,8 +315,10 @@ def result_from_data(data: dict[str, Any]) -> ReviewResult:
     the item schema, but the agent path validates only the top-level shape, so
     an item may be a non-dict or miss a key. A finding needs at least a file, a
     summary, and a detail; anything short of that is skipped."""
+    raw = data.get("findings")
+    items = raw if isinstance(raw, list) else []  # null / non-list -> no findings
     findings: list[Finding] = []
-    for item in list(data.get("findings", []))[:MAX_FINDINGS]:
+    for item in items[:MAX_FINDINGS]:
         if not isinstance(item, dict):
             continue
         file, summary, detail = item.get("file"), item.get("summary"), item.get("detail")
