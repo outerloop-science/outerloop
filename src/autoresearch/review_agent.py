@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import Harness, outage
+from autoresearch.harness import ClaudeCodeHarness, Harness, outage
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -33,12 +33,50 @@ from autoresearch.review import (
     format_review,
     skip_reason,
 )
-from autoresearch.review_cli import EXPECTED_FAILURES, post_round_review, post_skip_stub
+from autoresearch.review_cli import (
+    EXPECTED_FAILURES,
+    post_round,
+    post_round_review,
+    post_skip_stub,
+)
 from autoresearch.role_runner import run_role
 from autoresearch.roles import review_result_from_role, reviewer_spec
 from autoresearch.rolespec import RoleSpec
 
 log = logging.getLogger(__name__)
+
+# Native Claude Code tools a judge session uses. The RoleSpec's other tools
+# (pr-context-read, retriever) are harness-provided MCP tools, wired separately;
+# they are not passed as native CLI tools here.
+_NATIVE_READ_TOOLS = ("Read", "Grep", "Glob")
+
+
+def build_reviewer_harness(
+    api_key: str,
+    spec: RoleSpec | None = None,
+    *,
+    binary: str = "claude",
+    model: str | None = None,
+    container_image: str = "",
+) -> ClaudeCodeHarness:
+    """Construct a read-only Claude Code harness for the reviewer from its
+    RoleSpec — the deployment wiring the role-runner assumes (docs: "the harness
+    is assumed already constructed for the role"). Only native read tools are
+    granted (no Write/Edit/Bash), so the read-only boundary binds the session,
+    and the RoleSpec's budget sets turns and walltime."""
+    spec = spec or reviewer_spec()
+    if spec.execution.can_execute:
+        raise ValueError("build_reviewer_harness is for read-only judge roles")
+    allowed = tuple(tool for tool in spec.tools if tool in _NATIVE_READ_TOOLS)
+    return ClaudeCodeHarness(
+        api_key=api_key,
+        binary=binary,
+        model=model or "claude-opus-5",
+        max_turns=spec.budget.max_turns,
+        timeout_s=spec.budget.walltime_s,
+        allowed_tools=allowed,
+        container_image=container_image,
+    )
 
 
 def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullRequest, dict]:
@@ -100,15 +138,26 @@ def run_agent_review(
                 post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
 
-        rendered = format_review(review, pr.diff)
-        full = format_comment(review)
-        if rendered is None or full is None:
-            log.info("nothing to post")
-            return None
-        body, inline = rendered
-        round_label = post_round_review(
-            client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
-        )
+        # Human PRs get inline findings. Explicit rounds on BOT PRs stay issue
+        # comments: those ride into follow-up wakes as context, and the wake
+        # plumbing reads the issue-comment collection (matches review_cli).
+        bot_authored = pr.author.strip().casefold() == bot_login.strip().casefold()
+        if bot_authored:
+            body = format_comment(review)
+            if body is None:
+                log.info("nothing to post")
+                return None
+            round_label = post_round(client, repo, number, MARKER, body, pr_data)
+        else:
+            rendered = format_review(review, pr.diff)
+            full = format_comment(review)
+            if rendered is None or full is None:
+                log.info("nothing to post")
+                return None
+            body, inline = rendered
+            round_label = post_round_review(
+                client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+            )
         log.info("posted agent review (%s) on %s#%s", round_label, repo, number)
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI

@@ -129,6 +129,23 @@ def test_null_labels_do_not_crash() -> None:
     assert label is not None  # posts normally; null labels are not a crash
 
 
+def test_explicit_bot_pr_posts_issue_comment_not_inline() -> None:
+    # a bot PR reviewed on explicit re-request stays an issue comment, so it
+    # rides into follow-up wakes (the wake plumbing reads issue comments)
+    client, harness = _Client(author="autoresearch-bot"), _Harness(_FINDINGS)
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+        explicit=True,
+    )
+    assert label is not None
+    assert client.comments and client.reviews == []  # issue comment, not inline review
+
+
 def test_bot_authored_pr_is_skipped() -> None:
     client, harness = _Client(author="autoresearch-bot"), _Harness(_FINDINGS)
     label = run_agent_review(
@@ -176,6 +193,36 @@ def test_malformed_output_posts_nothing() -> None:
     assert client.reviews == [] and client.comments == []
 
 
+def test_build_reviewer_harness_is_read_only() -> None:
+    from autoresearch.review_agent import build_reviewer_harness
+
+    harness = build_reviewer_harness("k")
+    # the read-only boundary binds the session: no execute/write tools
+    assert "Bash" not in harness.allowed_tools
+    assert "Write" not in harness.allowed_tools and "Edit" not in harness.allowed_tools
+    assert set(harness.allowed_tools) == {"Read", "Grep", "Glob"}
+    # budget comes from the RoleSpec
+    assert harness.max_turns == 40 and harness.timeout_s == 1800
+
+
+def test_build_reviewer_harness_rejects_execute_role() -> None:
+    import pytest
+
+    from autoresearch.review_agent import build_reviewer_harness
+    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+
+    author = RoleSpec(
+        name="author",
+        instructions="x",
+        key="author",
+        tools=("Read", "Edit", "Bash"),
+        execution=Execution(environment="apptainer", can_execute=True),
+        budget=SessionBudget(max_turns=10, walltime_s=60),
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        build_reviewer_harness("k", author)
+
+
 def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     from autoresearch.review import PullRequest
 
@@ -184,3 +231,29 @@ def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     assert "reviewing a pull request" in brief.lower()
     assert "input_gain" in brief  # the diff is embedded
     assert "2026-08-13" in brief
+
+
+def test_reviewer_harness_uses_read_only_permission_mode(monkeypatch: Any, tmp_path: Path) -> None:
+    # defense in depth: a read-only harness passes --permission-mode default
+    # (edits denied), not acceptEdits. Inspect the actual spawned argv.
+    import autoresearch.harness as harness_mod
+    from autoresearch.review_agent import build_reviewer_harness
+
+    seen: dict[str, Any] = {}
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **_: Any) -> None:
+            seen["argv"] = command
+
+        def communicate(
+            self, input: str | None = None, timeout: float | None = None
+        ) -> tuple[str, str]:
+            return json.dumps({"result": "{}", "session_id": "s"}), ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    build_reviewer_harness("k").run("brief", tmp_path)
+    argv = seen["argv"]
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "Bash" not in argv[argv.index("--allowedTools") + 1]
