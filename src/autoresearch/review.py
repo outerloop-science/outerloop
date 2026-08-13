@@ -271,7 +271,15 @@ def review(
         return ReviewResult(findings=[], notes="", skipped=skip)
 
     raw = completer.complete(SYSTEM_PROMPT, build_prompt(pr, today), FINDINGS_SCHEMA)
-    data = json.loads(raw)
+    return result_from_data(json.loads(raw))
+
+
+def result_from_data(data: dict[str, Any]) -> ReviewResult:
+    """Build a ReviewResult from a validated findings object. Shared by the
+    one-shot completer path and the agent-session path — both hand back the
+    same schema, so both must sanitize identically: every string here is
+    untrusted model output bound for a GitHub comment, and the caps guard the
+    render (`sanitize` also neutralizes markdown/HTML injection)."""
     findings = [
         Finding(
             file=sanitize(item["file"], 200),

@@ -7,7 +7,8 @@ result-policy — no kernel change (docs/design/consolidation.md).
 
 from __future__ import annotations
 
-from autoresearch.review import FINDINGS_SCHEMA
+from autoresearch.review import FINDINGS_SCHEMA, ReviewResult, result_from_data
+from autoresearch.role_runner import RoleResult
 from autoresearch.rolespec import Environment, Execution, RoleSpec, SessionBudget
 
 # Read-only investigation: repo-read plus the harness-provided pr-context and
@@ -38,3 +39,16 @@ def reviewer_spec(
         skills=("kernel-primer", "plain-style", "review-rubric", "read-only-investigation"),
         output_schema=FINDINGS_SCHEMA,
     )
+
+
+def review_result_from_role(result: RoleResult) -> ReviewResult | None:
+    """The reviewer result-policy: turn a role run into a postable ReviewResult,
+    or None when the session did not hand back a verdict (error/outage — the
+    caller posts a skip stub, never a clean read). The agent hands back data;
+    the kernel sanitizes it (`result_from_data`) and posts it. The findings
+    carry line anchors, so the same `format_review` path the completer used
+    still places inline comments — the agent directs the anchor, the kernel
+    places it."""
+    if not result.ok or result.data is None:
+        return None
+    return result_from_data(result.data)
