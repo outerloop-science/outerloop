@@ -2,6 +2,41 @@
 
 Status: proposal (2026-08-12). Staged; each stage stops for review.
 
+## Principle
+
+**Everything is an agent except the smallest set of mechanisms that make an
+agent's output trustworthy.** The kernel is a thin, verifiable boundary *around*
+untrusted intelligence, never a manager *of* it — the microkernel idea applied to
+intelligence: a minimal privileged core, everything smart in userspace.
+
+Only four mechanisms are irreducible, because an agent cannot provide them about
+itself:
+
+1. **Disinterested verification** (measure + gate) — the graded thing can't
+   produce its own grade.
+2. **Outside-enforced isolation** (credentials, scope) — you can't ask the
+   guarded to guard itself; the agent is the untrusted party.
+3. **Crash-proof liveness** (the wake guarantee) — an agent can't guarantee its
+   own progress if it hangs or dies.
+4. **Reproducible audit** — a fixed, replayable procedure is what makes an
+   autonomous PR mergeable at all.
+
+Everything else is an agent. The compass:
+
+- **Agents by default, mechanism by exception.** If you can't name the guarantee,
+  it isn't kernel.
+- **Minimize the trusted base.** The kernel is the TCB — every line is attack
+  surface and audit burden. Small enough to hold in your head.
+- **Mechanism, not policy.** The kernel only says *no*; it never says *do this
+  next*. Decisions are agentic.
+- **Guarantees, not guardrails.** Don't make agents *correct*; make their output
+  *verifiable, contained, recoverable*.
+
+The bound that keeps it honest: as agentic as possible *while every autonomous
+action stays verifiable, contained, and recoverable*. The one place a mechanism
+must exist is exactly where you otherwise couldn't verify, contain, or recover
+what an agent did.
+
 ## Why
 
 The system grew by accretion. Each recent pain — session budgets, outages,
