@@ -449,28 +449,38 @@ def _parse_codex_result(
     at 0 (these backends are subscription or token metered; the budget layer
     meters them by a session/token proxy). Never raises.
     """
+    # Event schema verified against codex-cli 0.130.0 (cluster0):
+    #   thread.started -> thread_id (the session id)
+    #   error          -> message
+    #   turn.failed    -> error.message
+    #   turn.completed -> success (usage carries tokens)
     session_id = ""
     saw_error = False
     errors: list[str] = []
     for line in stdout.splitlines():
         text = line.strip()
-        if not text:
-            continue
+        if not text.startswith("{"):
+            continue  # timestamped log lines interleave the JSONL; skip them
         try:
             event = json.loads(text)
         except json.JSONDecodeError:
-            continue  # human-readable lines can interleave the JSONL; skip them
+            continue
         if not isinstance(event, dict):
             continue
-        for key in ("session_id", "conversation_id"):
-            value = event.get(key)
-            if not session_id and isinstance(value, str):
-                session_id = value
-        # A truthy `error` value or an error-typed event, not the mere presence
-        # of an "error" key — a benign event may carry `"error": null`.
-        if str(event.get("type", "")).endswith("error") or event.get("error"):
+        etype = str(event.get("type", ""))
+        if etype == "thread.started" and not session_id:
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str):
+                session_id = thread_id
+        elif etype == "error":
             saw_error = True
-            message = event.get("message") or event.get("error")
+            message = event.get("message")
+            if isinstance(message, str):
+                errors.append(message)
+        elif etype == "turn.failed":
+            saw_error = True
+            err = event.get("error")
+            message = err.get("message") if isinstance(err, dict) else None
             if isinstance(message, str):
                 errors.append(message)
     is_error = returncode != 0 or saw_error
@@ -507,10 +517,35 @@ class CodexHarness:
 
     api_key: str
     binary: str = "codex"
-    model: str = "gpt-5-codex"  # verify the available model id on the cluster
+    model: str = "gpt-5-codex"  # codex-cli flagship; overridable per call
     sandbox: str = "read-only"  # judge default; authors pass "workspace-write"
     timeout_s: int = DEFAULT_TIMEOUT_S
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+
+    def _login(self, session_home: Path) -> SessionResult | None:
+        """Write auth.json into the per-run HOME. None on success, an error
+        SessionResult on failure. The key travels on stdin, never argv."""
+        env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
+        try:
+            proc = subprocess.run(
+                [self.binary, "login", "--with-api-key"],
+                input=self.api_key,
+                cwd=session_home,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except OSError as exc:
+            log.warning("could not spawn codex login: %s", exc)
+            return _error_result("codex-login-error", detail=str(exc)[:200])
+        except subprocess.TimeoutExpired:
+            return _error_result("codex-login-error", detail="codex login timed out")
+        if proc.returncode != 0:
+            detail = redact((proc.stderr or proc.stdout or "").strip(), (self.api_key,))[-300:]
+            log.warning("codex login failed: %s", detail)
+            return _error_result("codex-login-error", detail=detail or "codex login failed")
+        return None
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -523,6 +558,13 @@ class CodexHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
+        # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
+        # (verified: the responses endpoint 401s on env-only). Write auth.json
+        # into the scrubbed per-run HOME with `codex login --with-api-key`
+        # (key on stdin, never argv) before exec.
+        login_error = self._login(session_home)
+        if login_error is not None:
+            return login_error
         # --output-last-message target lives inside the per-run home (0700),
         # not the shared parent, so model output is not exposed there while
         # codex is writing it; cleared first so a stale file can never be read

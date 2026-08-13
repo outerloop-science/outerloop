@@ -41,6 +41,8 @@ def test_brief_goes_to_stdin_never_argv(monkeypatch: Any, tmp_path: Path) -> Non
             return json.dumps({"session_id": "s"}), ""
 
     monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    # stub the login pre-step (its own subprocess) so this test isolates exec
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, home: None)
     brief = "SENTINEL_BRIEF_9x7 please review this pull request"
     CodexHarness(api_key="k").run(brief, tmp_path)
     assert seen["stdin"] == brief
@@ -52,16 +54,18 @@ def test_command_resume_uses_resume_subcommand() -> None:
     assert cmd[:4] == ["codex", "exec", "resume", "sess-123"]
 
 
-def test_parse_success_pulls_session_and_final_text() -> None:
+def test_parse_success_pulls_thread_id_and_final_text() -> None:
+    # schema verified against codex-cli 0.130.0: thread.started -> thread_id
     stdout = "\n".join(
         [
-            json.dumps({"type": "session.created", "session_id": "sess-9"}),
-            json.dumps({"type": "item.completed"}),
+            json.dumps({"type": "thread.started", "thread_id": "019ff8f0-abc"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "turn.completed", "usage": {"output_tokens": 29}}),
         ]
     )
     result = _parse_codex_result(stdout, "final answer\n", 0, "t.jsonl")
     assert result.is_error is False
-    assert result.session_id == "sess-9"
+    assert result.session_id == "019ff8f0-abc"
     assert result.final_text == "final answer"
     assert result.transcript_path == "t.jsonl"
 
@@ -77,8 +81,18 @@ def test_parse_flags_error_event_with_message() -> None:
     assert "model unavailable" in result.error_detail
 
 
-def test_parse_tolerates_non_json_lines() -> None:
-    stdout = "starting up...\n" + json.dumps({"session_id": "s"}) + "\nbye"
+def test_parse_flags_turn_failed_with_nested_message() -> None:
+    stdout = json.dumps({"type": "turn.failed", "error": {"message": "401 Unauthorized"}})
+    result = _parse_codex_result(stdout, "", 0)
+    assert result.is_error is True
+    assert "401 Unauthorized" in result.error_detail
+
+
+def test_parse_skips_timestamped_log_lines() -> None:
+    # codex interleaves "2026-... ERROR ..." log lines that are not JSON
+    stdout = "2026-08-13T02:25:06Z ERROR codex_api: failed to connect\n" + json.dumps(
+        {"type": "thread.started", "thread_id": "t1"}
+    )
     result = _parse_codex_result(stdout, "ok", 0)
-    assert result.session_id == "s"
+    assert result.session_id == "t1"
     assert result.is_error is False
