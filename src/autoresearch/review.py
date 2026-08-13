@@ -88,11 +88,16 @@ or gaming defect with a concrete failure. Edge cases, missing docs,
 wording, and anything low-confidence are advisory: `blocking` false. Most
 findings are advisory.
 
+Set `kind` to what you want the reader to do: `change` (fix this),
+`suggestion` (an optional improvement), `question` (you need an answer), or
+`note` (just flagging). A blocking finding is almost always `change`.
+
 Never instruct the reader to merge, approve, or reject. You are advisory."""
 )
 
 
 CONFIDENCES = ("low", "medium", "high")
+KINDS = ("change", "suggestion", "question", "note")
 
 
 class Completer(Protocol):
@@ -124,6 +129,9 @@ class Finding:
     detail: str
     category: str = ""  # verifier-only (gaming taxonomy); "" for advisory
     blocking: bool = False  # a confirmed defect that should gate merge
+    # What the reader is asked to do — the speech act, separate from blocking
+    # (does it gate) and line (is it local). Governs how a finding renders.
+    kind: Literal["change", "suggestion", "question", "note"] = "note"
 
 
 @dataclass(frozen=True)
@@ -147,8 +155,9 @@ FINDINGS_SCHEMA: dict[str, Any] = {
                     "summary": {"type": "string"},
                     "detail": {"type": "string"},
                     "blocking": {"type": "boolean"},
+                    "kind": {"type": "string", "enum": list(KINDS)},
                 },
-                "required": ["file", "line", "confidence", "summary", "detail", "blocking"],
+                "required": ["file", "line", "confidence", "summary", "detail", "blocking", "kind"],
                 "additionalProperties": False,
             },
         },
@@ -308,6 +317,7 @@ def result_from_data(data: dict[str, Any]) -> ReviewResult:
             summary=sanitize(item["summary"], MAX_SUMMARY_CHARS),
             detail=sanitize(item["detail"], MAX_DETAIL_CHARS),
             blocking=bool(item.get("blocking")),
+            kind=item["kind"] if item.get("kind") in KINDS else "note",
         )
         for item in list(data.get("findings", []))[:MAX_FINDINGS]
     ]

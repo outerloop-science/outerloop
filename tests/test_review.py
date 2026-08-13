@@ -56,6 +56,21 @@ ONE_FINDING = {
 }
 
 
+def test_result_from_data_parses_and_defaults_kind() -> None:
+    from autoresearch.review import result_from_data
+
+    data = {
+        "findings": [
+            {**ONE_FINDING["findings"][0], "kind": "change"},
+            {**ONE_FINDING["findings"][0], "kind": "bogus"},  # invalid -> note
+            {**ONE_FINDING["findings"][0]},  # missing -> note
+        ],
+        "notes": "",
+    }
+    kinds = [f.kind for f in result_from_data(data).findings]
+    assert kinds == ["change", "note", "note"]
+
+
 def test_bot_authored_prs_are_never_reviewed() -> None:
     pr = make_pr(author=BOT)
     assert skip_reason(pr, BOT) is not None
