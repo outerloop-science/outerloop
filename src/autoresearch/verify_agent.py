@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import Harness, outage
+from autoresearch.harness import Harness, budget_exhausted, outage
 from autoresearch.review_agent import _pull_request
 from autoresearch.review_cli import EXPECTED_FAILURES, post_round, post_skip_stub
 from autoresearch.role_runner import run_role
@@ -90,12 +90,13 @@ def run_agent_verify(
         role_result = run_role(spec, harness, brief, workspace)
         result = verify_result_from_role(role_result)
         if result is None:
-            # No verdict is an outage-or-error, never a clean read: the
-            # verifier's silence must not look like an endorsement, so an API
-            # outage says so on the thread.
+            # No verdict is never a clean read: the verifier's silence must not
+            # look like an endorsement. An API outage OR a session that ran out
+            # of budget (walltime/turns) says so on the thread — otherwise a
+            # timed-out verification is indistinguishable from "no issues".
             detail = role_result.error or role_result.session.stop_reason
             log.warning("verification produced no verdict on %s#%s: %s", repo, number, detail)
-            if outage(role_result.session):
+            if outage(role_result.session) or budget_exhausted(role_result.session):
                 post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
             return None
 

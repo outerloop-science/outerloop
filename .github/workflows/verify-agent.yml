@@ -25,6 +25,13 @@ on:
         type: string
         required: false
         default: main
+      model:
+        description: Model for the verifier session. (No effort input — agent
+          sessions are budgeted by turns and walltime, not the completer's
+          effort knob.)
+        type: string
+        required: false
+        default: claude-opus-5
     secrets:
       anthropic_verifier_key:
         description: >-
@@ -110,6 +117,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          VERIFY_MODEL: ${{ inputs.model }}
           # The parent of the two checkouts (pr-head/ and base/).
           VERIFY_CHECKOUT: ${{ github.workspace }}
         run: uv run --extra review python -m autoresearch.verify_agent_cli

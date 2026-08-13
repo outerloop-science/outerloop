@@ -27,6 +27,13 @@ on:
         type: string
         required: false
         default: main
+      model:
+        description: Model for the reviewer session. (No effort input — agent
+          sessions are budgeted by turns and walltime, not the completer's
+          effort knob.)
+        type: string
+        required: false
+        default: claude-opus-5
     secrets:
       anthropic_reviewer_key:
         required: true
@@ -100,5 +107,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
         run: uv run --extra review python -m autoresearch.review_agent_cli

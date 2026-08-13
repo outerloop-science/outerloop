@@ -55,8 +55,12 @@ def main() -> int:
         log.warning("VERIFY_CHECKOUT lacks pr-head/ and base/; skipping")
         return 0
     # Only pr-head is untrusted: rename instruction files (CLAUDE.md, .claude/
-    # hooks, ...) so no backend auto-loads PR content as instructions.
-    renamed = sanitize_checkout(workspace / "pr-head")
+    # hooks, ...) so no backend auto-loads PR content as instructions. A rename
+    # failure means an instruction file is still live — fail closed.
+    renamed, failed = sanitize_checkout(workspace / "pr-head")
+    if failed:
+        log.warning("pr-head could not be fully sanitized (%d left); skipping", failed)
+        return 0
     if renamed:
         log.info("sanitized %d instruction file(s) in pr-head", renamed)
 

@@ -312,8 +312,8 @@ def test_sanitize_checkout_renames_nested_instruction_files(tmp_path: Path) -> N
     (tmp_path / ".claude" / "settings.json").write_text("{}")
     (tmp_path / "AGENTS.md").write_text("x")
     (tmp_path / "models" / "encoder.py").write_text("ok")
-    renamed = sanitize_checkout(tmp_path)
-    assert renamed == 3
+    renamed, failed = sanitize_checkout(tmp_path)
+    assert renamed == 3 and failed == 0
     assert not (tmp_path / "models" / "CLAUDE.md").exists()
     assert (tmp_path / "models" / "CLAUDE.md.pr-data").exists()
     assert (tmp_path / ".claude.pr-data" / "settings.json").exists()

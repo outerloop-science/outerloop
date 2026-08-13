@@ -58,8 +58,12 @@ def main() -> int:
         return 0
     workspace = Path(checkout).resolve()
     # The checkout is untrusted: rename instruction files (CLAUDE.md, .claude/
-    # hooks, ...) so no backend auto-loads PR content as instructions.
-    renamed = sanitize_checkout(workspace)
+    # hooks, ...) so no backend auto-loads PR content as instructions. A rename
+    # failure means an instruction file is still live — fail closed.
+    renamed, failed = sanitize_checkout(workspace)
+    if failed:
+        log.warning("checkout could not be fully sanitized (%d left); skipping", failed)
+        return 0
     if renamed:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
     explicit = os.environ.get("REVIEW_EXPLICIT_REQUEST", "").strip().lower() == "true"
