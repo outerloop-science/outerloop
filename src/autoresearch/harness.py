@@ -421,11 +421,13 @@ def _codex_command(
     and the stdin prompt behavior.
     """
     head = [binary, "exec", "resume", resume_session_id] if resume_session_id else [binary, "exec"]
+    # --model is omitted when empty so codex uses its configured default; a
+    # wrong model id is a 404 ("Model not found"), so only pin a verified one.
+    model_flag = ["--model", model] if model else []
     return [
         *head,
         "--json",  # JSONL events on stdout (session id, usage)
-        "--model",
-        model,
+        *model_flag,
         "--sandbox",
         sandbox,  # "read-only" for judge roles; "workspace-write" for authors
         "--cd",
@@ -517,7 +519,8 @@ class CodexHarness:
 
     api_key: str
     binary: str = "codex"
-    model: str = "gpt-5-codex"  # codex-cli flagship; overridable per call
+    # empty -> codex's configured default (a wrong id 404s); pin only a verified one
+    model: str = ""
     sandbox: str = "read-only"  # judge default; authors pass "workspace-write"
     timeout_s: int = DEFAULT_TIMEOUT_S
     extra_args: tuple[str, ...] = field(default_factory=tuple)

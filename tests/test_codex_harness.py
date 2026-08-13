@@ -21,6 +21,12 @@ def test_command_has_expected_flags() -> None:
     assert "--output-last-message" in cmd and "/w-last.txt" in cmd
     assert "--sandbox" in cmd and "read-only" in cmd
     assert "--cd" in cmd and "/w" in cmd
+    assert cmd[cmd.index("--model") + 1] == "m"
+
+
+def test_command_omits_model_when_empty() -> None:
+    cmd = _codex_command("codex", "", "read-only", Path("/w"), Path("/l"), None, ())
+    assert "--model" not in cmd  # codex uses its configured default
 
 
 def test_brief_goes_to_stdin_never_argv(monkeypatch: Any, tmp_path: Path) -> None:
