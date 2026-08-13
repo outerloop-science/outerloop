@@ -11,6 +11,11 @@ on:
         description: PR number to review
         type: string
         required: true
+      backend:
+        description: Which agent backend drives the review
+        type: choice
+        options: [claude, codex]
+        default: claude
 
 permissions:
   contents: read
@@ -42,18 +47,26 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      # Native binary, not npm: the npm wrapper's native-binary spawn is
-      # fragile (macOS quarantines it); the standalone install is what the
-      # cluster0 validation used. Adds ~/.local/bin to PATH for the run step,
-      # which the harness passes through to the scrubbed session env.
-      - name: Install the Claude Code CLI
+      # Claude installs as a native binary (the npm wrapper's native-binary
+      # spawn is fragile — macOS quarantines it — and the standalone install is
+      # what the cluster0 validation used). Codex ships via npm on Linux.
+      # Either way the binary lands on PATH, which the harness passes through to
+      # the scrubbed session env.
+      - name: Install the ${{ inputs.backend }} CLI
         run: |
-          curl -fsSL https://claude.ai/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if [ "${{ inputs.backend }}" = "codex" ]; then
+            npm install -g @openai/codex
+          else
+            curl -fsSL https://claude.ai/install.sh | bash
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
       - name: Run the agent review
         working-directory: .autoresearch
         env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          # The CLI reads only the key for the chosen backend; the other is unset.
           ANTHROPIC_REVIEWER_KEY: ${{ secrets.REVIEWER_API_KEY }}
+          OPENAI_REVIEWER_KEY: ${{ secrets.OPENAI_REVIEWER_KEY }}
           # The workflow token, not the bot PAT — the PAT never reaches a session.
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}

@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import ClaudeCodeHarness, Harness, outage
+from autoresearch.harness import ClaudeCodeHarness, CodexHarness, Harness, outage
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -55,22 +55,34 @@ def build_reviewer_harness(
     api_key: str,
     spec: RoleSpec | None = None,
     *,
-    binary: str = "claude",
+    backend: str = "claude",
+    binary: str | None = None,
     model: str | None = None,
     container_image: str = "",
-) -> ClaudeCodeHarness:
-    """Construct a read-only Claude Code harness for the reviewer from its
-    RoleSpec — the deployment wiring the role-runner assumes (docs: "the harness
-    is assumed already constructed for the role"). Only native read tools are
-    granted (no Write/Edit/Bash), so the read-only boundary binds the session,
-    and the RoleSpec's budget sets turns and walltime."""
+) -> Harness:
+    """Construct a read-only harness for the reviewer from its RoleSpec, for the
+    chosen backend — the deployment wiring the role-runner assumes (docs: "the
+    harness is assumed already constructed for the role"). The read-only
+    boundary binds the session regardless of backend: Claude via a native
+    read-only tool set (no Write/Edit/Bash), Codex via --sandbox read-only. The
+    RoleSpec's budget sets turns/walltime."""
     spec = spec or reviewer_spec()
     if spec.execution.can_execute:
         raise ValueError("build_reviewer_harness is for read-only judge roles")
+    if backend == "codex":
+        return CodexHarness(
+            api_key=api_key,
+            binary=binary or "codex",
+            model=model or "",  # codex's configured default
+            sandbox="read-only",
+            timeout_s=spec.budget.walltime_s,
+        )
+    if backend != "claude":
+        raise ValueError(f"unknown reviewer backend: {backend!r}")
     allowed = tuple(tool for tool in spec.tools if tool in _NATIVE_READ_TOOLS)
     return ClaudeCodeHarness(
         api_key=api_key,
-        binary=binary,
+        binary=binary or "claude",
         model=model or "claude-opus-5",
         max_turns=spec.budget.max_turns,
         timeout_s=spec.budget.walltime_s,

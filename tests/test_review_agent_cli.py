@@ -57,6 +57,24 @@ def test_missing_key_skips(monkeypatch: Any) -> None:
     assert calls == {}
 
 
+def test_codex_backend_reads_openai_key(monkeypatch: Any) -> None:
+    env = _base_env()
+    env["REVIEW_BACKEND"] = "codex"
+    env["OPENAI_REVIEWER_KEY"] = "sk-openai"
+    del env["ANTHROPIC_REVIEWER_KEY"]  # wrong key for this backend; must be ignored
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls.get("args")  # reached run_agent_review with the openai key
+
+
+def test_unknown_backend_skips(monkeypatch: Any) -> None:
+    env = _base_env()
+    env["REVIEW_BACKEND"] = "hermes"
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls == {}
+
+
 def test_missing_checkout_fails_closed(monkeypatch: Any) -> None:
     env = _base_env()
     del env["REVIEW_CHECKOUT"]  # would otherwise default to cwd (wrong tree)
