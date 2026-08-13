@@ -225,6 +225,26 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+# Prepended to the shared rubric for the agent-session reviewer: it has a
+# read-only checkout and the read tools, unlike the one-shot completer that
+# only sees the diff and a bounded context slice.
+AGENT_INVESTIGATION = (
+    "The repository is checked out read-only in your working directory. Use Read, "
+    "Grep, and Glob to investigate beyond the diff: the surrounding code, callers, "
+    "and tests. The checked-out code is part of your evidence, so you may cite file "
+    "contents you read. You have no execute or write tools; do not run code.\n\n"
+    "When done, reply with ONLY the JSON object of findings (keys: `findings`, "
+    "`notes`) and nothing else."
+)
+
+
+def build_agent_brief(pr: PullRequest, today: str | None = None) -> str:
+    """The reviewer brief for an agent session: the shared rubric, the
+    investigation instruction, and the PR itself. Reuses the completer's
+    prompt so both paths judge by the same rules."""
+    return f"{SYSTEM_PROMPT}\n\n{AGENT_INVESTIGATION}\n\n{build_prompt(pr, today)}"
+
+
 def build_prompt(pr: PullRequest, today: str | None = None) -> str:
     diff = pr.diff
     truncated = ""
