@@ -21,8 +21,14 @@ def _base_env() -> dict[str, str]:
 def _patch(monkeypatch: Any, env: dict[str, str]) -> dict[str, Any]:
     monkeypatch.setattr(cli.os, "environ", env)
     monkeypatch.setattr(cli, "GitHubClient", lambda auth: "client")
-    monkeypatch.setattr(cli, "build_reviewer_harness", lambda *a, **k: "harness")
     calls: dict[str, Any] = {}
+    # capture what the CLI passes to the harness builder (backend + key), so a
+    # test can assert the backend is actually forwarded
+    monkeypatch.setattr(
+        cli,
+        "build_reviewer_harness",
+        lambda api_key, **k: calls.update(build_key=api_key, build_kwargs=k) or "harness",
+    )
     monkeypatch.setattr(
         cli,
         "run_agent_review",
@@ -64,7 +70,9 @@ def test_codex_backend_reads_openai_key(monkeypatch: Any) -> None:
     del env["ANTHROPIC_REVIEWER_KEY"]  # wrong key for this backend; must be ignored
     calls = _patch(monkeypatch, env)
     assert cli.main() == 0
-    assert calls.get("args")  # reached run_agent_review with the openai key
+    # the codex backend AND its openai key are forwarded to the harness builder
+    assert calls["build_kwargs"]["backend"] == "codex"
+    assert calls["build_key"] == "sk-openai"
 
 
 def test_unknown_backend_skips(monkeypatch: Any) -> None:

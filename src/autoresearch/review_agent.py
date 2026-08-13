@@ -64,8 +64,9 @@ def build_reviewer_harness(
     chosen backend — the deployment wiring the role-runner assumes (docs: "the
     harness is assumed already constructed for the role"). The read-only
     boundary binds the session regardless of backend: Claude via a native
-    read-only tool set (no Write/Edit/Bash), Codex via --sandbox read-only. The
-    RoleSpec's budget sets turns/walltime."""
+    read-only tool set (no Write/Edit/Bash), Codex via --sandbox read-only.
+    Budget: Claude gets max_turns and walltime; Codex is bounded by walltime
+    only (no per-turn cap yet) and does not use container_image."""
     spec = spec or reviewer_spec()
     if spec.execution.can_execute:
         raise ValueError("build_reviewer_harness is for read-only judge roles")

@@ -29,8 +29,11 @@ concurrency:
 jobs:
   agent-review:
     runs-on: ubuntu-latest
-    # Advisory: an infrastructure failure here must never turn a PR red.
-    continue-on-error: true
+    # Backstop a hung session so it cannot burn the 360-min default runner
+    # budget; the harness kills the session at its own walltime well before
+    # this. No continue-on-error: this is a manual workflow, not a PR check, so
+    # a failure never reds a PR — and masking install failures would hide them.
+    timeout-minutes: 40
     steps:
       # The reviewer code runs from here; the PR head is only ever read.
       - name: Check out the reviewer
@@ -47,17 +50,22 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      # Claude installs as a native binary (the npm wrapper's native-binary
-      # spawn is fragile — macOS quarantines it — and the standalone install is
-      # what the cluster0 validation used). Codex ships via npm on Linux.
-      # Either way the binary lands on PATH, which the harness passes through to
-      # the scrubbed session env.
+          # the reviewer is checked out under a dot-path; point the cache key at
+          # its lockfile or the default glob would miss it and never invalidate
+          cache-dependency-glob: .autoresearch/uv.lock
+      # Both CLIs are PINNED to the versions validated on cluster0 — bump them
+      # deliberately (and re-validate), since the codex adapter in particular
+      # parses codex-cli's --json event schema. Claude installs as a native
+      # binary (the npm wrapper's native-binary spawn is fragile — macOS
+      # quarantines it); its installer takes a version arg. Codex ships via npm
+      # on Linux. Either way the binary lands on PATH, which the harness passes
+      # through to the scrubbed session env.
       - name: Install the ${{ inputs.backend }} CLI
         run: |
           if [ "${{ inputs.backend }}" = "codex" ]; then
-            npm install -g @openai/codex
+            npm install -g @openai/codex@0.130.0
           else
-            curl -fsSL https://claude.ai/install.sh | bash
+            curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Run the agent review
@@ -65,7 +73,7 @@ jobs:
         env:
           REVIEW_BACKEND: ${{ inputs.backend }}
           # The CLI reads only the key for the chosen backend; the other is unset.
-          ANTHROPIC_REVIEWER_KEY: ${{ secrets.REVIEWER_API_KEY }}
+          ANTHROPIC_REVIEWER_KEY: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
           OPENAI_REVIEWER_KEY: ${{ secrets.OPENAI_REVIEWER_KEY }}
           # The workflow token, not the bot PAT — the PAT never reaches a session.
           GITHUB_TOKEN: ${{ github.token }}
