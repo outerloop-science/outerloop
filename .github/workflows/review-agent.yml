@@ -21,10 +21,11 @@ permissions:
   contents: read
   pull-requests: write
 
-# One review at a time per PR (avoid a duplicate comment or a duplicate bill).
+# One review at a time per PR. Do NOT cancel in progress: a running session is a
+# paid model call, so queue a second dispatch behind it rather than kill it.
 concurrency:
   group: advisory-review-agent-${{ inputs.pr_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   agent-review:
@@ -61,8 +62,13 @@ jobs:
       # on Linux. Either way the binary lands on PATH, which the harness passes
       # through to the scrubbed session env.
       - name: Install the ${{ inputs.backend }} CLI
+        env:
+          # via env, not interpolated into the script (avoids the injection shape)
+          BACKEND: ${{ inputs.backend }}
+        # pipefail so a failed curl fails the step instead of piping empty to bash
         run: |
-          if [ "${{ inputs.backend }}" = "codex" ]; then
+          set -euo pipefail
+          if [ "$BACKEND" = "codex" ]; then
             npm install -g @openai/codex@0.130.0
           else
             curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
