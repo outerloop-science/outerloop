@@ -304,24 +304,38 @@ def review(
 
 
 def result_from_data(data: dict[str, Any]) -> ReviewResult:
-    """Build a ReviewResult from a validated findings object. Shared by the
-    one-shot completer path and the agent-session path — both hand back the
-    same schema, so both must sanitize identically: every string here is
-    untrusted model output bound for a GitHub comment, and the caps guard the
-    render (`sanitize` also neutralizes markdown/HTML injection)."""
-    findings = [
-        Finding(
-            file=sanitize(item["file"], 200),
-            line=item["line"] if isinstance(item.get("line"), int) else None,
-            confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
-            summary=sanitize(item["summary"], MAX_SUMMARY_CHARS),
-            detail=sanitize(item["detail"], MAX_DETAIL_CHARS),
-            blocking=bool(item.get("blocking")),
-            kind=item["kind"] if item.get("kind") in KINDS else "note",
+    """Build a ReviewResult from a findings object. Shared by the one-shot
+    completer path and the agent-session path — both sanitize identically:
+    every string here is untrusted model output bound for a GitHub comment, and
+    the caps guard the render (`sanitize` also neutralizes markdown/HTML).
+
+    Malformed items are dropped, never raised on: the completer path enforces
+    the item schema, but the agent path validates only the top-level shape, so
+    an item may be a non-dict or miss a key. A finding needs at least a file, a
+    summary, and a detail; anything short of that is skipped."""
+    findings: list[Finding] = []
+    for item in list(data.get("findings", []))[:MAX_FINDINGS]:
+        if not isinstance(item, dict):
+            continue
+        file, summary, detail = item.get("file"), item.get("summary"), item.get("detail")
+        if not (isinstance(file, str) and isinstance(summary, str) and isinstance(detail, str)):
+            continue
+        findings.append(
+            Finding(
+                file=sanitize(file, 200),
+                line=item["line"] if isinstance(item.get("line"), int) else None,
+                confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
+                summary=sanitize(summary, MAX_SUMMARY_CHARS),
+                detail=sanitize(detail, MAX_DETAIL_CHARS),
+                blocking=bool(item.get("blocking")),
+                kind=item["kind"] if item.get("kind") in KINDS else "note",
+            )
         )
-        for item in list(data.get("findings", []))[:MAX_FINDINGS]
-    ]
-    return ReviewResult(findings=findings, notes=sanitize(data.get("notes", ""), MAX_DETAIL_CHARS))
+    notes = data.get("notes", "")
+    return ReviewResult(
+        findings=findings,
+        notes=sanitize(notes if isinstance(notes, str) else "", MAX_DETAIL_CHARS),
+    )
 
 
 def commentable_lines(diff: str) -> dict[str, set[int]]:

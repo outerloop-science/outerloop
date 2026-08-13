@@ -518,9 +518,11 @@ class CodexHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
-        # --output-last-message target lives outside the clone and is cleared
-        # first, so a stale file can never be read as this run's result.
-        last_message_path = workspace.parent / f"{transcript_stem}-last.txt"
+        # --output-last-message target lives inside the per-run home (0700),
+        # not the shared parent, so model output is not exposed there while
+        # codex is writing it; cleared first so a stale file can never be read
+        # as this run's result, and deleted again after reading.
+        last_message_path = session_home / "codex-last-message.txt"
         with contextlib.suppress(OSError):
             last_message_path.unlink()
         command = _codex_command(
@@ -571,10 +573,12 @@ class CodexHarness:
         stdout = redact(stdout, (self.api_key,))
         transcript_path = _write_private(workspace.parent, transcript_stem, ".jsonl", stdout)
         last_message = ""
+        # errors="replace": a non-UTF-8 last-message file must not raise
+        # UnicodeDecodeError (not an OSError) and break the never-raises contract.
         with contextlib.suppress(OSError):
-            last_message = redact(last_message_path.read_text(), (self.api_key,))
+            last_message = redact(last_message_path.read_text(errors="replace"), (self.api_key,))
         # The final message is preserved in the 0600 transcript; drop the raw
-        # file so model output is not left behind with default permissions.
+        # file so model output is not left behind.
         with contextlib.suppress(OSError):
             last_message_path.unlink()
         return _parse_codex_result(stdout, last_message, process.returncode, transcript_path)

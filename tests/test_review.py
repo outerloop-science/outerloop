@@ -81,6 +81,32 @@ def test_result_from_data_parses_and_defaults_kind() -> None:
     assert kinds == ["change", "note", "note"]
 
 
+def test_result_from_data_drops_malformed_items_without_crashing() -> None:
+    from autoresearch.review import result_from_data
+
+    good = {
+        "file": "x.py",
+        "line": 1,
+        "confidence": "high",
+        "summary": "ok",
+        "detail": "d",
+        "blocking": False,
+        "kind": "note",
+    }
+    data: dict[str, Any] = {
+        "findings": [
+            good,
+            {"file": "y.py"},  # missing summary/detail -> dropped
+            "not a dict",  # non-dict -> dropped
+            {"summary": "no file", "detail": "d"},  # missing file -> dropped
+        ],
+        "notes": None,  # non-string notes must not crash
+    }
+    result = result_from_data(data)
+    assert [f.file for f in result.findings] == ["x.py"]
+    assert result.notes == ""
+
+
 def test_bot_authored_prs_are_never_reviewed() -> None:
     pr = make_pr(author=BOT)
     assert skip_reason(pr, BOT) is not None
