@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Review findings carry a `kind` — change, suggestion, question, or note —
+  saying what the reader is asked to do, separate from whether the finding
+  gates the merge. Placement follows it: actionable findings (a blocking
+  defect, a change, or a suggestion) anchor inline on their line; questions
+  and notes stay in the compact body list so local FYIs do not flood the
+  diff. Suggestions are marked as optional.
 - Reviews are shorter and lead with a verdict. Every advisory and
   verification round now opens with one line — blocking vs advisory
   counts — then shows blocking findings in full and the rest as a

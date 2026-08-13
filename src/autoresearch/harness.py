@@ -402,6 +402,190 @@ def _parse_result(stdout: str) -> dict[str, Any] | None:
     return candidates[0] if candidates else None
 
 
+def _codex_command(
+    binary: str,
+    model: str,
+    sandbox: str,
+    workspace: Path,
+    last_message_path: Path,
+    resume_session_id: str | None,
+    extra_args: tuple[str, ...],
+) -> list[str]:
+    """Argv for one headless `codex exec` run.
+
+    The prompt is NOT an argument: `codex exec` reads it from stdin when no
+    positional prompt is given, keeping the brief out of world-readable /proc
+    argv (the same rule as the Claude adapter). Flags follow the Codex docs and
+    must be checked against `codex exec --help` on the cluster.
+    """
+    head = [binary, "exec", "resume", resume_session_id] if resume_session_id else [binary, "exec"]
+    return [
+        *head,
+        "--json",  # JSONL events on stdout (session id, usage)
+        "--model",
+        model,
+        "--sandbox",
+        sandbox,  # "read-only" for judge roles; "workspace-write" for authors
+        "--cd",
+        str(workspace),
+        "--output-last-message",  # final message -> file (reliable final_text)
+        str(last_message_path),
+        "--skip-git-repo-check",
+        *extra_args,
+    ]
+
+
+def _parse_codex_result(
+    stdout: str, last_message: str, returncode: int, transcript_path: str = ""
+) -> SessionResult:
+    """Best-effort SessionResult from `codex exec --json` output.
+
+    `final_text` comes from the --output-last-message file, which is reliable.
+    `session_id` is pulled from the JSONL events defensively; the exact event
+    schema must be confirmed against a live `--json` run, so until then resume
+    may be unavailable. Cost is left at 0 (these backends are subscription or
+    token metered; the budget layer meters them by a session/token proxy).
+    Never raises.
+    """
+    session_id = ""
+    saw_error = False
+    errors: list[str] = []
+    for line in stdout.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            event = json.loads(text)
+        except json.JSONDecodeError:
+            continue  # human-readable lines can interleave the JSONL; skip them
+        if not isinstance(event, dict):
+            continue
+        for key in ("session_id", "conversation_id"):
+            value = event.get(key)
+            if not session_id and isinstance(value, str):
+                session_id = value
+        # A truthy `error` value or an error-typed event, not the mere presence
+        # of an "error" key — a benign event may carry `"error": null`.
+        if str(event.get("type", "")).endswith("error") or event.get("error"):
+            saw_error = True
+            message = event.get("message") or event.get("error")
+            if isinstance(message, str):
+                errors.append(message)
+    is_error = returncode != 0 or saw_error
+    detail = "; ".join(errors)[:500]
+    return SessionResult(
+        stop_reason="error" if is_error else "completed",
+        is_error=is_error,
+        error_detail=detail if is_error else "",
+        cost_usd=0.0,
+        num_turns=0,
+        session_id=session_id,
+        final_text=last_message.strip(),
+        transcript_path=transcript_path,
+    )
+
+
+@dataclass
+class CodexHarness:
+    """Headless OpenAI Codex CLI (`codex exec`) — a second Harness backend.
+
+    Stage 1's swappability proof, first used for the read-only reviewer
+    (docs/design/consolidation.md): Codex's own `--sandbox read-only` plus a
+    judge RoleSpec's tool set. Flags and the JSONL event schema follow the Codex
+    docs and MUST be verified against `codex exec --help` and a live `--json`
+    run on the cluster before production; `session_id` and cost parsing are
+    best-effort until then. No apptainer wrapper yet (the reviewer runs
+    read-only); the author-on-Codex path adds one later.
+
+    `run` never raises: every failure comes back as an error SessionResult.
+    """
+
+    api_key: str
+    binary: str = "codex"
+    model: str = "gpt-5-codex"  # verify the available model id on the cluster
+    sandbox: str = "read-only"  # judge default; authors pass "workspace-write"
+    timeout_s: int = DEFAULT_TIMEOUT_S
+    extra_args: tuple[str, ...] = field(default_factory=tuple)
+
+    def run(
+        self, brief_text: str, workspace: Path, resume_session_id: str | None = None
+    ) -> SessionResult:
+        transcript_stem = f"{workspace.name}-codex"
+        session_home = workspace.parent / f"{workspace.name}-home"
+        try:
+            session_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(session_home, 0o700)
+        except OSError as exc:
+            log.warning("could not create session home %s: %s", session_home, exc)
+            return _error_result("workspace-error")
+        # --output-last-message target lives inside the per-run home (0700),
+        # not the shared parent, so model output is not exposed there while
+        # codex is writing it; cleared first so a stale file can never be read
+        # as this run's result, and deleted again after reading.
+        last_message_path = session_home / "codex-last-message.txt"
+        with contextlib.suppress(OSError):
+            last_message_path.unlink()
+        command = _codex_command(
+            self.binary,
+            self.model,
+            self.sandbox,
+            workspace,
+            last_message_path,
+            resume_session_id,
+            self.extra_args,
+        )
+        try:
+            env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
+            process = subprocess.Popen(
+                command,
+                cwd=workspace,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log.warning("could not spawn %s: %s", self.binary, exc)
+            return _error_result("spawn-error")
+        try:
+            stdout, _ = process.communicate(input=brief_text, timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            try:
+                stdout, _ = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout = ""
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    stdout, _ = process.communicate(timeout=5)
+            path = _write_private(
+                workspace.parent, transcript_stem, ".jsonl", redact(stdout or "", (self.api_key,))
+            )
+            with contextlib.suppress(OSError):
+                last_message_path.unlink()  # clean up on the timeout path too
+            log.warning("codex session timed out after %ss in %s", self.timeout_s, workspace)
+            return _error_result(
+                "timeout",
+                path,
+                detail=f"session hit its {self.timeout_s}s walltime and was killed",
+            )
+        stdout = redact(stdout, (self.api_key,))
+        transcript_path = _write_private(workspace.parent, transcript_stem, ".jsonl", stdout)
+        last_message = ""
+        # errors="replace": a non-UTF-8 last-message file must not raise
+        # UnicodeDecodeError (not an OSError) and break the never-raises contract.
+        with contextlib.suppress(OSError):
+            last_message = redact(last_message_path.read_text(errors="replace"), (self.api_key,))
+        # The final message is preserved in the 0600 transcript; drop the raw
+        # file so model output is not left behind.
+        with contextlib.suppress(OSError):
+            last_message_path.unlink()
+        return _parse_codex_result(stdout, last_message, process.returncode, transcript_path)
+
+
 @dataclass
 class FakeHarness:
     """Deterministic in-process harness for tests and dry runs."""

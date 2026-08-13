@@ -88,11 +88,16 @@ or gaming defect with a concrete failure. Edge cases, missing docs,
 wording, and anything low-confidence are advisory: `blocking` false. Most
 findings are advisory.
 
+Set `kind` to what you want the reader to do: `change` (fix this),
+`suggestion` (an optional improvement), `question` (you need an answer), or
+`note` (just flagging). A blocking finding is almost always `change`.
+
 Never instruct the reader to merge, approve, or reject. You are advisory."""
 )
 
 
 CONFIDENCES = ("low", "medium", "high")
+KINDS = ("change", "suggestion", "question", "note")
 
 
 class Completer(Protocol):
@@ -124,6 +129,9 @@ class Finding:
     detail: str
     category: str = ""  # verifier-only (gaming taxonomy); "" for advisory
     blocking: bool = False  # a confirmed defect that should gate merge
+    # What the reader is asked to do — the speech act, separate from blocking
+    # (does it gate) and line (is it local). Governs how a finding renders.
+    kind: Literal["change", "suggestion", "question", "note"] = "note"
 
 
 @dataclass(frozen=True)
@@ -147,8 +155,9 @@ FINDINGS_SCHEMA: dict[str, Any] = {
                     "summary": {"type": "string"},
                     "detail": {"type": "string"},
                     "blocking": {"type": "boolean"},
+                    "kind": {"type": "string", "enum": list(KINDS)},
                 },
-                "required": ["file", "line", "confidence", "summary", "detail", "blocking"],
+                "required": ["file", "line", "confidence", "summary", "detail", "blocking", "kind"],
                 "additionalProperties": False,
             },
         },
@@ -225,6 +234,28 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+# Prepended to the shared rubric for the agent-session reviewer: it has a
+# read-only checkout and the read tools, unlike the one-shot completer that
+# only sees the diff and a bounded context slice.
+AGENT_INVESTIGATION = (
+    "The repository is checked out read-only in your working directory. Use Read, "
+    "Grep, and Glob to investigate beyond the diff: the surrounding code, callers, "
+    "and tests. The checked-out code is part of your evidence, so you may cite file "
+    "contents you read. You have no execute or write tools; do not run code.\n\n"
+    "When done, reply with ONLY a JSON object and nothing else: `findings` (a "
+    "list) and `notes` (a string). Each finding has `file`, `line` (or null), "
+    "`confidence` (low, medium, or high), `summary`, `detail`, `blocking` (true "
+    "or false), and `kind` (change, suggestion, question, or note)."
+)
+
+
+def build_agent_brief(pr: PullRequest, today: str | None = None) -> str:
+    """The reviewer brief for an agent session: the shared rubric, the
+    investigation instruction, and the PR itself. Reuses the completer's
+    prompt so both paths judge by the same rules."""
+    return f"{SYSTEM_PROMPT}\n\n{AGENT_INVESTIGATION}\n\n{build_prompt(pr, today)}"
+
+
 def build_prompt(pr: PullRequest, today: str | None = None) -> str:
     diff = pr.diff
     truncated = ""
@@ -271,19 +302,44 @@ def review(
         return ReviewResult(findings=[], notes="", skipped=skip)
 
     raw = completer.complete(SYSTEM_PROMPT, build_prompt(pr, today), FINDINGS_SCHEMA)
-    data = json.loads(raw)
-    findings = [
-        Finding(
-            file=sanitize(item["file"], 200),
-            line=item["line"] if isinstance(item.get("line"), int) else None,
-            confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
-            summary=sanitize(item["summary"], MAX_SUMMARY_CHARS),
-            detail=sanitize(item["detail"], MAX_DETAIL_CHARS),
-            blocking=bool(item.get("blocking")),
+    return result_from_data(json.loads(raw))
+
+
+def result_from_data(data: dict[str, Any]) -> ReviewResult:
+    """Build a ReviewResult from a findings object. Shared by the one-shot
+    completer path and the agent-session path — both sanitize identically:
+    every string here is untrusted model output bound for a GitHub comment, and
+    the caps guard the render (`sanitize` also neutralizes markdown/HTML).
+
+    Malformed items are dropped, never raised on: the completer path enforces
+    the item schema, but the agent path validates only the top-level shape, so
+    an item may be a non-dict or miss a key. A finding needs at least a file, a
+    summary, and a detail; anything short of that is skipped."""
+    raw = data.get("findings")
+    items = raw if isinstance(raw, list) else []  # null / non-list -> no findings
+    findings: list[Finding] = []
+    for item in items[:MAX_FINDINGS]:
+        if not isinstance(item, dict):
+            continue
+        file, summary, detail = item.get("file"), item.get("summary"), item.get("detail")
+        if not (isinstance(file, str) and isinstance(summary, str) and isinstance(detail, str)):
+            continue
+        findings.append(
+            Finding(
+                file=sanitize(file, 200),
+                line=item["line"] if isinstance(item.get("line"), int) else None,
+                confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
+                summary=sanitize(summary, MAX_SUMMARY_CHARS),
+                detail=sanitize(detail, MAX_DETAIL_CHARS),
+                blocking=bool(item.get("blocking")),
+                kind=item["kind"] if item.get("kind") in KINDS else "note",
+            )
         )
-        for item in list(data.get("findings", []))[:MAX_FINDINGS]
-    ]
-    return ReviewResult(findings=findings, notes=sanitize(data.get("notes", ""), MAX_DETAIL_CHARS))
+    notes = data.get("notes", "")
+    return ReviewResult(
+        findings=findings,
+        notes=sanitize(notes if isinstance(notes, str) else "", MAX_DETAIL_CHARS),
+    )
 
 
 def commentable_lines(diff: str) -> dict[str, set[int]]:
@@ -355,8 +411,34 @@ def verdict_line(findings: list[Finding], clean_text: str = "no defects found") 
     return f"**Verdict: {blocking} blocking, {advisory} advisory.**"
 
 
+# Findings that anchor inline: the ones the reader can act on right at the
+# line. Blocking findings anchor too (they gate the merge, so they are always
+# actionable), which keeps them inline regardless of `kind`.
+_INLINE_KINDS = ("change", "suggestion")
+# Body-bullet labels that surface intent for the kinds kept in the body.
+_BRIEF_LABEL = {"question": "Question: ", "suggestion": "Suggestion: "}
+
+
+def _inlines(finding: Finding) -> bool:
+    return finding.blocking or finding.kind in _INLINE_KINDS
+
+
+def _inline_comment(finding: Finding) -> str:
+    """The inline thread body for a local, actionable finding. A lead word says
+    which it is: a blocking defect (gates the merge), an optional suggestion, or
+    a plain change."""
+    if finding.blocking:
+        lead = "**Blocking.** "
+    elif finding.kind == "suggestion":
+        lead = "**Suggestion.** "
+    else:
+        lead = ""
+    paragraph = _finding_paragraph(finding, with_ref=False)
+    return f"{lead}{paragraph}\n\n*({finding.confidence} confidence)*"
+
+
 def _finding_brief(finding: Finding) -> str:
-    """A compact one-line bullet for a non-blocking finding. Summary is
+    """A compact one-line bullet for a finding kept in the body. Summary is
     model text shaped by the diff, so an odd backtick must be balanced or
     it pairs with the reference's opening backtick and spills the path."""
     safe_file = finding.file.replace("`", "")
@@ -364,7 +446,8 @@ def _finding_brief(finding: Finding) -> str:
     summary = finding.summary.rstrip(".!?…")
     if summary.count("`") % 2:
         summary += "`"
-    return f"- {summary} ({where}; {finding.confidence})"
+    label = _BRIEF_LABEL.get(finding.kind, "")
+    return f"- {label}{summary} ({where}; {finding.confidence})"
 
 
 def _render_body(
@@ -385,7 +468,7 @@ def _render_body(
     lines = [marker, header, "", verdict, ""]
     if inline_count:
         n = inline_count
-        lines.append(f"{n} blocking finding{'s' if n != 1 else ''} attached to the lines below.")
+        lines.append(f"{n} finding{'s' if n != 1 else ''} attached to the lines below.")
         lines.append("")
     for f in blocking:  # only the ones not shown inline reach here
         lines.append(_finding_paragraph(f))
@@ -412,17 +495,17 @@ def format_review(result: ReviewResult, diff: str) -> tuple[str, list[dict[str, 
     anchors = commentable_lines(diff)
     inline: list[dict[str, Any]] = []
     remaining: list[Finding] = []
-    # Only blocking findings anchor inline (they are what the reader must
-    # act on); advisory findings stay as a compact list in the body.
+    # Actionable findings (blocking, or kind change/suggestion) anchor inline
+    # where the reader acts; questions and notes stay a compact body list, so
+    # local FYI findings do not flood the diff with threads.
     for finding in sorted(result.findings, key=lambda f: _CONFIDENCE_ORDER[f.confidence]):
-        if finding.blocking and finding.line and finding.line in anchors.get(finding.file, ()):
+        if _inlines(finding) and finding.line and finding.line in anchors.get(finding.file, ()):
             inline.append(
                 {
                     "path": finding.file,
                     "line": finding.line,
                     "side": "RIGHT",
-                    "body": f"{_finding_paragraph(finding, with_ref=False)}\n\n"
-                    f"*({finding.confidence} confidence)*",
+                    "body": _inline_comment(finding),
                 }
             )
         else:

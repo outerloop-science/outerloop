@@ -56,6 +56,62 @@ ONE_FINDING = {
 }
 
 
+def test_result_from_data_parses_and_defaults_kind() -> None:
+    from autoresearch.review import result_from_data
+
+    def item(**extra: Any) -> dict[str, Any]:
+        return {
+            "file": "x.py",
+            "line": 1,
+            "confidence": "low",
+            "summary": "s",
+            "detail": "d",
+            **extra,
+        }
+
+    data: dict[str, Any] = {
+        "findings": [
+            item(kind="change"),
+            item(kind="bogus"),  # invalid -> note
+            item(),  # missing -> note
+        ],
+        "notes": "",
+    }
+    kinds = [f.kind for f in result_from_data(data).findings]
+    assert kinds == ["change", "note", "note"]
+
+
+def test_result_from_data_drops_malformed_items_without_crashing() -> None:
+    from autoresearch.review import result_from_data
+
+    good = {
+        "file": "x.py",
+        "line": 1,
+        "confidence": "high",
+        "summary": "ok",
+        "detail": "d",
+        "blocking": False,
+        "kind": "note",
+    }
+    data: dict[str, Any] = {
+        "findings": [
+            good,
+            {"file": "y.py"},  # missing summary/detail -> dropped
+            "not a dict",  # non-dict -> dropped
+            {"summary": "no file", "detail": "d"},  # missing file -> dropped
+        ],
+        "notes": None,  # non-string notes must not crash
+    }
+    result = result_from_data(data)
+    assert [f.file for f in result.findings] == ["x.py"]
+    assert result.notes == ""
+
+    # findings null or a non-list must not raise, either
+    assert result_from_data({"findings": None, "notes": ""}).findings == []
+    assert result_from_data({"findings": 7, "notes": ""}).findings == []
+    assert result_from_data({}).findings == []
+
+
 def test_bot_authored_prs_are_never_reviewed() -> None:
     pr = make_pr(author=BOT)
     assert skip_reason(pr, BOT) is not None
@@ -325,8 +381,80 @@ def test_format_review_splits_anchored_from_body() -> None:
     # advisory findings stay in the body as a compact list, references intact
     assert "Stale doc" in body and "`src/other.py`:5" in body
     assert "Global" in body and "Bad add" not in body
-    assert "1 blocking finding attached to the lines below." in body
+    assert "1 finding attached to the lines below." in body
     assert "Verdict:" in body and body.lstrip().startswith(MARKER)
+
+
+def test_nonblocking_suggestion_anchors_inline_with_label() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    sugg = Finding(
+        file="src/x.py",
+        line=11,
+        confidence="medium",
+        summary="Rename for clarity",
+        detail="`tmp` hides intent.",
+        blocking=False,
+        kind="suggestion",
+    )
+    _body, inline = format_review(ReviewResult([sugg], notes=""), DIFF)  # type: ignore[misc]
+    (item,) = inline
+    assert item["line"] == 11
+    assert item["body"].startswith("**Suggestion.**")
+
+
+def test_inline_lead_distinguishes_blocking_from_change() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    blocking = Finding(
+        file="src/x.py",
+        line=11,
+        confidence="high",
+        summary="Bug",
+        detail="Crashes.",
+        blocking=True,
+        kind="change",
+    )
+    change = Finding(
+        file="src/x.py",
+        line=12,
+        confidence="medium",
+        summary="Tidy",
+        detail="Clearer name.",
+        blocking=False,
+        kind="change",
+    )
+    _body, inline = format_review(ReviewResult([blocking, change], notes=""), DIFF)  # type: ignore[misc]
+    by_line = {c["line"]: c["body"] for c in inline}
+    assert by_line[11].startswith("**Blocking.**")
+    assert not by_line[12].startswith("**Blocking.**")
+
+
+def test_local_question_and_note_stay_in_body() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    question = Finding(
+        file="src/x.py",
+        line=11,
+        confidence="low",
+        summary="Why drop the guard",
+        detail="The old code checked n.",
+        blocking=False,
+        kind="question",
+    )
+    note = Finding(
+        file="src/x.py",
+        line=12,
+        confidence="low",
+        summary="Uses tabs here",
+        detail="Rest of file is spaces.",
+        blocking=False,
+        kind="note",
+    )
+    body, inline = format_review(ReviewResult([question, note], notes=""), DIFF)  # type: ignore[misc]
+    assert inline == []  # neither floods the diff
+    assert "Question: Why drop the guard" in body
+    assert "Uses tabs here" in body
 
 
 def test_commentable_lines_survives_header_lookalike_content() -> None:
@@ -364,7 +492,7 @@ def test_format_review_all_anchored_says_so() -> None:
     assert rendered is not None
     body, inline = rendered
     assert len(inline) == 1
-    assert "1 blocking finding attached to the lines below." in body
+    assert "1 finding attached to the lines below." in body
 
 
 def test_commentable_lines_stops_at_file_boundaries() -> None:
