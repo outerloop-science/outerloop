@@ -192,3 +192,15 @@ repo goes public. See `public-surface.md` for that threat model.
 - **Runner choice.** GitHub-hosted runners cannot be egress-firewalled as
   tightly as a container we control. Self-hosted runners give more control
   but bring back "our hardware." Decide per role and per trust level.
+
+## Status (2026-08-13)
+
+The agent-session reviewer is live. It runs as a reusable workflow
+(`.github/workflows/advisory-review-agent.yml`): on a PR it checks out the head
+read-only, runs the reviewer as an agent that reads the code (no Bash/Write, so
+untrusted PR code is only read, never executed), and posts findings. Claude on
+GitHub-hosted runners is the default — its reads are native, so it needs no
+second sandbox; codex's read-only sandbox (bwrap) cannot init on GitHub-hosted
+runners, so codex reviews run via the cluster harness instead. Findings that
+would need a second layer (fork PRs, live web search) stay future work. The
+completer path is retained until the lab repos migrate, then removed.
