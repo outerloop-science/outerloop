@@ -129,6 +129,23 @@ def test_null_labels_do_not_crash() -> None:
     assert label is not None  # posts normally; null labels are not a crash
 
 
+def test_explicit_bot_pr_posts_issue_comment_not_inline() -> None:
+    # a bot PR reviewed on explicit re-request stays an issue comment, so it
+    # rides into follow-up wakes (the wake plumbing reads issue comments)
+    client, harness = _Client(author="autoresearch-bot"), _Harness(_FINDINGS)
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+        explicit=True,
+    )
+    assert label is not None
+    assert client.comments and client.reviews == []  # issue comment, not inline review
+
+
 def test_bot_authored_pr_is_skipped() -> None:
     client, harness = _Client(author="autoresearch-bot"), _Harness(_FINDINGS)
     label = run_agent_review(

@@ -33,7 +33,12 @@ from autoresearch.review import (
     format_review,
     skip_reason,
 )
-from autoresearch.review_cli import EXPECTED_FAILURES, post_round_review, post_skip_stub
+from autoresearch.review_cli import (
+    EXPECTED_FAILURES,
+    post_round,
+    post_round_review,
+    post_skip_stub,
+)
 from autoresearch.role_runner import run_role
 from autoresearch.roles import review_result_from_role, reviewer_spec
 from autoresearch.rolespec import RoleSpec
@@ -133,15 +138,26 @@ def run_agent_review(
                 post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
 
-        rendered = format_review(review, pr.diff)
-        full = format_comment(review)
-        if rendered is None or full is None:
-            log.info("nothing to post")
-            return None
-        body, inline = rendered
-        round_label = post_round_review(
-            client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
-        )
+        # Human PRs get inline findings. Explicit rounds on BOT PRs stay issue
+        # comments: those ride into follow-up wakes as context, and the wake
+        # plumbing reads the issue-comment collection (matches review_cli).
+        bot_authored = pr.author.strip().casefold() == bot_login.strip().casefold()
+        if bot_authored:
+            body = format_comment(review)
+            if body is None:
+                log.info("nothing to post")
+                return None
+            round_label = post_round(client, repo, number, MARKER, body, pr_data)
+        else:
+            rendered = format_review(review, pr.diff)
+            full = format_comment(review)
+            if rendered is None or full is None:
+                log.info("nothing to post")
+                return None
+            body, inline = rendered
+            round_label = post_round_review(
+                client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+            )
         log.info("posted agent review (%s) on %s#%s", round_label, repo, number)
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI

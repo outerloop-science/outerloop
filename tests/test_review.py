@@ -112,6 +112,19 @@ def test_result_from_data_drops_malformed_items_without_crashing() -> None:
     assert result_from_data({}).findings == []
 
 
+def test_boolean_line_is_not_treated_as_a_line_number() -> None:
+    from autoresearch.review import result_from_data
+
+    data: dict[str, Any] = {
+        "findings": [
+            {"file": "x.py", "line": True, "confidence": "low", "summary": "s", "detail": "d"}
+        ],
+        "notes": "",
+    }
+    # bool is an int subclass; `line: true` must not become line 1
+    assert result_from_data(data).findings[0].line is None
+
+
 def test_bot_authored_prs_are_never_reviewed() -> None:
     pr = make_pr(author=BOT)
     assert skip_reason(pr, BOT) is not None

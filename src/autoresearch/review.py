@@ -324,10 +324,14 @@ def result_from_data(data: dict[str, Any]) -> ReviewResult:
         file, summary, detail = item.get("file"), item.get("summary"), item.get("detail")
         if not (isinstance(file, str) and isinstance(summary, str) and isinstance(detail, str)):
             continue
+        # bool is an int subclass, so `line: true` would slip through an
+        # `isinstance(..., int)` check and become line 1.
+        line = item.get("line")
+        line = line if isinstance(line, int) and not isinstance(line, bool) else None
         findings.append(
             Finding(
                 file=sanitize(file, 200),
-                line=item["line"] if isinstance(item.get("line"), int) else None,
+                line=line,
                 confidence=item["confidence"] if item.get("confidence") in CONFIDENCES else "low",
                 summary=sanitize(summary, MAX_SUMMARY_CHARS),
                 detail=sanitize(detail, MAX_DETAIL_CHARS),

@@ -436,7 +436,7 @@ def _codex_command(
 
 
 def _parse_codex_result(
-    stdout: str, last_message: str, returncode: int, transcript_path: str = ""
+    stdout: str, last_message: str, returncode: int, transcript_path: str = "", stderr: str = ""
 ) -> SessionResult:
     """Best-effort SessionResult from `codex exec --json` output.
 
@@ -473,6 +473,10 @@ def _parse_codex_result(
                 errors.append(message)
     is_error = returncode != 0 or saw_error
     detail = "; ".join(errors)[:500]
+    # Fall back to stderr so a failed run (e.g. a bad flag, no matching event)
+    # carries some cause instead of an empty detail.
+    if is_error and not detail and stderr.strip():
+        detail = stderr.strip()[-500:]
     return SessionResult(
         stop_reason="error" if is_error else "completed",
         is_error=is_error,
@@ -550,7 +554,7 @@ class CodexHarness:
             log.warning("could not spawn %s: %s", self.binary, exc)
             return _error_result("spawn-error")
         try:
-            stdout, _ = process.communicate(input=brief_text, timeout=self.timeout_s)
+            stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
@@ -583,7 +587,13 @@ class CodexHarness:
         # file so model output is not left behind.
         with contextlib.suppress(OSError):
             last_message_path.unlink()
-        return _parse_codex_result(stdout, last_message, process.returncode, transcript_path)
+        return _parse_codex_result(
+            stdout,
+            last_message,
+            process.returncode,
+            transcript_path,
+            stderr=redact(stderr, (self.api_key,)),
+        )
 
 
 @dataclass
