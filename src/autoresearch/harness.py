@@ -564,6 +564,8 @@ class CodexHarness:
             path = _write_private(
                 workspace.parent, transcript_stem, ".jsonl", redact(stdout or "", (self.api_key,))
             )
+            with contextlib.suppress(OSError):
+                last_message_path.unlink()  # clean up on the timeout path too
             log.warning("codex session timed out after %ss in %s", self.timeout_s, workspace)
             return _error_result(
                 "timeout",

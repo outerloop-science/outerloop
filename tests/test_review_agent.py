@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from autoresearch.harness import SessionResult
 from autoresearch.review import build_agent_brief
@@ -63,8 +64,12 @@ class _Harness:
 class _Client:
     """Minimal GitHubClient stand-in recording posts."""
 
-    def __init__(self, *, author: str = "alice", labels: list[dict] | None = None) -> None:
-        self._author, self._labels = author, labels or []
+    _UNSET = object()
+
+    def __init__(self, *, author: str = "alice", labels: Any = _UNSET) -> None:
+        # labels passed as None models the API returning "labels": null
+        self._author = author
+        self._labels = [] if labels is _Client._UNSET else labels
         self.reviews: list[tuple[str, list[dict]]] = []
         self.comments: list[str] = []
 
@@ -109,6 +114,19 @@ def test_clean_review_posts_inline() -> None:
     assert any(c.get("path") == "models/encoder.py" for c in inline)
     # the brief carried the read-only investigation instruction
     assert "checked out read-only" in harness.briefs[0]
+
+
+def test_null_labels_do_not_crash() -> None:
+    client, harness = _Client(labels=None), _Harness(_FINDINGS)
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+    )
+    assert label is not None  # posts normally; null labels are not a crash
 
 
 def test_bot_authored_pr_is_skipped() -> None:

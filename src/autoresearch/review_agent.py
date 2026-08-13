@@ -51,9 +51,10 @@ def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullReq
         body=str(pr_data.get("body") or ""),
         diff=diff,
         author=str((pr_data.get("user") or {}).get("login", "")),
+        # `or []`: the labels field may be null in the payload, not just absent
         labels=tuple(
             str(label.get("name", ""))
-            for label in pr_data.get("labels", [])
+            for label in (pr_data.get("labels") or [])
             if isinstance(label, dict)
         ),
     )
