@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import Harness, outage
+from autoresearch.harness import ClaudeCodeHarness, Harness, outage
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -39,6 +39,39 @@ from autoresearch.roles import review_result_from_role, reviewer_spec
 from autoresearch.rolespec import RoleSpec
 
 log = logging.getLogger(__name__)
+
+# Native Claude Code tools a judge session uses. The RoleSpec's other tools
+# (pr-context-read, retriever) are harness-provided MCP tools, wired separately;
+# they are not passed as native CLI tools here.
+_NATIVE_READ_TOOLS = ("Read", "Grep", "Glob")
+
+
+def build_reviewer_harness(
+    api_key: str,
+    spec: RoleSpec | None = None,
+    *,
+    binary: str = "claude",
+    model: str | None = None,
+    container_image: str = "",
+) -> ClaudeCodeHarness:
+    """Construct a read-only Claude Code harness for the reviewer from its
+    RoleSpec — the deployment wiring the role-runner assumes (docs: "the harness
+    is assumed already constructed for the role"). Only native read tools are
+    granted (no Write/Edit/Bash), so the read-only boundary binds the session,
+    and the RoleSpec's budget sets turns and walltime."""
+    spec = spec or reviewer_spec()
+    if spec.execution.can_execute:
+        raise ValueError("build_reviewer_harness is for read-only judge roles")
+    allowed = tuple(tool for tool in spec.tools if tool in _NATIVE_READ_TOOLS)
+    return ClaudeCodeHarness(
+        api_key=api_key,
+        binary=binary,
+        model=model or "claude-opus-5",
+        max_turns=spec.budget.max_turns,
+        timeout_s=spec.budget.walltime_s,
+        allowed_tools=allowed,
+        container_image=container_image,
+    )
 
 
 def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullRequest, dict]:

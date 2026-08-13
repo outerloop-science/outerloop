@@ -176,6 +176,36 @@ def test_malformed_output_posts_nothing() -> None:
     assert client.reviews == [] and client.comments == []
 
 
+def test_build_reviewer_harness_is_read_only() -> None:
+    from autoresearch.review_agent import build_reviewer_harness
+
+    harness = build_reviewer_harness("k")
+    # the read-only boundary binds the session: no execute/write tools
+    assert "Bash" not in harness.allowed_tools
+    assert "Write" not in harness.allowed_tools and "Edit" not in harness.allowed_tools
+    assert set(harness.allowed_tools) == {"Read", "Grep", "Glob"}
+    # budget comes from the RoleSpec
+    assert harness.max_turns == 40 and harness.timeout_s == 1800
+
+
+def test_build_reviewer_harness_rejects_execute_role() -> None:
+    import pytest
+
+    from autoresearch.review_agent import build_reviewer_harness
+    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+
+    author = RoleSpec(
+        name="author",
+        instructions="x",
+        key="author",
+        tools=("Read", "Edit", "Bash"),
+        execution=Execution(environment="apptainer", can_execute=True),
+        budget=SessionBudget(max_turns=10, walltime_s=60),
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        build_reviewer_harness("k", author)
+
+
 def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     from autoresearch.review import PullRequest
 
