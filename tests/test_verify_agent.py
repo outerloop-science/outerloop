@@ -159,3 +159,23 @@ def test_brief_directs_ruler_reads_at_base() -> None:
     assert "`base/`" in brief and "`pr-head/`" in brief
     assert "contract: yes" in brief  # fenced from base, orchestrator-vouched
     assert "do not run code" in brief.lower()
+
+
+def test_bogus_category_clamps_to_other() -> None:
+    from autoresearch.verifier import verify_result_from_data
+
+    data = {
+        "findings": [
+            {
+                "file": "x.py",
+                "line": 1,
+                "category": "made-up-category",
+                "confidence": "low",
+                "summary": "s",
+                "detail": "d",
+                "blocking": False,
+            }
+        ],
+        "notes": "",
+    }
+    assert verify_result_from_data(data).findings[0].category == "other"

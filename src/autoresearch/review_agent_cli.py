@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
-from autoresearch.review_agent import build_reviewer_harness, run_agent_review
+from autoresearch.review_agent import build_reviewer_harness, run_agent_review, sanitize_checkout
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,11 @@ def main() -> int:
         log.warning("REVIEW_CHECKOUT is unset; skipping (won't review the wrong tree)")
         return 0
     workspace = Path(checkout).resolve()
+    # The checkout is untrusted: rename instruction files (CLAUDE.md, .claude/
+    # hooks, ...) so no backend auto-loads PR content as instructions.
+    renamed = sanitize_checkout(workspace)
+    if renamed:
+        log.info("sanitized %d instruction file(s) in the checkout", renamed)
     explicit = os.environ.get("REVIEW_EXPLICIT_REQUEST", "").strip().lower() == "true"
 
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))

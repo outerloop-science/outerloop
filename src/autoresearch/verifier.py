@@ -257,8 +257,9 @@ def build_verify_prompt(
 AGENT_VERIFY_INVESTIGATION = (
     "Two trees are checked out read-only in your working directory: `pr-head/` "
     "is the pull request's code (the change under review, written by the agent "
-    "you are verifying), and `base/` is the default branch (trusted: the real "
-    "contract and the frozen ruler). Read the ruler source — how the metric is "
+    "you are verifying), and `base/` is the PR's base branch (trusted: the "
+    "contract and the frozen ruler as they stood before this change). Read the "
+    "ruler source — how the metric is "
     "ACTUALLY computed — from `base/`, never from `pr-head/`. Use Read, Grep, "
     "and Glob to follow the change through the tree: how the eval calls the "
     "changed code, what it can see, what it could exploit. You have no execute "
@@ -324,7 +325,9 @@ def verify_result_from_data(data: Any) -> ReviewResult:
             summary=sanitize(str(item.get("summary", "")), MAX_SUMMARY_CHARS),
             detail=sanitize(str(item.get("detail", "")), MAX_DETAIL_CHARS),
             blocking=bool(item.get("blocking")),
-            category=sanitize(str(item.get("category", "other")), 40),
+            # clamped to the taxonomy: the agent path validates only the
+            # top-level shape, so a free-string category must not leak through
+            category=item["category"] if item.get("category") in CATEGORIES else "other",
         )
         for item in (raw_findings if isinstance(raw_findings, list) else [])[:MAX_FINDINGS]
         if isinstance(item, dict) and item.get("summary")

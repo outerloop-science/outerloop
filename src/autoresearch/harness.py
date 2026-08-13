@@ -216,6 +216,13 @@ class ClaudeCodeHarness:
     # passes the task-source gate upstream.
     allowed_tools: tuple[str, ...] = ("Write", "Edit", "Read", "Glob", "Grep", "Bash")
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    # --bare skips hooks, plugin sync, auto-memory, and CLAUDE.md
+    # auto-discovery, and restricts auth to ANTHROPIC_API_KEY. REQUIRED for
+    # judge sessions whose cwd contains an untrusted checkout: a PR-authored
+    # CLAUDE.md or .claude/settings.json (hooks run commands) must never load
+    # as instructions. Off for author sessions, where the target repo's own
+    # CLAUDE.md is useful contributor guidance.
+    bare: bool = False
     # Apptainer image for session containment (decided 2026-08-06). When set,
     # the session runs under `apptainer exec --containall --cleanenv`: no host
     # $HOME, no host env, no same-user absolute paths — the session sees only
@@ -266,6 +273,7 @@ class ClaudeCodeHarness:
             ",".join(self.allowed_tools),
             "--permission-mode",
             permission_mode,
+            *(["--bare"] if self.bare else []),
             *self.extra_args,
         ]
         if resume_session_id:

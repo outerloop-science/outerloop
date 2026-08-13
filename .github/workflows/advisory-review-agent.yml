@@ -54,7 +54,7 @@ jobs:
     # caller's PR red. (Failures still show in this job's run log.)
     continue-on-error: true
     # Backstop a hung session so it can't burn the 360-min default runner budget.
-    timeout-minutes: 40
+    timeout-minutes: 70
     # Fork PRs must not reach the secret. `pull_request_target` runs in the base
     # repo's context, so this gate is what closes the pwn-request hole. The
     # reviewer also never executes PR code, a second layer of defense.

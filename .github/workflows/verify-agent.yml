@@ -53,7 +53,7 @@ jobs:
     # Advisory role: an infrastructure failure must never red the caller's PR.
     continue-on-error: true
     # Backstop a hung session; the harness kills at its own walltime first.
-    timeout-minutes: 40
+    timeout-minutes: 70
     # Fork PRs must not reach the secret; this role covers the BOT's PRs only
     # (human PRs belong to the advisory reviewer); and label events count only
     # for the SPECIFIC re-request label applied by someone other than the PR's

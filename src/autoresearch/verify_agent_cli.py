@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
-from autoresearch.review_agent import build_reviewer_harness
+from autoresearch.review_agent import build_reviewer_harness, sanitize_checkout
 from autoresearch.roles import verifier_spec
 from autoresearch.verify_agent import run_agent_verify
 
@@ -49,6 +49,16 @@ def main() -> int:
         log.warning("VERIFY_CHECKOUT is unset; skipping (won't verify the wrong trees)")
         return 0
     workspace = Path(checkout).resolve()
+    # Both trees must actually be there — a session over a wrong layout would
+    # read nothing and post a hollow "no findings" that reads as a clean pass.
+    if not (workspace / "pr-head").is_dir() or not (workspace / "base").is_dir():
+        log.warning("VERIFY_CHECKOUT lacks pr-head/ and base/; skipping")
+        return 0
+    # Only pr-head is untrusted: rename instruction files (CLAUDE.md, .claude/
+    # hooks, ...) so no backend auto-loads PR content as instructions.
+    renamed = sanitize_checkout(workspace / "pr-head")
+    if renamed:
+        log.info("sanitized %d instruction file(s) in pr-head", renamed)
 
     spec = verifier_spec()
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))

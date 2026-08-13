@@ -89,7 +89,37 @@ def build_reviewer_harness(
         timeout_s=spec.budget.walltime_s,
         allowed_tools=allowed,
         container_image=container_image,
+        # A judge's cwd contains an untrusted checkout: never load its
+        # CLAUDE.md / hooks / project settings as instructions.
+        bare=True,
     )
+
+
+# Files an agent harness may auto-load as INSTRUCTIONS from a checkout. In an
+# untrusted tree they are attack surface (a PR-authored CLAUDE.md, or
+# .claude/settings.json hooks that execute commands), so the CLIs rename them
+# before any session starts. Renamed — not deleted — so a judge can still read
+# them as data. Backend-agnostic defense in depth behind claude's --bare.
+INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", ".claude", ".mcp.json")
+SANITIZED_SUFFIX = ".pr-data"
+
+
+def sanitize_checkout(tree: Path) -> int:
+    """Rename instruction-bearing files/dirs anywhere under `tree` so no agent
+    backend auto-loads untrusted content as instructions. Returns the count
+    renamed. Best-effort on individual failures; never raises."""
+    renamed = 0
+    if not tree.is_dir():
+        return 0
+    # bottom-up so a renamed directory doesn't orphan paths found beneath it
+    for path in sorted(tree.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.name in INSTRUCTION_FILES:
+            try:
+                path.rename(path.with_name(path.name + SANITIZED_SUFFIX))
+                renamed += 1
+            except OSError as exc:
+                log.warning("could not sanitize %s: %s", path, exc)
+    return renamed
 
 
 def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullRequest, dict]:
