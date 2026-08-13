@@ -24,10 +24,14 @@ Skills are also the *procedural layer of memory* — see the memory table.
 | execute / bash | author, steward | inside apptainer; **never** reviewer/verifier |
 | pr-context-read | reviewer, verifier | read-only, **tokenless** — the harness fetches PR/issue text; the bot PAT never enters a session |
 | retriever | opt-in per RoleSpec | curated egress for best-practice/reference lookups (the retriever-in-harness seam) |
+| subagent (fan-out) | author, steward | inherits the parent RoleSpec's tools/scope/key; spend counts against the session budget |
 
 GitHub **writes** (open PR, comment, update ledger), the **eval run**, and
-**sbatch** are kernel syscalls, not agent tools. The agent proposes; the kernel
-acts. This is the credential boundary.
+**experiment submission** are `act` syscalls, not agent tools: the agent directs
+them, the kernel performs them so the guarantee holds — the PAT never enters a
+session, and a launched experiment always gets its paired wake job
+(consolidation.md, "Syscalls: sync, yield, and no interrupt"). The agent drafts;
+the kernel opens the bot PR; a human merges.
 
 ## Skills (know-how)
 
@@ -73,7 +77,7 @@ per tiny thing is the accretion trap in a new costume.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | session / resume | working context, agent notes | one run | one run | the session | the session |
 | 2 | run reports (episodic) | hypothesis + outcome per run | persistent | per target | role session | brief (recent N) |
-| 3 | lessons (semantic) | distilled do / don't | persistent, curated | per target | curator drafts → human PR | brief |
+| 3 | lessons (semantic) | distilled do / don't | persistent, curated | per target | curator role → bot PR → human merge | brief |
 | 4 | **human feedback (new)** | maintainer comments + the merge/close **delta** | persistent → distilled | per target | capture step | brief |
 | 5 | ledger / leaderboard (factual) | verified best, seeds, floor | persistent | per benchmark | **kernel only** | brief + humans |
 | 6 | skills store (procedural) | the skills above | persistent, versioned | global/role/target | humans (PR-gated) | brief |
@@ -119,9 +123,9 @@ rule.
 - **No maintainer-private text** in anything an agent reads.
 - **Reproducibility pin** — a run records which lessons-version it saw, so runs
   stay comparable (same caveat as pinning a self-improving backend).
-- **Authored, then gated** — skills and lessons are human-authored now; an agent
-  may *propose* one, but it lands through a human-reviewed PR, never silent
-  self-modification.
+- **Proposed by agents, gated at merge** — an agent (the curator, like any role)
+  drafts a skill or lesson as a bot PR; it lands only on a human merge, never a
+  silent self-edit. Drafting is agentic; merge authority is the human gate.
 - **Untrusted content is data, not instructions** — PR/issue text, retriever
   results, and the target's own files are untrusted. The harness data-fences
   them and a role treats them as material to judge, never as commands. This is

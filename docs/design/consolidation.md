@@ -70,6 +70,32 @@ So: measure (kernel) + judge (invoked role) + gate (policy) + execute (plumbing)
 what — the kernel doesn't; it wakes the session. Every time real judgment is
 required, it is a role, not the kernel.
 
+## Syscalls: sync, yield, and no interrupt
+
+Agents don't touch the trust-critical machinery directly — they call syscalls,
+and the kernel mediates only where a guarantee depends on it. `act` is every
+outward effect the kernel performs for a role: open a bot PR, post a comment,
+update the ledger, and **launch an experiment**. So agents already draft PRs
+(the kernel opens them; humans **merge**) and already launch experiments (the
+kernel submits them, with the paired wake job so no run is stranded). A role can
+also **fan out subagents** inside its session; they inherit its RoleSpec (tools,
+scope, key), and their spend counts against its budget.
+
+**Our OS is single-threaded, cooperative, and non-preemptive.** The tick is the
+scheduler: it runs each lane to completion and exits, and run state on the shared
+filesystem is the context switch. There is one blocking syscall —
+launch-experiment, which runs for hours — and it is a **yield**, not a preemptive
+block: the session ends, the kernel records the continuation (what it waits for,
+plus resume state), and a later tick wakes it. The wake cycle is coroutine
+yield/resume, which is why no agent is ever a long-lived process.
+
+**Nothing is interrupted mid-flight.** There are no signals into a running
+session. You steer at yield boundaries — a wake prompt can supersede a
+task-level instruction — or you cancel the job (the coarse `kill`). Between
+yields the agent honors its standing brief. A single-threaded OS that can't be
+interrupted is a real constraint; it is also what makes every step recoverable
+from a file on disk.
+
 ## What is kernel, what is app
 
 | Now | Fate |
