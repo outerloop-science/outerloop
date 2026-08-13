@@ -1,0 +1,63 @@
+name: advisory-review-agent
+# The agent-session reviewer, run manually (workflow_dispatch) to validate it on
+# a real runner beside the live completer (review.yml). It checks out the PR head
+# READ-ONLY and never executes it — the reviewer's tool set has no Bash/Write, so
+# untrusted PR code is only read. Non-destructive: this does not replace
+# review.yml. The swap + completer sunset is a later change once this is proven.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One review at a time per PR (avoid a duplicate comment or a duplicate bill).
+concurrency:
+  group: advisory-review-agent-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  agent-review:
+    runs-on: ubuntu-latest
+    # Advisory: an infrastructure failure here must never turn a PR red.
+    continue-on-error: true
+    steps:
+      # The reviewer code runs from here; the PR head is only ever read.
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          path: .autoresearch
+          persist-credentials: false
+      - name: Check out the PR head (read-only; never executed)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          path: pr-head
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # Native binary, not npm: the npm wrapper's native-binary spawn is
+      # fragile (macOS quarantines it); the standalone install is what the
+      # cluster0 validation used. Adds ~/.local/bin to PATH for the run step,
+      # which the harness passes through to the scrubbed session env.
+      - name: Install the Claude Code CLI
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run the agent review
+        working-directory: .autoresearch
+        env:
+          ANTHROPIC_REVIEWER_KEY: ${{ secrets.REVIEWER_API_KEY }}
+          # The workflow token, not the bot PAT — the PAT never reaches a session.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEW_BOT_LOGIN: agentic-learning-bot
+          REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
+        run: uv run --extra review python -m autoresearch.review_agent_cli
