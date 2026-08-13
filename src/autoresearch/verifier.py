@@ -249,6 +249,44 @@ def build_verify_prompt(
     return "\n\n".join(parts)
 
 
+# Prepended to the shared rubric for the agent-session verifier. Unlike the
+# completer, it has TWO read-only checkouts: the PR head (the change under
+# review) and the BASE branch (the trusted contract and ruler — the solver
+# cannot have shaped it). Ruler reads must target base, which preserves the
+# completer path's "ruler from the base branch, never the PR" property.
+AGENT_VERIFY_INVESTIGATION = (
+    "Two trees are checked out read-only in your working directory: `pr-head/` "
+    "is the pull request's code (the change under review, written by the agent "
+    "you are verifying), and `base/` is the default branch (trusted: the real "
+    "contract and the frozen ruler). Read the ruler source — how the metric is "
+    "ACTUALLY computed — from `base/`, never from `pr-head/`. Use Read, Grep, "
+    "and Glob to follow the change through the tree: how the eval calls the "
+    "changed code, what it can see, what it could exploit. You have no execute "
+    "or write tools; do not run code.\n\n"
+    "When done, reply with ONLY a JSON object and nothing else: `findings` (a "
+    "list) and `notes` (a string). Each finding has `file`, `line` (or null), "
+    "`category` (one of: " + ", ".join(CATEGORIES) + "), `confidence` (low, "
+    "medium, or high), `summary`, `detail`, and `blocking` (true or false)."
+)
+
+
+def build_verify_agent_brief(
+    pr: PullRequest,
+    contract_text: str,
+    today: str | None = None,
+    thread: tuple[tuple[str, str], ...] = (),
+) -> str:
+    """The verifier brief for an agent session: the shared rubric, the
+    two-tree investigation instruction, and the claim/diff/thread. The ruler
+    and file contents are NOT fenced in — the agent reads them from the
+    checkouts (ruler from base/); the contract is still fenced from the base
+    branch so the rules arrive orchestrator-vouched."""
+    return (
+        f"{VERIFY_SYSTEM_PROMPT}\n\n{AGENT_VERIFY_INVESTIGATION}\n\n"
+        f"{build_verify_prompt(pr, contract_text, ruler_files=(), today=today, thread=thread)}"
+    )
+
+
 def verify(
     pr: PullRequest,
     completer: Completer,
@@ -268,11 +306,16 @@ def verify(
         build_verify_prompt(pr, contract_text, ruler_files, today, thread),
         VERIFY_SCHEMA,
     )
-    data = json.loads(raw)
+    return verify_result_from_data(json.loads(raw))
+
+
+def verify_result_from_data(data: Any) -> ReviewResult:
+    """Build a ReviewResult from a verifier findings object. Shared by the
+    one-shot completer path and the agent-session path — both sanitize
+    identically (untrusted model output bound for a GitHub comment). A degraded
+    response must skip cleanly, not KeyError: every field access is defensive
+    even though the schema marks them required."""
     raw_findings = data.get("findings") if isinstance(data, dict) else None
-    # A degraded response must skip cleanly, not KeyError out of the CLI's
-    # EXPECTED_FAILURES: every field access is defensive even though the
-    # schema marks them required.
     findings = [
         Finding(
             file=sanitize(str(item.get("file", "")), 200),

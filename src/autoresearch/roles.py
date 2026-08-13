@@ -10,6 +10,7 @@ from __future__ import annotations
 from autoresearch.review import FINDINGS_SCHEMA, ReviewResult, result_from_data
 from autoresearch.role_runner import RoleResult
 from autoresearch.rolespec import Environment, Execution, RoleSpec, SessionBudget
+from autoresearch.verifier import VERIFY_SCHEMA, verify_result_from_data
 
 # Read-only investigation: repo-read plus the harness-provided pr-context and
 # retriever. No Write/Edit/Bash — a judge never executes untrusted PR code.
@@ -39,6 +40,42 @@ def reviewer_spec(
         skills=("kernel-primer", "plain-style", "review-rubric", "read-only-investigation"),
         output_schema=FINDINGS_SCHEMA,
     )
+
+
+def verifier_spec(
+    *, environment: Environment = "gh-runner", max_turns: int = 40, walltime_s: int = 1800
+) -> RoleSpec:
+    """The verifier as a read-only agent session.
+
+    Investigates a bot PR's improvement claim with the read tools — the ruler
+    from the base checkout, the change from the head — and returns findings
+    validated against `verifier.VERIFY_SCHEMA` (the gaming taxonomy). Read-only
+    by construction, same as the reviewer."""
+    return RoleSpec(
+        name="verifier",
+        instructions=(
+            "Verify the integrity of the benchmark improvement this bot PR "
+            "claims. Read the ruler from the base checkout and follow the "
+            "change through the tree; do not execute code. Return the findings "
+            "as the required JSON object."
+        ),
+        key="verifier",
+        tools=_JUDGE_TOOLS,
+        execution=Execution(environment=environment, can_execute=False),
+        budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
+        skills=("kernel-primer", "plain-style", "integrity-lens", "read-only-investigation"),
+        output_schema=VERIFY_SCHEMA,
+    )
+
+
+def verify_result_from_role(result: RoleResult) -> ReviewResult | None:
+    """The verifier result-policy: turn a role run into a postable ReviewResult
+    (categories included), or None when the session produced no verdict —
+    the caller posts a skip stub, never a clean read (silence must not look
+    like an endorsement)."""
+    if not result.ok or result.data is None:
+        return None
+    return verify_result_from_data(result.data)
 
 
 def review_result_from_role(result: RoleResult) -> ReviewResult | None:
