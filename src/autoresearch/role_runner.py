@@ -81,6 +81,14 @@ def run_role(
 
     A judge whose first message is malformed is asked once (per `max_repairs`)
     to resend just the JSON, resuming the same session so it keeps its context.
+
+    The `harness` is assumed already constructed for this role — its tools,
+    execution sandbox, and budget set to match `spec`. That construction (map
+    spec.tools to the backend's native tool flags vs harness-provided MCP
+    tools, spec.execution to the sandbox, spec.budget to turns/walltime) is the
+    deployment wiring, done where the harness is built for the role — the same
+    way climb builds its harness from effective_limits. run_role does not
+    reconcile a mismatched harness; it runs what it is given.
     """
     session = harness.run(brief_text, workspace, resume_session_id)
     if session.is_error:
@@ -92,13 +100,17 @@ def run_role(
     data, error = _validate_output(session.final_text, spec.output_schema)
     repairs = 0
     while data is None and repairs < max_repairs:
+        # A repair prompt only works if it resumes the session that holds the
+        # investigation context. With no session to resume, a fresh session
+        # would see only "resend the JSON" and produce nothing useful — fail
+        # instead of burning a context-less turn.
+        resume_target = session.session_id or resume_session_id
+        if not resume_target:
+            log.info("role %s: cannot repair structured output without a session", spec.name)
+            break
         repairs += 1
         log.info("role %s: repairing structured output (%s)", spec.name, error)
-        session = harness.run(
-            _repair_prompt(error),
-            workspace,
-            resume_session_id=session.session_id or resume_session_id,
-        )
+        session = harness.run(_repair_prompt(error), workspace, resume_session_id=resume_target)
         if session.is_error:
             return RoleResult(
                 ok=False, session=session, error=session.error_detail or session.stop_reason

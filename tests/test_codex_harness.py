@@ -9,18 +9,42 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
-from autoresearch.harness import _codex_command, _parse_codex_result
+import autoresearch.harness as harness_mod
+from autoresearch.harness import CodexHarness, _codex_command, _parse_codex_result
 
 
-def test_command_reads_prompt_from_stdin_not_argv() -> None:
+def test_command_has_expected_flags() -> None:
     cmd = _codex_command("codex", "m", "read-only", Path("/w"), Path("/w-last.txt"), None, ())
     assert cmd[:2] == ["codex", "exec"]
-    # the brief travels on stdin, never as an argument
-    assert all(part != "brief_text" for part in cmd)
     assert "--output-last-message" in cmd and "/w-last.txt" in cmd
     assert "--sandbox" in cmd and "read-only" in cmd
     assert "--cd" in cmd and "/w" in cmd
+
+
+def test_brief_goes_to_stdin_never_argv(monkeypatch: Any, tmp_path: Path) -> None:
+    """The real guarantee: the brief is fed on stdin (argv is world-readable in
+    /proc), so it must never appear in the spawned command."""
+    seen: dict[str, Any] = {}
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **_: Any) -> None:
+            seen["argv"] = command
+
+        def communicate(
+            self, input: str | None = None, timeout: float | None = None
+        ) -> tuple[str, str]:
+            seen["stdin"] = input
+            return json.dumps({"session_id": "s"}), ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    brief = "SENTINEL_BRIEF_9x7 please review this pull request"
+    CodexHarness(api_key="k").run(brief, tmp_path)
+    assert seen["stdin"] == brief
+    assert not any("SENTINEL_BRIEF_9x7" in str(part) for part in seen["argv"])
 
 
 def test_command_resume_uses_resume_subcommand() -> None:

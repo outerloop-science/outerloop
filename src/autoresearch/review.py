@@ -406,10 +406,16 @@ def _inlines(finding: Finding) -> bool:
 
 
 def _inline_comment(finding: Finding) -> str:
-    """The inline thread body for a local, actionable finding. A suggestion is
-    marked as optional; a change (or blocking defect) reads as itself."""
+    """The inline thread body for a local, actionable finding. A lead word says
+    which it is: a blocking defect (gates the merge), an optional suggestion, or
+    a plain change."""
+    if finding.blocking:
+        lead = "**Blocking.** "
+    elif finding.kind == "suggestion":
+        lead = "**Suggestion.** "
+    else:
+        lead = ""
     paragraph = _finding_paragraph(finding, with_ref=False)
-    lead = "**Suggestion.** " if finding.kind == "suggestion" and not finding.blocking else ""
     return f"{lead}{paragraph}\n\n*({finding.confidence} confidence)*"
 
 

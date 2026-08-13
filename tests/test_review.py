@@ -372,6 +372,33 @@ def test_nonblocking_suggestion_anchors_inline_with_label() -> None:
     assert item["body"].startswith("**Suggestion.**")
 
 
+def test_inline_lead_distinguishes_blocking_from_change() -> None:
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    blocking = Finding(
+        file="src/x.py",
+        line=11,
+        confidence="high",
+        summary="Bug",
+        detail="Crashes.",
+        blocking=True,
+        kind="change",
+    )
+    change = Finding(
+        file="src/x.py",
+        line=12,
+        confidence="medium",
+        summary="Tidy",
+        detail="Clearer name.",
+        blocking=False,
+        kind="change",
+    )
+    _body, inline = format_review(ReviewResult([blocking, change], notes=""), DIFF)  # type: ignore[misc]
+    by_line = {c["line"]: c["body"] for c in inline}
+    assert by_line[11].startswith("**Blocking.**")
+    assert not by_line[12].startswith("**Blocking.**")
+
+
 def test_local_question_and_note_stay_in_body() -> None:
     from autoresearch.review import Finding, ReviewResult, format_review
 

@@ -464,7 +464,9 @@ def _parse_codex_result(
             value = event.get(key)
             if not session_id and isinstance(value, str):
                 session_id = value
-        if str(event.get("type", "")).endswith("error") or "error" in event:
+        # A truthy `error` value or an error-typed event, not the mere presence
+        # of an "error" key — a benign event may carry `"error": null`.
+        if str(event.get("type", "")).endswith("error") or event.get("error"):
             saw_error = True
             message = event.get("message") or event.get("error")
             if isinstance(message, str):
@@ -571,6 +573,10 @@ class CodexHarness:
         last_message = ""
         with contextlib.suppress(OSError):
             last_message = redact(last_message_path.read_text(), (self.api_key,))
+        # The final message is preserved in the 0600 transcript; drop the raw
+        # file so model output is not left behind with default permissions.
+        with contextlib.suppress(OSError):
+            last_message_path.unlink()
         return _parse_codex_result(stdout, last_message, process.returncode, transcript_path)
 
 
