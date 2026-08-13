@@ -207,8 +207,9 @@ The agent-session reviewer is live. It runs as a reusable workflow
 read-only, runs the reviewer as an agent that reads the code (no Bash/Write, so
 untrusted PR code is only read, never executed), and posts findings. Claude on
 GitHub-hosted runners is the default — its reads are native, so it needs no
-second sandbox; codex's read-only sandbox (bwrap) cannot init on GitHub-hosted
-runners, so codex reviews run via the cluster harness instead. Findings that
+second sandbox; codex's default bwrap sandbox cannot init on GitHub-hosted
+runners (its Landlock fallback can, but on a deprecated flag with a `/proc` read
+gap — see below), so codex reviews run via the cluster harness instead. Findings that
 would need a second layer (fork PRs, live web search) stay future work. The
 completer path is retained until the lab repos migrate, then removed.
 Gating is unchanged by the swap: reviews stay advisory, blocking findings
@@ -232,23 +233,37 @@ EMPIRICAL and dated; treat them as observations to re-test, not fixed truths.
   write tool. So: safe to EXPERIMENT with as a judge on GitHub-hosted, not
   TRUSTED until an upstream read/write toolset split or an OS read-only
   bind-mount.
-- **codex-cli (0.130.0):** reads by executing shell, so it needs a jail. Its
-  default `--sandbox read-only` FAILED to init on GitHub-hosted runners — at the
-  network-namespace (loopback) step, not the filesystem step. NOT tested, and
-  the open levers: a sandbox config that skips the network namespace
-  (`-c sandbox_permissions=...`; a judge wants no egress anyway), or codex's
-  `--dangerously-bypass-approvals-and-sandbox` (shipped FOR externally-sandboxed
-  environments) inside a read-only bind-mount. So "codex can't judge on
-  GitHub-hosted" is an observation of the default, not a proven limit — verify
-  the config space before relying on either conclusion. Codex judging on the
-  cluster (apptainer, where its sandbox inits) is proven.
+- **codex-cli (0.130.0):** reads by executing shell, so it needs a jail. Settled
+  empirically on GitHub-hosted (probe, 2026-08-13): the default `--sandbox
+  read-only` (bundled bubblewrap) FAILS to init — it dies at the network-namespace
+  (loopback) step, `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`,
+  not the filesystem step. But `-c use_legacy_landlock=true` DOES init a working
+  read-only sandbox: writes are blocked (Landlock filesystem) AND network egress is
+  blocked (`curl` exits 6 / `HTTP_000`). So the classic shell exfil — "`curl` the
+  secret out" — is closed on GitHub-hosted. Two residual gaps keep it out of
+  TRUSTED: (1) Landlock is filesystem-scoped, not process isolation, so the session
+  still reads a parent's env via `/proc/<ppid>/environ` — the probe surfaced a
+  planted `CANARY_TOKEN` — so a prompt-injected judge could read a token the
+  spawning CLI holds and emit it in its findings, which the kernel then posts (an
+  exfil channel that needs no network); (2) codex itself warns
+  `use_legacy_landlock is deprecated and will be removed soon`, so this exact
+  config is short-lived. Net: codex judging on GitHub-hosted is FEASIBLE today via
+  Landlock, but on a deprecated flag and with a `/proc` read gap; codex judging on
+  the cluster (apptainer, full bwrap) stays the proven, durable path.
 
 **The durable invariant** (an OS fact, not a tool version): run an executing
 session unsandboxed only inside a STRONG external jail (read-only bind-mount +
 no egress). A weak jail is not enough — the env scrub protects the session's
 OWN env, but a same-uid executing child can read the parent CLI's
-`GITHUB_TOKEN` via `/proc/<ppid>/environ`. Non-executing backends (Claude,
-Hermes-file) cannot do this, which is why they are safe on any runner.
+`GITHUB_TOKEN` via `/proc/<ppid>/environ`. The probe above sharpens this: even
+codex's Landlock jail — which blocks both writes AND network egress — does NOT
+close the `/proc` read, because Landlock is a filesystem LSM, not process
+isolation. So "no writes + no egress" is not "no secret access": a jailed
+executing judge can still read a reachable token and route it out through the
+one channel the jail can't close, its own findings output. The clean fixes are
+to keep no exploitable token in the spawning process's env, or to use a
+non-executing backend (Claude, Hermes-file), which cannot read `/proc` at all —
+which is why they are safe on any runner.
 
 Re-test on version bumps: a codex sandbox backend that inits on GitHub-hosted,
 a hermes read-only toolset, or a GitHub runner that grants namespaces would each
