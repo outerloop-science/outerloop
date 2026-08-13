@@ -664,6 +664,237 @@ class CodexHarness:
         )
 
 
+def _hermes_command(
+    repo_dir: Path,
+    query: str,
+    model: str,
+    base_url: str,
+    max_turns: int,
+    enabled_toolsets: tuple[str, ...],
+    disabled_toolsets: tuple[str, ...],
+    extra_args: tuple[str, ...],
+) -> list[str]:
+    """Argv for one headless hermes run (`run_agent.py`, fire-style flags,
+    verified against the hermes-agent source, v0.20.1).
+
+    The BRIEF is never in argv — it is written to a file and `query` is only a
+    short pointer instruction. The API key is never in argv either: hermes
+    reads OPENROUTER_API_KEY from the environment when --api_key is absent,
+    regardless of base_url. --save_sample makes hermes write a JSON trajectory
+    to its cwd, which is the machine-readable result channel."""
+    argv = [
+        "uv",
+        "run",
+        "--project",
+        str(repo_dir),
+        "python",
+        str(repo_dir / "run_agent.py"),
+        f"--query={query}",
+        f"--max_turns={max_turns}",
+        "--save_sample",
+    ]
+    if model:
+        argv.append(f"--model={model}")
+    if base_url:
+        argv.append(f"--base_url={base_url}")
+    # Embedded quotes are load-bearing: fire literal-evals flag values, so a
+    # bare `a,b` becomes a Python TUPLE and hermes's .split(",") crashes.
+    # `"a,b"` evals to the string hermes expects (verified by the live smoke
+    # test, which caught exactly this).
+    if enabled_toolsets:
+        argv.append(f'--enabled_toolsets="{",".join(enabled_toolsets)}"')
+    if disabled_toolsets:
+        argv.append(f'--disabled_toolsets="{",".join(disabled_toolsets)}"')
+    return [*argv, *extra_args]
+
+
+def _parse_hermes_result(
+    stdout: str, sample: dict[str, Any] | None, returncode: int, transcript_path: str = ""
+) -> SessionResult:
+    """Best-effort SessionResult from a hermes run.
+
+    Prefers the --save_sample trajectory JSON (assistant messages + turn
+    count); falls back to raw stdout as the final text. Cost is left at 0
+    (metered by the budget layer's proxy). Never raises."""
+    final_text = ""
+    num_turns = 0
+    if isinstance(sample, dict):
+        messages = sample.get("messages") or sample.get("trajectory") or []
+        if isinstance(messages, list):
+            assistant = [
+                m
+                for m in messages
+                if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content")
+            ]
+            num_turns = len(assistant)
+            if assistant:
+                content = assistant[-1]["content"]
+                final_text = content if isinstance(content, str) else str(content)
+    if not final_text:
+        final_text = stdout.strip()[-20_000:]
+    # hermes exits 0 even when every API call failed (observed: HTTP 401 with
+    # a clean exit); a run with no assistant output is a failure, not a report
+    is_error = returncode != 0 or num_turns == 0
+    return SessionResult(
+        stop_reason="error" if is_error else "completed",
+        is_error=is_error,
+        error_detail=stdout.strip()[-500:] if is_error else "",
+        cost_usd=0.0,
+        num_turns=num_turns,
+        session_id="",  # no headless resume seam yet: repair/wake unavailable
+        final_text=final_text,
+        transcript_path=transcript_path,
+    )
+
+
+@dataclass
+class HermesHarness:
+    """Headless hermes-agent (Nous Research, MIT) — the OSS backend behind the
+    Harness seam, driven via `uv run <repo>/run_agent.py` from a pinned clone.
+
+    ELIGIBILITY: author-side / experimental only. Hermes has no native
+    read-only toolset (its `file` toolset bundles write_file and patch), so it
+    must NOT be wired as a judge until its `approvals.deny` config route is
+    verified live — the judge boundary is the tool set, never the prompt.
+    Instruction-file surface: hermes auto-loads AGENTS.md from the workspace,
+    which sanitize_checkout already neutralizes in untrusted trees. No session
+    resume in the headless seam, so run_role's repair pass is unavailable.
+
+    `run` never raises: every failure comes back as an error SessionResult.
+    """
+
+    api_key: str  # exported via key_env (never argv)
+    repo_dir: Path  # pinned hermes-agent checkout
+    # hermes resolves credentials from provider-specific env vars (a registry:
+    # OPENROUTER_API_KEY for the OpenRouter default, ANTHROPIC_API_KEY for the
+    # direct anthropic provider, ...); name the one matching the provider
+    key_env: str = "OPENROUTER_API_KEY"
+    # hermes needs a provider in ~/.hermes/config.yaml (a scrubbed HOME has
+    # none, and it refuses to run "unconfigured"); when set, the harness
+    # pre-seeds a minimal config in the per-run home
+    provider: str = ""
+    model: str = ""  # OpenRouter format (provider/model); empty -> hermes default
+    base_url: str = ""  # empty -> OpenRouter; any OpenAI-compatible endpoint works
+    max_turns: int = DEFAULT_MAX_TURNS
+    timeout_s: int = DEFAULT_TIMEOUT_S
+    enabled_toolsets: tuple[str, ...] = ("file",)
+    disabled_toolsets: tuple[str, ...] = (
+        "terminal",
+        "web",
+        "search",
+        "browser",
+        "computer_use",
+        "code_execution",
+        "delegation",
+        "cronjob",
+        "skills",
+        "memory",
+    )
+    extra_args: tuple[str, ...] = field(default_factory=tuple)
+
+    def run(
+        self, brief_text: str, workspace: Path, resume_session_id: str | None = None
+    ) -> SessionResult:
+        if resume_session_id:
+            # No headless resume seam: refusing beats silently starting fresh
+            # with none of the prior session's context.
+            return _error_result(
+                "resume-unsupported", detail="hermes headless runs cannot resume a session"
+            )
+        transcript_stem = f"{workspace.name}-hermes"
+        session_home = workspace.parent / f"{workspace.name}-home"
+        try:
+            session_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(session_home, 0o700)
+        except OSError as exc:
+            log.warning("could not create session home %s: %s", session_home, exc)
+            return _error_result("workspace-error")
+        if self.provider:
+            # minimal headless config: provider + default model, nothing else
+            hermes_dir = session_home / ".hermes"
+            try:
+                hermes_dir.mkdir(mode=0o700, exist_ok=True)
+                config_lines = ["model:\n", f'  provider: "{self.provider}"\n']
+                if self.model:
+                    config_lines.insert(1, f'  default: "{self.model}"\n')
+                (hermes_dir / "config.yaml").write_text("".join(config_lines))
+            except OSError as exc:
+                log.warning("could not seed hermes config: %s", exc)
+                return _error_result("workspace-error", detail="could not seed hermes config")
+        # The brief travels via a 0600 file (argv is world-readable in /proc);
+        # the --query is only a fixed pointer to it.
+        brief_path = Path(_write_private(session_home, "brief", ".md", brief_text))
+        if not brief_path.name:
+            return _error_result("workspace-error", detail="could not store the brief")
+        query = (
+            f"Read the file {brief_path} and follow it as your complete brief. "
+            f"The tree to work on is at {workspace.resolve()}."
+        )
+        command = _hermes_command(
+            Path(self.repo_dir),
+            query,
+            self.model,
+            self.base_url,
+            self.max_turns,
+            self.enabled_toolsets,
+            self.disabled_toolsets,
+            self.extra_args,
+        )
+        try:
+            env = session_env(self.api_key, self.key_env, session_home)
+            # cwd is the per-run home, NOT the workspace: --save_sample writes
+            # its trajectory JSON to cwd, and artifacts must never land in the
+            # clone (they would enter the diff).
+            process = subprocess.Popen(
+                command,
+                cwd=session_home,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log.warning("could not spawn hermes: %s", exc)
+            return _error_result("spawn-error", detail=str(exc)[:200])
+        try:
+            stdout, _ = process.communicate(timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            try:
+                stdout, _ = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout = ""
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    stdout, _ = process.communicate(timeout=5)
+            path = _write_private(
+                workspace.parent, transcript_stem, ".log", redact(stdout or "", (self.api_key,))
+            )
+            log.warning("hermes session timed out after %ss in %s", self.timeout_s, workspace)
+            return _error_result(
+                "timeout",
+                path,
+                detail=f"session hit its {self.timeout_s}s walltime and was killed",
+            )
+        stdout = redact(stdout, (self.api_key,))
+        transcript_path = _write_private(workspace.parent, transcript_stem, ".log", stdout)
+        sample: dict[str, Any] | None = None
+        # newest sample_*.json in the per-run home is this run's trajectory
+        candidates = sorted(
+            session_home.glob("sample_*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        if candidates:
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                sample = json.loads(candidates[0].read_text(errors="replace"))
+            for stale in candidates:
+                with contextlib.suppress(OSError):
+                    stale.unlink()  # trajectories can embed the brief; don't accumulate
+        return _parse_hermes_result(stdout, sample, process.returncode, transcript_path)
+
+
 @dataclass
 class FakeHarness:
     """Deterministic in-process harness for tests and dry runs."""
