@@ -30,7 +30,7 @@ GitHub **writes** (open PR, comment, update ledger), the **eval run**, and
 **experiment submission** are `act` syscalls, not agent tools: the agent directs
 them, the kernel performs them so the guarantee holds — the PAT never enters a
 session, and a launched experiment always gets its paired wake job
-(consolidation.md, "Syscalls: sync, yield, and no interrupt"). The agent drafts;
+(consolidation.md, "Syscalls"). The agent drafts;
 the kernel opens the bot PR; a human merges.
 
 ## Skills (know-how)
