@@ -1,0 +1,117 @@
+# Reusable agent-session reviewer. Target repos call this with `uses:` and never
+# vendor the reviewer code. It checks out the PR head READ-ONLY and runs the
+# reviewer as an agent that reads the code (no Bash/Write — untrusted PR code is
+# only read, never executed) and posts findings. Constraints: never reviews
+# bot-authored PRs automatically, never approves, never fails the caller's CI,
+# and never runs with secrets on a fork PR (same-repo gate).
+name: advisory-review-agent
+
+on:
+  workflow_call:
+    inputs:
+      bot_login:
+        description: Login of your bot account — its PRs are never reviewed. Required.
+        type: string
+        required: true
+      backend:
+        description: Agent backend. claude on GitHub-hosted runners; codex needs a
+          namespace-capable host (its sandbox can't init on GitHub-hosted).
+        type: string
+        required: false
+        default: claude
+      reviewer_repo:
+        description: Repo holding the reviewer (change this if you forked).
+        type: string
+        required: false
+        default: agentic-learning-ai-lab/autoresearch
+      reviewer_ref:
+        description: Ref of the reviewer to run. Pin to a tag or SHA in production.
+        type: string
+        required: false
+        default: main
+    secrets:
+      anthropic_reviewer_key:
+        required: true
+      openai_reviewer_key:
+        description: Only needed for the codex backend.
+        required: false
+      checkout_ssh_key:
+        description: >-
+          Read-only deploy key for the reviewer repo. Needed while that repo is
+          PRIVATE (the caller's token cannot read another private repo); omit
+          once it is public.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One review at a time per PR. Do NOT cancel in progress: a running session is a
+# paid model call, so queue a second dispatch behind it rather than kill it.
+concurrency:
+  group: advisory-review-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Advisory means advisory: an infrastructure failure here must never turn the
+    # caller's PR red.
+    continue-on-error: true
+    # Backstop a hung session so it can't burn the 360-min default runner budget.
+    timeout-minutes: 40
+    # Fork PRs must not reach the secret. `pull_request_target` runs in the base
+    # repo's context, so this gate is what closes the pwn-request hole. The
+    # reviewer also never executes PR code, a second layer of defense.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BACKEND: ${{ inputs.backend }}
+    steps:
+      # Checks out the reviewer, never the pull request's code for execution. An
+      # empty ssh-key is ignored by actions/checkout (token auth is enough for a
+      # public or same-repo reviewer); a private reviewer repo needs the key.
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - name: Check out the PR head (read-only; never executed)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          path: pr-head
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      # Pinned to the versions validated on cluster0 — bump deliberately. Claude
+      # installs as a native binary (its installer takes a version arg); codex
+      # ships via npm. Either way the binary lands on PATH, which the harness
+      # passes to the scrubbed session env.
+      - name: Install the ${{ inputs.backend }} CLI
+        run: |
+          set -euo pipefail
+          if [ "$BACKEND" = "codex" ]; then
+            npm install -g @openai/codex@0.130.0
+          else
+            curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Run the agent review
+        working-directory: .autoresearch
+        env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          ANTHROPIC_REVIEWER_KEY: ${{ secrets.anthropic_reviewer_key }}
+          OPENAI_REVIEWER_KEY: ${{ secrets.openai_reviewer_key }}
+          # The caller's own workflow token — the bot PAT is never used here.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
+        run: uv run --extra review python -m autoresearch.review_agent_cli

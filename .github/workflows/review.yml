@@ -1,6 +1,8 @@
 name: advisory-review
-# Advisory review runs on OPEN and on demand (label), not on every push —
-# a 2-3 minute model review per synchronize was the minutes burner.
+# Advisory review runs on OPEN and on demand (label), not on every push — a
+# session per push is the minutes burner. This calls the AGENT reviewer (reads
+# the PR head read-only); the completer reusable (advisory-review.yml) is kept
+# only until the other repos migrate, then sunset.
 on:
   pull_request_target:
     types: [opened, reopened, labeled]
@@ -12,8 +14,8 @@ jobs:
     # label events only run the review for the explicit re-request label
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
 
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review.yml@main
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: agentic-learning-bot
     secrets:
-      reviewer_api_key: ${{ secrets.REVIEWER_API_KEY }}
+      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
