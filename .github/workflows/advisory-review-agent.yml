@@ -4,6 +4,10 @@
 # only read, never executed) and posts findings. Constraints: never reviews
 # bot-authored PRs automatically, never approves, never fails the caller's CI,
 # and never runs with secrets on a fork PR (same-repo gate).
+#
+# Claude only: it runs on GitHub-hosted runners, and claude's reads are native
+# (no second sandbox needed). Codex reads via a bwrap sandbox that can't init on
+# GitHub-hosted runners, so codex reviews run via the cluster harness, not here.
 name: advisory-review-agent
 
 on:
@@ -13,12 +17,6 @@ on:
         description: Login of your bot account — its PRs are never reviewed. Required.
         type: string
         required: true
-      backend:
-        description: Agent backend. claude on GitHub-hosted runners; codex needs a
-          namespace-capable host (its sandbox can't init on GitHub-hosted).
-        type: string
-        required: false
-        default: claude
       reviewer_repo:
         description: Repo holding the reviewer (change this if you forked).
         type: string
@@ -32,9 +30,6 @@ on:
     secrets:
       anthropic_reviewer_key:
         required: true
-      openai_reviewer_key:
-        description: Only needed for the codex backend.
-        required: false
       checkout_ssh_key:
         description: >-
           Read-only deploy key for the reviewer repo. Needed while that repo is
@@ -56,7 +51,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     # Advisory means advisory: an infrastructure failure here must never turn the
-    # caller's PR red.
+    # caller's PR red. (Failures still show in this job's run log.)
     continue-on-error: true
     # Backstop a hung session so it can't burn the 360-min default runner budget.
     timeout-minutes: 40
@@ -66,7 +61,6 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      BACKEND: ${{ inputs.backend }}
     steps:
       # Checks out the reviewer, never the pull request's code for execution. An
       # empty ssh-key is ignored by actions/checkout (token auth is enough for a
@@ -89,29 +83,22 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Pinned to the versions validated on cluster0 — bump deliberately. Claude
-      # installs as a native binary (its installer takes a version arg); codex
-      # ships via npm. Either way the binary lands on PATH, which the harness
-      # passes to the scrubbed session env.
-      - name: Install the ${{ inputs.backend }} CLI
+      # Native binary, pinned to the version validated on cluster0 — bump
+      # deliberately. It lands on PATH, which the harness passes to the scrubbed
+      # session env.
+      - name: Install the Claude CLI
         run: |
           set -euo pipefail
-          if [ "$BACKEND" = "codex" ]; then
-            npm install -g @openai/codex@0.130.0
-          else
-            curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
+          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run the agent review
         working-directory: .autoresearch
         env:
-          REVIEW_BACKEND: ${{ inputs.backend }}
+          # PR_NUMBER and PR_REPO are read from the job env / github context.
           ANTHROPIC_REVIEWER_KEY: ${{ secrets.anthropic_reviewer_key }}
-          OPENAI_REVIEWER_KEY: ${{ secrets.openai_reviewer_key }}
           # The caller's own workflow token — the bot PAT is never used here.
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ env.PR_NUMBER }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
         run: uv run --extra review python -m autoresearch.review_agent_cli
