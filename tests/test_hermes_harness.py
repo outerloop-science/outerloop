@@ -120,3 +120,16 @@ def test_sample_files_are_cleaned_up(monkeypatch: Any, tmp_path: Path) -> None:
     result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run("b", workspace)
     assert result.final_text == "done"
     assert not list(home.glob("sample_*.json"))  # trajectory (may embed the brief) removed
+
+
+def test_parse_sharegpt_trajectory() -> None:
+    # the REAL saved format (agent_runtime_helpers.convert_to_trajectory_format)
+    sample = [
+        {"from": "system", "value": "You are a function calling AI model..."},
+        {"from": "human", "value": "the brief"},
+        {"from": "gpt", "value": "ok"},
+    ]
+    result = _parse_hermes_result("noise", sample, 0)
+    assert result.is_error is False
+    assert result.final_text == "ok"
+    assert result.num_turns == 1

@@ -709,7 +709,7 @@ def _hermes_command(
 
 
 def _parse_hermes_result(
-    stdout: str, sample: dict[str, Any] | None, returncode: int, transcript_path: str = ""
+    stdout: str, sample: Any, returncode: int, transcript_path: str = ""
 ) -> SessionResult:
     """Best-effort SessionResult from a hermes run.
 
@@ -718,18 +718,25 @@ def _parse_hermes_result(
     (metered by the budget layer's proxy). Never raises."""
     final_text = ""
     num_turns = 0
-    if isinstance(sample, dict):
-        messages = sample.get("messages") or sample.get("trajectory") or []
-        if isinstance(messages, list):
-            assistant = [
-                m
-                for m in messages
-                if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content")
-            ]
-            num_turns = len(assistant)
-            if assistant:
-                content = assistant[-1]["content"]
-                final_text = content if isinstance(content, str) else str(content)
+    # hermes saves ShareGPT-format trajectories ({"from": "gpt", "value": ...}),
+    # either as a bare list or wrapped in a dict; accept role/content too.
+    messages: list[Any] = []
+    if isinstance(sample, list):
+        messages = sample
+    elif isinstance(sample, dict):
+        wrapped = sample.get("messages") or sample.get("trajectory") or []
+        messages = wrapped if isinstance(wrapped, list) else []
+    assistant = [
+        m
+        for m in messages
+        if isinstance(m, dict)
+        and (m.get("role") == "assistant" or m.get("from") == "gpt")
+        and (m.get("content") or m.get("value"))
+    ]
+    num_turns = len(assistant)
+    if assistant:
+        content = assistant[-1].get("content") or assistant[-1].get("value")
+        final_text = content if isinstance(content, str) else str(content)
     if not final_text:
         final_text = stdout.strip()[-20_000:]
     # hermes exits 0 even when every API call failed (observed: HTTP 401 with
@@ -773,6 +780,14 @@ class HermesHarness:
     # none, and it refuses to run "unconfigured"); when set, the harness
     # pre-seeds a minimal config in the per-run home
     provider: str = ""
+    # approvals.deny: fnmatch globs hermes refuses before any yolo/mode-off
+    # bypass (headless: a clean deny, never a hang). NOTE it matches SHELL
+    # COMMANDS (the terminal tool), NOT the write_file/patch tool calls (source
+    # verified) — so it does NOT make a read-only judge. It is useful for the
+    # AUTHOR to hardline-forbid dangerous commands. A read-only hermes judge
+    # needs an OS-level jail (the checkout bind-mounted read-only) or an
+    # upstream split of the `file` toolset into read/write.
+    approvals_deny: tuple[str, ...] = ()
     model: str = ""  # OpenRouter format (provider/model); empty -> hermes default
     base_url: str = ""  # empty -> OpenRouter; any OpenAI-compatible endpoint works
     max_turns: int = DEFAULT_MAX_TURNS
@@ -817,6 +832,9 @@ class HermesHarness:
                 config_lines = ["model:\n", f'  provider: "{self.provider}"\n']
                 if self.model:
                     config_lines.insert(1, f'  default: "{self.model}"\n')
+                if self.approvals_deny:
+                    config_lines.append("approvals:\n  deny:\n")
+                    config_lines += [f'    - "{glob}"\n' for glob in self.approvals_deny]
                 (hermes_dir / "config.yaml").write_text("".join(config_lines))
             except OSError as exc:
                 log.warning("could not seed hermes config: %s", exc)
@@ -881,7 +899,7 @@ class HermesHarness:
             )
         stdout = redact(stdout, (self.api_key,))
         transcript_path = _write_private(workspace.parent, transcript_stem, ".log", stdout)
-        sample: dict[str, Any] | None = None
+        sample: Any = None
         # newest sample_*.json in the per-run home is this run's trajectory
         candidates = sorted(
             session_home.glob("sample_*.json"), key=lambda p: p.stat().st_mtime, reverse=True

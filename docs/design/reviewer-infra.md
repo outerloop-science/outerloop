@@ -213,3 +213,43 @@ would need a second layer (fork PRs, live web search) stay future work. The
 completer path is retained until the lab repos migrate, then removed.
 Gating is unchanged by the swap: reviews stay advisory, blocking findings
 gate per roles.md, and humans hold merge authority.
+
+## Which backend can judge, and where (observed 2026-08-13 — version-specific, re-verify)
+
+The rule that survives version bumps: **a judge must read the tree without
+executing arbitrary code while secrets are reachable.** Two ways to meet it —
+native reads, or execution inside a real jail. The per-backend facts below are
+EMPIRICAL and dated; treat them as observations to re-test, not fixed truths.
+
+- **Claude Code (2.1.229):** native reads (Read/Grep/Glob), write droppable →
+  read-only with no execution. Judges on any runner, including GitHub-hosted.
+  The trusted default.
+- **hermes-agent (0.20.1):** native reads too (`file` toolset, `terminal`
+  disabled) → no execution, so a GitHub-hosted run is low-harm (its bundled
+  `write_file` is inert in an ephemeral container: no push, no committed
+  output, scrubbed env). But it has no mechanical read-only boundary — `file`
+  bundles write with read, and `approvals.deny` gates shell commands, not the
+  write tool. So: safe to EXPERIMENT with as a judge on GitHub-hosted, not
+  TRUSTED until an upstream read/write toolset split or an OS read-only
+  bind-mount.
+- **codex-cli (0.130.0):** reads by executing shell, so it needs a jail. Its
+  default `--sandbox read-only` FAILED to init on GitHub-hosted runners — at the
+  network-namespace (loopback) step, not the filesystem step. NOT tested, and
+  the open levers: a sandbox config that skips the network namespace
+  (`-c sandbox_permissions=...`; a judge wants no egress anyway), or codex's
+  `--dangerously-bypass-approvals-and-sandbox` (shipped FOR externally-sandboxed
+  environments) inside a read-only bind-mount. So "codex can't judge on
+  GitHub-hosted" is an observation of the default, not a proven limit — verify
+  the config space before relying on either conclusion. Codex judging on the
+  cluster (apptainer, where its sandbox inits) is proven.
+
+**The durable invariant** (an OS fact, not a tool version): run an executing
+session unsandboxed only inside a STRONG external jail (read-only bind-mount +
+no egress). A weak jail is not enough — the env scrub protects the session's
+OWN env, but a same-uid executing child can read the parent CLI's
+`GITHUB_TOKEN` via `/proc/<ppid>/environ`. Non-executing backends (Claude,
+Hermes-file) cannot do this, which is why they are safe on any runner.
+
+Re-test on version bumps: a codex sandbox backend that inits on GitHub-hosted,
+a hermes read-only toolset, or a GitHub runner that grants namespaces would each
+rewrite this section.
