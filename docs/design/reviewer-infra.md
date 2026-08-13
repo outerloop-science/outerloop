@@ -2,20 +2,24 @@
 
 This note records how we intend to build the reviewer and verifier agents.
 The goal is to be able to change the model, the harness, or the search
-provider later without a rewrite. It is written before we build so the
-seams are agreed first. Nothing here is deployed yet.
+provider later without a rewrite. It was written before we built, so the
+seams were agreed first. The REVIEWER half is now deployed — see "Status"
+at the end; the sections between record the design and the verifier's
+current shape.
 
 ## Where we are now
 
-Both roles are one API call. We gather a fixed bundle of context (the diff,
-the contract, the eval modules, the tests, the PR thread), send it in a
-single request, and post the reply. This is cheap, fast, and safe: the
-model runs no tools and executes nothing.
+The reviewer is now an agent session (see Status). The verifier is still
+one API call: we gather a fixed bundle of context (the diff, the contract,
+the eval modules, the tests, the PR thread), send it in a single request,
+and post the reply. This is cheap, fast, and safe: the model runs no tools
+and executes nothing.
 
-It has one limit. A single call cannot explore the code. It cannot open a
-file the diff refers to but does not include, follow a caller, or run the
-tests to check that a finding reproduces. On the pilot this is fine. On a
-larger target it will miss things.
+The one-call shape has one limit. A single call cannot explore the code.
+It cannot open a file the diff refers to but does not include, follow a
+caller, or run the tests to check that a finding reproduces. On the pilot
+this was fine. On a larger target it misses things — which is why the
+reviewer moved to an agent session first.
 
 ## The three seams
 
@@ -51,12 +55,14 @@ are two. `retrieve` reaches outside the runner, through the broker.
 these a stable contract, MCP if convenient, so they survive a change of
 model or harness.
 
-For the local work, give the agent one sandboxed shell over the base tree:
-read-only, no network. That covers grep, find, and sed without listing them.
-It is safe because the base tree is trusted code. The two things the shell
-must not do are handled outside it. It has no network, so the broker is the
-only outward path. And it never runs the PR's code, which stays on the
-split-workflow path.
+For the local work, give the agent read-only access to the tree under
+review. As deployed, that tree is the PR HEAD — untrusted, same-repo code —
+so the safety argument is not "the tree is trusted"; it is that reading is
+not running: the agent has no execute or write tools, and everything it
+reads is data to judge, never instructions to follow (the prompt-injection
+boundary). The two dangerous acts are handled outside the read surface: the
+broker is the only outward path, and the PR's code is never run — that
+stays on the split-workflow path.
 
 ## Retrieval is a tool, not context
 
@@ -145,10 +151,11 @@ the key.
 
 Two facts make this manageable.
 
-First, reading is not running. Reading the base tree is safe: it is code the
-workflow already checks out and trusts. Running code is the dangerous act,
-and it is a small part of what a reviewer does. The read-only reviewer never
-runs anything.
+First, reading is not running. The deployed reviewer reads the PR head —
+untrusted code — and that is safe because reading it can only inform the
+model, not execute anything: the session has no execute or write tools, and
+file contents are treated as data, never as instructions. Running code is
+the dangerous act, and the read-only reviewer never runs anything.
 
 Second, the split workflow keeps the blast radius small, not zero. The agent
 runs sandboxed with no write token and no secret beyond a spend-capped API
@@ -204,3 +211,5 @@ second sandbox; codex's read-only sandbox (bwrap) cannot init on GitHub-hosted
 runners, so codex reviews run via the cluster harness instead. Findings that
 would need a second layer (fork PRs, live web search) stay future work. The
 completer path is retained until the lab repos migrate, then removed.
+Gating is unchanged by the swap: reviews stay advisory, blocking findings
+gate per roles.md, and humans hold merge authority.
