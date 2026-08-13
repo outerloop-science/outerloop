@@ -233,10 +233,27 @@ def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     assert "2026-08-13" in brief
 
 
-def test_reviewer_harness_uses_read_only_permission_mode() -> None:
-    # defense in depth: a read-only harness must not auto-accept edits
+def test_reviewer_harness_uses_read_only_permission_mode(monkeypatch: Any, tmp_path: Path) -> None:
+    # defense in depth: a read-only harness passes --permission-mode default
+    # (edits denied), not acceptEdits. Inspect the actual spawned argv.
+    import autoresearch.harness as harness_mod
     from autoresearch.review_agent import build_reviewer_harness
 
-    h = build_reviewer_harness("k")
-    mutating = {"Write", "Edit", "Bash"}.intersection(h.allowed_tools)
-    assert not mutating  # sanity: it's read-only
+    seen: dict[str, Any] = {}
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **_: Any) -> None:
+            seen["argv"] = command
+
+        def communicate(
+            self, input: str | None = None, timeout: float | None = None
+        ) -> tuple[str, str]:
+            return json.dumps({"result": "{}", "session_id": "s"}), ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    build_reviewer_harness("k").run("brief", tmp_path)
+    argv = seen["argv"]
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "Bash" not in argv[argv.index("--allowedTools") + 1]

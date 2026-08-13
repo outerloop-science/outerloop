@@ -23,8 +23,14 @@ log = logging.getLogger(__name__)
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    repo = os.environ["PR_REPO"]
-    number = int(os.environ["PR_NUMBER"])
+    # Fail closed on a missing/invalid PR reference too, so a misconfigured
+    # workflow skips cleanly rather than exiting nonzero (never red the CI).
+    repo = os.environ.get("PR_REPO", "").strip()
+    number_raw = os.environ.get("PR_NUMBER", "").strip()
+    if not repo or not number_raw.isdigit():
+        log.warning("PR_REPO/PR_NUMBER unset or invalid; skipping")
+        return 0
+    number = int(number_raw)
     # Fail closed: without the bot login we cannot honor "never review
     # bot-authored PRs", so we do not review at all.
     bot_login = os.environ.get("REVIEW_BOT_LOGIN", "").strip()
