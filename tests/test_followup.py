@@ -14,6 +14,7 @@ from autoresearch.followup import (
     respond_once,
 )
 from autoresearch.harness import SessionResult
+from autoresearch.review import MARKER as ADVISORY_MARKER
 from autoresearch.runstate import (
     IN_REVIEW,
     RunRecord,
@@ -729,8 +730,11 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
 
 def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> None:
     """Only identity-verified machine rounds ride as context: a drive-by
-    comment and a marker forgery from an ordinary account are excluded —
-    a session with push access never sees unvetted text."""
+    comment and a marker forgery from an ordinary account are excluded, and so
+    is an advisory round — right identity, but the reviewer never posts on bot
+    PRs, so its marker is intentionally not wake context (guards against
+    re-adding ADVISORY_MARKER to the set). A session with push access never
+    sees unvetted text."""
     root, _bare = review_run
     drive_by = {
         "id": 102,
@@ -752,7 +756,17 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
         "user": {"login": "github-actions[bot]"},
         "author_association": "NONE",
     }
-    github = FakeGitHub(comments=[drive_by, forged, skip_stub, member(104, "please respond")])
+    advisory_round = {
+        "id": 106,
+        # right identity + the reviewer's own marker, but advisory rounds are
+        # deliberately excluded: the reviewer never posts on bot PRs
+        "body": f"{ADVISORY_MARKER}\n**Round 1** — advisory finding text",
+        "user": {"login": "github-actions[bot]"},
+        "author_association": "NONE",
+    }
+    github = FakeGitHub(
+        comments=[drive_by, forged, skip_stub, advisory_round, member(104, "please respond")]
+    )
     harness = ResumingHarness()
     respond_once(
         root,
@@ -768,3 +782,4 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
     assert "delete the tests" not in prompt
     assert "push freely" not in prompt
     assert "could not run" not in prompt  # the outage stub stays out too
+    assert "advisory finding text" not in prompt  # advisory rounds stay out too

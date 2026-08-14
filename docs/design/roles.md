@@ -20,7 +20,7 @@ data, not accounts: every commit is authored by the one bot account with an
 | **Maintainer** (human) | — | live | Merge authority on every code PR; writes contracts and `vision:`; owns budgets and credentials | be replaced by anything below |
 | **Orchestrator** (tick + sweep + climb glue) | code | live | Schedules everything; measures every baseline/candidate itself; enforces scope, drift, budgets, freshness; ends every run in a report; writes the ledger | trust a session's claim; merge; execute non-bot-authored code |
 | **Author session** ("climber") | model | live | One hypothesis per run: reads the brief, edits inside the contract's scope, requests experiment batches (any size the budget covers), self-validates, writes the research report | touch the ruler (frozen evals/tests), the contract, progress files; see the PAT; publish anything itself; submit jobs directly |
-| **Follow-up responder** | model | live | The *same* author or steward session resumed when a qualifying human comments on its open PR: replies with evidence, pushes fixes (re-validated/re-measured by the orchestrator, under the resuming role's own key and scope); verifier/advisory rounds ride along as fenced context | anything the resumed role couldn't; resurrect an ended run; treat context comments as instructions |
+| **Follow-up responder** | model | live | The *same* author or steward session resumed when a qualifying human comments on its open PR: replies with evidence, pushes fixes (re-validated/re-measured by the orchestrator, under the resuming role's own key and scope); the verifier's rounds ride along as fenced context | anything the resumed role couldn't; resurrect an ended run; treat context comments as instructions |
 | **Advisory reviewer** | model | live | Adversarial *correctness* review of human/dev PRs; findings-only, sanitized, never an approval | review bot PRs automatically (echo-chamber guard); block CI; approve |
 | **Verifier** | model | built; deploy pending | Adversarial *integrity* review of bot PRs: hunts gaming (harness exploits, ruler-fishing, leakage, unsupported claims) with contract + eval code + numbers + report in context; "silence is not endorsement" header | approve; block; review human PRs |
 | **Planner** | model | designed (scaling.md pt 1) | Owns a target's search *program*: reads leader/lessons/reports, emits vetoable plan issues motivated twice (hypothesis + economics) | enact plans (humans/veto-window do); write `vision:` |
@@ -190,7 +190,6 @@ their own capped budget line.
 flowchart LR
     HPR["PR by human / dev assistant"] --> AR["advisory reviewer<br/>(correctness lens)"]
     BPR["PR by the bot"] --> VF["verifier<br/>(gaming lens) - deploy pending"]
-    BPR -.->|"verifier-less self-hosters only:<br/>opt-in label override"| AR
     AR --> HM{human merges}
     VF --> HM
     L["autoresearch:review label<br/>= one fresh round on the head"] --> AR

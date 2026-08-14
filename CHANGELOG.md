@@ -20,6 +20,10 @@ Versions follow [SemVer](https://semver.org).
   it), and the explicit re-request override for bot PRs (only the completer
   workflow set `REVIEW_EXPLICIT_REQUEST`). The advisory reviewer now never
   reviews bot-authored PRs.
+- `ADVISORY_MARKER` dropped from follow-up wake context
+  (`MACHINE_ROUND_MARKERS`): with the reviewer reviewing only human PRs and
+  wakes scanning bot PRs, advisory rounds never fed a wake. Verifier rounds
+  still do.
 
 ### Added
 

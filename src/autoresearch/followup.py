@@ -367,8 +367,8 @@ def _respond(
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
 
         prompt = STEWARD_WAKE_PREAMBLE + prompt
-    # Comments WITHOUT standing (verifier rounds, advisory rounds) ride
-    # along as fenced context — never as triggers, never as instructions.
+    # Comments WITHOUT standing (the verifier's rounds) ride along as fenced
+    # context — never as triggers, never as instructions.
     ctx = context_comments(github.list_comments(record.target, number), record.last_comment_id)
     if ctx:
         from autoresearch.brief import _fence
