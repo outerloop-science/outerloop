@@ -100,4 +100,4 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           REVIEW_BOT_LOGIN: agentic-learning-bot
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
-        run: uv run --extra review python -m autoresearch.review_agent_cli
+        run: uv run python -m autoresearch.review_agent_cli

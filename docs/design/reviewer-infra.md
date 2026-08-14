@@ -1,44 +1,32 @@
 # Reviewer and verifier infrastructure
 
-This note records how we intend to build the reviewer and verifier agents.
-The goal is to be able to change the model, the harness, or the search
-provider later without a rewrite. It was written before we built, so the
-seams were agreed first. The REVIEWER half is now deployed — see "Status"
-at the end; the sections between record the design and the verifier's
-current shape.
+This note records how the reviewer and verifier agents are built and why. The
+goal is to change the model, the harness, or the search provider later without a
+rewrite, so the seams are kept independent.
 
 ## Where we are now
 
-The reviewer is now an agent session (see Status). The verifier is still
-one API call: we gather a fixed bundle of context (the diff, the contract,
-the eval modules, the tests, the PR thread), send it in a single request,
-and post the reply. This is cheap, fast, and safe: the model runs no tools
-and executes nothing.
-
-The one-call shape has one limit. A single call cannot explore the code.
-It cannot open a file the diff refers to but does not include, follow a
-caller, or run the tests to check that a finding reproduces. On the pilot
-this was fine. On a larger target it misses things — which is why the
-reviewer moved to an agent session first.
+The reviewer and the verifier both run as agent sessions: each reads the tree
+under review with tools, so it can open a file the diff refers to but does not
+include, follow a caller, or re-run a check to see whether a finding reproduces.
+Both are advisory — findings only, humans hold merge authority.
 
 ## The three seams
 
 We keep three things independent so each can change on its own.
 
-### 1. The model
+### 1. The model (the backend)
 
-The reviewer already talks to a `Completer` interface. `AnthropicCompleter`
-is one implementation. Swapping the model is a config change, not a rewrite:
-Claude on Bedrock, Vertex, or Foundry, an OpenAI-compatible endpoint, or a
-local model all fit behind the same interface. Keep it that way. No code
-outside the completer should depend on Anthropic-specific response shapes.
+The model lives behind the `Harness` seam (`harness.py`): a role runs as a
+session on a backend, and the backend is swappable — Claude Code, Codex, and
+hermes-agent today, a new one being an adapter, not a rewrite. No code outside
+the adapter depends on a provider's response shape.
 
 ### 2. The harness
 
-The reviewer should become an agent that calls tools in a loop, not a
-single call. This is the same decision as adding retrieval (see below):
-retrieval is only useful inside a loop, so we cannot have one without the
-other.
+The reviewer and verifier run as agents that call tools in a loop, not a single
+call. This is the same decision as adding retrieval (see below): retrieval is
+only useful inside a loop, so one implies the other.
 
 ### 3. The tools
 
@@ -157,38 +145,36 @@ model, not execute anything: the session has no execute or write tools, and
 file contents are treated as data, never as instructions. Running code is
 the dangerous act, and the read-only reviewer never runs anything.
 
-Second, the split workflow keeps the blast radius small, not zero. The agent
-runs sandboxed with no write token and no secret beyond a spend-capped API
-key. It writes findings to an artifact, and a separate minimal step with the
-write token posts them. Two residual risks remain, and each has a bounded
-worst case. If the spend-capped key leaks, the worst case is capped spend
-until we rotate it, not an open-ended credential loss. If the agent is
-prompt-injected, the injected text reaches a repo comment through the
-posting step, so the worst case there is a wrong comment, not a merge. The
-posting step must treat the artifact as data, not instructions, and findings
-are read by a human.
+Second, containment. Today the agent runs in a single GitHub-hosted step that
+holds the caller's workflow token (repo-scoped, short-lived) and a spend-capped
+model key. What keeps that manageable is the same-repo gate (no fork PR reaches
+it) plus the read-only tool set — and, on the auto path, only Claude, whose
+`Read` refuses `/proc` so a prompt-injected session cannot lift the step token
+(see "Which backend can judge"). Two residual risks have bounded worst cases: a
+leaked spend-capped key is capped spend until rotation, not open-ended
+credential loss; a prompt-injected agent's text reaches a repo comment through
+the posting path, so the worst case is a wrong comment (read by a human), not a
+merge. The STRONGER containment — the tokenless split workflow (a sandboxed
+agent step with no write token → findings artifact → a separate minimal posting
+step) — is the fork-PR-phase work, NOT yet built.
 
-What is safe today, precisely. `verify.yml` runs only on same-repo,
-bot-authored branches, so no fork PR reaches the reviewer. That makes an
-agentic reviewer that only reads safe to run now. It does not make running
-the PR's code safe. Bot-authored code is model-generated, which is the exact
-thing this note says not to run next to a secret. So even on internal PRs,
-executing the eval uses the guarded `run-candidate` path, never a direct
-run. Reading is what today's setup licenses; running is always guarded. The
-sandbox and split-workflow work is what gates accepting fork PRs after the
-repo goes public. See `public-surface.md` for that threat model.
+What is safe today, precisely. The agent workflows run only on same-repo PRs
+(the reviewer via `pull_request_target`'s same-repo gate; the verifier only on
+bot-authored branches), so no fork PR reaches them. That makes an agent that
+only reads safe to run now. It does not make running the PR's code safe.
+Bot-authored code is model-generated — the exact thing this note says not to run
+next to a secret — so even on internal PRs, executing the eval uses the guarded
+`run-candidate` path, never a direct run. Reading is what today's setup
+licenses; running is always guarded. The split workflow is what gates accepting
+fork PRs after the repo goes public. See `public-surface.md` for that threat
+model.
 
-## Sequencing
+## What's next
 
-1. Stand up the harness with a sandboxed, read-only shell over the base
-   tree. This needs no broker and no custom tools, because reading the
-   trusted base is safe.
-2. Define the `retrieve` tool contract and the broker, and add them without
-   changing the harness.
-3. Before making the agentic reviewer the default, score it against the
-   single-pass version on the meta-benchmark. The metric is whether it
-   catches more seeded gaming per dollar. "Feels better" and "is better,
-   safely" can differ, so measure it.
+The harness runs read-only agent sessions over the PR-head checkout — that part
+is done. Still to build: the `retrieve` tool contract and the broker, added
+without changing the harness. The meta-benchmark scores whether a change catches
+more seeded gaming per dollar before it ships.
 
 ## Open decisions
 
@@ -211,7 +197,7 @@ second sandbox; codex's default bwrap sandbox cannot init on GitHub-hosted
 runners (its Landlock fallback can, but on a deprecated flag with a `/proc` read
 gap — see below), so codex reviews run via the cluster harness instead. Findings that
 would need a second layer (fork PRs, live web search) stay future work. The
-completer path is retained until the lab repos migrate, then removed.
+completer path has now been removed — all lab repos run the agent path.
 Gating is unchanged by the swap: reviews stay advisory, blocking findings
 gate per roles.md, and humans hold merge authority.
 

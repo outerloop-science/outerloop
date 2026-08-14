@@ -15,7 +15,7 @@ reports weekly. Humans keep the merge button.
 | Axis | Decision |
 | --- | --- |
 | Compute | Torch-first: GPU jobs via sbatch under a sponsoring account, tagged, low-priority, hard GPU-hour budgets. Cloud burst deferred. |
-| Agent/LLM | Pilot on ONE subscription harness (Claude Code or Codex — whichever passes the headless-auth spike first); first-party API alongside (tiered models, hard $ caps). **Provider-diverse by design, Anthropic as the pilot**: every LLM touchpoint sits behind a seam (`Completer` for reviews, `Harness` for sessions) so a second provider is a new implementation, not a rewrite. Third-party aggregators, self-hosted: deferred. |
+| Agent/LLM | Every LLM touchpoint sits behind the `Harness` seam, so a new backend is an implementation, not a rewrite. Wired today: Claude Code and Codex (subscription harnesses) and hermes-agent (via OpenRouter, an aggregator), plus the first-party API with tiered models and hard $ caps. Self-hosted: deferred. |
 | GitHub | Org machine user (bot) with fine-grained access to opted-in repos + a contract file per repo. No GitHub App for now. |
 | Scheduling | Self-resubmitting sbatch chain on Torch (scrontab is disabled there); nothing SSHes in — all connections outbound. Reviewer role on GitHub Actions. |
 

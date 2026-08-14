@@ -3,9 +3,6 @@
 Runs the reviewer as a read-only agent over a PR-head checkout the workflow
 prepared (REVIEW_CHECKOUT), and posts the findings inline. Exits 0 even on skip
 or failure — an advisory reviewer must never turn a target repo's CI red.
-
-Lives beside review_cli (the completer entry point) during validation; the
-workflow swap that makes this the default sunsets the completer path.
 """
 
 from __future__ import annotations
@@ -89,7 +86,6 @@ def main() -> int:
         return 0
     if renamed:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
-    explicit = os.environ.get("REVIEW_EXPLICIT_REQUEST", "").strip().lower() == "true"
 
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
     harness = build_reviewer_harness(
@@ -108,7 +104,6 @@ def main() -> int:
         harness,
         workspace,
         bot_login=bot_login,
-        explicit=explicit,
     )
     return 0
 

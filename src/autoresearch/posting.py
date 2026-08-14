@@ -2,9 +2,7 @@
 
 Round-numbered comments, inline reviews, and skip stubs — the machinery for
 getting a judge's findings onto a PR thread. Backend-agnostic on purpose: no
-model or completer dependency, so both the completer path and the agent path
-post through here. (Extracted from review_cli so that path can be sunset as a
-clean delete once the last repo migrates.)
+model dependency, so any judge backend posts through here.
 """
 
 from __future__ import annotations
@@ -20,8 +18,8 @@ log = logging.getLogger(__name__)
 # Posting/transport failures an advisory role tolerates — logged, never fatal,
 # because an advisory reviewer or verifier must not turn a target repo's CI red.
 # Programming errors (AttributeError, KeyError, TypeError) deliberately
-# propagate. Model-call errors are NOT here: they arise only inside a completer
-# call, which catches them itself — posting has nothing to do with the model.
+# propagate. Model-call errors are NOT here: they arise inside the agent
+# session, which handles them itself — posting has nothing to do with the model.
 EXPECTED_FAILURES = (
     GitHubError,
     ValueError,
@@ -118,9 +116,9 @@ def post_skip_stub(
 
     `secrets` are the model API key(s) the caller holds — an auth error is
     exactly the class that can echo request material, so we scrub them from the
-    posted text. The caller supplies them (the harness's own key on the agent
-    path, the completer's key on the completer path) so posting stays
-    backend-agnostic — the key env var is provider-specific, this module is not.
+    posted text. The caller supplies them (the harness owns its own key) so
+    posting stays backend-agnostic — the key env var is provider-specific, this
+    module is not.
     """
     note = redact(str(exc), tuple(s for s in secrets if s))[:200]
     try:

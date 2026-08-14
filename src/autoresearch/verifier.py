@@ -21,7 +21,6 @@ Same constitution as the reviewer, inverted population:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -34,7 +33,6 @@ from autoresearch.review import (
     MAX_SUMMARY_CHARS,
     OPT_OUT_LABEL,
     PLAIN_STYLE,
-    Completer,
     Finding,
     PullRequest,
     ReviewResult,
@@ -300,18 +298,14 @@ def build_verify_prompt(
             safe_author = " ".join(str(author).split()).replace("`", "")[:100]
             parts.append(f"### {safe_author}\n{_fenced(body[:MAX_THREAD_COMMENT_CHARS])}")
     parts.append("## The change (diff)\n" + _fenced(pr.diff[:MAX_DIFF_CHARS]))
-    if pr.context_files:
-        parts.append("## Current head contents of changed files")
-        for path, content in pr.context_files:
-            parts.append(f"### {_safe_path(path)}\n{_fenced(content)}")
     return "\n\n".join(parts)
 
 
-# Prepended to the shared rubric for the agent-session verifier. Unlike the
-# completer, it has TWO read-only checkouts: the PR head (the change under
+# Prepended to the shared rubric for the agent-session verifier: it has TWO
+# read-only checkouts: the PR head (the change under
 # review) and the BASE branch (the trusted contract and ruler — the solver
-# cannot have shaped it). Ruler reads must target base, which preserves the
-# completer path's "ruler from the base branch, never the PR" property.
+# cannot have shaped it). Ruler reads must target base: the ruler comes from
+# the base branch, never the PR.
 AGENT_VERIFY_INVESTIGATION = (
     "Two trees are checked out read-only in your working directory: `pr-head/` "
     "is the pull request's code (the change under review, written by the agent "
@@ -346,34 +340,11 @@ def build_verify_agent_brief(
     )
 
 
-def verify(
-    pr: PullRequest,
-    completer: Completer,
-    bot_login: str,
-    contract_text: str,
-    ruler_files: tuple[tuple[str, str], ...] = (),
-    today: str | None = None,
-    thread: tuple[tuple[str, str], ...] = (),
-) -> ReviewResult:
-    """Run one verification. Skips (rather than raises) when constraints say so."""
-    skip = verify_skip_reason(pr, bot_login)
-    if skip is not None:
-        log.info("skipping verification of %s#%s: %s", pr.repo, pr.number, skip)
-        return ReviewResult(findings=[], notes="", skipped=skip)
-    raw = completer.complete(
-        VERIFY_SYSTEM_PROMPT,
-        build_verify_prompt(pr, contract_text, ruler_files, today, thread),
-        VERIFY_SCHEMA,
-    )
-    return verify_result_from_data(json.loads(raw))
-
-
 def verify_result_from_data(data: Any) -> ReviewResult:
-    """Build a ReviewResult from a verifier findings object. Shared by the
-    one-shot completer path and the agent-session path — both sanitize
-    identically (untrusted model output bound for a GitHub comment). A degraded
-    response must skip cleanly, not KeyError: every field access is defensive
-    even though the schema marks them required."""
+    """Build a ReviewResult from a verifier findings object. Sanitizes
+    untrusted model output bound for a GitHub comment. A degraded response must
+    skip cleanly, not KeyError: every field access is defensive even though the
+    schema marks them required."""
     raw_findings = data.get("findings") if isinstance(data, dict) else None
     findings = [
         Finding(

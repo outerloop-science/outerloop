@@ -5,6 +5,7 @@ import pytest
 
 from autoresearch.review import (
     ADVISORY_HEADER,
+    FINDINGS_SCHEMA,
     MARKER,
     MAX_DIFF_CHARS,
     OPT_OUT_LABEL,
@@ -12,7 +13,7 @@ from autoresearch.review import (
     ReviewResult,
     build_prompt,
     format_comment,
-    review,
+    result_from_data,
     skip_reason,
 )
 
@@ -27,6 +28,22 @@ class FakeCompleter:
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> str:
         self.calls.append((system, prompt, schema))
         return json.dumps(self.payload)
+
+
+def review(
+    pr: PullRequest,
+    completer: FakeCompleter,
+    bot_login: str,
+    today: str | None = None,
+) -> ReviewResult:
+    """Drives the reviewer's non-skip path — skip_reason, then result_from_data
+    over a fake completer's payload — so the shared rendering/parsing/
+    sanitization tests below need no agent harness."""
+    skip = skip_reason(pr, bot_login)
+    if skip is not None:
+        return ReviewResult(findings=[], notes="", skipped=skip)
+    raw = completer.complete("", build_prompt(pr, today), FINDINGS_SCHEMA)
+    return result_from_data(json.loads(raw))
 
 
 def make_pr(**overrides: Any) -> PullRequest:
@@ -297,21 +314,6 @@ def test_schema_forbids_extra_keys() -> None:
 
 def test_skipped_result_renders_nothing() -> None:
     assert format_comment(ReviewResult(findings=[], notes="", skipped="because")) is None
-
-
-def test_explicit_request_overrides_bot_skip() -> None:
-    """A maintainer-added re-request label reviews a bot PR; the automatic
-    path still never does."""
-    pr = make_pr(author=BOT)
-    assert skip_reason(pr, BOT) is not None  # automatic: skipped
-    assert skip_reason(pr, BOT, explicit_request=True) is None  # asked: reviewed
-
-
-def test_opt_out_still_wins_over_explicit_request() -> None:
-    """Contradictory labels resolve to silence, not to a review."""
-    pr = make_pr(author=BOT, labels=("autoresearch:no-review",))
-    reason = skip_reason(pr, BOT, explicit_request=True)
-    assert reason is not None and "opted out" in reason
 
 
 def test_advisory_header_semantics_are_pinned() -> None:

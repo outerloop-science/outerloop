@@ -53,9 +53,8 @@ uv run python -m autoresearch.contract_cli .autoresearch.yaml
   enforced in code.
 - **Nothing leaves your infrastructure.** Experiments run where you say
   (Slurm is the first backend; the compute interface is small and pluggable).
-- **No model lock-in.** LLM calls sit behind small interfaces (`Completer` for
-  reviews, the harness layer for coding sessions) so backends can diversify;
-  Anthropic is the pilot backend.
+- **No model lock-in.** Every model call goes through the harness layer, so
+  backends are swappable — Claude Code, Codex, and hermes-agent are wired today.
 
 Full design: [docs/design/architecture.md](docs/design/architecture.md) ·
 Roadmap: [docs/roadmap.md](docs/roadmap.md)

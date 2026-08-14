@@ -87,7 +87,7 @@ MAX_CONTEXT_COMMENT_CHARS = 4_000
 # forgeable; identity + marker together are not. The markers are the
 # renderers' own constants, and marker-first is their tested shape: both
 # render bodies starting with the marker (asserted in their render tests)
-# and publish through review_cli.post_round, which inserts the round stamp
+# and publish through posting.post_round, which inserts the round stamp
 # AFTER the marker — always as ISSUE comments. That is why this reads one
 # collection and matches at the start of the body; a quote-reply prefixes
 # every line with "> ", so quoted rounds can never re-qualify.
