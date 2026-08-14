@@ -301,11 +301,11 @@ def build_verify_prompt(
     return "\n\n".join(parts)
 
 
-# Prepended to the shared rubric for the agent-session verifier. Unlike the
-# completer, it has TWO read-only checkouts: the PR head (the change under
+# Prepended to the shared rubric for the agent-session verifier: it has TWO
+# read-only checkouts: the PR head (the change under
 # review) and the BASE branch (the trusted contract and ruler — the solver
-# cannot have shaped it). Ruler reads must target base, which preserves the
-# completer path's "ruler from the base branch, never the PR" property.
+# cannot have shaped it). Ruler reads must target base: the ruler comes from
+# the base branch, never the PR.
 AGENT_VERIFY_INVESTIGATION = (
     "Two trees are checked out read-only in your working directory: `pr-head/` "
     "is the pull request's code (the change under review, written by the agent "
@@ -341,11 +341,10 @@ def build_verify_agent_brief(
 
 
 def verify_result_from_data(data: Any) -> ReviewResult:
-    """Build a ReviewResult from a verifier findings object. Shared by the
-    one-shot completer path and the agent-session path — both sanitize
-    identically (untrusted model output bound for a GitHub comment). A degraded
-    response must skip cleanly, not KeyError: every field access is defensive
-    even though the schema marks them required."""
+    """Build a ReviewResult from a verifier findings object. Sanitizes
+    untrusted model output bound for a GitHub comment. A degraded response must
+    skip cleanly, not KeyError: every field access is defensive even though the
+    schema marks them required."""
     raw_findings = data.get("findings") if isinstance(data, dict) else None
     findings = [
         Finding(

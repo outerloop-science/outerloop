@@ -33,8 +33,8 @@ on:
         default: main
       model:
         description: Model for the reviewer session. (No effort input — agent
-          sessions are budgeted by turns and walltime, not the completer's
-          effort knob.)
+          sessions are budgeted by turns and walltime, not a per-call effort
+          knob.)
         type: string
         required: false
         default: claude-opus-5

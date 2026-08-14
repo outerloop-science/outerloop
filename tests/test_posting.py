@@ -1,8 +1,6 @@
 """Shared posting helpers (`posting.py`): round numbering and the skip stub.
-
-These live here rather than in test_clis so they survive the completer sunset —
-`posting.py` outlives `review_cli`. The fake client is deliberately local (no
-completer/llm dependency), matching what the helpers actually call.
+The fake client is deliberately local (no model/llm dependency), matching what
+the helpers actually call.
 """
 
 from __future__ import annotations
@@ -157,9 +155,9 @@ def test_post_round_review_falls_back_to_a_comment_carrying_full_findings() -> N
 
 
 def test_skip_stub_redacts_the_provided_key_any_provider() -> None:
-    # backend-agnostic: whatever key the caller passes (Anthropic on the
-    # completer path, the harness's own key on the agent path) is scrubbed
-    # before the error text — which can echo request material — is posted.
+    # backend-agnostic: whatever key the caller passes (the harness owns its
+    # own key) is scrubbed before the error text — which can echo request
+    # material — is posted.
     client = _FakeClient()
     posting.post_skip_stub(
         client,  # type: ignore[arg-type]

@@ -4,9 +4,6 @@ Runs the verifier as a read-only agent over the two checkouts the workflow
 prepared under VERIFY_CHECKOUT (`pr-head/` and `base/`), and posts the findings
 as an issue comment. Exits 0 even on skip or failure — the verifier is
 advisory and must never turn a target repo's CI red.
-
-The verify entry point (the one-shot completer entry, verifier_cli, was sunset
-once all repos migrated to this workflow).
 """
 
 from __future__ import annotations

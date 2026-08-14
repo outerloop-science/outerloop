@@ -1,18 +1,13 @@
 """Agent-session verifier: runs the verifier as an agent over TWO read-only
 checkouts — the PR head (the change under review) and the base branch (the
-trusted contract and ruler) — instead of the one-shot completer.
+trusted contract and ruler).
 
 `run_agent_verify` is the orchestration core, testable with a fake harness and
-client. It reuses the completer path's pieces: the same skip rule (bot PRs
-only), the same rubric (via `build_verify_agent_brief`), the same result-policy
-sanitizer (`verify_result_from_role`), and the same posting (`post_round` with
-the verify marker — always an issue comment, so rounds ride into follow-up
-wakes). What changes is how the verdict is produced: an agent that reads the
-ruler from base/ and follows the change through pr-head/, rather than a single
-call over fenced excerpts.
-
-This is the verifier. It replaced a one-shot completer path (`verifier_cli`),
-sunset once all repos migrated to this workflow.
+client. It builds on the shared pieces in `verifier`: the skip rule (bot PRs
+only), the rubric (via `build_verify_agent_brief`), the result-policy sanitizer
+(`verify_result_from_role`), and the posting (`post_round` with the verify
+marker — always an issue comment, so rounds ride into follow-up wakes). The
+agent reads the ruler from base/ and follows the change through pr-head/.
 """
 
 from __future__ import annotations
@@ -98,8 +93,7 @@ def run_agent_verify(
             log.warning("verification produced no verdict on %s#%s: %s", repo, number, detail)
             if outage(role_result.session) or budget_exhausted(role_result.session):
                 # `detail` is already api-key-redacted by the harness (it owns
-                # its own secret), so no secrets are passed here — unlike the
-                # completer path, whose CompleterError is not self-redacted.
+                # its own secret), so no secrets are passed here.
                 post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
             return None
 

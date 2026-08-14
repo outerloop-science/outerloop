@@ -193,8 +193,7 @@ def _fence(text: str) -> str:
 
 
 # Prepended to the shared rubric for the agent-session reviewer: it has a
-# read-only checkout and the read tools, unlike the one-shot completer that
-# only sees the diff and a bounded context slice.
+# read-only checkout and the read tools, so it can investigate beyond the diff.
 AGENT_INVESTIGATION = (
     "The repository is checked out read-only in your working directory. Use Read, "
     "Grep, and Glob to investigate beyond the diff: the surrounding code, callers, "
@@ -209,8 +208,8 @@ AGENT_INVESTIGATION = (
 
 def build_agent_brief(pr: PullRequest, today: str | None = None) -> str:
     """The reviewer brief for an agent session: the shared rubric, the
-    investigation instruction, and the PR itself. Reuses the completer's
-    prompt so both paths judge by the same rules."""
+    investigation instruction, and the PR itself, built on the shared
+    `build_prompt` so brief and rubric stay in one place."""
     return f"{SYSTEM_PROMPT}\n\n{AGENT_INVESTIGATION}\n\n{build_prompt(pr, today)}"
 
 
@@ -234,15 +233,14 @@ def build_prompt(pr: PullRequest, today: str | None = None) -> str:
 
 
 def result_from_data(data: dict[str, Any]) -> ReviewResult:
-    """Build a ReviewResult from a findings object. Shared by the one-shot
-    completer path and the agent-session path — both sanitize identically:
-    every string here is untrusted model output bound for a GitHub comment, and
-    the caps guard the render (`sanitize` also neutralizes markdown/HTML).
+    """Build a ReviewResult from a findings object. Every string here is
+    untrusted model output bound for a GitHub comment, and the caps guard the
+    render (`sanitize` also neutralizes markdown/HTML).
 
-    Malformed items are dropped, never raised on: the completer path enforces
-    the item schema, but the agent path validates only the top-level shape, so
-    an item may be a non-dict or miss a key. A finding needs at least a file, a
-    summary, and a detail; anything short of that is skipped."""
+    Malformed items are dropped, never raised on: the agent path validates only
+    the top-level shape, so an item may be a non-dict or miss a key. A finding
+    needs at least a file, a summary, and a detail; anything short of that is
+    skipped."""
     raw = data.get("findings")
     items = raw if isinstance(raw, list) else []  # null / non-list -> no findings
     findings: list[Finding] = []

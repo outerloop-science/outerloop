@@ -53,9 +53,9 @@ def verify(
     today: str | None = None,
     thread: tuple[tuple[str, str], ...] = (),
 ) -> ReviewResult:
-    """Test shim for the sunset completer verifier. Its non-skip path was just
-    verify_result_from_data over the model's payload; kept here (over a fake
-    completer) so the shared prompt/rendering tests below need no changes."""
+    """Drives the verifier's non-skip path — verify_skip_reason, then
+    verify_result_from_data over a fake completer's payload — so the shared
+    prompt/rendering tests below need no agent harness."""
     skip = verify_skip_reason(pr, bot_login)
     if skip is not None:
         return ReviewResult(findings=[], notes="", skipped=skip)

@@ -2,9 +2,9 @@
 # agent reviewer's mirror). It checks out TWO trees read-only — the PR head
 # (the change under review) and the base branch (the trusted contract and
 # ruler) — and runs the verifier as an agent that reads them (no Bash/Write:
-# nothing from the PR is ever executed). Same constitution as the completer it
-# replaces: never fails the caller's CI, never runs with secrets on a fork PR,
-# silence is not endorsement. Claude only on GitHub-hosted runners (codex's
+# nothing from the PR is ever executed). Its constitution: never fails the
+# caller's CI, never runs with secrets on a fork PR, silence is not
+# endorsement. Claude only on GitHub-hosted runners (codex's
 # sandbox cannot init there; codex verification runs via the cluster harness).
 name: verification-review-agent
 
@@ -27,8 +27,8 @@ on:
         default: main
       model:
         description: Model for the verifier session. (No effort input — agent
-          sessions are budgeted by turns and walltime, not the completer's
-          effort knob.)
+          sessions are budgeted by turns and walltime, not a per-call effort
+          knob.)
         type: string
         required: false
         default: claude-opus-5
