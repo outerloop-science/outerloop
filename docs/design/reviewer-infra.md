@@ -1,11 +1,11 @@
 # Reviewer and verifier infrastructure
 
-This note records how we intend to build the reviewer and verifier agents.
-The goal is to be able to change the model, the harness, or the search
-provider later without a rewrite. It was written before we built, so the
-seams were agreed first. The REVIEWER half is now deployed — see "Status"
-at the end; the sections between record the design and the verifier's
-current shape.
+This note records how the reviewer and verifier agents are built and the design
+that led there. The goal was to change the model, the harness, or the search
+provider later without a rewrite, so the seams were agreed before building.
+Both are now deployed as agent sessions (see Status); the sections between
+record the design, including some that describe the now-removed completer era
+as history.
 
 ## Where we are now
 
@@ -21,20 +21,22 @@ the design that led here; some describe the completer era as history.
 
 We keep three things independent so each can change on its own.
 
-### 1. The model
+### 1. The model (the backend)
 
-The reviewer already talks to a `Completer` interface. `AnthropicCompleter`
-is one implementation. Swapping the model is a config change, not a rewrite:
-Claude on Bedrock, Vertex, or Foundry, an OpenAI-compatible endpoint, or a
-local model all fit behind the same interface. Keep it that way. No code
-outside the completer should depend on Anthropic-specific response shapes.
+The model lives behind the `Harness` seam (`harness.py`): a role runs as a
+session on a backend, and the backend is swappable — Claude Code, Codex, and
+hermes-agent are wired today, and a new one is an adapter, not a rewrite.
+(The original design used a one-call `Completer` interface with an
+`AnthropicCompleter`; that path was sunset with the completer. The principle
+survived the implementation: no code outside the adapter depends on a
+provider's response shape.)
 
 ### 2. The harness
 
-The reviewer should become an agent that calls tools in a loop, not a
-single call. This is the same decision as adding retrieval (see below):
-retrieval is only useful inside a loop, so we cannot have one without the
-other.
+The reviewer and verifier run as agents that call tools in a loop, not a single
+call — the move that replaced the completer. This is the same decision as adding
+retrieval (see below): retrieval is only useful inside a loop, so one implies
+the other.
 
 ### 3. The tools
 
@@ -153,38 +155,42 @@ model, not execute anything: the session has no execute or write tools, and
 file contents are treated as data, never as instructions. Running code is
 the dangerous act, and the read-only reviewer never runs anything.
 
-Second, the split workflow keeps the blast radius small, not zero. The agent
-runs sandboxed with no write token and no secret beyond a spend-capped API
-key. It writes findings to an artifact, and a separate minimal step with the
-write token posts them. Two residual risks remain, and each has a bounded
-worst case. If the spend-capped key leaks, the worst case is capped spend
-until we rotate it, not an open-ended credential loss. If the agent is
-prompt-injected, the injected text reaches a repo comment through the
-posting step, so the worst case there is a wrong comment, not a merge. The
-posting step must treat the artifact as data, not instructions, and findings
-are read by a human.
+Second, containment. Today the agent runs in a single GitHub-hosted step that
+holds the caller's workflow token (repo-scoped, short-lived) and a spend-capped
+model key. What keeps that manageable is the same-repo gate (no fork PR reaches
+it) plus the read-only tool set — and, on the auto path, only Claude, whose
+`Read` refuses `/proc` so a prompt-injected session cannot lift the step token
+(see "Which backend can judge"). Two residual risks have bounded worst cases: a
+leaked spend-capped key is capped spend until rotation, not open-ended
+credential loss; a prompt-injected agent's text reaches a repo comment through
+the posting path, so the worst case is a wrong comment (read by a human), not a
+merge. The STRONGER containment — the tokenless split workflow (a sandboxed
+agent step with no write token → findings artifact → a separate minimal posting
+step) — is the fork-PR-phase work, NOT yet built.
 
-What is safe today, precisely. `verify.yml` runs only on same-repo,
-bot-authored branches, so no fork PR reaches the reviewer. That makes an
-agentic reviewer that only reads safe to run now. It does not make running
-the PR's code safe. Bot-authored code is model-generated, which is the exact
-thing this note says not to run next to a secret. So even on internal PRs,
-executing the eval uses the guarded `run-candidate` path, never a direct
-run. Reading is what today's setup licenses; running is always guarded. The
-sandbox and split-workflow work is what gates accepting fork PRs after the
-repo goes public. See `public-surface.md` for that threat model.
+What is safe today, precisely. The agent workflows run only on same-repo PRs
+(the reviewer via `pull_request_target`'s same-repo gate; the verifier only on
+bot-authored branches), so no fork PR reaches them. That makes an agent that
+only reads safe to run now. It does not make running the PR's code safe.
+Bot-authored code is model-generated — the exact thing this note says not to run
+next to a secret — so even on internal PRs, executing the eval uses the guarded
+`run-candidate` path, never a direct run. Reading is what today's setup
+licenses; running is always guarded. The split workflow is what gates accepting
+fork PRs after the repo goes public. See `public-surface.md` for that threat
+model.
 
 ## Sequencing
 
-1. Stand up the harness with a sandboxed, read-only shell over the base
-   tree. This needs no broker and no custom tools, because reading the
-   trusted base is safe.
+1. ~~Stand up the harness with a read-only tree.~~ **Done** — the `Harness`
+   seam runs read-only agent sessions over the PR-head checkout.
 2. Define the `retrieve` tool contract and the broker, and add them without
-   changing the harness.
-3. Before making the agentic reviewer the default, score it against the
-   single-pass version on the meta-benchmark. The metric is whether it
-   catches more seeded gaming per dollar. "Feels better" and "is better,
-   safely" can differ, so measure it.
+   changing the harness. **Pending** — retrieval is still future work.
+3. ~~Before making the agentic reviewer the default, score it against the
+   single-pass version on the meta-benchmark.~~ **Superseded** — the migration
+   made the agent path the default and the single-pass completer was retired
+   without a head-to-head, since the one-call shape provably could not explore.
+   The meta-benchmark still matters for future changes (does a change catch
+   more seeded gaming per dollar), just not as a gate on this one.
 
 ## Open decisions
 
