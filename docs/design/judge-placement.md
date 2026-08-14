@@ -105,11 +105,11 @@ So the model is **notes by default, the PR as a promotion**:
 
 - A climb is a *candidate*. The verifier's output lands as a note in research
   memory — the always-on record the orchestrator reasons over.
-- The kernel opens a PR **only when the climb clears the gate** (climbed metric
-  up, suite no-regression, verifier finds no gaming — the metric taxonomy's
-  gate). The note becomes that PR's opening body. From that point on, comments
-  are the channel — once a PR exists, that is the right place for both the
-  verifier and humans to speak.
+- The kernel opens a PR **only when the climb clears the gate**: the climbed
+  metric improved, the wider metric suite shows no regression, and the verifier
+  finds no gaming. The note becomes that PR's opening body. From that point on,
+  comments are the channel — once a PR exists, that is the right place for both
+  the verifier and humans to speak.
 
 It is one lever — *when the PR is born* — not two channels. It reframes
 human-in-the-loop from **push-everything** to **pull + curated-push**: humans
