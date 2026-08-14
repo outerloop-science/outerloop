@@ -244,12 +244,14 @@ path-opening tool.
   are inert on an ephemeral runner, but that bounds the wrong thing; the token
   read is what matters. Not token-safe.
 - **Claude Code (2.1.229):** the strongest boundary — a native read-only tool
-  set (Read/Grep/Glob, no Write/Edit/Bash), so no writes and no shell. Still the
-  trusted default. But note the open question the new axis raises: can `Read`
-  open `/proc/self/status` → PPid → `/proc/<ppid>/environ`? UNVERIFIED. If it
-  can, even Claude leaks a token that is reachable in its process tree, and
-  "reading isn't running" does not save it. TODO: verify; until then do not
-  assume Claude is `/proc`-safe, only that it is write/exec-safe.
+  set (Read/Grep/Glob, no Write/Edit/Bash), so no writes and no shell. The new
+  axis raised the question: can `Read` open `/proc/<pid>/environ`? PROBED
+  2026-08-14 (claude-proc-probe, opus-5, faithful harness mimic): `Read` REFUSES
+  both `/proc/<parent-pid>/environ` and `/proc/self/environ` — a tool-level
+  boundary, not model reluctance (`permission_denials: []`, it simply could not
+  open them). So unlike codex (shell) and hermes (file read), Claude's `Read`
+  does NOT reach `/proc`: it is `/proc`-safe, and the trusted default. Version-
+  specific — re-test on CLI bumps.
 
 **The durable invariant** (an OS fact): the only robust defense is that **no
 exploitable token lives in the judge's process tree** — the tokenless split
@@ -259,12 +261,14 @@ namespace / `hidepid`), which the GitHub-hosted runners do not give us. Env
 scrub, read-only tool sets, and no-egress sandboxes each close a different hole
 but NONE closes the `/proc` read while the token sits in a parent process.
 
-Consequence for deployment: the **auto path is claude-only** (write/exec-safe,
-and `/proc` risk pending verification + the split). codex and hermes run only
-from the manual bench (informed `/proc` caveat) or the cluster. The tokenless
-split is the prerequisite before ANY backend — Claude included — is trusted next
-to a live token on the auto path, and it is the same infrastructure the fork-PR
-public phase needs.
+Consequence for deployment: the **auto path is claude-only**, and that is now
+proven sound — Claude is write-safe, exec-safe, AND `/proc`-safe (probe above).
+codex and hermes reach `/proc` (shell / file read), so they run only from the
+manual bench (informed `/proc` caveat) or the cluster. The tokenless split is
+the prerequisite before THOSE path-opening backends are trusted next to a live
+token on the auto path; Claude does not need it for this vector. The split is
+still the same infrastructure the fork-PR public phase needs (untrusted code
+next to a token), so it lands there regardless.
 
 Re-test on version bumps: whether Claude's `Read` opens `/proc`, a hermes
 read-only toolset, a codex sandbox that hides `/proc`, or a runner that grants
