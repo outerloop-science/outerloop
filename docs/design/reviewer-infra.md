@@ -207,9 +207,69 @@ The agent-session reviewer is live. It runs as a reusable workflow
 read-only, runs the reviewer as an agent that reads the code (no Bash/Write, so
 untrusted PR code is only read, never executed), and posts findings. Claude on
 GitHub-hosted runners is the default — its reads are native, so it needs no
-second sandbox; codex's read-only sandbox (bwrap) cannot init on GitHub-hosted
-runners, so codex reviews run via the cluster harness instead. Findings that
+second sandbox; codex's default bwrap sandbox cannot init on GitHub-hosted
+runners (its Landlock fallback can, but on a deprecated flag with a `/proc` read
+gap — see below), so codex reviews run via the cluster harness instead. Findings that
 would need a second layer (fork PRs, live web search) stay future work. The
 completer path is retained until the lab repos migrate, then removed.
 Gating is unchanged by the swap: reviews stay advisory, blocking findings
 gate per roles.md, and humans hold merge authority.
+
+## Which backend can judge, and where (observed 2026-08-13/14 — version-specific, re-verify)
+
+The rule I first wrote here was wrong, and a judge caught it (gpt-5.6-terra,
+reviewing the hermes PR, 2026-08-14). The old axis was "read without EXECUTING
+while secrets are reachable." The correct axis is broader:
+
+> **A judge must not be able to OPEN AN ARBITRARY PATH while a secret is
+> reachable in its process tree.** `/proc/<pid>/environ` is a regular file; any
+> tool that opens files by path can read a parent's environment — no shell
+> required. So a file-READ tool is a credential-exfil primitive just like a
+> shell is.
+
+That reframes every backend. The env scrub protects the session's OWN env, but
+NOT the parent CLI's env, which `/proc/<parent-pid>/environ` exposes to any
+path-opening tool.
+
+- **codex-cli (0.130.0):** reads by executing shell → reaches `/proc`. Probe
+  (2026-08-13, GitHub-hosted): default bwrap FAILS to init (network-namespace/
+  loopback step, `RTM_NEWADDR`); `-c use_legacy_landlock=true` DOES init and
+  blocks writes AND network egress — but Landlock is a filesystem LSM, not
+  process isolation, so `/proc/<ppid>/environ` stays readable (probe lifted a
+  planted `CANARY_TOKEN`) and the token routes out via the findings the kernel
+  posts. Also deprecated ("`use_legacy_landlock` will be removed soon").
+- **hermes-agent (0.20.1):** `file` toolset READS ARBITRARY PATHS. Even with
+  `terminal` disabled it can open `/proc/<ppid>/environ` and lift the token —
+  the same reach as codex, via a file read (finding, 2026-08-14). Its *writes*
+  are inert on an ephemeral runner, but that bounds the wrong thing; the token
+  read is what matters. Not token-safe.
+- **Claude Code (2.1.229):** the strongest boundary — a native read-only tool
+  set (Read/Grep/Glob, no Write/Edit/Bash), so no writes and no shell. The new
+  axis raised the question: can `Read` open `/proc/<pid>/environ`? PROBED
+  2026-08-14 (claude-proc-probe, opus-5, faithful harness mimic): `Read` REFUSES
+  both `/proc/<parent-pid>/environ` and `/proc/self/environ` — a tool-level
+  boundary, not model reluctance (`permission_denials: []`, it simply could not
+  open them). So unlike codex (shell) and hermes (file read), Claude's `Read`
+  does NOT reach `/proc`: it is `/proc`-safe, and the trusted default. Version-
+  specific — re-test on CLI bumps.
+
+**The durable invariant** (an OS fact): the only robust defense is that **no
+exploitable token lives in the judge's process tree** — the tokenless split
+(judge runs with no `GITHUB_TOKEN`, writes findings to an artifact, a separate
+minimal step posts). Failing that, an OS jail that hides `/proc` (a PID
+namespace / `hidepid`), which the GitHub-hosted runners do not give us. Env
+scrub, read-only tool sets, and no-egress sandboxes each close a different hole
+but NONE closes the `/proc` read while the token sits in a parent process.
+
+Consequence for deployment: the **auto path is claude-only**, and that is now
+proven sound — Claude is write-safe, exec-safe, AND `/proc`-safe (probe above).
+codex and hermes reach `/proc` (shell / file read), so they run only from the
+manual bench (informed `/proc` caveat) or the cluster. The tokenless split is
+the prerequisite before THOSE path-opening backends are trusted next to a live
+token on the auto path; Claude does not need it for this vector. The split is
+still the same infrastructure the fork-PR public phase needs (untrusted code
+next to a token), so it lands there regardless.
+
+Re-test on version bumps: whether Claude's `Read` opens `/proc`, a hermes
+read-only toolset, a codex sandbox that hides `/proc`, or a runner that grants
+PID namespaces would each rewrite this section.

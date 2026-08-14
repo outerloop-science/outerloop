@@ -1,8 +1,14 @@
 name: advisory-review-agent-manual
-# Manual dispatch of the agent reviewer — for validation and for running codex
-# on a specific PR (codex is not the PR-triggered default; its sandbox needs a
-# namespace-capable host). The PR-triggered production path is review.yml ->
-# advisory-review-agent.yml (reusable).
+# Manual dispatch of the agent reviewer — the experimental bench for backends
+# that are not the PR-triggered default. Claude is the trusted default (native
+# read-only tool set). Codex and hermes are validated here first:
+#   codex reads by executing shell, so it runs in the Landlock read-only sandbox
+#     (its default bwrap can't init on GitHub-hosted). Even jailed it can read a
+#     parent's env via /proc, so this bench is an INFORMED one-off, never the
+#     auto default — see docs/design/reviewer-infra.md.
+#   hermes has no read-only tool set; its judge safety is environmental (inert
+#     writes on this throwaway runner, terminal disabled). Experimental only.
+# The PR-triggered production path is review.yml -> advisory-review-agent.yml.
 on:
   workflow_dispatch:
     inputs:
@@ -13,8 +19,16 @@ on:
       backend:
         description: Which agent backend drives the review
         type: choice
-        options: [claude, codex]
+        options: [claude, codex, hermes]
         default: claude
+      model:
+        description: >-
+          Model for the session. Empty -> the backend default (claude-opus-5,
+          codex configured, hermes default). For hermes pass an OpenRouter id,
+          e.g. deepseek/deepseek-chat.
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -46,21 +60,41 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      - name: Install the ${{ inputs.backend }} CLI
+      # Each backend ships as a pinned artifact, same discipline across the
+      # three: codex npm pin, claude installer pin, hermes release tag.
+      - name: Install the ${{ inputs.backend }} backend
+        env:
+          HERMES_REF: v2026.8.13
         run: |
           set -euo pipefail
-          if [ "$BACKEND" = "codex" ]; then
-            npm install -g @openai/codex@0.130.0
-          else
-            curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
+          case "$BACKEND" in
+            codex)
+              npm install -g @openai/codex@0.130.0
+              ;;
+            hermes)
+              git clone --depth 1 --branch "$HERMES_REF" \
+                https://github.com/NousResearch/hermes-agent \
+                "$GITHUB_WORKSPACE/hermes-agent"
+              ;;
+            *)
+              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              ;;
+          esac
       - name: Run the agent review
         working-directory: .autoresearch
         env:
           REVIEW_BACKEND: ${{ inputs.backend }}
+          REVIEW_MODEL: ${{ inputs.model }}
           ANTHROPIC_REVIEWER_KEY: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
           OPENAI_REVIEWER_KEY: ${{ secrets.OPENAI_REVIEWER_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # codex's default bwrap can't init on GitHub-hosted; opt into Landlock
+          # (read-only, no egress). Harmless for the other backends.
+          REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
+          # hermes reads its pinned clone from here; provider seeds ~/.hermes.
+          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
+          REVIEW_HERMES_PROVIDER: openrouter
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}

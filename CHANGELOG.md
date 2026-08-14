@@ -6,6 +6,22 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- The reviewer can now run on three backends, selected by `REVIEW_BACKEND`
+  (`claude` | `codex` | `hermes`) with per-backend keys
+  (`ANTHROPIC_REVIEWER_KEY` | `OPENAI_REVIEWER_KEY` | `OPENROUTER_API_KEY`) and
+  a backend-aware `model`. How read-only is enforced differs by backend, and
+  that is a trust difference: claude uses a native read-only tool set
+  (trusted); codex an OS sandbox (on GitHub-hosted, the Landlock sandbox via
+  `REVIEW_CODEX_LEGACY_LANDLOCK`, since the default bwrap cannot init there);
+  hermes an environmental boundary only (no shell, inert writes on an ephemeral
+  runner) — experimental. The auto path (`advisory-review-agent.yml`) is
+  **claude only**: both codex (shell) and hermes (its `file` tool reads
+  arbitrary paths, incl. `/proc/<pid>/environ`) can reach the step's
+  `GITHUB_TOKEN`, so they run only from the manual bench (`review-agent.yml`) or
+  the cluster until the tokenless split exists.
+
 ### Changed
 
 - The verifier can now run as an agent session over TWO read-only checkouts:

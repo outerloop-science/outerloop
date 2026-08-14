@@ -1,0 +1,185 @@
+"""HermesHarness command construction and output parsing.
+
+Hermes is not run here; these pin the argv shape (verified against
+hermes-agent v0.20.1 source) and the defensive trajectory parsing."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import autoresearch.harness as harness_mod
+from autoresearch.harness import HermesHarness, _hermes_command, _parse_hermes_result
+
+
+def test_command_shape_and_toolsets() -> None:
+    cmd = _hermes_command(
+        Path("/opt/hermes"),
+        "Read the brief at /h/brief.md",
+        "anthropic/claude-sonnet-4.6",
+        "",
+        40,
+        ("file",),
+        ("terminal", "web"),
+        (),
+    )
+    assert cmd[:4] == ["uv", "run", "--project", "/opt/hermes"]
+    assert "--save_sample" in cmd
+    # embedded quotes so fire literal-evals a STRING, not a tuple
+    assert '--enabled_toolsets="file"' in cmd
+    assert '--disabled_toolsets="terminal,web"' in cmd
+    assert "--max_turns=40" in cmd
+    assert not any("--base_url" in part for part in cmd)  # empty -> hermes default
+
+
+def test_brief_and_key_never_in_argv(monkeypatch: Any, tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    home = workspace.parent / f"{workspace.name}-home"
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs: Any) -> None:
+            seen["argv"] = command
+            seen["env"] = kwargs.get("env", {})
+            # the brief exists DURING the run; capture it before cleanup removes it
+            briefs = list(home.glob("brief*.md"))
+            seen["brief_files"] = [str(b) for b in briefs]
+            seen["brief_text"] = briefs[0].read_text() if briefs else ""
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return "final words", ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    brief = "SENTINEL_BRIEF_7q2 private research text"
+    HermesHarness(
+        api_key="sk-or-SECRET", repo_dir=tmp_path / "hermes", key_env="OPENAI_API_KEY"
+    ).run(brief, workspace)
+    assert not any("SENTINEL_BRIEF_7q2" in str(part) for part in seen["argv"])
+    assert not any("sk-or-SECRET" in str(part) for part in seen["argv"])
+    assert seen["env"]["OPENAI_API_KEY"] == "sk-or-SECRET"
+    # the brief landed in a file inside the per-run home, referenced by the query
+    assert seen["brief_text"] and "SENTINEL_BRIEF_7q2" in seen["brief_text"]
+    query_arg = next(part for part in seen["argv"] if part.startswith("--query="))
+    assert seen["brief_files"][0] in query_arg
+    # and it does not outlive the run (it holds PR content)
+    assert not list(home.glob("brief*.md"))
+
+
+def test_parse_prefers_sample_trajectory() -> None:
+    sample = {
+        "messages": [
+            {"role": "user", "content": "brief"},
+            {"role": "assistant", "content": "thinking..."},
+            {"role": "assistant", "content": '{"findings": [], "notes": "ok"}'},
+        ]
+    }
+    result = _parse_hermes_result("noisy stdout", sample, 0, "t.log")
+    assert result.is_error is False
+    assert result.final_text == '{"findings": [], "notes": "ok"}'
+    assert result.num_turns == 2
+    assert result.session_id == ""  # no resume seam
+
+
+def test_parse_falls_back_to_stdout_but_flags_zero_turns() -> None:
+    # no assistant output = failure (hermes exits 0 even on total API failure)
+    result = _parse_hermes_result("  HTTP 401: Missing Authentication header  ", None, 0)
+    assert result.final_text == "HTTP 401: Missing Authentication header"
+    assert result.is_error is True
+
+
+def test_nonzero_returncode_is_error_with_detail() -> None:
+    result = _parse_hermes_result("boom: missing key", None, 2)
+    assert result.is_error is True
+    assert "missing key" in result.error_detail
+
+
+def test_resume_is_refused_not_silently_fresh(tmp_path: Path) -> None:
+    harness = HermesHarness(api_key="k", repo_dir=tmp_path)
+    result = harness.run("brief", tmp_path / "ws", resume_session_id="old-session")
+    assert result.is_error is True
+    assert result.stop_reason == "resume-unsupported"
+
+
+def test_sample_files_are_cleaned_up(monkeypatch: Any, tmp_path: Path) -> None:
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    home = workspace.parent / f"{workspace.name}-home"
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **_: Any) -> None:
+            home.mkdir(exist_ok=True)
+            (home / "sample_ab12.json").write_text(
+                json.dumps({"messages": [{"role": "assistant", "content": "done"}]})
+            )
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return "", ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run("b", workspace)
+    assert result.final_text == "done"
+    assert not list(home.glob("sample_*.json"))  # trajectory (may embed the brief) removed
+    assert not list(home.glob("brief*.md"))  # the brief holds PR content; not left at rest
+
+
+def test_parse_sharegpt_trajectory() -> None:
+    # the REAL saved format (agent_runtime_helpers.convert_to_trajectory_format)
+    sample = [
+        {"from": "system", "value": "You are a function calling AI model..."},
+        {"from": "human", "value": "the brief"},
+        {"from": "gpt", "value": "ok"},
+    ]
+    result = _parse_hermes_result("noise", sample, 0)
+    assert result.is_error is False
+    assert result.final_text == "ok"
+
+
+def test_parse_conversations_wrapper() -> None:
+    # run_agent.py --save_sample wraps the turns under "conversations"
+    # (run_agent.py:8404, v0.20.1). Missing this key was read as zero turns and
+    # dropped a real verdict as a bogus error — the whole "produced no verdict" bug.
+    sample = {
+        "conversations": [
+            {"from": "human", "value": "the brief"},
+            {"from": "gpt", "value": '{"findings": [], "notes": "clean"}'},
+        ],
+        "model": "deepseek/deepseek-v4-pro",
+        "completed": True,
+    }
+    result = _parse_hermes_result("noise", sample, 0)
+    assert result.is_error is False
+    assert result.num_turns == 1
+    assert result.final_text == '{"findings": [], "notes": "clean"}'
+
+
+def test_sample_read_does_not_follow_symlink(tmp_path: Path) -> None:
+    # the per-run home is session-writable; a planted sample_*.json symlink must
+    # not be read as a trajectory (that would exfil an arbitrary same-user file)
+    from autoresearch.harness import _collect_hermes_sample
+
+    home = tmp_path / "home"
+    home.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SENSITIVE")
+    (home / "sample_evil.json").symlink_to(secret)
+    sample = _collect_hermes_sample(home)
+    assert sample is None  # the link was not followed/read
+    assert not (home / "sample_evil.json").exists()  # link removed, not its target
+    assert secret.read_text() == "SENSITIVE"  # target untouched
+
+
+def test_config_write_refuses_symlink(tmp_path: Path) -> None:
+    from autoresearch.harness import _write_private_fixed
+
+    target = tmp_path / "target.txt"
+    target.write_text("ORIG")
+    (tmp_path / "config.yaml").symlink_to(target)
+    assert _write_private_fixed(tmp_path / "config.yaml", "NEW") is False  # refused
+    assert target.read_text() == "ORIG"  # redirect target untouched

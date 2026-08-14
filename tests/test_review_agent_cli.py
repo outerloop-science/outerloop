@@ -75,9 +75,32 @@ def test_codex_backend_reads_openai_key(monkeypatch: Any) -> None:
     assert calls["build_key"] == "sk-openai"
 
 
-def test_unknown_backend_skips(monkeypatch: Any) -> None:
+def test_hermes_backend_reads_openrouter_key(monkeypatch: Any, tmp_path: Path) -> None:
     env = _base_env()
     env["REVIEW_BACKEND"] = "hermes"
+    env["OPENROUTER_API_KEY"] = "sk-or-test"
+    env["REVIEW_HERMES_REPO"] = str(tmp_path)  # else hermes fail-closed skips
+    del env["ANTHROPIC_REVIEWER_KEY"]  # wrong key for this backend; must be ignored
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls["build_kwargs"]["backend"] == "hermes"
+    assert calls["build_key"] == "sk-or-test"
+    assert calls["build_kwargs"]["hermes_repo"] == tmp_path.resolve()
+    assert calls["build_kwargs"]["provider"] == "openrouter"
+
+
+def test_hermes_backend_without_repo_skips(monkeypatch: Any) -> None:
+    env = _base_env()
+    env["REVIEW_BACKEND"] = "hermes"
+    env["OPENROUTER_API_KEY"] = "sk-or-test"  # key present, but no pinned clone
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls == {}  # fail-closed: hermes needs REVIEW_HERMES_REPO
+
+
+def test_unknown_backend_skips(monkeypatch: Any) -> None:
+    env = _base_env()
+    env["REVIEW_BACKEND"] = "gemini-cli"  # a genuinely unknown backend (hermes is now valid)
     calls = _patch(monkeypatch, env)
     assert cli.main() == 0
     assert calls == {}
