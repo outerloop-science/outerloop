@@ -724,7 +724,16 @@ def _parse_hermes_result(
     if isinstance(sample, list):
         messages = sample
     elif isinstance(sample, dict):
-        wrapped = sample.get("messages") or sample.get("trajectory") or []
+        # run_agent.py --save_sample wraps the ShareGPT turns under
+        # "conversations" (verified against hermes v0.20.1, run_agent.py:8404);
+        # accept "messages"/"trajectory" too for other/older paths. Missing this
+        # key makes num_turns==0 and drops a real verdict as a bogus error.
+        wrapped = (
+            sample.get("conversations")
+            or sample.get("messages")
+            or sample.get("trajectory")
+            or []
+        )
         messages = wrapped if isinstance(wrapped, list) else []
     assistant = [
         m
@@ -759,18 +768,21 @@ class HermesHarness:
     """Headless hermes-agent (Nous Research, MIT) — the OSS backend behind the
     Harness seam, driven via `uv run <repo>/run_agent.py` from a pinned clone.
 
-    ELIGIBILITY: author-side, or an EXPERIMENTAL judge on an ephemeral runner —
-    never a trusted judge. Hermes has no native read-only toolset (its `file`
-    toolset bundles write_file and patch, and `approvals.deny` gates only shell),
-    so it cannot enforce read-only at the tool set the way Claude does. As a
-    judge its safety is therefore ENVIRONMENTAL, not tool-set: `terminal` is
-    disabled (no shell -> no /proc reach to a parent's token) and its writes are
-    inert on an ephemeral GitHub-hosted runner (nothing to push, scrubbed env,
-    container discarded). That boundary holds ONLY where writes cannot persist —
-    valid on the throwaway runner, NOT on the cluster or any reused workspace. A
-    tool-set boundary is strictly stronger, so Claude stays the trusted default
-    and hermes-as-judge stays experimental until an upstream read/write toolset
-    split or an OS read-only bind-mount gives it a real boundary.
+    ELIGIBILITY: author-side, or an EXPERIMENTAL judge — never a trusted judge,
+    and never on the auto path while a token is reachable. Hermes has no native
+    read-only toolset (its `file` toolset bundles write_file and patch, and
+    `approvals.deny` gates only shell), so it cannot enforce read-only at the tool
+    set the way Claude does. Critically, `file` READS ARBITRARY PATHS: even with
+    `terminal` disabled it can open /proc/<parent-pid>/environ and lift a
+    GITHUB_TOKEN held by the process that spawned it — the same /proc reach codex
+    has via shell, just via a file read. So "no shell" does NOT make it token-safe;
+    it must not judge next to a live token without the tokenless split (findings ->
+    artifact, a separate step posts). What IS bounded on an ephemeral runner is its
+    WRITES — inert (nothing to push, scrubbed env, container discarded), and only
+    where writes cannot persist. So: manual bench only (informed /proc caveat),
+    never the auto path, never the cluster/reused workspace, until an upstream
+    read/write toolset split or an OS jail that also hides /proc gives it a real
+    boundary. Claude stays the trusted default (native read-only tool set).
     Instruction-file surface: hermes auto-loads AGENTS.md from the workspace,
     which sanitize_checkout already neutralizes in untrusted trees. No session
     resume in the headless seam, so run_role's repair pass is unavailable.
@@ -900,6 +912,8 @@ class HermesHarness:
                 workspace.parent, transcript_stem, ".log", redact(stdout or "", (self.api_key,))
             )
             log.warning("hermes session timed out after %ss in %s", self.timeout_s, workspace)
+            with contextlib.suppress(OSError):
+                brief_path.unlink()  # the brief holds PR content; clean up on timeout too
             return _error_result(
                 "timeout",
                 path,
@@ -918,6 +932,8 @@ class HermesHarness:
             for stale in candidates:
                 with contextlib.suppress(OSError):
                     stale.unlink()  # trajectories can embed the brief; don't accumulate
+        with contextlib.suppress(OSError):
+            brief_path.unlink()  # the brief holds PR content; don't leave it at rest
         return _parse_hermes_result(stdout, sample, process.returncode, transcript_path)
 
 

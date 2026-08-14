@@ -36,19 +36,25 @@ def test_command_shape_and_toolsets() -> None:
 def test_brief_and_key_never_in_argv(monkeypatch: Any, tmp_path: Path) -> None:
     seen: dict[str, Any] = {}
 
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    home = workspace.parent / f"{workspace.name}-home"
+
     class FakePopen:
         returncode = 0
 
         def __init__(self, command: list[str], **kwargs: Any) -> None:
             seen["argv"] = command
             seen["env"] = kwargs.get("env", {})
+            # the brief exists DURING the run; capture it before cleanup removes it
+            briefs = list(home.glob("brief*.md"))
+            seen["brief_files"] = [str(b) for b in briefs]
+            seen["brief_text"] = briefs[0].read_text() if briefs else ""
 
         def communicate(self, timeout: float | None = None) -> tuple[str, str]:
             return "final words", ""
 
     monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
-    workspace = tmp_path / "clone"
-    workspace.mkdir()
     brief = "SENTINEL_BRIEF_7q2 private research text"
     HermesHarness(
         api_key="sk-or-SECRET", repo_dir=tmp_path / "hermes", key_env="OPENAI_API_KEY"
@@ -57,11 +63,11 @@ def test_brief_and_key_never_in_argv(monkeypatch: Any, tmp_path: Path) -> None:
     assert not any("sk-or-SECRET" in str(part) for part in seen["argv"])
     assert seen["env"]["OPENAI_API_KEY"] == "sk-or-SECRET"
     # the brief landed in a file inside the per-run home, referenced by the query
-    home = workspace.parent / f"{workspace.name}-home"
-    briefs = list(home.glob("brief*.md"))
-    assert briefs and "SENTINEL_BRIEF_7q2" in briefs[0].read_text()
+    assert seen["brief_text"] and "SENTINEL_BRIEF_7q2" in seen["brief_text"]
     query_arg = next(part for part in seen["argv"] if part.startswith("--query="))
-    assert str(briefs[0]) in query_arg
+    assert seen["brief_files"][0] in query_arg
+    # and it does not outlive the run (it holds PR content)
+    assert not list(home.glob("brief*.md"))
 
 
 def test_parse_prefers_sample_trajectory() -> None:
@@ -120,6 +126,7 @@ def test_sample_files_are_cleaned_up(monkeypatch: Any, tmp_path: Path) -> None:
     result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run("b", workspace)
     assert result.final_text == "done"
     assert not list(home.glob("sample_*.json"))  # trajectory (may embed the brief) removed
+    assert not list(home.glob("brief*.md"))  # the brief holds PR content; not left at rest
 
 
 def test_parse_sharegpt_trajectory() -> None:
@@ -132,4 +139,22 @@ def test_parse_sharegpt_trajectory() -> None:
     result = _parse_hermes_result("noise", sample, 0)
     assert result.is_error is False
     assert result.final_text == "ok"
+
+
+def test_parse_conversations_wrapper() -> None:
+    # run_agent.py --save_sample wraps the turns under "conversations"
+    # (run_agent.py:8404, v0.20.1). Missing this key was read as zero turns and
+    # dropped a real verdict as a bogus error — the whole "produced no verdict" bug.
+    sample = {
+        "conversations": [
+            {"from": "human", "value": "the brief"},
+            {"from": "gpt", "value": '{"findings": [], "notes": "clean"}'},
+        ],
+        "model": "deepseek/deepseek-v4-pro",
+        "completed": True,
+    }
+    result = _parse_hermes_result("noise", sample, 0)
+    assert result.is_error is False
+    assert result.num_turns == 1
+    assert result.final_text == '{"findings": [], "notes": "clean"}'
     assert result.num_turns == 1

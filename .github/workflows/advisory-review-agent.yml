@@ -5,15 +5,13 @@
 # bot-authored PRs automatically, never approves, never fails the caller's CI,
 # and never runs with secrets on a fork PR (same-repo gate).
 #
-# Backends allowed on this AUTO path (GitHub-hosted): non-executing ones only.
-#   claude (default): native read-only tool set — the trusted default.
-#   hermes: no read-only tool set, but it does not execute (terminal disabled),
-#     so it cannot reach the step token via /proc, and its writes are inert on
-#     this ephemeral runner. EXPERIMENTAL — do not point a caller here until one
-#     green manual run (review-agent.yml) confirms it produces findings.
-#   codex is NOT allowed here: it reads by executing shell, so it could read the
-#     step's GITHUB_TOKEN via /proc — that needs the tokenless split first. Run
-#     codex from the manual bench or the cluster. See docs/design/reviewer-infra.md.
+# CLAUDE ONLY on this auto path — deliberately. Claude enforces read-only at the
+# TOOL SET (no Write/Edit/Bash). The other backends can't be trusted next to the
+# step's GITHUB_TOKEN here: codex reads by executing shell, and hermes's `file`
+# tool reads arbitrary paths — either can open /proc/<pid>/environ and lift the
+# token. Running them safely needs the tokenless split (findings -> artifact, a
+# separate step posts), which does not exist yet. Until then they run only from
+# the manual bench (review-agent.yml), where a human opts in with that caveat.
 name: advisory-review-agent
 
 on:
@@ -23,13 +21,6 @@ on:
         description: Login of your bot account — its PRs are never reviewed. Required.
         type: string
         required: true
-      backend:
-        description: >-
-          Agent backend: claude (default, trusted) or hermes (experimental).
-          codex is rejected on this auto path — use the manual bench.
-        type: string
-        required: false
-        default: claude
       reviewer_repo:
         description: Repo holding the reviewer (change this if you forked).
         type: string
@@ -41,21 +32,15 @@ on:
         required: false
         default: main
       model:
-        description: >-
-          Model for the session. Empty -> the backend default (claude-opus-5, or
-          hermes's default). For hermes pass an OpenRouter id, e.g.
-          deepseek/deepseek-chat. (No effort input — agent sessions are budgeted
-          by turns and walltime, not the completer's effort knob.)
+        description: Model for the reviewer session. (No effort input — agent
+          sessions are budgeted by turns and walltime, not the completer's
+          effort knob.)
         type: string
         required: false
-        default: ''
+        default: claude-opus-5
     secrets:
       anthropic_reviewer_key:
-        description: Required for the claude backend.
-        required: false
-      openrouter_api_key:
-        description: Required for the hermes backend (OpenRouter-metered).
-        required: false
+        required: true
       checkout_ssh_key:
         description: >-
           Read-only deploy key for the reviewer repo. Needed while that repo is
@@ -87,19 +72,11 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      BACKEND: ${{ inputs.backend }}
     steps:
-      # Reject executing backends on the auto path early and loudly, but never
-      # red the caller's CI (advisory). Only claude/hermes proceed.
-      - name: Guard the backend
-        if: inputs.backend != 'claude' && inputs.backend != 'hermes'
-        run: |
-          echo "::warning::backend '${BACKEND}' is not allowed on the auto path (executing backends can read the step token via /proc); use the manual bench (review-agent.yml) or the cluster. Skipping."
       # Checks out the reviewer, never the pull request's code for execution. An
       # empty ssh-key is ignored by actions/checkout (token auth is enough for a
       # public or same-repo reviewer); a private reviewer repo needs the key.
       - name: Check out the reviewer
-        if: inputs.backend == 'claude' || inputs.backend == 'hermes'
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.reviewer_repo }}
@@ -108,51 +85,34 @@ jobs:
           path: .autoresearch
           persist-credentials: false
       - name: Check out the PR head (read-only; never executed)
-        if: inputs.backend == 'claude' || inputs.backend == 'hermes'
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ env.PR_NUMBER }}/head
           path: pr-head
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
-        if: inputs.backend == 'claude' || inputs.backend == 'hermes'
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Each backend ships as a pinned artifact (claude installer / hermes
-      # release tag), landing on PATH or a clone dir the harness reads.
-      - name: Install the ${{ inputs.backend }} backend
-        if: inputs.backend == 'claude' || inputs.backend == 'hermes'
-        env:
-          HERMES_REF: v2026.8.13
+      # Native binary, pinned to the version validated on cluster0 — bump
+      # deliberately. It lands on PATH, which the harness passes to the scrubbed
+      # session env.
+      - name: Install the Claude CLI
         run: |
           set -euo pipefail
-          case "$BACKEND" in
-            hermes)
-              git clone --depth 1 --branch "$HERMES_REF" \
-                https://github.com/NousResearch/hermes-agent \
-                "$GITHUB_WORKSPACE/hermes-agent"
-              ;;
-            *)
-              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
-              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-              ;;
-          esac
+          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run the agent review
-        if: inputs.backend == 'claude' || inputs.backend == 'hermes'
         working-directory: .autoresearch
         env:
           # PR_NUMBER and PR_REPO are read from the job env / github context.
-          REVIEW_BACKEND: ${{ inputs.backend }}
-          REVIEW_MODEL: ${{ inputs.model }}
+          # REVIEW_BACKEND defaults to claude in the CLI; this path never sets it
+          # to codex/hermes (see the header — /proc token reach).
           ANTHROPIC_REVIEWER_KEY: ${{ secrets.anthropic_reviewer_key }}
-          OPENROUTER_API_KEY: ${{ secrets.openrouter_api_key }}
-          # hermes reads its pinned clone from here; provider seeds ~/.hermes.
-          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
-          REVIEW_HERMES_PROVIDER: openrouter
           # The caller's own workflow token — the bot PAT is never used here.
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
         run: uv run --extra review python -m autoresearch.review_agent_cli

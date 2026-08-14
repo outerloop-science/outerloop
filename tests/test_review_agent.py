@@ -223,9 +223,10 @@ def test_build_reviewer_harness_codex_sandbox_extra_passthrough() -> None:
 
     # The deployment (workflow) opts into the Landlock sandbox on GitHub-hosted;
     # the builder threads it verbatim to codex's argv.
-    h = build_reviewer_harness("k", backend="codex", sandbox_extra=("-c", "use_legacy_landlock=true"))
+    extra = ("-c", "use_legacy_landlock=true")
+    h = build_reviewer_harness("k", backend="codex", sandbox_extra=extra)
     assert isinstance(h, CodexHarness)
-    assert h.extra_args == ("-c", "use_legacy_landlock=true")
+    assert h.extra_args == extra
 
 
 def test_build_reviewer_harness_hermes_backend(tmp_path: Path) -> None:

@@ -16,9 +16,11 @@ Versions follow [SemVer](https://semver.org).
   (trusted); codex an OS sandbox (on GitHub-hosted, the Landlock sandbox via
   `REVIEW_CODEX_LEGACY_LANDLOCK`, since the default bwrap cannot init there);
   hermes an environmental boundary only (no shell, inert writes on an ephemeral
-  runner) — experimental. The auto path (`advisory-review-agent.yml`) allows
-  claude (default) and hermes; codex is rejected there and runs from the manual
-  bench (`review-agent.yml`) or the cluster.
+  runner) — experimental. The auto path (`advisory-review-agent.yml`) is
+  **claude only**: both codex (shell) and hermes (its `file` tool reads
+  arbitrary paths, incl. `/proc/<pid>/environ`) can reach the step's
+  `GITHUB_TOKEN`, so they run only from the manual bench (`review-agent.yml`) or
+  the cluster until the tokenless split exists.
 
 ### Changed
 

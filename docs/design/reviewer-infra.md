@@ -215,56 +215,57 @@ completer path is retained until the lab repos migrate, then removed.
 Gating is unchanged by the swap: reviews stay advisory, blocking findings
 gate per roles.md, and humans hold merge authority.
 
-## Which backend can judge, and where (observed 2026-08-13 — version-specific, re-verify)
+## Which backend can judge, and where (observed 2026-08-13/14 — version-specific, re-verify)
 
-The rule that survives version bumps: **a judge must read the tree without
-executing arbitrary code while secrets are reachable.** Two ways to meet it —
-native reads, or execution inside a real jail. The per-backend facts below are
-EMPIRICAL and dated; treat them as observations to re-test, not fixed truths.
+The rule I first wrote here was wrong, and a judge caught it (gpt-5.6-terra,
+reviewing the hermes PR, 2026-08-14). The old axis was "read without EXECUTING
+while secrets are reachable." The correct axis is broader:
 
-- **Claude Code (2.1.229):** native reads (Read/Grep/Glob), write droppable →
-  read-only with no execution. Judges on any runner, including GitHub-hosted.
-  The trusted default.
-- **hermes-agent (0.20.1):** native reads too (`file` toolset, `terminal`
-  disabled) → no execution, so a GitHub-hosted run is low-harm (its bundled
-  `write_file` is inert in an ephemeral container: no push, no committed
-  output, scrubbed env). But it has no mechanical read-only boundary — `file`
-  bundles write with read, and `approvals.deny` gates shell commands, not the
-  write tool. So: safe to EXPERIMENT with as a judge on GitHub-hosted, not
-  TRUSTED until an upstream read/write toolset split or an OS read-only
-  bind-mount.
-- **codex-cli (0.130.0):** reads by executing shell, so it needs a jail. Settled
-  empirically on GitHub-hosted (probe, 2026-08-13): the default `--sandbox
-  read-only` (bundled bubblewrap) FAILS to init — it dies at the network-namespace
-  (loopback) step, `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`,
-  not the filesystem step. But `-c use_legacy_landlock=true` DOES init a working
-  read-only sandbox: writes are blocked (Landlock filesystem) AND network egress is
-  blocked (`curl` exits 6 / `HTTP_000`). So the classic shell exfil — "`curl` the
-  secret out" — is closed on GitHub-hosted. Two residual gaps keep it out of
-  TRUSTED: (1) Landlock is filesystem-scoped, not process isolation, so the session
-  still reads a parent's env via `/proc/<ppid>/environ` — the probe surfaced a
-  planted `CANARY_TOKEN` — so a prompt-injected judge could read a token the
-  spawning CLI holds and emit it in its findings, which the kernel then posts (an
-  exfil channel that needs no network); (2) codex itself warns
-  `use_legacy_landlock is deprecated and will be removed soon`, so this exact
-  config is short-lived. Net: codex judging on GitHub-hosted is FEASIBLE today via
-  Landlock, but on a deprecated flag and with a `/proc` read gap; codex judging on
-  the cluster (apptainer, full bwrap) stays the proven, durable path.
+> **A judge must not be able to OPEN AN ARBITRARY PATH while a secret is
+> reachable in its process tree.** `/proc/<pid>/environ` is a regular file; any
+> tool that opens files by path can read a parent's environment — no shell
+> required. So a file-READ tool is a credential-exfil primitive just like a
+> shell is.
 
-**The durable invariant** (an OS fact, not a tool version): run an executing
-session unsandboxed only inside a STRONG external jail (read-only bind-mount +
-no egress). A weak jail is not enough — the env scrub protects the session's
-OWN env, but a same-uid executing child can read the parent CLI's
-`GITHUB_TOKEN` via `/proc/<ppid>/environ`. The probe above sharpens this: even
-codex's Landlock jail — which blocks both writes AND network egress — does NOT
-close the `/proc` read, because Landlock is a filesystem LSM, not process
-isolation. So "no writes + no egress" is not "no secret access": a jailed
-executing judge can still read a reachable token and route it out through the
-one channel the jail can't close, its own findings output. The clean fixes are
-to keep no exploitable token in the spawning process's env, or to use a
-non-executing backend (Claude, Hermes-file), which cannot read `/proc` at all —
-which is why they are safe on any runner.
+That reframes every backend. The env scrub protects the session's OWN env, but
+NOT the parent CLI's env, which `/proc/<parent-pid>/environ` exposes to any
+path-opening tool.
 
-Re-test on version bumps: a codex sandbox backend that inits on GitHub-hosted,
-a hermes read-only toolset, or a GitHub runner that grants namespaces would each
-rewrite this section.
+- **codex-cli (0.130.0):** reads by executing shell → reaches `/proc`. Probe
+  (2026-08-13, GitHub-hosted): default bwrap FAILS to init (network-namespace/
+  loopback step, `RTM_NEWADDR`); `-c use_legacy_landlock=true` DOES init and
+  blocks writes AND network egress — but Landlock is a filesystem LSM, not
+  process isolation, so `/proc/<ppid>/environ` stays readable (probe lifted a
+  planted `CANARY_TOKEN`) and the token routes out via the findings the kernel
+  posts. Also deprecated ("`use_legacy_landlock` will be removed soon").
+- **hermes-agent (0.20.1):** `file` toolset READS ARBITRARY PATHS. Even with
+  `terminal` disabled it can open `/proc/<ppid>/environ` and lift the token —
+  the same reach as codex, via a file read (finding, 2026-08-14). Its *writes*
+  are inert on an ephemeral runner, but that bounds the wrong thing; the token
+  read is what matters. Not token-safe.
+- **Claude Code (2.1.229):** the strongest boundary — a native read-only tool
+  set (Read/Grep/Glob, no Write/Edit/Bash), so no writes and no shell. Still the
+  trusted default. But note the open question the new axis raises: can `Read`
+  open `/proc/self/status` → PPid → `/proc/<ppid>/environ`? UNVERIFIED. If it
+  can, even Claude leaks a token that is reachable in its process tree, and
+  "reading isn't running" does not save it. TODO: verify; until then do not
+  assume Claude is `/proc`-safe, only that it is write/exec-safe.
+
+**The durable invariant** (an OS fact): the only robust defense is that **no
+exploitable token lives in the judge's process tree** — the tokenless split
+(judge runs with no `GITHUB_TOKEN`, writes findings to an artifact, a separate
+minimal step posts). Failing that, an OS jail that hides `/proc` (a PID
+namespace / `hidepid`), which the GitHub-hosted runners do not give us. Env
+scrub, read-only tool sets, and no-egress sandboxes each close a different hole
+but NONE closes the `/proc` read while the token sits in a parent process.
+
+Consequence for deployment: the **auto path is claude-only** (write/exec-safe,
+and `/proc` risk pending verification + the split). codex and hermes run only
+from the manual bench (informed `/proc` caveat) or the cluster. The tokenless
+split is the prerequisite before ANY backend — Claude included — is trusted next
+to a live token on the auto path, and it is the same infrastructure the fork-PR
+public phase needs.
+
+Re-test on version bumps: whether Claude's `Read` opens `/proc`, a hermes
+read-only toolset, a codex sandbox that hides `/proc`, or a runner that grants
+PID namespaces would each rewrite this section.
