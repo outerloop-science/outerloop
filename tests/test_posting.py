@@ -100,3 +100,57 @@ def test_skip_stub_carries_its_own_marker_and_reason() -> None:
     (stub,) = [c["body"] for c in client.posted]
     assert stub.lstrip().startswith(posting.SKIP_MARKER)
     assert "could not run" in stub and "credit balance" in stub
+
+
+def test_post_round_posts_one_numbered_stamped_comment() -> None:
+    client = _FakeClient()
+    label = posting.post_round(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        f"{_MARKER}\nfindings",
+        {"head": {"sha": "abcd1234ef"}},
+    )
+    assert label == "**Round 1**"
+    (posted,) = client.posted
+    assert posted["body"].lstrip().startswith(_MARKER)
+    assert "reviewed head `abcd1234`" in posted["body"]  # 8-char stamp
+
+
+def test_post_round_review_posts_inline_on_success() -> None:
+    client = _FakeClient()
+    label = posting.post_round_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        f"{_MARKER}\nsummary",
+        [{"path": "x.py", "line": 1, "body": "note"}],
+        {"head": {"sha": "abcd"}},
+        fallback_body=f"{_MARKER}\nfull findings",
+    )
+    assert label == "**Round 1**"
+    (posted,) = client.posted
+    assert posted["kind"] == "review" and posted["inline"]
+
+
+def test_post_round_review_falls_back_to_a_comment_carrying_full_findings() -> None:
+    class _NoInline(_FakeClient):
+        def create_pr_review(self, repo: str, number: int, body: str, comments: Any = None) -> None:
+            raise GitHubError(422, "/repos/org/repo", "unprocessable")
+
+    client = _NoInline()
+    label = posting.post_round_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        f"{_MARKER}\nsummary only",
+        [{"path": "x.py", "line": 1}],
+        {"head": {"sha": "abcd"}},
+        fallback_body=f"{_MARKER}\nFULL findings in the fallback",
+    )
+    assert label == "**Round 1**"
+    (posted,) = client.posted  # the failed inline review fell back to an issue comment
+    assert posted["kind"] == "comment" and "FULL findings in the fallback" in posted["body"]

@@ -32,9 +32,9 @@ from autoresearch.verifier import (
     VERIFY_MARKER,
     build_verify_agent_brief,
     format_verify_comment,
+    gather_thread,
     verify_skip_reason,
 )
-from autoresearch.verifier_cli import gather_thread
 
 log = logging.getLogger(__name__)
 

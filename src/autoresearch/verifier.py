@@ -25,6 +25,7 @@ import json
 import logging
 from typing import Any
 
+from autoresearch.github import GitHubClient
 from autoresearch.review import (
     CONFIDENCES,
     MAX_DETAIL_CHARS,
@@ -63,6 +64,63 @@ MAX_CLAIM_CHARS = 30_000
 # carried them) — most recent comments, bounded.
 MAX_THREAD_COMMENTS = 12
 MAX_THREAD_COMMENT_CHARS = 4_000
+
+# The verifier's own rounds post via the Actions workflow token — this
+# identity, which no ordinary account can assume. Marker text alone is
+# forgeable (it appears verbatim in every posted round); identity is not.
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+
+
+def _standing(comment: dict, bot_login: str) -> bool:
+    """Only voices with standing reach the verifier: maintainers by
+    association, the accused agent's own replies, and prior verifier
+    rounds identified by POSTING IDENTITY plus marker (marker alone can be
+    forged by any commenter on a public repo)."""
+    # QUALIFYING_ASSOCIATIONS lives in followup, which imports VERIFY_MARKER from
+    # this module; a function-level import avoids the module-level import cycle.
+    from autoresearch.followup import QUALIFYING_ASSOCIATIONS
+
+    body = str(comment.get("body") or "")
+    if not body.strip():
+        return False
+    login = str((comment.get("user") or {}).get("login", ""))
+    if str(comment.get("author_association", "")) in QUALIFYING_ASSOCIATIONS:
+        return True
+    if login.casefold() == bot_login.casefold():
+        return True
+    return login.casefold() == ACTIONS_BOT_LOGIN.casefold() and body.lstrip().startswith(
+        VERIFY_MARKER
+    )
+
+
+def gather_thread(
+    client: GitHubClient, repo: str, number: int, bot_login: str
+) -> tuple[tuple[str, str], ...]:
+    """The gated discussion, from ALL THREE places maintainers write —
+    issue comments, review bodies, inline review comments (the follow-up
+    lane learned this the hard way: independent collections, and feedback
+    lands in any of them)."""
+    sources = (
+        client.list_comments(repo, number),
+        client.list_pr_reviews(repo, number),
+        client.list_pr_review_comments(repo, number),
+    )
+    # Chronological across ALL sources: the prompt keeps the most recent
+    # tail, and a per-source concatenation would let a long inline-review
+    # thread silently evict the issue comments (rebuttals, prior rounds).
+    gated = [
+        (
+            str(c.get("submitted_at") or c.get("created_at") or ""),
+            str((c.get("user") or {}).get("login", "")),
+            str(c.get("body") or ""),
+        )
+        for comments in sources
+        for c in comments
+        if _standing(c, bot_login)
+    ]
+    gated.sort(key=lambda item: item[0])  # ISO-8601 sorts lexicographically
+    return tuple((author, body) for _, author, body in gated)
+
 
 CATEGORIES = (
     "harness-exploitation",
