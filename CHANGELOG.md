@@ -25,6 +25,14 @@ Versions follow [SemVer](https://semver.org).
   wakes scanning bot PRs, advisory rounds never fed a wake. Verifier rounds
   still do.
 
+### Changed
+
+- The author session now runs on the role-runner, like the judges:
+  `author_spec` (roles.py) is the manifest, `climb_once` dispatches through
+  `run_role`, and the climb CLI builds its harness from the spec
+  (`build_author_harness`), so the session budget has one source. Behavior
+  unchanged; steward and follow-up dispatch are the remaining collapses.
+
 ### Added
 
 - The reviewer can now run on three backends, selected by `REVIEW_BACKEND`

@@ -47,6 +47,8 @@ from autoresearch.progress import (
     update_leader,
     write_progress,
 )
+from autoresearch.roles import author_spec
+from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
     ABORTED,
     BUDGET_EXHAUSTED,
@@ -158,6 +160,33 @@ def _measure_committed(
             _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
 
 
+def build_author_harness(
+    api_key: str,
+    spec: RoleSpec | None = None,
+    *,
+    binary: str | None = None,
+    model: str | None = None,
+    container_image: str = "",
+) -> ClaudeCodeHarness:
+    """Construct the author's harness from its RoleSpec — the same deployment
+    wiring the judges use (`spec.budget` drives turns and walltime, so
+    manifest and harness cannot disagree). Claude only: the author runs
+    contained (apptainer) with the full editing tool set, and KEEPS
+    instruction-file discovery — the target repo's CLAUDE.md is legitimate
+    guidance for an editing role, unlike a judge's untrusted checkout."""
+    spec = spec or author_spec()
+    if not spec.execution.can_execute:
+        raise ValueError("build_author_harness is for editing roles")
+    return ClaudeCodeHarness(
+        api_key=api_key,
+        binary=binary or "claude",
+        model=model or "claude-opus-5",
+        max_turns=spec.budget.max_turns,
+        timeout_s=spec.budget.walltime_s,
+        container_image=container_image,
+    )
+
+
 def live_climb(
     config: ClimbConfig,
     run_root: Path,
@@ -172,6 +201,7 @@ def live_climb(
     base_branch: str = "main",
     issue_number: int = 0,
     task_hypothesis: str = "",
+    spec: RoleSpec | None = None,
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo."""
     run_dir = run_root / "runs" / run_id
@@ -272,6 +302,7 @@ def live_climb(
                 created=created,
                 task_hypothesis=task_hypothesis,
                 baseline_workspace=baseline_wt,
+                spec=spec,
             )
         finally:
             if not _best_effort(
@@ -817,20 +848,22 @@ def main() -> int:
     if armed:
         log.info("self-deadline armed: Terminated in %ds", armed)
 
+    # the manifest first, the harness from it: budget has one source (the args)
+    spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
     try:
         try:
             outcome = live_climb(
                 config=ClimbConfig(target=args.target, benchmark=args.benchmark),
                 run_root=args.run_root,
                 run_id=run_id,
-                harness=ClaudeCodeHarness(
-                    api_key=api_key,
+                harness=build_author_harness(
+                    api_key,
+                    spec,
                     binary=args.claude_bin,
                     model=args.model,
-                    max_turns=args.max_turns,
-                    timeout_s=args.session_minutes * 60,
                     container_image=args.image,
                 ),
+                spec=spec,
                 evaluator=SubprocessEvaluator(container_image=args.image),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,

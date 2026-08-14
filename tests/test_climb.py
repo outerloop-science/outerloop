@@ -1200,3 +1200,18 @@ def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, original)
+
+
+def test_author_harness_is_built_from_the_spec() -> None:
+    """The spec is the single source for the session budget: manifest and
+    harness cannot disagree (the judges' build_reviewer_harness pattern)."""
+    from autoresearch.climb import build_author_harness
+    from autoresearch.roles import author_spec, reviewer_spec
+
+    spec = author_spec(max_turns=7, walltime_s=120)
+    harness = build_author_harness("sk-key", spec, container_image="img.sif")
+    assert harness.max_turns == 7
+    assert harness.timeout_s == 120
+    assert harness.container_image == "img.sif"
+    with pytest.raises(ValueError, match="editing roles"):
+        build_author_harness("sk-key", reviewer_spec())

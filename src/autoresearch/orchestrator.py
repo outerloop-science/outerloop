@@ -20,6 +20,7 @@ import math
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from pathlib import Path
 from secrets import randbits
 from typing import Protocol
@@ -33,6 +34,9 @@ from autoresearch.contract import (
     path_is_forbidden,
 )
 from autoresearch.harness import Harness, SessionResult, budget_exhausted, outage, redact
+from autoresearch.role_runner import run_role
+from autoresearch.roles import author_spec
+from autoresearch.rolespec import RoleSpec
 
 log = logging.getLogger(__name__)
 
@@ -541,6 +545,7 @@ def climb_once(
     created: str = "",
     task_hypothesis: str = "",
     baseline_workspace: Path | None = None,
+    spec: RoleSpec | None = None,
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -549,9 +554,20 @@ def climb_once(
     `changed_paths` reports every path the session touched (the caller wires
     it to `git add -A` + staged paths); scope is enforced on it BEFORE the
     candidate eval runs.
+
+    The session runs as the author role on the role-runner (`spec` defaults
+    to `author_spec`; the caller that built the harness passes its spec so
+    manifest and harness agree). Scope enforcement stays HERE, on the
+    contract — the spec's scope is the manifest copy, filled from the same
+    contract.
     """
     contract = load_contract(contract_text, config.target)
     bench = _benchmark(contract, config.benchmark)
+    spec = spec or author_spec()
+    if not spec.execution.can_execute:
+        raise ValueError("climb_once runs an editing role; the spec must allow execution")
+    if not spec.scope:
+        spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
 
     # Baseline from the PRE-session tree — never from a stored number
     # (architecture: "baseline re-run at the merge-base, not a trusted
@@ -581,7 +597,8 @@ def climb_once(
         ),
         created=created,
     )
-    session = harness.run(render(brief), workspace)
+    role_result = run_role(spec, harness, render(brief), workspace)
+    session = role_result.session
     if session.is_error:
         # our caps running out is a budget ending, not a malfunction; the
         # API refusing us is an outage — neither is the run's own failure

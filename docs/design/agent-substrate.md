@@ -193,9 +193,10 @@ is the rare exception).
 ## The role-runner: one loop replaces five drivers
 
 Replaces the five per-role drivers — done for the judges (`review_cli` and
-`verifier_cli` are deleted); `climb`, `steward`, `followup` still to collapse.
-Kernel code; it calls into the agentic realm at step 2, and everything
-trust-critical is deterministic.
+`verifier_cli` are deleted) and the author's session dispatch (`climb_once`
+runs `author_spec` through `run_role`); `steward` and `followup` dispatch
+still to collapse. Kernel code; it calls into the agentic realm at step 2,
+and everything trust-critical is deterministic.
 
 1. **prep** — build the workspace (editable for author, read-only for judge);
    `brief.build(RoleSpec, task, memory)`; pick the backend adapter.
