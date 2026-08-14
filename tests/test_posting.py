@@ -154,3 +154,21 @@ def test_post_round_review_falls_back_to_a_comment_carrying_full_findings() -> N
     assert label == "**Round 1**"
     (posted,) = client.posted  # the failed inline review fell back to an issue comment
     assert posted["kind"] == "comment" and "FULL findings in the fallback" in posted["body"]
+
+
+def test_skip_stub_redacts_the_provided_key_any_provider() -> None:
+    # backend-agnostic: whatever key the caller passes (Anthropic on the
+    # completer path, the harness's own key on the agent path) is scrubbed
+    # before the error text — which can echo request material — is posted.
+    client = _FakeClient()
+    posting.post_skip_stub(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        "advisory review",
+        ValueError("401 Unauthorized: key sk-or-LEAK9 rejected"),
+        secrets=("sk-or-LEAK9",),
+    )
+    (stub,) = [c["body"] for c in client.posted]
+    assert "sk-or-LEAK9" not in stub
+    assert "[redacted]" in stub

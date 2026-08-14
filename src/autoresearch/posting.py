@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 
 from autoresearch.github import GitHubClient, GitHubError
 from autoresearch.harness import redact
@@ -102,24 +101,28 @@ def post_round_review(
 SKIP_MARKER = "<!-- autoresearch:round-skipped -->"
 
 
-def post_skip_stub(client: GitHubClient, repo: str, number: int, role: str, exc: Exception) -> None:
+def post_skip_stub(
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    role: str,
+    exc: Exception,
+    secrets: tuple[str, ...] = (),
+) -> None:
     """Silence is invisible: when the model API refuses a round (dead
     credits, spend cap, auth), say so on the thread instead of leaving a
     gap only the Actions tab can see. A DIFFERENT marker than a real
     round, deliberately — a stub never counts toward round numbering and
     never rides as follow-up wake context (both match on their own
-    markers)."""
-    # the reviewer/verifier keys are the only secrets this process holds;
-    # auth errors are exactly the class that can echo request material
-    secrets = tuple(
-        v
-        for v in (
-            os.environ.get("ANTHROPIC_REVIEWER_KEY", ""),
-            os.environ.get("ANTHROPIC_VERIFIER_KEY", ""),
-        )
-        if v
-    )
-    note = redact(str(exc), secrets)[:200]
+    markers).
+
+    `secrets` are the model API key(s) the caller holds — an auth error is
+    exactly the class that can echo request material, so we scrub them from the
+    posted text. The caller supplies them (the harness's own key on the agent
+    path, the completer's key on the completer path) so posting stays
+    backend-agnostic — the key env var is provider-specific, this module is not.
+    """
+    note = redact(str(exc), tuple(s for s in secrets if s))[:200]
     try:
         client.comment(
             repo,

@@ -100,8 +100,10 @@ def main() -> int:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
         return 0
     # An unset secret arrives as an empty string; skip cleanly instead of
-    # crashing inside the API client.
-    if not os.environ.get("ANTHROPIC_REVIEWER_KEY", "").strip():
+    # crashing inside the API client. The completer is Anthropic by construction
+    # (the multi-backend path is the agent reviewer); read its key once.
+    reviewer_key = os.environ.get("ANTHROPIC_REVIEWER_KEY", "").strip()
+    if not reviewer_key:
         log.warning("ANTHROPIC_REVIEWER_KEY is unset or empty; skipping review")
         return 0
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
@@ -123,7 +125,7 @@ def main() -> int:
             ),
         )
         completer = AnthropicCompleter(
-            api_key=os.environ["ANTHROPIC_REVIEWER_KEY"],
+            api_key=reviewer_key,
             model=os.environ.get("REVIEW_MODEL") or "claude-opus-5",
             effort=os.environ.get("REVIEW_EFFORT") or "high",
         )
@@ -161,7 +163,7 @@ def main() -> int:
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("advisory review did not complete: %s: %s", type(exc).__name__, exc)
         if isinstance(exc, CompleterError):
-            post_skip_stub(client, repo, number, "advisory review", exc)
+            post_skip_stub(client, repo, number, "advisory review", exc, secrets=(reviewer_key,))
     return 0
 
 

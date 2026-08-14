@@ -103,7 +103,10 @@ def main() -> int:
     if not bot_login:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
         return 0
-    if not os.environ.get("ANTHROPIC_VERIFIER_KEY", "").strip():
+    # The completer is Anthropic by construction (the multi-backend path is the
+    # agent verifier); read its key once and reuse it below.
+    verifier_key = os.environ.get("ANTHROPIC_VERIFIER_KEY", "").strip()
+    if not verifier_key:
         log.warning("ANTHROPIC_VERIFIER_KEY is unset or empty; skipping verification")
         return 0
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
@@ -149,7 +152,7 @@ def main() -> int:
                 log.warning("verifying without the discussion thread: %s", exc)
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         completer = AnthropicCompleter(
-            api_key=os.environ["ANTHROPIC_VERIFIER_KEY"],
+            api_key=verifier_key,
             model=os.environ.get("VERIFY_MODEL") or "claude-opus-5",
             effort=os.environ.get("VERIFY_EFFORT") or "high",
         )
@@ -165,7 +168,7 @@ def main() -> int:
     except EXPECTED_FAILURES as exc:  # advisory role: never fail the target's CI
         log.warning("verification did not complete: %s: %s", type(exc).__name__, exc)
         if isinstance(exc, CompleterError):
-            post_skip_stub(client, repo, number, "verification", exc)
+            post_skip_stub(client, repo, number, "verification", exc, secrets=(verifier_key,))
     return 0
 
 
