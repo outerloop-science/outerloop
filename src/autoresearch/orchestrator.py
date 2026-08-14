@@ -599,9 +599,12 @@ def climb_once(
     )
     role_result = run_role(spec, harness, render(brief), workspace)
     session = role_result.session
-    if session.is_error:
-        # our caps running out is a budget ending, not a malfunction; the
-        # API refusing us is an outage — neither is the run's own failure
+    if not role_result.ok:
+        # the role-runner's verdict, not just the raw session flag (for a
+        # schema-less role they coincide today, but any failure the runner
+        # learns to report must not slip through as a clean run).
+        # Our caps running out is a budget ending, not a malfunction; the
+        # API refusing us is an outage — neither is the run's own failure.
         if outage(session):
             kind = "session-outage"
         elif budget_exhausted(session):
@@ -612,7 +615,7 @@ def climb_once(
             outcome=kind,
             baseline=baseline,
             session=session,
-            note=session.error_detail or session.stop_reason,
+            note=role_result.error or session.error_detail or session.stop_reason,
         )
 
     # Scope BEFORE measurement: an out-of-scope tree is never evaluated,

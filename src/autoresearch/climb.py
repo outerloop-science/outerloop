@@ -183,6 +183,9 @@ def build_author_harness(
         model=model or "claude-opus-5",
         max_turns=spec.budget.max_turns,
         timeout_s=spec.budget.walltime_s,
+        # the manifest drives the tool set, same as the budget (all author
+        # tools are native Claude tools; no MCP tools to filter out)
+        allowed_tools=spec.tools,
         container_image=container_image,
     )
 
