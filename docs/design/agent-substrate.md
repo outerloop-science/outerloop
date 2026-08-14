@@ -168,9 +168,8 @@ reviewer on a GH runner is where we first prove an alternate backend (Codex) —
 a judge that never executes is the safe place to swap; the author runs in
 apptainer on Torch. Hermes's Singularity backend maps onto apptainer directly.
 
-**One seam.** The old one-shot `Completer` becomes a degenerate RoleSpec — no
-tools, no edit, `output_schema` set — a one-turn session on the same adapter.
-Cheap fast-pass, no second seam.
+**One seam.** The one-shot `Completer` is deleted outright — every role,
+judges included, is an agent session on the same adapter. No second seam.
 
 ## RoleSpec: the app manifest
 
@@ -193,9 +192,10 @@ is the rare exception).
 
 ## The role-runner: one loop replaces five drivers
 
-Replaces `climb`, `steward`, `followup`, `review_cli`, `verifier_cli`. Kernel
-code; it calls into the agentic realm at step 2, and everything trust-critical is
-deterministic.
+Replaces the five per-role drivers — done for the judges (`review_cli` and
+`verifier_cli` are deleted); `climb`, `steward`, `followup` still to collapse.
+Kernel code; it calls into the agentic realm at step 2, and everything
+trust-critical is deterministic.
 
 1. **prep** — build the workspace (editable for author, read-only for judge);
    `brief.build(RoleSpec, task, memory)`; pick the backend adapter.

@@ -120,9 +120,9 @@ scope, key), and their spend counts against its budget.
 
 | Now | Fate |
 | --- | --- |
-| `climb`, `steward`, `followup`, `review_cli`, `verifier_cli` | Five copies of "prep → run a role → act on the result." Collapse into **one role-runner + a RoleSpec + a result-policy** each. The measure/gate/PR halves stay kernel; the brief/skills halves become app config. |
-| `review`, `verifier` (rendering, verdict/blocking machinery) | Move onto the agent-session path; shared finding-rendering becomes a skill. |
-| `harness`, `llm`, `brief` | The seam. Keep. Add adapters. |
+| `climb`, `steward`, `followup` | Remaining copies of "prep → run a role → act on the result." Collapse into **one role-runner + a RoleSpec + a result-policy** each — done for the judges (`review_cli`/`verifier_cli` are deleted; reviewer and verifier run on the role-runner). The measure/gate/PR halves stay kernel; the brief/skills halves become app config. |
+| `review`, `verifier` (rendering, verdict/blocking machinery) | On the agent-session path; hold the shared vocabulary and rendering both judges use. |
+| `harness`, `brief` | The seam. Keep. Adapters live: claude, codex, hermes. |
 | `orchestrator`, `contract`, `github`, `compute`, `runstate`, `disk`, `limits`, `intake` | Kernel. Barely moves — the point. |
 | `tick` | Kernel, but bloated from the same accretion. Its own diet, later. |
 

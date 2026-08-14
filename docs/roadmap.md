@@ -146,12 +146,12 @@ open-ended sweep space.
 
 ## Phase 7 — Research targets & scale-out
 
-- [x] Verification agent CODE (scaling.md Part 2d): verifier on the review
-      chassis — bot-PRs only, gaming prompt with contract + ruler source in
-      context, own capped key, silence-is-not-endorsement header; label
-      routes by author. DEPLOY still pending: pilot caller workflow +
-      `ANTHROPIC_VERIFIER_KEY` org secret (maintainer) — required before any
-      statistically-verifiable target onboards
+- [x] Verification agent (scaling.md Part 2d): verifier on the review
+      chassis — bot-PRs only, gaming prompt, contract fenced in and ruler read
+      from the base checkout, own capped key, silence-is-not-endorsement
+      header; label routes by author. Deployed on yolo-jepa (first target:
+      `verify.yml` caller + repo-level `ANTHROPIC_VERIFIER_KEY`); each new
+      target onboards by copying the caller and setting the key
 - [x] Benchmark steward CODE (maintainer direction 2026-08-08/09: the
       steward agent does env work, not hand edits): separate identity
       (`steward-01`, own key), territory = the contract's `steward.allowed`
