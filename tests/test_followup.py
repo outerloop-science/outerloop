@@ -689,9 +689,7 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
         "user": {"login": "GitHub-Actions[bot]"},  # case-insensitive identity
         "author_association": "NONE",
     }
-    github = FakeGitHub(
-        comments=[verifier_comment, member(103, "address the findings above")]
-    )
+    github = FakeGitHub(comments=[verifier_comment, member(103, "address the findings above")])
     harness = ResumingHarness()
     outcome = respond_once(
         root,
