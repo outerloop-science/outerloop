@@ -115,7 +115,10 @@ def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "")
 
 # Substrings that mean "the API itself is unavailable to us" — credit,
 # limit, auth, throttling. Matched only against error surfaces of an
-# is_error result (backend error text, never agent prose).
+# is_error result (backend error text, never agent prose). The first group is
+# Anthropic-shaped; the second matches the OpenAI-compatible / hermes+OpenRouter
+# 401 shapes, whose text differs (e.g. "HTTP 401: Missing Authentication
+# header", "No auth credentials found") so the Anthropic patterns miss them.
 OUTAGE_PATTERNS = (
     "credit balance",
     "usage limit",
@@ -125,6 +128,10 @@ OUTAGE_PATTERNS = (
     "invalid x-api-key",
     "rate_limit_error",
     "overloaded_error",
+    "401",
+    "missing authentication",
+    "no auth credentials",
+    "invalid api key",
 )
 
 

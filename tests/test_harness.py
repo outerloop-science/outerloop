@@ -217,6 +217,11 @@ def test_outage_classification_matches_api_refusals_only() -> None:
     assert outage(result(True, text="API Error (400): You have reached your usage limit."))
     assert outage(result(True, detail="authentication_error: invalid x-api-key"))
     assert outage(result(True, detail="rate_limit_error: Number of requests..."))
+    # hermes / OpenRouter 401 shapes (OpenAI-compatible, not Anthropic-shaped)
+    assert outage(result(True, detail="HTTP 401: Missing Authentication header"))
+    assert outage(
+        result(True, detail='{"error":{"message":"No auth credentials found","code":401}}')
+    )
     assert not outage(result(True, detail="error_max_turns: Reached maximum number of turns"))
     assert not outage(  # agent prose never consulted when backend detail exists
         result(
