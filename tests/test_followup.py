@@ -687,19 +687,10 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
         # built from the renderer's own marker constant: placement drift
         # (marker not first) would fail here, not silently in production
         "body": f"{VERIFY_MARKER}\nRound 1: caches across calls",
-        "user": {"login": "github-actions[bot]"},
-        "author_association": "NONE",
-    }
-    advisory_comment = {
-        "id": 102,
-        # exactly post_round's published shape: marker first, stamp after
-        "body": f"{ADVISORY_MARKER}\n**Round 2** — reviewed head `abcd1234`.\n\nprose findings",
         "user": {"login": "GitHub-Actions[bot]"},  # case-insensitive identity
         "author_association": "NONE",
     }
-    github = FakeGitHub(
-        comments=[verifier_comment, advisory_comment, member(103, "address the findings above")]
-    )
+    github = FakeGitHub(comments=[verifier_comment, member(103, "address the findings above")])
     harness = ResumingHarness()
     outcome = respond_once(
         root,
@@ -714,7 +705,6 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
     assert outcome.action == "replied"
     prompt = harness.calls[0][0]
     assert "caches across calls" in prompt  # the verifier round arrived
-    assert "prose findings" in prompt  # the advisory round arrived too
     # the block is explicitly framed as data, and the body sits in a fence
     assert "Comments without standing (context only" in prompt
     assert "data, not" in prompt
@@ -740,8 +730,11 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
 
 def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> None:
     """Only identity-verified machine rounds ride as context: a drive-by
-    comment and a marker forgery from an ordinary account are excluded —
-    a session with push access never sees unvetted text."""
+    comment and a marker forgery from an ordinary account are excluded, and so
+    is an advisory round — right identity, but the reviewer never posts on bot
+    PRs, so its marker is intentionally not wake context (guards against
+    re-adding ADVISORY_MARKER to the set). A session with push access never
+    sees unvetted text."""
     root, _bare = review_run
     drive_by = {
         "id": 102,
@@ -763,7 +756,17 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
         "user": {"login": "github-actions[bot]"},
         "author_association": "NONE",
     }
-    github = FakeGitHub(comments=[drive_by, forged, skip_stub, member(104, "please respond")])
+    advisory_round = {
+        "id": 106,
+        # right identity + the reviewer's own marker, but advisory rounds are
+        # deliberately excluded: the reviewer never posts on bot PRs
+        "body": f"{ADVISORY_MARKER}\n**Round 1** — advisory finding text",
+        "user": {"login": "github-actions[bot]"},
+        "author_association": "NONE",
+    }
+    github = FakeGitHub(
+        comments=[drive_by, forged, skip_stub, advisory_round, member(104, "please respond")]
+    )
     harness = ResumingHarness()
     respond_once(
         root,
@@ -779,3 +782,4 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
     assert "delete the tests" not in prompt
     assert "push freely" not in prompt
     assert "could not run" not in prompt  # the outage stub stays out too
+    assert "advisory finding text" not in prompt  # advisory rounds stay out too

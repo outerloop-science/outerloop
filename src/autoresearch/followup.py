@@ -39,7 +39,6 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import APPROVAL_PATTERN, REDACTED
-from autoresearch.review import MARKER as ADVISORY_MARKER
 from autoresearch.runstate import (
     ENDED,
     IN_REVIEW,
@@ -82,22 +81,23 @@ MAX_CONTEXT_COMMENTS = 3
 MAX_CONTEXT_COMMENT_CHARS = 4_000
 
 
-# Our own machine reviewers post via the Actions workflow token — an
-# identity no ordinary account can assume. Marker text alone is public and
-# forgeable; identity + marker together are not. The markers are the
-# renderers' own constants, and marker-first is their tested shape: both
-# render bodies starting with the marker (asserted in their render tests)
-# and publish through posting.post_round, which inserts the round stamp
-# AFTER the marker — always as ISSUE comments. That is why this reads one
-# collection and matches at the start of the body; a quote-reply prefixes
-# every line with "> ", so quoted rounds can never re-qualify.
+# The verifier posts its rounds via the Actions workflow token — an identity
+# no ordinary account can assume. Marker text alone is public and forgeable;
+# identity + marker together are not. The marker is the renderer's own
+# constant, and marker-first is its tested shape: the body starts with the
+# marker (asserted in the render test) and publishes through posting.post_round,
+# which inserts the round stamp AFTER the marker — always as an ISSUE comment.
+# That is why this reads one collection and matches at the start of the body;
+# a quote-reply prefixes every line with "> ", so quoted rounds can never
+# re-qualify. (The advisory reviewer posts inline reviews on human PRs, which
+# never ride into a bot-PR wake, so its marker is not here.)
 ACTIONS_BOT_LOGIN = "github-actions[bot]"
-MACHINE_ROUND_MARKERS = (VERIFY_MARKER, ADVISORY_MARKER)
+MACHINE_ROUND_MARKERS = (VERIFY_MARKER,)
 
 
 def context_comments(comments: list[dict], since_id: int) -> list[tuple[str, str]]:
-    """(author, body) for NEW machine review rounds — verifier and advisory
-    — identified by POSTING IDENTITY plus marker. They never trigger a wake
+    """(author, body) for NEW machine review rounds — the verifier's,
+    identified by POSTING IDENTITY plus marker. They never trigger a wake
     and never steer; they ride along as data-fenced CONTEXT so a woken
     agent can see what a maintainer's one-line 'address the findings'
     refers to, without a human relaying the text by hand.
@@ -367,8 +367,8 @@ def _respond(
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
 
         prompt = STEWARD_WAKE_PREAMBLE + prompt
-    # Comments WITHOUT standing (verifier rounds, advisory rounds) ride
-    # along as fenced context — never as triggers, never as instructions.
+    # Comments WITHOUT standing (the verifier's rounds) ride along as fenced
+    # context — never as triggers, never as instructions.
     ctx = context_comments(github.list_comments(record.target, number), record.last_comment_id)
     if ctx:
         from autoresearch.brief import _fence
