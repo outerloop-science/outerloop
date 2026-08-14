@@ -49,7 +49,6 @@ def verify(
     completer: ScriptedCompleter,
     bot_login: str,
     contract_text: str,
-    ruler_files: tuple[tuple[str, str], ...] = (),
     today: str | None = None,
     thread: tuple[tuple[str, str], ...] = (),
 ) -> ReviewResult:
@@ -61,7 +60,7 @@ def verify(
         return ReviewResult(findings=[], notes="", skipped=skip)
     raw = completer.complete(
         VERIFY_SYSTEM_PROMPT,
-        build_verify_prompt(pr, contract_text, ruler_files, today, thread),
+        build_verify_prompt(pr, contract_text, today, thread),
         VERIFY_SCHEMA,
     )
     return verify_result_from_data(json.loads(raw))
@@ -83,19 +82,15 @@ def test_opt_out_and_empty_diff_still_skip() -> None:
     assert verify_skip_reason(make_pr(diff="  \n"), BOT) is not None
 
 
-def test_prompt_carries_contract_ruler_claim_and_change() -> None:
+def test_prompt_carries_contract_claim_and_change() -> None:
     prompt = build_verify_prompt(
         make_pr(),
         contract_text="benchmarks:\n  - name: tsp\n",
-        ruler_files=(("src/pilot/eval.py", "def evaluate(): ..."),),
         today="2026-08-09",
     )
     assert "## The contract" in prompt and "name: tsp" in prompt
-    assert "## Ruler source" in prompt and "def evaluate" in prompt
     assert "## The claim" in prompt and "Research report" in prompt
     assert "## The change" in prompt and "+x=1" in prompt
-    # the ruler section states the agent cannot modify it
-    assert "cannot modify" in prompt
 
 
 def test_verify_tags_findings_with_category_and_sanitizes() -> None:

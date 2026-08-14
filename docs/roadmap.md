@@ -149,10 +149,9 @@ open-ended sweep space.
 - [x] Verification agent CODE (scaling.md Part 2d): verifier on the review
       chassis — bot-PRs only, gaming prompt with contract + ruler source in
       context, own capped key, silence-is-not-endorsement header; label
-      routes by author (the #48 interim advisory override is now opt-in for
-      verifier-less self-hosters). DEPLOY still pending: pilot caller
-      workflow + `VERIFIER_API_KEY` org secret (maintainer) — required
-      before any statistically-verifiable target onboards
+      routes by author. DEPLOY still pending: pilot caller workflow +
+      `ANTHROPIC_VERIFIER_KEY` org secret (maintainer) — required before any
+      statistically-verifiable target onboards
 - [x] Benchmark steward CODE (maintainer direction 2026-08-08/09: the
       steward agent does env work, not hand edits): separate identity
       (`steward-01`, own key), territory = the contract's `steward.allowed`
