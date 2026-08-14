@@ -5,7 +5,8 @@ a today-change. It records why the reviewer and the verifier — which share a
 "read-only agent judge" implementation — belong in opposite homes, and what that
 implies for their output, their identities, and how many of them we run. Pairs
 with `reviewer-infra.md` (the seams and the threat model), `roles.md` (RoleSpec
-and result-policy), and `architecture.md` (the kernel as a multi-agent OS).
+and result-policy), and `consolidation.md` (the kernel as a multi-agent OS and
+its syscalls).
 
 ## The thesis
 
@@ -85,9 +86,9 @@ the right trade, not a compromise.
 This dissolves the "the reviewer's sandbox is weaker than the author's" worry
 rather than requiring a substrate rebuild. The reviewer *should not* have the
 strong jail; the strong jail belongs to the verifier, which gets it by living in
-the orchestrator. (One backend caveat lives in `reviewer-infra.md`: on the auto
-reviewer path only Claude is trusted, because its `Read` tool refuses `/proc`
-while codex's shell and hermes's file-read do not.)
+the orchestrator. (One backend caveat: on the auto reviewer path only Claude is
+trusted, because its `Read` tool refuses `/proc` while codex's shell and hermes's
+file-read do not — see `reviewer-infra.md` for the per-backend threat model.)
 
 Consequence: target repos only ever host the *reviewer*. The verifier collapses
 into the orchestrator, so a repo the climber targets needs no verify workflow at
