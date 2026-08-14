@@ -162,6 +162,14 @@ open-ended sweep space.
       steward key + pilot contract `steward:` section + the four work-order
       issues (denoise v2 [PR #18 draft as spec], reach v3, probe v2,
       speedup noise floor)
+- [x] Suite no-regression gate (yolo-jepa lessons: both gamed climbs bought
+      their number by exploiting one benchmark's structure): the contract
+      declares `scope.shared` paths; a solver diff touching them has every
+      sibling benchmark re-measured on both sides (paired seed) and loses
+      credit if one regresses beyond its own floor — an honest negative,
+      not an abort. Env-specific diffs stay cheap (one benchmark measured).
+      Re-gated on the merged tree when the base moved. Follow-up pushes are
+      NOT yet suite-gated — named gap, wire with the follow-up re-measure
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met

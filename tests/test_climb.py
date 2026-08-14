@@ -1200,3 +1200,46 @@ def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, original)
+
+
+def test_moved_base_regates_the_suite_on_the_merged_tree(tmp_path, target_repo) -> None:
+    """The suite gate must hold on the tree that actually lands: the sibling
+    passed at session time, but the merged tree regresses it — re-measurement
+    vetoes the push, same as an absorbed improvement."""
+    _push_contract(
+        tmp_path,
+        target_repo,
+        CONTRACT.replace(
+            "scope: {allowed: [src/pilot/solvers/]}\n",
+            "  - name: sokoban\n"
+            "    command: uv run python -m pilot.eval --benchmark sokoban --json\n"
+            "    metric: solve_rate\n"
+            "    direction: max\n"
+            "scope: {allowed: [src/pilot/], shared: [src/pilot/model/]}\n",
+        ).replace(
+            "benchmarks:\n", "benchmarks:\n", 1
+        ),
+        "suite",
+    )
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-suite-race",
+        harness=RacingHarness(
+            edits={"src/pilot/model/encoder.py": "shared=1\n"},
+            target_repo=target_repo,
+            tmp_path=tmp_path,
+        ),
+        # session pair, sibling pair (passes: 0.8 flat), then post-merge:
+        # climbed pair still improves, but the merged tree's sibling drops
+        evaluator=QueueEvaluator(values=[13.876, 13.1, 0.8, 0.8, 13.9, 13.2, 0.8, 0.5]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="t",
+    )
+    assert outcome.outcome == "publish-error"
+    assert github.prs == []
+    note = load_record(tmp_path / "state", "tsp-suite-race").ending_note
+    assert "suite regression after merging" in note and "sokoban" in note

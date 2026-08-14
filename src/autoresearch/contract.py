@@ -135,6 +135,13 @@ class Budgets(_StrictModel):
 
 class Scope(_StrictModel):
     allowed: list[str] = Field(min_length=1)
+    # Shared code paths (encoder / world model / training loop — code every
+    # benchmark exercises, as opposed to env-specific solver code). A solver
+    # diff touching any of these is suite-gated: the orchestrator re-measures
+    # EVERY sibling benchmark on both sides and refuses credit if one
+    # regresses beyond its own floor. Env-specific diffs stay cheap — only
+    # their benchmark is measured.
+    shared: list[str] = Field(default_factory=list)
 
 
 # The orchestrator's ledger: no agent scope — solver OR steward — may
@@ -256,6 +263,14 @@ def load_contract(text: str, target_repo: str) -> Contract:
         for path in forbidden:
             if _overlaps(allowed, path):
                 raise ScopeError(f"allowed path {entry!r} overlaps forbidden {str(path)!r}")
+    # Shared paths route the suite gate off changed paths, which are already
+    # scope-checked — but a malformed entry would silently never match, so
+    # the same load-time rigor applies.
+    for entry in contract.scope.shared:
+        shared = normalize_path(entry)
+        for path in forbidden:
+            if _overlaps(shared, path):
+                raise ScopeError(f"shared path {entry!r} overlaps forbidden {str(path)!r}")
     if contract.steward is not None:
         # same rigor as the solver scope, plus the role-separation invariant:
         # steward and solver territories must not overlap AT LOAD TIME — a
