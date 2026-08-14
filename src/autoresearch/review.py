@@ -20,7 +20,7 @@ from __future__ import annotations
 import html
 import logging
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -39,9 +39,6 @@ ADVISORY_HEADER = (
     f"Reply to disagree; the `{OPT_OUT_LABEL}` label opts this PR out.*"
 )
 MAX_DIFF_CHARS = 200_000
-MAX_CONTEXT_FILES = 8
-MAX_FILE_CHARS = 20_000
-MAX_CONTEXT_CHARS = 60_000
 MAX_SUMMARY_CHARS = 300
 MAX_DETAIL_CHARS = 1_500
 MAX_FINDINGS = 40
@@ -110,8 +107,7 @@ class PullRequest:
     diff: str
     author: str
     labels: Sequence[str] = field(default_factory=tuple)
-    # (path, head-revision content) for changed files — bounded by
-    # pick_context_files before it gets here.
+    # (path, head-revision content) for changed files, if the caller supplies any
     context_files: Sequence[tuple[str, str]] = field(default_factory=tuple)
 
 
@@ -198,28 +194,6 @@ def sanitize(text: str, limit: int) -> str:
     if len(flat) > limit:
         flat = flat[: limit - 1].rstrip() + "…"
     return flat
-
-
-def pick_context_files(candidates: Iterable[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
-    """Bound the changed-file contents that accompany the diff.
-
-    Keeps the caller's (diff) order; skips empty, binary-looking, and
-    oversized files so one generated artifact cannot crowd out real code.
-    """
-    picked: list[tuple[str, str]] = []
-    budget = MAX_CONTEXT_CHARS
-    for path, content in candidates:
-        if not content or "\x00" in content or len(content) > MAX_FILE_CHARS:
-            continue
-        if len(content) > budget:
-            continue
-        picked.append((path, content))
-        budget -= len(content)
-        # Break AFTER appending (a lazily-fetching caller then never fetches
-        # past the file cap), and stop pulling once the budget is spent.
-        if len(picked) >= MAX_CONTEXT_FILES or budget <= 0:
-            break
-    return tuple(picked)
 
 
 def _fence(text: str) -> str:

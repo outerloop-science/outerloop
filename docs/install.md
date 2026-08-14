@@ -14,10 +14,10 @@ minutes and needs no bot account, no cluster, and no GPU. Do that first.
 An automated reviewer comments on your pull requests. It never approves, never
 blocks a merge, and never fails your build.
 
-**You need:** an LLM API key. That's it.
+**You need:** an Anthropic API key. That's it.
 
 **Step 1 — add the key as a repository secret.** Repo → Settings → Secrets and
-variables → Actions → New repository secret. Name it `REVIEWER_API_KEY`.
+variables → Actions → New repository secret. Name it `ANTHROPIC_REVIEWER_KEY`.
 A spend-capped key is strongly recommended.
 
 **Step 2 — add this file** to the repo you want reviewed, at
@@ -27,17 +27,19 @@ A spend-capped key is strongly recommended.
 name: advisory-review
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened, labeled]
 permissions:
   contents: read
   pull-requests: write
 jobs:
   advisory:
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review.yml@main
+    # label events only run on the explicit re-request label
+    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: my-bot            # PRs by this login are never reviewed
     secrets:
-      reviewer_api_key: ${{ secrets.REVIEWER_API_KEY }}
+      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
 ```
 
 **Step 3 — open a pull request.** A comment appears within a minute or two.

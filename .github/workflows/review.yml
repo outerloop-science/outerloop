@@ -1,8 +1,7 @@
 name: advisory-review
 # Advisory review runs on OPEN and on demand (label), not on every push — a
-# session per push is the minutes burner. This calls the AGENT reviewer (reads
-# the PR head read-only); the completer reusable (advisory-review.yml) is kept
-# only until the other repos migrate, then sunset.
+# session per push is the minutes burner. This calls the agent reviewer, which
+# reads the PR head read-only.
 on:
   pull_request_target:
     types: [opened, reopened, labeled]

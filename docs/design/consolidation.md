@@ -149,10 +149,9 @@ runs stay comparable.
 
 ## Reviewer and verifier are this consolidation
 
-Today they sit on the one-shot `Completer` seam: read a diff, emit findings, no
-tools, no checkout. The planned upgrade — make them agentic — *is* moving them
-onto the agent-session path with a read-only checkout of the PR head (Read,
-Grep, Glob; no Bash, no Write; egress limited to the model API plus the curated
+They run on the agent-session path with a read-only checkout of the PR head
+(Read, Grep, Glob; no Bash, no Write; egress limited to the model API plus the
+curated
 retriever). The two seams collapse to one substrate; roles differ only by
 RoleSpec.
 

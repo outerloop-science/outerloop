@@ -35,9 +35,8 @@ operator's compute, or with a secret exfiltrated.**
 ## The gap that gates the flip: `pull_request_target`
 
 The advisory reviewer runs on `pull_request_target` so it can hold secrets
-(per-repo `ANTHROPIC_REVIEWER_KEY`; optionally a checkout key — grep for
-both names when auditing; the legacy org secret `REVIEWER_API_KEY` is being
-retired with the completer). On a public repo that
+(per-repo `ANTHROPIC_REVIEWER_KEY`; optionally a checkout key). On a public
+repo that
 trigger fires for **fork PRs from strangers** — the classic pwn-request
 shape: privileged context + attacker-influenced event.
 

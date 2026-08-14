@@ -1,21 +1,15 @@
 # Reviewer and verifier infrastructure
 
-This note records how the reviewer and verifier agents are built and the design
-that led there. The goal was to change the model, the harness, or the search
-provider later without a rewrite, so the seams were agreed before building.
-Both are now deployed as agent sessions (see Status); the sections between
-record the design, including some that describe the now-removed completer era
-as history.
+This note records how the reviewer and verifier agents are built and why. The
+goal is to change the model, the harness, or the search provider later without a
+rewrite, so the seams are kept independent.
 
 ## Where we are now
 
-The reviewer AND the verifier are both agent sessions now (see Status). The
-one-shot completer path that each replaced — a single API call over a fixed
-bundle of context — has been sunset across all repos and deleted. It was cheap
-and safe but could not explore: a single call cannot open a file the diff
-refers to but does not include, follow a caller, or re-run a check. The agent
-sessions can, which is why the migration happened. The sections below record
-the design that led here; some describe the completer era as history.
+The reviewer and the verifier both run as agent sessions: each reads the tree
+under review with tools, so it can open a file the diff refers to but does not
+include, follow a caller, or re-run a check to see whether a finding reproduces.
+Both are advisory — findings only, humans hold merge authority.
 
 ## The three seams
 
@@ -25,18 +19,14 @@ We keep three things independent so each can change on its own.
 
 The model lives behind the `Harness` seam (`harness.py`): a role runs as a
 session on a backend, and the backend is swappable — Claude Code, Codex, and
-hermes-agent are wired today, and a new one is an adapter, not a rewrite.
-(The original design used a one-call `Completer` interface with an
-`AnthropicCompleter`; that path was sunset with the completer. The principle
-survived the implementation: no code outside the adapter depends on a
-provider's response shape.)
+hermes-agent today, a new one being an adapter, not a rewrite. No code outside
+the adapter depends on a provider's response shape.
 
 ### 2. The harness
 
 The reviewer and verifier run as agents that call tools in a loop, not a single
-call — the move that replaced the completer. This is the same decision as adding
-retrieval (see below): retrieval is only useful inside a loop, so one implies
-the other.
+call. This is the same decision as adding retrieval (see below): retrieval is
+only useful inside a loop, so one implies the other.
 
 ### 3. The tools
 
@@ -179,18 +169,12 @@ licenses; running is always guarded. The split workflow is what gates accepting
 fork PRs after the repo goes public. See `public-surface.md` for that threat
 model.
 
-## Sequencing
+## What's next
 
-1. ~~Stand up the harness with a read-only tree.~~ **Done** — the `Harness`
-   seam runs read-only agent sessions over the PR-head checkout.
-2. Define the `retrieve` tool contract and the broker, and add them without
-   changing the harness. **Pending** — retrieval is still future work.
-3. ~~Before making the agentic reviewer the default, score it against the
-   single-pass version on the meta-benchmark.~~ **Superseded** — the migration
-   made the agent path the default and the single-pass completer was retired
-   without a head-to-head, since the one-call shape provably could not explore.
-   The meta-benchmark still matters for future changes (does a change catch
-   more seeded gaming per dollar), just not as a gate on this one.
+The harness runs read-only agent sessions over the PR-head checkout — that part
+is done. Still to build: the `retrieve` tool contract and the broker, added
+without changing the harness. The meta-benchmark scores whether a change catches
+more seeded gaming per dollar before it ships.
 
 ## Open decisions
 
