@@ -11,6 +11,7 @@ from autoresearch.verifier import (
     VERIFY_MARKER,
     build_verify_prompt,
     format_verify_comment,
+    gather_thread,
     verify,
     verify_skip_reason,
 )
@@ -366,3 +367,45 @@ def test_thread_gate_excludes_unprivileged_voices(monkeypatch) -> None:
     idx_review = next(i for i, b in enumerate(bodies) if "review-body feedback" in b)
     idx_comment = next(i for i, b in enumerate(bodies) if "address the findings" in b)
     assert idx_review < idx_comment
+
+
+def test_gather_thread_gates_by_standing_and_orders_chronologically() -> None:
+    """Direct coverage of verifier.gather_thread — survives the completer
+    sunset (the vcli.main integration test above dies with verifier_cli)."""
+
+    class _Client:
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {"created_at": "2026-01-02", "user": {"login": "drive-by"}, "body": "noise"},
+                {
+                    "created_at": "2026-01-01",
+                    "user": {"login": "maint"},
+                    "author_association": "OWNER",
+                    "body": "fix the seed",
+                },
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return [{"submitted_at": "2026-01-03", "user": {"login": BOT}, "body": "my rebuttal"}]
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return [
+                {
+                    "created_at": "2026-01-04",
+                    "user": {"login": "github-actions[bot]"},
+                    "body": f"{VERIFY_MARKER}\nprior verifier round",
+                },
+                {
+                    "created_at": "2026-01-05",
+                    "user": {"login": "forger"},
+                    "body": f"{VERIFY_MARKER}\nmarker text alone must not admit",
+                },
+            ]
+
+    thread = gather_thread(_Client(), "org/repo", 1, BOT)  # type: ignore[arg-type]
+    authors = [a for a, _ in thread]
+    # gated & chronological: maintainer (OWNER, 01-01), the accused agent (01-03),
+    # the real prior round (Actions identity + marker, 01-04). Excluded: the
+    # drive-by, and the forger who copied the marker without the posting identity.
+    assert authors == ["maint", BOT, "github-actions[bot]"]
+    assert "drive-by" not in authors and "forger" not in authors

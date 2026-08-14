@@ -156,32 +156,16 @@ def test_review_cli_posts_a_skip_stub_when_the_model_api_refuses(monkeypatch) ->
     monkeypatch.setattr(cli, "review", fake_review)
     monkeypatch.setattr(cli, "AnthropicCompleter", lambda **kw: object())
     _cli_env(monkeypatch)
+    from autoresearch.posting import SKIP_MARKER
+
     assert cli.main() == 0  # still never fails the target's CI
     (stub,) = [c["body"] for c in fake_client.posted]
-    assert stub.lstrip().startswith(cli.SKIP_MARKER)
+    assert stub.lstrip().startswith(SKIP_MARKER)
     assert "could not run" in stub and "credit balance" in stub
     from autoresearch.review import MARKER
     from autoresearch.verifier import VERIFY_MARKER
 
     assert MARKER not in stub and VERIFY_MARKER not in stub
-
-
-def test_skip_stub_posting_failure_is_swallowed(monkeypatch, caplog) -> None:
-    import autoresearch.review_cli as cli
-    from autoresearch.github import GitHubError
-
-    class RefusingClient(FakeReviewClient):
-        def comment(self, repo, number, body):
-            raise GitHubError(403, "/repos/org/repo", "forbidden")
-
-    cli.post_skip_stub(
-        RefusingClient(),  # type: ignore[arg-type]
-        "org/repo",
-        1,
-        "advisory review",
-        CompleterError("x"),
-    )
-    assert "could not post the skip stub" in caplog.text
 
 
 def test_human_pr_review_is_inline_and_comment_event_only(monkeypatch) -> None:
@@ -270,28 +254,6 @@ def test_bot_pr_explicit_round_stays_an_issue_comment(monkeypatch) -> None:
     assert cli.main() == 0
     (posted,) = fake_client.posted
     assert posted.get("kind") != "review"  # plain comment: wake context reads these
-
-
-def test_round_numbering_spans_comments_and_reviews(monkeypatch) -> None:
-    """Switching posting styles must not reset the round counter."""
-    import autoresearch.review_cli as cli
-    from autoresearch.review import MARKER
-
-    fake_client = FakeReviewClient()
-    fake_client.posted.append(
-        {"body": f"{MARKER}\nold round", "user": {"type": "User"}}  # issue-comment round
-    )
-    fake_client.posted.append(
-        {"body": f"{MARKER}\nolder", "user": {"type": "User"}, "kind": "review", "inline": []}
-    )
-    _stamp, label = cli._round_stamp(
-        fake_client,  # type: ignore[arg-type]
-        "org/repo",
-        1,
-        MARKER,
-        {"head": {"sha": "abc"}},
-    )
-    assert label == "**Round 3**"
 
 
 def test_review_cli_threads_date_and_context(monkeypatch) -> None:

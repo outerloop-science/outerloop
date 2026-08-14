@@ -23,8 +23,8 @@ from pathlib import Path
 
 from autoresearch.github import GitHubClient
 from autoresearch.harness import Harness, budget_exhausted, outage
+from autoresearch.posting import EXPECTED_FAILURES, post_round, post_skip_stub
 from autoresearch.review_agent import _pull_request
-from autoresearch.review_cli import EXPECTED_FAILURES, post_round, post_skip_stub
 from autoresearch.role_runner import run_role
 from autoresearch.roles import verifier_spec, verify_result_from_role
 from autoresearch.rolespec import RoleSpec
@@ -32,9 +32,9 @@ from autoresearch.verifier import (
     VERIFY_MARKER,
     build_verify_agent_brief,
     format_verify_comment,
+    gather_thread,
     verify_skip_reason,
 )
-from autoresearch.verifier_cli import gather_thread
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +97,9 @@ def run_agent_verify(
             detail = role_result.error or role_result.session.stop_reason
             log.warning("verification produced no verdict on %s#%s: %s", repo, number, detail)
             if outage(role_result.session) or budget_exhausted(role_result.session):
+                # `detail` is already api-key-redacted by the harness (it owns
+                # its own secret), so no secrets are passed here — unlike the
+                # completer path, whose CompleterError is not self-redacted.
                 post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
             return None
 

@@ -32,6 +32,12 @@ from autoresearch.harness import (
     budget_exhausted,
     outage,
 )
+from autoresearch.posting import (
+    EXPECTED_FAILURES,
+    post_round,
+    post_round_review,
+    post_skip_stub,
+)
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -39,12 +45,6 @@ from autoresearch.review import (
     format_comment,
     format_review,
     skip_reason,
-)
-from autoresearch.review_cli import (
-    EXPECTED_FAILURES,
-    post_round,
-    post_round_review,
-    post_skip_stub,
 )
 from autoresearch.role_runner import run_role
 from autoresearch.roles import review_result_from_role, reviewer_spec
@@ -220,6 +220,9 @@ def run_agent_review(
             detail = role_result.error or role_result.session.stop_reason
             log.warning("agent review produced no verdict on %s#%s: %s", repo, number, detail)
             if outage(role_result.session) or budget_exhausted(role_result.session):
+                # `detail` is already api-key-redacted by the harness (it owns
+                # its own secret), so no secrets are passed here — unlike the
+                # completer path, whose CompleterError is not self-redacted.
                 post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
 

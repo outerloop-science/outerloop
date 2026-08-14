@@ -17,20 +17,16 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.llm import AnthropicCompleter, CompleterError
+from autoresearch.posting import post_round, post_skip_stub
 from autoresearch.review import PullRequest
-from autoresearch.review_cli import (
-    EXPECTED_FAILURES,
-    _gather_context,
-    post_round,
-    post_skip_stub,
-)
+from autoresearch.review_cli import EXPECTED_FAILURES, _gather_context
 from autoresearch.verifier import (
     MAX_RULER_FILES,
     VERIFY_MARKER,
     format_verify_comment,
+    gather_thread,
     verify,
     verify_skip_reason,
 )
@@ -97,59 +93,6 @@ def gather_ruler(
     return tuple(out)
 
 
-# The verifier's own rounds post via the Actions workflow token — this
-# identity, which no ordinary account can assume. Marker text alone is
-# forgeable (it appears verbatim in every posted round); identity is not.
-ACTIONS_BOT_LOGIN = "github-actions[bot]"
-
-
-def _standing(comment: dict, bot_login: str) -> bool:
-    """Only voices with standing reach the verifier: maintainers by
-    association, the accused agent's own replies, and prior verifier
-    rounds identified by POSTING IDENTITY plus marker (marker alone can be
-    forged by any commenter on a public repo)."""
-    body = str(comment.get("body") or "")
-    if not body.strip():
-        return False
-    login = str((comment.get("user") or {}).get("login", ""))
-    if str(comment.get("author_association", "")) in QUALIFYING_ASSOCIATIONS:
-        return True
-    if login.casefold() == bot_login.casefold():
-        return True
-    return login.casefold() == ACTIONS_BOT_LOGIN.casefold() and body.lstrip().startswith(
-        VERIFY_MARKER
-    )
-
-
-def gather_thread(
-    client: GitHubClient, repo: str, number: int, bot_login: str
-) -> tuple[tuple[str, str], ...]:
-    """The gated discussion, from ALL THREE places maintainers write —
-    issue comments, review bodies, inline review comments (the follow-up
-    lane learned this the hard way: independent collections, and feedback
-    lands in any of them)."""
-    sources = (
-        client.list_comments(repo, number),
-        client.list_pr_reviews(repo, number),
-        client.list_pr_review_comments(repo, number),
-    )
-    # Chronological across ALL sources: the prompt keeps the most recent
-    # tail, and a per-source concatenation would let a long inline-review
-    # thread silently evict the issue comments (rebuttals, prior rounds).
-    gated = [
-        (
-            str(c.get("submitted_at") or c.get("created_at") or ""),
-            str((c.get("user") or {}).get("login", "")),
-            str(c.get("body") or ""),
-        )
-        for comments in sources
-        for c in comments
-        if _standing(c, bot_login)
-    ]
-    gated.sort(key=lambda item: item[0])  # ISO-8601 sorts lexicographically
-    return tuple((author, body) for _, author, body in gated)
-
-
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     repo = os.environ["PR_REPO"]
@@ -160,7 +103,10 @@ def main() -> int:
     if not bot_login:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
         return 0
-    if not os.environ.get("ANTHROPIC_VERIFIER_KEY", "").strip():
+    # The completer is Anthropic by construction (the multi-backend path is the
+    # agent verifier); read its key once and reuse it below.
+    verifier_key = os.environ.get("ANTHROPIC_VERIFIER_KEY", "").strip()
+    if not verifier_key:
         log.warning("ANTHROPIC_VERIFIER_KEY is unset or empty; skipping verification")
         return 0
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
@@ -206,7 +152,7 @@ def main() -> int:
                 log.warning("verifying without the discussion thread: %s", exc)
             pr = replace(pr, context_files=_gather_context(client, repo, number, pr_data))
         completer = AnthropicCompleter(
-            api_key=os.environ["ANTHROPIC_VERIFIER_KEY"],
+            api_key=verifier_key,
             model=os.environ.get("VERIFY_MODEL") or "claude-opus-5",
             effort=os.environ.get("VERIFY_EFFORT") or "high",
         )
@@ -222,7 +168,7 @@ def main() -> int:
     except EXPECTED_FAILURES as exc:  # advisory role: never fail the target's CI
         log.warning("verification did not complete: %s: %s", type(exc).__name__, exc)
         if isinstance(exc, CompleterError):
-            post_skip_stub(client, repo, number, "verification", exc)
+            post_skip_stub(client, repo, number, "verification", exc, secrets=(verifier_key,))
     return 0
 
 
