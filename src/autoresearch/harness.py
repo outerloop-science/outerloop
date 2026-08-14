@@ -729,10 +729,7 @@ def _parse_hermes_result(
         # accept "messages"/"trajectory" too for other/older paths. Missing this
         # key makes num_turns==0 and drops a real verdict as a bogus error.
         wrapped = (
-            sample.get("conversations")
-            or sample.get("messages")
-            or sample.get("trajectory")
-            or []
+            sample.get("conversations") or sample.get("messages") or sample.get("trajectory") or []
         )
         messages = wrapped if isinstance(wrapped, list) else []
     assistant = [
