@@ -50,11 +50,6 @@ VERIFY_HEADER = (
     "the result.*"
 )
 
-# Verifier-specific context caps: the ruler's source is the load-bearing
-# extra input, bounded the same way the reviewer bounds file context.
-MAX_RULER_FILES = 6
-MAX_RULER_FILE_CHARS = 20_000
-MAX_RULER_CHARS = 60_000
 MAX_CONTRACT_CHARS = 10_000
 MAX_CLAIM_CHARS = 30_000
 # The discussion is context the verifier must not be blind to (found live:
@@ -243,20 +238,15 @@ def _fenced(text: str) -> str:
     return f"{fence}\n{text}\n{fence}"
 
 
-def _safe_path(path: str) -> str:
-    """Git allows newlines and backticks in filenames; a raw path could
-    forge prompt structure even with fenced content."""
-    return " ".join(str(path).split()).replace("`", "")[:300]
-
-
 def build_verify_prompt(
     pr: PullRequest,
     contract_text: str,
-    ruler_files: tuple[tuple[str, str], ...] = (),
     today: str | None = None,
     thread: tuple[tuple[str, str], ...] = (),
 ) -> str:
-    """Assemble the verifier's context. Order: rules, ruler, claim, change."""
+    """Assemble the verifier's context. Order: rules, claim, change. The agent
+    verifier reads the ruler from the base/ checkout, so it is not fenced into
+    the prompt."""
     parts: list[str] = []
     if today:
         parts.append(f"Today's date (UTC): {today}")
@@ -265,19 +255,6 @@ def build_verify_prompt(
         "## The contract (the rules this repo set; from the default branch, "
         "not the PR)\n" + _fenced(contract_text[:MAX_CONTRACT_CHARS])
     )
-    if ruler_files:
-        parts.append(
-            "## Ruler source (frozen eval/tests the agent cannot modify; "
-            "read how the metric is ACTUALLY computed)"
-        )
-        total = 0
-        for path, content in ruler_files[:MAX_RULER_FILES]:
-            clipped = content[:MAX_RULER_FILE_CHARS]
-            if total + len(clipped) > MAX_RULER_CHARS:
-                parts.append(f"(ruler context cap reached before {_safe_path(path)})")
-                break
-            total += len(clipped)
-            parts.append(f"### {_safe_path(path)}\n{_fenced(clipped)}")
     # The claim is agent-authored (the most injection-prone input) and is
     # bounded like everything else; the report is capped generously — a
     # run report is a few thousand words, not tens of thousands.
@@ -336,7 +313,7 @@ def build_verify_agent_brief(
     branch so the rules arrive orchestrator-vouched."""
     return (
         f"{VERIFY_SYSTEM_PROMPT}\n\n{AGENT_VERIFY_INVESTIGATION}\n\n"
-        f"{build_verify_prompt(pr, contract_text, ruler_files=(), today=today, thread=thread)}"
+        f"{build_verify_prompt(pr, contract_text, today=today, thread=thread)}"
     )
 
 
