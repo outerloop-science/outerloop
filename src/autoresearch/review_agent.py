@@ -32,6 +32,12 @@ from autoresearch.harness import (
     budget_exhausted,
     outage,
 )
+from autoresearch.posting import (
+    EXPECTED_FAILURES,
+    post_round,
+    post_round_review,
+    post_skip_stub,
+)
 from autoresearch.review import (
     MARKER,
     PullRequest,
@@ -39,12 +45,6 @@ from autoresearch.review import (
     format_comment,
     format_review,
     skip_reason,
-)
-from autoresearch.review_cli import (
-    EXPECTED_FAILURES,
-    post_round,
-    post_round_review,
-    post_skip_stub,
 )
 from autoresearch.role_runner import run_role
 from autoresearch.roles import review_result_from_role, reviewer_spec

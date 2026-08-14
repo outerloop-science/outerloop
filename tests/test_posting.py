@@ -1,0 +1,102 @@
+"""Shared posting helpers (`posting.py`): round numbering and the skip stub.
+
+These live here rather than in test_clis so they survive the completer sunset —
+`posting.py` outlives `review_cli`. The fake client is deliberately local (no
+completer/llm dependency), matching what the helpers actually call.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from autoresearch import posting
+from autoresearch.github import GitHubError
+
+_MARKER = "<!-- test-marker -->"
+
+
+class _FakeClient:
+    """Records posts and serves them back split by kind — the minimal surface
+    the posting helpers touch (list_comments, list_pr_reviews, comment)."""
+
+    def __init__(self) -> None:
+        self.posted: list[dict] = []
+
+    def list_comments(self, repo: str, number: int, max_pages: int = 20) -> list[dict]:
+        return [c for c in self.posted if c.get("kind") != "review"]
+
+    def list_pr_reviews(self, repo: str, number: int, max_pages: int = 10) -> list[dict]:
+        return [c for c in self.posted if c.get("kind") == "review"]
+
+    def comment(self, repo: str, number: int, body: str) -> None:
+        self.posted.append({"body": body, "kind": "comment"})
+
+    def create_pr_review(self, repo: str, number: int, body: str, comments: Any = None) -> None:
+        self.posted.append({"body": body, "kind": "review", "inline": comments or []})
+
+
+def test_round_numbering_spans_comments_and_reviews() -> None:
+    """Prior rounds are counted across BOTH issue comments and review bodies, so
+    switching a role between posting styles never resets its numbering."""
+    client = _FakeClient()
+    client.posted.append({"body": f"{_MARKER}\nold round", "kind": "comment"})
+    client.posted.append({"body": f"{_MARKER}\nolder", "kind": "review", "inline": []})
+    _stamp, label = posting._round_stamp(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        {"head": {"sha": "abc"}},
+    )
+    assert label == "**Round 3**"
+
+
+def test_round_stamp_falls_back_when_count_fails(caplog: Any) -> None:
+    """A GitHub failure counting prior rounds must not cost the round itself —
+    it falls back to a labeled 'New round', never raises."""
+
+    class _Blind(_FakeClient):
+        def list_comments(self, repo: str, number: int, max_pages: int = 20) -> list[dict]:
+            raise GitHubError(500, "/repos/org/repo", "server error")
+
+    _stamp, label = posting._round_stamp(
+        _Blind(),  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        {"head": {"sha": "abc"}},
+    )
+    assert "New round" in label
+    assert "could not count prior rounds" in caplog.text
+
+
+def test_skip_stub_posting_failure_is_swallowed(caplog: Any) -> None:
+    """post_skip_stub must never raise — a failed stub post is logged, not fatal
+    (an advisory role never reds the target's CI)."""
+
+    class _Refusing(_FakeClient):
+        def comment(self, repo: str, number: int, body: str) -> None:
+            raise GitHubError(403, "/repos/org/repo", "forbidden")
+
+    posting.post_skip_stub(
+        _Refusing(),  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        "advisory review",
+        ValueError("x"),
+    )
+    assert "could not post the skip stub" in caplog.text
+
+
+def test_skip_stub_carries_its_own_marker_and_reason() -> None:
+    client = _FakeClient()
+    posting.post_skip_stub(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        "advisory review",
+        ValueError("credit balance"),
+    )
+    (stub,) = [c["body"] for c in client.posted]
+    assert stub.lstrip().startswith(posting.SKIP_MARKER)
+    assert "could not run" in stub and "credit balance" in stub

@@ -20,13 +20,9 @@ from datetime import UTC, datetime
 from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.llm import AnthropicCompleter, CompleterError
+from autoresearch.posting import post_round, post_skip_stub
 from autoresearch.review import PullRequest
-from autoresearch.review_cli import (
-    EXPECTED_FAILURES,
-    _gather_context,
-    post_round,
-    post_skip_stub,
-)
+from autoresearch.review_cli import EXPECTED_FAILURES, _gather_context
 from autoresearch.verifier import (
     MAX_RULER_FILES,
     VERIFY_MARKER,

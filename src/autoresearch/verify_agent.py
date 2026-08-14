@@ -23,8 +23,8 @@ from pathlib import Path
 
 from autoresearch.github import GitHubClient
 from autoresearch.harness import Harness, budget_exhausted, outage
+from autoresearch.posting import EXPECTED_FAILURES, post_round, post_skip_stub
 from autoresearch.review_agent import _pull_request
-from autoresearch.review_cli import EXPECTED_FAILURES, post_round, post_skip_stub
 from autoresearch.role_runner import run_role
 from autoresearch.roles import verifier_spec, verify_result_from_role
 from autoresearch.rolespec import RoleSpec
