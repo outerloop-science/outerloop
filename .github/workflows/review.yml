@@ -10,7 +10,7 @@ permissions:
   pull-requests: write
 jobs:
   advisory:
-    # label events only run the review for the explicit re-request label
+    # a labeled event only runs for the autoresearch:review label (manual re-review)
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
 
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main

@@ -1,16 +1,11 @@
-"""Agent-session reviewer: the deployment path that runs the reviewer as an
-agent over a read-only PR-head checkout, instead of the one-shot completer.
+"""Agent-session reviewer: runs the reviewer as an agent over a read-only
+PR-head checkout.
 
 `run_agent_review` is the orchestration core, testable with a fake harness and
-client. It reuses everything the completer path already has: the same skip
-rules, the same rubric (via `build_agent_brief`), the same result-policy
+client. It builds on the shared vocabulary in `review`: the same skip rules,
+the same rubric (via `build_agent_brief`), the same result policy
 (`review_result_from_role`), and the same inline-posting path (`format_review`
--> `post_round_review`). The only new thing is *how the verdict is produced* —
-an agent session with read tools — not how it is judged or posted.
-
-This is the reviewer. It replaced a one-shot completer path (`review_cli` +
-`llm.AnthropicCompleter`), which was sunset once all repos migrated to this
-workflow — the shared vocabulary and rendering it reuses live in `review`.
+-> `post_round_review`).
 """
 
 from __future__ import annotations
@@ -30,7 +25,6 @@ from autoresearch.harness import (
 )
 from autoresearch.posting import (
     EXPECTED_FAILURES,
-    post_round,
     post_round_review,
     post_skip_stub,
 )
@@ -189,7 +183,6 @@ def run_agent_review(
     *,
     bot_login: str,
     spec: RoleSpec | None = None,
-    explicit: bool = False,
     today: str | None = None,
 ) -> str | None:
     """Review PR #`number` as an agent session over `workspace` (a read-only
@@ -202,7 +195,7 @@ def run_agent_review(
     today = today or datetime.now(UTC).date().isoformat()
     try:
         pr, pr_data = _pull_request(client, repo, number)
-        skip = skip_reason(pr, bot_login, explicit)
+        skip = skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping agent review of %s#%s: %s", repo, number, skip)
             return None
@@ -222,26 +215,15 @@ def run_agent_review(
                 post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
 
-        # Human PRs get inline findings. Explicit rounds on BOT PRs stay issue
-        # comments: those ride into follow-up wakes as context, and the wake
-        # plumbing reads the issue-comment collection.
-        bot_authored = pr.author.strip().casefold() == bot_login.strip().casefold()
-        if bot_authored:
-            body = format_comment(review)
-            if body is None:
-                log.info("nothing to post")
-                return None
-            round_label = post_round(client, repo, number, MARKER, body, pr_data)
-        else:
-            rendered = format_review(review, pr.diff)
-            full = format_comment(review)
-            if rendered is None or full is None:
-                log.info("nothing to post")
-                return None
-            body, inline = rendered
-            round_label = post_round_review(
-                client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
-            )
+        rendered = format_review(review, pr.diff)
+        full = format_comment(review)
+        if rendered is None or full is None:
+            log.info("nothing to post")
+            return None
+        body, inline = rendered
+        round_label = post_round_review(
+            client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+        )
         log.info("posted agent review (%s) on %s#%s", round_label, repo, number)
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI

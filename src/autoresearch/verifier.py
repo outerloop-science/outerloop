@@ -298,10 +298,6 @@ def build_verify_prompt(
             safe_author = " ".join(str(author).split()).replace("`", "")[:100]
             parts.append(f"### {safe_author}\n{_fenced(body[:MAX_THREAD_COMMENT_CHARS])}")
     parts.append("## The change (diff)\n" + _fenced(pr.diff[:MAX_DIFF_CHARS]))
-    if pr.context_files:
-        parts.append("## Current head contents of changed files")
-        for path, content in pr.context_files:
-            parts.append(f"### {_safe_path(path)}\n{_fenced(content)}")
     return "\n\n".join(parts)
 
 

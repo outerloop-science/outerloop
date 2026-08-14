@@ -15,6 +15,11 @@ Versions follow [SemVer](https://semver.org).
   `anthropic` dependency (with the `review` extra). The shared review vocabulary
   and rendering the agent path builds on (`build_prompt`, `result_from_data`,
   `format_review`, `gather_thread`, …) stay in `review`/`verifier`.
+- Swept in the same PR, dead once the completer went: the unused
+  `PullRequest.context_files` field and its prompt rendering (nothing populated
+  it), and the explicit re-request override for bot PRs (only the completer
+  workflow set `REVIEW_EXPLICIT_REQUEST`). The advisory reviewer now never
+  reviews bot-authored PRs.
 
 ### Added
 

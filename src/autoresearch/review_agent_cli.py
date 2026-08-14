@@ -89,7 +89,6 @@ def main() -> int:
         return 0
     if renamed:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
-    explicit = os.environ.get("REVIEW_EXPLICIT_REQUEST", "").strip().lower() == "true"
 
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
     harness = build_reviewer_harness(
@@ -108,7 +107,6 @@ def main() -> int:
         harness,
         workspace,
         bot_login=bot_login,
-        explicit=explicit,
     )
     return 0
 

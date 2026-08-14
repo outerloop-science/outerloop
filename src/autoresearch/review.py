@@ -1,12 +1,9 @@
 """Advisory PR reviewer.
 
 Posts review comments on opted-in repos. It is advisory only: it never
-approves, never blocks, and never comments on bot-authored PRs
-AUTOMATICALLY — the guard against the pipeline nudging humans to merge its
-own work. A maintainer's explicit re-request label overrides that one
-skip (a human asking for a machine opinion is not the pipeline nudging
-anyone); the opt-out label always wins. Maintainers opt a PR out with a
-label.
+approves, never blocks, and never comments on bot-authored PRs — the guard
+against the pipeline nudging humans to merge its own work. Maintainers opt a
+PR out with a label.
 
 The verdict is produced by the agent reviewer (`review_agent`); this module
 holds the shared vocabulary and rendering it builds on — the PR/finding/result
@@ -107,8 +104,6 @@ class PullRequest:
     diff: str
     author: str
     labels: Sequence[str] = field(default_factory=tuple)
-    # (path, head-revision content) for changed files, if the caller supplies any
-    context_files: Sequence[tuple[str, str]] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -159,17 +154,11 @@ FINDINGS_SCHEMA: dict[str, Any] = {
 }
 
 
-def skip_reason(pr: PullRequest, bot_login: str, explicit_request: bool = False) -> str | None:
-    """Why this PR must not be reviewed, or None if it may be.
-
-    `explicit_request` (a maintainer added the re-request label) overrides
-    the AUTOMATIC bot-author skip: that skip exists so the loop never
-    reviews its own PRs into an echo chamber, not to refuse a human who
-    deliberately asked for a machine opinion. The opt-out label still wins
-    even then — two contradictory labels resolve to silence, and the human
-    can remove the opt-out to break the tie.
-    """
-    if pr.author.casefold() == bot_login.casefold() and not explicit_request:
+def skip_reason(pr: PullRequest, bot_login: str) -> str | None:
+    """Why this PR must not be reviewed, or None if it may be. The reviewer
+    never comments on its own PRs (an echo chamber); the opt-out label
+    suppresses review on any PR."""
+    if pr.author.casefold() == bot_login.casefold():
         return "bot-authored PR: the reviewer never comments on its own work"
     if any(label.casefold() == OPT_OUT_LABEL for label in pr.labels):
         return f"opted out via the {OPT_OUT_LABEL} label"
@@ -236,24 +225,11 @@ def build_prompt(pr: PullRequest, today: str | None = None) -> str:
         )
     header = f"Today's date: {today}\n" if today else ""
     header += f"Repository: {pr.repo} — PR #{pr.number} by {pr.author}\n\n"
-    context = ""
-    if pr.context_files:
-        parts = [
-            "\n\n## Current contents of changed files (head revision; bounded"
-            " subset — other files may also have changed)"
-        ]
-        for path, content in pr.context_files:
-            # Git allows newlines and backticks in filenames; a raw path could
-            # forge prompt structure even with fenced content.
-            safe_path = " ".join(str(path).split()).replace("`", "")[:300]
-            fence = _fence(content)
-            parts.append(f"\n### {safe_path}\n{fence}\n{content}\n{fence}")
-        context = "".join(parts)
     diff_fence = _fence(diff)
     return (
         header + f"Pull request: {pr.title}\n\n"
         f"Description:\n{pr.body or '(none)'}\n\n"
-        f"Diff:\n{diff_fence}diff\n{diff}\n{diff_fence}{truncated}" + context
+        f"Diff:\n{diff_fence}diff\n{diff}\n{diff_fence}{truncated}"
     )
 
 
