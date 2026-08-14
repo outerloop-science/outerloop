@@ -190,6 +190,58 @@ def _write_private(directory: Path, stem: str, suffix: str, text: str) -> str:
     return ""
 
 
+def _write_private_fixed(path: Path, text: str) -> bool:
+    """Write `text` to a fixed path, refusing to follow a symlink (a
+    session-writable dir could hold a planted link redirecting the write to an
+    arbitrary same-user file). True on success. Truncates an existing regular
+    file; O_NOFOLLOW makes os.open raise on a symlink."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+    except OSError:
+        return False
+    return True
+
+
+def _read_no_follow(path: Path) -> str | None:
+    """Read a file's text without following a symlink. None on any error (a
+    missing file lost to a race, or a planted link O_NOFOLLOW refuses)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "r", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _collect_hermes_sample(session_home: Path) -> Any:
+    """Load this run's trajectory (newest `sample_*.json`) and delete every one
+    of them. Hardened for a session-writable dir: the mtime sort key cannot
+    raise out of run() on a vanished file, the read does not follow symlinks,
+    and unlink removes the link itself (never its target). Returns the parsed
+    sample, or None."""
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidates = sorted(session_home.glob("sample_*.json"), key=_mtime, reverse=True)
+    sample: Any = None
+    if candidates:
+        text = _read_no_follow(candidates[0])
+        if text is not None:
+            with contextlib.suppress(json.JSONDecodeError):
+                sample = json.loads(text)
+    for stale in candidates:
+        with contextlib.suppress(OSError):
+            stale.unlink()  # trajectories can embed the brief; don't accumulate
+    return sample
+
+
 def _float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -859,7 +911,8 @@ class HermesHarness:
                 if self.approvals_deny:
                     config_lines.append("approvals:\n  deny:\n")
                     config_lines += [f'    - "{glob}"\n' for glob in self.approvals_deny]
-                (hermes_dir / "config.yaml").write_text("".join(config_lines))
+                if not _write_private_fixed(hermes_dir / "config.yaml", "".join(config_lines)):
+                    raise OSError("hermes config write refused (symlink?) or failed")
             except OSError as exc:
                 log.warning("could not seed hermes config: %s", exc)
                 return _error_result("workspace-error", detail="could not seed hermes config")
@@ -916,6 +969,7 @@ class HermesHarness:
                 workspace.parent, transcript_stem, ".log", redact(stdout or "", (self.api_key,))
             )
             log.warning("hermes session timed out after %ss in %s", self.timeout_s, workspace)
+            _collect_hermes_sample(session_home)  # drop trajectories (may embed the brief) too
             with contextlib.suppress(OSError):
                 brief_path.unlink()  # the brief holds PR content; clean up on timeout too
             return _error_result(
@@ -925,17 +979,7 @@ class HermesHarness:
             )
         stdout = redact(stdout, (self.api_key,))
         transcript_path = _write_private(workspace.parent, transcript_stem, ".log", stdout)
-        sample: Any = None
-        # newest sample_*.json in the per-run home is this run's trajectory
-        candidates = sorted(
-            session_home.glob("sample_*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-        )
-        if candidates:
-            with contextlib.suppress(OSError, json.JSONDecodeError):
-                sample = json.loads(candidates[0].read_text(errors="replace"))
-            for stale in candidates:
-                with contextlib.suppress(OSError):
-                    stale.unlink()  # trajectories can embed the brief; don't accumulate
+        sample = _collect_hermes_sample(session_home)
         with contextlib.suppress(OSError):
             brief_path.unlink()  # the brief holds PR content; don't leave it at rest
         return _parse_hermes_result(stdout, sample, process.returncode, transcript_path)

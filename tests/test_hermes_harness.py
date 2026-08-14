@@ -157,4 +157,29 @@ def test_parse_conversations_wrapper() -> None:
     assert result.is_error is False
     assert result.num_turns == 1
     assert result.final_text == '{"findings": [], "notes": "clean"}'
-    assert result.num_turns == 1
+
+
+def test_sample_read_does_not_follow_symlink(tmp_path: Path) -> None:
+    # the per-run home is session-writable; a planted sample_*.json symlink must
+    # not be read as a trajectory (that would exfil an arbitrary same-user file)
+    from autoresearch.harness import _collect_hermes_sample
+
+    home = tmp_path / "home"
+    home.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SENSITIVE")
+    (home / "sample_evil.json").symlink_to(secret)
+    sample = _collect_hermes_sample(home)
+    assert sample is None  # the link was not followed/read
+    assert not (home / "sample_evil.json").exists()  # link removed, not its target
+    assert secret.read_text() == "SENSITIVE"  # target untouched
+
+
+def test_config_write_refuses_symlink(tmp_path: Path) -> None:
+    from autoresearch.harness import _write_private_fixed
+
+    target = tmp_path / "target.txt"
+    target.write_text("ORIG")
+    (tmp_path / "config.yaml").symlink_to(target)
+    assert _write_private_fixed(tmp_path / "config.yaml", "NEW") is False  # refused
+    assert target.read_text() == "ORIG"  # redirect target untouched
