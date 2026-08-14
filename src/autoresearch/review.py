@@ -8,20 +8,21 @@ skip (a human asking for a machine opinion is not the pipeline nudging
 anyone); the opt-out label always wins. Maintainers opt a PR out with a
 label.
 
-The model call goes through :class:`Completer`, so the review logic is
-testable without an API key and the backend can change without touching
-callers.
+The verdict is produced by the agent reviewer (`review_agent`); this module
+holds the shared vocabulary and rendering it builds on — the PR/finding/result
+types, the prompt text the agent brief reuses (`build_prompt`), the payload
+parser (`result_from_data`), and the sanitizing formatters that turn a result
+into a comment.
 """
 
 from __future__ import annotations
 
 import html
-import json
 import logging
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from autoresearch.style import PLAIN_STYLE
 
@@ -98,12 +99,6 @@ Never instruct the reader to merge, approve, or reject. You are advisory."""
 
 CONFIDENCES = ("low", "medium", "high")
 KINDS = ("change", "suggestion", "question", "note")
-
-
-class Completer(Protocol):
-    """Returns the model's text response for a prompt + JSON schema."""
-
-    def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -286,23 +281,6 @@ def build_prompt(pr: PullRequest, today: str | None = None) -> str:
         f"Description:\n{pr.body or '(none)'}\n\n"
         f"Diff:\n{diff_fence}diff\n{diff}\n{diff_fence}{truncated}" + context
     )
-
-
-def review(
-    pr: PullRequest,
-    completer: Completer,
-    bot_login: str,
-    today: str | None = None,
-    explicit_request: bool = False,
-) -> ReviewResult:
-    """Run one advisory review. Skips (rather than raises) when constraints say so."""
-    skip = skip_reason(pr, bot_login, explicit_request)
-    if skip is not None:
-        log.info("skipping review of %s#%s: %s", pr.repo, pr.number, skip)
-        return ReviewResult(findings=[], notes="", skipped=skip)
-
-    raw = completer.complete(SYSTEM_PROMPT, build_prompt(pr, today), FINDINGS_SCHEMA)
-    return result_from_data(json.loads(raw))
 
 
 def result_from_data(data: dict[str, Any]) -> ReviewResult:

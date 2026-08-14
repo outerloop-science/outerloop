@@ -115,4 +115,4 @@ jobs:
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
-        run: uv run --extra review python -m autoresearch.review_agent_cli
+        run: uv run python -m autoresearch.review_agent_cli

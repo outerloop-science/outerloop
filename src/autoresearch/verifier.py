@@ -21,7 +21,6 @@ Same constitution as the reviewer, inverted population:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -34,7 +33,6 @@ from autoresearch.review import (
     MAX_SUMMARY_CHARS,
     OPT_OUT_LABEL,
     PLAIN_STYLE,
-    Completer,
     Finding,
     PullRequest,
     ReviewResult,
@@ -344,28 +342,6 @@ def build_verify_agent_brief(
         f"{VERIFY_SYSTEM_PROMPT}\n\n{AGENT_VERIFY_INVESTIGATION}\n\n"
         f"{build_verify_prompt(pr, contract_text, ruler_files=(), today=today, thread=thread)}"
     )
-
-
-def verify(
-    pr: PullRequest,
-    completer: Completer,
-    bot_login: str,
-    contract_text: str,
-    ruler_files: tuple[tuple[str, str], ...] = (),
-    today: str | None = None,
-    thread: tuple[tuple[str, str], ...] = (),
-) -> ReviewResult:
-    """Run one verification. Skips (rather than raises) when constraints say so."""
-    skip = verify_skip_reason(pr, bot_login)
-    if skip is not None:
-        log.info("skipping verification of %s#%s: %s", pr.repo, pr.number, skip)
-        return ReviewResult(findings=[], notes="", skipped=skip)
-    raw = completer.complete(
-        VERIFY_SYSTEM_PROMPT,
-        build_verify_prompt(pr, contract_text, ruler_files, today, thread),
-        VERIFY_SCHEMA,
-    )
-    return verify_result_from_data(json.loads(raw))
 
 
 def verify_result_from_data(data: Any) -> ReviewResult:

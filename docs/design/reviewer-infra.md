@@ -9,17 +9,13 @@ current shape.
 
 ## Where we are now
 
-The reviewer is now an agent session (see Status). The verifier is still
-one API call: we gather a fixed bundle of context (the diff, the contract,
-the eval modules, the tests, the PR thread), send it in a single request,
-and post the reply. This is cheap, fast, and safe: the model runs no tools
-and executes nothing.
-
-The one-call shape has one limit. A single call cannot explore the code.
-It cannot open a file the diff refers to but does not include, follow a
-caller, or run the tests to check that a finding reproduces. On the pilot
-this was fine. On a larger target it misses things — which is why the
-reviewer moved to an agent session first.
+The reviewer AND the verifier are both agent sessions now (see Status). The
+one-shot completer path that each replaced — a single API call over a fixed
+bundle of context — has been sunset across all repos and deleted. It was cheap
+and safe but could not explore: a single call cannot open a file the diff
+refers to but does not include, follow a caller, or re-run a check. The agent
+sessions can, which is why the migration happened. The sections below record
+the design that led here; some describe the completer era as history.
 
 ## The three seams
 
@@ -211,7 +207,7 @@ second sandbox; codex's default bwrap sandbox cannot init on GitHub-hosted
 runners (its Landlock fallback can, but on a deprecated flag with a `/proc` read
 gap — see below), so codex reviews run via the cluster harness instead. Findings that
 would need a second layer (fork PRs, live web search) stay future work. The
-completer path is retained until the lab repos migrate, then removed.
+completer path has now been removed — all lab repos run the agent path.
 Gating is unchanged by the swap: reviews stay advisory, blocking findings
 gate per roles.md, and humans hold merge authority.
 

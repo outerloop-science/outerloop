@@ -8,13 +8,9 @@ rules, the same rubric (via `build_agent_brief`), the same result-policy
 -> `post_round_review`). The only new thing is *how the verdict is produced* —
 an agent session with read tools — not how it is judged or posted.
 
-This lives beside `review_cli` (the completer path), which stays the live
-default until this path is validated on a real runner. When the workflow swaps
-to this path, the SAME change sunsets the completer path — the completer branch
-in `review_cli`, `llm.AnthropicCompleter` and `review.review`/`build_prompt` if
-then unused, and their tests — so `main` never carries two reviewer
-implementations. The workflow swap and its CHANGELOG entry come with that
-validation.
+This is the reviewer. It replaced a one-shot completer path (`review_cli` +
+`llm.AnthropicCompleter`), which was sunset once all repos migrated to this
+workflow — the shared vocabulary and rendering it reuses live in `review`.
 """
 
 from __future__ import annotations
@@ -228,7 +224,7 @@ def run_agent_review(
 
         # Human PRs get inline findings. Explicit rounds on BOT PRs stay issue
         # comments: those ride into follow-up wakes as context, and the wake
-        # plumbing reads the issue-comment collection (matches review_cli).
+        # plumbing reads the issue-comment collection.
         bot_authored = pr.author.strip().casefold() == bot_login.strip().casefold()
         if bot_authored:
             body = format_comment(review)

@@ -4,8 +4,8 @@ Runs the reviewer as a read-only agent over a PR-head checkout the workflow
 prepared (REVIEW_CHECKOUT), and posts the findings inline. Exits 0 even on skip
 or failure — an advisory reviewer must never turn a target repo's CI red.
 
-Lives beside review_cli (the completer entry point) during validation; the
-workflow swap that makes this the default sunsets the completer path.
+The review entry point (the one-shot completer entry, review_cli, was sunset
+once all repos migrated to this workflow).
 """
 
 from __future__ import annotations

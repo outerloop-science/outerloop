@@ -10,10 +10,9 @@ from autoresearch.review import (
     MAX_FINDINGS,
     REDACTED,
     format_comment,
-    review,
     sanitize,
 )
-from test_review import BOT, FakeCompleter, make_pr
+from test_review import BOT, FakeCompleter, make_pr, review
 
 
 def _finding(**kw: Any) -> dict[str, Any]:

@@ -11,8 +11,8 @@ wakes). What changes is how the verdict is produced: an agent that reads the
 ruler from base/ and follows the change through pr-head/, rather than a single
 call over fenced excerpts.
 
-Lives beside `verifier_cli` (the completer path) until the migration completes;
-the sunset then removes the whole one-shot seam at once.
+This is the verifier. It replaced a one-shot completer path (`verifier_cli`),
+sunset once all repos migrated to this workflow.
 """
 
 from __future__ import annotations

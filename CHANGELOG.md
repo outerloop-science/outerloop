@@ -6,6 +6,16 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Removed
+
+- The one-shot **completer** reviewer and verifier are sunset, now that all lab
+  repos run the agent-session path. Deleted: `advisory-review.yml`,
+  `verify.yml`, `review_cli.py`, `verifier_cli.py`, `llm.AnthropicCompleter`,
+  the `Completer` protocol, the completer `review()`/`verify()`, and the
+  `anthropic` dependency (with the `review` extra). The shared review vocabulary
+  and rendering the agent path builds on (`build_prompt`, `result_from_data`,
+  `format_review`, `gather_thread`, …) stay in `review`/`verifier`.
+
 ### Added
 
 - The reviewer can now run on three backends, selected by `REVIEW_BACKEND`

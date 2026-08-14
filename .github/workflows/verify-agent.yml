@@ -120,4 +120,4 @@ jobs:
           VERIFY_MODEL: ${{ inputs.model }}
           # The parent of the two checkouts (pr-head/ and base/).
           VERIFY_CHECKOUT: ${{ github.workspace }}
-        run: uv run --extra review python -m autoresearch.verify_agent_cli
+        run: uv run python -m autoresearch.verify_agent_cli

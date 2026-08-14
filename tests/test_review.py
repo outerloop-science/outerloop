@@ -5,6 +5,7 @@ import pytest
 
 from autoresearch.review import (
     ADVISORY_HEADER,
+    FINDINGS_SCHEMA,
     MARKER,
     MAX_DIFF_CHARS,
     OPT_OUT_LABEL,
@@ -12,7 +13,7 @@ from autoresearch.review import (
     ReviewResult,
     build_prompt,
     format_comment,
-    review,
+    result_from_data,
     skip_reason,
 )
 
@@ -27,6 +28,23 @@ class FakeCompleter:
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> str:
         self.calls.append((system, prompt, schema))
         return json.dumps(self.payload)
+
+
+def review(
+    pr: PullRequest,
+    completer: FakeCompleter,
+    bot_login: str,
+    today: str | None = None,
+    explicit_request: bool = False,
+) -> ReviewResult:
+    """Test shim for the sunset completer reviewer. Its non-skip path was just
+    result_from_data over the model's payload; kept here (over a fake completer)
+    so the shared rendering/parsing/sanitization tests below need no changes."""
+    skip = skip_reason(pr, bot_login, explicit_request)
+    if skip is not None:
+        return ReviewResult(findings=[], notes="", skipped=skip)
+    raw = completer.complete("", build_prompt(pr, today), FINDINGS_SCHEMA)
+    return result_from_data(json.loads(raw))
 
 
 def make_pr(**overrides: Any) -> PullRequest:
