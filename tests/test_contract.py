@@ -223,3 +223,19 @@ def test_scope_shared_overlapping_forbidden_is_refused() -> None:
     )
     with pytest.raises(ScopeError, match="shared path"):
         load_contract(bad, "org/pilot")
+
+
+def test_shared_path_outside_allowed_is_dead_config_and_refused() -> None:
+    bad = PILOT_CONTRACT.replace(
+        "  allowed: [src/pilot/solvers/]",
+        "  allowed: [src/pilot/solvers/]\n  shared: [src/other/]",
+    )
+    with pytest.raises(ScopeError, match="overlaps no allowed path"):
+        load_contract(bad, "org/pilot")
+
+
+def test_benchmark_name_must_be_a_slug() -> None:
+    # names reach branch names and ledger keys; contract text must not shape refs
+    bad = PILOT_CONTRACT.replace("name: tsp", "name: ../tsp evil")
+    with pytest.raises(ValidationError):
+        load_contract(bad, "org/pilot")

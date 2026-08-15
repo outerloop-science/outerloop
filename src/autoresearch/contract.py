@@ -62,7 +62,9 @@ class _StrictModel(BaseModel):
 
 
 class Benchmark(_StrictModel):
-    name: str = Field(min_length=1)
+    # Slug shape only: the name reaches branch names, ledger keys, and log
+    # labels — contract text must not shape refs or paths beyond a slug.
+    name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]{1,64}$")
     command: str = Field(min_length=1)
     metric: str = Field(min_length=1)
     direction: Literal["min", "max"]
@@ -265,12 +267,20 @@ def load_contract(text: str, target_repo: str) -> Contract:
                 raise ScopeError(f"allowed path {entry!r} overlaps forbidden {str(path)!r}")
     # Shared paths route the suite gate off changed paths, which are already
     # scope-checked — but a malformed entry would silently never match, so
-    # the same load-time rigor applies.
+    # the same load-time rigor applies. A shared path the agent can never
+    # touch (no overlap with any allowed path) is dead config that reads as
+    # protection: refused loudly, like any contract typo.
+    solver_allowed = [normalize_path(entry) for entry in contract.scope.allowed]
     for entry in contract.scope.shared:
         shared = normalize_path(entry)
         for path in forbidden:
             if _overlaps(shared, path):
                 raise ScopeError(f"shared path {entry!r} overlaps forbidden {str(path)!r}")
+        if not any(_overlaps(shared, a) for a in solver_allowed):
+            raise ScopeError(
+                f"shared path {entry!r} overlaps no allowed path — the suite "
+                f"gate could never trigger on it"
+            )
     if contract.steward is not None:
         # same rigor as the solver scope, plus the role-separation invariant:
         # steward and solver territories must not overlap AT LOAD TIME — a

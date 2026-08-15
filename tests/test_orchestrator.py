@@ -54,10 +54,12 @@ class FakeEvaluator:
     values: list[float] = field(default_factory=list)
     calls: list[tuple[str, str]] = field(default_factory=list)
     seen_env: list = field(default_factory=list)
+    seen_ws: list = field(default_factory=list)
 
     def evaluate(self, workspace: Path, command: str, metric: str, extra_env=None) -> float:
         self.calls.append((command, metric))
         self.seen_env.append(dict(extra_env) if extra_env else None)
+        self.seen_ws.append(workspace)
         value = self.values.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -576,6 +578,11 @@ def test_shared_diff_measures_every_sibling_and_passes(tmp_path: Path) -> None:
     # 2 climbed evals + a paired pass per sibling
     assert len(evaluator.calls) == 4
     assert evaluator.calls[2] == evaluator.calls[3]  # sibling: same command both sides
+    # each pair measures pristine-vs-session, sibling exactly like the climbed
+    # metric: [baseline ws, session ws, sibling baseline ws, sibling session ws]
+    pristine = evaluator.seen_ws[0]
+    assert pristine.name == "pristine"
+    assert evaluator.seen_ws == [pristine, pristine.parent, pristine, pristine.parent]
     (row,) = result.suite
     assert row.name == "sokoban" and not row.regressed
     assert row.baseline == 0.8 and row.candidate == 0.8
@@ -691,3 +698,12 @@ def test_climb_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="must allow execution"):
         run_climb(tmp_path, [13.876], spec=reviewer_spec())
+
+
+def test_shared_match_is_case_folded_like_the_other_path_checks(tmp_path: Path) -> None:
+    # a Model/ spelling must not dodge the gate (forbidden/steward checks fold too)
+    result, evaluator = run_shared_climb(
+        tmp_path, [13.876, 13.10, 0.8, 0.8], changed=["src/pilot/Model/encoder.py"]
+    )
+    assert result.outcome == "improved"
+    assert len(evaluator.calls) == 4  # the suite pass ran

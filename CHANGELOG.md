@@ -31,10 +31,12 @@ Versions follow [SemVer](https://semver.org).
   paths — encoder, world model, training loop). A solver diff touching one is
   only credited after every sibling benchmark is re-measured on both sides
   (paired seed); a sibling regressing beyond its own floor ends the run as
-  `suite-regression`, an honest negative. Env-specific diffs still measure
-  only their benchmark. The gate re-runs on the merged tree when the base
-  moved; the PR body carries the suite table. Follow-up pushes are not yet
-  suite-gated (named gap).
+  `suite-regression`, an honest negative — including when the regression is
+  found on the merged tree after the base moved (never an abort). Env-specific
+  diffs still measure only their benchmark; the PR body carries the suite
+  table. A shared path outside the allowed scope is dead config and fails at
+  load. Benchmark names are now slug-shaped (they reach branch names and
+  ledger keys). Follow-up pushes are not yet suite-gated (named gap).
 - The reviewer can now run on three backends, selected by `REVIEW_BACKEND`
   (`claude` | `codex` | `hermes`) with per-backend keys
   (`ANTHROPIC_REVIEWER_KEY` | `OPENAI_REVIEWER_KEY` | `OPENROUTER_API_KEY`) and

@@ -440,12 +440,13 @@ def out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
 def shared_touched(paths: Sequence[str], contract: Contract) -> list[str]:
     """Changed paths under `scope.shared` — the suite-gate trigger. Runs on
     paths that already passed `out_of_scope`, so unparseable entries are
-    simply not shared (they were rejected upstream)."""
-    shared = [normalize_path(entry) for entry in contract.scope.shared]
+    simply not shared (they were rejected upstream). Case-folded like the
+    forbidden/steward checks: a `Model/` spelling must not dodge the gate."""
+    shared = [_fold(normalize_path(entry)) for entry in contract.scope.shared]
     hits = []
     for path in paths:
         try:
-            candidate = normalize_path(path)
+            candidate = _fold(normalize_path(path))
         except Exception:
             continue
         if any(candidate == s or s in candidate.parents for s in shared):

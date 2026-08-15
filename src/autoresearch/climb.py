@@ -76,6 +76,12 @@ class WorkspaceDrift(RuntimeError):
     """The tree changed between measurement and commit."""
 
 
+class SuiteRegressed(RuntimeError):
+    """A sibling benchmark regressed beyond its floor on the landing tree —
+    the improvement was bought by breaking siblings. An honest negative
+    result wherever it is caught, never an abort."""
+
+
 def _title_pair(a: float, b: float) -> str:
     """Compact but never ambiguous: widen precision until the two numbers
     render differently (a title reading '10.00 -> 10.00' looks like no
@@ -487,24 +493,26 @@ def live_climb(
                     # same as the claim itself — re-measure every sibling on
                     # the fresh pair under the recorded suite seed
                     rows = []
-                    for row in suite:
+                    for i, row in enumerate(suite):
                         sib = next(b for b in contract.benchmarks if b.name == row.name)
                         env = (
                             {sib.seed_env: str(result.suite_seed)}
                             if sib.seed_env and result.suite_seed
                             else None
                         )
+                        # worktree labels use the sibling INDEX: the name is
+                        # contract text (untrusted) and must not shape a path
                         sib_base = _measure_committed(
-                            ws, evaluator, run_dir, f"fresh-base-{sib.name}", fresh_base, sib, env
+                            ws, evaluator, run_dir, f"fresh-base-sib{i}", fresh_base, sib, env
                         )
                         sib_cand = _measure_committed(
-                            ws, evaluator, run_dir, f"merged-{sib.name}", merged_sha, sib, env
+                            ws, evaluator, run_dir, f"merged-sib{i}", merged_sha, sib, env
                         )
                         regressed = suite_regressed(
                             sib_base, sib_cand, sib.direction, sib.min_delta, sib.min_delta_rel
                         )
                         if regressed:
-                            raise WorkspaceDrift(
+                            raise SuiteRegressed(
                                 f"suite regression after merging the moved base: "
                                 f"{sib.name} {sib_base} -> {sib_cand}"
                             )
@@ -641,6 +649,20 @@ def live_climb(
             outcome_name = "no-improvement"
             result = dc_replace(result, outcome="no-improvement", note=str(exc))
             log.info("noise-floored for %s: %s", run_id, exc)
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": NEGATIVE_RESULT,
+                    "ending_note": redact(str(exc), secrets)[:480],
+                }
+            )
+        except SuiteRegressed as exc:
+            # the gate's verdict is the same wherever it fires: an honest
+            # negative, not an abort — the merged tree just answered later
+            outcome_name = "suite-regression"
+            result = dc_replace(result, outcome="suite-regression", note=str(exc))
+            log.info("suite-regressed for %s: %s", run_id, exc)
             final = RunRecord(
                 **{
                     **record.__dict__,

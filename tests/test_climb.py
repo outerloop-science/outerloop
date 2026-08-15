@@ -1240,10 +1240,12 @@ def test_moved_base_regates_the_suite_on_the_merged_tree(tmp_path, target_repo) 
         now=1_000_000.0,
         created="t",
     )
-    assert outcome.outcome == "publish-error"
+    assert outcome.outcome == "suite-regression"
     assert github.prs == []
-    note = load_record(tmp_path / "state", "tsp-suite-race").ending_note
-    assert "suite regression after merging" in note and "sokoban" in note
+    record = load_record(tmp_path / "state", "tsp-suite-race")
+    assert record.ending == "negative-result"  # the gate's promise: never an abort
+    assert "suite regression after merging" in record.ending_note
+    assert "sokoban" in record.ending_note
 
 
 def test_author_harness_is_built_from_the_spec() -> None:
