@@ -865,6 +865,7 @@ roadmap: docs/roadmap.md
     assert "--max-turns 30" in wrap
     assert "--session-minutes 25" in wrap
     assert "--job-minutes 120" in wrap  # the job's own walltime, for the alarm
+    assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
 
 
 def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
@@ -1562,3 +1563,30 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
         save_record(tmp_path, replace(rec, followup_job_id="", wake_attempts=0), now=NOW)
     _, subs2 = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec_nokey, NOW)
     assert len(subs2) == 1 and subs2[0][0] == "tsp-r1"
+
+
+def test_panel_env_knob_disables_and_reconfigures(tmp_path: Path) -> None:
+    """AUTORESEARCH_PANEL='' switches the pre-PR panel off; a custom value and
+    key file ride into the climb argv verbatim."""
+    from autoresearch.tick import FollowupSpec, _climb_panel_argv
+
+    def make(panel: str = "verify,review", panel_key_file: str = "") -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="i.sif",
+            home=tmp_path,
+            panel=panel,
+            panel_key_file=panel_key_file,
+        )
+
+    assert _climb_panel_argv(make(panel="")) == []
+    assert _climb_panel_argv(make()) == ["--panel", "verify,review"]
+    assert _climb_panel_argv(make(panel="verify", panel_key_file="/keys/verifier")) == [
+        "--panel",
+        "verify",
+        "--panel-key-file",
+        "/keys/verifier",
+    ]

@@ -136,6 +136,12 @@ class FollowupSpec:
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
     steward_key_file: str = ""
+    # Pre-PR verification panel for climb jobs (docs/design/orchestrator-verify.md).
+    # DEFAULT ON — the flip is code, the off-switch is AUTORESEARCH_PANEL="".
+    # The climb CLI fails LOUDLY if the panel key file is missing: a
+    # configured gate must never silently vanish.
+    panel: str = "verify,review"
+    panel_key_file: str = ""  # "" = the climb CLI's default verifier-key path
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -1089,6 +1095,16 @@ def clear_pending(root: Path, target: str) -> None:
     _pending_path(root, target).unlink(missing_ok=True)
 
 
+def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
+    """Panel args for a climb job; empty when the operator disabled the panel."""
+    if not spec.panel.strip():
+        return []
+    argv = ["--panel", spec.panel]
+    if spec.panel_key_file:
+        argv += ["--panel-key-file", spec.panel_key_file]
+    return argv
+
+
 def _climb_limit_argv(limits: EffectiveLimits) -> list[str]:
     """Climb-CLI flags carrying the tick-resolved limits: the job's own
     walltime rides along so the climb can arm its self-deadline (Slurm
@@ -1165,6 +1181,7 @@ def service_self_initiated(
             "--image",
             spec.image,
             *_climb_limit_argv(limits),
+            *_climb_panel_argv(spec),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1384,6 +1401,7 @@ def service_intake(
             "--hypothesis-b64",
             hypothesis_b64,
             *_climb_limit_argv(limits),
+            *_climb_panel_argv(spec),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1468,6 +1486,8 @@ def main() -> int:
                     "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
                 ),
                 steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
+                panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
+                panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
             )
         except Exception as exc:
             log.warning("in-review servicing disabled: %s", exc)
