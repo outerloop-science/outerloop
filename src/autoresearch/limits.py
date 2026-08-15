@@ -24,12 +24,15 @@ from typing import Any
 # Raised from 60/60/90/60 on 2026-08-09 (maintainer decision): the first
 # steward work order to BUILD an env burned its full 60-turn budget mid-
 # work — session budgets sized for solver tweaks starve construction work.
+# floor = session floor + overhead + self-deadline margin: even at the
+# floors, a session must fit inside its job with the ending's runway.
+# Public: the tick's AUTORESEARCH_MAX_JOB_MINUTES knob floors here too.
+CLIMB_JOB_MINUTES_FLOOR = 40
+
 _BOUNDS: dict[str, tuple[int, int, int]] = {
     "session_max_turns": (120, 10, 120),
     "session_minutes": (90, 10, 90),
-    # floor = session floor + overhead + self-deadline margin: even at the
-    # floors, a session must fit inside its job with the ending's runway
-    "climb_job_minutes": (120, 40, 120),
+    "climb_job_minutes": (120, CLIMB_JOB_MINUTES_FLOOR, 120),
     "followup_job_minutes": (90, 20, 90),
 }
 

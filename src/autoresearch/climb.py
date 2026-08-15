@@ -1076,7 +1076,7 @@ def main() -> int:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
     # same 0600 discipline as the PAT: this key spends real money
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"

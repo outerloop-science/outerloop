@@ -103,6 +103,26 @@ def test_released_claim_is_pickable_again_and_forgeries_ignored() -> None:
     )
 
 
+def test_intake_attempt_cap_stops_the_claim_release_loop() -> None:
+    from autoresearch.intake import MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
+
+    class G2(G):
+        def __init__(self, issues, comments):
+            super().__init__(issues)
+            self.comments = comments
+
+        def list_comments(self, repo, number, max_pages=20):
+            return self.comments
+
+    burned = []
+    for _ in range(MAX_INTAKE_ATTEMPTS):
+        burned.append({"body": f"{CLAIM_MARKER}\nPicked up", "user": {"login": "bot"}})
+        burned.append({"body": f"{RELEASE_MARKER}\nSubmission failed", "user": {"login": "bot"}})
+    assert (
+        pick_issue(G2([issue(4, "fix reach please")], burned), "org/pilot", CONTRACT, "bot") is None
+    )
+
+
 def test_hypothesis_fences_issue_text() -> None:
     task = pick_issue(
         G([issue(7, "reach: try a better local planner", "the PD controller ```breaks```")]),

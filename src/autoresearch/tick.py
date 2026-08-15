@@ -1241,10 +1241,14 @@ def service_self_initiated(
             expired = now - submitted_at > PENDING_TTL_S
             if landed:
                 clear_pending(root, spec.target)  # the run record carries it now
-            elif (
-                not expired and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
+            elif (alive := _holder_alive(compute, str(pending.get("job_id", "")))) is True or (
+                not expired and alive is not False
             ):
-                return None  # climb queued or starting; its record isn't written yet
+                # climb queued or starting; its record isn't written yet. A
+                # provably-alive job waits regardless of the marker's TTL —
+                # queue wait can exceed it — the TTL only breaks ties when
+                # Slurm can't say (a dup submit is worse than a slow retry).
+                return None
             else:
                 # Died before writing a record. Keep its cooldown so a
                 # crash-at-startup loop can't resubmit every tick.
@@ -1566,9 +1570,13 @@ class LoggingDispatcher:
 
 def _max_job_minutes_from_env() -> int:
     """AUTORESEARCH_MAX_JOB_MINUTES, clamped into what the code can honor:
-    at least the cpu_short default, at most the ceiling the stranded window
-    allows. A clamped value logs — a silently-shrunk cap would read as the
-    partition rejecting jobs for no reason."""
+    at least the climb-job floor (an operator on a short-MaxTime partition
+    must be able to LOWER the cap below cpu_short's 6h, or every submit is
+    rejected), at most the ceiling the stranded window allows. A clamped
+    value logs — a silently-changed cap would read as the partition
+    rejecting jobs for no reason."""
+    from autoresearch.limits import CLIMB_JOB_MINUTES_FLOOR
+
     raw = os.environ.get("AUTORESEARCH_MAX_JOB_MINUTES", "").strip()
     if not raw:
         return MAX_CLIMB_JOB_MINUTES
@@ -1577,7 +1585,7 @@ def _max_job_minutes_from_env() -> int:
     except ValueError:
         log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
         return MAX_CLIMB_JOB_MINUTES
-    clamped = max(MAX_CLIMB_JOB_MINUTES, min(value, MAX_JOB_MINUTES_CEILING))
+    clamped = max(CLIMB_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
     if clamped != value:
         log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
     return clamped
