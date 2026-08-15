@@ -44,6 +44,34 @@ jobs:
 
 **Step 3 — open a pull request.** A comment appears within a minute or two.
 
+**Optional — a second, independent opinion from an open-model backend.** Add
+one more job to the same file (and an `OPENROUTER_API_KEY` repo secret). It
+runs through the least-token split: the model session holds read-only
+permissions; a separate posting job holds the write token. Each opinion posts
+its own round, labeled, with the reviewer named in the round stamp:
+
+```yaml
+  second-opinion:
+    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-second-opinion.yml@main
+    with:
+      bot_login: my-bot
+      backend: hermes
+      model: openai/gpt-5.6-terra  # any OpenRouter id
+      lens_label: second opinion — terra
+    secrets:
+      openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+For `backend: codex` instead: pass `openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}`
+in `secrets:`, and set `model` to a Codex model id (or omit it for the codex
+default) — an OpenRouter id will not work there.
+
+
+A third opinion is one more block with a distinct `lens_id`. If the backend's
+key is missing or expires, each triggering PR gets a visible "could not run"
+stub naming that lens — a dead key is never silent.
+
 That's the whole setup. Notes:
 
 - `bot_login` is **required** — the reviewer refuses to run without it, because
