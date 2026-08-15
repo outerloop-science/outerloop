@@ -645,6 +645,12 @@ def live_climb(
                         )
                     suite = tuple(rows)
                 if panel_lenses:
+                    # the merged tree may carry an UPDATED contract: the
+                    # fresh panel judges by the rules it will land under
+                    try:
+                        fresh_contract = ws.git("show", f"{fresh_base}:.autoresearch.yaml")
+                    except GitError:
+                        fresh_contract = contract_text
                     # the panel's verdict must hold on the tree that actually
                     # lands, same as the claim and the suite gate (terra, #95
                     # round 5). No wake here — the session has concluded, so
@@ -654,7 +660,7 @@ def live_climb(
                         run_dir,
                         fresh_base,
                         panel_lenses,
-                        contract_text,
+                        fresh_contract,
                         config.target,
                         config.benchmark,
                         config.bot_login,
@@ -679,6 +685,15 @@ def live_climb(
                         panel_degraded=verdict.degraded,
                     )
                 result = dc_replace(result, baseline=baseline, candidate=candidate, suite=suite)
+
+            # the report was written from the PRE-freshness result: refresh
+            # it so the merged-tree measurements and panel verdict are the
+            # record (terra note, #95 round 7)
+            _best_effort(
+                "run report refresh",
+                lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+                secrets,
+            )
 
             # Progress record (BENCHMARKS.md + results/leader.json), written
             # by the orchestrator from ITS measurements after the drift check
@@ -1113,12 +1128,16 @@ def main() -> int:
             if kind not in LENS_KINDS:
                 # a typo'd kind must never silently disable a gate
                 parser.error(f"--panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
-            hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
-            if backend == "hermes" and not hermes_repo_env:
+            if backend != "claude":
+                # non-claude judges execute or read broadly and would run
+                # UNCONTAINED on the orchestrator host, next to key files.
+                # The seam supports them; enable when their containment on
+                # this host lands (claude runs inside args.image).
                 parser.error(
-                    f"--panel entry {entry!r}: the hermes backend needs "
-                    f"REVIEW_HERMES_REPO (the pinned clone) in the environment"
+                    f"--panel entry {entry!r}: only the claude backend is "
+                    f"contained on the orchestrator host so far"
                 )
+            hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
             try:
                 judge = build_reviewer_harness(
                     panel_key,

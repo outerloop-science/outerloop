@@ -129,6 +129,11 @@ def run_panel(
         )
         for f in found_blocking:
             lines.append(f"  - **{f.file}:{f.line if f.line is not None else '?'}** — {f.summary}")
+        for f in result.findings:
+            if not f.blocking:
+                lines.append(
+                    f"  - advisory: {f.file}:{f.line if f.line is not None else '?'} — {f.summary}"
+                )
     merged = tuple(blocking)
     return PanelVerdict(
         blocking=merged,

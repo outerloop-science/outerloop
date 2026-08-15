@@ -726,6 +726,8 @@ def climb_once(
                 baseline=baseline,
                 session=session,
                 note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
             )
 
         try:
@@ -738,7 +740,12 @@ def climb_once(
             )
         except EvalError as exc:
             return ClimbResult(
-                outcome="eval-error", baseline=baseline, session=session, note=f"candidate: {exc}"
+                outcome="eval-error",
+                baseline=baseline,
+                session=session,
+                note=f"candidate: {exc}",
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
             )
 
         if not improved(baseline, candidate, bench.direction, config.min_relative_improvement):
@@ -941,7 +948,7 @@ def pr_body(
     else:
         banner = []
     panel_section = (
-        ["", "## Pre-PR verification", "", result.panel_transcript]
+        ["", "## Pre-PR verification", "", result.panel_transcript[:MAX_REPORT_BODY]]
         if result.panel_transcript
         else []
     )
