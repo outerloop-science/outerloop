@@ -296,6 +296,14 @@ def _respond(
     created: str,
     spec: RoleSpec | None = None,
 ) -> FollowupOutcome:
+    # a deployment bug is refused before any GitHub read or contract load —
+    # the contained error outcome retries next tick either way, so fail as
+    # cheaply as possible
+    spec = spec or followup_spec()
+    if not spec.execution.can_execute:
+        raise ValueError(
+            "the follow-up responder is an editing role; the spec must allow execution"
+        )
 
     pr = github.get_pull_request(record.target, number)
     if pr.get("merged") or pr.get("merged_at"):
@@ -368,14 +376,12 @@ def _respond(
     is_steward = record.agent_id.startswith("steward")
     scope_check = steward_out_of_scope if is_steward else out_of_scope
 
-    # the manifest: the resuming role's key family and scope side. The caller
-    # (CLI) owns the budget; the kernel owns these two, from the record and
-    # the contract — same split as climb_once.
-    spec = spec or followup_spec()
-    if not spec.execution.can_execute:
-        raise ValueError(
-            "the follow-up responder is an editing role; the spec must allow execution"
-        )
+    # Fill the manifest's key family and scope from the record and contract
+    # so the spec run_role receives is TRUE (roles.md: the follow-up runs
+    # under the resuming role's own key and scope). run_role does not consume
+    # these fields — like instructions/skills, they are manifest data ahead
+    # of the loader — enforcement stays scope_check below and the CLI's
+    # key-file.
     owned = (
         (contract.steward.allowed if contract.steward else [])
         if is_steward
