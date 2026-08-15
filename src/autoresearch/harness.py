@@ -754,9 +754,10 @@ def _hermes_command(
 
     The BRIEF is never in argv — it is written to a file and `query` is only a
     short pointer instruction. The API key is never in argv either: hermes
-    reads OPENROUTER_API_KEY from the environment when --api_key is absent,
-    regardless of base_url. --save_sample makes hermes write a JSON trajectory
-    to its cwd, which is the machine-readable result channel."""
+    reads it from the env var its SEEDED PROVIDER's registry names (the
+    harness exports it under key_env; openrouter reads OPENROUTER_API_KEY,
+    openai-api reads OPENAI_API_KEY). --save_sample makes hermes write a JSON
+    trajectory to its cwd, which is the machine-readable result channel."""
     argv = [
         "uv",
         "run",

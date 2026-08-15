@@ -208,6 +208,35 @@ def test_hermes_openai_without_model_writes_a_stub(monkeypatch: Any, tmp_path: P
     envelope = json.loads((tmp_path / "findings.json").read_text())
     assert envelope["kind"] == "skip-stub"
     assert "provider-native REVIEW_MODEL" in envelope["detail"]
+    # an OpenRouter-shaped id is just as unservable as an empty one
+    env["REVIEW_MODEL"] = "openai/gpt-5.6-terra"
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+
+
+def test_padded_provider_matches_github_expression_semantics(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # the workflow's key-injection expressions compare untrimmed input; the
+    # CLI must apply the same rule so the two layers cannot disagree — a
+    # padded value lands in the unknown-provider stub, never a wrong-key skip
+    import json
+
+    env = _base_env()
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": " openai ",
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "unknown REVIEW_HERMES_PROVIDER" in envelope["detail"]
 
 
 def test_explicitly_empty_hermes_provider_means_the_default(

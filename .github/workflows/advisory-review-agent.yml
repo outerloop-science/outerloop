@@ -89,10 +89,13 @@ on:
         description: Anthropic key for the claude backend.
         required: false
       openrouter_api_key:
-        description: OpenRouter key for the hermes backend.
+        description: OpenRouter key for the hermes backend (default provider).
         required: false
       openai_reviewer_key:
-        description: OpenAI key for the codex backend.
+        description: >-
+          OpenAI key, shared by the codex backend and hermes with
+          hermes_provider: openai — one org key, two backends; only the
+          selected session's tree ever sees it.
         required: false
       checkout_ssh_key:
         description: >-

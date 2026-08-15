@@ -41,12 +41,16 @@ def main() -> int:
         return 0
     # Backend is a deployment choice, not baked in: pick the harness and its
     # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
-    backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
+    # Free-form caller inputs are compared with EXACTLY GitHub's expression
+    # semantics — case-insensitive, never trimmed — so this CLI and the
+    # workflow's key-injection expressions can never disagree about a value:
+    # a padded input misses both layers and lands in the unknown-value stub.
+    backend = os.environ.get("REVIEW_BACKEND", "claude").lower() or "claude"
     emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     # hermes's key SOURCE follows its provider: openai-direct uses the same
     # org-registered OpenAI key as codex (no OpenRouter platform fee).
     # Explicitly-empty input means the default, same as an omitted one.
-    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").strip().lower() or "openrouter"
+    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
         "codex": "OPENAI_REVIEWER_KEY",
@@ -109,10 +113,15 @@ def main() -> int:
             return 0
         hermes_repo = Path(hermes_repo_env).resolve()
         provider = hermes_provider
-        if provider == "openai" and not os.environ.get("REVIEW_MODEL", "").strip():
-            # empty model falls back to hermes's default id, which is
-            # OpenRouter-shaped and cannot be served by api.openai.com
-            detail = "hermes+openai requires a provider-native REVIEW_MODEL"
+        review_model = os.environ.get("REVIEW_MODEL", "").strip()
+        if provider == "openai" and (not review_model or "/" in review_model):
+            # an empty model falls back to hermes's default id and a slash
+            # marks an OpenRouter-shaped one — api.openai.com serves neither,
+            # so the session would burn its budget on an unservable id
+            detail = (
+                "hermes+openai requires a provider-native REVIEW_MODEL "
+                "(gpt-5.6-terra, no openai/ prefix)"
+            )
             log.warning("%s; skipping review", detail)
             if emit_env:
                 _emit(
