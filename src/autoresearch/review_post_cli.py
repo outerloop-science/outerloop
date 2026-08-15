@@ -59,6 +59,11 @@ def post_from_file(
         log.warning("findings envelope names a different PR; refused")
         return None
     kind = envelope.get("kind")
+    if kind == "skip-clean":
+        # a clean skip (bot PR, opt-out) posts nothing by design; the
+        # envelope exists so a MISSING artifact always means a broken session
+        log.info("session skipped cleanly (%s); nothing to post", envelope.get("detail", ""))
+        return None
     if kind not in ("skip-stub", "findings"):
         log.warning("unknown envelope kind %r; nothing posted", kind)
         return None

@@ -247,7 +247,12 @@ jobs:
           cache-dependency-glob: .autoresearch/uv.lock
       - name: Download findings
         id: findings
-        continue-on-error: true  # no artifact = clean skip upstream
+        # NO continue-on-error: every session outcome uploads an envelope
+        # (findings / skip-stub / skip-clean), so a missing artifact means
+        # the session died before emitting — fail this job visibly (the
+        # caller's PR stays green; the job is continue-on-error at job
+        # level). Observed live 2026-08-15: errored terra sessions posted
+        # nothing and read as quiet clean days.
         uses: actions/download-artifact@v4
         with:
           name: review-findings-${{ inputs.opinion_id || inputs.backend }}-${{ env.PR_NUMBER }}
