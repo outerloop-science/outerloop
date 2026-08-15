@@ -1106,7 +1106,7 @@ def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> Non
     # recovery: comment + close + state cleared
     contract_alarm(tmp_path, g, "org/pilot", None, NOW)
     assert g.closed == [7]
-    assert any("loads again" in body for _, body in g.comments)
+    assert any("lanes resume" in body for _, body in g.comments)
     assert not (tmp_path / "contract-alarm.json").exists()
     # healthy steady state: no writes at all
     contract_alarm(tmp_path, g, "org/pilot", None, NOW)

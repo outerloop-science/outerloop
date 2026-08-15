@@ -327,7 +327,7 @@ def contract_alarm(
                 return
             with contextlib.suppress(Exception):
                 github.comment(
-                    target, open_alarm, "The contract loads again; launch lanes resume this tick."
+                    target, open_alarm, "The tick loads again cleanly; launch lanes resume."
                 )
         if state:
             with contextlib.suppress(OSError):
@@ -348,14 +348,14 @@ def contract_alarm(
         try:
             number = _find_alarm_issue(github, target, bot_login) or github.create_issue(
                 target,
-                "autoresearch: contract failed to load — launch lanes are paused",
-                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has been unable to "
-                f"load `.autoresearch.yaml` for {count} consecutive ticks; "
-                f"intake, steward, and self-initiated lanes sit out until it "
-                f"loads. The error below says whether the contract itself was "
-                f"rejected or the fetch is failing.\n\n"
+                "autoresearch: launch lanes are paused",
+                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator's launch lanes "
+                f"(intake, steward, self-initiated) have sat out {count} "
+                f"consecutive ticks. The error below names the cause — a "
+                f"contract that failed to load, or a panel config the climb "
+                f"would reject.\n\n"
                 f"{_fence(safe_error)}\n{safe_error}\n{_fence(safe_error)}\n\n"
-                f"This issue closes itself when the contract loads again.",
+                f"This issue closes itself when a tick passes cleanly.",
             )
             if number:
                 state["issue"] = number
@@ -951,6 +951,13 @@ def tick(
             except Exception as exc:
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
                 contract_error = f"{type(exc).__name__}: {exc}"
+            if contract_error is None:
+                # a bad panel config idles the same launch lanes a bad
+                # contract does — same silent-idle class ("this cost 36
+                # hours once"), so it rides the same alarm
+                panel_error = _panel_preflight_error(followup_spec)
+                if panel_error:
+                    contract_error = f"panel preflight: {panel_error}"
             try:
                 contract_alarm(
                     root,
