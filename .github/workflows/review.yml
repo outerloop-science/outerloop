@@ -29,7 +29,10 @@ jobs:
     with:
       bot_login: agentic-learning-bot
       backend: hermes
-      model: openai/gpt-5.6-terra
+      # openai-direct: same token rate, no OpenRouter platform fee (the org's
+      # OpenAI account is tax-exempt); model id is provider-native
+      hermes_provider: openai
+      model: gpt-5.6-terra
       opinion_label: second opinion — terra
     secrets:
-      openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+      openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
