@@ -175,4 +175,6 @@ add the thorough one where depth is worth the extra turns.
   identities; the ensemble.
 
 Nothing here is urgent. It is the shape to grow into, written down so the interim
-is recognized as interim.
+is recognized as interim. The loop mechanics of the in-orchestrator step —
+panel, round policy, stopping, egress — are specified in
+`orchestrator-verify.md`.
