@@ -1109,19 +1109,25 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
-def _panel_key_missing(spec: FollowupSpec) -> str:
-    """Path of the panel key file if the panel needs one it cannot read, else "".
+def _panel_key_error(spec: FollowupSpec) -> str:
+    """Why the climb could not read its panel key ("" when it can).
 
     Preflighted BEFORE claiming or submitting: the climb CLI fails loudly on a
-    missing key, but by then an intake issue is already claimed — and
+    bad key file, but by then an intake issue is already claimed — and
     pick_issue never reclaims — so the strand must be caught on the tick host,
-    which shares the filesystem the climb will read."""
+    which shares the home filesystem the climb will read. Reading through
+    FileTokenProvider applies the climb's exact acceptance rules (exists,
+    mode 600, non-empty), so preflight and climb cannot disagree."""
     if not spec.panel.strip():
         return ""
     from autoresearch.climb import PANEL_KEY_DEFAULT
+    from autoresearch.github import FileTokenProvider
 
-    path = Path(spec.panel_key_file or os.path.expanduser(PANEL_KEY_DEFAULT))
-    return "" if path.is_file() else str(path)
+    try:
+        FileTokenProvider(Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()).token()
+        return ""
+    except Exception as exc:
+        return str(exc)
 
 
 def _climb_limit_argv(limits: EffectiveLimits) -> list[str]:
@@ -1183,13 +1189,13 @@ def service_self_initiated(
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
             return None
-        missing_key = _panel_key_missing(spec)
-        if missing_key:
+        key_error = _panel_key_error(spec)
+        if key_error:
             log.error(
-                "climb on %s not launched: panel enabled but key file %s is missing "
-                "(provision it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                "climb on %s not launched: panel enabled but its key is unusable — %s "
+                "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
                 benchmark,
-                missing_key,
+                key_error,
             )
             return None
         if dry_run:
@@ -1395,13 +1401,13 @@ def service_intake(
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
-        missing_key = _panel_key_missing(spec)
-        if missing_key:
+        key_error = _panel_key_error(spec)
+        if key_error:
             log.error(
-                "issue #%d not claimed: panel enabled but key file %s is missing "
-                "(provision it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                "issue #%d not claimed: panel enabled but its key is unusable — %s "
+                "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
                 task.number,
-                missing_key,
+                key_error,
             )
             return None
         if dry_run:

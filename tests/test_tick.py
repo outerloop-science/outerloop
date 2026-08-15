@@ -605,7 +605,8 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
 
     contract = _self_contract()
     panel_key = tmp_path / "verifier_key"
-    panel_key.write_text("k")  # preflight: no key, no launch
+    panel_key.write_text("k")  # preflight: no usable key, no launch
+    panel_key.chmod(0o600)
     spec = FollowupSpec(
         target="org/pilot",
         account="acct",
@@ -848,7 +849,8 @@ roadmap: docs/roadmap.md
         "org/pilot",
     )
     panel_key = tmp_path / "verifier_key"
-    panel_key.write_text("k")  # preflight: no key, no launch
+    panel_key.write_text("k")  # preflight: no usable key, no launch
+    panel_key.chmod(0o600)
     spec = FollowupSpec(
         target="org/pilot",
         account="acct",
@@ -1629,12 +1631,19 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     assert off is not None and off.panel == ""
 
 
-def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path) -> None:
-    """Panel on + unreadable key file: nothing is claimed or submitted (the
-    climb would die at startup AFTER the claim, stranding the issue — the
-    tick catches it on the shared filesystem first). A provisioned key or a
-    disabled panel passes."""
-    from autoresearch.tick import FollowupSpec, _panel_key_missing
+def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
+    """Panel on + a key the climb would reject (missing, group-readable,
+    empty): the intake lane claims nothing and the self-initiated lane
+    submits nothing — the strand is caught before any side effect. The
+    preflight reads through FileTokenProvider so its acceptance rules ARE
+    the climb's; a 0600 non-empty key or a disabled panel passes, and a
+    ~ path expands (operator env values arrive verbatim)."""
+    from autoresearch.tick import (
+        FollowupSpec,
+        _panel_key_error,
+        service_intake,
+        service_self_initiated,
+    )
 
     def make(**kw: Any) -> FollowupSpec:
         return FollowupSpec(
@@ -1647,9 +1656,61 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path) -> None:
             **kw,
         )
 
-    missing = tmp_path / "nope"
-    assert _panel_key_missing(make(panel_key_file=str(missing))) == str(missing)
-    provisioned = tmp_path / "verifier_key"
-    provisioned.write_text("k")
-    assert _panel_key_missing(make(panel_key_file=str(provisioned))) == ""
-    assert _panel_key_missing(make(panel="")) == ""
+    loose = tmp_path / "loose"
+    loose.write_text("k")  # default mode: group/world readable
+    empty = tmp_path / "empty"
+    empty.write_text("")
+    empty.chmod(0o600)
+    good = tmp_path / "good"
+    good.write_text("k")
+    good.chmod(0o600)
+    assert "chmod 600" in _panel_key_error(make(panel_key_file=str(loose)))
+    assert "empty" in _panel_key_error(make(panel_key_file=str(empty)))
+    assert _panel_key_error(make(panel_key_file=str(tmp_path / "nope"))) != ""
+    assert _panel_key_error(make(panel_key_file=str(good))) == ""
+    assert _panel_key_error(make(panel="")) == ""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert _panel_key_error(make(panel_key_file="~/good")) == ""
+
+    # both lanes consult it BEFORE side effects: nothing claimed or submitted
+    bad = make(panel_key_file=str(tmp_path / "nope"))
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(" ".join(argv))
+        return CommandResult(0, "123\n", "")
+
+    contract = _self_contract()
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, bad, contract, NOW) is None
+
+    class IntakeGitHub:
+        def __init__(self) -> None:
+            self.comments: list[str] = []
+
+        def list_open_issues(self, repo):
+            return [
+                {
+                    "number": 5,
+                    "title": "improve tsp",
+                    "body": "",
+                    "user": {"login": "mengye"},
+                    "author_association": "OWNER",
+                    "labels": [],
+                }
+            ]
+
+        def list_comments(self, repo, number):
+            return []
+
+        def comment(self, repo, number, body):
+            self.comments.append(body)
+
+    gh = IntakeGitHub()
+    assert service_intake(tmp_path, gh, compute, bad, NOW, contract=contract) is None
+    assert submitted == [] and gh.comments == []
+    # positive control: the same issue IS claimed once the key is usable,
+    # so the bad-path assertions above cannot pass vacuously
+    ok = make(panel_key_file=str(good))
+    assert service_intake(tmp_path, gh, compute, ok, NOW, contract=contract) is not None
+    assert len(gh.comments) == 1 and len(submitted) == 1

@@ -1040,7 +1040,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--panel-key-file",
-        default=os.path.expanduser(PANEL_KEY_DEFAULT),
+        default=PANEL_KEY_DEFAULT,
         help="key file for panel judge sessions (the verifier's own key, never the author's)",
     )
     parser.add_argument("--panel-revisions", type=int, default=1)
@@ -1123,7 +1123,7 @@ def main() -> int:
         from autoresearch.panel import LENS_KINDS
         from autoresearch.review_agent import build_reviewer_harness
 
-        panel_key = FileTokenProvider(Path(args.panel_key_file)).token()
+        panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
         lenses = []
         for entry in args.panel.split(","):
             kind, _, rest = entry.strip().partition(":")
