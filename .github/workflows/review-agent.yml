@@ -34,8 +34,11 @@ permissions:
   contents: read
   pull-requests: write
 
+# The bench gets its OWN group: experiments queue behind each other but
+# never block (or get blocked by) a standing round. Racing a standing round
+# only risks a cosmetic duplicate round number.
 concurrency:
-  group: advisory-review-agent-${{ inputs.pr_number }}
+  group: advisory-review-bench-${{ inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:

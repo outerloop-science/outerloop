@@ -42,6 +42,7 @@ def main() -> int:
     # Backend is a deployment choice, not baked in: pick the harness and its
     # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
     backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
+    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
         "codex": "OPENAI_REVIEWER_KEY",
@@ -49,8 +50,18 @@ def main() -> int:
     }.get(backend)
     if key_var is None:
         log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
+        if emit_env:
+            # a typo in a caller's backend input must be a PR-visible stub,
+            # not a silent log line
+            _emit(
+                Path(emit_env).resolve(),
+                repo,
+                number,
+                kind="skip-stub",
+                detail=f"unknown REVIEW_BACKEND {backend!r}",
+                reviewed_by=backend,
+            )
         return 0
-    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     api_key = os.environ.get(key_var, "").strip()
     if not api_key:
         log.warning("%s is unset or empty; skipping review", key_var)
@@ -64,6 +75,8 @@ def main() -> int:
                 number,
                 kind="skip-stub",
                 detail=f"{key_var} is unset or empty",
+                # no harness exists yet; the backend name still attributes the stub
+                reviewed_by=backend,
             )
         return 0
     # Backend-specific deployment config, resolved from env so the workflow

@@ -128,3 +128,18 @@ def test_missing_key_in_emit_mode_writes_a_stub(monkeypatch: Any, tmp_path: Path
     envelope = json.loads((tmp_path / "findings.json").read_text())
     assert envelope["kind"] == "skip-stub"
     assert "ANTHROPIC_REVIEWER_KEY" in envelope["detail"]
+    assert envelope["reviewed_by"] == "claude"  # the stub names its backend
+
+
+def test_unknown_backend_in_emit_mode_writes_a_stub(monkeypatch: Any, tmp_path: Path) -> None:
+    import json
+
+    env = _base_env()
+    env["REVIEW_BACKEND"] = "gemeni"  # a typo'd caller input
+    env["REVIEW_EMIT_FILE"] = str(tmp_path / "findings.json")
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "unknown REVIEW_BACKEND" in envelope["detail"]

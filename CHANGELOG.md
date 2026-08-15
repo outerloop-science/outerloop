@@ -31,15 +31,15 @@ Versions follow [SemVer](https://semver.org).
   via hermes/OpenRouter) next to the Claude round — the first live user of the
   least-token split. Takes effect for PRs opened after this merges
   (`pull_request_target` runs the base branch's workflow).
-- Second-opinion reviews from non-Claude backends on the auto path, via the
-  least-token split (`advisory-second-opinion.yml`): a read-only session job
-  runs the backend (hermes/terra via OpenRouter, or codex) and emits raw
-  findings as an artifact; a separate posting job — no session — re-validates
-  the envelope (right PR, bot-skip re-checked, sanitizing render) and posts
-  through the normal advisory path with a `Lens:` label. Targets opt in by
-  calling the new reusable next to the Claude one. On private repos the
-  session job carries a read-scoped token only; it becomes tokenless at the
-  public flip.
+- The advisory reusable (`advisory-review-agent.yml`) is now one workflow for
+  every backend, always through the least-token split: a read-only session
+  job runs the backend (claude default; hermes/OpenRouter; codex) and emits
+  raw findings as an artifact; a separate posting job — no session —
+  re-validates the envelope (right PR, bot-skip re-checked, sanitizing
+  render) and posts with an opinion label. A second opinion is one more caller
+  job with a different backend/model. Session cost and turns are logged at
+  emit/post time. On private repos the session job carries a read-scoped
+  token only; it becomes tokenless at the public flip.
 - Every judge round now names its reviewer in the round stamp —
   ``reviewer `backend/model`​`` (e.g. `claude/claude-opus-5`, `hermes/<terra
   id>`) — on advisory rounds, second opinions (via the envelope), and
@@ -62,11 +62,10 @@ Versions follow [SemVer](https://semver.org).
   (trusted); codex an OS sandbox (on GitHub-hosted, the Landlock sandbox via
   `REVIEW_CODEX_LEGACY_LANDLOCK`, since the default bwrap cannot init there);
   hermes an environmental boundary only (no shell, inert writes on an ephemeral
-  runner) — experimental. The auto path (`advisory-review-agent.yml`) is
-  **claude only**: both codex (shell) and hermes (its `file` tool reads
-  arbitrary paths, incl. `/proc/<pid>/environ`) can reach the step's
-  `GITHUB_TOKEN`, so they run only from the manual bench (`review-agent.yml`) or
-  the cluster until the tokenless split exists.
+  runner) — experimental. On the auto path every backend now runs through the
+  least-token split (see the consolidated reusable above), so no session sits
+  next to a write token; the manual bench (`review-agent.yml`) remains the
+  single-job informed-caveat path for experiments.
 
 ### Changed
 

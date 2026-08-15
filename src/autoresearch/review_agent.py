@@ -274,7 +274,14 @@ def run_agent_review(
                 data=role_result.data,
                 reviewed_by=backend_id(harness),
             )
-            log.info("emitted findings for %s#%s to %s", repo, number, emit_path)
+            cost = role_result.session.cost_usd
+            log.info(
+                "emitted findings for %s#%s (cost=%s turns=%d)",
+                repo,
+                number,
+                f"${cost:.2f}" if cost else "unreported",
+                role_result.session.num_turns,
+            )
             return "emitted"
 
         rendered = format_review(review, pr.diff)
@@ -294,7 +301,15 @@ def run_agent_review(
             fallback_body=full,
             reviewed_by=backend_id(harness),
         )
-        log.info("posted agent review (%s) on %s#%s", round_label, repo, number)
+        cost = role_result.session.cost_usd
+        log.info(
+            "posted agent review (%s) on %s#%s (cost=%s turns=%d)",
+            round_label,
+            repo,
+            number,
+            f"${cost:.2f}" if cost else "unreported",
+            role_result.session.num_turns,
+        )
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("agent review did not complete: %s: %s", type(exc).__name__, exc)
