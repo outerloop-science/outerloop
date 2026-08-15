@@ -31,15 +31,15 @@ Versions follow [SemVer](https://semver.org).
   via hermes/OpenRouter) next to the Claude round — the first live user of the
   least-token split. Takes effect for PRs opened after this merges
   (`pull_request_target` runs the base branch's workflow).
-- Second-opinion reviews from non-Claude backends on the auto path, via the
-  least-token split (`advisory-second-opinion.yml`): a read-only session job
-  runs the backend (hermes/terra via OpenRouter, or codex) and emits raw
-  findings as an artifact; a separate posting job — no session — re-validates
-  the envelope (right PR, bot-skip re-checked, sanitizing render) and posts
-  through the normal advisory path with a `Lens:` label. Targets opt in by
-  calling the new reusable next to the Claude one. On private repos the
-  session job carries a read-scoped token only; it becomes tokenless at the
-  public flip.
+- The advisory reusable (`advisory-review-agent.yml`) is now one workflow for
+  every backend, always through the least-token split: a read-only session
+  job runs the backend (claude default; hermes/OpenRouter; codex) and emits
+  raw findings as an artifact; a separate posting job — no session —
+  re-validates the envelope (right PR, bot-skip re-checked, sanitizing
+  render) and posts with a `Lens:` label. A second opinion is one more caller
+  job with a different backend/model. Session cost and turns are logged at
+  emit/post time. On private repos the session job carries a read-scoped
+  token only; it becomes tokenless at the public flip.
 - Every judge round now names its reviewer in the round stamp —
   ``reviewer `backend/model`​`` (e.g. `claude/claude-opus-5`, `hermes/<terra
   id>`) — on advisory rounds, second opinions (via the envelope), and

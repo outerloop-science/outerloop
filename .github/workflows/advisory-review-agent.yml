@@ -1,18 +1,28 @@
-# Reusable agent-session reviewer. Target repos call this with `uses:` and never
-# vendor the reviewer code. It checks out the PR head READ-ONLY and runs the
-# reviewer as an agent that reads the code (no Bash/Write — untrusted PR code is
-# only read, never executed) and posts findings. Constraints: never reviews
-# bot-authored PRs automatically, never approves, never fails the caller's CI,
-# and never runs with secrets on a fork PR (same-repo gate).
+# Reusable agent-session reviewer — ONE workflow, any backend, always the
+# least-token split. Target repos call this with `uses:` and never vendor the
+# reviewer code. A standing reviewer is one caller job; a second opinion is
+# another caller job with a different backend/model/lens.
 #
-# CLAUDE ONLY on this auto path — deliberately. Claude enforces read-only at the
-# TOOL SET (no Write/Edit/Bash). The other backends can't be trusted next to the
-# step's GITHUB_TOKEN here: codex reads by executing shell, and hermes's `file`
-# tool reads arbitrary paths — either can open /proc/<pid>/environ and lift the
-# token. They run on the auto path via the LEAST-TOKEN SPLIT instead:
-# advisory-second-opinion.yml (read-only session job emits findings; a separate
-# posting job holds the write token with no session next to it). The manual
-# bench (review-agent.yml) remains for one-off experiments.
+# Topology (every backend, claude included):
+#   session job — READ-ONLY permissions. Checks out the PR head (never
+#     executed), runs the review session, emits raw findings (or a skip-stub
+#     marker) as an artifact. The only secrets present are the session's own
+#     model key and read-scoped tokens (job token + the reviewer repo's
+#     read-only deploy key while private) — nothing worth stealing, so even
+#     backends that can read /proc (codex: shell; hermes: file tool) are safe
+#     here. Claude's native read-only tool set and /proc-safe Read remain
+#     defense in depth rather than load-bearing.
+#   post job — holds pull-requests:write, runs NO model session. Re-validates
+#     the envelope (right PR, bot/opt-out skip re-checked, sanitizing render)
+#     and posts through the normal advisory path with the reviewer named in
+#     the round stamp.
+#
+# Constraints: never reviews bot-authored PRs, never approves, never fails
+# the caller's CI, same-repo PRs only. By design: the "Round N" counter is
+# shared across all lenses on a PR (the number is cosmetic; the stamp names
+# the reviewer), and a missing/expired backend key posts a could-not-run stub
+# naming its lens on each triggering PR until fixed — the noise IS the
+# warning.
 name: advisory-review-agent
 
 on:
@@ -22,6 +32,34 @@ on:
         description: Login of your bot account — its PRs are never reviewed. Required.
         type: string
         required: true
+      backend:
+        description: Review backend (claude | hermes | codex).
+        type: string
+        required: false
+        default: claude
+      model:
+        description: >-
+          Model for the session. Empty uses the backend default
+          (claude-opus-5 for claude; the backend's own default otherwise).
+          For hermes pass an OpenRouter id.
+        type: string
+        required: false
+        default: ''
+      lens_label:
+        description: >-
+          Label shown on the posted round (who this opinion is). Leave empty
+          for the primary reviewer.
+        type: string
+        required: false
+        default: ''
+      lens_id:
+        description: >-
+          Slug distinguishing this lens's artifact and concurrency group when
+          a caller runs the SAME backend twice (two models). Defaults to the
+          backend name.
+        type: string
+        required: false
+        default: ''
       reviewer_repo:
         description: Repo holding the reviewer (change this if you forked).
         type: string
@@ -32,16 +70,16 @@ on:
         type: string
         required: false
         default: main
-      model:
-        description: Model for the reviewer session. (No effort input — agent
-          sessions are budgeted by turns and walltime, not a per-call effort
-          knob.)
-        type: string
-        required: false
-        default: claude-opus-5
     secrets:
       anthropic_reviewer_key:
-        required: true
+        description: Anthropic key for the claude backend.
+        required: false
+      openrouter_api_key:
+        description: OpenRouter key for the hermes backend.
+        required: false
+      openai_reviewer_key:
+        description: OpenAI key for the codex backend.
+        required: false
       checkout_ssh_key:
         description: >-
           Read-only deploy key for the reviewer repo. Needed while that repo is
@@ -49,34 +87,41 @@ on:
           once it is public.
         required: false
 
+# The caller grants this much; each job below narrows it further.
 permissions:
   contents: read
   pull-requests: write
 
-# One review at a time per PR. Do NOT cancel in progress: a running session is a
-# paid model call, so queue a second dispatch behind it rather than kill it.
+# One review per lens per PR at a time. Do NOT cancel in progress: a running
+# session is a paid model call, so queue behind it rather than kill it.
 concurrency:
-  group: advisory-review-agent-${{ github.event.pull_request.number }}
+  group: advisory-review-agent-${{ inputs.lens_id || inputs.backend }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
-  review:
+  session:
     runs-on: ubuntu-latest
-    # Advisory means advisory: an infrastructure failure here must never turn the
-    # caller's PR red. (Failures still show in this job's run log.)
+    # Advisory means advisory: an infrastructure failure here must never turn
+    # the caller's PR red. (Failures still show in this job's run log.)
     continue-on-error: true
     # Backstop a hung session so it can't burn the 360-min default runner budget.
     timeout-minutes: 70
-    # Fork PRs must not reach the secret. `pull_request_target` runs in the base
-    # repo's context, so this gate is what closes the pwn-request hole. The
-    # reviewer also never executes PR code, a second layer of defense.
+    # Fork PRs must not reach any secret. `pull_request_target` runs in the
+    # base repo's context, so this gate is what closes the pwn-request hole.
+    # The reviewer also never executes PR code, a second layer of defense.
     if: github.event.pull_request.head.repo.full_name == github.repository
+    # READ-ONLY: the session runs here, so the job token must not be worth
+    # stealing. pull-requests:read lets the CLI fetch the PR metadata/diff.
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      BACKEND: ${{ inputs.backend }}
     steps:
-      # Checks out the reviewer, never the pull request's code for execution. An
-      # empty ssh-key is ignored by actions/checkout (token auth is enough for a
-      # public or same-repo reviewer); a private reviewer repo needs the key.
+      # Checks out the reviewer, never the pull request's code for execution.
+      # An empty ssh-key is ignored by actions/checkout (token auth is enough
+      # for a public or same-repo reviewer); a private reviewer repo needs it.
       - name: Check out the reviewer
         uses: actions/checkout@v4
         with:
@@ -95,25 +140,103 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Native binary, pinned to the version validated on cluster0 — bump
-      # deliberately. It lands on PATH, which the harness passes to the scrubbed
-      # session env.
-      - name: Install the Claude CLI
+      # Pinned artifacts, same discipline across backends: claude installer
+      # pin, codex npm pin, hermes release tag. Bump deliberately.
+      - name: Install the ${{ inputs.backend }} backend
+        env:
+          HERMES_REF: v2026.8.13
         run: |
           set -euo pipefail
-          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Run the agent review
+          case "$BACKEND" in
+            codex)
+              npm install -g @openai/codex@0.130.0
+              ;;
+            hermes)
+              git clone --depth 1 --branch "$HERMES_REF" \
+                https://github.com/NousResearch/hermes-agent \
+                "$GITHUB_WORKSPACE/hermes-agent"
+              ;;
+            claude)
+              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "unsupported review backend: $BACKEND" >&2
+              exit 0  # advisory: never red the caller's CI
+              ;;
+          esac
+      - name: Run the session (emit only — nothing posted from this job)
         working-directory: .autoresearch
         env:
-          # PR_NUMBER and PR_REPO are read from the job env / github context.
-          # REVIEW_BACKEND defaults to claude in the CLI; this path never sets it
-          # to codex/hermes (see the header — /proc token reach).
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          REVIEW_MODEL: ${{ inputs.model }}
           ANTHROPIC_REVIEWER_KEY: ${{ secrets.anthropic_reviewer_key }}
-          # The caller's own workflow token — the bot PAT is never used here.
+          OPENROUTER_API_KEY: ${{ secrets.openrouter_api_key }}
+          OPENAI_REVIEWER_KEY: ${{ secrets.openai_reviewer_key }}
+          # codex's default bwrap can't init on GitHub-hosted; opt into
+          # Landlock (read-only, no egress). Harmless for other backends.
+          REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
+          # hermes reads its pinned clone from here; provider seeds ~/.hermes.
+          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
+          REVIEW_HERMES_PROVIDER: openrouter
+          # read-only job token: PR metadata/diff fetch only
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
-          REVIEW_MODEL: ${{ inputs.model }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_agent_cli
+      - name: Upload findings
+        # not `success()`: a session step that died AFTER emitting must still
+        # deliver its findings (or its skip-stub) to the posting job
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/findings.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  post:
+    runs-on: ubuntu-latest
+    needs: session
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: true
+    timeout-minutes: 15
+    # The write half: no model session runs in this job.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Download findings
+        id: findings
+        continue-on-error: true  # no artifact = clean skip upstream
+        uses: actions/download-artifact@v4
+        with:
+          name: review-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}
+      - name: Post the findings
+        if: steps.findings.outcome == 'success'
+        working-directory: .autoresearch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+          REVIEW_LENS_LABEL: ${{ inputs.lens_label }}
+        run: uv run python -m autoresearch.review_post_cli

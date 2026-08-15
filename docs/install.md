@@ -44,16 +44,18 @@ jobs:
 
 **Step 3 — open a pull request.** A comment appears within a minute or two.
 
+Every review runs through the least-token split: the model session holds
+read-only permissions; a separate posting job holds the write token. Each
+round names its reviewer in the stamp.
+
 **Optional — a second, independent opinion from an open-model backend.** Add
-one more job to the same file (and an `OPENROUTER_API_KEY` repo secret). It
-runs through the least-token split: the model session holds read-only
-permissions; a separate posting job holds the write token. Each opinion posts
-its own round, labeled, with the reviewer named in the round stamp:
+one more job to the same file (and an `OPENROUTER_API_KEY` repo secret) —
+same reusable, different backend. Each opinion posts its own labeled round:
 
 ```yaml
   second-opinion:
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-second-opinion.yml@main
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: my-bot
       backend: hermes

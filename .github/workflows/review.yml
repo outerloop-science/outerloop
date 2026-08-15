@@ -19,17 +19,16 @@ jobs:
     secrets:
       anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
 
-  # Independent second opinion (terra via hermes/OpenRouter) through the
-  # least-token split — its round carries a Lens label and its own reviewer
-  # attribution in the stamp. Independence is the point: no coordination
-  # with the primary round.
+  # Independent second opinion (terra via hermes/OpenRouter) — same reusable,
+  # different backend/lens. Independence is the point: no coordination with
+  # the primary round.
   second-opinion:
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
 
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-second-opinion.yml@main
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: agentic-learning-bot
-      backend: hermes  # explicit: the model id below is an OpenRouter id
+      backend: hermes
       model: openai/gpt-5.6-terra
       lens_label: second opinion — terra
     secrets:
