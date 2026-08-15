@@ -1336,6 +1336,7 @@ roadmap: docs/roadmap.md
         home=tmp_path,
         key_file="/k",
         steward_key_file="/k",
+        panel="",  # the outage latch must be what returns None, not the preflight
     )
 
     class G:

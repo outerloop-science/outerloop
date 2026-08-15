@@ -61,6 +61,12 @@ def qualifying_issue(issue: dict, bot_login: str) -> bool:
 def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTask | None:
     """The oldest qualifying, unclaimed issue that names exactly one
     benchmark. At most one — intake is deliberately slow."""
+    if not bot_login.strip():
+        # fail closed like the steward picker: with no identity the claim
+        # scan below would see NO claims and re-claim every tick — an
+        # unbounded paid loop
+        log.warning("pick_issue: bot_login is blank; intake lane sits out")
+        return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
         labels = {

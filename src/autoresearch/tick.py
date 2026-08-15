@@ -514,7 +514,7 @@ def service_in_review(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
                     partition=spec.job_partition or spec.partition,
-                    time_minutes=spec.time_minutes,
+                    time_minutes=min(spec.time_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"followup-{record.run_id}"[:60], now, argv),
                     cpus=4,
                     mem="8G",
@@ -1174,6 +1174,23 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         return str(exc)
 
 
+def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
+    """The submitted climb walltime: contract budget + panel allowance,
+    clamped at the partition cap. Warns when the cap cuts below the session
+    budget — the self-deadline would then fire before the author's own
+    clock, and that must be a visible operator choice, never a silent
+    surprise."""
+    job = min(limits.climb_job_minutes + _panel_job_minutes(spec, limits), spec.max_job_minutes)
+    if job < limits.session_minutes:
+        log.warning(
+            "work-job cap %d min is below the %d-min session budget; sessions "
+            "will be cut short by the self-deadline",
+            job,
+            limits.session_minutes,
+        )
+    return job
+
+
 def _panel_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
     """Extra walltime the panel needs, ADDED to the contract-clamped job
     budget: the contract's knobs cap the AUTHOR's spend and their ceilings
@@ -1268,10 +1285,7 @@ def service_self_initiated(
             return None
         if dry_run:
             return (benchmark, "dry-run")
-        job_minutes = min(
-            limits.climb_job_minutes + _panel_job_minutes(spec, limits),
-            spec.max_job_minutes,
-        )
+        job_minutes = _climb_job_minutes(spec, limits)
         argv = [
             "uv",
             "run",
@@ -1359,11 +1373,10 @@ def service_steward(
             submitted_at = float(pending.get("submitted_at", 0.0))
             landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
             expired = now - submitted_at > PENDING_TTL_S
-            if (
-                not landed
-                and not expired
-                and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
-            ):
+            alive = _holder_alive(compute, str(pending.get("job_id", "")))
+            # liveness first, TTL only breaks unknown ties — same rule as
+            # the self-initiated lane (queue wait can outlive the TTL)
+            if not landed and (alive is True or (not expired and alive is not False)):
                 return None
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
@@ -1411,7 +1424,7 @@ def service_steward(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
                     partition=spec.job_partition or spec.partition,
-                    time_minutes=limits.climb_job_minutes,
+                    time_minutes=min(limits.climb_job_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
@@ -1484,10 +1497,7 @@ def service_intake(
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
-        job_minutes = min(
-            limits.climb_job_minutes + _panel_job_minutes(spec, limits),
-            spec.max_job_minutes,
-        )
+        job_minutes = _climb_job_minutes(spec, limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from autoresearch.intake import CLAIM_MARKER, RELEASE_MARKER
