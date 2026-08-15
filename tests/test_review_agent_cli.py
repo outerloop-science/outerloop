@@ -215,6 +215,51 @@ def test_hermes_openai_without_model_writes_a_stub(monkeypatch: Any, tmp_path: P
     assert "args" not in calls
 
 
+def test_fail_closed_skips_emit_stubs(monkeypatch: Any, tmp_path: Path) -> None:
+    # every fail-closed path leaves an envelope in emit mode: the post job
+    # requires the artifact, so a silent return would fail it for the wrong
+    # reason (and a misconfigured standing reviewer must be PR-visible)
+    import json
+
+    for missing, fragment in [
+        ("REVIEW_BOT_LOGIN", "REVIEW_BOT_LOGIN is unset"),
+        ("REVIEW_CHECKOUT", "REVIEW_CHECKOUT is unset"),
+    ]:
+        env = _base_env()
+        del env[missing]
+        env["REVIEW_EMIT_FILE"] = str(tmp_path / f"{missing}.json")
+        calls = _patch(monkeypatch, env)
+        assert cli.main() == 0
+        assert "args" not in calls
+        envelope = json.loads((tmp_path / f"{missing}.json").read_text())
+        assert envelope["kind"] == "skip-stub"
+        assert fragment in envelope["detail"]
+
+
+def test_openrouter_native_shaped_model_writes_a_stub(monkeypatch: Any, tmp_path: Path) -> None:
+    # the mirror of the openai-direct gate: OpenRouter cannot resolve a
+    # provider-native id, so the session would burn its budget for nothing
+    import json
+
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENROUTER_API_KEY": "sk-or-test",
+            "REVIEW_MODEL": "gpt-5.6-terra",  # missing the openai/ prefix
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "OpenRouter-shaped" in envelope["detail"]
+
+
 def test_padded_provider_matches_github_expression_semantics(
     monkeypatch: Any, tmp_path: Path
 ) -> None:

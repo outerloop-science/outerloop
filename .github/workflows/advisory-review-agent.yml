@@ -209,6 +209,20 @@ jobs:
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_agent_cli
+      - name: Backstop envelope
+        # Runs only when the CLI exited 0 (default step semantics): a
+        # reviewer_ref pinned BEFORE envelope-on-every-outcome writes nothing
+        # on a clean skip, which would hard-fail the post job's required
+        # download on every bot PR. A crashed session exits nonzero, skips
+        # this step, and still fails loudly downstream.
+        working-directory: .autoresearch
+        env:
+          PR_REPO: ${{ github.repository }}
+          EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: |
+          if [ ! -f "$EMIT_FILE" ]; then
+            uv run python -c "import json, os, pathlib; pathlib.Path(os.environ['EMIT_FILE']).write_text(json.dumps({'repo': os.environ['PR_REPO'], 'number': int(os.environ['PR_NUMBER']), 'kind': 'skip-clean', 'detail': 'session wrote no envelope (reviewer_ref predates envelope emission)'}))"
+          fi
       - name: Upload findings
         # not `success()`: a session step that died AFTER emitting must still
         # deliver its findings (or its skip-stub) to the posting job

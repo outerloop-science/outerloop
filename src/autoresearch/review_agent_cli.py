@@ -23,6 +23,22 @@ from autoresearch.review_agent import (
 log = logging.getLogger(__name__)
 
 
+def _skip_stub(emit_env: str, repo: str, number: int, detail: str, reviewed_by: str) -> None:
+    """A fail-closed skip still leaves an envelope when emitting: the post job
+    REQUIRES an artifact, and a standing reviewer that cannot run must say so
+    on the PR rather than fail into silence."""
+    log.warning("%s; skipping review", detail)
+    if emit_env:
+        _emit(
+            Path(emit_env).resolve(),
+            repo,
+            number,
+            kind="skip-stub",
+            detail=detail,
+            reviewed_by=reviewed_by,
+        )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     # Fail closed on a missing/invalid PR reference too, so a misconfigured
@@ -33,11 +49,12 @@ def main() -> int:
         log.warning("PR_REPO/PR_NUMBER unset or invalid; skipping")
         return 0
     number = int(number_raw)
+    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     # Fail closed: without the bot login we cannot honor "never review
     # bot-authored PRs", so we do not review at all.
     bot_login = os.environ.get("REVIEW_BOT_LOGIN", "").strip()
     if not bot_login:
-        log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
+        _skip_stub(emit_env, repo, number, "REVIEW_BOT_LOGIN is unset", "")
         return 0
     # Backend is a deployment choice, not baked in: pick the harness and its
     # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
@@ -46,7 +63,6 @@ def main() -> int:
     # workflow's key-injection expressions can never disagree about a value:
     # a padded input misses both layers and lands in the unknown-value stub.
     backend = os.environ.get("REVIEW_BACKEND", "claude").lower() or "claude"
-    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     # a model id is never compared against workflow expressions, so trimming
     # is safe here — and the same trimmed value must reach gate and harness
     review_model = os.environ.get("REVIEW_MODEL", "").strip()
@@ -112,10 +128,28 @@ def main() -> int:
     if backend == "hermes":
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
         if not hermes_repo_env:
-            log.warning("REVIEW_HERMES_REPO is unset; skipping (hermes needs its pinned clone)")
+            _skip_stub(
+                emit_env,
+                repo,
+                number,
+                "REVIEW_HERMES_REPO is unset (hermes needs its pinned clone)",
+                backend,
+            )
             return 0
         hermes_repo = Path(hermes_repo_env).resolve()
         provider = hermes_provider
+        if provider == "openrouter" and review_model and "/" not in review_model:
+            # the mirror mistake: OpenRouter ids are provider/model-shaped, so
+            # a native id would burn a session on an unresolvable model
+            _skip_stub(
+                emit_env,
+                repo,
+                number,
+                "hermes+openrouter requires an OpenRouter-shaped REVIEW_MODEL "
+                "(openai/gpt-5.6-terra, with the provider prefix)",
+                backend,
+            )
+            return 0
         if provider == "openai" and (not review_model or "/" in review_model):
             # an empty model falls back to hermes's default id and a slash
             # marks an OpenRouter-shaped one — api.openai.com serves neither,
@@ -141,7 +175,13 @@ def main() -> int:
     # own repo) if the checkout step were misconfigured.
     checkout = os.environ.get("REVIEW_CHECKOUT", "").strip()
     if not checkout:
-        log.warning("REVIEW_CHECKOUT is unset; skipping (won't review the wrong tree)")
+        _skip_stub(
+            emit_env,
+            repo,
+            number,
+            "REVIEW_CHECKOUT is unset (won't review the wrong tree)",
+            backend,
+        )
         return 0
     workspace = Path(checkout).resolve()
     # The checkout is untrusted: rename instruction files (CLAUDE.md, .claude/
@@ -149,7 +189,13 @@ def main() -> int:
     # failure means an instruction file is still live — fail closed.
     renamed, failed = sanitize_checkout(workspace)
     if failed:
-        log.warning("checkout could not be fully sanitized (%d left); skipping", failed)
+        _skip_stub(
+            emit_env,
+            repo,
+            number,
+            f"checkout could not be fully sanitized ({failed} instruction files left)",
+            backend,
+        )
         return 0
     if renamed:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
