@@ -46,9 +46,7 @@ def main() -> int:
     # hermes's key SOURCE follows its provider: openai-direct uses the same
     # org-registered OpenAI key as codex (no OpenRouter platform fee).
     # Explicitly-empty input means the default, same as an omitted one.
-    hermes_provider = (
-        os.environ.get("REVIEW_HERMES_PROVIDER", "").strip().lower() or "openrouter"
-    )
+    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").strip().lower() or "openrouter"
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
         "codex": "OPENAI_REVIEWER_KEY",
