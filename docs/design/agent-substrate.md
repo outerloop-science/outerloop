@@ -24,7 +24,7 @@ Skills are also the *procedural layer of memory* — see the memory table.
 | execute / bash | author, steward | inside apptainer; **never** reviewer/verifier |
 | pr-context-read | reviewer, verifier | read-only, **tokenless** — the harness fetches PR/issue text; the bot PAT never enters a session |
 | retriever | opt-in per RoleSpec | curated egress for best-practice/reference lookups (the retriever-in-harness seam) |
-| subagent (fan-out) | author, steward | inherits the parent RoleSpec's tools/scope/key; spend counts against the session budget |
+| subagent (fan-out) | all agentic roles | inherits the parent RoleSpec's tools/scope/key as a CEILING (a judge's subagents are read-only by construction); spend counts against the session budget. A subagent may FIND; the parent must JUDGE — verdicts are never delegated |
 
 GitHub **writes** (open PR, comment, update ledger), the **eval run**, and
 **experiment submission** are `act` syscalls, not agent tools: the agent directs
@@ -70,6 +70,79 @@ per tiny thing is the accretion trap in a new costume.
 - `method-notes` — the JEPA method, the variance floor, the curves, the probe,
   known headroom (spiral/decay near 0), the oracle ceiling (~0.81).
 - `eval-and-env` — `uv run python bench_eval.py`, the CPU-torch env, the budget.
+
+## Role manifests: the template
+
+How a role's whole surface — tools, skills, subagents — is declared, so a new
+role (or a new capability on an existing role) has a form to fill in rather
+than a convention to rediscover. `RoleSpec` already carries tools and skill
+names; this adds the file formats and the placement rules.
+
+**Placement rules (the whole section in three lines):**
+
+- A **skill** carries judgment the role must own (how to analyze results, how
+  to review its own diff). It loads into the brief; the role still does the
+  thinking.
+- A **subagent** carries bulk that would pollute the session's context
+  (aggregate 100 runs' logs into a table, sweep a literature allowlist). It
+  returns a digest; the parent does the thinking on the digest.
+- A **gate is never delegated to either.** Self-review improves drafts; it is
+  not verification — the graded thing cannot produce its own grade.
+- For judges the same rule one level down: **a subagent may find; the judge
+  must judge.** Evidence-gathering fans out (read-only, under the parent's
+  ceiling); the verdict is written by the judge session itself.
+
+The same rule places compression: mechanical window compaction is the
+backend's (a harness capability); what-is-worth-keeping about one's own work
+is a skill (externalize before hibernating); about many runs' work, a role
+(the curator's distillation). Nothing load-bearing lives only in a
+compressible medium.
+
+**A skill file** (`skills/<scope>/<name>.md`; scope is `global`,
+`role/<role>`, or `target/<repo>`):
+
+```yaml
+---
+name: analyze-results
+scope: role/author
+when: at an experiment wake — before deciding continue / prune / conclude
+tools_required: []        # a skill may not smuggle a tool its role lacks;
+                          # validated at spec load, like the read-only-judge
+                          # invariant
+---
+Compare against the baseline AND the noise floor, not zero. Check variance
+across seeds before believing a delta. Look for the mechanism's signature,
+not just the aggregate number. Decide: continue, prune, or conclude — and
+say which and why in the notebook before the session ends.
+```
+
+**A subagent declaration** (inside a RoleSpec):
+
+```yaml
+subagents:
+  - name: result-aggregation
+    inherits: parent          # key, scope, containment — a CEILING, never wider
+    tools: [Read]             # may only NARROW the parent's tool set
+    budget: {turns: 10, share_of_parent: true}   # spend bills the parent
+```
+
+Two invariants make this catalog safe rather than sprawl, both validated at
+spec load: a subagent only narrows its parent (tools, scope, key), and a
+skill cannot require a tool its role lacks.
+
+**The current roster** (skills as declared in `roles.py`; subagents are the
+planned set — none are wired yet):
+
+| Role | Tools (enforced) | Skills (declared) | Subagents (planned) |
+| --- | --- | --- | --- |
+| author | Read/Grep/Glob/Write/Edit/Bash | kernel-primer, plain-style, hypothesis-discipline, honest-method, experiment-lifecycle, research-report (+ self-review, analyze-results — proposed) | literature-search (retriever), result-aggregation |
+| reviewer | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, review-rubric, read-only-investigation | evidence-sweep (parallel read-only file/caller sweeps on large diffs), reference-check (retriever) |
+| verifier | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, integrity-lens, read-only-investigation | evidence-sweep (read-only; e.g. trace every consumer of a changed ruler input) |
+| followup | editing set, resuming role's key/scope | kernel-primer, plain-style, respond-to-review | inherits the resumed role's |
+| steward | editing set, own territory | kernel-primer, plain-style, ruler-hardening, benchmark-design | literature-search (eval conventions) |
+
+The self-review skill's relationship to the panel is specified in
+`orchestrator-verify.md`: it shortens rounds and substitutes for nothing.
 
 ## Memory (layers)
 
