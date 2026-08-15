@@ -24,7 +24,7 @@ Skills are also the *procedural layer of memory* — see the memory table.
 | execute / bash | author, steward | inside apptainer; **never** reviewer/verifier |
 | pr-context-read | reviewer, verifier | read-only, **tokenless** — the harness fetches PR/issue text; the bot PAT never enters a session |
 | retriever | opt-in per RoleSpec | curated egress for best-practice/reference lookups (the retriever-in-harness seam) |
-| subagent (fan-out) | author, steward | inherits the parent RoleSpec's tools/scope/key; spend counts against the session budget |
+| subagent (fan-out) | all agentic roles | inherits the parent RoleSpec's tools/scope/key as a CEILING (a judge's subagents are read-only by construction); spend counts against the session budget. A subagent may FIND; the parent must JUDGE — verdicts are never delegated |
 
 GitHub **writes** (open PR, comment, update ledger), the **eval run**, and
 **experiment submission** are `act` syscalls, not agent tools: the agent directs
@@ -88,6 +88,9 @@ names; this adds the file formats and the placement rules.
   returns a digest; the parent does the thinking on the digest.
 - A **gate is never delegated to either.** Self-review improves drafts; it is
   not verification — the graded thing cannot produce its own grade.
+- For judges the same rule one level down: **a subagent may find; the judge
+  must judge.** Evidence-gathering fans out (read-only, under the parent's
+  ceiling); the verdict is written by the judge session itself.
 
 The same rule places compression: mechanical window compaction is the
 backend's (a harness capability); what-is-worth-keeping about one's own work
@@ -133,8 +136,8 @@ planned set — none are wired yet):
 | Role | Tools (enforced) | Skills (declared) | Subagents (planned) |
 | --- | --- | --- | --- |
 | author | Read/Grep/Glob/Write/Edit/Bash | kernel-primer, plain-style, hypothesis-discipline, honest-method, experiment-lifecycle, research-report (+ self-review, analyze-results — proposed) | literature-search (retriever), result-aggregation |
-| reviewer | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, review-rubric, read-only-investigation | — (its tools suffice; fan-out is an editing-role affordance, per the tools table) |
-| verifier | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, integrity-lens, read-only-investigation | — (tracing a claimed number through the ruler source is the role's own job, with its own read tools) |
+| reviewer | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, review-rubric, read-only-investigation | evidence-sweep (parallel read-only file/caller sweeps on large diffs), reference-check (retriever) |
+| verifier | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, integrity-lens, read-only-investigation | evidence-sweep (read-only; e.g. trace every consumer of a changed ruler input) |
 | followup | editing set, resuming role's key/scope | kernel-primer, plain-style, respond-to-review | inherits the resumed role's |
 | steward | editing set, own territory | kernel-primer, plain-style, ruler-hardening, benchmark-design | literature-search (eval conventions) |
 
