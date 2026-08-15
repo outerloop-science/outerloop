@@ -169,7 +169,14 @@ open-ended sweep space.
       credit if one regresses beyond its own floor — an honest negative,
       not an abort. Env-specific diffs stay cheap (one benchmark measured).
       Re-gated on the merged tree when the base moved. Follow-up pushes are
-      NOT yet suite-gated — named gap, wire with the follow-up re-measure
+      NOT yet suite-gated — named gap, wire with the follow-up re-measure.
+      Credit rule for the future generalist inversion (maintainer 2026-08-15):
+      shared-path CONTACT prices the suite pass but never grants suite-wide
+      credit — a config fork routing one benchmark to new code would launder
+      universality. Multi-row credit must be evidence-based (siblings improved
+      in the same pass, or mechanism verified shared); per-benchmark eval
+      configs belong in ruler territory so shared code cannot observe the
+      benchmark identity; input-sniffing forks stay a verifier lens item
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met
