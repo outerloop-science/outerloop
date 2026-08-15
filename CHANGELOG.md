@@ -27,6 +27,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Second-opinion reviews from non-Claude backends on the auto path, via the
+  least-token split (`advisory-second-opinion.yml`): a read-only session job
+  runs the backend (hermes/terra via OpenRouter, or codex) and emits raw
+  findings as an artifact; a separate posting job — no session — re-validates
+  the envelope (right PR, bot-skip re-checked, sanitizing render) and posts
+  through the normal advisory path with a `Lens:` label. Targets opt in by
+  calling the new reusable next to the Claude one. On private repos the
+  session job carries a read-scoped token only; it becomes tokenless at the
+  public flip.
+- Every judge round now names its reviewer in the round stamp —
+  ``reviewer `backend/model`​`` (e.g. `claude/claude-opus-5`, `hermes/<terra
+  id>`) — on advisory rounds, second opinions (via the envelope), and
+  verifier rounds alike, so multi-reviewer threads read unambiguously.
 - Suite no-regression gate: contracts may declare `scope.shared` (shared code
   paths — encoder, world model, training loop). A solver diff touching one is
   only credited after every sibling benchmark is re-measured on both sides

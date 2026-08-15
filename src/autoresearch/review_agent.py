@@ -10,9 +10,11 @@ the same rubric (via `build_agent_brief`), the same result policy
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from autoresearch.github import GitHubClient
 from autoresearch.harness import (
@@ -20,6 +22,7 @@ from autoresearch.harness import (
     CodexHarness,
     Harness,
     HermesHarness,
+    backend_id,
     budget_exhausted,
     outage,
 )
@@ -174,6 +177,34 @@ def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullReq
     return pr, pr_data
 
 
+def _emit(
+    path: Path,
+    repo: str,
+    number: int,
+    *,
+    kind: str,
+    data: dict[str, Any] | None = None,
+    detail: str = "",
+    reviewed_by: str = "",
+) -> None:
+    """Write the posting step's input. repo/number ride along so the poster
+    can refuse an envelope that does not match its own PR reference;
+    reviewed_by (backend/model) rides along for the round stamp."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "repo": repo,
+                "number": number,
+                "kind": kind,
+                "data": data,
+                "detail": detail,
+                "reviewed_by": reviewed_by,
+            }
+        )
+    )
+
+
 def run_agent_review(
     client: GitHubClient,
     repo: str,
@@ -184,12 +215,19 @@ def run_agent_review(
     bot_login: str,
     spec: RoleSpec | None = None,
     today: str | None = None,
+    emit_path: Path | None = None,
 ) -> str | None:
     """Review PR #`number` as an agent session over `workspace` (a read-only
     PR-head checkout the caller prepared). Post the findings inline via the
     Reviews API. Returns the round label, or None when it skipped or could not
     produce a verdict. Advisory: never raises the expected failures, so it can
     never turn a target repo's CI red.
+
+    With `emit_path`, nothing is posted: the raw findings (or a skip-stub
+    marker) are written there for a separate posting step — the least-token
+    split (docs/design/reviewer-infra.md). The session job runs with read-only
+    permissions; the posting job holds the write token but runs no session.
+    A clean skip (bot PR, opt-out, empty diff) writes nothing.
     """
     spec = spec or reviewer_spec()
     today = today or datetime.now(UTC).date().isoformat()
@@ -211,8 +249,33 @@ def run_agent_review(
             if outage(role_result.session) or budget_exhausted(role_result.session):
                 # `detail` is already api-key-redacted by the harness (it owns
                 # its own secret), so no secrets are passed here.
-                post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
+                if emit_path is not None:
+                    _emit(
+                        emit_path,
+                        repo,
+                        number,
+                        kind="skip-stub",
+                        detail=detail,
+                        reviewed_by=backend_id(harness),
+                    )
+                else:
+                    post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
+
+        if emit_path is not None:
+            # raw data, not rendered text: the posting step re-validates and
+            # sanitizes at the render boundary, so the artifact crossing the
+            # job boundary carries no pre-trusted markup
+            _emit(
+                emit_path,
+                repo,
+                number,
+                kind="findings",
+                data=role_result.data,
+                reviewed_by=backend_id(harness),
+            )
+            log.info("emitted findings for %s#%s to %s", repo, number, emit_path)
+            return "emitted"
 
         rendered = format_review(review, pr.diff)
         full = format_comment(review)
@@ -221,7 +284,15 @@ def run_agent_review(
             return None
         body, inline = rendered
         round_label = post_round_review(
-            client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+            client,
+            repo,
+            number,
+            MARKER,
+            body,
+            inline,
+            pr_data,
+            fallback_body=full,
+            reviewed_by=backend_id(harness),
         )
         log.info("posted agent review (%s) on %s#%s", round_label, repo, number)
         return round_label

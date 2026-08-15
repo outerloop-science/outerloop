@@ -1,0 +1,212 @@
+# Reusable SECOND-OPINION reviewer: a non-Claude backend (hermes/terra, codex)
+# complementing the Claude advisory round, via the LEAST-TOKEN SPLIT.
+#
+# Why two jobs: these backends can read arbitrary paths or execute shell, so
+# they must never run next to a write-capable GITHUB_TOKEN (/proc reach —
+# docs/design/reviewer-infra.md). Split:
+#   session job — READ-ONLY permissions. The only secrets present are the
+#     session's own model key and a token whose theft buys read access to a
+#     repo the session is already reading, expiring with the job. Emits raw
+#     findings as an artifact; posts nothing.
+#   post job — holds pull-requests:write, runs NO model session. Re-validates
+#     the envelope (right PR, skip rules re-checked, sanitizing render) and
+#     posts through the normal advisory path.
+# Same constraints as the primary reviewer: never reviews bot PRs, never
+# approves, never fails the caller's CI, same-repo PRs only.
+#
+# Two behaviors by design: the "Round N" counter is SHARED with the primary
+# reviewer (concurrent rounds may number non-monotonically — the number is
+# cosmetic, the Lens label says who); and a missing/expired backend key posts
+# a fresh could-not-run stub per triggering PR until fixed — the noise IS the
+# warning (maintainer requirement: key failures must never be silent).
+name: advisory-second-opinion
+
+on:
+  workflow_call:
+    inputs:
+      bot_login:
+        description: Login of your bot account — its PRs are never reviewed. Required.
+        type: string
+        required: true
+      backend:
+        description: Second-opinion backend (hermes | codex).
+        type: string
+        required: false
+        default: hermes
+      model:
+        description: >-
+          Model for the session. For hermes pass an OpenRouter id (e.g. the
+          terra or deepseek id); empty uses the backend default.
+        type: string
+        required: false
+        default: ''
+      lens_label:
+        description: Short label shown on the posted round (who this opinion is).
+        type: string
+        required: false
+        default: second opinion
+      lens_id:
+        description: >-
+          Slug distinguishing this opinion's artifact and concurrency group
+          when a caller runs the SAME backend twice (two models). Defaults to
+          the backend name.
+        type: string
+        required: false
+        default: ''
+      reviewer_repo:
+        description: Repo holding the reviewer (change this if you forked).
+        type: string
+        required: false
+        default: agentic-learning-ai-lab/autoresearch
+      reviewer_ref:
+        description: Ref of the reviewer to run. Pin to a tag or SHA in production.
+        type: string
+        required: false
+        default: main
+    secrets:
+      openrouter_api_key:
+        description: OpenRouter key for the hermes backend.
+        required: false
+      openai_reviewer_key:
+        description: OpenAI key for the codex backend.
+        required: false
+      checkout_ssh_key:
+        description: >-
+          Read-only deploy key for the reviewer repo, needed while it is
+          private; omit once public.
+        required: false
+
+# The caller grants this much; each job below narrows it further.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: advisory-second-opinion-${{ inputs.lens_id || inputs.backend }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 70
+    # Fork PRs must not reach any secret (pull_request_target context).
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # READ-ONLY: the session runs here, so the job token must not be worth
+    # stealing. pull-requests:read lets the CLI fetch the PR metadata/diff.
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BACKEND: ${{ inputs.backend }}
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - name: Check out the PR head (read-only; never executed)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          path: pr-head
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      # Pinned artifacts, same discipline as the manual bench.
+      - name: Install the ${{ inputs.backend }} backend
+        env:
+          HERMES_REF: v2026.8.13
+        run: |
+          set -euo pipefail
+          case "$BACKEND" in
+            codex)
+              npm install -g @openai/codex@0.130.0
+              ;;
+            hermes)
+              git clone --depth 1 --branch "$HERMES_REF" \
+                https://github.com/NousResearch/hermes-agent \
+                "$GITHUB_WORKSPACE/hermes-agent"
+              ;;
+            *)
+              echo "unsupported second-opinion backend: $BACKEND" >&2
+              exit 0  # advisory: never red the caller's CI
+              ;;
+          esac
+      - name: Run the session (emit only — nothing posted from this job)
+        working-directory: .autoresearch
+        env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          OPENROUTER_API_KEY: ${{ secrets.openrouter_api_key }}
+          OPENAI_REVIEWER_KEY: ${{ secrets.openai_reviewer_key }}
+          REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
+          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
+          REVIEW_HERMES_PROVIDER: openrouter
+          # read-only job token: PR metadata/diff fetch only
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: uv run python -m autoresearch.review_agent_cli
+      - name: Upload findings
+        # not `success()`: a session step that died AFTER emitting must still
+        # deliver its findings (or its skip-stub) to the posting job
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: second-opinion-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/findings.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  post:
+    runs-on: ubuntu-latest
+    needs: session
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: true
+    timeout-minutes: 15
+    # The write half: no model session runs in this job.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Download findings
+        id: findings
+        continue-on-error: true  # no artifact = clean skip upstream
+        uses: actions/download-artifact@v4
+        with:
+          name: second-opinion-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}
+      - name: Post the findings
+        if: steps.findings.outcome == 'success'
+        working-directory: .autoresearch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+          REVIEW_LENS_LABEL: ${{ inputs.lens_label }}
+        run: uv run python -m autoresearch.review_post_cli

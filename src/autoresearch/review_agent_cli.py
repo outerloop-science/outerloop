@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
-from autoresearch.review_agent import build_reviewer_harness, run_agent_review, sanitize_checkout
+from autoresearch.review_agent import (
+    _emit,
+    build_reviewer_harness,
+    run_agent_review,
+    sanitize_checkout,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,9 +50,21 @@ def main() -> int:
     if key_var is None:
         log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
         return 0
+    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     api_key = os.environ.get(key_var, "").strip()
     if not api_key:
         log.warning("%s is unset or empty; skipping review", key_var)
+        if emit_env:
+            # a standing second-opinion service must not die silently when
+            # its key is missing or rotates out (keys expire): the stub the
+            # post job publishes is the PR-visible warning
+            _emit(
+                Path(emit_env).resolve(),
+                repo,
+                number,
+                kind="skip-stub",
+                detail=f"{key_var} is unset or empty",
+            )
         return 0
     # Backend-specific deployment config, resolved from env so the workflow
     # (which knows the host) supplies it, never the pure builder:
@@ -97,6 +114,11 @@ def main() -> int:
         provider=provider,
         sandbox_extra=sandbox_extra,
     )
+    # Least-token split: with REVIEW_EMIT_FILE set, findings are written there
+    # instead of posted — this job then needs only READ permissions, and a
+    # separate posting job (review_post_cli) holds the write token with no
+    # session next to it. This is what makes non-Claude backends safe on the
+    # auto path (docs/design/reviewer-infra.md).
     run_agent_review(
         client,
         repo,
@@ -104,6 +126,7 @@ def main() -> int:
         harness,
         workspace,
         bot_login=bot_login,
+        emit_path=Path(emit_env).resolve() if emit_env else None,
     )
     return 0
 

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autoresearch.github import GitHubClient
-from autoresearch.harness import Harness, budget_exhausted, outage
+from autoresearch.harness import Harness, backend_id, budget_exhausted, outage
 from autoresearch.posting import EXPECTED_FAILURES, post_round, post_skip_stub
 from autoresearch.review_agent import _pull_request
 from autoresearch.role_runner import run_role
@@ -101,7 +101,9 @@ def run_agent_verify(
         if body is None:
             log.info("nothing to post")
             return None
-        round_label = post_round(client, repo, number, VERIFY_MARKER, body, pr_data)
+        round_label = post_round(
+            client, repo, number, VERIFY_MARKER, body, pr_data, reviewed_by=backend_id(harness)
+        )
         log.info("posted verification (%s) on %s#%s", round_label, repo, number)
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory role: never fail the target's CI

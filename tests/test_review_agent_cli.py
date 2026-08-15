@@ -112,3 +112,19 @@ def test_missing_checkout_fails_closed(monkeypatch: Any) -> None:
     calls = _patch(monkeypatch, env)
     assert cli.main() == 0
     assert calls == {}
+
+
+def test_missing_key_in_emit_mode_writes_a_stub(monkeypatch: Any, tmp_path: Path) -> None:
+    # a standing second opinion must not die silently when its key is
+    # missing/expired: the emitted stub becomes the PR-visible warning
+    import json
+
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env["REVIEW_EMIT_FILE"] = str(tmp_path / "findings.json")
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls  # no session ran
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "ANTHROPIC_REVIEWER_KEY" in envelope["detail"]
