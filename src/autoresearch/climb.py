@@ -18,6 +18,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ from autoresearch.orchestrator import (
     suite_regressed,
 )
 from autoresearch.orchestrator import improved as orch_improved
+from autoresearch.panel import PanelLens, PanelVerdict, run_panel
 from autoresearch.progress import (
     PROGRESS_PATHS,
     fmt_metric,
@@ -49,6 +51,7 @@ from autoresearch.progress import (
     update_leader,
     write_progress,
 )
+from autoresearch.review import PullRequest
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -62,6 +65,7 @@ from autoresearch.runstate import (
     save_record,
     stamp_outage,
 )
+from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +210,90 @@ def build_editor_harness(
     )
 
 
+def build_panel_runner(
+    ws: Workspace,
+    run_dir: Path,
+    base_sha: str,
+    lenses: tuple[PanelLens, ...],
+    contract_text: str,
+    target: str,
+    benchmark: str,
+    bot_login: str,
+    today: str,
+) -> Callable[[float, float, str], PanelVerdict]:
+    """The git half of the pre-PR panel: prepare the two read-only checkouts
+    and the synthetic claim, then hand off to `run_panel` (which owns no git).
+
+    Each call snapshots the CURRENT workspace tree as a detached commit and
+    checks it out as `pr-head/` (sanitized — the candidate is an untrusted
+    tree), next to `base/` (the trusted pre-session commit: contract and
+    ruler). Worktrees are removed after the read; a fresh pair is built per
+    round because the tree changes with every revision."""
+    from autoresearch.review_agent import sanitize_checkout
+
+    reads = {"n": 0}
+
+    def runner(baseline: float, candidate: float, report: str) -> PanelVerdict:
+        reads["n"] += 1
+        panel_ws = run_dir / "panel"
+        shutil.rmtree(panel_ws, ignore_errors=True)
+        panel_ws.mkdir(parents=True, exist_ok=True)
+        ws.git("add", "-A")
+        tree = ws.git("write-tree").strip()
+        ws.git("reset")
+        snapshot = ws.git(
+            "-c",
+            "user.name=panel",
+            "-c",
+            "user.email=panel@localhost",
+            "commit-tree",
+            tree,
+            "-p",
+            base_sha,
+            "-m",
+            "panel snapshot (never pushed)",
+        ).strip()
+        ws.git("worktree", "add", "--detach", str(panel_ws / "base"), base_sha)
+        ws.git("worktree", "add", "--detach", str(panel_ws / "pr-head"), snapshot)
+        try:
+            _renamed, failed = sanitize_checkout(panel_ws / "pr-head")
+            if failed:
+                # fail closed for the read, loudly in the transcript: an
+                # unsanitizable tree is never judged, and never certified
+                return PanelVerdict(
+                    blocking=(),
+                    transcript=(
+                        f"**Verification round {reads['n']}**\n- panel skipped: "
+                        f"the candidate tree could not be sanitized "
+                        f"({failed} instruction file(s) left) — NOT a clean read"
+                    ),
+                    wake_text="",
+                )
+            claim = PullRequest(
+                repo=target,
+                number=0,
+                title=f"[agent] {benchmark}: {_title_pair(baseline, candidate)}",
+                body=(
+                    f"Automated improvement claim (pre-PR): {benchmark} "
+                    f"{baseline} -> {candidate}, measured by the orchestrator.\n\n"
+                    f"## Research report\n\n{report[:MAX_CLAIM_CHARS]}"
+                ),
+                diff=ws.git("diff", base_sha),
+                author=bot_login,
+            )
+            return run_panel(lenses, panel_ws, claim, contract_text, today, reads["n"])
+        finally:
+            for name in ("base", "pr-head"):
+                _best_effort(
+                    "panel worktree cleanup",
+                    partial(ws.git, "worktree", "remove", "--force", str(panel_ws / name)),
+                )
+            _best_effort("panel dir removal", lambda: shutil.rmtree(panel_ws, ignore_errors=True))
+            _best_effort("panel worktree prune", lambda: ws.git("worktree", "prune"))
+
+    return runner
+
+
 def live_climb(
     config: ClimbConfig,
     run_root: Path,
@@ -221,8 +309,13 @@ def live_climb(
     issue_number: int = 0,
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
+    panel_lenses: tuple[PanelLens, ...] = (),
+    panel_revisions: int = 1,
 ) -> LiveClimbOutcome:
-    """Run one climb against the real target repo."""
+    """Run one climb against the real target repo. With `panel_lenses`, the
+    pre-PR verification panel gates the claim before any PR exists
+    (docs/design/orchestrator-verify.md); blocking findings still open at
+    the cap open a DRAFT PR carrying them."""
     run_dir = run_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     workspace = run_dir / "ws"
@@ -309,6 +402,21 @@ def live_climb(
         # seed or the sampled pool into the solver's view.
         baseline_wt = run_dir / "measure-baseline"
         ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
+        panel_runner = (
+            build_panel_runner(
+                ws,
+                run_dir,
+                base_sha,
+                panel_lenses,
+                contract_text,
+                config.target,
+                config.benchmark,
+                config.bot_login,
+                created[:10],
+            )
+            if panel_lenses
+            else None
+        )
         try:
             result = climb_once(
                 config,
@@ -322,6 +430,8 @@ def live_climb(
                 task_hypothesis=task_hypothesis,
                 baseline_workspace=baseline_wt,
                 spec=spec,
+                panel_runner=panel_runner,
+                panel_revisions=panel_revisions,
             )
         finally:
             if not _best_effort(
@@ -621,13 +731,18 @@ def live_climb(
                 head=branch,
                 base=base_branch,
                 body=body,
+                # blocking findings open at the panel cap: visible, plainly
+                # not merge-ready (docs/design/orchestrator-verify.md)
+                draft=result.panel_blocking_open,
             )
             # Arm auto-merge, best-effort, and ONLY when branch protection
             # requires a human review — the guard keeps bot-never-merges
             # enforced in code, not in per-repo config. Repos without
             # auto-merge enabled just log the refusal.
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit():
+            # never arm a draft: open blocking findings mean a human must
+            # look, and approving+arming would route around the panel
+            if pr_number.isdigit() and not result.panel_blocking_open:
                 _best_effort(
                     "auto-merge arming",
                     lambda: github.arm_auto_merge_when_review_required(
@@ -853,6 +968,21 @@ def main() -> int:
     parser.add_argument("--max-turns", type=int, default=60)
     parser.add_argument("--session-minutes", type=int, default=60)
     parser.add_argument(
+        "--panel",
+        default="",
+        help=(
+            "pre-PR verification lenses, comma-separated kind[:backend[:model]] "
+            "entries (e.g. 'verify,review' or 'verify:claude,review:hermes:MODEL'); "
+            "empty disables the panel"
+        ),
+    )
+    parser.add_argument(
+        "--panel-key-file",
+        default=os.path.expanduser("~/.config/autoresearch/verifier_key"),
+        help="key file for panel judge sessions (the verifier's own key, never the author's)",
+    )
+    parser.add_argument("--panel-revisions", type=int, default=1)
+    parser.add_argument(
         "--job-minutes",
         type=int,
         default=0,
@@ -922,6 +1052,31 @@ def main() -> int:
 
     # the manifest first, the harness from it: budget has one source (the args)
     spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
+
+    # Pre-PR panel lenses: judge sessions on the verifier's own key (separate
+    # identity from the author). kind[:backend[:model]]; claude by default.
+    panel_lenses: tuple[PanelLens, ...] = ()
+    if args.panel.strip():
+        from autoresearch.review_agent import build_reviewer_harness
+
+        panel_key = FileTokenProvider(Path(args.panel_key_file)).token()
+        lenses = []
+        for entry in args.panel.split(","):
+            kind, _, rest = entry.strip().partition(":")
+            backend, _, model = rest.partition(":")
+            backend = backend or "claude"
+            try:
+                judge = build_reviewer_harness(
+                    panel_key,
+                    backend=backend,
+                    binary=args.claude_bin if backend == "claude" else None,
+                    model=model or None,
+                    container_image=args.image if backend == "claude" else "",
+                )
+            except ValueError as exc:
+                parser.error(f"--panel entry {entry!r}: {exc}")
+            lenses.append(PanelLens(kind=kind, harness=judge))
+        panel_lenses = tuple(lenses)
     try:
         try:
             outcome = live_climb(
@@ -936,6 +1091,8 @@ def main() -> int:
                     container_image=args.image,
                 ),
                 spec=spec,
+                panel_lenses=panel_lenses,
+                panel_revisions=args.panel_revisions,
                 evaluator=SubprocessEvaluator(container_image=args.image),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,

@@ -180,12 +180,14 @@ open-ended sweep space.
       claim-vs-mechanism consistency is the verifier lens item; per-benchmark
       eval configs stay ruler territory so shared code cannot observe the
       benchmark identity
-- [ ] Pre-PR verification loop (design: docs/design/orchestrator-verify.md):
-      the verifier panel runs inside the climb job after measurement — a PR
-      becomes the OUTPUT of verification; blocking findings wake the author
-      (round-capped, re-measured); codex/hermes panel backends become
-      eligible (no token adjacency in the orchestrator); GitHub-side
-      verify.yml thins to defense-in-depth per target
+- [x] Pre-PR verification loop CODE (design: docs/design/orchestrator-verify.md):
+      the panel (verify + review lenses, multi-opinion at the seam) runs
+      inside the climb job after measurement — a PR becomes the OUTPUT of
+      verification; blocking findings wake the author (round-capped, fully
+      re-measured and re-gated); capped-out blocking opens a DRAFT PR and
+      never arms auto-merge; the transcript rides in the PR body. DEPLOY:
+      the tick's climb args gain --panel + the verifier key file; GitHub-side
+      verify.yml thins per target after the pilot runs clean
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met

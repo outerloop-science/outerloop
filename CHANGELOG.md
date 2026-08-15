@@ -27,6 +27,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The pre-PR verification panel (docs/design/orchestrator-verify.md) runs
+  inside the climb job: after a candidate measures improved (and suite-gates
+  clean), a panel of read-only lenses — integrity `verify` and code `review`,
+  each on any backend — reads the claim over local pr-head/base worktrees.
+  Blocking findings wake the same author session (data-fenced); the revision
+  is fully re-measured and re-gated; one revision round after the initial
+  read, then blocking-still-open opens a DRAFT PR with the findings on top
+  and never arms auto-merge. Every PR carries the verification transcript;
+  a lens with no verdict is recorded — silence is never endorsement. Enable
+  with `--panel verify,review` (+ `--panel-key-file`, the verifier's own
+  key). Round numbers now count per reviewer, so standing opinions no longer
+  inflate each other's counters.
 - autoresearch's own PRs now get a terra second opinion (openai/gpt-5.6-terra
   via hermes/OpenRouter) next to the Claude round — the first live user of the
   least-token split. Takes effect for PRs opened after this merges

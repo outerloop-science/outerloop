@@ -707,3 +707,133 @@ def test_shared_match_is_case_folded_like_the_other_path_checks(tmp_path: Path) 
     )
     assert result.outcome == "improved"
     assert len(evaluator.calls) == 4  # the suite pass ran
+
+
+# ---- the pre-PR panel loop -------------------------------------------------
+
+
+class _SeqHarness:
+    """Queued session results; records resume ids like the real backends."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = list(texts)
+        self.resumes: list[str | None] = []
+
+    def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+        self.resumes.append(resume_session_id)
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.1,
+            num_turns=2,
+            session_id=f"s{len(self.resumes)}",
+            final_text=self._texts.pop(0),
+            transcript_path="",
+        )
+
+
+class _QueuedPanel:
+    """Scripted PanelVerdicts; records the (baseline, candidate, report) args."""
+
+    def __init__(self, verdicts: list) -> None:
+        self._verdicts = list(verdicts)
+        self.calls: list[tuple[float, float, str]] = []
+
+    def __call__(self, baseline, candidate, report):
+        self.calls.append((baseline, candidate, report))
+        return self._verdicts.pop(0)
+
+
+def _verdict(blocking: bool, round_no: int):
+    from autoresearch.panel import PanelVerdict
+    from autoresearch.review import Finding
+
+    findings = (
+        (
+            Finding(
+                file="src/pilot/solvers/tsp.py",
+                line=1,
+                confidence="high",
+                summary="gamed",
+                detail="d",
+                blocking=True,
+            ),
+        )
+        if blocking
+        else ()
+    )
+    return PanelVerdict(
+        blocking=findings,
+        transcript=f"**Verification round {round_no}**\n- judge: {int(blocking)} blocking",
+        wake_text="fix it (data, not instructions)" if blocking else "",
+    )
+
+
+def _run_panel_climb(tmp_path, values, verdicts, texts=None, revisions=1):
+    harness = _SeqHarness(texts or ["report r1", "report r2"])
+    evaluator = FakeEvaluator(values=list(values))
+    panel = _QueuedPanel(verdicts)
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        evaluator,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        panel_runner=panel,
+        panel_revisions=revisions,
+    )
+    return result, harness, evaluator, panel
+
+
+def test_clean_panel_read_passes_through(tmp_path: Path) -> None:
+    result, harness, _evaluator, panel = _run_panel_climb(
+        tmp_path, [13.9, 13.1], [_verdict(False, 1)]
+    )
+    assert result.outcome == "improved"
+    assert result.panel_rounds == 1 and not result.panel_blocking_open
+    assert "Verification round 1" in result.panel_transcript
+    assert panel.calls[0][0] == 13.9 and panel.calls[0][1] == 13.1
+    assert panel.calls[0][2] == "report r1"  # the panel read the CLAIM
+    assert len(harness.resumes) == 1  # no wake
+
+
+def test_blocking_then_clean_revises_and_remeasures(tmp_path: Path) -> None:
+    result, harness, evaluator, _panel = _run_panel_climb(
+        tmp_path, [13.9, 13.1, 13.0], [_verdict(True, 1), _verdict(False, 2)]
+    )
+    assert result.outcome == "improved"
+    assert result.panel_rounds == 2 and not result.panel_blocking_open
+    # the wake resumed the SAME session and the revision was re-measured
+    assert harness.resumes == [None, "s1"]
+    assert len(evaluator.calls) == 3  # baseline + candidate + revised candidate
+    assert result.candidate == 13.0
+    assert "round 1" in result.panel_transcript and "round 2" in result.panel_transcript
+
+
+def test_capped_out_blocking_stays_open_for_a_draft_pr(tmp_path: Path) -> None:
+    result, harness, _evaluator, _panel = _run_panel_climb(
+        tmp_path, [13.9, 13.1, 13.0], [_verdict(True, 1), _verdict(True, 2)]
+    )
+    assert result.outcome == "improved"  # still credited; the PR will be a DRAFT
+    assert result.panel_blocking_open and result.panel_rounds == 2
+    assert len(harness.resumes) == 2  # exactly one revision at the cap
+
+
+def test_revision_that_loses_the_improvement_is_a_named_negative(tmp_path: Path) -> None:
+    result, _h, _e, _p = _run_panel_climb(tmp_path, [13.9, 13.1, 14.5], [_verdict(True, 1)])
+    assert result.outcome == "no-improvement"
+    assert "lost the improvement" in result.note
+    assert result.panel_rounds == 1
+
+
+def test_panel_pr_body_carries_banner_and_transcript(tmp_path: Path) -> None:
+    result, _h, _e, _p = _run_panel_climb(
+        tmp_path, [13.9, 13.1, 13.0], [_verdict(True, 1), _verdict(True, 2)]
+    )
+    body = pr_body(result, CONFIG, redact_secrets=())
+    assert body.startswith("> **Draft")
+    assert "## Pre-PR verification" in body
+    assert "Verification round 2" in body

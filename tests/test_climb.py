@@ -99,7 +99,7 @@ class FakeGitHub:
     arming_error: str = ""
 
     def create_pull(self, repo, title, head, base, body, draft=False) -> str:
-        self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body))
+        self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body, draft=draft))
         return f"https://github.com/{repo}/pull/1"
 
     def arm_auto_merge_when_review_required(self, repo, number) -> bool:
@@ -1261,3 +1261,101 @@ def test_author_harness_is_built_from_the_spec() -> None:
     assert harness.container_image == "img.sif"
     with pytest.raises(ValueError, match="editing roles"):
         build_editor_harness("sk-key", reviewer_spec())
+
+
+def _panel_judge(texts):
+    """A scripted read-only judge for the real run_panel path."""
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class _J:
+        queue: list = field(default_factory=lambda: list(texts))
+        seen_ws: list = field(default_factory=list)
+
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.seen_ws.append(Path(workspace))
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.0,
+                num_turns=1,
+                session_id="judge",
+                final_text=self.queue.pop(0),
+                transcript_path="",
+            )
+
+    return _J()
+
+
+def test_panel_clean_read_lands_a_normal_pr_with_transcript(tmp_path, target_repo) -> None:
+    import json as _json
+
+    from autoresearch.panel import PanelLens
+
+    judge = _panel_judge([_json.dumps({"findings": [], "notes": "clean"})])
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-panel-ok",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-15T00:00:00Z",
+        panel_lenses=(PanelLens("review", judge),),
+    )
+    assert outcome.outcome == "improved"
+    pr = github.prs[0]
+    assert pr["draft"] is False
+    assert "## Pre-PR verification" in pr["body"]
+    assert "0 blocking" in pr["body"]
+    # the judge read a SANITIZED candidate worktree, not the live workspace
+    assert judge.seen_ws[0].name == "pr-head"
+    # panel worktrees cleaned up
+    leftovers = [p.name for p in (tmp_path / "state" / "runs" / "tsp-panel-ok").iterdir()]
+    assert "panel" not in leftovers
+    assert github.armed  # clean panel: auto-merge arming still runs
+
+
+def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_repo) -> None:
+    import json as _json
+
+    from autoresearch.panel import PanelLens
+
+    blocking = _json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/pilot/solvers/tsp.py",
+                    "line": 1,
+                    "confidence": "high",
+                    "summary": "suspicious lever",
+                    "detail": "looks structural",
+                    "blocking": True,
+                }
+            ],
+            "notes": "",
+        }
+    )
+    judge = _panel_judge([blocking, blocking])
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-panel-draft",
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=2\n"}),
+        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.05]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-15T00:00:00Z",
+        panel_lenses=(PanelLens("review", judge),),
+    )
+    assert outcome.outcome == "improved"
+    pr = github.prs[0]
+    assert pr["draft"] is True
+    assert pr["body"].startswith("> **Draft")
+    assert "suspicious lever" in pr["body"]
+    assert github.armed == []  # a draft with open blocking findings never arms
