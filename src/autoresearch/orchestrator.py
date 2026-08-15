@@ -380,11 +380,14 @@ class ClimbResult:
     # the seed every seeded sibling's pair ran under (0 = gate did not run)
     suite_seed: int = 0
     # the pre-PR panel's record: per-round transcript for the PR body, how
-    # many reads ran, and whether blocking findings were still open at the
-    # cap (the caller opens a DRAFT PR with the findings on top)
+    # many reads ran, whether blocking findings were still open at the cap,
+    # and whether the FINAL read was degraded (a lens with no verdict, an
+    # unsanitizable tree). Either flag means the caller opens a DRAFT PR
+    # and never arms auto-merge.
     panel_transcript: str = ""
     panel_rounds: int = 0
     panel_blocking_open: bool = False
+    panel_degraded: bool = False
 
     def report(self, config: ClimbConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
@@ -399,7 +402,12 @@ class ClimbResult:
             verdict = "REGRESSED" if row.regressed else "ok"
             lines.append(f"Suite {row.name}: {row.baseline} -> {row.candidate} ({verdict})")
         if self.panel_rounds:
-            state = "blocking findings OPEN at the cap" if self.panel_blocking_open else "clean"
+            if self.panel_blocking_open:
+                state = "blocking findings OPEN at the cap"
+            elif self.panel_degraded:
+                state = "DEGRADED final read (a lens produced no verdict)"
+            else:
+                state = "clean"
             lines.append(f"Panel: {self.panel_rounds} read(s), {state}")
         if self.note:
             lines.append(f"Note: {self.note}")
@@ -706,6 +714,7 @@ def climb_once(
     panel_reads = 0
     panel_sections: list[str] = []
     panel_blocking_open = False
+    panel_degraded = False
     while True:
         # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
         # because the out-of-scope edit could be to the ruler itself.
@@ -821,7 +830,18 @@ def climb_once(
         panel_reads += 1
         verdict = panel_runner(baseline, candidate, session.final_text)
         panel_sections.append(verdict.transcript)
+        # only the FINAL read's degradation matters: an earlier outage that a
+        # later clean read supersedes is history, not state
+        panel_degraded = verdict.degraded
         if not verdict.blocking:
+            # a degraded clean read is NOT a certified pass: no wake (nothing
+            # for the author to fix), but the caller drafts the PR
+            break
+        if not session.session_id:
+            # cannot resume a session with no id, and a FRESH session seeing
+            # only the findings text would revise blind — fail closed to the
+            # draft path instead (review question, #95 round 1)
+            panel_blocking_open = True
             break
         if panel_reads > panel_revisions:
             # capped out with blocking findings still open: an unconverged
@@ -870,6 +890,7 @@ def climb_once(
         panel_transcript="\n\n".join(panel_sections),
         panel_rounds=panel_reads,
         panel_blocking_open=panel_blocking_open,
+        panel_degraded=panel_degraded,
     )
 
 
@@ -903,16 +924,22 @@ def pr_body(
             f"| {fmt_metric(row.candidate, row.display_digits)} |"
             for row in result.suite
         ]
-    banner = (
-        [
+    if result.panel_blocking_open:
+        banner = [
             "> **Draft — the verification panel capped out with blocking "
             "findings still open.** They are listed under Pre-PR "
             "verification below; the human decides.",
             "",
         ]
-        if result.panel_blocking_open
-        else []
-    )
+    elif result.panel_degraded:
+        banner = [
+            "> **Draft — the final panel read was degraded (a lens produced "
+            "no verdict).** Not a certified pass; see Pre-PR verification "
+            "below.",
+            "",
+        ]
+    else:
+        banner = []
     panel_section = (
         ["", "## Pre-PR verification", "", result.panel_transcript]
         if result.panel_transcript

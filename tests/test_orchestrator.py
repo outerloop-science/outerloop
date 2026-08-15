@@ -837,3 +837,45 @@ def test_panel_pr_body_carries_banner_and_transcript(tmp_path: Path) -> None:
     assert body.startswith("> **Draft")
     assert "## Pre-PR verification" in body
     assert "Verification round 2" in body
+
+
+def test_degraded_final_read_marks_the_result_and_skips_the_wake(tmp_path: Path) -> None:
+    from autoresearch.panel import PanelVerdict
+
+    degraded = PanelVerdict(
+        blocking=(),
+        transcript="**Verification round 1**\n- judge: no verdict",
+        wake_text="",
+        degraded=True,
+    )
+    result, harness, _e, _p = _run_panel_climb(tmp_path, [13.9, 13.1], [degraded])
+    assert result.outcome == "improved"
+    assert result.panel_degraded and not result.panel_blocking_open
+    assert len(harness.resumes) == 1  # nothing woke: an outage is not the author's to fix
+    body = pr_body(result, CONFIG, redact_secrets=())
+    assert body.startswith("> **Draft") and "degraded" in body
+
+
+def test_wake_without_a_session_id_fails_closed_to_draft(tmp_path: Path) -> None:
+    class _NoIdHarness(_SeqHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            session = super().run(brief_text, workspace, resume_session_id)
+            return SessionResult(**{**session.__dict__, "session_id": ""})
+
+    harness = _NoIdHarness(["report r1"])
+    evaluator = FakeEvaluator(values=[13.9, 13.1])
+    panel = _QueuedPanel([_verdict(True, 1)])
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        evaluator,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        panel_runner=panel,
+    )
+    assert result.outcome == "improved"
+    assert result.panel_blocking_open  # draft path, not a blind fresh session
+    assert len(harness.resumes) == 1  # no wake attempted

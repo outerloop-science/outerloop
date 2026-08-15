@@ -90,3 +90,13 @@ def test_clean_panel_has_no_wake(tmp_path: Path) -> None:
         (PanelLens("review", _Judge(_VERIFY_CLEAN)),), tmp_path, _PR, "c", "t", round_no=1
     )
     assert verdict.blocking == () and verdict.wake_text == ""
+
+
+def test_no_verdict_degrades_the_read(tmp_path: Path) -> None:
+    dead = _Judge("", is_error=True)
+    verdict = run_panel((PanelLens("verify", dead),), tmp_path, _PR, "c", "t", round_no=1)
+    assert verdict.degraded  # never a certified pass
+    clean = run_panel(
+        (PanelLens("review", _Judge(_VERIFY_CLEAN)),), tmp_path, _PR, "c", "t", round_no=1
+    )
+    assert not clean.degraded

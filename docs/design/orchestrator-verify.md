@@ -142,9 +142,11 @@ load-bearing lives only in a compressible medium.
    enforced by the kernel; capped-out blocking opens a DRAFT PR and never
    arms auto-merge.
 3. **Panel** — BUILT at the seam (lens list = kind x backend; the climb CLI
-   parses `--panel verify:claude,review:hermes:MODEL`); claude wired on the
-   cluster, other backends as their host support lands (no token adjacency
-   here, so eligibility is config).
+   parses `--panel verify:claude,review:hermes:MODEL`, and a hermes entry
+   additionally needs `REVIEW_HERMES_REPO` — the pinned clone — in the
+   climb job's environment); claude wired on the cluster, other backends as
+   their host support lands (no token adjacency here, so eligibility is
+   config).
 4. **Transcript in the PR body** — BUILT (plus the run report); thinning or
    retiring the GitHub-side verifier stays per-target.
 5. **Retriever egress** for the author, with fetch logging; network

@@ -53,6 +53,11 @@ class PanelVerdict:
     blocking: tuple[Finding, ...]
     transcript: str  # markdown lines for the PR's verification section
     wake_text: str  # data-fenced findings for the author; empty when clean
+    # True when any lens produced NO verdict (session error/outage, unknown
+    # kind, unsanitizable tree): the read is NOT a certified pass — silence
+    # is never endorsement, in the gate as well as the transcript. The climb
+    # opens a DRAFT PR on a degraded final read and never arms auto-merge.
+    degraded: bool = False
 
 
 def _render_wake(findings: tuple[Finding, ...]) -> str:
@@ -90,6 +95,7 @@ def run_panel(
     """
     lines = [f"**Verification round {round_no}**"]
     blocking: list[Finding] = []
+    degraded = False
     for lens in lenses:
         who = lens.name()
         if lens.kind == "verify":
@@ -103,7 +109,8 @@ def run_panel(
             workspace = panel_workspace / "pr-head"
             policy = review_result_from_role
         else:
-            lines.append(f"- `{who}`: unknown lens kind {lens.kind!r} — skipped")
+            lines.append(f"- `{who}`: unknown lens kind {lens.kind!r} — NOT a clean read")
+            degraded = True
             continue
         role_result = run_role(spec, lens.harness, brief, workspace)
         result = policy(role_result)
@@ -112,6 +119,7 @@ def run_panel(
             lines.append(
                 f"- `{who}` ({lens.kind}): **no verdict** ({detail}) — silence is not endorsement"
             )
+            degraded = True
             continue
         found_blocking = [f for f in result.findings if f.blocking]
         blocking.extend(found_blocking)
@@ -126,4 +134,5 @@ def run_panel(
         blocking=merged,
         transcript="\n".join(lines),
         wake_text=_render_wake(merged) if merged else "",
+        degraded=degraded,
     )

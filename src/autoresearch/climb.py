@@ -253,9 +253,9 @@ def build_panel_runner(
             "-m",
             "panel snapshot (never pushed)",
         ).strip()
-        ws.git("worktree", "add", "--detach", str(panel_ws / "base"), base_sha)
-        ws.git("worktree", "add", "--detach", str(panel_ws / "pr-head"), snapshot)
         try:
+            ws.git("worktree", "add", "--detach", str(panel_ws / "base"), base_sha)
+            ws.git("worktree", "add", "--detach", str(panel_ws / "pr-head"), snapshot)
             _renamed, failed = sanitize_checkout(panel_ws / "pr-head")
             if failed:
                 # fail closed for the read, loudly in the transcript: an
@@ -268,6 +268,7 @@ def build_panel_runner(
                         f"({failed} instruction file(s) left) — NOT a clean read"
                     ),
                     wake_text="",
+                    degraded=True,
                 )
             claim = PullRequest(
                 repo=target,
@@ -278,7 +279,9 @@ def build_panel_runner(
                     f"{baseline} -> {candidate}, measured by the orchestrator.\n\n"
                     f"## Research report\n\n{report[:MAX_CLAIM_CHARS]}"
                 ),
-                diff=ws.git("diff", base_sha),
+                # base..snapshot, never base..worktree: the snapshot commit
+                # includes newly ADDED files, which a working-tree diff omits
+                diff=ws.git("diff", f"{base_sha}..{snapshot}"),
                 author=bot_login,
             )
             return run_panel(lenses, panel_ws, claim, contract_text, today, reads["n"])
@@ -731,18 +734,19 @@ def live_climb(
                 head=branch,
                 base=base_branch,
                 body=body,
-                # blocking findings open at the panel cap: visible, plainly
-                # not merge-ready (docs/design/orchestrator-verify.md)
-                draft=result.panel_blocking_open,
+                # blocking findings open at the panel cap, or a degraded
+                # final read: visible, plainly not merge-ready
+                draft=result.panel_blocking_open or result.panel_degraded,
             )
             # Arm auto-merge, best-effort, and ONLY when branch protection
             # requires a human review — the guard keeps bot-never-merges
             # enforced in code, not in per-repo config. Repos without
             # auto-merge enabled just log the refusal.
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            # never arm a draft: open blocking findings mean a human must
-            # look, and approving+arming would route around the panel
-            if pr_number.isdigit() and not result.panel_blocking_open:
+            # never arm a draft: open blocking findings or an uncertified
+            # read mean a human must look; approving+arming would route
+            # around the panel
+            if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
                 _best_effort(
                     "auto-merge arming",
                     lambda: github.arm_auto_merge_when_review_required(
@@ -1056,7 +1060,9 @@ def main() -> int:
     # Pre-PR panel lenses: judge sessions on the verifier's own key (separate
     # identity from the author). kind[:backend[:model]]; claude by default.
     panel_lenses: tuple[PanelLens, ...] = ()
+    panel_key = ""
     if args.panel.strip():
+        from autoresearch.panel import LENS_KINDS
         from autoresearch.review_agent import build_reviewer_harness
 
         panel_key = FileTokenProvider(Path(args.panel_key_file)).token()
@@ -1065,6 +1071,15 @@ def main() -> int:
             kind, _, rest = entry.strip().partition(":")
             backend, _, model = rest.partition(":")
             backend = backend or "claude"
+            if kind not in LENS_KINDS:
+                # a typo'd kind must never silently disable a gate
+                parser.error(f"--panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
+            hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+            if backend == "hermes" and not hermes_repo_env:
+                parser.error(
+                    f"--panel entry {entry!r}: the hermes backend needs "
+                    f"REVIEW_HERMES_REPO (the pinned clone) in the environment"
+                )
             try:
                 judge = build_reviewer_harness(
                     panel_key,
@@ -1072,6 +1087,8 @@ def main() -> int:
                     binary=args.claude_bin if backend == "claude" else None,
                     model=model or None,
                     container_image=args.image if backend == "claude" else "",
+                    hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
+                    provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
                 )
             except ValueError as exc:
                 parser.error(f"--panel entry {entry!r}: {exc}")
@@ -1098,7 +1115,17 @@ def main() -> int:
                 bot_auth=bot_auth,
                 now=time.time(),
                 created=datetime.now(UTC).isoformat(),
-                secrets=(api_key, bot_auth.token()),
+                # the panel key joins the redaction set: judge error text can
+                # echo request material like any other model error
+                secrets=tuple(
+                    k
+                    for k in (
+                        api_key,
+                        bot_auth.token(),
+                        panel_key,
+                    )
+                    if k
+                ),
                 issue_number=args.issue,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()
