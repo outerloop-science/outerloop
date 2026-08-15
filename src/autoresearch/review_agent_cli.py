@@ -64,6 +64,8 @@ def main() -> int:
                 number,
                 kind="skip-stub",
                 detail=f"{key_var} is unset or empty",
+                # no harness exists yet; the backend name still attributes the stub
+                reviewed_by=backend,
             )
         return 0
     # Backend-specific deployment config, resolved from env so the workflow

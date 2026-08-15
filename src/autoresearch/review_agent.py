@@ -274,11 +274,12 @@ def run_agent_review(
                 data=role_result.data,
                 reviewed_by=backend_id(harness),
             )
+            cost = role_result.session.cost_usd
             log.info(
-                "emitted findings for %s#%s (cost=$%.2f turns=%d)",
+                "emitted findings for %s#%s (cost=%s turns=%d)",
                 repo,
                 number,
-                role_result.session.cost_usd,
+                f"${cost:.2f}" if cost else "unreported",
                 role_result.session.num_turns,
             )
             return "emitted"
@@ -300,12 +301,13 @@ def run_agent_review(
             fallback_body=full,
             reviewed_by=backend_id(harness),
         )
+        cost = role_result.session.cost_usd
         log.info(
-            "posted agent review (%s) on %s#%s (cost=$%.2f turns=%d)",
+            "posted agent review (%s) on %s#%s (cost=%s turns=%d)",
             round_label,
             repo,
             number,
-            role_result.session.cost_usd,
+            f"${cost:.2f}" if cost else "unreported",
             role_result.session.num_turns,
         )
         return round_label

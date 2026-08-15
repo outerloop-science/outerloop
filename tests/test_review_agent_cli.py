@@ -128,3 +128,4 @@ def test_missing_key_in_emit_mode_writes_a_stub(monkeypatch: Any, tmp_path: Path
     envelope = json.loads((tmp_path / "findings.json").read_text())
     assert envelope["kind"] == "skip-stub"
     assert "ANTHROPIC_REVIEWER_KEY" in envelope["detail"]
+    assert envelope["reviewed_by"] == "claude"  # the stub names its backend
