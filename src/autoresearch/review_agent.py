@@ -10,6 +10,7 @@ the same rubric (via `build_agent_brief`), the same result policy
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -339,4 +340,17 @@ def run_agent_review(
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("agent review did not complete: %s: %s", type(exc).__name__, exc)
+        if emit_path is not None:
+            # the invariant holds here too: the workflow backstop would cover
+            # a missing file, but with a generic detail — the real failure is
+            # the one worth reading on the PR
+            with contextlib.suppress(Exception):
+                _emit(
+                    emit_path,
+                    repo,
+                    number,
+                    kind="skip-stub",
+                    detail=f"{type(exc).__name__}: {exc}",
+                    reviewed_by=backend_id(harness),
+                )
         return None
