@@ -1157,30 +1157,33 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
     the home filesystem the climb will read."""
     if not spec.panel.strip():
         return ""
-    from autoresearch.climb import HARNESS_KEY_DEFAULT, PANEL_KEY_DEFAULT
-    from autoresearch.github import FileTokenProvider
-    from autoresearch.panel import parse_lenses
+    try:
+        from autoresearch.climb import HARNESS_KEY_DEFAULT, PANEL_KEY_DEFAULT
+        from autoresearch.github import FileTokenProvider
+        from autoresearch.panel import parse_lenses
 
-    try:
-        parse_lenses(spec.panel)
-    except ValueError as exc:
-        return str(exc)
-    path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
-    if not path.is_absolute():
-        # the climb runs from a flight directory, not the tick's cwd — a
-        # relative path that resolves here could still miss there
-        return f"panel key path {path} is relative; only absolute paths fly"
-    author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
-    if path.resolve() == author.resolve():
-        return (
-            f"panel key file {path} is the author key file "
-            "(role separation: the verifier needs its own key)"
-        )
-    try:
+        try:
+            parse_lenses(spec.panel)
+        except ValueError as exc:
+            return str(exc)
+        path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+        if not path.is_absolute():
+            # the climb runs from a flight directory, not the tick's cwd — a
+            # relative path that resolves here could still miss there
+            return f"panel key path {path} is relative; only absolute paths fly"
+        author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
+        if path.resolve() == author.resolve():
+            return (
+                f"panel key file {path} is the author key file "
+                "(role separation: the verifier needs its own key)"
+            )
         FileTokenProvider(path).token()
         return ""
     except Exception as exc:
-        return str(exc)
+        # never raises: an unexpected failure (partial deploy, ELOOP, unset
+        # HOME) must fail closed WITH the alarm, not abort the tick that
+        # would have written it
+        return f"{type(exc).__name__}: {exc}"
 
 
 def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
@@ -1521,7 +1524,7 @@ def service_intake(
         job_minutes = _climb_job_minutes(spec, limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
-        from autoresearch.intake import CLAIM_MARKER, RELEASE_MARKER
+        from autoresearch.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
 
         github.comment(
             target,
@@ -1578,7 +1581,9 @@ def service_intake(
                     target,
                     task.number,
                     f"{RELEASE_MARKER}\nSubmission failed; claim released — "
-                    f"a later tick will retry this issue.",
+                    f"a later tick will retry this issue (intake gives up "
+                    f"after {MAX_INTAKE_ATTEMPTS} claim attempts and leaves "
+                    f"it for a human).",
                 )
             raise
         log.info("issue #%s claimed for climb job %s", task.number, job_id)
