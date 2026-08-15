@@ -143,3 +143,20 @@ def test_unknown_backend_in_emit_mode_writes_a_stub(monkeypatch: Any, tmp_path: 
     envelope = json.loads((tmp_path / "findings.json").read_text())
     assert envelope["kind"] == "skip-stub"
     assert "unknown REVIEW_BACKEND" in envelope["detail"]
+
+
+def test_hermes_openai_provider_reads_the_openai_key(monkeypatch: Any, tmp_path: Path) -> None:
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "openai",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENAI_REVIEWER_KEY": "sk-openai-test",
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls["build_key"] == "sk-openai-test"
+    assert calls["build_kwargs"]["provider"] == "openai"

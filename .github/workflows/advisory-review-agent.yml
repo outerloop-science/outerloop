@@ -45,6 +45,15 @@ on:
         type: string
         required: false
         default: ''
+      hermes_provider:
+        description: >-
+          Credential provider for the hermes backend: openrouter (default) or
+          openai — openai-direct uses OPENAI_REVIEWER_KEY, avoids the
+          OpenRouter platform fee, and takes provider-NATIVE model ids
+          (gpt-5.6-terra, no openai/ prefix).
+        type: string
+        required: false
+        default: openrouter
       opinion_label:
         description: >-
           Label shown on the posted round (who this opinion is). Leave empty
@@ -184,7 +193,7 @@ jobs:
           REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
           # hermes reads its pinned clone from here; provider seeds ~/.hermes.
           REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
-          REVIEW_HERMES_PROVIDER: openrouter
+          REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
           # read-only job token: PR metadata/diff fetch only
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}

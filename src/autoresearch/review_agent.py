@@ -98,14 +98,25 @@ def build_reviewer_harness(
     if backend == "hermes":
         if hermes_repo is None:
             raise ValueError("hermes reviewer backend needs hermes_repo (the pinned clone)")
+        # hermes resolves credentials from provider-specific env vars: the
+        # harness must export the key under the name the CHOSEN provider
+        # reads. openai-direct avoids the OpenRouter platform fee (and the
+        # org's tax exemption applies) at the same token rate.
+        key_envs = {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}
+        key_env = key_envs.get(provider or "openrouter")
+        if key_env is None:
+            raise ValueError(f"unknown hermes provider: {provider!r}")
         # Defaults already encode the judge shape: file toolset only, terminal
         # and every other executing/egress toolset disabled. Read-only rests on
         # that config plus the ephemeral runner (see the docstring above).
         return HermesHarness(
             api_key=api_key,
+            key_env=key_env,
             repo_dir=hermes_repo,
             provider=provider,
-            model=model or "",  # OpenRouter provider/model; empty -> hermes default
+            # model id is PROVIDER-NATIVE: openai/gpt-5.6-terra on openrouter,
+            # gpt-5.6-terra on openai-direct; empty -> hermes default
+            model=model or "",
             max_turns=spec.budget.max_turns,
             timeout_s=spec.budget.walltime_s,
         )

@@ -24,11 +24,16 @@ on:
       model:
         description: >-
           Model for the session. Empty -> the backend default (claude-opus-5,
-          codex configured, hermes default). For hermes pass an OpenRouter id,
-          e.g. deepseek/deepseek-chat.
+          codex configured, hermes default). For hermes pass the PROVIDER'S
+          native id (openrouter: deepseek/deepseek-chat; openai: gpt-5.6-terra).
         type: string
         required: false
         default: ''
+      hermes_provider:
+        description: hermes credential provider (openrouter | openai)
+        type: choice
+        options: [openrouter, openai]
+        default: openrouter
 
 permissions:
   contents: read
@@ -97,7 +102,7 @@ jobs:
           REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
           # hermes reads its pinned clone from here; provider seeds ~/.hermes.
           REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
-          REVIEW_HERMES_PROVIDER: openrouter
+          REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}

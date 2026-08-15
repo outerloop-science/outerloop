@@ -541,3 +541,21 @@ def test_skip_stub_names_its_opinion(tmp_path: Path) -> None:
     )
     (comment,) = client.comments
     assert "advisory review (second opinion — terra)" in comment
+
+
+def test_hermes_openai_direct_exports_the_openai_key_env(tmp_path: Path) -> None:
+    # openai-direct: same token rate, no OpenRouter platform fee; hermes reads
+    # the key from the env var its provider registry names
+    from autoresearch.harness import HermesHarness
+    from autoresearch.review_agent import build_reviewer_harness
+
+    h = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="openai")
+    assert isinstance(h, HermesHarness)
+    assert h.key_env == "OPENAI_API_KEY" and h.provider == "openai"
+    default = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="")
+    assert isinstance(default, HermesHarness)
+    assert default.key_env == "OPENROUTER_API_KEY"
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown hermes provider"):
+        build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="mystery")

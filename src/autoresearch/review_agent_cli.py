@@ -43,10 +43,13 @@ def main() -> int:
     # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
     backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
     emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
+    # hermes's key SOURCE follows its provider: openai-direct uses the same
+    # org-registered OpenAI key as codex (no OpenRouter platform fee)
+    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter").strip().lower()
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
         "codex": "OPENAI_REVIEWER_KEY",
-        "hermes": "OPENROUTER_API_KEY",
+        "hermes": "OPENAI_REVIEWER_KEY" if hermes_provider == "openai" else "OPENROUTER_API_KEY",
     }.get(backend)
     if key_var is None:
         log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
@@ -97,7 +100,7 @@ def main() -> int:
             log.warning("REVIEW_HERMES_REPO is unset; skipping (hermes needs its pinned clone)")
             return 0
         hermes_repo = Path(hermes_repo_env).resolve()
-        provider = os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter").strip()
+        provider = hermes_provider
     # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
     # agent reads it but never executes it (read-only tool set). Fail closed:
     # defaulting to cwd would silently review the wrong tree (the reviewer's
