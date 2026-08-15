@@ -1776,6 +1776,26 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
         submitted2.append(" ".join(argv))
         return CommandResult(0, "77\n", "")
 
+    # a low cap must reach BOTH consumers at every site: the Slurm request
+    # AND the --job-minutes the self-deadline arms against (a deadline armed
+    # past the real walltime is a kill before a clean ending)
+    low = make(panel_key_file=str(good), max_job_minutes=60)
+    submitted_low: list[str] = []
+
+    def runner_low(argv, timeout_s):
+        submitted_low.append(" ".join(argv))
+        return CommandResult(0, "88\n", "")
+
+    from autoresearch.tick import clear_pending
+
+    clear_pending(tmp_path, "org/pilot")
+    out_low = service_self_initiated(
+        tmp_path, SlurmCompute(runner=runner_low), low, contract, NOW + 4000
+    )
+    assert out_low is not None
+    assert "--time=60" in submitted_low[0] and "--job-minutes 60" in submitted_low[0]
+    clear_pending(tmp_path, "org/pilot")
+
     ok2 = make(panel_key_file=str(good))
     from autoresearch.contract import load_contract
 

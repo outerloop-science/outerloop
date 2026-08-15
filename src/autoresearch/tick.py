@@ -500,7 +500,9 @@ def service_in_review(
                 "--bot-login",
                 spec.bot_login,
                 "--job-minutes",
-                str(spec.time_minutes),
+                # the SAME clamped value Slurm gets: a deadline armed past
+                # the real walltime is a Slurm kill before a clean ending
+                str(min(spec.time_minutes, spec.max_job_minutes)),
                 "--max-turns",
                 str(spec.max_turns),
             ]
@@ -1414,7 +1416,9 @@ def service_steward(
             work_order_b64,
             "--key-file",
             spec.steward_key_file,
-            *_climb_limit_argv(limits, limits.climb_job_minutes),
+            # the SAME clamped walltime the JobSpec requests, so the
+            # self-deadline arms against the real clock
+            *_climb_limit_argv(limits, min(limits.climb_job_minutes, spec.max_job_minutes)),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
