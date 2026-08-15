@@ -93,8 +93,12 @@ Versions follow [SemVer](https://semver.org).
   behind a climb that dies at startup. The panel's walltime is orchestrator
   overhead: the tick ADDS an allowance for it to the contract-clamped job
   budget (a contract can never raise orchestrator spend, so it cannot be
-  asked to fund our own gate); a residual overrun still fails safe via the
-  self-deadline.
+  asked to fund our own gate), clamped at the job partition's MaxTime —
+  sbatch rejects longer requests outright. Work jobs can ride a longer
+  partition than the tick chain: `AUTORESEARCH_JOB_PARTITION` (e.g. cpu48)
+  with `AUTORESEARCH_MAX_JOB_MINUTES` raising the cap in lockstep (code
+  ceiling 10h until the stranded window is spec-aware — named gap). A
+  residual overrun still fails safe via the self-deadline.
 - All five roles now run on the role-runner: `author_spec`/`followup_spec`/
   `steward_spec` (roles.py) join the judges' specs as the manifests,
   `climb_once`/`respond_once`/`live_steward` dispatch through `run_role`, and

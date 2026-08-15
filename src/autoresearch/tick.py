@@ -118,6 +118,19 @@ class TickReport:
     launch_blocked: bool = False  # True when the preflight turned launch lanes off
 
 
+# The submitted walltime must never exceed the job partition's MaxTime —
+# sbatch REJECTS a longer request outright, which would ground every climb.
+# The DEFAULT matches cpu_short (6 h); an operator moving work jobs to a
+# longer partition (AUTORESEARCH_JOB_PARTITION=cpu48) raises the cap with
+# AUTORESEARCH_MAX_JOB_MINUTES. Code-side ceiling: the cap must stay under
+# STRANDED_IMPLEMENTING_S or the picker declares live runs stranded — jobs
+# longer than 10 h need that window made spec-aware first (named gap). The
+# self-deadline arms at the CLAMPED value, so a job that wanted more time
+# fails safe mid-panel instead of never starting.
+MAX_CLIMB_JOB_MINUTES = 6 * 60
+MAX_JOB_MINUTES_CEILING = 10 * 60
+
+
 @dataclass(frozen=True)
 class FollowupSpec:
     """How the tick launches follow-up jobs for in-review runs."""
@@ -147,6 +160,14 @@ class FollowupSpec:
     # overrun still fails safe through the self-deadline.
     panel: str = "verify,review"
     panel_key_file: str = ""  # "" = the climb CLI's default verifier-key path
+    # Where submitted WORK jobs (climb/steward/followup) run; empty = same as
+    # `partition`. The tick chain itself always stays on `partition` — ticks
+    # are minutes, work jobs can be hours, and Slurm prices walltime into
+    # scheduling priority, so the two deserve independent placement.
+    job_partition: str = ""
+    # Partition MaxTime for work jobs — the panel-augmented walltime clamps
+    # here (see MAX_CLIMB_JOB_MINUTES). Raise together with job_partition.
+    max_job_minutes: int = MAX_CLIMB_JOB_MINUTES
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -492,7 +513,7 @@ def service_in_review(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
-                    partition=spec.partition,
+                    partition=spec.job_partition or spec.partition,
                     time_minutes=spec.time_minutes,
                     command=_flight_command(spec.home, f"followup-{record.run_id}"[:60], now, argv),
                     cpus=4,
@@ -1020,11 +1041,6 @@ def replace_report(
 
 
 MAX_ACTIVE_RUNS_PER_TARGET = 1
-# Torch's short CPU partitions cap jobs at 6 h and sbatch REJECTS a longer
-# request outright — an unclamped panel-augmented walltime would ground every
-# climb at submit. The self-deadline arms at the CLAMPED value, so a job that
-# wanted more time fails safe mid-panel instead of never starting.
-MAX_CLIMB_JOB_MINUTES = 6 * 60
 SELF_INITIATED_COOLDOWN_S = 6 * 3600
 # An implementing run untouched for this long is a crashed climb job; it must
 # not block the lane forever, but the window must exceed the LONGEST honest
@@ -1250,7 +1266,7 @@ def service_self_initiated(
             return (benchmark, "dry-run")
         job_minutes = min(
             limits.climb_job_minutes + _panel_job_minutes(spec, limits),
-            MAX_CLIMB_JOB_MINUTES,
+            spec.max_job_minutes,
         )
         argv = [
             "uv",
@@ -1277,7 +1293,7 @@ def service_self_initiated(
             JobSpec(
                 job_name=f"climb-{benchmark}"[:60],
                 account=spec.account,
-                partition=spec.partition,
+                partition=spec.job_partition or spec.partition,
                 time_minutes=job_minutes,
                 command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
                 cpus=4,
@@ -1390,7 +1406,7 @@ def service_steward(
                 JobSpec(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
-                    partition=spec.partition,
+                    partition=spec.job_partition or spec.partition,
                     time_minutes=limits.climb_job_minutes,
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
@@ -1466,7 +1482,7 @@ def service_intake(
             return (f"issue-{task.number}", "dry-run")
         job_minutes = min(
             limits.climb_job_minutes + _panel_job_minutes(spec, limits),
-            MAX_CLIMB_JOB_MINUTES,
+            spec.max_job_minutes,
         )
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
@@ -1511,7 +1527,7 @@ def service_intake(
                 JobSpec(
                     job_name=f"climb-issue-{task.number}",
                     account=spec.account,
-                    partition=spec.partition,
+                    partition=spec.job_partition or spec.partition,
                     time_minutes=job_minutes,
                     command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
                     cpus=4,
@@ -1548,6 +1564,25 @@ class LoggingDispatcher:
         return ""
 
 
+def _max_job_minutes_from_env() -> int:
+    """AUTORESEARCH_MAX_JOB_MINUTES, clamped into what the code can honor:
+    at least the cpu_short default, at most the ceiling the stranded window
+    allows. A clamped value logs — a silently-shrunk cap would read as the
+    partition rejecting jobs for no reason."""
+    raw = os.environ.get("AUTORESEARCH_MAX_JOB_MINUTES", "").strip()
+    if not raw:
+        return MAX_CLIMB_JOB_MINUTES
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
+        return MAX_CLIMB_JOB_MINUTES
+    clamped = max(MAX_CLIMB_JOB_MINUTES, min(value, MAX_JOB_MINUTES_CEILING))
+    if clamped != value:
+        log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
+    return clamped
+
+
 def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     """GitHub client + FollowupSpec from the chain environment, or Nones when
     the environment is incomplete (the tick then runs without in-review
@@ -1579,6 +1614,8 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
                 panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
                 panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
+                job_partition=os.environ.get("AUTORESEARCH_JOB_PARTITION", ""),
+                max_job_minutes=_max_job_minutes_from_env(),
             )
             return github, followup_spec
         except Exception as exc:

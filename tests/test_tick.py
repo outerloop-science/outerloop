@@ -1633,6 +1633,16 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     env["AUTORESEARCH_PANEL"] = ""
     _github, off = _followup_spec_from_env(tmp_path)
     assert off is not None and off.panel == ""
+    # work jobs can ride a longer partition than the tick chain, with the
+    # walltime cap raised in lockstep (clamped to the code-side ceiling)
+    env["AUTORESEARCH_JOB_PARTITION"] = "cpu48"
+    env["AUTORESEARCH_MAX_JOB_MINUTES"] = "480"
+    _github, longer = _followup_spec_from_env(tmp_path)
+    assert longer is not None
+    assert longer.job_partition == "cpu48" and longer.max_job_minutes == 480
+    env["AUTORESEARCH_MAX_JOB_MINUTES"] = "9000"  # above the ceiling
+    _github, capped = _followup_spec_from_env(tmp_path)
+    assert capped is not None and capped.max_job_minutes == 600
 
 
 def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1756,7 +1766,9 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     limits = effective_limits()  # defaults: 120-min job, 90-min session
     assert _panel_job_minutes(make(panel=""), limits) == 0
     wanted = limits.climb_job_minutes + _panel_job_minutes(make(), limits)
-    assert wanted > MAX_CLIMB_JOB_MINUTES  # the default path NEEDS the clamp
+    # the default path NEEDS the clamp (spec.max_job_minutes defaults to
+    # MAX_CLIMB_JOB_MINUTES = cpu_short's 6h MaxTime)
+    assert wanted > MAX_CLIMB_JOB_MINUTES
     submitted2: list[str] = []
 
     def runner2(argv, timeout_s):
