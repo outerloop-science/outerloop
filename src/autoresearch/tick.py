@@ -1172,6 +1172,11 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
             # relative path that resolves here could still miss there
             return f"panel key path {path} is relative; only absolute paths fly"
         author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
+        if not author.is_absolute():
+            # same rule as the panel key: the climb resolves paths from a
+            # flight directory, so a relative author path both misconfigures
+            # the author AND defeats the role-separation comparison below
+            return f"author key path {author} is relative; only absolute paths fly"
         if path.resolve() == author.resolve():
             return (
                 f"panel key file {path} is the author key file "

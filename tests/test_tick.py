@@ -1701,6 +1701,11 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     # role separation: the panel key must not BE the author key
     same = make(panel_key_file=str(good), key_file=str(good))
     assert "author key" in _panel_preflight_error(same)
+    # ... and a RELATIVE author path fails too: the climb resolves it from a
+    # flight dir, so the comparison above could pass where the runtime collides
+    rel = make(panel_key_file=str(good), key_file="keys/author")
+    assert "author key path" in _panel_preflight_error(rel)
+    assert "relative" in _panel_preflight_error(rel)
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))
