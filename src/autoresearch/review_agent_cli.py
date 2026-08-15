@@ -109,6 +109,21 @@ def main() -> int:
             return 0
         hermes_repo = Path(hermes_repo_env).resolve()
         provider = hermes_provider
+        if provider == "openai" and not os.environ.get("REVIEW_MODEL", "").strip():
+            # empty model falls back to hermes's default id, which is
+            # OpenRouter-shaped and cannot be served by api.openai.com
+            detail = "hermes+openai requires a provider-native REVIEW_MODEL"
+            log.warning("%s; skipping review", detail)
+            if emit_env:
+                _emit(
+                    Path(emit_env).resolve(),
+                    repo,
+                    number,
+                    kind="skip-stub",
+                    detail=detail,
+                    reviewed_by=backend,
+                )
+            return 0
     # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
     # agent reads it but never executes it (read-only tool set). Fail closed:
     # defaulting to cwd would silently review the wrong tree (the reviewer's

@@ -41,7 +41,9 @@ on:
         description: >-
           Model for the session. Empty uses the backend default
           (claude-opus-5 for claude; the backend's own default otherwise).
-          For hermes pass an OpenRouter id.
+          For hermes pass an OpenRouter id — except with
+          hermes_provider: openai, which REQUIRES the provider-native id
+          (gpt-5.6-terra, no openai/ prefix).
         type: string
         required: false
         default: ''

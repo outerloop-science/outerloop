@@ -881,7 +881,7 @@ class HermesHarness:
     # upstream split of the `file` toolset into read/write.
     approvals_deny: tuple[str, ...] = ()
     model: str = ""  # OpenRouter format (provider/model); empty -> hermes default
-    base_url: str = ""  # empty -> OpenRouter; any OpenAI-compatible endpoint works
+    base_url: str = ""  # empty -> the seeded provider's own endpoint
     max_turns: int = DEFAULT_MAX_TURNS
     timeout_s: int = DEFAULT_TIMEOUT_S
     enabled_toolsets: tuple[str, ...] = ("file",)

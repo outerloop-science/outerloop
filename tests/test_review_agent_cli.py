@@ -154,6 +154,7 @@ def test_hermes_openai_provider_reads_the_openai_key(monkeypatch: Any, tmp_path:
             "REVIEW_HERMES_PROVIDER": "openai",
             "REVIEW_HERMES_REPO": str(tmp_path),
             "OPENAI_REVIEWER_KEY": "sk-openai-test",
+            "REVIEW_MODEL": "gpt-5.6-terra",  # openai-direct requires a native id
         }
     )
     calls = _patch(monkeypatch, env)
@@ -183,6 +184,30 @@ def test_unknown_hermes_provider_in_emit_mode_writes_a_stub(
     envelope = json.loads((tmp_path / "findings.json").read_text())
     assert envelope["kind"] == "skip-stub"
     assert "unknown REVIEW_HERMES_PROVIDER" in envelope["detail"]
+
+
+def test_hermes_openai_without_model_writes_a_stub(monkeypatch: Any, tmp_path: Path) -> None:
+    # hermes's default model id is OpenRouter-shaped; api.openai.com cannot
+    # serve it, so an unset model must be a PR-visible stub, not a dead session
+    import json
+
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "openai",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENAI_REVIEWER_KEY": "sk-openai-test",
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "provider-native REVIEW_MODEL" in envelope["detail"]
 
 
 def test_explicitly_empty_hermes_provider_means_the_default(
