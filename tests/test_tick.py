@@ -869,11 +869,15 @@ roadmap: docs/roadmap.md
     out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), spec, contract, NOW)
     assert out == ("tsp", "123")
     sbatch = submitted[0]
-    assert "--time=120" in sbatch  # 100000 clamped to the default-as-ceiling
+    # contract budget (100000 clamped to the 120 ceiling) + the panel
+    # allowance the TICK adds (3 reads x 2 lenses x 30-min judge budget
+    # + the 25-min session for the revision wake = 205): the contract can
+    # never raise orchestrator spend, so the panel brings its own time
+    assert "--time=325" in sbatch
     wrap = sbatch[-1]
     assert "--max-turns 30" in wrap
     assert "--session-minutes 25" in wrap
-    assert "--job-minutes 120" in wrap  # the job's own walltime, for the alarm
+    assert "--job-minutes 325" in wrap  # the ACTUAL walltime, for the alarm
     assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
 
 
@@ -1640,7 +1644,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     ~ path expands (operator env values arrive verbatim)."""
     from autoresearch.tick import (
         FollowupSpec,
-        _panel_key_error,
+        _panel_preflight_error,
         service_intake,
         service_self_initiated,
     )
@@ -1664,13 +1668,34 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     good = tmp_path / "good"
     good.write_text("k")
     good.chmod(0o600)
-    assert "chmod 600" in _panel_key_error(make(panel_key_file=str(loose)))
-    assert "empty" in _panel_key_error(make(panel_key_file=str(empty)))
-    assert _panel_key_error(make(panel_key_file=str(tmp_path / "nope"))) != ""
-    assert _panel_key_error(make(panel_key_file=str(good))) == ""
-    assert _panel_key_error(make(panel="")) == ""
+    assert "chmod 600" in _panel_preflight_error(make(panel_key_file=str(loose)))
+    assert "empty" in _panel_preflight_error(make(panel_key_file=str(empty)))
+    assert _panel_preflight_error(make(panel_key_file=str(tmp_path / "nope"))) != ""
+    assert _panel_preflight_error(make(panel_key_file=str(good))) == ""
+    assert _panel_preflight_error(make(panel="")) == ""
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert _panel_key_error(make(panel_key_file="~/good")) == ""
+    assert _panel_preflight_error(make(panel_key_file="~/good")) == ""
+    # the climb's OTHER startup rejections are preflighted too: a typo'd lens
+    # spec (climb dies at argparse) and a relative key path (the climb runs
+    # from a flight dir, not the tick's cwd)
+    bad_spec = make(panel="verfy", panel_key_file=str(good))
+    assert "unknown kind" in _panel_preflight_error(bad_spec)
+    assert "not contained" not in _panel_preflight_error(bad_spec)  # first error wins
+    assert "only the claude backend" in _panel_preflight_error(
+        make(panel="verify:hermes", panel_key_file=str(good))
+    )
+    assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
+    # role separation: the panel key must not BE the author key
+    same = make(panel_key_file=str(good), key_file=str(good))
+    assert "author key" in _panel_preflight_error(same)
+
+    # the walltime allowance exists exactly when the panel does
+    from autoresearch.limits import effective_limits
+    from autoresearch.tick import _panel_job_minutes
+
+    limits = effective_limits()
+    assert _panel_job_minutes(make(panel=""), limits) == 0
+    assert _panel_job_minutes(make(), limits) > 0
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))

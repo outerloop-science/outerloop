@@ -138,12 +138,13 @@ class FollowupSpec:
     steward_key_file: str = ""
     # Pre-PR verification panel for climb jobs (docs/design/orchestrator-verify.md).
     # DEFAULT ON — the flip is code, the off-switch is AUTORESEARCH_PANEL="".
-    # The climb CLI fails LOUDLY if the panel key file is missing (a configured
-    # gate must never silently vanish); the tick preflights the same file
-    # before claiming or submitting so nothing is stranded. Panel rounds and a
-    # possible revision re-measure run INSIDE the climb job's walltime — size
-    # the contract's climb_job_minutes for them; an overrun fails safe through
-    # the self-deadline, costing that attempt, not correctness.
+    # The climb CLI fails LOUDLY on a bad panel config (a configured gate must
+    # never silently vanish); the tick preflights the same rules — lens
+    # grammar AND key file — before claiming or submitting so nothing is
+    # stranded. The panel's walltime is the orchestrator's own overhead: the
+    # tick ADDS a panel allowance to the contract-clamped job budget
+    # (_panel_job_minutes) rather than eating the author's time; a residual
+    # overrun still fails safe through the self-deadline.
     panel: str = "verify,review"
     panel_key_file: str = ""  # "" = the climb CLI's default verifier-key path
 
@@ -1109,38 +1110,76 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
-def _panel_key_error(spec: FollowupSpec) -> str:
-    """Why the climb could not read its panel key ("" when it can).
+def _panel_preflight_error(spec: FollowupSpec) -> str:
+    """Why the climb would die at startup on this panel config ("" when it
+    won't): the lens spec, then the key file — each checked with the climb's
+    OWN rules (parse_lenses for the grammar and claude-only backend;
+    FileTokenProvider for exists/mode-600/non-empty), so preflight and climb
+    cannot disagree.
 
-    Preflighted BEFORE claiming or submitting: the climb CLI fails loudly on a
-    bad key file, but by then an intake issue is already claimed — and
-    pick_issue never reclaims — so the strand must be caught on the tick host,
-    which shares the home filesystem the climb will read. Reading through
-    FileTokenProvider applies the climb's exact acceptance rules (exists,
-    mode 600, non-empty), so preflight and climb cannot disagree."""
+    Preflighted BEFORE claiming or submitting: the climb CLI fails loudly,
+    but by then an intake issue is already claimed — and pick_issue never
+    reclaims — so the strand must be caught on the tick host, which shares
+    the home filesystem the climb will read."""
     if not spec.panel.strip():
         return ""
-    from autoresearch.climb import PANEL_KEY_DEFAULT
+    from autoresearch.climb import HARNESS_KEY_DEFAULT, PANEL_KEY_DEFAULT
     from autoresearch.github import FileTokenProvider
+    from autoresearch.panel import parse_lenses
 
     try:
-        FileTokenProvider(Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()).token()
+        parse_lenses(spec.panel)
+    except ValueError as exc:
+        return str(exc)
+    path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+    if not path.is_absolute():
+        # the climb runs from a flight directory, not the tick's cwd — a
+        # relative path that resolves here could still miss there
+        return f"panel key path {path} is relative; only absolute paths fly"
+    author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
+    if path.resolve() == author.resolve():
+        return (
+            f"panel key file {path} is the author key file "
+            "(role separation: the verifier needs its own key)"
+        )
+    try:
+        FileTokenProvider(path).token()
         return ""
     except Exception as exc:
         return str(exc)
 
 
-def _climb_limit_argv(limits: EffectiveLimits) -> list[str]:
-    """Climb-CLI flags carrying the tick-resolved limits: the job's own
-    walltime rides along so the climb can arm its self-deadline (Slurm
-    delivers no signals to our processes on Torch — measured 2026-08-08)."""
+def _panel_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
+    """Extra walltime the panel needs, ADDED to the contract-clamped job
+    budget: the contract's knobs cap the AUTHOR's spend and their ceilings
+    deliberately cannot raise ours (limits.py), so the panel — the
+    orchestrator's own gate, flipped on by the tick — brings its own time.
+    Worst case: three sequential reads of every lens (initial, post-revision,
+    merged-tree) on the judge budget, plus one revision wake on the session
+    budget. The revision's re-measure rides the margin the self-deadline
+    already fails safe on."""
+    lenses = [entry for entry in spec.panel.split(",") if entry.strip()]
+    if not lenses:
+        return 0
+    from autoresearch.roles import reviewer_spec, verifier_spec
+
+    judge_minutes = max(reviewer_spec().budget.walltime_s, verifier_spec().budget.walltime_s) // 60
+    return 3 * len(lenses) * judge_minutes + limits.session_minutes
+
+
+def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
+    """Climb-CLI flags carrying the tick-resolved limits: the job's ACTUAL
+    walltime rides along (contract budget + any panel allowance, exactly what
+    the JobSpec gets) so the climb arms its self-deadline against the real
+    clock (Slurm delivers no signals to our processes on Torch — measured
+    2026-08-08)."""
     return [
         "--max-turns",
         str(limits.session_max_turns),
         "--session-minutes",
         str(limits.session_minutes),
         "--job-minutes",
-        str(limits.climb_job_minutes),
+        str(job_minutes),
     ]
 
 
@@ -1189,17 +1228,18 @@ def service_self_initiated(
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
             return None
-        key_error = _panel_key_error(spec)
-        if key_error:
+        panel_error = _panel_preflight_error(spec)
+        if panel_error:
             log.error(
-                "climb on %s not launched: panel enabled but its key is unusable — %s "
+                "climb on %s not launched: panel misconfigured — %s "
                 "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
                 benchmark,
-                key_error,
+                panel_error,
             )
             return None
         if dry_run:
             return (benchmark, "dry-run")
+        job_minutes = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
         argv = [
             "uv",
             "run",
@@ -1214,7 +1254,7 @@ def service_self_initiated(
             str(spec.run_root),
             "--image",
             spec.image,
-            *_climb_limit_argv(limits),
+            *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
         ]
         if spec.pat_file:
@@ -1226,7 +1266,7 @@ def service_self_initiated(
                 job_name=f"climb-{benchmark}"[:60],
                 account=spec.account,
                 partition=spec.partition,
-                time_minutes=limits.climb_job_minutes,
+                time_minutes=job_minutes,
                 command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
                 cpus=4,
                 mem="8G",
@@ -1329,7 +1369,7 @@ def service_steward(
             work_order_b64,
             "--key-file",
             spec.steward_key_file,
-            *_climb_limit_argv(limits),
+            *_climb_limit_argv(limits, limits.climb_job_minutes),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1401,17 +1441,18 @@ def service_intake(
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
-        key_error = _panel_key_error(spec)
-        if key_error:
+        panel_error = _panel_preflight_error(spec)
+        if panel_error:
             log.error(
-                "issue #%d not claimed: panel enabled but its key is unusable — %s "
+                "issue #%d not claimed: panel misconfigured — %s "
                 "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
                 task.number,
-                key_error,
+                panel_error,
             )
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
+        job_minutes = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from autoresearch.intake import CLAIM_MARKER
@@ -1443,7 +1484,7 @@ def service_intake(
             str(task.number),
             "--hypothesis-b64",
             hypothesis_b64,
-            *_climb_limit_argv(limits),
+            *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
         ]
         if spec.pat_file:
@@ -1455,7 +1496,7 @@ def service_intake(
                 job_name=f"climb-issue-{task.number}",
                 account=spec.account,
                 partition=spec.partition,
-                time_minutes=limits.climb_job_minutes,
+                time_minutes=job_minutes,
                 command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
                 cpus=4,
                 mem="8G",
