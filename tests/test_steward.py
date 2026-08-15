@@ -725,3 +725,26 @@ def test_rebase_row_records_the_measurement_seed(tmp_path) -> None:
     raw = _json.loads((tmp_path / "results" / "leader.json").read_text())
     assert raw[bench.name]["run_seed"] == 987654321
     assert raw[bench.name]["best_run"] == "baseline-steward-tsp-s"
+
+
+def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> None:
+    # the steward edits env code; a judge spec here is a deployment bug — loud
+    # and immediate, before the record or any network work
+    from autoresearch.roles import reviewer_spec
+    from autoresearch.steward import StewardConfig, live_steward
+
+    with pytest.raises(ValueError, match="must allow execution"):
+        live_steward(
+            config=StewardConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="stw-badspec",
+            harness=None,  # type: ignore[arg-type]  # refused before any use
+            evaluator=None,  # type: ignore[arg-type]
+            github=None,  # type: ignore[arg-type]
+            bot_auth=None,  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="t",
+            spec=reviewer_spec(),
+        )
+    # "before any work" made checkable: no run dir, no record, nothing on disk
+    assert not (tmp_path / "state").exists()

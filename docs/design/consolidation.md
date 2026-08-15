@@ -120,7 +120,7 @@ scope, key), and their spend counts against its budget.
 
 | Now | Fate |
 | --- | --- |
-| `climb`, `steward`, `followup` | Remaining copies of "prep → run a role → act on the result." Collapse into **one role-runner + a RoleSpec + a result-policy** each — done for the judges (`review_cli`/`verifier_cli` are deleted; reviewer and verifier run on the role-runner), the author (`climb_once` runs `author_spec` through `run_role`; the harness is built from the spec), and the follow-up responder (`respond_once` runs `followup_spec` under the resuming role's key and scope). Steward dispatch pending. The measure/gate/PR halves stay kernel; the brief/skills halves become app config. |
+| `climb`, `steward`, `followup` | Session dispatch collapsed: all five roles run through **one role-runner + a RoleSpec** (judges via their agent modules, `review_cli`/`verifier_cli` deleted; author via `climb_once`; follow-up via `respond_once` under the resuming role's key and scope; steward via `live_steward`) with the harness built from the spec (`build_editor_harness` for editing roles). What remains of these modules is each role's kernel half — measure/gate/PR/wake plumbing. The brief/skills halves becoming app config is the remaining consolidation. |
 | `review`, `verifier` (rendering, verdict/blocking machinery) | On the agent-session path; hold the shared vocabulary and rendering both judges use. |
 | `harness`, `brief` | The seam. Keep. Adapters live: claude, codex, hermes. |
 | `orchestrator`, `contract`, `github`, `compute`, `runstate`, `disk`, `limits`, `intake` | Kernel. Barely moves — the point. |

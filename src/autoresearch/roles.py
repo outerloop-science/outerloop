@@ -114,6 +114,39 @@ def verifier_spec(
     )
 
 
+def steward_spec(
+    *,
+    environment: Environment = "apptainer",
+    max_turns: int = 60,
+    walltime_s: int = 3600,
+    scope: tuple[str, ...] = (),
+) -> RoleSpec:
+    """The benchmark steward as an editing agent session.
+
+    Its territory is the contract's `steward.allowed` (env generators, eval
+    harness, tests), with the solver's scope forbidden in code — the role
+    separation that makes verifier-checked stewardship trustworthy. No
+    output_schema: the artifact is the env-work diff plus the report, and the
+    orchestrator runs the validation ruler. `scope=()` means "filled from the
+    contract by the kernel". Budget defaults mirror the steward CLI's.
+    """
+    return RoleSpec(
+        name="steward",
+        instructions=(
+            "Keep the benchmarks discriminating: restore headroom, harden "
+            "metrics, add evaluations — env work inside your steward "
+            "territory, never the solver's code. Propose; the orchestrator "
+            "validates and a human merges."
+        ),
+        key="steward",
+        tools=_AUTHOR_TOOLS,
+        execution=Execution(environment=environment, can_execute=True),
+        budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
+        skills=("kernel-primer", "plain-style", "ruler-hardening", "benchmark-design"),
+        scope=tuple(scope),
+    )
+
+
 def followup_spec(
     *,
     resuming: Literal["author", "steward"] = "author",
