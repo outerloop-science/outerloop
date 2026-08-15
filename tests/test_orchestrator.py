@@ -54,10 +54,12 @@ class FakeEvaluator:
     values: list[float] = field(default_factory=list)
     calls: list[tuple[str, str]] = field(default_factory=list)
     seen_env: list = field(default_factory=list)
+    seen_ws: list = field(default_factory=list)
 
     def evaluate(self, workspace: Path, command: str, metric: str, extra_env=None) -> float:
         self.calls.append((command, metric))
         self.seen_env.append(dict(extra_env) if extra_env else None)
+        self.seen_ws.append(workspace)
         value = self.values.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -530,9 +532,178 @@ def test_subprocess_evaluator_env_is_private_per_eval(tmp_path: Path) -> None:
     assert len(seen) == 2 and seen[0] != seen[1]
 
 
+# ---- suite no-regression gate --------------------------------------------
+
+SHARED_CONTRACT = """
+benchmarks:
+  - name: tsp
+    command: uv run python -m pilot.eval --benchmark tsp --json
+    metric: mean_tour_length
+    direction: min
+  - name: sokoban
+    command: uv run python -m pilot.eval --benchmark sokoban --json
+    metric: solve_rate
+    direction: max
+budgets: {gpu_hours_per_run: 1, runs_per_week: 10}
+scope: {allowed: [src/pilot/], shared: [src/pilot/model/]}
+roadmap: docs/roadmap.md
+"""
+
+
+def run_shared_climb(tmp_path, values, changed, contract=SHARED_CONTRACT, **kw):
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=list(values))
+    baseline_ws = tmp_path / "pristine"
+    baseline_ws.mkdir(exist_ok=True)
+    result = climb_once(
+        CONFIG,
+        contract,
+        tmp_path,
+        harness,
+        evaluator,
+        ruler="mean tour length over the frozen pool",
+        changed_paths=lambda: changed,
+        created="2026-08-06T00:00:00Z",
+        baseline_workspace=kw.pop("baseline_workspace", baseline_ws),
+        **kw,
+    )
+    return result, evaluator
+
+
+def test_shared_diff_measures_every_sibling_and_passes(tmp_path: Path) -> None:
+    result, evaluator = run_shared_climb(
+        tmp_path, [13.876, 13.10, 0.8, 0.8], changed=["src/pilot/model/encoder.py"]
+    )
+    assert result.outcome == "improved"
+    # 2 climbed evals + a paired pass per sibling
+    assert len(evaluator.calls) == 4
+    assert evaluator.calls[2] == evaluator.calls[3]  # sibling: same command both sides
+    # each pair measures pristine-vs-session, sibling exactly like the climbed
+    # metric: [baseline ws, session ws, sibling baseline ws, sibling session ws]
+    pristine = evaluator.seen_ws[0]
+    assert pristine.name == "pristine"
+    assert evaluator.seen_ws == [pristine, pristine.parent, pristine, pristine.parent]
+    (row,) = result.suite
+    assert row.name == "sokoban" and not row.regressed
+    assert row.baseline == 0.8 and row.candidate == 0.8
+
+
+def test_shared_diff_regressing_a_sibling_loses_credit(tmp_path: Path) -> None:
+    result, _ = run_shared_climb(
+        tmp_path, [13.876, 13.10, 0.8, 0.5], changed=["src/pilot/model/encoder.py"]
+    )
+    assert result.outcome == "suite-regression"
+    assert "sokoban" in result.note and "0.8" in result.note
+    assert result.branch == ""  # no PR is opened from this outcome
+    (row,) = result.suite
+    assert row.regressed
+
+
+def test_env_specific_diff_skips_the_suite_pass(tmp_path: Path) -> None:
+    result, evaluator = run_shared_climb(
+        tmp_path, [13.876, 13.10], changed=["src/pilot/solvers/tsp.py"]
+    )
+    assert result.outcome == "improved"
+    assert len(evaluator.calls) == 2  # cheap path: only the climbed benchmark
+    assert result.suite == ()
+
+
+def test_sibling_floor_gives_a_stochastic_eval_its_tolerance(tmp_path: Path) -> None:
+    floored = SHARED_CONTRACT.replace(
+        "    direction: max\n", "    direction: max\n    min_delta: 0.05\n", 1
+    )
+    result, _ = run_shared_climb(
+        tmp_path,
+        [13.876, 13.10, 0.8, 0.77],
+        changed=["src/pilot/model/encoder.py"],
+        contract=floored,
+    )
+    assert result.outcome == "improved"  # a 0.03 drop sits inside sokoban's 0.05 floor
+    (row,) = result.suite
+    assert not row.regressed
+
+
+def test_shared_diff_without_pristine_baseline_fails_closed(tmp_path: Path) -> None:
+    result, _ = run_shared_climb(
+        tmp_path,
+        [13.876, 13.10],
+        changed=["src/pilot/model/encoder.py"],
+        baseline_workspace=None,
+    )
+    assert result.outcome == "eval-error"
+    assert "no pristine baseline workspace" in result.note
+
+
+def test_sibling_eval_failure_is_an_eval_error_naming_it(tmp_path: Path) -> None:
+    result, _ = run_shared_climb(
+        tmp_path,
+        [13.876, 13.10, EvalError("harness crashed")],
+        changed=["src/pilot/model/encoder.py"],
+    )
+    assert result.outcome == "eval-error"
+    assert "suite sokoban" in result.note
+
+
+def test_seeded_sibling_pair_is_pinned_to_one_suite_seed(tmp_path: Path) -> None:
+    seeded = SHARED_CONTRACT.replace(
+        "    direction: max\n", "    direction: max\n    seed_env: PILOT_SOKOBAN_SEED\n", 1
+    )
+    result, evaluator = run_shared_climb(
+        tmp_path,
+        [13.876, 13.10, 0.8, 0.8],
+        changed=["src/pilot/model/encoder.py"],
+        contract=seeded,
+    )
+    assert result.outcome == "improved"
+    sib_envs = evaluator.seen_env[2:]
+    assert sib_envs[0] == sib_envs[1]  # paired: same seed both sides
+    assert sib_envs[0] and "PILOT_SOKOBAN_SEED" in sib_envs[0]
+    assert result.suite_seed > 0
+
+
+def test_suite_regressed_is_direction_aware_and_fails_closed() -> None:
+    from autoresearch.orchestrator import suite_regressed
+
+    assert suite_regressed(0.8, 0.5, "max")  # max: drop is a regression
+    assert not suite_regressed(0.8, 0.9, "max")
+    assert suite_regressed(10.0, 12.0, "min")  # min: rise is a regression
+    assert not suite_regressed(10.0, 9.0, "min")
+    assert not suite_regressed(0.8, 0.77, "max", min_delta=0.05)  # inside the floor
+    assert suite_regressed(0.8, 0.70, "max", min_delta=0.05)  # beyond it
+    assert suite_regressed(float("nan"), 0.8, "max")  # unmeasurable fails closed
+
+
+def test_pr_body_carries_the_suite_table(tmp_path: Path) -> None:
+    result, _ = run_shared_climb(
+        tmp_path, [13.876, 13.10, 0.8, 0.8], changed=["src/pilot/model/encoder.py"]
+    )
+    body = pr_body(result, CONFIG, redact_secrets=())
+    assert "| sokoban | 0.8 | 0.8 |" in body
+    assert "none regressed beyond its floor" in body
+
+
+def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
+    from autoresearch.contract import load_contract
+    from autoresearch.orchestrator import make_task
+
+    gated = make_task(load_contract(SHARED_CONTRACT, "org/pilot"), "tsp", 13.876)
+    assert "suite-gated" in gated.done_criteria
+    ungated = make_task(load_contract(CONTRACT, "org/pilot"), "tsp", 13.876)
+    assert "suite-gated" not in ungated.done_criteria
+
+
 def test_climb_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
     # the author is an editing role; a judge spec here is a deployment bug
     from autoresearch.roles import reviewer_spec
 
     with pytest.raises(ValueError, match="must allow execution"):
         run_climb(tmp_path, [13.876], spec=reviewer_spec())
+
+
+def test_shared_match_is_case_folded_like_the_other_path_checks(tmp_path: Path) -> None:
+    # a Model/ spelling must not dodge the gate (forbidden/steward checks fold too)
+    result, evaluator = run_shared_climb(
+        tmp_path, [13.876, 13.10, 0.8, 0.8], changed=["src/pilot/Model/encoder.py"]
+    )
+    assert result.outcome == "improved"
+    assert len(evaluator.calls) == 4  # the suite pass ran

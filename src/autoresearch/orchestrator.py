@@ -345,11 +345,22 @@ class ClimbConfig:
 
 
 @dataclass(frozen=True)
+class SuiteMeasurement:
+    """One sibling benchmark's paired measurement from the suite gate."""
+
+    name: str
+    baseline: float
+    candidate: float
+    regressed: bool
+    display_digits: int | None = None
+
+
+@dataclass(frozen=True)
 class ClimbResult:
     """What one attempt produced — the raw material of the run report."""
 
     # improved | no-improvement | session-error | session-budget |
-    # session-outage | eval-error | scope-violation
+    # session-outage | eval-error | scope-violation | suite-regression
     outcome: str
     baseline: float | None = None
     candidate: float | None = None
@@ -362,6 +373,11 @@ class ClimbResult:
     # the seed both measurements ran under (0 = benchmark has no seed_env):
     # recorded in the ledger row so the number is re-derivable
     run_seed: int = 0
+    # sibling measurements when the suite gate ran (shared paths touched);
+    # empty when the diff was env-specific or no shared paths are declared
+    suite: tuple[SuiteMeasurement, ...] = ()
+    # the seed every seeded sibling's pair ran under (0 = gate did not run)
+    suite_seed: int = 0
 
     def report(self, config: ClimbConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
@@ -372,6 +388,9 @@ class ClimbResult:
             lines.append(f"Baseline: {self.baseline}")
         if self.candidate is not None:
             lines.append(f"Candidate: {self.candidate}")
+        for row in self.suite:
+            verdict = "REGRESSED" if row.regressed else "ok"
+            lines.append(f"Suite {row.name}: {row.baseline} -> {row.candidate} ({verdict})")
         if self.note:
             lines.append(f"Note: {self.note}")
         if self.session is not None:
@@ -416,6 +435,23 @@ def out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
         if not any(candidate == a or a in candidate.parents for a in allowed):
             violations.append(path)
     return violations
+
+
+def shared_touched(paths: Sequence[str], contract: Contract) -> list[str]:
+    """Changed paths under `scope.shared` — the suite-gate trigger. Runs on
+    paths that already passed `out_of_scope`, so unparseable entries are
+    simply not shared (they were rejected upstream). Case-folded like the
+    forbidden/steward checks: a `Model/` spelling must not dodge the gate."""
+    shared = [_fold(normalize_path(entry)) for entry in contract.scope.shared]
+    hits = []
+    for path in paths:
+        try:
+            candidate = _fold(normalize_path(path))
+        except Exception:
+            continue
+        if any(candidate == s or s in candidate.parents for s in shared):
+            hits.append(path)
+    return hits
 
 
 def steward_out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
@@ -499,6 +535,27 @@ def clears_min_delta(
     return delta > floor
 
 
+def suite_regressed(
+    baseline: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None = None,
+    min_delta_rel: float | None = None,
+) -> bool:
+    """Did a sibling benchmark move the WRONG way beyond its own floor?
+
+    Both sides are same-seed paired, so with no floor declared any wrong-way
+    move counts (paired noise is ~0 by construction); a declared floor gives
+    a stochastic eval its honest tolerance. Non-finite values fail closed —
+    an unmeasurable sibling must never read as "no regression"."""
+    if not (math.isfinite(baseline) and math.isfinite(candidate)):
+        return True
+    drop = baseline - candidate if direction == "max" else candidate - baseline
+    if drop <= 0:
+        return False
+    return drop > benchmark_floor(baseline, min_delta, min_delta_rel)
+
+
 def improved(baseline: float, candidate: float, direction: str, min_rel: float) -> bool:
     """Direction-aware, threshold-clearing improvement. Non-finite values
     never count (the evaluator rejects them; this is defense in depth)."""
@@ -516,6 +573,7 @@ def make_task(
 ) -> Task:
     bench = _benchmark(contract, benchmark_name)
     better = "up" if bench.direction == "max" else "down"
+    suite_gated = bool(contract.scope.shared) and len(contract.benchmarks) > 1
     return Task(
         hypothesis=hypothesis
         or (
@@ -528,6 +586,12 @@ def make_task(
         done_criteria=(
             f"`{bench.command}` runs clean and {bench.metric} moves {better} "
             f"versus {baseline}; repository tests pass"
+            + (
+                "; a change touching shared paths is suite-gated — no sibling "
+                "benchmark may regress beyond its floor"
+                if suite_gated
+                else ""
+            )
         ),
     )
 
@@ -641,23 +705,91 @@ def climb_once(
             outcome="eval-error", baseline=baseline, session=session, note=f"candidate: {exc}"
         )
 
-    if improved(baseline, candidate, bench.direction, config.min_relative_improvement):
+    if not improved(baseline, candidate, bench.direction, config.min_relative_improvement):
         return ClimbResult(
-            outcome="improved",
+            outcome="no-improvement",
             baseline=baseline,
             candidate=candidate,
             session=session,
-            branch=f"{config.branch_prefix}/{config.benchmark}",
-            measured_paths=measured,
+            note="a negative result reported clearly is a success",
             run_seed=run_seed,
         )
+
+    # Suite gate: a diff touching shared code must not buy its improvement
+    # by regressing a sibling benchmark (the recurring gamed-climb shape:
+    # a real lever that exploits one benchmark's structure). Runs only on
+    # an otherwise-credited claim — a negative result needs no gate.
+    suite: tuple[SuiteMeasurement, ...] = ()
+    suite_seed = 0
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    if siblings and shared_touched(measured, contract):
+        if baseline_workspace is None:
+            # fail closed: without a pristine pre-session tree the sibling
+            # baselines cannot be measured, and an ungated shared diff must
+            # never read as a clean pass
+            return ClimbResult(
+                outcome="eval-error",
+                baseline=baseline,
+                candidate=candidate,
+                session=session,
+                note="suite gate: no pristine baseline workspace to measure siblings",
+                run_seed=run_seed,
+            )
+        suite_seed = run_seed or draw_run_seed()
+        rows = []
+        for sib in siblings:
+            env = {sib.seed_env: str(suite_seed)} if sib.seed_env else None
+            try:
+                # paired like the climbed benchmark: same seed both sides
+                sib_base = evaluator.evaluate(
+                    baseline_workspace, sib.command, sib.metric, extra_env=env
+                )
+                sib_cand = evaluator.evaluate(workspace, sib.command, sib.metric, extra_env=env)
+            except EvalError as exc:
+                return ClimbResult(
+                    outcome="eval-error",
+                    baseline=baseline,
+                    candidate=candidate,
+                    session=session,
+                    note=f"suite {sib.name}: {exc}",
+                    run_seed=run_seed,
+                )
+            rows.append(
+                SuiteMeasurement(
+                    name=sib.name,
+                    baseline=sib_base,
+                    candidate=sib_cand,
+                    regressed=suite_regressed(
+                        sib_base, sib_cand, sib.direction, sib.min_delta, sib.min_delta_rel
+                    ),
+                    display_digits=sib.display_digits,
+                )
+            )
+        suite = tuple(rows)
+        regressed = [r for r in suite if r.regressed]
+        if regressed:
+            named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
+            return ClimbResult(
+                outcome="suite-regression",
+                baseline=baseline,
+                candidate=candidate,
+                session=session,
+                note=f"shared-path diff regressed sibling benchmark(s): {named}",
+                run_seed=run_seed,
+                suite=suite,
+                suite_seed=suite_seed,
+            )
+
     return ClimbResult(
-        outcome="no-improvement",
+        outcome="improved",
         baseline=baseline,
         candidate=candidate,
         session=session,
-        note="a negative result reported clearly is a success",
+        branch=f"{config.branch_prefix}/{config.benchmark}",
+        measured_paths=measured,
         run_seed=run_seed,
+        suite=suite,
+        suite_seed=suite_seed,
     )
 
 
@@ -677,6 +809,20 @@ def pr_body(
 
     if result.outcome != "improved" or result.baseline is None or result.candidate is None:
         raise ValueError("pr_body requires an improved result with both measurements")
+    suite_lines: list[str] = []
+    if result.suite:
+        suite_lines = [
+            "",
+            "Shared code was touched, so every sibling benchmark was re-measured "
+            "on both sides (paired seed): none regressed beyond its floor.",
+            "",
+            "| suite benchmark | baseline | candidate |",
+            "| --- | --- | --- |",
+        ] + [
+            f"| {row.name} | {fmt_metric(row.baseline, row.display_digits)} "
+            f"| {fmt_metric(row.candidate, row.display_digits)} |"
+            for row in result.suite
+        ]
     body = "\n".join(
         [
             f"Automated improvement attempt on `{config.benchmark}` "
@@ -686,6 +832,7 @@ def pr_body(
             "| --- | --- |",
             f"| baseline ({config.benchmark}) | {fmt_metric(result.baseline, display_digits)} |",
             f"| candidate | {fmt_metric(result.candidate, display_digits)} |",
+            *suite_lines,
             "",
             "Both numbers were measured by the orchestrator re-running the "
             "contract's eval command — not taken from the session. CI "

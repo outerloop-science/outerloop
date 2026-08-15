@@ -162,6 +162,24 @@ open-ended sweep space.
       steward key + pilot contract `steward:` section + the four work-order
       issues (denoise v2 [PR #18 draft as spec], reach v3, probe v2,
       speedup noise floor)
+- [x] Suite no-regression gate (yolo-jepa lessons: both gamed climbs bought
+      their number by exploiting one benchmark's structure): the contract
+      declares `scope.shared` paths; a solver diff touching them has every
+      sibling benchmark re-measured on both sides (paired seed) and loses
+      credit if one regresses beyond its own floor — an honest negative,
+      not an abort. Env-specific diffs stay cheap (one benchmark measured).
+      Re-gated on the merged tree when the base moved. Follow-up pushes are
+      NOT yet suite-gated — named gap, wire with the follow-up re-measure.
+      Credit rule for the future generalist inversion (maintainer 2026-08-15):
+      shared-path CONTACT prices the suite pass but never grants suite-wide
+      credit. A per-benchmark fork is legitimate STAGED research (mechanism
+      proven on the toy first, larger benchmarks later, possibly coupled with
+      other innovations) when claimed as such — the offense is a claim/evidence
+      mismatch, never the fork. Multi-row credit must be evidence-based
+      (siblings improved in the same pass, or mechanism verified shared);
+      claim-vs-mechanism consistency is the verifier lens item; per-benchmark
+      eval configs stay ruler territory so shared code cannot observe the
+      benchmark identity
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met

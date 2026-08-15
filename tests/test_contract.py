@@ -203,3 +203,39 @@ roadmap: docs/roadmap.md
         load_contract(base % "-0.1", "org/pilot")
     with pytest.raises(ValueError):
         load_contract(base % "13", "org/pilot")  # 13 meaning 13% is a typo, not 13x
+
+
+def test_scope_shared_parses_and_defaults_empty() -> None:
+    contract = load_contract(PILOT_CONTRACT, "org/pilot")
+    assert contract.scope.shared == []
+    with_shared = PILOT_CONTRACT.replace(
+        "  allowed: [src/pilot/solvers/]",
+        "  allowed: [src/pilot/]\n  shared: [src/pilot/model/]",
+    )
+    contract = load_contract(with_shared, "org/pilot")
+    assert contract.scope.shared == ["src/pilot/model/"]
+
+
+def test_scope_shared_overlapping_forbidden_is_refused() -> None:
+    bad = PILOT_CONTRACT.replace(
+        "  allowed: [src/pilot/solvers/]",
+        "  allowed: [src/pilot/solvers/]\n  shared: [.github/]",
+    )
+    with pytest.raises(ScopeError, match="shared path"):
+        load_contract(bad, "org/pilot")
+
+
+def test_shared_path_outside_allowed_is_dead_config_and_refused() -> None:
+    bad = PILOT_CONTRACT.replace(
+        "  allowed: [src/pilot/solvers/]",
+        "  allowed: [src/pilot/solvers/]\n  shared: [src/other/]",
+    )
+    with pytest.raises(ScopeError, match="overlaps no allowed path"):
+        load_contract(bad, "org/pilot")
+
+
+def test_benchmark_name_must_be_a_slug() -> None:
+    # names reach branch names and ledger keys; contract text must not shape refs
+    bad = PILOT_CONTRACT.replace("name: tsp", "name: ../tsp evil")
+    with pytest.raises(ValidationError):
+        load_contract(bad, "org/pilot")
