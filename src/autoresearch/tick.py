@@ -339,7 +339,7 @@ def contract_alarm(
     # holds) and fenced with a run longer than any backtick run inside —
     # transport errors can echo request material, loader errors can echo
     # contract content, and both are untrusted for a public issue body
-    safe_error = redact(error, _client_secrets(github))[:600]
+    safe_error = redact(error, _client_secrets(github)).replace(str(Path.home()), "~")[:600]
     # A recorded issue a human closed by hand stays closed: closing the
     # alarm is the maintainer's "I know" — re-opening or re-creating it
     # every threshold would be alarm spam, and recovery still clears state.
@@ -1194,7 +1194,15 @@ def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
     surprise."""
     from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
 
-    job = min(limits.climb_job_minutes + _panel_job_minutes(spec, limits), spec.max_job_minutes)
+    wanted = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
+    job = min(wanted, spec.max_job_minutes)
+    if job < wanted:
+        log.info(
+            "climb job clamped to %d min by the partition cap (worst case "
+            "wanted %d); slow panel rounds fail safe via the self-deadline",
+            job,
+            wanted,
+        )
     if job < limits.session_minutes + CLIMB_OVERHEAD_MINUTES:
         log.warning(
             "work-job cap %d min leaves no runway around the %d-min session "

@@ -1036,8 +1036,9 @@ def main() -> int:
         default="",
         help=(
             "pre-PR verification lenses, comma-separated kind[:backend[:model]] "
-            "entries (e.g. 'verify,review' or 'verify:claude,review:hermes:MODEL'); "
-            "empty disables the panel"
+            "entries (e.g. 'verify,review' or 'verify:claude:MODEL'); only the "
+            "claude backend is contained on this host so far; empty disables "
+            "the panel"
         ),
     )
     parser.add_argument(
