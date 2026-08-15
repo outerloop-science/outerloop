@@ -154,9 +154,12 @@ it) plus the read-only tool set — and, on the auto path, only Claude, whose
 leaked spend-capped key is capped spend until rotation, not open-ended
 credential loss; a prompt-injected agent's text reaches a repo comment through
 the posting path, so the worst case is a wrong comment (read by a human), not a
-merge. The STRONGER containment — the tokenless split workflow (a sandboxed
-agent step with no write token → findings artifact → a separate minimal posting
-step) — is the fork-PR-phase work, NOT yet built.
+merge. The STRONGER containment is now built as the **least-token split**
+(`advisory-second-opinion.yml`): the session job holds read-only permissions
+(on a private repo the checkout still needs `contents: read`, so token theft
+buys read access to a repo the session is already reading, expiring with the
+job), and the posting job holds the write token with no session next to it.
+The residual read-scoped token drops to zero at the public flip.
 
 What is safe today, precisely. The agent workflows run only on same-repo PRs
 (the reviewer via `pull_request_target`'s same-repo gate; the verifier only on
@@ -172,8 +175,9 @@ model.
 ## What's next
 
 The harness runs read-only agent sessions over the PR-head checkout — that part
-is done. Still to build: the `retrieve` tool contract and the broker, added
-without changing the harness. The meta-benchmark scores whether a change catches
+is done, and the least-token split now carries non-Claude second opinions on
+the auto path. Still to build: the `retrieve` tool contract and the broker,
+added without changing the harness. The meta-benchmark scores whether a change catches
 more seeded gaming per dollar before it ships.
 
 ## Open decisions
@@ -247,14 +251,16 @@ namespace / `hidepid`), which the GitHub-hosted runners do not give us. Env
 scrub, read-only tool sets, and no-egress sandboxes each close a different hole
 but NONE closes the `/proc` read while the token sits in a parent process.
 
-Consequence for deployment: the **auto path is claude-only**, and that is now
-proven sound — Claude is write-safe, exec-safe, AND `/proc`-safe (probe above).
-codex and hermes reach `/proc` (shell / file read), so they run only from the
-manual bench (informed `/proc` caveat) or the cluster. The tokenless split is
-the prerequisite before THOSE path-opening backends are trusted next to a live
-token on the auto path; Claude does not need it for this vector. The split is
-still the same infrastructure the fork-PR public phase needs (untrusted code
-next to a token), so it lands there regardless.
+Consequence for deployment: the **single-job auto path is claude-only**, and
+that is proven sound — Claude is write-safe, exec-safe, AND `/proc`-safe
+(probe above). codex and hermes reach `/proc` (shell / file read), so they
+never run next to a write token: on the auto path they run through the
+least-token split (`advisory-second-opinion.yml` — read-only session job
+emits findings, a separate posting job writes), and the manual bench remains
+for one-off experiments. On private repos the split's session job still
+carries a read-scoped token (worst case: reading a repo the session already
+reads); at the public flip the checkout needs no token and the session job
+becomes truly tokenless — the same infrastructure the fork-PR phase needs.
 
 Re-test on version bumps: whether Claude's `Read` opens `/proc`, a hermes
 read-only toolset, a codex sandbox that hides `/proc`, or a runner that grants

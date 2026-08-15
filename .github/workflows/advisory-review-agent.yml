@@ -9,9 +9,10 @@
 # TOOL SET (no Write/Edit/Bash). The other backends can't be trusted next to the
 # step's GITHUB_TOKEN here: codex reads by executing shell, and hermes's `file`
 # tool reads arbitrary paths — either can open /proc/<pid>/environ and lift the
-# token. Running them safely needs the tokenless split (findings -> artifact, a
-# separate step posts), which does not exist yet. Until then they run only from
-# the manual bench (review-agent.yml), where a human opts in with that caveat.
+# token. They run on the auto path via the LEAST-TOKEN SPLIT instead:
+# advisory-second-opinion.yml (read-only session job emits findings; a separate
+# posting job holds the write token with no session next to it). The manual
+# bench (review-agent.yml) remains for one-off experiments.
 name: advisory-review-agent
 
 on:

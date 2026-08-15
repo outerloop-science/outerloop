@@ -335,3 +335,136 @@ def test_sanitize_checkout_renames_nested_instruction_files(tmp_path: Path) -> N
     assert (tmp_path / "models" / "CLAUDE.md.pr-data").exists()
     assert (tmp_path / ".claude.pr-data" / "settings.json").exists()
     assert (tmp_path / "models" / "encoder.py").exists()  # code untouched
+
+
+# ---- least-token split: emit mode + the posting half ----------------------
+
+
+def test_emit_mode_writes_findings_and_posts_nothing(tmp_path: Path) -> None:
+    client, harness = _Client(), _Harness(_FINDINGS)
+    out = tmp_path / "findings.json"
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+        emit_path=out,
+    )
+    assert label == "emitted"
+    assert client.reviews == [] and client.comments == []  # nothing posted here
+    envelope = json.loads(out.read_text())
+    assert envelope["repo"] == "org/repo" and envelope["number"] == 7
+    assert envelope["kind"] == "findings"
+    assert envelope["data"]["findings"][0]["file"] == "models/encoder.py"
+
+
+def test_emit_mode_outage_writes_skip_stub_marker(tmp_path: Path) -> None:
+    client = _Client()
+    harness = _Harness("", is_error=True, detail="rate_limit_error: slow down")
+    out = tmp_path / "findings.json"
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+        emit_path=out,
+    )
+    assert label is None
+    assert client.comments == []  # the stub is the POST job's to publish
+    envelope = json.loads(out.read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "rate_limit_error" in envelope["detail"]
+
+
+def test_emit_mode_clean_skip_writes_no_file(tmp_path: Path) -> None:
+    client, harness = _Client(author="autoresearch-bot"), _Harness(_FINDINGS)
+    out = tmp_path / "findings.json"
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+        emit_path=out,
+    )
+    assert label is None
+    assert not out.exists()  # no artifact -> the post job no-ops
+
+
+def _findings_envelope(tmp_path: Path, **overrides: Any) -> Path:
+    envelope = {
+        "repo": "org/repo",
+        "number": 7,
+        "kind": "findings",
+        "data": json.loads(_FINDINGS),
+        "detail": "",
+        **overrides,
+    }
+    path = tmp_path / "findings.json"
+    path.write_text(json.dumps(envelope))
+    return path
+
+
+def test_post_from_file_posts_with_lens_label(tmp_path: Path) -> None:
+    from autoresearch.review_post_cli import post_from_file
+
+    client = _Client()
+    path = _findings_envelope(tmp_path)
+    label = post_from_file(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        "autoresearch-bot",
+        path,
+        lens_label="second opinion — terra via hermes",
+    )
+    assert label is not None
+    body, inline = client.reviews[0]
+    assert body.startswith("**Lens:** second opinion — terra via hermes")
+    assert any(c.get("path") == "models/encoder.py" for c in inline)
+
+
+def test_post_from_file_refuses_wrong_pr_envelope(tmp_path: Path) -> None:
+    from autoresearch.review_post_cli import post_from_file
+
+    client = _Client()
+    path = _findings_envelope(tmp_path, number=99)
+    assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) is None  # type: ignore[arg-type]
+    assert client.reviews == [] and client.comments == []
+
+
+def test_post_from_file_tolerates_malformed_json(tmp_path: Path) -> None:
+    from autoresearch.review_post_cli import post_from_file
+
+    client = _Client()
+    path = tmp_path / "findings.json"
+    path.write_text("{not json")
+    assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) is None  # type: ignore[arg-type]
+    assert client.reviews == [] and client.comments == []
+
+
+def test_post_from_file_rechecks_the_bot_skip(tmp_path: Path) -> None:
+    # the write authority re-decides: a forged/buggy envelope must not make
+    # the poster comment on a bot PR
+    from autoresearch.review_post_cli import post_from_file
+
+    client = _Client(author="autoresearch-bot")
+    path = _findings_envelope(tmp_path)
+    assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) is None  # type: ignore[arg-type]
+    assert client.reviews == [] and client.comments == []
+
+
+def test_post_from_file_publishes_the_skip_stub(tmp_path: Path) -> None:
+    from autoresearch.review_post_cli import post_from_file
+
+    client = _Client()
+    path = _findings_envelope(tmp_path, kind="skip-stub", detail="rate_limit_error: slow down")
+    label = post_from_file(client, "org/repo", 7, "autoresearch-bot", path)  # type: ignore[arg-type]
+    assert label == "skip-stub"
+    assert client.reviews == []
+    assert len(client.comments) == 1 and "could not run" in client.comments[0]

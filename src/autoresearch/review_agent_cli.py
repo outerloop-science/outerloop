@@ -97,6 +97,12 @@ def main() -> int:
         provider=provider,
         sandbox_extra=sandbox_extra,
     )
+    # Least-token split: with REVIEW_EMIT_FILE set, findings are written there
+    # instead of posted — this job then needs only READ permissions, and a
+    # separate posting job (review_post_cli) holds the write token with no
+    # session next to it. This is what makes non-Claude backends safe on the
+    # auto path (docs/design/reviewer-infra.md).
+    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     run_agent_review(
         client,
         repo,
@@ -104,6 +110,7 @@ def main() -> int:
         harness,
         workspace,
         bot_login=bot_login,
+        emit_path=Path(emit_env).resolve() if emit_env else None,
     )
     return 0
 
