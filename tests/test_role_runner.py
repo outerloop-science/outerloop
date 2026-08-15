@@ -1,5 +1,5 @@
-"""Role-runner: structured-output validation, the repair loop, and the reviewer
-RoleSpec. The harness is faked; no session is actually run."""
+"""Role-runner: structured-output validation, the repair loop, and the role
+specs. The harness is faked; no session is actually run."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from pathlib import Path
 from autoresearch.harness import SessionResult
 from autoresearch.review import FINDINGS_SCHEMA
 from autoresearch.role_runner import run_role
-from autoresearch.roles import reviewer_spec
-from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+from autoresearch.roles import author_spec, reviewer_spec
 
 _WORKSPACE = Path("/tmp/does-not-matter")
 _FINDINGS = json.dumps({"findings": [], "notes": "looks fine"})
@@ -46,22 +45,20 @@ class _SeqHarness:
         return self.results.pop(0)
 
 
-def _author_spec() -> RoleSpec:
-    return RoleSpec(
-        name="author",
-        instructions="improve",
-        key="author",
-        tools=("Read", "Edit", "Bash"),
-        execution=Execution(environment="apptainer", can_execute=True),
-        budget=SessionBudget(max_turns=10, walltime_s=60),
-    )
-
-
 def test_reviewer_spec_is_read_only_and_uses_findings_schema() -> None:
     spec = reviewer_spec()
     assert spec.execution.can_execute is False
     assert spec.scope is None
     assert spec.output_schema is FINDINGS_SCHEMA
+
+
+def test_author_spec_is_an_executing_editor_with_no_schema() -> None:
+    spec = author_spec()
+    assert spec.execution.can_execute is True
+    assert {"Write", "Edit", "Bash"} <= set(spec.tools)
+    assert spec.output_schema is None  # the artifact is the diff + report
+    assert spec.scope == ()  # filled from the contract by the kernel
+    assert author_spec(scope=("src/x/",)).scope == ("src/x/",)
 
 
 def test_happy_path_returns_validated_data() -> None:
@@ -110,6 +107,6 @@ def test_session_error_propagates() -> None:
 
 
 def test_editing_role_needs_no_schema() -> None:
-    result = run_role(_author_spec(), _SeqHarness([_session("done")]), "brief", _WORKSPACE)
+    result = run_role(author_spec(), _SeqHarness([_session("done")]), "brief", _WORKSPACE)
     assert result.ok is True
     assert result.data is None

@@ -528,3 +528,11 @@ def test_subprocess_evaluator_env_is_private_per_eval(tmp_path: Path) -> None:
     evaluator.evaluate(tmp_path, capture, "m")
     seen = (tmp_path / "seen.txt").read_text().split()
     assert len(seen) == 2 and seen[0] != seen[1]
+
+
+def test_climb_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
+    # the author is an editing role; a judge spec here is a deployment bug
+    from autoresearch.roles import reviewer_spec
+
+    with pytest.raises(ValueError, match="must allow execution"):
+        run_climb(tmp_path, [13.876], spec=reviewer_spec())

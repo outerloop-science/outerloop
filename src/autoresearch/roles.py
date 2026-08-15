@@ -16,6 +16,49 @@ from autoresearch.verifier import VERIFY_SCHEMA, verify_result_from_data
 # retriever. No Write/Edit/Bash — a judge never executes untrusted PR code.
 _JUDGE_TOOLS = ("Read", "Grep", "Glob", "pr-context-read", "retriever")
 
+# The full editing set: the author implements, runs tests, and self-validates
+# inside its container. Execution is the role's job, not a leak.
+_AUTHOR_TOOLS = ("Read", "Grep", "Glob", "Write", "Edit", "Bash")
+
+
+def author_spec(
+    *,
+    environment: Environment = "apptainer",
+    max_turns: int = 60,
+    walltime_s: int = 3600,
+    scope: tuple[str, ...] = (),
+) -> RoleSpec:
+    """The climbing author as an editing agent session.
+
+    No output_schema: the artifact is the workspace diff plus the free-text
+    research report, judged by measurement (the kernel re-runs the eval), not
+    by parsing. `scope` is the contract's allowed paths; an empty tuple means
+    "filled from the contract by the kernel" (climb_once), which owns scope
+    enforcement either way. Budget defaults mirror the climb CLI's.
+    """
+    return RoleSpec(
+        name="author",
+        instructions=(
+            "Improve the configured benchmark: one concrete hypothesis, "
+            "implemented inside the contract's allowed paths, self-validated "
+            "by running the eval. Write a research report — hypothesis, what "
+            "moved, negatives, one next step."
+        ),
+        key="author",
+        tools=_AUTHOR_TOOLS,
+        execution=Execution(environment=environment, can_execute=True),
+        budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
+        skills=(
+            "kernel-primer",
+            "plain-style",
+            "hypothesis-discipline",
+            "honest-method",
+            "experiment-lifecycle",
+            "research-report",
+        ),
+        scope=tuple(scope),
+    )
+
 
 def reviewer_spec(
     *, environment: Environment = "gh-runner", max_turns: int = 40, walltime_s: int = 1800
