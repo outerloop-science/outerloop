@@ -1217,15 +1217,21 @@ def _panel_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
 
 def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
     """Climb-CLI flags carrying the tick-resolved limits: the job's ACTUAL
-    walltime rides along (contract budget + any panel allowance, exactly what
-    the JobSpec gets) so the climb arms its self-deadline against the real
-    clock (Slurm delivers no signals to our processes on Torch — measured
-    2026-08-08)."""
+    walltime rides along (contract budget + any panel allowance, clamped at
+    the partition cap — exactly what the JobSpec gets) so the climb arms its
+    self-deadline against the real clock (Slurm delivers no signals to our
+    processes on Torch — measured 2026-08-08). The session shrinks to fit a
+    CAPPED job with the same rule limits.effective_limits applies to
+    contract values — better a short session that ends cleanly than a full
+    one the self-deadline kills mid-flight."""
+    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
+
+    session = min(limits.session_minutes, job_minutes - CLIMB_OVERHEAD_MINUTES)
     return [
         "--max-turns",
         str(limits.session_max_turns),
         "--session-minutes",
-        str(limits.session_minutes),
+        str(max(SESSION_MINUTES_FLOOR, session)),
         "--job-minutes",
         str(job_minutes),
     ]

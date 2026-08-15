@@ -29,9 +29,13 @@ from typing import Any
 # Public: the tick's AUTORESEARCH_MAX_JOB_MINUTES knob floors here too.
 CLIMB_JOB_MINUTES_FLOOR = 40
 
+# Public: the tick shrinks a capped job's session with the same floor the
+# contract clamp uses.
+SESSION_MINUTES_FLOOR = 10
+
 _BOUNDS: dict[str, tuple[int, int, int]] = {
     "session_max_turns": (120, 10, 120),
-    "session_minutes": (90, 10, 90),
+    "session_minutes": (90, SESSION_MINUTES_FLOOR, 90),
     "climb_job_minutes": (120, CLIMB_JOB_MINUTES_FLOOR, 120),
     "followup_job_minutes": (90, 20, 90),
 }

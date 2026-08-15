@@ -1795,6 +1795,9 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     )
     assert out_low is not None
     assert "--time=60" in submitted_low[0] and "--job-minutes 60" in submitted_low[0]
+    # the session shrinks to fit the capped job (same rule as the contract
+    # clamp): 60-min job - 20-min overhead, never the full 90-min default
+    assert "--session-minutes 40" in submitted_low[0]
     clear_pending(tmp_path, "org/pilot")
 
     ok2 = make(panel_key_file=str(good))
