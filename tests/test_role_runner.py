@@ -121,3 +121,14 @@ def test_followup_spec_carries_the_resuming_roles_key() -> None:
     assert {"Write", "Edit", "Bash"} <= set(spec.tools)
     assert spec.output_schema is None  # the reply is prose; changes are re-measured
     assert followup_spec(resuming="steward").key == "steward"
+
+
+def test_steward_spec_is_an_executing_editor_in_its_own_territory() -> None:
+    from autoresearch.roles import steward_spec
+
+    spec = steward_spec()
+    assert spec.name == "steward" and spec.key == "steward"
+    assert spec.execution.can_execute is True
+    assert {"Write", "Edit", "Bash"} <= set(spec.tools)
+    assert spec.output_schema is None  # the artifact is the env-work diff + report
+    assert spec.scope == ()  # filled from contract.steward.allowed by the kernel
