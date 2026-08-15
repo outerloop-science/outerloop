@@ -19,7 +19,7 @@ jobs:
     secrets:
       anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
 
-  # Independent second opinion (terra via hermes/OpenRouter) — same reusable,
+  # Independent second opinion (terra via hermes, openai-direct) — same reusable,
   # different backend and opinion label. Independence is the point: no coordination with
   # the primary round.
   second-opinion:

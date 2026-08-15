@@ -47,6 +47,9 @@ def main() -> int:
     # a padded input misses both layers and lands in the unknown-value stub.
     backend = os.environ.get("REVIEW_BACKEND", "claude").lower() or "claude"
     emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
+    # a model id is never compared against workflow expressions, so trimming
+    # is safe here — and the same trimmed value must reach gate and harness
+    review_model = os.environ.get("REVIEW_MODEL", "").strip()
     # hermes's key SOURCE follows its provider: openai-direct uses the same
     # org-registered OpenAI key as codex (no OpenRouter platform fee).
     # Explicitly-empty input means the default, same as an omitted one.
@@ -113,7 +116,6 @@ def main() -> int:
             return 0
         hermes_repo = Path(hermes_repo_env).resolve()
         provider = hermes_provider
-        review_model = os.environ.get("REVIEW_MODEL", "").strip()
         if provider == "openai" and (not review_model or "/" in review_model):
             # an empty model falls back to hermes's default id and a slash
             # marks an OpenRouter-shaped one — api.openai.com serves neither,
@@ -157,7 +159,7 @@ def main() -> int:
         api_key,
         backend=backend,
         binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
-        model=os.environ.get("REVIEW_MODEL") or None,
+        model=review_model or None,
         hermes_repo=hermes_repo,
         provider=provider,
         sandbox_extra=sandbox_extra,

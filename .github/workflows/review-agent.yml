@@ -94,9 +94,11 @@ jobs:
         env:
           REVIEW_BACKEND: ${{ inputs.backend }}
           REVIEW_MODEL: ${{ inputs.model }}
-          ANTHROPIC_REVIEWER_KEY: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
-          OPENAI_REVIEWER_KEY: ${{ secrets.OPENAI_REVIEWER_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # one key per session tree, same rule as the reusable: a
+          # file-reading backend must not be able to lift a sibling's key
+          ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.ANTHROPIC_REVIEWER_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.OPENROUTER_API_KEY || '' }}
+          OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.OPENAI_REVIEWER_KEY || '' }}
           # codex's default bwrap can't init on GitHub-hosted; opt into Landlock
           # (read-only, no egress). Harmless for the other backends.
           REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
