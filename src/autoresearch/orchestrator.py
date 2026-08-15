@@ -34,6 +34,7 @@ from autoresearch.contract import (
     path_is_forbidden,
 )
 from autoresearch.harness import Harness, SessionResult, budget_exhausted, outage, redact
+from autoresearch.panel import PanelVerdict
 from autoresearch.role_runner import run_role
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
@@ -378,6 +379,15 @@ class ClimbResult:
     suite: tuple[SuiteMeasurement, ...] = ()
     # the seed every seeded sibling's pair ran under (0 = gate did not run)
     suite_seed: int = 0
+    # the pre-PR panel's record: per-round transcript for the PR body, how
+    # many reads ran, whether blocking findings were still open at the cap,
+    # and whether the FINAL read was degraded (a lens with no verdict, an
+    # unsanitizable tree). Either flag means the caller opens a DRAFT PR
+    # and never arms auto-merge.
+    panel_transcript: str = ""
+    panel_rounds: int = 0
+    panel_blocking_open: bool = False
+    panel_degraded: bool = False
 
     def report(self, config: ClimbConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
@@ -391,6 +401,14 @@ class ClimbResult:
         for row in self.suite:
             verdict = "REGRESSED" if row.regressed else "ok"
             lines.append(f"Suite {row.name}: {row.baseline} -> {row.candidate} ({verdict})")
+        if self.panel_rounds:
+            if self.panel_blocking_open:
+                state = "blocking findings OPEN at the cap"
+            elif self.panel_degraded:
+                state = "DEGRADED final read (a lens produced no verdict)"
+            else:
+                state = "clean"
+            lines.append(f"Panel: {self.panel_rounds} read(s), {state}")
         if self.note:
             lines.append(f"Note: {self.note}")
         if self.session is not None:
@@ -610,6 +628,8 @@ def climb_once(
     task_hypothesis: str = "",
     baseline_workspace: Path | None = None,
     spec: RoleSpec | None = None,
+    panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
+    panel_revisions: int = 1,
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -624,6 +644,15 @@ def climb_once(
     manifest and harness agree). Scope enforcement stays HERE, on the
     contract — the spec's scope is the manifest copy, filled from the same
     contract.
+
+    With `panel_runner` (docs/design/orchestrator-verify.md), a credited
+    claim is read by the verification panel BEFORE it can become a PR:
+    blocking findings wake the same session (data-fenced), the revision is
+    fully re-measured and re-gated, and the panel re-reads — up to
+    `panel_revisions` revisions after the initial read. Blocking findings
+    still open at the cap set `panel_blocking_open` (the caller posts a
+    DRAFT PR carrying them). The caller supplies the runner because the
+    panel's checkouts are git work (this function owns no git).
     """
     contract = load_contract(contract_text, config.target)
     bench = _benchmark(contract, config.benchmark)
@@ -682,103 +711,178 @@ def climb_once(
             note=role_result.error or session.error_detail or session.stop_reason,
         )
 
-    # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
-    # because the out-of-scope edit could be to the ruler itself.
-    measured = tuple(changed_paths())
-    violations = out_of_scope(list(measured), load_contract(contract_text, config.target))
-    if violations:
-        return ClimbResult(
-            outcome="scope-violation",
-            baseline=baseline,
-            session=session,
-            note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
-        )
+    panel_reads = 0
+    panel_sections: list[str] = []
+    panel_blocking_open = False
+    panel_degraded = False
+    while True:
+        # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
+        # because the out-of-scope edit could be to the ruler itself.
+        measured = tuple(changed_paths())
+        violations = out_of_scope(list(measured), load_contract(contract_text, config.target))
+        if violations:
+            return ClimbResult(
+                outcome="scope-violation",
+                baseline=baseline,
+                session=session,
+                note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
 
-    try:
-        # SAME seed as the baseline: paired measurement (common random
-        # numbers) — the improvement claim compares like against like even
-        # on a resampled pool, and the seed is fresh per climb so nothing
-        # about the pool was knowable when the solver wrote its code
-        candidate = evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env)
-    except EvalError as exc:
-        return ClimbResult(
-            outcome="eval-error", baseline=baseline, session=session, note=f"candidate: {exc}"
-        )
-
-    if not improved(baseline, candidate, bench.direction, config.min_relative_improvement):
-        return ClimbResult(
-            outcome="no-improvement",
-            baseline=baseline,
-            candidate=candidate,
-            session=session,
-            note="a negative result reported clearly is a success",
-            run_seed=run_seed,
-        )
-
-    # Suite gate: a diff touching shared code must not buy its improvement
-    # by regressing a sibling benchmark (the recurring gamed-climb shape:
-    # a real lever that exploits one benchmark's structure). Runs only on
-    # an otherwise-credited claim — a negative result needs no gate.
-    suite: tuple[SuiteMeasurement, ...] = ()
-    suite_seed = 0
-    siblings = [b for b in contract.benchmarks if b.name != bench.name]
-    if siblings and shared_touched(measured, contract):
-        if baseline_workspace is None:
-            # fail closed: without a pristine pre-session tree the sibling
-            # baselines cannot be measured, and an ungated shared diff must
-            # never read as a clean pass
+        try:
+            # SAME seed as the baseline: paired measurement (common random
+            # numbers) — the improvement claim compares like against like even
+            # on a resampled pool, and the seed is fresh per climb so nothing
+            # about the pool was knowable when the solver wrote its code
+            candidate = evaluator.evaluate(
+                workspace, bench.command, bench.metric, extra_env=seed_env
+            )
+        except EvalError as exc:
             return ClimbResult(
                 outcome="eval-error",
                 baseline=baseline,
+                session=session,
+                note=f"candidate: {exc}",
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
+
+        if not improved(baseline, candidate, bench.direction, config.min_relative_improvement):
+            return ClimbResult(
+                outcome="no-improvement",
+                baseline=baseline,
                 candidate=candidate,
                 session=session,
-                note="suite gate: no pristine baseline workspace to measure siblings",
+                note=(
+                    "the revision addressing panel findings lost the improvement"
+                    if panel_reads
+                    else "a negative result reported clearly is a success"
+                ),
                 run_seed=run_seed,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
             )
-        suite_seed = run_seed or draw_run_seed()
-        rows = []
-        for sib in siblings:
-            env = {sib.seed_env: str(suite_seed)} if sib.seed_env else None
-            try:
-                # paired like the climbed benchmark: same seed both sides
-                sib_base = evaluator.evaluate(
-                    baseline_workspace, sib.command, sib.metric, extra_env=env
-                )
-                sib_cand = evaluator.evaluate(workspace, sib.command, sib.metric, extra_env=env)
-            except EvalError as exc:
+
+        # Suite gate: a diff touching shared code must not buy its improvement
+        # by regressing a sibling benchmark (the recurring gamed-climb shape:
+        # a real lever that exploits one benchmark's structure). Runs only on
+        # an otherwise-credited claim — a negative result needs no gate.
+        suite: tuple[SuiteMeasurement, ...] = ()
+        suite_seed = 0
+        siblings = [b for b in contract.benchmarks if b.name != bench.name]
+        if siblings and shared_touched(measured, contract):
+            if baseline_workspace is None:
+                # fail closed: without a pristine pre-session tree the sibling
+                # baselines cannot be measured, and an ungated shared diff must
+                # never read as a clean pass
                 return ClimbResult(
                     outcome="eval-error",
                     baseline=baseline,
                     candidate=candidate,
                     session=session,
-                    note=f"suite {sib.name}: {exc}",
+                    note="suite gate: no pristine baseline workspace to measure siblings",
                     run_seed=run_seed,
                 )
-            rows.append(
-                SuiteMeasurement(
-                    name=sib.name,
-                    baseline=sib_base,
-                    candidate=sib_cand,
-                    regressed=suite_regressed(
-                        sib_base, sib_cand, sib.direction, sib.min_delta, sib.min_delta_rel
-                    ),
-                    display_digits=sib.display_digits,
+            suite_seed = run_seed or draw_run_seed()
+            rows = []
+            for sib in siblings:
+                env = {sib.seed_env: str(suite_seed)} if sib.seed_env else None
+                try:
+                    # paired like the climbed benchmark: same seed both sides
+                    sib_base = evaluator.evaluate(
+                        baseline_workspace, sib.command, sib.metric, extra_env=env
+                    )
+                    sib_cand = evaluator.evaluate(workspace, sib.command, sib.metric, extra_env=env)
+                except EvalError as exc:
+                    return ClimbResult(
+                        outcome="eval-error",
+                        baseline=baseline,
+                        candidate=candidate,
+                        session=session,
+                        note=f"suite {sib.name}: {exc}",
+                        run_seed=run_seed,
+                    )
+                rows.append(
+                    SuiteMeasurement(
+                        name=sib.name,
+                        baseline=sib_base,
+                        candidate=sib_cand,
+                        regressed=suite_regressed(
+                            sib_base, sib_cand, sib.direction, sib.min_delta, sib.min_delta_rel
+                        ),
+                        display_digits=sib.display_digits,
+                    )
                 )
-            )
-        suite = tuple(rows)
-        regressed = [r for r in suite if r.regressed]
-        if regressed:
-            named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
+            suite = tuple(rows)
+            regressed = [r for r in suite if r.regressed]
+            if regressed:
+                named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
+                return ClimbResult(
+                    outcome="suite-regression",
+                    baseline=baseline,
+                    candidate=candidate,
+                    session=session,
+                    note=f"shared-path diff regressed sibling benchmark(s): {named}",
+                    run_seed=run_seed,
+                    suite=suite,
+                    suite_seed=suite_seed,
+                    panel_transcript="\n\n".join(panel_sections),
+                    panel_rounds=panel_reads,
+                )
+
+        if panel_runner is None:
+            break
+        # the panel reads the CREDITED claim: improvement + suite gate passed
+        panel_reads += 1
+        verdict = panel_runner(baseline, candidate, session.final_text)
+        panel_sections.append(verdict.transcript)
+        # only the FINAL read's degradation matters: an earlier outage that a
+        # later clean read supersedes is history, not state
+        panel_degraded = verdict.degraded
+        if not verdict.blocking:
+            # a degraded clean read is NOT a certified pass: no wake (nothing
+            # for the author to fix), but the caller drafts the PR
+            break
+        if not session.session_id:
+            # cannot resume a session with no id, and a FRESH session seeing
+            # only the findings text would revise blind — fail closed to the
+            # draft path instead (review question, #95 round 1)
+            panel_blocking_open = True
+            break
+        if panel_reads > panel_revisions:
+            # capped out with blocking findings still open: an unconverged
+            # loop is information the human must see, never suppressed —
+            # the caller posts a DRAFT PR with these findings on top
+            panel_blocking_open = True
+            break
+        wake_result = run_role(
+            spec,
+            harness,
+            verdict.wake_text,
+            workspace,
+            resume_session_id=session.session_id or None,
+        )
+        session = wake_result.session
+        if not wake_result.ok:
+            if outage(session):
+                kind = "session-outage"
+            elif budget_exhausted(session):
+                kind = "session-budget"
+            else:
+                kind = "session-error"
             return ClimbResult(
-                outcome="suite-regression",
+                outcome=kind,
                 baseline=baseline,
                 candidate=candidate,
                 session=session,
-                note=f"shared-path diff regressed sibling benchmark(s): {named}",
+                note=wake_result.error or session.error_detail or session.stop_reason,
                 run_seed=run_seed,
-                suite=suite,
-                suite_seed=suite_seed,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
             )
+        # loop: the revision is a NEW candidate — scope, drift fingerprints,
+        # paired eval, improvement threshold, and the suite gate all re-apply
 
     return ClimbResult(
         outcome="improved",
@@ -790,6 +894,10 @@ def climb_once(
         run_seed=run_seed,
         suite=suite,
         suite_seed=suite_seed,
+        panel_transcript="\n\n".join(panel_sections),
+        panel_rounds=panel_reads,
+        panel_blocking_open=panel_blocking_open,
+        panel_degraded=panel_degraded,
     )
 
 
@@ -823,8 +931,30 @@ def pr_body(
             f"| {fmt_metric(row.candidate, row.display_digits)} |"
             for row in result.suite
         ]
+    if result.panel_blocking_open:
+        banner = [
+            "> **Draft — the verification panel capped out with blocking "
+            "findings still open.** They are listed under Pre-PR "
+            "verification below; the human decides.",
+            "",
+        ]
+    elif result.panel_degraded:
+        banner = [
+            "> **Draft — the final panel read was degraded (a lens produced "
+            "no verdict).** Not a certified pass; see Pre-PR verification "
+            "below.",
+            "",
+        ]
+    else:
+        banner = []
+    panel_section = (
+        ["", "## Pre-PR verification", "", result.panel_transcript[:MAX_REPORT_BODY]]
+        if result.panel_transcript
+        else []
+    )
     body = "\n".join(
         [
+            *banner,
             f"Automated improvement attempt on `{config.benchmark}` "
             f"(agent `{config.agent_id}`, one hypothesis per PR).",
             "",
@@ -845,6 +975,7 @@ def pr_body(
                 if result.session
                 else ""
             ),
+            *panel_section,
         ]
     )
     return redact(body, redact_secrets)

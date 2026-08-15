@@ -170,3 +170,25 @@ def test_skip_stub_redacts_the_provided_key_any_provider() -> None:
     (stub,) = [c["body"] for c in client.posted]
     assert "sk-or-LEAK9" not in stub
     assert "[redacted]" in stub
+
+
+def test_rounds_count_per_reviewer() -> None:
+    # two standing opinions must not inflate each other's round numbers
+    from autoresearch.posting import _round_stamp
+
+    class _C:
+        def list_comments(self, repo, number):
+            stamp = "**Round 1** — reviewed head `aaaa1111` — reviewer `hermes/terra`."
+            return [{"body": f"<!-- m -->\n{stamp}\nx"}]
+
+        def list_pr_reviews(self, repo, number):
+            return []
+
+    pr_data = {"head": {"sha": "aaaa1111bbbb"}}
+    # claude's FIRST round stays Round 1 despite terra's prior round
+    stamp, label = _round_stamp(_C(), "o/r", 1, "<!-- m -->", pr_data, "claude/claude-opus-5")  # type: ignore[arg-type]
+    assert label == "**Round 1**"
+    assert "(re-run" not in stamp
+    # terra's next round increments ITS OWN count and sees its own same-head re-run
+    stamp, label = _round_stamp(_C(), "o/r", 1, "<!-- m -->", pr_data, "hermes/terra")  # type: ignore[arg-type]
+    assert "**Round 2**" in label and "(re-run on the same head)" in label

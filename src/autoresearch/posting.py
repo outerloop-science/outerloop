@@ -62,6 +62,9 @@ def _round_stamp(
     styles never resets its numbering."""
     head = pr_data.get("head")
     head_sha = str(head.get("sha", ""))[:8] if isinstance(head, dict) else ""
+    # attribution is render-side data (it can cross a job boundary in the
+    # least-token split): strip backticks/newlines, cap, never trust
+    by = " ".join(str(reviewed_by).split()).replace("`", "")[:60]
     # The round number is cosmetic: an EXPECTED failure counting prior
     # rounds must never cost the round itself. Programming errors still
     # propagate, per this module's policy.
@@ -73,15 +76,18 @@ def _round_stamp(
         # identity (Actions token, GitHub App, or a self-hoster's
         # machine-user PAT, which posts as type User)
         prior = [b for b in bodies if b.lstrip().startswith(marker)]
+        # Rounds count PER REVIEWER: with several standing opinions on one
+        # PR, a shared counter reads as re-reviews that never happened
+        # (terra "Round 1", claude "Round 2"). Unattributed rounds keep the
+        # shared count.
+        if by:
+            prior = [b for b in prior if f"reviewer `{by}`" in b]
         round_label = f"**Round {len(prior) + 1}**"
         if head_sha and any(f"reviewed head `{head_sha}`" in b for b in prior):
             round_label += " (re-run on the same head)"
     except EXPECTED_FAILURES as exc:
         log.warning("could not count prior rounds: %s", exc)
         round_label = "**New round** (prior count unavailable)"
-    # attribution is render-side data (it can cross a job boundary in the
-    # least-token split): strip backticks/newlines, cap, never trust
-    by = " ".join(str(reviewed_by).split()).replace("`", "")[:60]
     by_clause = f" — reviewer `{by}`" if by else ""
     return f"{round_label} — reviewed head `{head_sha or 'unknown'}`{by_clause}.\n\n", round_label
 

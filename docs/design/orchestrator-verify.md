@@ -133,16 +133,22 @@ load-bearing lives only in a compressible medium.
 
 ## Sequencing
 
-1. **Verify step in the climb job**: after measurement, run the verifier
-   spec through the role-runner against the local pr-head/base checkouts the
-   climb already has — no GitHub round-trip. Findings gate PR posting.
-2. **Author wake on blocking findings**: loop inside the climb job, same
-   session id, re-measure on every revision. Round cap enforced by the
-   kernel.
-3. **Panel**: add the code-reviewer lens; enable codex/hermes backends for
-   it (no token adjacency in the orchestrator).
-4. **Transcript in the PR body**; thin or retire the GitHub-side verifier
-   per target.
+1. **Verify step in the climb job** — BUILT (`panel.py` + the loop in
+   `climb_once`; `build_panel_runner` prepares the checkouts): after
+   measurement, the panel reads local pr-head/base worktrees, no GitHub
+   round-trip. Findings gate PR posting.
+2. **Author wake on blocking findings** — BUILT: loop inside the climb job,
+   same session id, fully re-measured and re-gated per revision, cap
+   enforced by the kernel; capped-out blocking opens a DRAFT PR and never
+   arms auto-merge.
+3. **Panel** — BUILT at the seam (lens list = kind x backend; the climb CLI
+   parses `--panel verify:claude,review:hermes:MODEL`, and a hermes entry
+   additionally needs `REVIEW_HERMES_REPO` — the pinned clone — in the
+   climb job's environment); claude wired on the cluster, other backends as
+   their host support lands (no token adjacency here, so eligibility is
+   config).
+4. **Transcript in the PR body** — BUILT (plus the run report); thinning or
+   retiring the GitHub-side verifier stays per-target.
 5. **Retriever egress** for the author, with fetch logging; network
    isolation joins the containment work when it lands.
 
