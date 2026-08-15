@@ -1182,13 +1182,17 @@ def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
     budget — the self-deadline would then fire before the author's own
     clock, and that must be a visible operator choice, never a silent
     surprise."""
+    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+
     job = min(limits.climb_job_minutes + _panel_job_minutes(spec, limits), spec.max_job_minutes)
-    if job < limits.session_minutes:
+    if job < limits.session_minutes + CLIMB_OVERHEAD_MINUTES:
         log.warning(
-            "work-job cap %d min is below the %d-min session budget; sessions "
-            "will be cut short by the self-deadline",
+            "work-job cap %d min leaves no runway around the %d-min session "
+            "(the orchestrator needs ~%d min); sessions or endings will be "
+            "cut short by the self-deadline",
             job,
             limits.session_minutes,
+            CLIMB_OVERHEAD_MINUTES,
         )
     return job
 

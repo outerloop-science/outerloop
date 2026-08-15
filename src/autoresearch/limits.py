@@ -37,8 +37,9 @@ _BOUNDS: dict[str, tuple[int, int, int]] = {
 }
 
 # A climb job must outlive its session long enough for the orchestrator's
-# own work around it (clone, two evals, publish, ending writes).
-_CLIMB_OVERHEAD_MINUTES = 20
+# own work around it (clone, two evals, publish, ending writes). Public:
+# the tick's cap warning uses it as the no-runway threshold too.
+CLIMB_OVERHEAD_MINUTES = 20
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ def effective_limits(budgets: Any = None) -> EffectiveLimits:
         name: _clamp(name, getattr(budgets, name, None) if budgets is not None else None)
         for name in _BOUNDS
     }
-    max_session = values["climb_job_minutes"] - _CLIMB_OVERHEAD_MINUTES
+    max_session = values["climb_job_minutes"] - CLIMB_OVERHEAD_MINUTES
     if values["session_minutes"] > max_session:
         floor = _BOUNDS["session_minutes"][1]
         values["session_minutes"] = max(floor, max_session)

@@ -1672,7 +1672,8 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
         )
 
     loose = tmp_path / "loose"
-    loose.write_text("k")  # default mode: group/world readable
+    loose.write_text("k")
+    loose.chmod(0o644)  # pinned: write_text's mode depends on the umask
     empty = tmp_path / "empty"
     empty.write_text("")
     empty.chmod(0o600)
