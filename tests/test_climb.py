@@ -1210,14 +1210,15 @@ def test_moved_base_regates_the_suite_on_the_merged_tree(tmp_path, target_repo) 
         tmp_path,
         target_repo,
         CONTRACT.replace(
-            "scope: {allowed: [src/pilot/solvers/]}\n",
+            "budgets:",
             "  - name: sokoban\n"
             "    command: uv run python -m pilot.eval --benchmark sokoban --json\n"
             "    metric: solve_rate\n"
             "    direction: max\n"
-            "scope: {allowed: [src/pilot/], shared: [src/pilot/model/]}\n",
+            "budgets:",
         ).replace(
-            "benchmarks:\n", "benchmarks:\n", 1
+            "scope: {allowed: [src/pilot/solvers/]}",
+            "scope: {allowed: [src/pilot/], shared: [src/pilot/model/]}",
         ),
         "suite",
     )
@@ -1243,3 +1244,18 @@ def test_moved_base_regates_the_suite_on_the_merged_tree(tmp_path, target_repo) 
     assert github.prs == []
     note = load_record(tmp_path / "state", "tsp-suite-race").ending_note
     assert "suite regression after merging" in note and "sokoban" in note
+
+
+def test_author_harness_is_built_from_the_spec() -> None:
+    """The spec is the single source for the session budget: manifest and
+    harness cannot disagree (the judges' build_reviewer_harness pattern)."""
+    from autoresearch.climb import build_editor_harness
+    from autoresearch.roles import author_spec, reviewer_spec
+
+    spec = author_spec(max_turns=7, walltime_s=120)
+    harness = build_editor_harness("sk-key", spec, container_image="img.sif")
+    assert harness.max_turns == 7
+    assert harness.timeout_s == 120
+    assert harness.container_image == "img.sif"
+    with pytest.raises(ValueError, match="editing roles"):
+        build_editor_harness("sk-key", reviewer_spec())

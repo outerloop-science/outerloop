@@ -606,7 +606,9 @@ def test_sibling_floor_gives_a_stochastic_eval_its_tolerance(tmp_path: Path) -> 
         "    direction: max\n", "    direction: max\n    min_delta: 0.05\n", 1
     )
     result, _ = run_shared_climb(
-        tmp_path, [13.876, 13.10, 0.8, 0.77], changed=["src/pilot/model/encoder.py"],
+        tmp_path,
+        [13.876, 13.10, 0.8, 0.77],
+        changed=["src/pilot/model/encoder.py"],
         contract=floored,
     )
     assert result.outcome == "improved"  # a 0.03 drop sits inside sokoban's 0.05 floor
@@ -616,7 +618,9 @@ def test_sibling_floor_gives_a_stochastic_eval_its_tolerance(tmp_path: Path) -> 
 
 def test_shared_diff_without_pristine_baseline_fails_closed(tmp_path: Path) -> None:
     result, _ = run_shared_climb(
-        tmp_path, [13.876, 13.10], changed=["src/pilot/model/encoder.py"],
+        tmp_path,
+        [13.876, 13.10],
+        changed=["src/pilot/model/encoder.py"],
         baseline_workspace=None,
     )
     assert result.outcome == "eval-error"
@@ -625,7 +629,8 @@ def test_shared_diff_without_pristine_baseline_fails_closed(tmp_path: Path) -> N
 
 def test_sibling_eval_failure_is_an_eval_error_naming_it(tmp_path: Path) -> None:
     result, _ = run_shared_climb(
-        tmp_path, [13.876, 13.10, EvalError("harness crashed")],
+        tmp_path,
+        [13.876, 13.10, EvalError("harness crashed")],
         changed=["src/pilot/model/encoder.py"],
     )
     assert result.outcome == "eval-error"
@@ -637,7 +642,9 @@ def test_seeded_sibling_pair_is_pinned_to_one_suite_seed(tmp_path: Path) -> None
         "    direction: max\n", "    direction: max\n    seed_env: PILOT_SOKOBAN_SEED\n", 1
     )
     result, evaluator = run_shared_climb(
-        tmp_path, [13.876, 13.10, 0.8, 0.8], changed=["src/pilot/model/encoder.py"],
+        tmp_path,
+        [13.876, 13.10, 0.8, 0.8],
+        changed=["src/pilot/model/encoder.py"],
         contract=seeded,
     )
     assert result.outcome == "improved"
@@ -676,3 +683,11 @@ def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
     assert "suite-gated" in gated.done_criteria
     ungated = make_task(load_contract(CONTRACT, "org/pilot"), "tsp", 13.876)
     assert "suite-gated" not in ungated.done_criteria
+
+
+def test_climb_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
+    # the author is an editing role; a judge spec here is a deployment bug
+    from autoresearch.roles import reviewer_spec
+
+    with pytest.raises(ValueError, match="must allow execution"):
+        run_climb(tmp_path, [13.876], spec=reviewer_spec())

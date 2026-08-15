@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -32,6 +33,7 @@ from autoresearch.climb import (
     _best_effort,
     arm_self_deadline,
     arm_sigterm_containment,
+    build_editor_harness,
 )
 from autoresearch.contract import Contract, load_contract
 from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
@@ -51,6 +53,9 @@ from autoresearch.progress import (
     load_leader,
     write_progress,
 )
+from autoresearch.role_runner import run_role
+from autoresearch.roles import steward_spec
+from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
     ABORTED,
     BUDGET_EXHAUSTED,
@@ -412,9 +417,15 @@ def live_steward(
     base_branch: str = "main",
     issue_number: int = 0,
     work_order: str = "",
+    spec: RoleSpec | None = None,
 ) -> LiveClimbOutcome:
     """Run one stewardship against the real target repo."""
     import os as _os
+
+    # a deployment bug is loud and immediate — same guard as climb_once
+    spec = spec or steward_spec()
+    if not spec.execution.can_execute:
+        raise ValueError("the steward is an editing role; the spec must allow execution")
 
     run_dir = run_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -461,6 +472,10 @@ def live_steward(
         bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
         if bench is None:
             raise ValueError(f"benchmark {config.benchmark!r} not in contract")
+        if not spec.scope:
+            # manifest truth: the spec run_role receives carries the steward's
+            # real territory; enforcement stays steward_out_of_scope below
+            spec = dc_replace(spec, scope=tuple(contract.steward.allowed))
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -482,12 +497,16 @@ def live_steward(
                     f"(benchmark `{config.benchmark}`). A report will follow here.",
                 )
 
-        session = harness.run(
-            steward_brief(contract_text, contract, work_order, config.benchmark), workspace
+        role_result = run_role(
+            spec,
+            harness,
+            steward_brief(contract_text, contract, work_order, config.benchmark),
+            workspace,
         )
-        if session.is_error:
+        session = role_result.session
+        if not role_result.ok:
             raise SessionFailure(
-                session.error_detail or session.stop_reason,
+                role_result.error or session.error_detail or session.stop_reason,
                 budget_exhausted(session),
                 outage(session),
             )
@@ -731,7 +750,6 @@ def main() -> int:
     import time
     from datetime import UTC, datetime
 
-    from autoresearch.harness import ClaudeCodeHarness
     from autoresearch.orchestrator import SubprocessEvaluator
 
     arm_sigterm_containment()
@@ -781,19 +799,21 @@ def main() -> int:
     if armed:
         log.info("self-deadline armed: Terminated in %ds", armed)
 
+    # the manifest first, the harness from it (budget has one source: the args)
+    spec = steward_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
     try:
         outcome = live_steward(
             config=StewardConfig(target=args.target, benchmark=args.benchmark),
             run_root=args.run_root,
             run_id=run_id,
-            harness=ClaudeCodeHarness(
-                api_key=api_key,
+            harness=build_editor_harness(
+                api_key,
+                spec,
                 binary=args.claude_bin,
                 model=args.model,
-                max_turns=args.max_turns,
-                timeout_s=args.session_minutes * 60,
                 container_image=args.image,
             ),
+            spec=spec,
             evaluator=SubprocessEvaluator(container_image=args.image),
             github=GitHubClient(auth=bot_auth),
             bot_auth=bot_auth,

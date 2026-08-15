@@ -783,3 +783,29 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
     assert "push freely" not in prompt
     assert "could not run" not in prompt  # the outage stub stays out too
     assert "advisory finding text" not in prompt  # advisory rounds stay out too
+
+
+def test_read_only_spec_is_refused(review_run) -> None:
+    # the responder edits and replies; a judge spec here is a deployment bug —
+    # contained per-lane like any responder failure (cursor un-advanced), so
+    # one bad deployment cannot crash the tick's other lanes
+    from autoresearch.roles import reviewer_spec
+
+    root, _ = review_run
+    harness = ResumingHarness()
+    gh = FakeGitHub(comments=[member(101, "please respond")])
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        harness,
+        QueueEvaluator(values=[10.5]),
+        gh,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=(),
+        spec=reviewer_spec(),
+    )
+    assert outcome.action == "error"
+    assert "must allow execution" in outcome.note
+    assert harness.calls == []  # refused before any session spend
+    assert load_record(root, "tsp-r1").last_comment_id == 100  # cursor un-advanced

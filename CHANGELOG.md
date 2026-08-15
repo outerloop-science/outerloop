@@ -51,6 +51,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- All five roles now run on the role-runner: `author_spec`/`followup_spec`/
+  `steward_spec` (roles.py) join the judges' specs as the manifests,
+  `climb_once`/`respond_once`/`live_steward` dispatch through `run_role`, and
+  the CLIs build their harness from the spec (`build_editor_harness`, one
+  builder for all editing roles), so the session budget and tool set have
+  one source. The follow-up runs under the resuming role's key and scope
+  (author or steward, from the record and contract); the steward's spec
+  carries its own territory (`contract.steward.allowed`). Behavior
+  unchanged. The session-dispatch half of the driver collapse is complete;
+  briefs/skills as app config is the remaining consolidation.
 - The verifier can now run as an agent session over TWO read-only checkouts:
   the PR head (the change under review) and the base branch (the trusted
   contract and ruler — all ruler reads are directed there, never at the PR).
