@@ -29,7 +29,13 @@ EXPECTED_FAILURES = (
 
 
 def post_round(
-    client: GitHubClient, repo: str, number: int, marker: str, body: str, pr_data: dict
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    marker: str,
+    body: str,
+    pr_data: dict,
+    reviewed_by: str = "",
 ) -> str:
     """Post one NEW comment per round — numbered, stamped with the reviewed
     head — so every round notifies and stays visible (edits do neither).
@@ -38,13 +44,18 @@ def post_round(
     synchronize-triggered spam; runs are now only PR-open or an explicit
     label request, so volume is human-bounded.
     """
-    stamp, round_label = _round_stamp(client, repo, number, marker, pr_data)
+    stamp, round_label = _round_stamp(client, repo, number, marker, pr_data, reviewed_by)
     client.comment(repo, number, body.replace(marker, f"{marker}\n{stamp}", 1))
     return round_label
 
 
 def _round_stamp(
-    client: GitHubClient, repo: str, number: int, marker: str, pr_data: dict
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    marker: str,
+    pr_data: dict,
+    reviewed_by: str = "",
 ) -> tuple[str, str]:
     """(stamp line, round label): prior rounds are counted across BOTH
     issue comments and review bodies, so switching a role between posting
@@ -68,7 +79,11 @@ def _round_stamp(
     except EXPECTED_FAILURES as exc:
         log.warning("could not count prior rounds: %s", exc)
         round_label = "**New round** (prior count unavailable)"
-    return f"{round_label} — reviewed head `{head_sha or 'unknown'}`.\n\n", round_label
+    # attribution is render-side data (it can cross a job boundary in the
+    # least-token split): strip backticks/newlines, cap, never trust
+    by = " ".join(str(reviewed_by).split()).replace("`", "")[:60]
+    by_clause = f" — reviewer `{by}`" if by else ""
+    return f"{round_label} — reviewed head `{head_sha or 'unknown'}`{by_clause}.\n\n", round_label
 
 
 def post_round_review(
@@ -80,6 +95,7 @@ def post_round_review(
     inline: list[dict],
     pr_data: dict,
     fallback_body: str,
+    reviewed_by: str = "",
 ) -> str:
     """The Reviews-API sibling of post_round: body summary plus anchored
     inline comments, event COMMENT always (the client hard-codes it). A
@@ -87,7 +103,7 @@ def post_round_review(
     fallback_body — the FULL single-comment rendering, because the review
     body alone may say no more than "findings are attached" while the
     findings live in the rejected inline payload."""
-    stamp, round_label = _round_stamp(client, repo, number, marker, pr_data)
+    stamp, round_label = _round_stamp(client, repo, number, marker, pr_data, reviewed_by)
     try:
         client.create_pr_review(repo, number, body.replace(marker, f"{marker}\n{stamp}", 1), inline)
     except EXPECTED_FAILURES as exc:

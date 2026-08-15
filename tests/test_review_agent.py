@@ -492,3 +492,34 @@ def test_post_from_file_stub_is_skip_checked_and_sanitized(tmp_path: Path) -> No
     (comment,) = client.comments
     assert "\n# fake heading" not in comment  # newline collapsed: no top-level markdown
     assert "<script>" not in comment
+
+
+def test_backend_id_names_backend_and_model(tmp_path: Path) -> None:
+    from autoresearch.harness import ClaudeCodeHarness, HermesHarness, backend_id
+
+    assert backend_id(ClaudeCodeHarness(api_key="k")) == "claude/claude-opus-5"
+    hermes = HermesHarness(api_key="k", repo_dir=tmp_path, model="moonshot/kimi-k3")
+    assert backend_id(hermes) == "hermes/moonshot/kimi-k3"
+    assert backend_id(_Harness("x")) == ""  # unknown types: stamp omits the clause
+
+
+def test_emit_envelope_carries_reviewed_by_and_stamp_shows_it(tmp_path: Path) -> None:
+    from autoresearch.review_post_cli import post_from_file
+
+    path = _findings_envelope(tmp_path, reviewed_by="hermes/terra-test")
+    client = _Client()
+    assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) is not None  # type: ignore[arg-type]
+    body, _inline = client.reviews[0]
+    assert "reviewer `hermes/terra-test`" in body
+
+
+def test_stamp_attribution_is_sanitized(tmp_path: Path) -> None:
+    # reviewed_by crosses the artifact boundary: backticks/newlines must not
+    # escape the stamp's inline-code span
+    from autoresearch.review_post_cli import post_from_file
+
+    path = _findings_envelope(tmp_path, reviewed_by="evil`\n# heading")
+    client = _Client()
+    assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) is not None  # type: ignore[arg-type]
+    body, _inline = client.reviews[0]
+    assert "reviewer `evil # heading`" in body  # collapsed + backtick-stripped

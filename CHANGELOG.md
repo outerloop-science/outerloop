@@ -36,6 +36,10 @@ Versions follow [SemVer](https://semver.org).
   calling the new reusable next to the Claude one. On private repos the
   session job carries a read-scoped token only; it becomes tokenless at the
   public flip.
+- Every judge round now names its reviewer in the round stamp —
+  ``reviewer `backend/model`​`` (e.g. `claude/claude-opus-5`, `hermes/<terra
+  id>`) — on advisory rounds, second opinions (via the envelope), and
+  verifier rounds alike, so multi-reviewer threads read unambiguously.
 - Suite no-regression gate: contracts may declare `scope.shared` (shared code
   paths — encoder, world model, training loop). A solver diff touching one is
   only credited after every sibling benchmark is re-measured on both sides

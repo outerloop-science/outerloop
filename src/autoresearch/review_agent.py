@@ -22,6 +22,7 @@ from autoresearch.harness import (
     CodexHarness,
     Harness,
     HermesHarness,
+    backend_id,
     budget_exhausted,
     outage,
 )
@@ -184,12 +185,23 @@ def _emit(
     kind: str,
     data: dict[str, Any] | None = None,
     detail: str = "",
+    reviewed_by: str = "",
 ) -> None:
     """Write the posting step's input. repo/number ride along so the poster
-    can refuse an envelope that does not match its own PR reference."""
+    can refuse an envelope that does not match its own PR reference;
+    reviewed_by (backend/model) rides along for the round stamp."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"repo": repo, "number": number, "kind": kind, "data": data, "detail": detail})
+        json.dumps(
+            {
+                "repo": repo,
+                "number": number,
+                "kind": kind,
+                "data": data,
+                "detail": detail,
+                "reviewed_by": reviewed_by,
+            }
+        )
     )
 
 
@@ -238,7 +250,14 @@ def run_agent_review(
                 # `detail` is already api-key-redacted by the harness (it owns
                 # its own secret), so no secrets are passed here.
                 if emit_path is not None:
-                    _emit(emit_path, repo, number, kind="skip-stub", detail=detail)
+                    _emit(
+                        emit_path,
+                        repo,
+                        number,
+                        kind="skip-stub",
+                        detail=detail,
+                        reviewed_by=backend_id(harness),
+                    )
                 else:
                     post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
@@ -247,7 +266,14 @@ def run_agent_review(
             # raw data, not rendered text: the posting step re-validates and
             # sanitizes at the render boundary, so the artifact crossing the
             # job boundary carries no pre-trusted markup
-            _emit(emit_path, repo, number, kind="findings", data=role_result.data)
+            _emit(
+                emit_path,
+                repo,
+                number,
+                kind="findings",
+                data=role_result.data,
+                reviewed_by=backend_id(harness),
+            )
             log.info("emitted findings for %s#%s to %s", repo, number, emit_path)
             return "emitted"
 
@@ -258,7 +284,15 @@ def run_agent_review(
             return None
         body, inline = rendered
         round_label = post_round_review(
-            client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+            client,
+            repo,
+            number,
+            MARKER,
+            body,
+            inline,
+            pr_data,
+            fallback_body=full,
+            reviewed_by=backend_id(harness),
         )
         log.info("posted agent review (%s) on %s#%s", round_label, repo, number)
         return round_label

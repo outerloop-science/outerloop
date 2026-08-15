@@ -135,6 +135,22 @@ OUTAGE_PATTERNS = (
 )
 
 
+def backend_id(harness: object) -> str:
+    """`backend/model` attribution for a round stamp — which reviewer wrote
+    this. Empty for unknown harness types (test fakes): the stamp then omits
+    the reviewer clause rather than naming something misleading."""
+    names = {
+        "ClaudeCodeHarness": "claude",
+        "CodexHarness": "codex",
+        "HermesHarness": "hermes",
+    }
+    backend = names.get(type(harness).__name__, "")
+    if not backend:
+        return ""
+    model = str(getattr(harness, "model", "") or "").strip()
+    return f"{backend}/{model}" if model else backend
+
+
 def outage(result: SessionResult) -> bool:
     """True when the session failed because the API refused us — dead
     credits, spend cap, bad key, throttling — not because of anything in

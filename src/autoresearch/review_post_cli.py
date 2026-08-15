@@ -93,7 +93,15 @@ def post_from_file(
             body = body.replace(MARKER, f"{MARKER}\n**Lens:** {label}", 1)
             full = full.replace(MARKER, f"{MARKER}\n**Lens:** {label}", 1)
         round_label = post_round_review(
-            client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
+            client,
+            repo,
+            number,
+            MARKER,
+            body,
+            inline,
+            pr_data,
+            fallback_body=full,
+            reviewed_by=str(envelope.get("reviewed_by", "")),
         )
         log.info("posted second-opinion review (%s) on %s#%s", round_label, repo, number)
         return round_label
