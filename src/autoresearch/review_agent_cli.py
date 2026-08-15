@@ -62,7 +62,10 @@ def main() -> int:
     # semantics — case-insensitive, never trimmed — so this CLI and the
     # workflow's key-injection expressions can never disagree about a value:
     # a padded input misses both layers and lands in the unknown-value stub.
-    backend = os.environ.get("REVIEW_BACKEND", "claude").lower() or "claude"
+    # explicit-empty mirrors the workflow too: '' matches no key-injection
+    # expression there, so here it must land in the unknown-backend stub
+    # rather than silently meaning claude
+    backend = os.environ.get("REVIEW_BACKEND", "claude").lower()
     # a model id is never compared against workflow expressions, so trimming
     # is safe here — and the same trimmed value must reach gate and harness
     review_model = os.environ.get("REVIEW_MODEL", "").strip()
