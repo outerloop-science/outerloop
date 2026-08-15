@@ -551,12 +551,12 @@ def test_hermes_openai_direct_exports_the_openai_key_env(tmp_path: Path) -> None
 
     h = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="openai")
     assert isinstance(h, HermesHarness)
-    assert h.base_url == "https://api.openai.com/v1"
-    assert h.provider == "openrouter"  # the config seed hermes accepts
-    assert h.key_env == "OPENROUTER_API_KEY"  # hermes's key slot, endpoint-independent
+    assert h.provider == "openai-api"  # hermes's canonical id; "openai" is a group
+    assert h.key_env == "OPENAI_API_KEY"
     default = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="")
     assert isinstance(default, HermesHarness)
-    assert default.base_url == ""
+    assert default.provider == "openrouter"
+    assert default.key_env == "OPENROUTER_API_KEY"
     import pytest
 
     with pytest.raises(ValueError, match="unknown hermes provider"):

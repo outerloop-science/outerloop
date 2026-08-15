@@ -98,27 +98,27 @@ def build_reviewer_harness(
     if backend == "hermes":
         if hermes_repo is None:
             raise ValueError("hermes reviewer backend needs hermes_repo (the pinned clone)")
-        # openai-direct is NOT a hermes registry provider: hermes's headless
-        # client takes any OpenAI-compatible base_url and reads its key from
-        # the OPENROUTER_API_KEY env slot regardless of endpoint (verified
-        # against the pinned source, v2026.8.13). So "openai" here means:
-        # point base_url at api.openai.com, export the ORG'S OPENAI KEY into
-        # hermes's key slot, and use the provider-NATIVE model id
-        # (gpt-5.6-terra, no openai/ prefix). Same token rate, no OpenRouter
-        # platform fee, and the org's tax exemption applies.
-        endpoints = {"openrouter": "", "openai": "https://api.openai.com/v1"}
-        if (provider or "openrouter") not in endpoints:
+        # "openai" maps to hermes's canonical openai-api provider (api-key
+        # auth against api.openai.com, key read from OPENAI_API_KEY; plain
+        # "openai" is a provider GROUP in hermes, not an id). openai-direct
+        # skips the OpenRouter platform fee at the same token rate, and the
+        # org's tax exemption applies. Model ids are provider-native:
+        # openai/gpt-5.6-terra on openrouter, gpt-5.6-terra on openai-api.
+        hermes_providers = {
+            "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
+            "openai": ("openai-api", "OPENAI_API_KEY"),
+        }
+        if (provider or "openrouter") not in hermes_providers:
             raise ValueError(f"unknown hermes provider: {provider!r}")
+        seed, key_env = hermes_providers[provider or "openrouter"]
         # Defaults already encode the judge shape: file toolset only, terminal
         # and every other executing/egress toolset disabled. Read-only rests on
         # that config plus the ephemeral runner (see the docstring above).
         return HermesHarness(
             api_key=api_key,
+            key_env=key_env,
             repo_dir=hermes_repo,
-            # the config seed hermes accepts; the endpoint override does the
-            # actual routing
-            provider="openrouter",
-            base_url=endpoints[provider or "openrouter"],
+            provider=seed,
             model=model or "",
             max_turns=spec.budget.max_turns,
             timeout_s=spec.budget.walltime_s,
