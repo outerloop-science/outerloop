@@ -69,6 +69,10 @@ from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
 
+# Where a climb job reads the panel judges' key unless --panel-key-file says
+# otherwise. The tick preflights this same path before claiming/submitting.
+PANEL_KEY_DEFAULT = "~/.config/autoresearch/verifier_key"
+
 
 class NoiseFloored(RuntimeError):
     """The candidate beat the recorded best, but by less than the
@@ -1036,7 +1040,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--panel-key-file",
-        default=os.path.expanduser("~/.config/autoresearch/verifier_key"),
+        default=os.path.expanduser(PANEL_KEY_DEFAULT),
         help="key file for panel judge sessions (the verifier's own key, never the author's)",
     )
     parser.add_argument("--panel-revisions", type=int, default=1)

@@ -81,6 +81,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The tick now flips the pre-PR panel ON for every climb job it submits
+  (`--panel verify,review` at both submission sites). `AUTORESEARCH_PANEL=""`
+  is the operator off-switch; `AUTORESEARCH_PANEL_KEY_FILE` overrides the
+  verifier-key path. The tick preflights the key file BEFORE claiming an
+  intake issue or submitting a climb — a missing key stays loud (tick error
+  every pass) but no longer strands a claimed issue behind a climb that dies
+  at startup. Panel rounds share the climb job's walltime: size
+  `climb_job_minutes` for them (an overrun fails safe via the self-deadline).
 - All five roles now run on the role-runner: `author_spec`/`followup_spec`/
   `steward_spec` (roles.py) join the judges' specs as the manifests,
   `climb_once`/`respond_once`/`live_steward` dispatch through `run_role`, and

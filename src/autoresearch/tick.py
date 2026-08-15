@@ -138,8 +138,12 @@ class FollowupSpec:
     steward_key_file: str = ""
     # Pre-PR verification panel for climb jobs (docs/design/orchestrator-verify.md).
     # DEFAULT ON — the flip is code, the off-switch is AUTORESEARCH_PANEL="".
-    # The climb CLI fails LOUDLY if the panel key file is missing: a
-    # configured gate must never silently vanish.
+    # The climb CLI fails LOUDLY if the panel key file is missing (a configured
+    # gate must never silently vanish); the tick preflights the same file
+    # before claiming or submitting so nothing is stranded. Panel rounds and a
+    # possible revision re-measure run INSIDE the climb job's walltime — size
+    # the contract's climb_job_minutes for them; an overrun fails safe through
+    # the self-deadline, costing that attempt, not correctness.
     panel: str = "verify,review"
     panel_key_file: str = ""  # "" = the climb CLI's default verifier-key path
 
@@ -1105,6 +1109,21 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
+def _panel_key_missing(spec: FollowupSpec) -> str:
+    """Path of the panel key file if the panel needs one it cannot read, else "".
+
+    Preflighted BEFORE claiming or submitting: the climb CLI fails loudly on a
+    missing key, but by then an intake issue is already claimed — and
+    pick_issue never reclaims — so the strand must be caught on the tick host,
+    which shares the filesystem the climb will read."""
+    if not spec.panel.strip():
+        return ""
+    from autoresearch.climb import PANEL_KEY_DEFAULT
+
+    path = Path(spec.panel_key_file or os.path.expanduser(PANEL_KEY_DEFAULT))
+    return "" if path.is_file() else str(path)
+
+
 def _climb_limit_argv(limits: EffectiveLimits) -> list[str]:
     """Climb-CLI flags carrying the tick-resolved limits: the job's own
     walltime rides along so the climb can arm its self-deadline (Slurm
@@ -1163,6 +1182,15 @@ def service_self_initiated(
                 pending_attempt = (str(pending.get("benchmark", "")), submitted_at)
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
+            return None
+        missing_key = _panel_key_missing(spec)
+        if missing_key:
+            log.error(
+                "climb on %s not launched: panel enabled but key file %s is missing "
+                "(provision it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                benchmark,
+                missing_key,
+            )
             return None
         if dry_run:
             return (benchmark, "dry-run")
@@ -1367,6 +1395,15 @@ def service_intake(
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
+        missing_key = _panel_key_missing(spec)
+        if missing_key:
+            log.error(
+                "issue #%d not claimed: panel enabled but key file %s is missing "
+                "(provision it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                task.number,
+                missing_key,
+            )
+            return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
@@ -1436,6 +1473,58 @@ class LoggingDispatcher:
         return ""
 
 
+def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
+    """GitHub client + FollowupSpec from the chain environment, or Nones when
+    the environment is incomplete (the tick then runs without in-review
+    servicing, and logs what is absent)."""
+    pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
+    account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
+    partition = os.environ.get("AUTORESEARCH_PARTITION", "")
+    image = os.environ.get(
+        "AUTORESEARCH_IMAGE",
+        os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
+    )
+    home = os.environ.get("AUTORESEARCH_HOME", "")
+    if pat_file and account and partition and home and Path(image).is_file():
+        from autoresearch.github import FileTokenProvider, GitHubClient
+
+        try:
+            github = GitHubClient(auth=FileTokenProvider(Path(pat_file)))
+            followup_spec = FollowupSpec(
+                account=account,
+                partition=partition,
+                run_root=root,
+                image=image,
+                home=Path(home),
+                pat_file=pat_file,
+                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
+                target=os.environ.get(
+                    "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
+                ),
+                steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
+                panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
+                panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
+            )
+            return github, followup_spec
+        except Exception as exc:
+            log.warning("in-review servicing disabled: %s", exc)
+            return None, None
+    absent = [
+        name
+        for name, value in [
+            ("AUTORESEARCH_PAT_FILE", pat_file),
+            ("AUTORESEARCH_ACCOUNT", account),
+            ("AUTORESEARCH_PARTITION", partition),
+            ("AUTORESEARCH_HOME", home),
+        ]
+        if not value
+    ]
+    if not Path(image).is_file():
+        absent.append(f"image:{image}")
+    log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
+    return None, None
+
+
 def main() -> int:
     import argparse
     import time
@@ -1457,54 +1546,7 @@ def main() -> int:
     # The waiting-run sweep stays dry until the experiment dispatcher lands;
     # in-review servicing is LIVE when credentials + image are available in
     # the chain environment.
-    import os
-
-    github = None
-    followup_spec = None
-    pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
-    account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
-    partition = os.environ.get("AUTORESEARCH_PARTITION", "")
-    image = os.environ.get(
-        "AUTORESEARCH_IMAGE",
-        os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
-    )
-    home = os.environ.get("AUTORESEARCH_HOME", "")
-    if pat_file and account and partition and home and Path(image).is_file():
-        from autoresearch.github import FileTokenProvider, GitHubClient
-
-        try:
-            github = GitHubClient(auth=FileTokenProvider(Path(pat_file)))
-            followup_spec = FollowupSpec(
-                account=account,
-                partition=partition,
-                run_root=args.root,
-                image=image,
-                home=Path(home),
-                pat_file=pat_file,
-                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
-                target=os.environ.get(
-                    "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
-                ),
-                steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
-                panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
-                panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
-            )
-        except Exception as exc:
-            log.warning("in-review servicing disabled: %s", exc)
-    else:
-        absent = [
-            name
-            for name, value in [
-                ("AUTORESEARCH_PAT_FILE", pat_file),
-                ("AUTORESEARCH_ACCOUNT", account),
-                ("AUTORESEARCH_PARTITION", partition),
-                ("AUTORESEARCH_HOME", home),
-            ]
-            if not value
-        ]
-        if not Path(image).is_file():
-            absent.append(f"image:{image}")
-        log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
+    github, followup_spec = _followup_spec_from_env(args.root)
 
     report = tick(
         args.root,

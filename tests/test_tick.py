@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from autoresearch.compute import CommandResult, SlurmCompute
 from autoresearch.runstate import (
@@ -603,6 +604,8 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     )
 
     contract = _self_contract()
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")  # preflight: no key, no launch
     spec = FollowupSpec(
         target="org/pilot",
         account="acct",
@@ -611,6 +614,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
         image="img.sif",
         home=tmp_path,
         bot_login="bot",
+        panel_key_file=str(panel_key),
     )
     submitted: list[str] = []
 
@@ -843,6 +847,8 @@ roadmap: docs/roadmap.md
 """,
         "org/pilot",
     )
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")  # preflight: no key, no launch
     spec = FollowupSpec(
         target="org/pilot",
         account="acct",
@@ -850,6 +856,7 @@ roadmap: docs/roadmap.md
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
+        panel_key_file=str(panel_key),
     )
     submitted: list[list[str]] = []
 
@@ -1565,9 +1572,9 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
     assert len(subs2) == 1 and subs2[0][0] == "tsp-r1"
 
 
-def test_panel_env_knob_disables_and_reconfigures(tmp_path: Path) -> None:
-    """AUTORESEARCH_PANEL='' switches the pre-PR panel off; a custom value and
-    key file ride into the climb argv verbatim."""
+def test_panel_spec_disables_and_reconfigures_the_climb_argv(tmp_path: Path) -> None:
+    """An empty panel spec drops the flags; a custom panel and key file ride
+    into the climb argv verbatim."""
     from autoresearch.tick import FollowupSpec, _climb_panel_argv
 
     def make(panel: str = "verify,review", panel_key_file: str = "") -> FollowupSpec:
@@ -1590,3 +1597,59 @@ def test_panel_env_knob_disables_and_reconfigures(tmp_path: Path) -> None:
         "--panel-key-file",
         "/keys/verifier",
     ]
+
+
+def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) -> None:
+    """AUTORESEARCH_PANEL/AUTORESEARCH_PANEL_KEY_FILE reach the FollowupSpec
+    through the chain environment, and empty AUTORESEARCH_PANEL turns the
+    panel off (not back to the default)."""
+    from autoresearch.tick import _followup_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "AUTORESEARCH_ACCOUNT": "a",
+        "AUTORESEARCH_PARTITION": "p",
+        "AUTORESEARCH_IMAGE": str(image),
+        "AUTORESEARCH_HOME": str(tmp_path),
+        "AUTORESEARCH_PANEL": "verify",
+        "AUTORESEARCH_PANEL_KEY_FILE": "/keys/verifier",
+    }
+    import autoresearch.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None
+    assert spec.panel == "verify" and spec.panel_key_file == "/keys/verifier"
+    env["AUTORESEARCH_PANEL"] = ""
+    _github, off = _followup_spec_from_env(tmp_path)
+    assert off is not None and off.panel == ""
+
+
+def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path) -> None:
+    """Panel on + unreadable key file: nothing is claimed or submitted (the
+    climb would die at startup AFTER the claim, stranding the issue — the
+    tick catches it on the shared filesystem first). A provisioned key or a
+    disabled panel passes."""
+    from autoresearch.tick import FollowupSpec, _panel_key_missing
+
+    def make(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="i.sif",
+            home=tmp_path,
+            **kw,
+        )
+
+    missing = tmp_path / "nope"
+    assert _panel_key_missing(make(panel_key_file=str(missing))) == str(missing)
+    provisioned = tmp_path / "verifier_key"
+    provisioned.write_text("k")
+    assert _panel_key_missing(make(panel_key_file=str(provisioned))) == ""
+    assert _panel_key_missing(make(panel="")) == ""
