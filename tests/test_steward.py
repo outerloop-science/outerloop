@@ -746,3 +746,5 @@ def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> No
             created="t",
             spec=reviewer_spec(),
         )
+    # "before any work" made checkable: no run dir, no record, nothing on disk
+    assert not (tmp_path / "state").exists()
