@@ -1021,10 +1021,14 @@ def replace_report(
 
 MAX_ACTIVE_RUNS_PER_TARGET = 1
 SELF_INITIATED_COOLDOWN_S = 6 * 3600
-# An implementing run untouched for this long is a crashed climb job (their
-# walltime is 90 min); it must not block the lane forever. Its cooldown
-# entry still applies, so the crashed benchmark isn't immediately retried.
-STRANDED_IMPLEMENTING_S = 6 * 3600
+# An implementing run untouched for this long is a crashed climb job; it must
+# not block the lane forever, but the window must exceed the LONGEST honest
+# job — the 120-min contract ceiling plus the panel allowance the tick adds
+# (~4.5 h at the defaults) plus queue-start slack — or the picker declares a
+# live run stranded and starts a second one on the same target, breaking the
+# one-active-run serialization. Its cooldown entry still applies, so a
+# crashed benchmark isn't immediately retried.
+STRANDED_IMPLEMENTING_S = 12 * 3600
 # A pending marker older than this is dead even if squeue can't be read.
 PENDING_TTL_S = 4 * 3600
 

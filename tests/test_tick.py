@@ -815,7 +815,7 @@ def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
 
 def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) -> None:
     """No Slurm evidence -> only the 24h run deadline authors an ending; the
-    6h stranded window frees the picker lane but never writes verdicts."""
+    stranded window frees the picker lane but never writes verdicts."""
     from autoresearch.tick import STRANDED_IMPLEMENTING_S
 
     _implementing_run(tmp_path, "r-old", job_id="", age_s=25 * 3600)
@@ -1678,9 +1678,10 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     # the climb's OTHER startup rejections are preflighted too: a typo'd lens
     # spec (climb dies at argparse) and a relative key path (the climb runs
     # from a flight dir, not the tick's cwd)
-    bad_spec = make(panel="verfy", panel_key_file=str(good))
-    assert "unknown kind" in _panel_preflight_error(bad_spec)
-    assert "not contained" not in _panel_preflight_error(bad_spec)  # first error wins
+    both_wrong = make(panel="verfy:hermes", panel_key_file=str(good))
+    err = _panel_preflight_error(both_wrong)
+    assert "unknown kind" in err  # kind is checked before backend
+    assert "claude backend" not in err
     assert "only the claude backend" in _panel_preflight_error(
         make(panel="verify:hermes", panel_key_file=str(good))
     )
