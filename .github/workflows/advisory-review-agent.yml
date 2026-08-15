@@ -66,7 +66,10 @@ on:
         required: false
         default: agentic-learning-ai-lab/autoresearch
       reviewer_ref:
-        description: Ref of the reviewer to run. Pin to a tag or SHA in production.
+        description: >-
+          Ref of the reviewer to run. Pin to a tag or SHA in production —
+          but a ref older than the least-token split lacks emit support and
+          will silently stop posting under this topology; pin nothing older.
         type: string
         required: false
         default: main

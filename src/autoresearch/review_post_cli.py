@@ -109,7 +109,13 @@ def post_from_file(
             fallback_body=full,
             reviewed_by=str(envelope.get("reviewed_by", "")),
         )
-        log.info("posted second-opinion review (%s) on %s#%s", round_label, repo, number)
+        log.info(
+            "posted review (%s) on %s#%s (reviewer=%s)",
+            round_label,
+            repo,
+            number,
+            str(envelope.get("reviewed_by", "")) or "unattributed",
+        )
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("posting did not complete: %s: %s", type(exc).__name__, exc)
