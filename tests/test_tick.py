@@ -1690,14 +1690,6 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     same = make(panel_key_file=str(good), key_file=str(good))
     assert "author key" in _panel_preflight_error(same)
 
-    # the walltime allowance exists exactly when the panel does
-    from autoresearch.limits import effective_limits
-    from autoresearch.tick import _panel_job_minutes
-
-    limits = effective_limits()
-    assert _panel_job_minutes(make(panel=""), limits) == 0
-    assert _panel_job_minutes(make(), limits) > 0
-
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))
     submitted: list[str] = []
@@ -1740,3 +1732,53 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     ok = make(panel_key_file=str(good))
     assert service_intake(tmp_path, gh, compute, ok, NOW, contract=contract) is not None
     assert len(gh.comments) == 1 and len(submitted) == 1
+
+    # a failed submit RELEASES the claim (pick_issue skips claimed issues,
+    # so without the release the issue would be stranded forever)
+    from autoresearch.intake import RELEASE_MARKER
+
+    def failing_runner(argv, timeout_s):
+        return CommandResult(1, "", "sbatch: error")
+
+    gh2 = IntakeGitHub()
+    out = service_intake(
+        tmp_path, gh2, SlurmCompute(runner=failing_runner), ok, NOW, contract=contract
+    )
+    assert out is None
+    assert any(RELEASE_MARKER in c for c in gh2.comments)
+
+    # the walltime allowance exists exactly when the panel does — and the
+    # panel-augmented total clamps at the 6h partition cap (sbatch would
+    # REJECT a longer request outright, grounding every climb)
+    from autoresearch.limits import effective_limits
+    from autoresearch.tick import MAX_CLIMB_JOB_MINUTES, _panel_job_minutes
+
+    limits = effective_limits()  # defaults: 120-min job, 90-min session
+    assert _panel_job_minutes(make(panel=""), limits) == 0
+    wanted = limits.climb_job_minutes + _panel_job_minutes(make(), limits)
+    assert wanted > MAX_CLIMB_JOB_MINUTES  # the default path NEEDS the clamp
+    submitted2: list[str] = []
+
+    def runner2(argv, timeout_s):
+        submitted2.append(" ".join(argv))
+        return CommandResult(0, "77\n", "")
+
+    ok2 = make(panel_key_file=str(good))
+    from autoresearch.contract import load_contract
+
+    default_contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    out2 = service_self_initiated(
+        tmp_path, SlurmCompute(runner=runner2), ok2, default_contract, NOW + 9000
+    )
+    assert out2 is not None
+    assert f"--time={MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
+    assert f"--job-minutes {MAX_CLIMB_JOB_MINUTES}" in submitted2[0]

@@ -49,8 +49,9 @@ class G:
         return self.issues
 
     def list_comments(self, repo, number, max_pages=20):
+        # claim markers count only when the BOT posted them (forgery guard)
         if number in self.claimed:
-            return [{"body": f"{CLAIM_MARKER}\nPicked up"}]
+            return [{"body": f"{CLAIM_MARKER}\nPicked up", "user": {"login": "bot"}}]
         return []
 
 
@@ -73,6 +74,33 @@ def test_pick_oldest_unclaimed_with_one_benchmark() -> None:
     assert task is not None
     assert task.number == 5
     assert task.benchmark == "reach"
+
+
+def test_released_claim_is_pickable_again_and_forgeries_ignored() -> None:
+    from autoresearch.intake import RELEASE_MARKER
+
+    class G2(G):
+        def __init__(self, issues, comments):
+            super().__init__(issues)
+            self.comments = comments
+
+        def list_comments(self, repo, number, max_pages=20):
+            return self.comments
+
+    released = [
+        {"body": f"{CLAIM_MARKER}\nPicked up", "user": {"login": "bot"}},
+        {"body": f"{RELEASE_MARKER}\nSubmission failed", "user": {"login": "bot"}},
+    ]
+    task = pick_issue(G2([issue(4, "fix reach please")], released), "org/pilot", CONTRACT, "bot")
+    assert task is not None and task.number == 4  # released -> claimable again
+    forged_release = [
+        {"body": f"{CLAIM_MARKER}\nPicked up", "user": {"login": "bot"}},
+        {"body": f"{RELEASE_MARKER}\nfree it!", "user": {"login": "mallory"}},
+    ]
+    assert (
+        pick_issue(G2([issue(4, "fix reach please")], forged_release), "org/pilot", CONTRACT, "bot")
+        is None
+    )
 
 
 def test_hypothesis_fences_issue_text() -> None:

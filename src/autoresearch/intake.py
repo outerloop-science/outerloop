@@ -20,6 +20,9 @@ from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 log = logging.getLogger(__name__)
 
 CLAIM_MARKER = "<!-- autoresearch:claimed -->"
+# Posted (by the bot only) to undo a claim whose run never started — a failed
+# submit must not strand the issue, since the claim scan skips claimed issues.
+RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
 # steward work orders carry this label; they are the STEWARD lane's,
 # never the solver's (a solver climb cannot touch env paths anyway)
 STEWARD_LABEL = "autoresearch:steward"
@@ -66,7 +69,17 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
         if not qualifying_issue(issue, bot_login):
             continue
         number = int(issue["number"])
-        if any(CLAIM_MARKER in str(c.get("body", "")) for c in github.list_comments(repo, number)):
+        claimed = False
+        for c in github.list_comments(repo, number):
+            author = str((c.get("user") or {}).get("login", ""))
+            if author.casefold() != bot_login.casefold():
+                continue  # only the bot's own markers count — no forged releases
+            body = str(c.get("body", ""))
+            if CLAIM_MARKER in body:
+                claimed = True
+            if RELEASE_MARKER in body:
+                claimed = False
+        if claimed:
             continue  # already claimed by a run
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)

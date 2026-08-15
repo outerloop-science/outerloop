@@ -40,6 +40,7 @@ from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
 from autoresearch.harness import Harness, budget_exhausted, outage, redact
 from autoresearch.intake import (
     CLAIM_MARKER,
+    RELEASE_MARKER,
     STEWARD_LABEL,
     IssueTask,
     infer_benchmark,
@@ -73,7 +74,6 @@ log = logging.getLogger(__name__)
 
 # posted when a claim ends without a merged PR (submit failure, aborted
 # run): a release AFTER the last claim makes the issue claimable again
-RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
 # rides WITH the release marker when the run died to an API outage: the
 # claim is released AND does not count toward MAX_STEWARD_ATTEMPTS — the
 # API being down is the orchestrator's failure, not the work order's

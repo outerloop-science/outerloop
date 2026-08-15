@@ -1020,6 +1020,11 @@ def replace_report(
 
 
 MAX_ACTIVE_RUNS_PER_TARGET = 1
+# Torch's short CPU partitions cap jobs at 6 h and sbatch REJECTS a longer
+# request outright — an unclamped panel-augmented walltime would ground every
+# climb at submit. The self-deadline arms at the CLAMPED value, so a job that
+# wanted more time fails safe mid-panel instead of never starting.
+MAX_CLIMB_JOB_MINUTES = 6 * 60
 SELF_INITIATED_COOLDOWN_S = 6 * 3600
 # An implementing run untouched for this long is a crashed climb job; it must
 # not block the lane forever, but the window must exceed the LONGEST honest
@@ -1243,7 +1248,10 @@ def service_self_initiated(
             return None
         if dry_run:
             return (benchmark, "dry-run")
-        job_minutes = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
+        job_minutes = min(
+            limits.climb_job_minutes + _panel_job_minutes(spec, limits),
+            MAX_CLIMB_JOB_MINUTES,
+        )
         argv = [
             "uv",
             "run",
@@ -1456,10 +1464,13 @@ def service_intake(
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
-        job_minutes = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
+        job_minutes = min(
+            limits.climb_job_minutes + _panel_job_minutes(spec, limits),
+            MAX_CLIMB_JOB_MINUTES,
+        )
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
-        from autoresearch.intake import CLAIM_MARKER
+        from autoresearch.intake import CLAIM_MARKER, RELEASE_MARKER
 
         github.comment(
             target,
@@ -1495,17 +1506,30 @@ def service_intake(
             argv += ["--pat-file", spec.pat_file]
         if spec.key_file:
             argv += ["--key-file", spec.key_file]
-        job_id = compute.submit(
-            JobSpec(
-                job_name=f"climb-issue-{task.number}",
-                account=spec.account,
-                partition=spec.partition,
-                time_minutes=job_minutes,
-                command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
-                cpus=4,
-                mem="8G",
+        try:
+            job_id = compute.submit(
+                JobSpec(
+                    job_name=f"climb-issue-{task.number}",
+                    account=spec.account,
+                    partition=spec.partition,
+                    time_minutes=job_minutes,
+                    command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
+                    cpus=4,
+                    mem="8G",
+                )
             )
-        )
+        except Exception:
+            # the claim is already posted and pick_issue skips claimed
+            # issues, so a failed submit must release it (same pattern as
+            # the steward lane) or the issue is stranded forever
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target,
+                    task.number,
+                    f"{RELEASE_MARKER}\nSubmission failed; claim released — "
+                    f"a later tick will retry this issue.",
+                )
+            raise
         log.info("issue #%s claimed for climb job %s", task.number, job_id)
         return (f"issue-{task.number}", job_id)
     except Exception as exc:  # intake must not break the tick
