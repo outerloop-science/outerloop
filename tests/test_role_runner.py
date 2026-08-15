@@ -110,3 +110,14 @@ def test_editing_role_needs_no_schema() -> None:
     result = run_role(author_spec(), _SeqHarness([_session("done")]), "brief", _WORKSPACE)
     assert result.ok is True
     assert result.data is None
+
+
+def test_followup_spec_carries_the_resuming_roles_key() -> None:
+    from autoresearch.roles import followup_spec
+
+    spec = followup_spec()
+    assert spec.name == "followup" and spec.key == "author"
+    assert spec.execution.can_execute is True
+    assert {"Write", "Edit", "Bash"} <= set(spec.tools)
+    assert spec.output_schema is None  # the reply is prose; changes are re-measured
+    assert followup_spec(resuming="steward").key == "steward"
