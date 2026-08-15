@@ -52,6 +52,13 @@ Versions follow [SemVer](https://semver.org).
   job with a different backend/model. Session cost and turns are logged at
   emit/post time. On private repos the session job carries a read-scoped
   token only; it becomes tokenless at the public flip.
+- The hermes backend can run directly against the OpenAI API: the new
+  `hermes_provider` workflow input (`openrouter` default | `openai`) seeds
+  hermes's canonical `openai-api` provider and switches the key source to
+  `openai_reviewer_key` — same token rate, no OpenRouter platform fee, and
+  provider-native model ids (`gpt-5.6-terra`, no `openai/` prefix). Key
+  injection stays one-key-per-session-tree across the provider split, and a
+  typo'd provider posts a PR-visible skip stub like a typo'd backend.
 - Every judge round now names its reviewer in the round stamp —
   ``reviewer `backend/model`​`` (e.g. `claude/claude-opus-5`, `hermes/<terra
   id>`) — on advisory rounds, second opinions (via the envelope), and

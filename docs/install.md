@@ -65,6 +65,12 @@ same reusable, different backend. Each opinion posts its own labeled round:
       openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
+To run the same hermes opinion **directly against the OpenAI API** (no
+OpenRouter platform fee), add `hermes_provider: openai` under `with:`, pass
+`openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}` in `secrets:`
+instead of the OpenRouter key, and use the provider-NATIVE model id
+(`model: gpt-5.6-terra` — no `openai/` prefix).
+
 For `backend: codex` instead: pass `openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}`
 in `secrets:`, and set `model` to a Codex model id (or omit it for the codex
 default) — an OpenRouter id will not work there.
