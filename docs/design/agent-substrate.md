@@ -133,8 +133,8 @@ planned set — none are wired yet):
 | Role | Tools (enforced) | Skills (declared) | Subagents (planned) |
 | --- | --- | --- | --- |
 | author | Read/Grep/Glob/Write/Edit/Bash | kernel-primer, plain-style, hypothesis-discipline, honest-method, experiment-lifecycle, research-report (+ self-review, analyze-results — proposed) | literature-search (retriever), result-aggregation |
-| reviewer | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, review-rubric, read-only-investigation | reference-check (retriever) |
-| verifier | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, integrity-lens, read-only-investigation | repro-probe (read-only re-derivation) |
+| reviewer | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, review-rubric, read-only-investigation | — (its tools suffice; fan-out is an editing-role affordance, per the tools table) |
+| verifier | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, integrity-lens, read-only-investigation | — (tracing a claimed number through the ruler source is the role's own job, with its own read tools) |
 | followup | editing set, resuming role's key/scope | kernel-primer, plain-style, respond-to-review | inherits the resumed role's |
 | steward | editing set, own territory | kernel-primer, plain-style, ruler-hardening, benchmark-design | literature-search (eval conventions) |
 
