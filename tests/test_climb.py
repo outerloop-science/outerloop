@@ -1359,3 +1359,53 @@ def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_rep
     assert pr["body"].startswith("> **Draft")
     assert "suspicious lever" in pr["body"]
     assert github.armed == []  # a draft with open blocking findings never arms
+
+
+def test_moved_base_gets_a_fresh_panel_read_and_blocking_drafts(tmp_path, target_repo) -> None:
+    """The panel's verdict must hold on the tree that actually lands: clean at
+    session time, blocking on the merged tree -> DRAFT PR, never armed."""
+    import json as _json
+
+    from autoresearch.panel import PanelLens
+
+    clean = _json.dumps({"findings": [], "notes": "clean"})
+    blocking = _json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/pilot/solvers/tsp.py",
+                    "line": 1,
+                    "confidence": "high",
+                    "summary": "merged-tree interaction looks gamed",
+                    "detail": "d",
+                    "blocking": True,
+                }
+            ],
+            "notes": "",
+        }
+    )
+    judge = _panel_judge([clean, blocking])
+    github = FakeGitHub()
+    outcome = live_climb(
+        config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="tsp-panel-race",
+        harness=RacingHarness(
+            edits={"src/pilot/solvers/tsp.py": "r=9\n"},
+            target_repo=target_repo,
+            tmp_path=tmp_path,
+        ),
+        # session pair, then the post-merge climbed pair
+        evaluator=QueueEvaluator(values=[13.876, 13.1, 13.9, 13.2]),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_000.0,
+        created="2026-08-15T00:00:00Z",
+        panel_lenses=(PanelLens("review", judge),),
+    )
+    assert outcome.outcome == "improved"
+    pr = github.prs[0]
+    assert pr["draft"] is True
+    assert "merged-tree interaction looks gamed" in pr["body"]
+    assert "Verification round 2" in pr["body"]  # numbering continued post-merge
+    assert github.armed == []

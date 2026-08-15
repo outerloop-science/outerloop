@@ -220,6 +220,7 @@ def build_panel_runner(
     benchmark: str,
     bot_login: str,
     today: str,
+    start_round: int = 0,
 ) -> Callable[[float, float, str], PanelVerdict]:
     """The git half of the pre-PR panel: prepare the two read-only checkouts
     and the synthetic claim, then hand off to `run_panel` (which owns no git).
@@ -231,7 +232,7 @@ def build_panel_runner(
     round because the tree changes with every revision."""
     from autoresearch.review_agent import sanitize_checkout
 
-    reads = {"n": 0}
+    reads = {"n": start_round}
 
     def runner(baseline: float, candidate: float, report: str) -> PanelVerdict:
         reads["n"] += 1
@@ -643,6 +644,40 @@ def live_climb(
                             )
                         )
                     suite = tuple(rows)
+                if panel_lenses:
+                    # the panel's verdict must hold on the tree that actually
+                    # lands, same as the claim and the suite gate (terra, #95
+                    # round 5). No wake here — the session has concluded, so
+                    # blocking or degraded goes straight to the draft path.
+                    merged_runner = build_panel_runner(
+                        ws,
+                        run_dir,
+                        fresh_base,
+                        panel_lenses,
+                        contract_text,
+                        config.target,
+                        config.benchmark,
+                        config.bot_login,
+                        created[:10],
+                        start_round=result.panel_rounds,
+                    )
+                    verdict = merged_runner(
+                        baseline,
+                        candidate,
+                        result.session.final_text if result.session else "",
+                    )
+                    joined = (
+                        f"{result.panel_transcript}\n\n{verdict.transcript}"
+                        if result.panel_transcript
+                        else verdict.transcript
+                    )
+                    result = dc_replace(
+                        result,
+                        panel_transcript=joined,
+                        panel_rounds=result.panel_rounds + 1,
+                        panel_blocking_open=result.panel_blocking_open or bool(verdict.blocking),
+                        panel_degraded=verdict.degraded,
+                    )
                 result = dc_replace(result, baseline=baseline, candidate=candidate, suite=suite)
 
             # Progress record (BENCHMARKS.md + results/leader.json), written
