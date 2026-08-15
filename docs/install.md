@@ -56,12 +56,17 @@ its own round, labeled, with the reviewer named in the round stamp:
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-second-opinion.yml@main
     with:
       bot_login: my-bot
-      backend: hermes              # or codex (needs OPENAI_REVIEWER_KEY)
+      backend: hermes
       model: openai/gpt-5.6-terra  # any OpenRouter id
       lens_label: second opinion — terra
     secrets:
       openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
+
+For `backend: codex` instead: pass `openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}`
+in `secrets:`, and set `model` to a Codex model id (or omit it for the codex
+default) — an OpenRouter id will not work there.
+
 
 A third opinion is one more block with a distinct `lens_id`. If the backend's
 key is missing or expires, each triggering PR gets a visible "could not run"
