@@ -13,6 +13,12 @@
 #     posts through the normal advisory path.
 # Same constraints as the primary reviewer: never reviews bot PRs, never
 # approves, never fails the caller's CI, same-repo PRs only.
+#
+# Two behaviors by design: the "Round N" counter is SHARED with the primary
+# reviewer (concurrent rounds may number non-monotonically — the number is
+# cosmetic, the Lens label says who); and a missing/expired backend key posts
+# a fresh could-not-run stub per triggering PR until fixed — the noise IS the
+# warning (maintainer requirement: key failures must never be silent).
 name: advisory-second-opinion
 
 on:
