@@ -410,7 +410,7 @@ def _findings_envelope(tmp_path: Path, **overrides: Any) -> Path:
     return path
 
 
-def test_post_from_file_posts_with_lens_label(tmp_path: Path) -> None:
+def test_post_from_file_posts_with_opinion_label(tmp_path: Path) -> None:
     from autoresearch.review_post_cli import post_from_file
 
     client = _Client()
@@ -421,16 +421,16 @@ def test_post_from_file_posts_with_lens_label(tmp_path: Path) -> None:
         7,
         "autoresearch-bot",
         path,
-        lens_label="second opinion — terra via hermes",
+        opinion_label="second opinion — terra via hermes",
     )
     assert label is not None
     body, inline = client.reviews[0]
-    # marker stays FIRST (round counting + quote-reply defense); lens after it
+    # marker stays FIRST (round counting + quote-reply defense); label after it
     from autoresearch.review import MARKER
 
     assert body.lstrip().startswith(MARKER)  # marker first, then the round stamp
-    assert "**Lens:** second opinion — terra via hermes" in body
-    assert body.index(MARKER) < body.index("**Lens:**")
+    assert "*second opinion — terra via hermes*" in body
+    assert body.index(MARKER) < body.index("*second opinion — terra via hermes*")
     assert any(c.get("path") == "models/encoder.py" for c in inline)
 
 
@@ -525,7 +525,7 @@ def test_stamp_attribution_is_sanitized(tmp_path: Path) -> None:
     assert "reviewer `evil # heading`" in body  # collapsed + backtick-stripped
 
 
-def test_skip_stub_names_its_lens(tmp_path: Path) -> None:
+def test_skip_stub_names_its_opinion(tmp_path: Path) -> None:
     # with two standing reviewers, a could-not-run stub must say WHOSE round
     from autoresearch.review_post_cli import post_from_file
 
@@ -537,7 +537,7 @@ def test_skip_stub_names_its_lens(tmp_path: Path) -> None:
         7,
         "autoresearch-bot",
         path,
-        lens_label="second opinion — terra",
+        opinion_label="second opinion — terra",
     )
     (comment,) = client.comments
     assert "advisory review (second opinion — terra)" in comment

@@ -31,10 +31,10 @@ from autoresearch.review_agent import _pull_request
 
 log = logging.getLogger(__name__)
 
-# A lens label rides into the round body so a human can tell the second
+# An opinion label rides into the round body so a human can tell the second
 # opinion from the primary reviewer at a glance. Caller-configured, but
 # rendered into a comment: length-capped and newline-stripped.
-MAX_LENS_LABEL = 80
+MAX_OPINION_LABEL = 80
 
 
 def post_from_file(
@@ -43,7 +43,7 @@ def post_from_file(
     number: int,
     bot_login: str,
     path: Path,
-    lens_label: str = "",
+    opinion_label: str = "",
 ) -> str | None:
     """Post the emitted findings (or skip stub). Returns the round label, or
     None when there was nothing to post or the envelope was refused."""
@@ -78,7 +78,7 @@ def post_from_file(
             detail = sanitize(str(envelope.get("detail", "")), 300)
             # name WHOSE round failed: with two standing reviewers, an
             # unattributed stub is ambiguous exactly when a key dies
-            who = " ".join(lens_label.split())[:MAX_LENS_LABEL] or str(
+            who = " ".join(opinion_label.split())[:MAX_OPINION_LABEL] or str(
                 envelope.get("reviewed_by", "")
             )
             role = f"advisory review ({who})" if who else "advisory review"
@@ -92,12 +92,12 @@ def post_from_file(
             log.info("nothing to post")
             return None
         body, inline = rendered
-        if lens_label:
+        if opinion_label:
             # AFTER the marker, never before it: round counting and the
             # quote-reply defense both match marker-FIRST bodies
-            label = " ".join(lens_label.split())[:MAX_LENS_LABEL]
-            body = body.replace(MARKER, f"{MARKER}\n**Lens:** {label}", 1)
-            full = full.replace(MARKER, f"{MARKER}\n**Lens:** {label}", 1)
+            label = " ".join(opinion_label.split())[:MAX_OPINION_LABEL]
+            body = body.replace(MARKER, f"{MARKER}\n*{label}*", 1)
+            full = full.replace(MARKER, f"{MARKER}\n*{label}*", 1)
         round_label = post_round_review(
             client,
             repo,
@@ -142,7 +142,7 @@ def main() -> int:
         int(number_raw),
         bot_login,
         path,
-        lens_label=os.environ.get("REVIEW_LENS_LABEL", "").strip(),
+        opinion_label=os.environ.get("REVIEW_OPINION_LABEL", "").strip(),
     )
     return 0
 

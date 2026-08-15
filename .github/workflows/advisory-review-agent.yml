@@ -1,7 +1,7 @@
 # Reusable agent-session reviewer — ONE workflow, any backend, always the
 # least-token split. Target repos call this with `uses:` and never vendor the
 # reviewer code. A standing reviewer is one caller job; a second opinion is
-# another caller job with a different backend/model/lens.
+# another caller job with a different backend/model/opinion label.
 #
 # Topology (every backend, claude included):
 #   session job — READ-ONLY permissions. Checks out the PR head (never
@@ -19,9 +19,9 @@
 #
 # Constraints: never reviews bot-authored PRs, never approves, never fails
 # the caller's CI, same-repo PRs only. By design: the "Round N" counter is
-# shared across all lenses on a PR (the number is cosmetic; the stamp names
+# shared across all opinions on a PR (the number is cosmetic; the stamp names
 # the reviewer), and a missing/expired backend key posts a could-not-run stub
-# naming its lens on each triggering PR until fixed — the noise IS the
+# naming its opinion label on each triggering PR until fixed — the noise IS the
 # warning.
 name: advisory-review-agent
 
@@ -45,16 +45,16 @@ on:
         type: string
         required: false
         default: ''
-      lens_label:
+      opinion_label:
         description: >-
           Label shown on the posted round (who this opinion is). Leave empty
           for the primary reviewer.
         type: string
         required: false
         default: ''
-      lens_id:
+      opinion_id:
         description: >-
-          Slug distinguishing this lens's artifact and concurrency group when
+          Slug distinguishing this opinion's artifact and concurrency group when
           a caller runs the SAME backend twice (two models). Defaults to the
           backend name.
         type: string
@@ -92,10 +92,10 @@ permissions:
   contents: read
   pull-requests: write
 
-# One review per lens per PR at a time. Do NOT cancel in progress: a running
+# One review per opinion per PR at a time. Do NOT cancel in progress: a running
 # session is a paid model call, so queue behind it rather than kill it.
 concurrency:
-  group: advisory-review-agent-${{ inputs.lens_id || inputs.backend }}-${{ github.event.pull_request.number }}
+  group: advisory-review-agent-${{ inputs.opinion_id || inputs.backend }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -192,7 +192,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: review-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
+          name: review-findings-${{ inputs.opinion_id || inputs.backend }}-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/findings.json
           if-no-files-found: ignore
           retention-days: 3
@@ -227,7 +227,7 @@ jobs:
         continue-on-error: true  # no artifact = clean skip upstream
         uses: actions/download-artifact@v4
         with:
-          name: review-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
+          name: review-findings-${{ inputs.opinion_id || inputs.backend }}-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}
       - name: Post the findings
         if: steps.findings.outcome == 'success'
@@ -238,5 +238,5 @@ jobs:
           PR_NUMBER: ${{ env.PR_NUMBER }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
-          REVIEW_LENS_LABEL: ${{ inputs.lens_label }}
+          REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
         run: uv run python -m autoresearch.review_post_cli

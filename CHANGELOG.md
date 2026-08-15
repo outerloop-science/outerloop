@@ -36,7 +36,7 @@ Versions follow [SemVer](https://semver.org).
   job runs the backend (claude default; hermes/OpenRouter; codex) and emits
   raw findings as an artifact; a separate posting job — no session —
   re-validates the envelope (right PR, bot-skip re-checked, sanitizing
-  render) and posts with a `Lens:` label. A second opinion is one more caller
+  render) and posts with an opinion label. A second opinion is one more caller
   job with a different backend/model. Session cost and turns are logged at
   emit/post time. On private repos the session job carries a read-scoped
   token only; it becomes tokenless at the public flip.

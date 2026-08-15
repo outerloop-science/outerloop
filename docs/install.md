@@ -60,7 +60,7 @@ same reusable, different backend. Each opinion posts its own labeled round:
       bot_login: my-bot
       backend: hermes
       model: openai/gpt-5.6-terra  # any OpenRouter id
-      lens_label: second opinion — terra
+      opinion_label: second opinion — terra
     secrets:
       openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
@@ -70,9 +70,9 @@ in `secrets:`, and set `model` to a Codex model id (or omit it for the codex
 default) — an OpenRouter id will not work there.
 
 
-A third opinion is one more block with a distinct `lens_id`. If the backend's
+A third opinion is one more block with a distinct `opinion_id`. If the backend's
 key is missing or expires, each triggering PR gets a visible "could not run"
-stub naming that lens — a dead key is never silent.
+stub naming that opinion — a dead key is never silent.
 
 That's the whole setup. Notes:
 
