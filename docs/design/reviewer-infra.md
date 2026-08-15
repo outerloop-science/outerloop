@@ -158,7 +158,9 @@ merge. The STRONGER containment is now built as the **least-token split**
 (`advisory-second-opinion.yml`): the session job holds read-only permissions
 (on a private repo the checkout still needs `contents: read`, so token theft
 buys read access to a repo the session is already reading, expiring with the
-job), and the posting job holds the write token with no session next to it.
+job; the read-only deploy key for the private reviewer repo is present for
+the same reason and in the same blast-radius class), and the posting job
+holds the write token with no session next to it.
 The residual read-scoped token drops to zero at the public flip.
 
 What is safe today, precisely. The agent workflows run only on same-repo PRs

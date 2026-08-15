@@ -425,7 +425,12 @@ def test_post_from_file_posts_with_lens_label(tmp_path: Path) -> None:
     )
     assert label is not None
     body, inline = client.reviews[0]
-    assert body.startswith("**Lens:** second opinion — terra via hermes")
+    # marker stays FIRST (round counting + quote-reply defense); lens after it
+    from autoresearch.review import MARKER
+
+    assert body.lstrip().startswith(MARKER)  # marker first, then the round stamp
+    assert "**Lens:** second opinion — terra via hermes" in body
+    assert body.index(MARKER) < body.index("**Lens:**")
     assert any(c.get("path") == "models/encoder.py" for c in inline)
 
 
@@ -468,3 +473,22 @@ def test_post_from_file_publishes_the_skip_stub(tmp_path: Path) -> None:
     assert label == "skip-stub"
     assert client.reviews == []
     assert len(client.comments) == 1 and "could not run" in client.comments[0]
+
+
+def test_post_from_file_stub_is_skip_checked_and_sanitized(tmp_path: Path) -> None:
+    # a forged stub envelope is still a post: bot-skip re-checked, and the
+    # detail is sanitized (no fresh lines, no live markdown) before rendering
+    from autoresearch.review_post_cli import post_from_file
+
+    bot_client = _Client(author="autoresearch-bot")
+    path = _findings_envelope(tmp_path, kind="skip-stub", detail="x")
+    assert post_from_file(bot_client, "org/repo", 7, "autoresearch-bot", path) is None  # type: ignore[arg-type]
+    assert bot_client.comments == []
+
+    client = _Client()
+    evil = "boom\n# fake heading\n<script>alert(1)</script>"
+    path = _findings_envelope(tmp_path, kind="skip-stub", detail=evil)
+    assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) == "skip-stub"  # type: ignore[arg-type]
+    (comment,) = client.comments
+    assert "\n# fake heading" not in comment  # newline collapsed: no top-level markdown
+    assert "<script>" not in comment

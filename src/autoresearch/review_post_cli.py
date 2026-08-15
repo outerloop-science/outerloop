@@ -19,7 +19,14 @@ from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.posting import EXPECTED_FAILURES, post_round_review, post_skip_stub
-from autoresearch.review import MARKER, format_comment, format_review, result_from_data, skip_reason
+from autoresearch.review import (
+    MARKER,
+    format_comment,
+    format_review,
+    result_from_data,
+    sanitize,
+    skip_reason,
+)
 from autoresearch.review_agent import _pull_request
 
 log = logging.getLogger(__name__)
@@ -52,22 +59,25 @@ def post_from_file(
         log.warning("findings envelope names a different PR; refused")
         return None
     kind = envelope.get("kind")
+    if kind not in ("skip-stub", "findings"):
+        log.warning("unknown envelope kind %r; nothing posted", kind)
+        return None
     try:
-        if kind == "skip-stub":
-            detail = str(envelope.get("detail", ""))[:300]
-            post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
-            return "skip-stub"
-        if kind != "findings":
-            log.warning("unknown envelope kind %r; nothing posted", kind)
-            return None
+        # The write authority re-checks the skip rules for EVERY kind: the
+        # session job decided them once, but this side of the artifact
+        # boundary is the one that must never post on a bot PR — a forged
+        # stub envelope is still a post.
         pr, pr_data = _pull_request(client, repo, number)
-        # The write authority re-checks the skip rules: the session job
-        # decided them once, but this side of the artifact boundary is the
-        # one that must never post on a bot PR.
         skip = skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping post on %s#%s: %s", repo, number, skip)
             return None
+        if kind == "skip-stub":
+            # sanitize: the detail crossed the job boundary and lands in a
+            # comment — collapse newlines, neutralize markdown, cap length
+            detail = sanitize(str(envelope.get("detail", "")), 300)
+            post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
+            return "skip-stub"
         data = envelope.get("data")
         review = result_from_data(data if isinstance(data, dict) else {})
         rendered = format_review(review, pr.diff)
@@ -77,9 +87,11 @@ def post_from_file(
             return None
         body, inline = rendered
         if lens_label:
+            # AFTER the marker, never before it: round counting and the
+            # quote-reply defense both match marker-FIRST bodies
             label = " ".join(lens_label.split())[:MAX_LENS_LABEL]
-            body = f"**Lens:** {label}\n\n{body}"
-            full = f"**Lens:** {label}\n\n{full}"
+            body = body.replace(MARKER, f"{MARKER}\n**Lens:** {label}", 1)
+            full = full.replace(MARKER, f"{MARKER}\n**Lens:** {label}", 1)
         round_label = post_round_review(
             client, repo, number, MARKER, body, inline, pr_data, fallback_body=full
         )

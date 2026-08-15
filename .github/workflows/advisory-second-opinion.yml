@@ -39,6 +39,14 @@ on:
         type: string
         required: false
         default: second opinion
+      lens_id:
+        description: >-
+          Slug distinguishing this opinion's artifact and concurrency group
+          when a caller runs the SAME backend twice (two models). Defaults to
+          the backend name.
+        type: string
+        required: false
+        default: ''
       reviewer_repo:
         description: Repo holding the reviewer (change this if you forked).
         type: string
@@ -68,7 +76,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: advisory-second-opinion-${{ github.event.pull_request.number }}
+  group: advisory-second-opinion-${{ inputs.lens_id || inputs.backend }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -143,9 +151,12 @@ jobs:
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_agent_cli
       - name: Upload findings
+        # not `success()`: a session step that died AFTER emitting must still
+        # deliver its findings (or its skip-stub) to the posting job
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: second-opinion-findings-${{ env.PR_NUMBER }}
+          name: second-opinion-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/findings.json
           if-no-files-found: ignore
           retention-days: 3
@@ -180,7 +191,7 @@ jobs:
         continue-on-error: true  # no artifact = clean skip upstream
         uses: actions/download-artifact@v4
         with:
-          name: second-opinion-findings-${{ env.PR_NUMBER }}
+          name: second-opinion-findings-${{ inputs.lens_id || inputs.backend }}-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}
       - name: Post the findings
         if: steps.findings.outcome == 'success'
