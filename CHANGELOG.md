@@ -43,12 +43,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- The author session now runs on the role-runner, like the judges:
-  `author_spec` (roles.py) is the manifest, `climb_once` dispatches through
-  `run_role`, and the climb CLI builds its harness from the spec
-  (`build_author_harness`), so the session budget and tool set have one
-  source. Behavior unchanged; steward and follow-up dispatch are the
-  remaining collapses.
+- The author and follow-up responder sessions now run on the role-runner,
+  like the judges: `author_spec`/`followup_spec` (roles.py) are the
+  manifests, `climb_once`/`respond_once` dispatch through `run_role`, and
+  the CLIs build their harness from the spec (`build_editor_harness`, one
+  builder for all editing roles), so the session budget and tool set have
+  one source. The follow-up runs under the resuming role's key and scope
+  (author or steward, from the record and contract). Behavior unchanged;
+  steward dispatch is the remaining collapse.
 - The verifier can now run as an agent session over TWO read-only checkouts:
   the PR head (the change under review) and the base branch (the trusted
   contract and ruler — all ruler reads are directed there, never at the PR).

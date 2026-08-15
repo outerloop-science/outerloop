@@ -39,6 +39,9 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import APPROVAL_PATTERN, REDACTED
+from autoresearch.role_runner import run_role
+from autoresearch.roles import followup_spec
+from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
     ENDED,
     IN_REVIEW,
@@ -243,6 +246,7 @@ def respond_once(
     now: float,
     secrets: tuple[str, ...] = (),
     created: str = "",
+    spec: RoleSpec | None = None,
 ) -> FollowupOutcome:
     record = load_record(run_root, run_id)
     if record.state != IN_REVIEW:
@@ -267,6 +271,7 @@ def respond_once(
             now,
             secrets,
             created,
+            spec,
         )
     except Exception as exc:
         log.warning("followup failed for %s: %s", run_id, redact(str(exc), secrets))
@@ -289,6 +294,7 @@ def _respond(
     now: float,
     secrets: tuple[str, ...],
     created: str,
+    spec: RoleSpec | None = None,
 ) -> FollowupOutcome:
 
     pr = github.get_pull_request(record.target, number)
@@ -362,6 +368,21 @@ def _respond(
     is_steward = record.agent_id.startswith("steward")
     scope_check = steward_out_of_scope if is_steward else out_of_scope
 
+    # the manifest: the resuming role's key family and scope side. The caller
+    # (CLI) owns the budget; the kernel owns these two, from the record and
+    # the contract — same split as climb_once.
+    spec = spec or followup_spec()
+    if not spec.execution.can_execute:
+        raise ValueError(
+            "the follow-up responder is an editing role; the spec must allow execution"
+        )
+    owned = (
+        (contract.steward.allowed if contract.steward else [])
+        if is_steward
+        else contract.scope.allowed
+    )
+    spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
+
     prompt = render_review_wake([(author, body) for _, author, body in comments])
     if is_steward:
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
@@ -383,8 +404,11 @@ def _respond(
             "answering; this may repeat rounds you already addressed — the "
             "PR thread is the ground truth)\n" + "\n\n".join(blocks)
         )
-    session = harness.run(prompt, workspace, resume_session_id=record.resume_session_id or None)
-    if session.is_error:
+    role_result = run_role(
+        spec, harness, prompt, workspace, resume_session_id=record.resume_session_id or None
+    )
+    session = role_result.session
+    if not role_result.ok:
         # cursor NOT advanced: the next attempt sees the same comments
         # Deliberately NOT a budget-exhausted ending: follow-ups never end
         # the run, and "error" is what keeps cursors un-advanced so the next
@@ -410,7 +434,9 @@ def _respond(
                 run_id, "error", f"api outage: {session.error_detail or session.stop_reason}"
             )
         return FollowupOutcome(
-            run_id, "error", f"session: {session.error_detail or session.stop_reason}"
+            run_id,
+            "error",
+            f"session: {role_result.error or session.error_detail or session.stop_reason}",
         )
 
     # Same self-approval scrub as the reviewer: the pipeline must never nudge
@@ -639,7 +665,7 @@ def main() -> int:
     import time
 
     from autoresearch.github import FileTokenProvider
-    from autoresearch.harness import DEFAULT_MAX_TURNS, ClaudeCodeHarness
+    from autoresearch.harness import DEFAULT_MAX_TURNS
     from autoresearch.orchestrator import SubprocessEvaluator
 
     parser = argparse.ArgumentParser(description="Service one in-review run.")
@@ -680,29 +706,32 @@ def main() -> int:
     # ending honest (cursors un-advanced on failure -> the next tick retries).
     import signal as _signal
 
-    from autoresearch.climb import arm_self_deadline
+    from autoresearch.climb import arm_self_deadline, build_editor_harness
 
     armed = arm_self_deadline(args.job_minutes)
     if armed:
         log.info("self-deadline armed: Terminated in %ds", armed)
+    # the manifest first, the harness from it (budget has one source: the
+    # args). The session must end before its job does, so the walltime is
+    # bounded by the job minus the self-deadline margin when one is known.
+    spec = followup_spec(
+        max_turns=args.max_turns,
+        walltime_s=(
+            min(3600, max(300, args.job_minutes * 60 - 300)) if args.job_minutes > 0 else 3600
+        ),
+    )
     try:
         outcome = respond_once(
             args.run_root,
             args.run_id,
-            harness=ClaudeCodeHarness(
-                api_key=api_key,
+            harness=build_editor_harness(
+                api_key,
+                spec,
                 binary=args.claude_bin,
                 model=args.model,
-                max_turns=args.max_turns,
-                # the session must end before its job does: bound by the
-                # walltime minus the self-deadline margin when one is known
-                timeout_s=(
-                    min(3600, max(300, args.job_minutes * 60 - 300))
-                    if args.job_minutes > 0
-                    else 3600
-                ),
                 container_image=args.image,
             ),
+            spec=spec,
             evaluator=SubprocessEvaluator(container_image=args.image),
             github=GitHubClient(auth=bot_auth),
             bot_login=args.bot_login,

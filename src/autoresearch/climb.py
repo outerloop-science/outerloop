@@ -160,7 +160,7 @@ def _measure_committed(
             _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
 
 
-def build_author_harness(
+def build_editor_harness(
     api_key: str,
     spec: RoleSpec | None = None,
     *,
@@ -168,15 +168,20 @@ def build_author_harness(
     model: str | None = None,
     container_image: str = "",
 ) -> ClaudeCodeHarness:
-    """Construct the author's harness from its RoleSpec — the same deployment
-    wiring the judges use (`spec.budget` drives turns and walltime, so
-    manifest and harness cannot disagree). Claude only: the author runs
-    contained (apptainer) with the full editing tool set, and KEEPS
-    instruction-file discovery — the target repo's CLAUDE.md is legitimate
-    guidance for an editing role, unlike a judge's untrusted checkout."""
+    """Construct an editing role's harness from its RoleSpec — the same
+    deployment wiring the judges use (`spec.budget` drives turns and walltime,
+    `spec.tools` the tool set, so manifest and harness cannot disagree). The
+    session runs contained (apptainer) and KEEPS instruction-file discovery —
+    the target repo's CLAUDE.md is legitimate guidance for an editing role,
+    unlike a judge's untrusted checkout.
+
+    Claude-only by validation status, not by design: the seam (`run_role`,
+    `climb_once`) takes any Harness. A codex or hermes editor needs its
+    resume and write+execute containment story bench-validated first; then
+    it is a new branch here, zero kernel change (the reviewer's rollout)."""
     spec = spec or author_spec()
     if not spec.execution.can_execute:
-        raise ValueError("build_author_harness is for editing roles")
+        raise ValueError("build_editor_harness is for editing roles")
     return ClaudeCodeHarness(
         api_key=api_key,
         binary=binary or "claude",
@@ -859,7 +864,7 @@ def main() -> int:
                 config=ClimbConfig(target=args.target, benchmark=args.benchmark),
                 run_root=args.run_root,
                 run_id=run_id,
-                harness=build_author_harness(
+                harness=build_editor_harness(
                     api_key,
                     spec,
                     binary=args.claude_bin,
