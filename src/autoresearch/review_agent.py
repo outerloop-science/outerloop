@@ -98,24 +98,27 @@ def build_reviewer_harness(
     if backend == "hermes":
         if hermes_repo is None:
             raise ValueError("hermes reviewer backend needs hermes_repo (the pinned clone)")
-        # hermes resolves credentials from provider-specific env vars: the
-        # harness must export the key under the name the CHOSEN provider
-        # reads. openai-direct avoids the OpenRouter platform fee (and the
-        # org's tax exemption applies) at the same token rate.
-        key_envs = {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}
-        key_env = key_envs.get(provider or "openrouter")
-        if key_env is None:
+        # openai-direct is NOT a hermes registry provider: hermes's headless
+        # client takes any OpenAI-compatible base_url and reads its key from
+        # the OPENROUTER_API_KEY env slot regardless of endpoint (verified
+        # against the pinned source, v2026.8.13). So "openai" here means:
+        # point base_url at api.openai.com, export the ORG'S OPENAI KEY into
+        # hermes's key slot, and use the provider-NATIVE model id
+        # (gpt-5.6-terra, no openai/ prefix). Same token rate, no OpenRouter
+        # platform fee, and the org's tax exemption applies.
+        endpoints = {"openrouter": "", "openai": "https://api.openai.com/v1"}
+        if (provider or "openrouter") not in endpoints:
             raise ValueError(f"unknown hermes provider: {provider!r}")
         # Defaults already encode the judge shape: file toolset only, terminal
         # and every other executing/egress toolset disabled. Read-only rests on
         # that config plus the ephemeral runner (see the docstring above).
         return HermesHarness(
             api_key=api_key,
-            key_env=key_env,
             repo_dir=hermes_repo,
-            provider=provider,
-            # model id is PROVIDER-NATIVE: openai/gpt-5.6-terra on openrouter,
-            # gpt-5.6-terra on openai-direct; empty -> hermes default
+            # the config seed hermes accepts; the endpoint override does the
+            # actual routing
+            provider="openrouter",
+            base_url=endpoints[provider or "openrouter"],
             model=model or "",
             max_turns=spec.budget.max_turns,
             timeout_s=spec.budget.walltime_s,
