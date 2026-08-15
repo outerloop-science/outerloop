@@ -24,7 +24,10 @@ more things fall out of the same move:
   does not exist here — every benched backend is eligible for the panel.
 - **Event-driven, not clock-driven.** The verify step fires when the
   candidate measures improved, inside the climb job — no second event plane.
-- **The strong jail.** Apptainer containment, same as the author.
+- **The strong jail.** Judge sessions adopt the climb's apptainer
+  containment when this step lands; today's GitHub-side judges run in the
+  runner sandbox instead. Backend eligibility above rests on the token
+  point, not on the jail.
 
 ## The loop
 
@@ -45,13 +48,16 @@ candidate measured improved (and suite-gated, when shared paths were touched)
       (rounds, verdicts per lens, what changed between rounds)
 ```
 
-Rules the loop inherits unchanged from the house review policy:
+Rules the loop takes from the house review policy:
 
 - **Iterate only on blocking findings.** Advisory notes ride into the PR as
   notes; they never trigger a round.
-- **Hard cap: 2 rounds** after the first, then post with the open findings
-  visible — "materially sound" is the bar, and a capped-out loop is a signal
-  the human should see, not suppress.
+- **Hard cap: one revision round after the initial read** (two rounds
+  total), matching the house review policy. A loop that caps out with
+  blocking findings still open posts a **draft PR** with those findings at
+  the top: visible and plainly not merge-ready. Hiding capped-out work would
+  suppress exactly the signal a human should see — a run that cannot
+  converge is information.
 - **Silence is never endorsement.** A panel session that errors or runs out
   of budget yields a skip stub in the transcript, and the PR says so.
 - **Disagreement is information.** When lenses conflict (one blocks, one
