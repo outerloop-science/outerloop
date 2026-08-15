@@ -523,3 +523,21 @@ def test_stamp_attribution_is_sanitized(tmp_path: Path) -> None:
     assert post_from_file(client, "org/repo", 7, "autoresearch-bot", path) is not None  # type: ignore[arg-type]
     body, _inline = client.reviews[0]
     assert "reviewer `evil # heading`" in body  # collapsed + backtick-stripped
+
+
+def test_skip_stub_names_its_lens(tmp_path: Path) -> None:
+    # with two standing reviewers, a could-not-run stub must say WHOSE round
+    from autoresearch.review_post_cli import post_from_file
+
+    client = _Client()
+    path = _findings_envelope(tmp_path, kind="skip-stub", detail="key dead")
+    post_from_file(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        "autoresearch-bot",
+        path,
+        lens_label="second opinion — terra",
+    )
+    (comment,) = client.comments
+    assert "advisory review (second opinion — terra)" in comment
