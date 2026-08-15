@@ -160,3 +160,46 @@ def test_hermes_openai_provider_reads_the_openai_key(monkeypatch: Any, tmp_path:
     assert cli.main() == 0
     assert calls["build_key"] == "sk-openai-test"
     assert calls["build_kwargs"]["provider"] == "openai"
+
+
+def test_unknown_hermes_provider_in_emit_mode_writes_a_stub(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # the provider input is free-form like the backend input: a typo must be
+    # a PR-visible stub, never a traceback
+    import json
+
+    env = _base_env()
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "opnai",
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "unknown REVIEW_HERMES_PROVIDER" in envelope["detail"]
+
+
+def test_explicitly_empty_hermes_provider_means_the_default(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # workflow env is always SET; empty must behave exactly like omitted
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENROUTER_API_KEY": "sk-or-test",
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls["build_key"] == "sk-or-test"
+    assert calls["build_kwargs"]["provider"] == "openrouter"

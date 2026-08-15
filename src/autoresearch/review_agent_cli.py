@@ -44,24 +44,34 @@ def main() -> int:
     backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
     emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     # hermes's key SOURCE follows its provider: openai-direct uses the same
-    # org-registered OpenAI key as codex (no OpenRouter platform fee)
-    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter").strip().lower()
+    # org-registered OpenAI key as codex (no OpenRouter platform fee).
+    # Explicitly-empty input means the default, same as an omitted one.
+    hermes_provider = (
+        os.environ.get("REVIEW_HERMES_PROVIDER", "").strip().lower() or "openrouter"
+    )
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
         "codex": "OPENAI_REVIEWER_KEY",
-        "hermes": "OPENAI_REVIEWER_KEY" if hermes_provider == "openai" else "OPENROUTER_API_KEY",
+        "hermes": {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_REVIEWER_KEY"}.get(
+            hermes_provider
+        ),
     }.get(backend)
     if key_var is None:
-        log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
+        # a typo in a caller's free-form backend/provider input must be a
+        # PR-visible stub, not a silent log line or a traceback
+        what = (
+            f"unknown REVIEW_HERMES_PROVIDER {hermes_provider!r}"
+            if backend == "hermes"
+            else f"unknown REVIEW_BACKEND {backend!r}"
+        )
+        log.warning("%s; skipping review", what)
         if emit_env:
-            # a typo in a caller's backend input must be a PR-visible stub,
-            # not a silent log line
             _emit(
                 Path(emit_env).resolve(),
                 repo,
                 number,
                 kind="skip-stub",
-                detail=f"unknown REVIEW_BACKEND {backend!r}",
+                detail=what,
                 reviewed_by=backend,
             )
         return 0
