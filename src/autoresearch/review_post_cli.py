@@ -76,7 +76,13 @@ def post_from_file(
             # sanitize: the detail crossed the job boundary and lands in a
             # comment — collapse newlines, neutralize markdown, cap length
             detail = sanitize(str(envelope.get("detail", "")), 300)
-            post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
+            # name WHOSE round failed: with two standing reviewers, an
+            # unattributed stub is ambiguous exactly when a key dies
+            who = " ".join(lens_label.split())[:MAX_LENS_LABEL] or str(
+                envelope.get("reviewed_by", "")
+            )
+            role = f"advisory review ({who})" if who else "advisory review"
+            post_skip_stub(client, repo, number, role, RuntimeError(detail))
             return "skip-stub"
         data = envelope.get("data")
         review = result_from_data(data if isinstance(data, dict) else {})

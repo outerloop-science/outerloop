@@ -27,6 +27,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- autoresearch's own PRs now get a terra second opinion (openai/gpt-5.6-terra
+  via hermes/OpenRouter) next to the Claude round — the first live user of the
+  least-token split. Takes effect for PRs opened after this merges
+  (`pull_request_target` runs the base branch's workflow).
 - Second-opinion reviews from non-Claude backends on the auto path, via the
   least-token split (`advisory-second-opinion.yml`): a read-only session job
   runs the backend (hermes/terra via OpenRouter, or codex) and emits raw
