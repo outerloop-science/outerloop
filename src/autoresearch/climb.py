@@ -405,11 +405,15 @@ def live_climb(
         # seed or the sampled pool into the solver's view.
         baseline_wt = run_dir / "measure-baseline"
         ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
+        # the panel's base is the PRE-SESSION commit — the exact tree the
+        # baseline was measured on — never origin/<base_branch>, which can
+        # name a different branch than the clone's checkout (terra, #95 r3)
+        pre_session_sha = ws.git("rev-parse", "HEAD").strip()
         panel_runner = (
             build_panel_runner(
                 ws,
                 run_dir,
-                base_sha,
+                pre_session_sha,
                 panel_lenses,
                 contract_text,
                 config.target,
