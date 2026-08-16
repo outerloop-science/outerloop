@@ -20,6 +20,13 @@ from autoresearch.followup import QUALIFYING_ASSOCIATIONS
 log = logging.getLogger(__name__)
 
 CLAIM_MARKER = "<!-- autoresearch:claimed -->"
+# Posted (by the bot only) to undo a claim whose run never started — a failed
+# submit must not strand the issue, since the claim scan skips claimed issues.
+RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
+# Claim attempts per issue before intake gives up on it: a durable submit
+# failure must not claim/release (and comment) forever. Same idea as the
+# steward lane's MAX_STEWARD_ATTEMPTS.
+MAX_INTAKE_ATTEMPTS = 3
 # steward work orders carry this label; they are the STEWARD lane's,
 # never the solver's (a solver climb cannot touch env paths anyway)
 STEWARD_LABEL = "autoresearch:steward"
@@ -54,6 +61,12 @@ def qualifying_issue(issue: dict, bot_login: str) -> bool:
 def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTask | None:
     """The oldest qualifying, unclaimed issue that names exactly one
     benchmark. At most one — intake is deliberately slow."""
+    if not bot_login.strip():
+        # fail closed like the steward picker: with no identity the claim
+        # scan below would see NO claims and re-claim every tick — an
+        # unbounded paid loop
+        log.warning("pick_issue: bot_login is blank; intake lane sits out")
+        return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
         labels = {
@@ -66,8 +79,23 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
         if not qualifying_issue(issue, bot_login):
             continue
         number = int(issue["number"])
-        if any(CLAIM_MARKER in str(c.get("body", "")) for c in github.list_comments(repo, number)):
+        claimed = False
+        attempts = 0
+        for c in github.list_comments(repo, number):
+            author = str((c.get("user") or {}).get("login", ""))
+            if author.casefold() != bot_login.casefold():
+                continue  # only the bot's own markers count — no forged releases
+            body = str(c.get("body", ""))
+            if CLAIM_MARKER in body:
+                claimed = True
+                attempts += 1
+            if RELEASE_MARKER in body:
+                claimed = False
+        if claimed:
             continue  # already claimed by a run
+        if attempts >= MAX_INTAKE_ATTEMPTS:
+            log.info("issue #%s burned %d claim attempts; needs a human look", number, attempts)
+            continue
         text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
         benchmark = infer_benchmark(text, contract)
         if not benchmark:

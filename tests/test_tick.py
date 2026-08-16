@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from autoresearch.compute import CommandResult, SlurmCompute
 from autoresearch.runstate import (
@@ -603,6 +604,9 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     )
 
     contract = _self_contract()
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")  # preflight: no usable key, no launch
+    panel_key.chmod(0o600)
     spec = FollowupSpec(
         target="org/pilot",
         account="acct",
@@ -611,6 +615,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
         image="img.sif",
         home=tmp_path,
         bot_login="bot",
+        panel_key_file=str(panel_key),
     )
     submitted: list[str] = []
 
@@ -810,7 +815,7 @@ def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
 
 def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) -> None:
     """No Slurm evidence -> only the 24h run deadline authors an ending; the
-    6h stranded window frees the picker lane but never writes verdicts."""
+    stranded window frees the picker lane but never writes verdicts."""
     from autoresearch.tick import STRANDED_IMPLEMENTING_S
 
     _implementing_run(tmp_path, "r-old", job_id="", age_s=25 * 3600)
@@ -843,6 +848,9 @@ roadmap: docs/roadmap.md
 """,
         "org/pilot",
     )
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")  # preflight: no usable key, no launch
+    panel_key.chmod(0o600)
     spec = FollowupSpec(
         target="org/pilot",
         account="acct",
@@ -850,6 +858,7 @@ roadmap: docs/roadmap.md
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
+        panel_key_file=str(panel_key),
     )
     submitted: list[list[str]] = []
 
@@ -860,11 +869,16 @@ roadmap: docs/roadmap.md
     out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), spec, contract, NOW)
     assert out == ("tsp", "123")
     sbatch = submitted[0]
-    assert "--time=120" in sbatch  # 100000 clamped to the default-as-ceiling
+    # contract budget (100000 clamped to the 120 ceiling) + the panel
+    # allowance the TICK adds (3 reads x 2 lenses x 30-min judge budget
+    # + the 25-min session for the revision wake = 205): the contract can
+    # never raise orchestrator spend, so the panel brings its own time
+    assert "--time=325" in sbatch
     wrap = sbatch[-1]
     assert "--max-turns 30" in wrap
     assert "--session-minutes 25" in wrap
-    assert "--job-minutes 120" in wrap  # the job's own walltime, for the alarm
+    assert "--job-minutes 325" in wrap  # the ACTUAL walltime, for the alarm
+    assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
 
 
 def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
@@ -1092,7 +1106,7 @@ def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> Non
     # recovery: comment + close + state cleared
     contract_alarm(tmp_path, g, "org/pilot", None, NOW)
     assert g.closed == [7]
-    assert any("loads again" in body for _, body in g.comments)
+    assert any("lanes resume" in body for _, body in g.comments)
     assert not (tmp_path / "contract-alarm.json").exists()
     # healthy steady state: no writes at all
     contract_alarm(tmp_path, g, "org/pilot", None, NOW)
@@ -1322,6 +1336,7 @@ roadmap: docs/roadmap.md
         home=tmp_path,
         key_file="/k",
         steward_key_file="/k",
+        panel="",  # the outage latch must be what returns None, not the preflight
     )
 
     class G:
@@ -1562,3 +1577,250 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
         save_record(tmp_path, replace(rec, followup_job_id="", wake_attempts=0), now=NOW)
     _, subs2 = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec_nokey, NOW)
     assert len(subs2) == 1 and subs2[0][0] == "tsp-r1"
+
+
+def test_panel_spec_disables_and_reconfigures_the_climb_argv(tmp_path: Path) -> None:
+    """An empty panel spec drops the flags; a custom panel and key file ride
+    into the climb argv verbatim."""
+    from autoresearch.tick import FollowupSpec, _climb_panel_argv
+
+    def make(panel: str = "verify,review", panel_key_file: str = "") -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="i.sif",
+            home=tmp_path,
+            panel=panel,
+            panel_key_file=panel_key_file,
+        )
+
+    assert _climb_panel_argv(make(panel="")) == []
+    assert _climb_panel_argv(make()) == ["--panel", "verify,review"]
+    assert _climb_panel_argv(make(panel="verify", panel_key_file="/keys/verifier")) == [
+        "--panel",
+        "verify",
+        "--panel-key-file",
+        "/keys/verifier",
+    ]
+
+
+def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) -> None:
+    """AUTORESEARCH_PANEL/AUTORESEARCH_PANEL_KEY_FILE reach the FollowupSpec
+    through the chain environment, and empty AUTORESEARCH_PANEL turns the
+    panel off (not back to the default)."""
+    from autoresearch.tick import _followup_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "AUTORESEARCH_ACCOUNT": "a",
+        "AUTORESEARCH_PARTITION": "p",
+        "AUTORESEARCH_IMAGE": str(image),
+        "AUTORESEARCH_HOME": str(tmp_path),
+        "AUTORESEARCH_PANEL": "verify",
+        "AUTORESEARCH_PANEL_KEY_FILE": "/keys/verifier",
+    }
+    import autoresearch.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None
+    assert spec.panel == "verify" and spec.panel_key_file == "/keys/verifier"
+    env["AUTORESEARCH_PANEL"] = ""
+    _github, off = _followup_spec_from_env(tmp_path)
+    assert off is not None and off.panel == ""
+    # work jobs can ride a longer partition than the tick chain, with the
+    # walltime cap raised in lockstep (clamped to the code-side ceiling)
+    env["AUTORESEARCH_JOB_PARTITION"] = "cpu48"
+    env["AUTORESEARCH_MAX_JOB_MINUTES"] = "480"
+    _github, longer = _followup_spec_from_env(tmp_path)
+    assert longer is not None
+    assert longer.job_partition == "cpu48" and longer.max_job_minutes == 480
+    env["AUTORESEARCH_MAX_JOB_MINUTES"] = "9000"  # above the ceiling
+    _github, capped = _followup_spec_from_env(tmp_path)
+    assert capped is not None and capped.max_job_minutes == 600
+
+
+def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
+    """Panel on + a key the climb would reject (missing, group-readable,
+    empty): the intake lane claims nothing and the self-initiated lane
+    submits nothing — the strand is caught before any side effect. The
+    preflight reads through FileTokenProvider so its acceptance rules ARE
+    the climb's; a 0600 non-empty key or a disabled panel passes, and a
+    ~ path expands (operator env values arrive verbatim)."""
+    from autoresearch.tick import (
+        FollowupSpec,
+        _panel_preflight_error,
+        service_intake,
+        service_self_initiated,
+    )
+
+    def make(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="i.sif",
+            home=tmp_path,
+            **kw,
+        )
+
+    loose = tmp_path / "loose"
+    loose.write_text("k")
+    loose.chmod(0o644)  # pinned: write_text's mode depends on the umask
+    empty = tmp_path / "empty"
+    empty.write_text("")
+    empty.chmod(0o600)
+    good = tmp_path / "good"
+    good.write_text("k")
+    good.chmod(0o600)
+    assert "chmod 600" in _panel_preflight_error(make(panel_key_file=str(loose)))
+    assert "empty" in _panel_preflight_error(make(panel_key_file=str(empty)))
+    assert _panel_preflight_error(make(panel_key_file=str(tmp_path / "nope"))) != ""
+    assert _panel_preflight_error(make(panel_key_file=str(good))) == ""
+    assert _panel_preflight_error(make(panel="")) == ""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert _panel_preflight_error(make(panel_key_file="~/good")) == ""
+    # the climb's OTHER startup rejections are preflighted too: a typo'd lens
+    # spec (climb dies at argparse) and a relative key path (the climb runs
+    # from a flight dir, not the tick's cwd)
+    both_wrong = make(panel="verfy:hermes", panel_key_file=str(good))
+    err = _panel_preflight_error(both_wrong)
+    assert "unknown kind" in err  # kind is checked before backend
+    assert "claude backend" not in err
+    assert "only the claude backend" in _panel_preflight_error(
+        make(panel="verify:hermes", panel_key_file=str(good))
+    )
+    assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
+    # role separation: the panel key must not BE the author key
+    same = make(panel_key_file=str(good), key_file=str(good))
+    assert "author key" in _panel_preflight_error(same)
+    # ... and a RELATIVE author path fails too: the climb resolves it from a
+    # flight dir, so the comparison above could pass where the runtime collides
+    rel = make(panel_key_file=str(good), key_file="keys/author")
+    assert "author key path" in _panel_preflight_error(rel)
+    assert "relative" in _panel_preflight_error(rel)
+
+    # both lanes consult it BEFORE side effects: nothing claimed or submitted
+    bad = make(panel_key_file=str(tmp_path / "nope"))
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(" ".join(argv))
+        return CommandResult(0, "123\n", "")
+
+    contract = _self_contract()
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, bad, contract, NOW) is None
+
+    class IntakeGitHub:
+        def __init__(self) -> None:
+            self.comments: list[str] = []
+
+        def list_open_issues(self, repo):
+            return [
+                {
+                    "number": 5,
+                    "title": "improve tsp",
+                    "body": "",
+                    "user": {"login": "mengye"},
+                    "author_association": "OWNER",
+                    "labels": [],
+                }
+            ]
+
+        def list_comments(self, repo, number):
+            return []
+
+        def comment(self, repo, number, body):
+            self.comments.append(body)
+
+    gh = IntakeGitHub()
+    assert service_intake(tmp_path, gh, compute, bad, NOW, contract=contract) is None
+    assert submitted == [] and gh.comments == []
+    # positive control: the same issue IS claimed once the key is usable,
+    # so the bad-path assertions above cannot pass vacuously
+    ok = make(panel_key_file=str(good))
+    assert service_intake(tmp_path, gh, compute, ok, NOW, contract=contract) is not None
+    assert len(gh.comments) == 1 and len(submitted) == 1
+
+    # a failed submit RELEASES the claim (pick_issue skips claimed issues,
+    # so without the release the issue would be stranded forever)
+    from autoresearch.intake import RELEASE_MARKER
+
+    def failing_runner(argv, timeout_s):
+        return CommandResult(1, "", "sbatch: error")
+
+    gh2 = IntakeGitHub()
+    out = service_intake(
+        tmp_path, gh2, SlurmCompute(runner=failing_runner), ok, NOW, contract=contract
+    )
+    assert out is None
+    assert any(RELEASE_MARKER in c for c in gh2.comments)
+
+    # the walltime allowance exists exactly when the panel does — and the
+    # panel-augmented total clamps at the 6h partition cap (sbatch would
+    # REJECT a longer request outright, grounding every climb)
+    from autoresearch.limits import effective_limits
+    from autoresearch.tick import MAX_CLIMB_JOB_MINUTES, _panel_job_minutes
+
+    limits = effective_limits()  # defaults: 120-min job, 90-min session
+    assert _panel_job_minutes(make(panel=""), limits) == 0
+    wanted = limits.climb_job_minutes + _panel_job_minutes(make(), limits)
+    # the default path NEEDS the clamp (spec.max_job_minutes defaults to
+    # MAX_CLIMB_JOB_MINUTES = cpu_short's 6h MaxTime)
+    assert wanted > MAX_CLIMB_JOB_MINUTES
+    submitted2: list[str] = []
+
+    def runner2(argv, timeout_s):
+        submitted2.append(" ".join(argv))
+        return CommandResult(0, "77\n", "")
+
+    # a low cap must reach BOTH consumers at every site: the Slurm request
+    # AND the --job-minutes the self-deadline arms against (a deadline armed
+    # past the real walltime is a kill before a clean ending)
+    low = make(panel_key_file=str(good), max_job_minutes=60)
+    submitted_low: list[str] = []
+
+    def runner_low(argv, timeout_s):
+        submitted_low.append(" ".join(argv))
+        return CommandResult(0, "88\n", "")
+
+    from autoresearch.tick import clear_pending
+
+    clear_pending(tmp_path, "org/pilot")
+    out_low = service_self_initiated(
+        tmp_path, SlurmCompute(runner=runner_low), low, contract, NOW + 4000
+    )
+    assert out_low is not None
+    assert "--time=60" in submitted_low[0] and "--job-minutes 60" in submitted_low[0]
+    # the session shrinks to fit the capped job (same rule as the contract
+    # clamp): 60-min job - 20-min overhead, never the full 90-min default
+    assert "--session-minutes 40" in submitted_low[0]
+    clear_pending(tmp_path, "org/pilot")
+
+    ok2 = make(panel_key_file=str(good))
+    from autoresearch.contract import load_contract
+
+    default_contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    out2 = service_self_initiated(
+        tmp_path, SlurmCompute(runner=runner2), ok2, default_contract, NOW + 9000
+    )
+    assert out2 is not None
+    assert f"--time={MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
+    assert f"--job-minutes {MAX_CLIMB_JOB_MINUTES}" in submitted2[0]

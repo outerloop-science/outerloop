@@ -69,6 +69,12 @@ from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
 
+# Where a climb job reads its keys unless the CLI flags say otherwise. The
+# tick preflights the panel key (and compares it against the author key —
+# role separation) before claiming/submitting.
+PANEL_KEY_DEFAULT = "~/.config/autoresearch/verifier_key"
+HARNESS_KEY_DEFAULT = "~/.config/autoresearch/harness_key"
+
 
 class NoiseFloored(RuntimeError):
     """The candidate beat the recorded best, but by less than the
@@ -1030,13 +1036,14 @@ def main() -> int:
         default="",
         help=(
             "pre-PR verification lenses, comma-separated kind[:backend[:model]] "
-            "entries (e.g. 'verify,review' or 'verify:claude,review:hermes:MODEL'); "
-            "empty disables the panel"
+            "entries (e.g. 'verify,review' or 'verify:claude:MODEL'); only the "
+            "claude backend is contained on this host so far; empty disables "
+            "the panel"
         ),
     )
     parser.add_argument(
         "--panel-key-file",
-        default=os.path.expanduser("~/.config/autoresearch/verifier_key"),
+        default=PANEL_KEY_DEFAULT,
         help="key file for panel judge sessions (the verifier's own key, never the author's)",
     )
     parser.add_argument("--panel-revisions", type=int, default=1)
@@ -1053,9 +1060,7 @@ def main() -> int:
         help="how long before the walltime the self-deadline fires (floor 60)",
     )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
-    parser.add_argument(
-        "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
-    )
+    parser.add_argument("--key-file", default=os.path.expanduser(HARNESS_KEY_DEFAULT))
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(
         "--min-free-gb",
@@ -1072,7 +1077,7 @@ def main() -> int:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
     # same 0600 discipline as the PAT: this key spends real money
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
@@ -1116,27 +1121,19 @@ def main() -> int:
     panel_lenses: tuple[PanelLens, ...] = ()
     panel_key = ""
     if args.panel.strip():
-        from autoresearch.panel import LENS_KINDS
+        from autoresearch.panel import parse_lenses
         from autoresearch.review_agent import build_reviewer_harness
 
-        panel_key = FileTokenProvider(Path(args.panel_key_file)).token()
+        panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+        try:
+            # grammar + claude-only rule live in parse_lenses (one owner,
+            # shared with the tick's pre-claim preflight): a typo'd kind or
+            # backend must never silently disable a gate
+            entries = parse_lenses(args.panel)
+        except ValueError as exc:
+            parser.error(str(exc))
         lenses = []
-        for entry in args.panel.split(","):
-            kind, _, rest = entry.strip().partition(":")
-            backend, _, model = rest.partition(":")
-            backend = backend or "claude"
-            if kind not in LENS_KINDS:
-                # a typo'd kind must never silently disable a gate
-                parser.error(f"--panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
-            if backend != "claude":
-                # non-claude judges execute or read broadly and would run
-                # UNCONTAINED on the orchestrator host, next to key files.
-                # The seam supports them; enable when their containment on
-                # this host lands (claude runs inside args.image).
-                parser.error(
-                    f"--panel entry {entry!r}: only the claude backend is "
-                    f"contained on the orchestrator host so far"
-                )
+        for kind, backend, model in entries:
             hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
             try:
                 judge = build_reviewer_harness(
@@ -1149,7 +1146,7 @@ def main() -> int:
                     provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
                 )
             except ValueError as exc:
-                parser.error(f"--panel entry {entry!r}: {exc}")
+                parser.error(f"panel entry {kind}:{backend}: {exc}")
             lenses.append(PanelLens(kind=kind, harness=judge))
         panel_lenses = tuple(lenses)
     try:

@@ -118,6 +118,19 @@ class TickReport:
     launch_blocked: bool = False  # True when the preflight turned launch lanes off
 
 
+# The submitted walltime must never exceed the job partition's MaxTime —
+# sbatch REJECTS a longer request outright, which would ground every climb.
+# The DEFAULT matches cpu_short (6 h); an operator moving work jobs to a
+# longer partition (AUTORESEARCH_JOB_PARTITION=cpu48) raises the cap with
+# AUTORESEARCH_MAX_JOB_MINUTES. Code-side ceiling: the cap must stay under
+# STRANDED_IMPLEMENTING_S or the picker declares live runs stranded — jobs
+# longer than 10 h need that window made spec-aware first (named gap). The
+# self-deadline arms at the CLAMPED value, so a job that wanted more time
+# fails safe mid-panel instead of never starting.
+MAX_CLIMB_JOB_MINUTES = 6 * 60
+MAX_JOB_MINUTES_CEILING = 10 * 60
+
+
 @dataclass(frozen=True)
 class FollowupSpec:
     """How the tick launches follow-up jobs for in-review runs."""
@@ -136,6 +149,25 @@ class FollowupSpec:
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
     steward_key_file: str = ""
+    # Pre-PR verification panel for climb jobs (docs/design/orchestrator-verify.md).
+    # DEFAULT ON — the flip is code, the off-switch is AUTORESEARCH_PANEL="".
+    # The climb CLI fails LOUDLY on a bad panel config (a configured gate must
+    # never silently vanish); the tick preflights the same rules — lens
+    # grammar AND key file — before claiming or submitting so nothing is
+    # stranded. The panel's walltime is the orchestrator's own overhead: the
+    # tick ADDS a panel allowance to the contract-clamped job budget
+    # (_panel_job_minutes) rather than eating the author's time; a residual
+    # overrun still fails safe through the self-deadline.
+    panel: str = "verify,review"
+    panel_key_file: str = ""  # "" = the climb CLI's default verifier-key path
+    # Where submitted WORK jobs (climb/steward/followup) run; empty = same as
+    # `partition`. The tick chain itself always stays on `partition` — ticks
+    # are minutes, work jobs can be hours, and Slurm prices walltime into
+    # scheduling priority, so the two deserve independent placement.
+    job_partition: str = ""
+    # Partition MaxTime for work jobs — the panel-augmented walltime clamps
+    # here (see MAX_CLIMB_JOB_MINUTES). Raise together with job_partition.
+    max_job_minutes: int = MAX_CLIMB_JOB_MINUTES
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -295,7 +327,7 @@ def contract_alarm(
                 return
             with contextlib.suppress(Exception):
                 github.comment(
-                    target, open_alarm, "The contract loads again; launch lanes resume this tick."
+                    target, open_alarm, "The tick loads again cleanly; launch lanes resume."
                 )
         if state:
             with contextlib.suppress(OSError):
@@ -307,7 +339,7 @@ def contract_alarm(
     # holds) and fenced with a run longer than any backtick run inside —
     # transport errors can echo request material, loader errors can echo
     # contract content, and both are untrusted for a public issue body
-    safe_error = redact(error, _client_secrets(github))[:600]
+    safe_error = redact(error, _client_secrets(github)).replace(str(Path.home()), "~")[:600]
     # A recorded issue a human closed by hand stays closed: closing the
     # alarm is the maintainer's "I know" — re-opening or re-creating it
     # every threshold would be alarm spam, and recovery still clears state.
@@ -316,14 +348,14 @@ def contract_alarm(
         try:
             number = _find_alarm_issue(github, target, bot_login) or github.create_issue(
                 target,
-                "autoresearch: contract failed to load — launch lanes are paused",
-                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator has been unable to "
-                f"load `.autoresearch.yaml` for {count} consecutive ticks; "
-                f"intake, steward, and self-initiated lanes sit out until it "
-                f"loads. The error below says whether the contract itself was "
-                f"rejected or the fetch is failing.\n\n"
+                "autoresearch: launch lanes are paused",
+                f"{CONTRACT_ALARM_MARKER}\nThe orchestrator's launch lanes "
+                f"(intake, steward, self-initiated) have sat out {count} "
+                f"consecutive ticks. The error below names the cause — a "
+                f"contract that failed to load, or a panel config the climb "
+                f"would reject.\n\n"
                 f"{_fence(safe_error)}\n{safe_error}\n{_fence(safe_error)}\n\n"
-                f"This issue closes itself when the contract loads again.",
+                f"This issue closes itself when a tick passes cleanly.",
             )
             if number:
                 state["issue"] = number
@@ -468,7 +500,9 @@ def service_in_review(
                 "--bot-login",
                 spec.bot_login,
                 "--job-minutes",
-                str(spec.time_minutes),
+                # the SAME clamped value Slurm gets: a deadline armed past
+                # the real walltime is a Slurm kill before a clean ending
+                str(min(spec.time_minutes, spec.max_job_minutes)),
                 "--max-turns",
                 str(spec.max_turns),
             ]
@@ -481,8 +515,8 @@ def service_in_review(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
-                    partition=spec.partition,
-                    time_minutes=spec.time_minutes,
+                    partition=spec.job_partition or spec.partition,
+                    time_minutes=min(spec.time_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"followup-{record.run_id}"[:60], now, argv),
                     cpus=4,
                     mem="8G",
@@ -917,6 +951,13 @@ def tick(
             except Exception as exc:
                 log.warning("contract fetch failed for %s: %s", followup_spec.target, exc)
                 contract_error = f"{type(exc).__name__}: {exc}"
+            if contract_error is None:
+                # a bad panel config idles the same launch lanes a bad
+                # contract does — same silent-idle class ("this cost 36
+                # hours once"), so it rides the same alarm
+                panel_error = _panel_preflight_error(followup_spec)
+                if panel_error:
+                    contract_error = f"panel preflight: {panel_error}"
             try:
                 contract_alarm(
                     root,
@@ -1010,10 +1051,14 @@ def replace_report(
 
 MAX_ACTIVE_RUNS_PER_TARGET = 1
 SELF_INITIATED_COOLDOWN_S = 6 * 3600
-# An implementing run untouched for this long is a crashed climb job (their
-# walltime is 90 min); it must not block the lane forever. Its cooldown
-# entry still applies, so the crashed benchmark isn't immediately retried.
-STRANDED_IMPLEMENTING_S = 6 * 3600
+# An implementing run untouched for this long is a crashed climb job; it must
+# not block the lane forever, but the window must exceed the LONGEST honest
+# job — the 120-min contract ceiling plus the panel allowance the tick adds
+# (~4.5 h at the defaults) plus queue-start slack — or the picker declares a
+# live run stranded and starts a second one on the same target, breaking the
+# one-active-run serialization. Its cooldown entry still applies, so a
+# crashed benchmark isn't immediately retried.
+STRANDED_IMPLEMENTING_S = 12 * 3600
 # A pending marker older than this is dead even if squeue can't be read.
 PENDING_TTL_S = 4 * 3600
 
@@ -1089,17 +1134,129 @@ def clear_pending(root: Path, target: str) -> None:
     _pending_path(root, target).unlink(missing_ok=True)
 
 
-def _climb_limit_argv(limits: EffectiveLimits) -> list[str]:
-    """Climb-CLI flags carrying the tick-resolved limits: the job's own
-    walltime rides along so the climb can arm its self-deadline (Slurm
-    delivers no signals to our processes on Torch — measured 2026-08-08)."""
+def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
+    """Panel args for a climb job; empty when the operator disabled the panel."""
+    if not spec.panel.strip():
+        return []
+    argv = ["--panel", spec.panel]
+    if spec.panel_key_file:
+        argv += ["--panel-key-file", spec.panel_key_file]
+    return argv
+
+
+def _panel_preflight_error(spec: FollowupSpec) -> str:
+    """Why the climb would die at startup on this panel config ("" when it
+    won't): the lens spec, then the key file — each checked with the climb's
+    OWN rules (parse_lenses for the grammar and claude-only backend;
+    FileTokenProvider for exists/mode-600/non-empty), so preflight and climb
+    cannot disagree.
+
+    Preflighted BEFORE claiming or submitting: the climb CLI fails loudly,
+    but by then an intake issue is already claimed — and pick_issue never
+    reclaims — so the strand must be caught on the tick host, which shares
+    the home filesystem the climb will read."""
+    if not spec.panel.strip():
+        return ""
+    try:
+        from autoresearch.climb import HARNESS_KEY_DEFAULT, PANEL_KEY_DEFAULT
+        from autoresearch.github import FileTokenProvider
+        from autoresearch.panel import parse_lenses
+
+        try:
+            parse_lenses(spec.panel)
+        except ValueError as exc:
+            return str(exc)
+        path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+        if not path.is_absolute():
+            # the climb runs from a flight directory, not the tick's cwd — a
+            # relative path that resolves here could still miss there
+            return f"panel key path {path} is relative; only absolute paths fly"
+        author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
+        if not author.is_absolute():
+            # same rule as the panel key: the climb resolves paths from a
+            # flight directory, so a relative author path both misconfigures
+            # the author AND defeats the role-separation comparison below
+            return f"author key path {author} is relative; only absolute paths fly"
+        if path.resolve() == author.resolve():
+            return (
+                f"panel key file {path} is the author key file "
+                "(role separation: the verifier needs its own key)"
+            )
+        FileTokenProvider(path).token()
+        return ""
+    except Exception as exc:
+        # never raises: an unexpected failure (partial deploy, ELOOP, unset
+        # HOME) must fail closed WITH the alarm, not abort the tick that
+        # would have written it
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
+    """The submitted climb walltime: contract budget + panel allowance,
+    clamped at the partition cap. Warns when the cap cuts below the session
+    budget — the self-deadline would then fire before the author's own
+    clock, and that must be a visible operator choice, never a silent
+    surprise."""
+    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+
+    wanted = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
+    job = min(wanted, spec.max_job_minutes)
+    if job < wanted:
+        log.info(
+            "climb job clamped to %d min by the partition cap (worst case "
+            "wanted %d); slow panel rounds fail safe via the self-deadline",
+            job,
+            wanted,
+        )
+    if job < limits.session_minutes + CLIMB_OVERHEAD_MINUTES:
+        log.warning(
+            "work-job cap %d min leaves no runway around the %d-min session "
+            "(the orchestrator needs ~%d min); sessions or endings will be "
+            "cut short by the self-deadline",
+            job,
+            limits.session_minutes,
+            CLIMB_OVERHEAD_MINUTES,
+        )
+    return job
+
+
+def _panel_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
+    """Extra walltime the panel needs, ADDED to the contract-clamped job
+    budget: the contract's knobs cap the AUTHOR's spend and their ceilings
+    deliberately cannot raise ours (limits.py), so the panel — the
+    orchestrator's own gate, flipped on by the tick — brings its own time.
+    Worst case: three sequential reads of every lens (initial, post-revision,
+    merged-tree) on the judge budget, plus one revision wake on the session
+    budget. The revision's re-measure rides the margin the self-deadline
+    already fails safe on."""
+    lenses = [entry for entry in spec.panel.split(",") if entry.strip()]
+    if not lenses:
+        return 0
+    from autoresearch.roles import reviewer_spec, verifier_spec
+
+    judge_minutes = max(reviewer_spec().budget.walltime_s, verifier_spec().budget.walltime_s) // 60
+    return 3 * len(lenses) * judge_minutes + limits.session_minutes
+
+
+def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
+    """Climb-CLI flags carrying the tick-resolved limits: the job's ACTUAL
+    walltime rides along (contract budget + any panel allowance, clamped at
+    the partition cap — exactly what the JobSpec gets) so the climb arms its
+    self-deadline against the real clock (Slurm delivers no signals to our
+    processes on Torch — measured 2026-08-08). The session shrinks to fit a
+    CAPPED job with the same rule limits.effective_limits applies to
+    contract values — better a short session that ends cleanly than a full
+    one the self-deadline kills mid-flight."""
+    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
+
+    session = min(limits.session_minutes, job_minutes - CLIMB_OVERHEAD_MINUTES)
     return [
         "--max-turns",
         str(limits.session_max_turns),
         "--session-minutes",
-        str(limits.session_minutes),
+        str(max(SESSION_MINUTES_FLOOR, session)),
         "--job-minutes",
-        str(limits.climb_job_minutes),
+        str(job_minutes),
     ]
 
 
@@ -1136,10 +1293,14 @@ def service_self_initiated(
             expired = now - submitted_at > PENDING_TTL_S
             if landed:
                 clear_pending(root, spec.target)  # the run record carries it now
-            elif (
-                not expired and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
+            elif (alive := _holder_alive(compute, str(pending.get("job_id", "")))) is True or (
+                not expired and alive is not False
             ):
-                return None  # climb queued or starting; its record isn't written yet
+                # climb queued or starting; its record isn't written yet. A
+                # provably-alive job waits regardless of the marker's TTL —
+                # queue wait can exceed it — the TTL only breaks ties when
+                # Slurm can't say (a dup submit is worse than a slow retry).
+                return None
             else:
                 # Died before writing a record. Keep its cooldown so a
                 # crash-at-startup loop can't resubmit every tick.
@@ -1148,8 +1309,18 @@ def service_self_initiated(
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
             return None
+        panel_error = _panel_preflight_error(spec)
+        if panel_error:
+            log.error(
+                "climb on %s not launched: panel misconfigured — %s "
+                "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                benchmark,
+                panel_error,
+            )
+            return None
         if dry_run:
             return (benchmark, "dry-run")
+        job_minutes = _climb_job_minutes(spec, limits)
         argv = [
             "uv",
             "run",
@@ -1164,7 +1335,8 @@ def service_self_initiated(
             str(spec.run_root),
             "--image",
             spec.image,
-            *_climb_limit_argv(limits),
+            *_climb_limit_argv(limits, job_minutes),
+            *_climb_panel_argv(spec),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1174,8 +1346,8 @@ def service_self_initiated(
             JobSpec(
                 job_name=f"climb-{benchmark}"[:60],
                 account=spec.account,
-                partition=spec.partition,
-                time_minutes=limits.climb_job_minutes,
+                partition=spec.job_partition or spec.partition,
+                time_minutes=job_minutes,
                 command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
                 cpus=4,
                 mem="8G",
@@ -1236,11 +1408,10 @@ def service_steward(
             submitted_at = float(pending.get("submitted_at", 0.0))
             landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
             expired = now - submitted_at > PENDING_TTL_S
-            if (
-                not landed
-                and not expired
-                and _holder_alive(compute, str(pending.get("job_id", ""))) is not False
-            ):
+            alive = _holder_alive(compute, str(pending.get("job_id", "")))
+            # liveness first, TTL only breaks unknown ties — same rule as
+            # the self-initiated lane (queue wait can outlive the TTL)
+            if not landed and (alive is True or (not expired and alive is not False)):
                 return None
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
@@ -1278,7 +1449,9 @@ def service_steward(
             work_order_b64,
             "--key-file",
             spec.steward_key_file,
-            *_climb_limit_argv(limits),
+            # the SAME clamped walltime the JobSpec requests, so the
+            # self-deadline arms against the real clock
+            *_climb_limit_argv(limits, min(limits.climb_job_minutes, spec.max_job_minutes)),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1287,8 +1460,8 @@ def service_steward(
                 JobSpec(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
-                    partition=spec.partition,
-                    time_minutes=limits.climb_job_minutes,
+                    partition=spec.job_partition or spec.partition,
+                    time_minutes=min(limits.climb_job_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
@@ -1350,11 +1523,21 @@ def service_intake(
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
+        panel_error = _panel_preflight_error(spec)
+        if panel_error:
+            log.error(
+                "issue #%d not claimed: panel misconfigured — %s "
+                "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                task.number,
+                panel_error,
+            )
+            return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
+        job_minutes = _climb_job_minutes(spec, limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
-        from autoresearch.intake import CLAIM_MARKER
+        from autoresearch.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
 
         github.comment(
             target,
@@ -1383,23 +1566,39 @@ def service_intake(
             str(task.number),
             "--hypothesis-b64",
             hypothesis_b64,
-            *_climb_limit_argv(limits),
+            *_climb_limit_argv(limits, job_minutes),
+            *_climb_panel_argv(spec),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
         if spec.key_file:
             argv += ["--key-file", spec.key_file]
-        job_id = compute.submit(
-            JobSpec(
-                job_name=f"climb-issue-{task.number}",
-                account=spec.account,
-                partition=spec.partition,
-                time_minutes=limits.climb_job_minutes,
-                command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
-                cpus=4,
-                mem="8G",
+        try:
+            job_id = compute.submit(
+                JobSpec(
+                    job_name=f"climb-issue-{task.number}",
+                    account=spec.account,
+                    partition=spec.job_partition or spec.partition,
+                    time_minutes=job_minutes,
+                    command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
+                    cpus=4,
+                    mem="8G",
+                )
             )
-        )
+        except Exception:
+            # the claim is already posted and pick_issue skips claimed
+            # issues, so a failed submit must release it (same pattern as
+            # the steward lane) or the issue is stranded forever
+            with contextlib.suppress(Exception):
+                github.comment(
+                    target,
+                    task.number,
+                    f"{RELEASE_MARKER}\nSubmission failed; claim released — "
+                    f"a later tick will retry this issue (intake gives up "
+                    f"after {MAX_INTAKE_ATTEMPTS} claim attempts and leaves "
+                    f"it for a human).",
+                )
+            raise
         log.info("issue #%s claimed for climb job %s", task.number, job_id)
         return (f"issue-{task.number}", job_id)
     except Exception as exc:  # intake must not break the tick
@@ -1416,6 +1615,83 @@ class LoggingDispatcher:
     def dispatch(self, record: RunRecord, reason: str) -> str:
         log.info("WOULD WAKE %s (%s) — session dispatch lands in phase 5", record.run_id, reason)
         return ""
+
+
+def _max_job_minutes_from_env() -> int:
+    """AUTORESEARCH_MAX_JOB_MINUTES, clamped into what the code can honor:
+    at least the climb-job floor (an operator on a short-MaxTime partition
+    must be able to LOWER the cap below cpu_short's 6h, or every submit is
+    rejected), at most the ceiling the stranded window allows. A clamped
+    value logs — a silently-changed cap would read as the partition
+    rejecting jobs for no reason."""
+    from autoresearch.limits import CLIMB_JOB_MINUTES_FLOOR
+
+    raw = os.environ.get("AUTORESEARCH_MAX_JOB_MINUTES", "").strip()
+    if not raw:
+        return MAX_CLIMB_JOB_MINUTES
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
+        return MAX_CLIMB_JOB_MINUTES
+    clamped = max(CLIMB_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
+    if clamped != value:
+        log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
+    return clamped
+
+
+def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
+    """GitHub client + FollowupSpec from the chain environment, or Nones when
+    the environment is incomplete (the tick then runs without in-review
+    servicing, and logs what is absent)."""
+    pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
+    account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
+    partition = os.environ.get("AUTORESEARCH_PARTITION", "")
+    image = os.environ.get(
+        "AUTORESEARCH_IMAGE",
+        os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
+    )
+    home = os.environ.get("AUTORESEARCH_HOME", "")
+    if pat_file and account and partition and home and Path(image).is_file():
+        from autoresearch.github import FileTokenProvider, GitHubClient
+
+        try:
+            github = GitHubClient(auth=FileTokenProvider(Path(pat_file)))
+            followup_spec = FollowupSpec(
+                account=account,
+                partition=partition,
+                run_root=root,
+                image=image,
+                home=Path(home),
+                pat_file=pat_file,
+                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
+                target=os.environ.get(
+                    "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
+                ),
+                steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
+                panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
+                panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
+                job_partition=os.environ.get("AUTORESEARCH_JOB_PARTITION", ""),
+                max_job_minutes=_max_job_minutes_from_env(),
+            )
+            return github, followup_spec
+        except Exception as exc:
+            log.warning("in-review servicing disabled: %s", exc)
+            return None, None
+    absent = [
+        name
+        for name, value in [
+            ("AUTORESEARCH_PAT_FILE", pat_file),
+            ("AUTORESEARCH_ACCOUNT", account),
+            ("AUTORESEARCH_PARTITION", partition),
+            ("AUTORESEARCH_HOME", home),
+        ]
+        if not value
+    ]
+    if not Path(image).is_file():
+        absent.append(f"image:{image}")
+    log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
+    return None, None
 
 
 def main() -> int:
@@ -1439,52 +1715,7 @@ def main() -> int:
     # The waiting-run sweep stays dry until the experiment dispatcher lands;
     # in-review servicing is LIVE when credentials + image are available in
     # the chain environment.
-    import os
-
-    github = None
-    followup_spec = None
-    pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
-    account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
-    partition = os.environ.get("AUTORESEARCH_PARTITION", "")
-    image = os.environ.get(
-        "AUTORESEARCH_IMAGE",
-        os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
-    )
-    home = os.environ.get("AUTORESEARCH_HOME", "")
-    if pat_file and account and partition and home and Path(image).is_file():
-        from autoresearch.github import FileTokenProvider, GitHubClient
-
-        try:
-            github = GitHubClient(auth=FileTokenProvider(Path(pat_file)))
-            followup_spec = FollowupSpec(
-                account=account,
-                partition=partition,
-                run_root=args.root,
-                image=image,
-                home=Path(home),
-                pat_file=pat_file,
-                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
-                target=os.environ.get(
-                    "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
-                ),
-                steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
-            )
-        except Exception as exc:
-            log.warning("in-review servicing disabled: %s", exc)
-    else:
-        absent = [
-            name
-            for name, value in [
-                ("AUTORESEARCH_PAT_FILE", pat_file),
-                ("AUTORESEARCH_ACCOUNT", account),
-                ("AUTORESEARCH_PARTITION", partition),
-                ("AUTORESEARCH_HOME", home),
-            ]
-            if not value
-        ]
-        if not Path(image).is_file():
-            absent.append(f"image:{image}")
-        log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
+    github, followup_spec = _followup_spec_from_env(args.root)
 
     report = tick(
         args.root,

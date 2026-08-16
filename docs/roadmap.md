@@ -185,8 +185,11 @@ open-ended sweep space.
       inside the climb job after measurement — a PR becomes the OUTPUT of
       verification; blocking findings wake the author (round-capped, fully
       re-measured and re-gated); capped-out blocking opens a DRAFT PR and
-      never arms auto-merge; the transcript rides in the PR body. DEPLOY:
-      the tick's climb args gain --panel + the verifier key file; GitHub-side
+      never arms auto-merge; the transcript rides in the PR body. DEPLOYED
+      in code: the tick passes --panel verify,review to every climb job by
+      default (off-switch AUTORESEARCH_PANEL=""). Cluster prerequisite: the
+      verifier key file at ~/.config/autoresearch/verifier_key on the tick
+      account — a missing key fails climbs LOUDLY by design. GitHub-side
       verify.yml thins per target after the pilot runs clean
 - [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
