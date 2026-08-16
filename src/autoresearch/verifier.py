@@ -171,10 +171,10 @@ sentence: the evidence and why it undermines the claim. """
     + """
 
 Set `blocking` true only for a confirmed gaming or integrity defect with
-a concrete way the number misleads. A claim contradicted by the PR's OWN
-evidence is an integrity defect — a mechanism story the report's own
-numbers refute, or an improvement that a trivial baseline appearing in the
-report's own tables beats — and grades `blocking` true even when the
+a concrete way the number misleads. A CONFIRMED contradiction between the
+claim and the PR's OWN evidence is such a defect — a mechanism story the
+report's own numbers refute, or an improvement that a trivial baseline in
+the report's own tables beats — and grades `blocking` true even when the
 measured delta itself is real. Suspicions, measurement notes, and
 low-confidence reads are advisory: `blocking` false.
 
