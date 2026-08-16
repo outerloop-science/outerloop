@@ -88,6 +88,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The verify lens's severity rubric now states that a claim contradicted by
+  the PR's own evidence is an integrity defect and grades blocking, even
+  when the measured delta is real — from the first live panel run, where
+  convergent findings of exactly that shape were graded advisory and the PR
+  shipped ready instead of draft.
 - The tick now flips the pre-PR panel ON for every climb job it submits
   (`--panel verify,review` at both submission sites). `AUTORESEARCH_PANEL=""`
   is the operator off-switch; `AUTORESEARCH_PANEL_KEY_FILE` overrides the
