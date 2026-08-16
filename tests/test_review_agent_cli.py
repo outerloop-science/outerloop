@@ -143,3 +143,162 @@ def test_unknown_backend_in_emit_mode_writes_a_stub(monkeypatch: Any, tmp_path: 
     envelope = json.loads((tmp_path / "findings.json").read_text())
     assert envelope["kind"] == "skip-stub"
     assert "unknown REVIEW_BACKEND" in envelope["detail"]
+
+
+def test_hermes_openai_provider_reads_the_openai_key(monkeypatch: Any, tmp_path: Path) -> None:
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "openai",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENAI_REVIEWER_KEY": "sk-openai-test",
+            "REVIEW_MODEL": "gpt-5.6-terra",  # openai-direct requires a native id
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls["build_key"] == "sk-openai-test"
+    assert calls["build_kwargs"]["provider"] == "openai"
+
+
+def test_unknown_hermes_provider_in_emit_mode_writes_a_stub(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # the provider input is free-form like the backend input: a typo must be
+    # a PR-visible stub, never a traceback
+    import json
+
+    env = _base_env()
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "opnai",
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "unknown REVIEW_HERMES_PROVIDER" in envelope["detail"]
+
+
+def test_hermes_openai_without_model_writes_a_stub(monkeypatch: Any, tmp_path: Path) -> None:
+    # hermes's default model id is OpenRouter-shaped; api.openai.com cannot
+    # serve it, so an unset model must be a PR-visible stub, not a dead session
+    import json
+
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "openai",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENAI_REVIEWER_KEY": "sk-openai-test",
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "provider-native REVIEW_MODEL" in envelope["detail"]
+    # an OpenRouter-shaped id is just as unservable as an empty one
+    env["REVIEW_MODEL"] = "openai/gpt-5.6-terra"
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+
+
+def test_fail_closed_skips_emit_stubs(monkeypatch: Any, tmp_path: Path) -> None:
+    # every fail-closed path leaves an envelope in emit mode: the post job
+    # requires the artifact, so a silent return would fail it for the wrong
+    # reason (and a misconfigured standing reviewer must be PR-visible)
+    import json
+
+    for missing, fragment in [
+        ("REVIEW_BOT_LOGIN", "REVIEW_BOT_LOGIN is unset"),
+        ("REVIEW_CHECKOUT", "REVIEW_CHECKOUT is unset"),
+    ]:
+        env = _base_env()
+        del env[missing]
+        env["REVIEW_EMIT_FILE"] = str(tmp_path / f"{missing}.json")
+        calls = _patch(monkeypatch, env)
+        assert cli.main() == 0
+        assert "args" not in calls
+        envelope = json.loads((tmp_path / f"{missing}.json").read_text())
+        assert envelope["kind"] == "skip-stub"
+        assert fragment in envelope["detail"]
+
+
+def test_openrouter_native_shaped_model_writes_a_stub(monkeypatch: Any, tmp_path: Path) -> None:
+    # the mirror of the openai-direct gate: OpenRouter cannot resolve a
+    # provider-native id, so the session would burn its budget for nothing
+    import json
+
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENROUTER_API_KEY": "sk-or-test",
+            "REVIEW_MODEL": "gpt-5.6-terra",  # missing the openai/ prefix
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "OpenRouter-shaped" in envelope["detail"]
+
+
+def test_padded_provider_matches_github_expression_semantics(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # the workflow's key-injection expressions compare untrimmed input; the
+    # CLI must apply the same rule so the two layers cannot disagree — a
+    # padded value lands in the unknown-provider stub, never a wrong-key skip
+    import json
+
+    env = _base_env()
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": " openai ",
+            "REVIEW_EMIT_FILE": str(tmp_path / "findings.json"),
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert "args" not in calls
+    envelope = json.loads((tmp_path / "findings.json").read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "unknown REVIEW_HERMES_PROVIDER" in envelope["detail"]
+
+
+def test_explicitly_empty_hermes_provider_means_the_default(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # workflow env is always SET; empty must behave exactly like omitted
+    env = _base_env()
+    del env["ANTHROPIC_REVIEWER_KEY"]
+    env.update(
+        {
+            "REVIEW_BACKEND": "hermes",
+            "REVIEW_HERMES_PROVIDER": "",
+            "REVIEW_HERMES_REPO": str(tmp_path),
+            "OPENROUTER_API_KEY": "sk-or-test",
+        }
+    )
+    calls = _patch(monkeypatch, env)
+    assert cli.main() == 0
+    assert calls["build_key"] == "sk-or-test"
+    assert calls["build_kwargs"]["provider"] == "openrouter"

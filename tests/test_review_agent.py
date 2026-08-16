@@ -380,7 +380,9 @@ def test_emit_mode_outage_writes_skip_stub_marker(tmp_path: Path) -> None:
     assert "rate_limit_error" in envelope["detail"]
 
 
-def test_emit_mode_clean_skip_writes_no_file(tmp_path: Path) -> None:
+def test_emit_mode_clean_skip_writes_a_skip_clean_envelope(tmp_path: Path) -> None:
+    # even a clean skip leaves an envelope, so the post job can REQUIRE the
+    # artifact and a missing one always means a broken session
     client, harness = _Client(author="autoresearch-bot"), _Harness(_FINDINGS)
     out = tmp_path / "findings.json"
     label = run_agent_review(
@@ -393,7 +395,43 @@ def test_emit_mode_clean_skip_writes_no_file(tmp_path: Path) -> None:
         emit_path=out,
     )
     assert label is None
-    assert not out.exists()  # no artifact -> the post job no-ops
+    envelope = json.loads(out.read_text())
+    assert envelope["kind"] == "skip-clean"
+
+
+def test_emit_mode_errored_session_writes_a_stub(tmp_path: Path) -> None:
+    # NOT an outage/budget failure — e.g. invalid structured output. In the
+    # split topology this must still surface on the PR (observed live
+    # 2026-08-15: terra structured-output failures read as quiet clean days).
+    client = _Client()
+    harness = _Harness("", is_error=True, detail="invalid structured output: missing keys")
+    out = tmp_path / "findings.json"
+    label = run_agent_review(
+        client,  # type: ignore[arg-type]
+        "org/repo",
+        7,
+        harness,
+        _WORKSPACE,
+        bot_login="autoresearch-bot",
+        emit_path=out,
+    )
+    assert label is None
+    envelope = json.loads(out.read_text())
+    assert envelope["kind"] == "skip-stub"
+    assert "invalid structured output" in envelope["detail"]
+
+
+def test_post_from_file_skip_clean_posts_nothing(tmp_path: Path) -> None:
+    from autoresearch.review_post_cli import post_from_file
+
+    path = tmp_path / "findings.json"
+    path.write_text(
+        json.dumps({"repo": "org/repo", "number": 7, "kind": "skip-clean", "detail": "bot PR"})
+    )
+    client = _Client()
+    out = post_from_file(client, "org/repo", 7, "autoresearch-bot", path)  # type: ignore[arg-type]
+    assert out is None
+    assert client.reviews == [] and client.comments == []
 
 
 def _findings_envelope(tmp_path: Path, **overrides: Any) -> Path:
@@ -541,3 +579,23 @@ def test_skip_stub_names_its_opinion(tmp_path: Path) -> None:
     )
     (comment,) = client.comments
     assert "advisory review (second opinion — terra)" in comment
+
+
+def test_hermes_openai_direct_exports_the_openai_key_env(tmp_path: Path) -> None:
+    # openai-direct: same token rate, no OpenRouter platform fee; hermes reads
+    # the key from the env var its provider registry names
+    from autoresearch.harness import HermesHarness
+    from autoresearch.review_agent import build_reviewer_harness
+
+    h = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="openai")
+    assert isinstance(h, HermesHarness)
+    assert h.provider == "openai-api"  # hermes's canonical id; "openai" is a group
+    assert h.key_env == "OPENAI_API_KEY"
+    default = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="")
+    assert isinstance(default, HermesHarness)
+    assert default.provider == "openrouter"
+    assert default.key_env == "OPENROUTER_API_KEY"
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown hermes provider"):
+        build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="mystery")

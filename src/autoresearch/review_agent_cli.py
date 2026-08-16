@@ -23,6 +23,22 @@ from autoresearch.review_agent import (
 log = logging.getLogger(__name__)
 
 
+def _skip_stub(emit_env: str, repo: str, number: int, detail: str, reviewed_by: str) -> None:
+    """A fail-closed skip still leaves an envelope when emitting: the post job
+    REQUIRES an artifact, and a standing reviewer that cannot run must say so
+    on the PR rather than fail into silence."""
+    log.warning("%s; skipping review", detail)
+    if emit_env:
+        _emit(
+            Path(emit_env).resolve(),
+            repo,
+            number,
+            kind="skip-stub",
+            detail=detail,
+            reviewed_by=reviewed_by,
+        )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     # Fail closed on a missing/invalid PR reference too, so a misconfigured
@@ -33,32 +49,53 @@ def main() -> int:
         log.warning("PR_REPO/PR_NUMBER unset or invalid; skipping")
         return 0
     number = int(number_raw)
+    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
     # Fail closed: without the bot login we cannot honor "never review
     # bot-authored PRs", so we do not review at all.
     bot_login = os.environ.get("REVIEW_BOT_LOGIN", "").strip()
     if not bot_login:
-        log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
+        _skip_stub(emit_env, repo, number, "REVIEW_BOT_LOGIN is unset", "")
         return 0
     # Backend is a deployment choice, not baked in: pick the harness and its
     # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
-    backend = os.environ.get("REVIEW_BACKEND", "claude").strip().lower()
-    emit_env = os.environ.get("REVIEW_EMIT_FILE", "").strip()
+    # Free-form caller inputs are compared with EXACTLY GitHub's expression
+    # semantics — case-insensitive, never trimmed — so this CLI and the
+    # workflow's key-injection expressions can never disagree about a value:
+    # a padded input misses both layers and lands in the unknown-value stub.
+    # explicit-empty mirrors the workflow too: '' matches no key-injection
+    # expression there, so here it must land in the unknown-backend stub
+    # rather than silently meaning claude
+    backend = os.environ.get("REVIEW_BACKEND", "claude").lower()
+    # a model id is never compared against workflow expressions, so trimming
+    # is safe here — and the same trimmed value must reach gate and harness
+    review_model = os.environ.get("REVIEW_MODEL", "").strip()
+    # hermes's key SOURCE follows its provider: openai-direct uses the same
+    # org-registered OpenAI key as codex (no OpenRouter platform fee).
+    # Explicitly-empty input means the default, same as an omitted one.
+    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
         "codex": "OPENAI_REVIEWER_KEY",
-        "hermes": "OPENROUTER_API_KEY",
+        "hermes": {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_REVIEWER_KEY"}.get(
+            hermes_provider
+        ),
     }.get(backend)
     if key_var is None:
-        log.warning("unknown REVIEW_BACKEND %r; skipping review", backend)
+        # a typo in a caller's free-form backend/provider input must be a
+        # PR-visible stub, not a silent log line or a traceback
+        what = (
+            f"unknown REVIEW_HERMES_PROVIDER {hermes_provider!r}"
+            if backend == "hermes"
+            else f"unknown REVIEW_BACKEND {backend!r}"
+        )
+        log.warning("%s; skipping review", what)
         if emit_env:
-            # a typo in a caller's backend input must be a PR-visible stub,
-            # not a silent log line
             _emit(
                 Path(emit_env).resolve(),
                 repo,
                 number,
                 kind="skip-stub",
-                detail=f"unknown REVIEW_BACKEND {backend!r}",
+                detail=what,
                 reviewed_by=backend,
             )
         return 0
@@ -94,17 +131,60 @@ def main() -> int:
     if backend == "hermes":
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
         if not hermes_repo_env:
-            log.warning("REVIEW_HERMES_REPO is unset; skipping (hermes needs its pinned clone)")
+            _skip_stub(
+                emit_env,
+                repo,
+                number,
+                "REVIEW_HERMES_REPO is unset (hermes needs its pinned clone)",
+                backend,
+            )
             return 0
         hermes_repo = Path(hermes_repo_env).resolve()
-        provider = os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter").strip()
+        provider = hermes_provider
+        if provider == "openrouter" and review_model and "/" not in review_model:
+            # the mirror mistake: OpenRouter ids are provider/model-shaped, so
+            # a native id would burn a session on an unresolvable model
+            _skip_stub(
+                emit_env,
+                repo,
+                number,
+                "hermes+openrouter requires an OpenRouter-shaped REVIEW_MODEL "
+                "(openai/gpt-5.6-terra, with the provider prefix)",
+                backend,
+            )
+            return 0
+        if provider == "openai" and (not review_model or "/" in review_model):
+            # an empty model falls back to hermes's default id and a slash
+            # marks an OpenRouter-shaped one — api.openai.com serves neither,
+            # so the session would burn its budget on an unservable id
+            detail = (
+                "hermes+openai requires a provider-native REVIEW_MODEL "
+                "(gpt-5.6-terra, no openai/ prefix)"
+            )
+            log.warning("%s; skipping review", detail)
+            if emit_env:
+                _emit(
+                    Path(emit_env).resolve(),
+                    repo,
+                    number,
+                    kind="skip-stub",
+                    detail=detail,
+                    reviewed_by=backend,
+                )
+            return 0
     # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
     # agent reads it but never executes it (read-only tool set). Fail closed:
     # defaulting to cwd would silently review the wrong tree (the reviewer's
     # own repo) if the checkout step were misconfigured.
     checkout = os.environ.get("REVIEW_CHECKOUT", "").strip()
     if not checkout:
-        log.warning("REVIEW_CHECKOUT is unset; skipping (won't review the wrong tree)")
+        _skip_stub(
+            emit_env,
+            repo,
+            number,
+            "REVIEW_CHECKOUT is unset (won't review the wrong tree)",
+            backend,
+        )
         return 0
     workspace = Path(checkout).resolve()
     # The checkout is untrusted: rename instruction files (CLAUDE.md, .claude/
@@ -112,7 +192,13 @@ def main() -> int:
     # failure means an instruction file is still live — fail closed.
     renamed, failed = sanitize_checkout(workspace)
     if failed:
-        log.warning("checkout could not be fully sanitized (%d left); skipping", failed)
+        _skip_stub(
+            emit_env,
+            repo,
+            number,
+            f"checkout could not be fully sanitized ({failed} instruction files left)",
+            backend,
+        )
         return 0
     if renamed:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
@@ -122,7 +208,7 @@ def main() -> int:
         api_key,
         backend=backend,
         binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
-        model=os.environ.get("REVIEW_MODEL") or None,
+        model=review_model or None,
         hermes_repo=hermes_repo,
         provider=provider,
         sandbox_extra=sandbox_extra,

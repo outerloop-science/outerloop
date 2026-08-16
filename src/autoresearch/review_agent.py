@@ -10,6 +10,7 @@ the same rubric (via `build_agent_brief`), the same result policy
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -98,14 +99,28 @@ def build_reviewer_harness(
     if backend == "hermes":
         if hermes_repo is None:
             raise ValueError("hermes reviewer backend needs hermes_repo (the pinned clone)")
+        # "openai" maps to hermes's canonical openai-api provider (api-key
+        # auth against api.openai.com, key read from OPENAI_API_KEY; plain
+        # "openai" is a provider GROUP in hermes, not an id). openai-direct
+        # skips the OpenRouter platform fee at the same token rate, and the
+        # org's tax exemption applies. Model ids are provider-native:
+        # openai/gpt-5.6-terra on openrouter, gpt-5.6-terra on openai-api.
+        hermes_providers = {
+            "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
+            "openai": ("openai-api", "OPENAI_API_KEY"),
+        }
+        if (provider or "openrouter") not in hermes_providers:
+            raise ValueError(f"unknown hermes provider: {provider!r}")
+        seed, key_env = hermes_providers[provider or "openrouter"]
         # Defaults already encode the judge shape: file toolset only, terminal
         # and every other executing/egress toolset disabled. Read-only rests on
         # that config plus the ephemeral runner (see the docstring above).
         return HermesHarness(
             api_key=api_key,
+            key_env=key_env,
             repo_dir=hermes_repo,
-            provider=provider,
-            model=model or "",  # OpenRouter provider/model; empty -> hermes default
+            provider=seed,
+            model=model or "",
             max_turns=spec.budget.max_turns,
             timeout_s=spec.budget.walltime_s,
         )
@@ -223,11 +238,14 @@ def run_agent_review(
     produce a verdict. Advisory: never raises the expected failures, so it can
     never turn a target repo's CI red.
 
-    With `emit_path`, nothing is posted: the raw findings (or a skip-stub
-    marker) are written there for a separate posting step — the least-token
+    With `emit_path`, nothing is posted: the raw findings (or a skip
+    envelope) are written there for a separate posting step — the least-token
     split (docs/design/reviewer-infra.md). The session job runs with read-only
     permissions; the posting job holds the write token but runs no session.
-    A clean skip (bot PR, opt-out, empty diff) writes nothing.
+    EVERY outcome writes an envelope — findings, a PR-visible skip-stub
+    (missing key, errored session), or skip-clean (bot PR, opt-out; posts
+    nothing) — so the posting job can treat a missing artifact as a broken
+    session, loudly.
     """
     spec = spec or reviewer_spec()
     today = today or datetime.now(UTC).date().isoformat()
@@ -236,6 +254,11 @@ def run_agent_review(
         skip = skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping agent review of %s#%s: %s", repo, number, skip)
+            if emit_path is not None:
+                # even a clean skip leaves an envelope: the posting job can
+                # then REQUIRE an artifact, so "no artifact" always means a
+                # broken session, never an ambiguous quiet day
+                _emit(emit_path, repo, number, kind="skip-clean", detail=skip)
             return None
 
         role_result = run_role(spec, harness, build_agent_brief(pr, today), workspace)
@@ -246,20 +269,24 @@ def run_agent_review(
             # on the thread; other failures are logged, advisory-silent.
             detail = role_result.error or role_result.session.stop_reason
             log.warning("agent review produced no verdict on %s#%s: %s", repo, number, detail)
-            if outage(role_result.session) or budget_exhausted(role_result.session):
-                # `detail` is already api-key-redacted by the harness (it owns
-                # its own secret), so no secrets are passed here.
-                if emit_path is not None:
-                    _emit(
-                        emit_path,
-                        repo,
-                        number,
-                        kind="skip-stub",
-                        detail=detail,
-                        reviewed_by=backend_id(harness),
-                    )
-                else:
-                    post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
+            # `detail` is already api-key-redacted by the harness (it owns
+            # its own secret), so no secrets are passed here.
+            if emit_path is not None:
+                # EVERY errored session surfaces on the PR in the split
+                # topology: this job's log is not the record — the stub the
+                # post job publishes is. Observed live 2026-08-15: terra's
+                # structured-output failures posted nothing and two rounds
+                # read as quiet clean days.
+                _emit(
+                    emit_path,
+                    repo,
+                    number,
+                    kind="skip-stub",
+                    detail=detail,
+                    reviewed_by=backend_id(harness),
+                )
+            elif outage(role_result.session) or budget_exhausted(role_result.session):
+                post_skip_stub(client, repo, number, "advisory review", RuntimeError(detail))
             return None
 
         if emit_path is not None:
@@ -313,4 +340,17 @@ def run_agent_review(
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
         log.warning("agent review did not complete: %s: %s", type(exc).__name__, exc)
+        if emit_path is not None:
+            # the invariant holds here too: the workflow backstop would cover
+            # a missing file, but with a generic detail — the real failure is
+            # the one worth reading on the PR
+            with contextlib.suppress(Exception):
+                _emit(
+                    emit_path,
+                    repo,
+                    number,
+                    kind="skip-stub",
+                    detail=f"{type(exc).__name__}: {exc}",
+                    reviewed_by=backend_id(harness),
+                )
         return None

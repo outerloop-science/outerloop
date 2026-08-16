@@ -41,10 +41,21 @@ on:
         description: >-
           Model for the session. Empty uses the backend default
           (claude-opus-5 for claude; the backend's own default otherwise).
-          For hermes pass an OpenRouter id.
+          For hermes pass an OpenRouter id — except with
+          hermes_provider: openai, which REQUIRES the provider-native id
+          (gpt-5.6-terra, no openai/ prefix).
         type: string
         required: false
         default: ''
+      hermes_provider:
+        description: >-
+          Credential provider for the hermes backend: openrouter (default) or
+          openai — openai-direct uses OPENAI_REVIEWER_KEY, avoids the
+          OpenRouter platform fee, and takes provider-NATIVE model ids
+          (gpt-5.6-terra, no openai/ prefix).
+        type: string
+        required: false
+        default: openrouter
       opinion_label:
         description: >-
           Label shown on the posted round (who this opinion is). Leave empty
@@ -78,10 +89,13 @@ on:
         description: Anthropic key for the claude backend.
         required: false
       openrouter_api_key:
-        description: OpenRouter key for the hermes backend.
+        description: OpenRouter key for the hermes backend (default provider).
         required: false
       openai_reviewer_key:
-        description: OpenAI key for the codex backend.
+        description: >-
+          OpenAI key, shared by the codex backend and hermes with
+          hermes_provider: openai — one org key, two backends; only the
+          selected session's tree ever sees it.
         required: false
       checkout_ssh_key:
         description: >-
@@ -176,15 +190,18 @@ jobs:
           # ONLY the chosen backend's key enters the session process tree: a
           # shell/file-reading backend must not be able to lift a sibling
           # backend's key via /proc (terra's blocking finding, #94 round 1)
+          # ... and for hermes the key follows the PROVIDER: an openai-direct
+          # session gets only the OpenAI key, an openrouter session only the
+          # OpenRouter key.
           ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.anthropic_reviewer_key || '' }}
-          OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && secrets.openrouter_api_key || '' }}
-          OPENAI_REVIEWER_KEY: ${{ inputs.backend == 'codex' && secrets.openai_reviewer_key || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.openrouter_api_key || '' }}
+          OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.openai_reviewer_key || '' }}
           # codex's default bwrap can't init on GitHub-hosted; opt into
           # Landlock (read-only, no egress). Harmless for other backends.
           REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
           # hermes reads its pinned clone from here; provider seeds ~/.hermes.
           REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
-          REVIEW_HERMES_PROVIDER: openrouter
+          REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
           # read-only job token: PR metadata/diff fetch only
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
@@ -192,6 +209,24 @@ jobs:
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_agent_cli
+      - name: Backstop envelope
+        # Runs only when the CLI exited 0 (default step semantics): a
+        # reviewer_ref pinned BEFORE envelope-on-every-outcome writes nothing
+        # on a clean skip, which would hard-fail the post job's required
+        # download on every bot PR. A crashed session exits nonzero, skips
+        # this step, and still fails loudly downstream. The backstop is a
+        # skip-STUB, not skip-clean: the poster's own skip re-check silences
+        # it on bot/opt-out PRs (the pinned-ref clean-skip case), while a
+        # session that went silent on a human PR posts a visible
+        # could-not-run round instead of being relabeled a quiet day.
+        working-directory: .autoresearch
+        env:
+          PR_REPO: ${{ github.repository }}
+          EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: |
+          if [ ! -f "$EMIT_FILE" ]; then
+            uv run python -c "import json, os, pathlib; pathlib.Path(os.environ['EMIT_FILE']).write_text(json.dumps({'repo': os.environ['PR_REPO'], 'number': int(os.environ['PR_NUMBER']), 'kind': 'skip-stub', 'detail': 'session wrote no envelope (reviewer_ref predates envelope emission, or the session went silent)'}))"
+          fi
       - name: Upload findings
         # not `success()`: a session step that died AFTER emitting must still
         # deliver its findings (or its skip-stub) to the posting job
@@ -230,7 +265,12 @@ jobs:
           cache-dependency-glob: .autoresearch/uv.lock
       - name: Download findings
         id: findings
-        continue-on-error: true  # no artifact = clean skip upstream
+        # NO continue-on-error: every session outcome uploads an envelope
+        # (findings / skip-stub / skip-clean), so a missing artifact means
+        # the session died before emitting — fail this job visibly (the
+        # caller's PR stays green; the job is continue-on-error at job
+        # level). Observed live 2026-08-15: errored terra sessions posted
+        # nothing and read as quiet clean days.
         uses: actions/download-artifact@v4
         with:
           name: review-findings-${{ inputs.opinion_id || inputs.backend }}-${{ env.PR_NUMBER }}
