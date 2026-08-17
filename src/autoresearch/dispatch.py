@@ -21,6 +21,7 @@ its own code-side ceiling; under the in-job threshold nothing here runs.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import shlex
@@ -222,10 +223,8 @@ def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
     except (OSError, ValueError) as exc:
         raise EvalError(f"dispatched eval {name}: no exit code ({exc})") from exc
     stdout = ""
-    try:
+    with contextlib.suppress(OSError):
         stdout = (ev / "stdout").read_text()
-    except OSError:
-        pass
     if code != 0:
         tail = ""
         try:
