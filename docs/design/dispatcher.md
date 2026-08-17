@@ -3,7 +3,7 @@
 **Status: proposal (2026-08-17).** How experiments and evals become their own
 jobs instead of running inside a role session's walltime. `architecture.md`
 owns the wake fail-safety layers this builds on; `agent-substrate.md` set the
-one-line constitution ("experiment launching is a syscall, not an agent");
+constitution (experiment submission is an `act` syscall, not an agent tool);
 `orchestrator-verify.md` owns the panel, which stays in-job. This note
 settles the three questions queued at the panel-flip review: when the
 dispatcher kicks in, how it interops with the orchestrator, and what the
@@ -43,10 +43,12 @@ sweep runs dry today). Nothing polls, and no clock runs while a job queues.
 ## The three settled questions
 
 **When it kicks in.** Phase 1 ships now — the eval-timeout class is live and
-recurring. The in-job evaluator remains for evals under a threshold the
-contract already expresses (`session gets what fits; jobs get the rest`):
-an eval expected to finish in ~minutes on the job's own allocation is not
-worth a queue round-trip. The dispatcher is for everything else, and the
+recurring. The in-job evaluator remains the default: an eval that finishes
+in minutes on the job's own allocation is not worth a queue round-trip.
+The switch is a per-benchmark contract knob (schema change, phase 1): an
+`eval_minutes` hint on the benchmark entry, clamped like every budget knob.
+Under the in-job threshold (code-side constant, of order EVAL_TIMEOUT_S) the
+eval runs in-job as today; above it the orchestrator dispatches. The
 orchestrator chooses per eval site, not per repo.
 
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
@@ -75,19 +77,29 @@ is believed.
 ## Phase 1 — eval as a job (climb + steward)
 
 The submitted eval job: the contract command, on a worktree of the measured
-sha, in the target's image, with no session credentials in its environment
-(the command and tree are exactly today's evaluator inputs — the change is
-the allocation). It writes `{metric, value}` JSON to the run directory; the
-afterany wake re-enters the climb stage that was parked. Failure modes map
-to existing endings: job dies -> `eval-error` at wake; results never arrive
--> the waiting-sweep's deadline ends the run as stuck; a moved base during
-the wait -> the existing merged-tree re-gate already covers it, since
-re-entry re-checks freshness like any other resumption.
+sha, under the SAME containment contract as today's in-job evaluator —
+apptainer `--containall --cleanenv` in the target's image, seeing only the
+worktree, a throwaway HOME, and the evaluator's environment allowlist plus
+the call site's `extra_env` (paired seeds ride there). The command and tree
+and jail are exactly today's evaluator inputs — the only change is the
+allocation. No orchestrator credential enters the job: agent-written eval
+commands run on a shared filesystem next to the PAT, so the jail is
+load-bearing, not hygiene. It writes `{metric, value}` JSON to the run
+directory; the afterany wake re-enters the climb stage that was parked. Failure modes map
+to the existing layers, exactly as the sweep implements them: a job that
+dies -> `eval-error` at wake; a wake that never fires -> the sweep wakes
+the run itself once the job reads GONE or PENDING past the deadline (a
+still-RUNNING job is deliberately left alone — the job's own walltime
+bounds that state); wakes that fire without producing progress -> `stuck`
+at MAX_WAKE_ATTEMPTS. A moved base during the wait -> the existing
+merged-tree re-gate covers it, since re-entry re-checks freshness like any
+other resumption.
 
 Suite gates and panel re-measures ride the same staging: a suite
-re-measure over N siblings becomes N parallel eval jobs instead of N
-sequential in-job runs — the first place dispatch makes something better,
-not just possible.
+re-measure over N siblings becomes 2N parallel eval jobs — baseline and
+candidate per sibling, paired seed via `extra_env`, exactly the comparison
+the gate computes today — instead of 2N sequential in-job runs. The first
+place dispatch makes something better, not just possible.
 
 ## Phase 2 — the author experiment syscall
 
@@ -105,9 +117,10 @@ GPU benchmarks and portfolio climbs both multiply eval load; both were
 designed against this seam. Portfolio's N concurrent climbs become N
 waiting records with independent wakes — the serialization question stays
 in the picker, not the dispatcher. The tick's job-partition knobs
-(`AUTORESEARCH_JOB_PARTITION`) already route work jobs; eval jobs get their
-own partition/GPU flags from the contract's benchmark entry, clamped by
-operator ceilings like every other budget.
+(`AUTORESEARCH_JOB_PARTITION`) already route work jobs; per-benchmark
+partition/GPU allocation fields are a phase-3 contract-schema change
+(`Benchmark` rejects unknown fields today, deliberately), validated and
+clamped by operator ceilings like every other budget.
 
 ## Non-goals
 

@@ -68,9 +68,10 @@ standing instruction they supersede — a resumed agent honors stale constraints
       2026-08-06, incl. on failed experiments) + expiring run lease with
       handoff + tick sweep + deadline floor (pending-cancel / gone-on-good-
       query / defer-on-query-failure) + `stuck` state. Session dispatch
-      behind the `WakeDispatcher` seam (real dispatcher lands with phase 5;
-      design accepted for build: docs/design/dispatcher.md — eval-as-a-job
-      first, triggered by the 2026-08-16 steward eval-timeout class)
+      behind the `WakeDispatcher` seam (real dispatcher lands with phase 5)
+- [ ] Experiment/eval dispatch design: docs/design/dispatcher.md —
+      eval-as-a-job first, triggered by the 2026-08-16 steward eval-timeout
+      class. (Distinct from the `WakeDispatcher` wake-session seam above.)
 
 - [x] The chain: `scripts/tick_chain.sbatch` — successor top-up to depth 2,
       `--dependency=singleton`, absolute `--begin` cadence grid, sbatch
