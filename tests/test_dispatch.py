@@ -162,7 +162,9 @@ roadmap: docs/roadmap.md
     )
     big, small = c.benchmarks
     assert big.eval_minutes == 45 and small.eval_minutes is None
-    with pytest.raises(Exception):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="eval_minutes"):
         load_contract(
             """
 benchmarks:

@@ -227,10 +227,8 @@ def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
         stdout = (ev / "stdout").read_text()
     if code != 0:
         tail = ""
-        try:
+        with contextlib.suppress(OSError):
             tail = (ev / "stderr").read_text()[-300:]
-        except OSError:
-            pass
         raise EvalError(f"dispatched eval {name} failed ({code}): {tail}")
     value = _metric_from_output(stdout, metric)
     if value is None:
