@@ -110,8 +110,18 @@ contract's budgets, submits, and ends the session with a resume marker. The
 wake resumes THE SAME session (the panel's wake mechanics) with the result
 file path. Budget enforcement lives at the syscall: `gpu_hours_per_run`
 decrements at submit time from the job's ceiling, refunds unused time at
-wake, refuses when exhausted. The author never touches Slurm and never
-holds credentials; the syscall is orchestrator code.
+wake, refuses when exhausted — and a new `experiments_per_run` budget knob
+(contract schema, clamped like every knob) caps the ROUNDS. That cap is
+what bounds total thinking: the session budget is per segment, so a run
+thinks for at most `session_minutes x (experiments_per_run + 1)` — a
+cumulative thinking clock was considered and rejected, because it starves
+the post-results analysis in late rounds, which is the highest-value
+thinking in the run. On CPU-cheap benchmarks the round cap is the ONLY
+effective limit (gpu-hours is zero there), and the cost driver is the
+thinking segments, not the experiments. The author never touches Slurm and
+never holds credentials; the syscall is orchestrator code. Resumed context
+grows per round; long runs lean on the standing compaction story
+(backend-native compaction + externalized findings).
 
 ## Phase 3 — scale interactions
 
