@@ -69,6 +69,11 @@ standing instruction they supersede — a resumed agent honors stale constraints
       handoff + tick sweep + deadline floor (pending-cancel / gone-on-good-
       query / defer-on-query-failure) + `stuck` state. Session dispatch
       behind the `WakeDispatcher` seam (real dispatcher lands with phase 5)
+- [ ] Experiment/eval dispatch design: docs/design/dispatcher.md —
+      eval-as-a-job first, triggered by the 2026-08-16 steward eval-timeout
+      class. Its phase 1 supplies the first production `WakeDispatcher`
+      implementation (transaction re-entry wakes for waiting runs); session
+      -resume wakes ride the same seam in phase 2.
 
 - [x] The chain: `scripts/tick_chain.sbatch` — successor top-up to depth 2,
       `--dependency=singleton`, absolute `--begin` cadence grid, sbatch
