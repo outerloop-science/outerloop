@@ -239,5 +239,8 @@ skip-clean, data, detail, reviewed_by}`), re-validated by the posting job.
 Phase 1 lands when: a steward eval that times out in-job today completes as
 a dispatched job with the run resuming correctly across the wake; a killed
 eval job ends its run as `eval-error` with a report; and the waiting-sweep's
-backup wake fires when the afterany job is scancel'd. The yolo ruler-v2
-`BENCH_FULL` grid is the first real workload.
+backup wake fires when the afterany job is scancel'd. The named first workloads are yolo's:
+the ruler-v2 `BENCH_FULL` grid, and ruler v3 — the maintainer wants T
+(trajectory length, fixed at 500 today) promoted from the diagnostic grid
+into the CLIMBED grid at 8 seeds, which triples the eval past any in-job
+budget (~1000 runs) and is exactly the shape phase 1 exists to serve.
