@@ -87,9 +87,11 @@ is believed.
 The submitted eval job: the contract command, on a worktree of the measured
 sha — where "the measured sha" is created if it does not exist yet: the
 candidate measure happens on a dirty workspace before anything is committed,
-so dispatch snapshots the tree first: add -A / write-tree / commit-tree
-parented on the base, run against a TEMPORARY index (`GIT_INDEX_FILE`), so
-the working index is never touched — a session that resumes later finds its
+so dispatch snapshots the tree first: a TEMPORARY index (`GIT_INDEX_FILE`)
+seeded with `read-tree` from the base commit — so tracked-but-ignored files
+behave exactly as they do in climb.py's populated-index fingerprint, which a
+fresh empty index would silently drop — then add -A / write-tree /
+commit-tree parented on the base; the working index is never touched — a session that resumes later finds its
 staged state intact. (The panel's current snapshot uses the working index
 plus a reset; it should adopt the temporary index too.) The fingerprint for
 the existing drift check is the snapshot's TREE hash — `write-tree` is
@@ -104,8 +106,13 @@ allowlist plus the call site's `extra_env` (paired seeds ride there). The comman
 and jail are exactly today's evaluator inputs — the only change is the
 allocation. No orchestrator credential enters the job: agent-written eval
 commands run on a shared filesystem next to the PAT, so the jail is
-load-bearing, not hygiene. It writes `{metric, value}` JSON to the run
-directory; the afterany wake re-enters the climb stage that was parked. Failure modes map
+load-bearing, not hygiene. The jailed process never sees the run directory —
+it prints its JSON to stdout exactly as the in-job contract requires, and
+the job's sbatch wrapper (orchestrator-authored, OUTSIDE the containment,
+running no agent-written code) captures stdout and writes the result file
+into the run directory — the same stdout-capture split the in-job evaluator
+performs in-process today. The afterany wake re-enters the climb stage that
+was parked and reads that file. Failure modes map
 to the existing layers, exactly as the sweep implements them: a job that
 dies -> the `eval-error` outcome at wake (ending `aborted`, exactly as the
 in-job eval failure maps today); a LOST wake -> the sweep's primary backup,
@@ -137,7 +144,10 @@ submits, and ends the session with a resume marker. The
 wake resumes THE SAME session (the panel's wake mechanics) with the result
 file path. Budget enforcement lives at the syscall: `gpu_hours_per_run`
 decrements at submit time from the job's ceiling, refunds unused time at
-wake, refuses when exhausted — and a new `experiments_per_run` budget knob
+wake, refuses when exhausted — and joins limits.py's clamp table first
+(phase-2 prerequisite): today it is validated only as non-negative, and a
+target-supplied number that escapes the clamp grammar would let a contract
+raise our compute spend, the exact thing the ceilings exist to prevent — and a new `experiments_per_run` budget knob
 (contract schema, clamped like every knob) caps the ROUNDS. That cap is
 what bounds total thinking: the session budget is per segment, so a run
 thinks for at most `session_minutes x (experiments_per_run + 1)` — a
