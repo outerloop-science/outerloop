@@ -46,7 +46,11 @@ sweep runs dry today). Nothing polls, and no clock runs while a job queues.
 recurring. The in-job evaluator remains the default: an eval that finishes
 in minutes on the job's own allocation is not worth a queue round-trip.
 The switch is a per-benchmark contract knob (schema change, phase 1): an
-`eval_minutes` hint on the benchmark entry — per-benchmark because eval
+`eval_minutes` hint on the benchmark entry — a HINT the orchestrator may
+distrust: it governs only the FIRST eval of a benchmark; after that the
+orchestrator's own measured durations decide, so a target inflating the
+hint buys one dispatched eval, not a standing queue tax, and an operator
+knob can disable dispatch per target outright — per-benchmark because eval
 cost is a property of the benchmark, not the run budget, so it is validated
 with its own code-side ceiling rather than riding the Budgets clamp table.
 Under the in-job threshold the eval runs in-job as today; above it the
@@ -131,7 +135,11 @@ retention as the floor.
 Suite gates and panel re-measures ride the same staging: a suite
 re-measure over N siblings becomes 2N parallel eval jobs — baseline and
 candidate per sibling, paired seed via `extra_env`, exactly the comparison
-the gate computes today — instead of 2N sequential in-job runs. The first
+the gate computes today — instead of 2N sequential in-job runs. Fan-out
+changes the record contract: `experiment_job_id` carries the COLON-JOINED
+job ids (the same syntax `--dependency=afterany:` takes, so ONE wake job
+covers the set), and the sweep's liveness read treats the set as alive
+while any member is, terminal when all are. The first
 place dispatch makes something better, not just possible.
 
 ## Phase 2 — the author experiment syscall
@@ -194,7 +202,7 @@ single writer via lease):
 | `experiment_job_id` `wake_job_id` `followup_job_id` | Slurm handles for the dispatched work, its afterany wake, and review servicing |
 | `resume_session_id` | the harness session a wake reconstructs — the entire "pause" state for a session's mind |
 | `state` `deadline` `terminal_seen` `wake_attempts` | wake bookkeeping; a waiting record REQUIRES a deadline |
-| `stage` (phase 1) | which measure point the transaction parked at; the wake re-enters there |
+| `stage` (phase 1) | a small object, not a label: the parked measure point PLUS the process-local state re-entry needs — the pre-eval tree fingerprints and measured paths the drift check compares (today they are locals; a resumed process without them would fail the drift check closed on every dispatch) and the expected result-file names |
 | `last_comment_id` `last_review_id` `last_review_comment_id` | three cursors because GitHub's three comment collections have independent id sequences |
 | `ending` `ending_note` `created` `updated` | terminal record |
 
