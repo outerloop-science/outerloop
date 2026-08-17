@@ -78,20 +78,22 @@ is believed.
 
 The submitted eval job: the contract command, on a worktree of the measured
 sha, under the SAME containment contract as today's in-job evaluator —
-apptainer `--containall --cleanenv` in the target's image, seeing only the
-worktree, a throwaway HOME, and the evaluator's environment allowlist plus
-the call site's `extra_env` (paired seeds ride there). The command and tree
+apptainer `--containall --cleanenv` in the climb's single `--image` (session
+and eval share it today; that stays), seeing only the worktree, a throwaway
+HOME, the node-local uv cache bind, and the evaluator's environment
+allowlist plus the call site's `extra_env` (paired seeds ride there). The command and tree
 and jail are exactly today's evaluator inputs — the only change is the
 allocation. No orchestrator credential enters the job: agent-written eval
 commands run on a shared filesystem next to the PAT, so the jail is
 load-bearing, not hygiene. It writes `{metric, value}` JSON to the run
 directory; the afterany wake re-enters the climb stage that was parked. Failure modes map
 to the existing layers, exactly as the sweep implements them: a job that
-dies -> `eval-error` at wake; a wake that never fires -> the sweep wakes
-the run itself once the job reads GONE or PENDING past the deadline (a
-still-RUNNING job is deliberately left alone — the job's own walltime
-bounds that state); wakes that fire without producing progress -> `stuck`
-at MAX_WAKE_ATTEMPTS. A moved base during the wait -> the existing
+dies -> `eval-error` at wake; a LOST wake -> the sweep's primary backup,
+which wakes any run whose job reads terminal after the grace period —
+plus GONE past the deadline (vanished) and PENDING past the deadline
+(cancel, then wake as unschedulable); a still-RUNNING job is deliberately
+left alone, bounded by its own walltime; wakes that fire without producing
+progress -> `stuck` at MAX_WAKE_ATTEMPTS. A moved base during the wait -> the existing
 merged-tree re-gate covers it, since re-entry re-checks freshness like any
 other resumption.
 
