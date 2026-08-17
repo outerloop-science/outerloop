@@ -6,6 +6,18 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- The dispatched-eval primitive (`dispatch` module) — dispatcher phase 1,
+  stage A per docs/design/dispatcher.md: temp-index tree snapshots (working
+  index untouched, tree hash = the drift fingerprint), the orchestrator-
+  authored eval job script (same jail as the in-job evaluator; the contract
+  command never crosses shell quoting; stdout captured outside the
+  containment into the run dir), result reading with the in-job error
+  semantics, and the contract's `eval_minutes` hint (own ceiling, in-job
+  below the threshold). Wiring into the climb transaction and the wake
+  path is the next stage.
+
 ### Removed
 
 - The one-shot **completer** reviewer and verifier are sunset, now that all lab
