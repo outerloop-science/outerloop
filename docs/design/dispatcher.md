@@ -46,9 +46,11 @@ sweep runs dry today). Nothing polls, and no clock runs while a job queues.
 recurring. The in-job evaluator remains the default: an eval that finishes
 in minutes on the job's own allocation is not worth a queue round-trip.
 The switch is a per-benchmark contract knob (schema change, phase 1): an
-`eval_minutes` hint on the benchmark entry, clamped like every budget knob.
-Under the in-job threshold (code-side constant, of order EVAL_TIMEOUT_S) the
-eval runs in-job as today; above it the orchestrator dispatches. The
+`eval_minutes` hint on the benchmark entry — per-benchmark because eval
+cost is a property of the benchmark, not the run budget, so it is validated
+with its own code-side ceiling rather than riding the Budgets clamp table.
+Under the in-job threshold (code-side constant, of order EVAL_TIMEOUT_S)
+the eval runs in-job as today; above it the orchestrator dispatches. The
 orchestrator chooses per eval site, not per repo.
 
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
@@ -57,9 +59,11 @@ transaction (session -> measure -> gates -> panel -> publish) becomes
 resumable at its measure points: reaching one submits the eval job, persists
 the stage in the run record, and returns; the wake re-enters the transaction
 at the recorded stage with the job's result file. The states, records,
-deadlines, lease machinery, and `MAX_WAKE_ATTEMPTS` stuck-run ending all
-exist — phase 1 is wiring the climb's stages into them, not building a
-second event plane. The panel stays in-job: judge sessions are
+deadlines, lease machinery, sweep, and `MAX_WAKE_ATTEMPTS` stuck-run
+ending all exist and are tested; what is a STUB today is the production
+`WakeDispatcher` — the tick's sweep runs dry and logs WOULD-WAKE. Phase 1
+fills that stub (a wake re-invokes the parked transaction) and wires the
+climb's stages into the rest — it does not build a second event plane. The panel stays in-job: judge sessions are
 API-bound minutes, and moving them buys nothing.
 
 **Clock pause, and the credit boundary.** There is no pause mechanism —
@@ -77,7 +81,14 @@ is believed.
 ## Phase 1 — eval as a job (climb + steward)
 
 The submitted eval job: the contract command, on a worktree of the measured
-sha, under the SAME containment contract as today's in-job evaluator —
+sha — where "the measured sha" is created if it does not exist yet: the
+candidate measure happens on a dirty workspace before anything is committed,
+so dispatch snapshots the tree first with the PANEL'S mechanics (add -A /
+write-tree / commit-tree parented on the base; includes added files, never
+touches the working index). The snapshot sha doubles as the drift
+fingerprint the final commit already checks. Suite-gate baseline jobs use
+real commits as today. The job runs under the SAME containment contract as
+today's in-job evaluator —
 apptainer `--containall --cleanenv` in the climb's single `--image` (session
 and eval share it today; that stays), seeing only the worktree, a throwaway
 HOME, the node-local uv cache bind, and the evaluator's environment
@@ -88,7 +99,8 @@ commands run on a shared filesystem next to the PAT, so the jail is
 load-bearing, not hygiene. It writes `{metric, value}` JSON to the run
 directory; the afterany wake re-enters the climb stage that was parked. Failure modes map
 to the existing layers, exactly as the sweep implements them: a job that
-dies -> `eval-error` at wake; a LOST wake -> the sweep's primary backup,
+dies -> the `eval-error` outcome at wake (ending `aborted`, exactly as the
+in-job eval failure maps today); a LOST wake -> the sweep's primary backup,
 which wakes any run whose job reads terminal after the grace period —
 plus GONE past the deadline (vanished) and PENDING past the deadline
 (cancel, then wake as unschedulable); a still-RUNNING job is deliberately
@@ -105,8 +117,11 @@ place dispatch makes something better, not just possible.
 
 ## Phase 2 — the author experiment syscall
 
-A session tool (`run_experiment`) that validates the request against the
-contract's budgets, submits, and ends the session with a resume marker. The
+An `act` syscall exposed to the session as `run_experiment` — the session
+INVOKES it; the validation, snapshot, submission, and session end are
+orchestrator code, per the substrate constitution (the agent directs, the
+kernel acts). It validates the request against the contract's budgets,
+submits, and ends the session with a resume marker. The
 wake resumes THE SAME session (the panel's wake mechanics) with the result
 file path. Budget enforcement lives at the syscall: `gpu_hours_per_run`
 decrements at submit time from the job's ceiling, refunds unused time at
