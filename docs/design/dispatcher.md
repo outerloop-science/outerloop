@@ -156,6 +156,54 @@ a promotion path: no dispatched result feeds credit without the
 orchestrator's own re-run. Not a scheduler: Slurm queues; the dispatcher
 submits and hibernates.
 
+## Appendix: record and channel formats
+
+No message bus, no database, no RPC: durable files on the shared filesystem
+carry state, Slurm itself carries events, GitHub markers carry the
+cross-trust-boundary record. Everything below is one of those three.
+
+**The run record** (`state/runs/<run_id>/state.json`, atomic tmp+replace,
+single writer via lease):
+
+| field | role |
+|---|---|
+| `run_id` `target` `benchmark` `agent_id` `task_title` `issue_number` `pr_url` | identity/topology |
+| `climb_job_id` | the transaction's own job — lets the sweep tell KILLED from crashed; must be re-stamped by any path re-entering `implementing` from a new job |
+| `experiment_job_id` `wake_job_id` `followup_job_id` | Slurm handles for the dispatched work, its afterany wake, and review servicing |
+| `resume_session_id` | the harness session a wake reconstructs — the entire "pause" state for a session's mind |
+| `state` `deadline` `terminal_seen` `wake_attempts` | wake bookkeeping; a waiting record REQUIRES a deadline |
+| `stage` (phase 1) | which measure point the transaction parked at; the wake re-enters there |
+| `last_comment_id` `last_review_id` `last_review_comment_id` | three cursors because GitHub's three comment collections have independent id sequences |
+| `ending` `ending_note` `created` `updated` | terminal record |
+
+**Job -> orchestrator**: the LAST single-line JSON object on stdout carrying
+the metric — `{"<metric>": v}` or `{"metric": name, "value": v}`; no regex
+fallback (a fuzzy match that reads the wrong number is worse than a clean
+failure). Dispatched jobs write the same JSON to a result file in the run
+directory — stdout dies with the job; the file is what the wake reads.
+Extra keys (margins, per-condition tables) ride along; the parser takes
+only its metric.
+
+**Orchestrator -> job**: argv (the contract command), a worktree of the
+snapshot sha as cwd, allowlisted env + the call site's `extra_env` (paired
+seeds). One-way by construction — the jail keeps records and credentials
+out of reach.
+
+**Orchestrator <-> session**: briefs are files (the query is a pointer,
+never argv); wake prompts carry results data-fenced with the standing
+DATA-not-instructions framing; sessions return structured output against
+role schemas; cost/turns come from harness session metadata.
+
+**Coordination files**: pending marker `state/pending/<target>.json`
+(`{benchmark, job_id, submitted_at}`; liveness-first, TTL breaks ties),
+lease (`{holder, holder_job_id, acquired}`, TTL-reaped), heartbeat.
+
+**GitHub markers** (cross-host, survive the cluster; authenticated by
+AUTHOR — only bot-posted markers count): claim / claim-released /
+outage-release, the advisory marker + per-reviewer round stamps, and the
+review findings envelope (`{repo, number, kind: findings|skip-stub|
+skip-clean, data, detail, reviewed_by}`), re-validated by the posting job.
+
 ## Acceptance
 
 Phase 1 lands when: a steward eval that times out in-job today completes as
