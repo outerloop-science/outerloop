@@ -93,40 +93,31 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
     env = {"GIT_INDEX_FILE": str(index)}
     # The workspace is AGENT-WRITTEN: every git call carries SAFE_GIT_FLAGS
     # (hooks/fsmonitor/ssh/credential neutralizers), drops HOME (no
-    # ~/.gitconfig read), and disables filters. git -c takes no globs, so a
-    # session-defined clean filter is neutralized by ENUMERATING the
-    # configured filter drivers and overriding each to a passthrough (`cat`
-    # is byte-for-byte; empty would error). The overrides ride EVERY index op
-    # — the clean filter runs lazily at write-tree, not add.
+    # ~/.gitconfig read), and disables agent-defined filters via
+    # _filter_neutral_env (GIT_CONFIG_* env, which handles driver names with
+    # '=' or dots that `-c` cannot). The neutralizers ride EVERY index op
+    # because the clean filter runs lazily at write-tree, not add.
     base_git = ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS]
-    no_filters: list[str] = ["-c", "core.attributesFile=/dev/null"]
     try:
-        listing = subprocess.run(
-            [*base_git, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
-            env=_git_env(env),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        for line in listing.stdout.splitlines():
-            key = line.split(" ", 1)[0]  # filter.<driver>.<op>; <driver> may contain dots
-            if not key.startswith("filter.") or "." not in key[7:]:
-                continue  # a wrapped config value on its own line — skip
-            driver = key[len("filter.") : key.rindex(".")]  # strip prefix AND the .<op> suffix
-            no_filters += [
-                "-c",
-                f"filter.{driver}.clean=cat",
-                "-c",
-                f"filter.{driver}.smudge=cat",
-                "-c",
-                f"filter.{driver}.process=",
-            ]
-        git = [*base_git, *no_filters]  # every index op carries the neutralizers
+        # Neutralize agent-defined filters via GIT_CONFIG_KEY_n/VALUE_n env
+        # injection, NOT `-c`: a driver name containing '=' (a legal git
+        # subsection char) defeats `-c filter.<driver>.clean=cat` because git
+        # splits `-c` at the FIRST '='. The env form takes key and value as
+        # SEPARATE strings, immune to that — and to dots. See _filter_neutral_env.
+        neutral = _filter_neutral_env(base_git, env)
+        run_env = {**env, **neutral}
 
         def run(args: list[str], timeout: int) -> str:
             return subprocess.run(
-                args, env=_git_env(env), check=True, capture_output=True, text=True, timeout=timeout
+                args,
+                env=_git_env(run_env),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             ).stdout.strip()
+
+        git = base_git  # neutralizers now ride the ENV, not argv
 
         # seed from the base so ignore rules apply as they do to a populated
         # index (a fresh empty index would drop tracked-but-ignored files)
@@ -159,6 +150,40 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
         raise EvalError(f"snapshot timed out: {exc}") from exc
     finally:
         index.unlink(missing_ok=True)
+
+
+def _filter_neutral_env(base_git: list[str], env: dict[str, str]) -> dict[str, str]:
+    """GIT_CONFIG_* env that overrides every configured filter driver to a
+    passthrough and disables attribute files. Robust where `-c` is not:
+    keys/values are separate env vars, so a driver name with '=' or dots is
+    handled correctly. Used by BOTH the snapshot (index ops) and the job
+    script's archive — the repo config and .gitattributes are agent-written
+    on both paths."""
+    pairs: list[tuple[str, str]] = [("core.attributesFile", "/dev/null")]
+    listing = subprocess.run(
+        [*base_git, "config", "-z", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
+        env=_git_env(env),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    # -z: NUL-separated records, each "key\nvalue" — so a value containing a
+    # newline can never masquerade as a second record.
+    for record in listing.stdout.split("\0"):
+        key = record.split("\n", 1)[0]
+        if not key.startswith("filter.") or "." not in key[len("filter.") :]:
+            continue
+        driver = key[len("filter.") : key.rindex(".")]
+        pairs += [
+            (f"filter.{driver}.clean", "cat"),
+            (f"filter.{driver}.smudge", "cat"),
+            (f"filter.{driver}.process", ""),
+        ]
+    out = {"GIT_CONFIG_COUNT": str(len(pairs))}
+    for i, (k, v) in enumerate(pairs):
+        out[f"GIT_CONFIG_KEY_{i}"] = k
+        out[f"GIT_CONFIG_VALUE_{i}"] = v
+    return out
 
 
 def drop_snapshot(ws: Workspace, snapshot: Snapshot) -> None:
@@ -226,6 +251,10 @@ def write_eval_job(
         if _SHELL_IDENT.match(k) and not managed_eval_env(k)
     }
     safe_git = " ".join(shlex.quote(f) for f in SAFE_GIT_FLAGS)
+    # the archive runs on the agent-written repo too: same filter neutralizers
+    # as the snapshot, injected as GIT_CONFIG_* env (robust to '=' in a driver
+    # name, unlike -c)
+    neutral = _filter_neutral_env(["git", "-C", str(repo_root), *SAFE_GIT_FLAGS], {})
     lines = [
         "#!/bin/sh",
         "set -u",
@@ -234,20 +263,26 @@ def write_eval_job(
         'TREE="$EV/tree"',
         'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/dispatch-eval-$$"',
         'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$TREE"',
-        # Materialize the snapshot by EXTRACTING its tree (git archive | tar),
-        # not `git worktree add`: a worktree's .git gitfile points back into
-        # $REPO/.git/worktrees, which the jail does not bind (so in-jail git
-        # would break), and it leaves an admin entry to reap. An extracted
-        # tree is a plain directory — nothing to bind back, nothing to clean
-        # in $REPO. SAFE_GIT_FLAGS still ride the archive (agent-written repo).
-        f'git -C "$REPO" {safe_git} archive --format=tar {shlex.quote(snapshot_sha)} '
-        '| tar -x -C "$TREE" >> "$EV/setup.log" 2>&1 '
-        '|| { echo 97 > "$EV/exit-code"; exit 0; }',
+        # trap FIRST, before anything that can exit, so $SCRATCH never leaks
         'cleanup() { rm -rf "$SCRATCH"; }',
-        # TERM/INT/HUP too: Slurm's walltime kill is SIGTERM, and a POSIX
-        # shell dying on a signal does not run its EXIT trap
         "trap 'cleanup' EXIT",
         "trap 'echo 143 > \"$EV/exit-code\"; cleanup; trap - EXIT; exit 0' TERM INT HUP",
+    ]
+    for k, v in neutral.items():
+        lines.append(f"export {k}={shlex.quote(v)}")
+    lines += [
+        # Materialize the snapshot by EXTRACTING its tree, not `git worktree
+        # add`: a worktree's .git points into $REPO/.git/worktrees, which the
+        # jail does not bind, and leaves an admin entry to reap. An extracted
+        # tree is a plain directory. The archive is written to a FILE and its
+        # own exit status checked — a `git archive | tar` pipe under POSIX sh
+        # tests only tar, so a failing archive producing an empty stream would
+        # pass and the eval would run on an empty tree.
+        f'if git -C "$REPO" {safe_git} archive --format=tar '
+        f'{shlex.quote(snapshot_sha)} > "$SCRATCH/tree.tar" 2>> "$EV/setup.log"; then '
+        'tar -x -C "$TREE" -f "$SCRATCH/tree.tar" >> "$EV/setup.log" 2>&1 '
+        '|| { echo 97 > "$EV/exit-code"; exit 0; }; '
+        'else echo 97 > "$EV/exit-code"; exit 0; fi',
         'export UV_CACHE_DIR="$SCRATCH/cache" UV_LINK_MODE=copy '
         'UV_PROJECT_ENVIRONMENT="$SCRATCH/cache/venv"',
         'export APPTAINERENV_UV_CACHE_DIR="$UV_CACHE_DIR" '

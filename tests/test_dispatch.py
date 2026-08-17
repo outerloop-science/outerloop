@@ -68,7 +68,6 @@ def test_snapshot_captures_dirty_tree_without_touching_the_index(tmp_path):
     assert ws.git("rev-parse", f"{snap.commit}^{{tree}}") == snap.tree
     # retained under a ref so gc cannot prune it while a job is queued
     assert ws.git("rev-parse", snap.ref) == snap.commit
-    assert snap.commit in ws.git("fsck", "--unreachable") if False else True
     # deterministic: same content -> same tree hash (the drift fingerprint)
     snap2 = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert snap2.tree == snap.tree and snap2.ref != snap.ref  # unique refs
@@ -158,6 +157,21 @@ def test_snapshot_neutralizes_agent_git_config(tmp_path):
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 9"
 
 
+def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
+    """A driver name containing '=' defeats `-c filter.<d>.clean=` (git splits
+    -c at the first '='); the GIT_CONFIG_* env form must handle it."""
+    root = _repo(tmp_path)
+    ws = _WS(root)
+    base = ws.git("rev-parse", "HEAD")
+    canary = tmp_path / "eqcanary"
+    (root / ".gitattributes").write_text("*.py filter=ev=il\n")
+    ws.git("config", "filter.ev=il.clean", f"sh -c 'touch {canary}; cat'")
+    (root / "kept.py").write_text("x = 5\n")
+    snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    assert not canary.exists(), "= in driver name defeated neutralization"
+    assert ws.git("show", f"{snap.commit}:kept.py") == "x = 5"
+
+
 def test_read_result_rejects_non_finite(tmp_path):
     rd = _result(tmp_path, name="n", stdout='{"metric": "r2", "value": NaN}\n')
     with pytest.raises(EvalError, match="non-finite"):
@@ -191,6 +205,29 @@ def test_write_eval_job_clears_stale_results(tmp_path):
     )
     assert not (ev / "exit-code").exists() and not (ev / "stdout").exists()
     assert not (ev / "tree" / "leftover").exists()  # stale extracted tree cleared
+
+
+def test_job_script_archive_failure_reports_not_masks(tmp_path):
+    """A failing git archive must yield exit 97, never a silent empty-tree
+    run (the pipe-only-checks-tar trap)."""
+    import subprocess as sp
+
+    root = _repo(tmp_path)  # a real repo so the archive command can run
+    run_dir = tmp_path / "run"
+    script = write_eval_job(
+        run_dir,
+        "c",
+        repo_root=root,
+        snapshot_sha="0" * 40,  # nonexistent sha
+        command="echo SHOULD_NOT_RUN",
+        image="/bin/true-not-an-image",
+    )
+    sp.run(["sh", str(script)], check=True, capture_output=True)
+    ev = run_dir / "eval-c"
+    assert (ev / "exit-code").read_text().strip() == "97"
+    # the jail line never ran -> no stdout with SHOULD_NOT_RUN
+    out = (ev / "stdout").read_text() if (ev / "stdout").exists() else ""
+    assert "SHOULD_NOT_RUN" not in out
 
 
 def test_eval_job_spec_carries_setup_slack(tmp_path):
