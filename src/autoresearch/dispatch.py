@@ -4,14 +4,16 @@ Phase 1 of docs/design/dispatcher.md. This module owns the three pieces the
 design specifies, and nothing else (the resumable climb transaction and the
 wake wiring build on these in the next stage):
 
-  * snapshot_tree  — a committable snapshot of a dirty workspace, taken
-    against a TEMPORARY index seeded from the base commit, so the working
-    index is never touched and tracked-but-ignored files behave exactly as
-    they do in the drift fingerprint.
-  * write_eval_job — the orchestrator-authored job script: materialize a
-    worktree of the snapshot, run the contract command under the SAME jail
-    as the in-job evaluator, capture stdout OUTSIDE the containment into
-    the run directory (the jailed process never sees the run dir).
+  * snapshot_tree  — a retained snapshot of a dirty workspace, taken
+    against a TEMPORARY unique index seeded from the base commit (working
+    index untouched, tracked-vs-ignored parity with the drift fingerprint),
+    kept reachable under a unique ref so gc cannot prune it before a queued
+    job runs. Release with drop_snapshot after the eval is read.
+  * write_eval_job — the orchestrator-authored job script: EXTRACT the
+    snapshot's tree (git archive | tar, no worktree metadata to bind or
+    reap), run the contract command under the SAME jail as the in-job
+    evaluator, capture stdout OUTSIDE the containment into the run
+    directory (the jailed process never sees the run dir).
   * read_eval_result — the wake side: exit code + the same last-JSON-line
     metric contract the in-job evaluator parses.
 
@@ -25,15 +27,23 @@ import contextlib
 import json
 import logging
 import math
+import re
 import shlex
+import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from autoresearch.compute import JobSpec
 from autoresearch.github import SAFE_GIT_FLAGS, Workspace
-from autoresearch.orchestrator import EvalError, _metric_from_output
+from autoresearch.orchestrator import EvalError, _metric_from_output, managed_eval_env
 
 log = logging.getLogger(__name__)
+
+# extra_env keys are exported unquoted into the job script; keep them to a
+# shell identifier shape (the values ARE shlex-quoted).
+_SHELL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # In-job evals must fit the climb job's overhead runway (a few minutes each,
 # see limits.CLIMB_OVERHEAD_MINUTES); anything longer is dispatched.
@@ -57,75 +67,73 @@ def should_dispatch(eval_minutes: int | None) -> bool:
     return effective_eval_minutes(eval_minutes) > IN_JOB_EVAL_MINUTES
 
 
-def snapshot_tree(ws: Workspace, base_sha: str) -> tuple[str, str]:
-    """Snapshot the workspace's current CONTENT as a commit parented on
-    `base_sha`, without touching the working index.
+@dataclass(frozen=True)
+class Snapshot:
+    """A retained snapshot of a dirty workspace. `ref` keeps the commit
+    reachable so gc cannot prune it while a queued job still needs it;
+    `tree` is the drift fingerprint. Release the ref via `drop_snapshot`
+    once the eval has been read."""
 
-    Returns (commit_sha, tree_hash). The tree hash is the drift fingerprint
-    (write-tree is deterministic for identical trees — what climb.py already
-    compares); the commit exists only so a worktree can materialize it.
+    commit: str
+    tree: str
+    ref: str
+
+
+def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
+    """Snapshot the workspace's current CONTENT as a commit parented on
+    `base_sha`, without touching the working index, and retain it under a
+    unique ref so gc cannot prune it before a queued job materializes it.
     """
-    index = Path(ws.root) / ".git" / f"dispatch-index-{base_sha[:12]}"
+    # Unique per snapshot: two snapshots against the SAME base run
+    # concurrently (the design's paired baseline/candidate fan-out) and must
+    # not collide on one index file.
+    token = uuid4().hex
+    index = Path(ws.root) / ".git" / f"dispatch-index-{token}"
+    ref = f"refs/dispatch/{token}"
     env = {"GIT_INDEX_FILE": str(index)}
-    # The workspace is AGENT-WRITTEN: every invocation carries the same
-    # child-spawn neutralizers as Workspace.git (SAFE_GIT_FLAGS — hooks,
-    # fsmonitor, ssh, credential helpers), plus clean/smudge filters and
-    # attribute-driven conversion OFF for the add (a session-defined clean
-    # filter would otherwise execute on the orchestrator host).
-    # git -c takes no globs, so a session-defined clean filter is neutralized
-    # by ENUMERATING the configured filter drivers and overriding each to a
-    # passthrough (`cat` preserves content byte-for-byte; empty would error).
-    # The overrides ride EVERY index op — the clean filter runs lazily at
-    # write-tree, not at add — so they fold into the base flag list itself.
+    # The workspace is AGENT-WRITTEN: every git call carries SAFE_GIT_FLAGS
+    # (hooks/fsmonitor/ssh/credential neutralizers), drops HOME (no
+    # ~/.gitconfig read), and disables filters. git -c takes no globs, so a
+    # session-defined clean filter is neutralized by ENUMERATING the
+    # configured filter drivers and overriding each to a passthrough (`cat`
+    # is byte-for-byte; empty would error). The overrides ride EVERY index op
+    # — the clean filter runs lazily at write-tree, not add.
     base_git = ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS]
     no_filters: list[str] = ["-c", "core.attributesFile=/dev/null"]
-    listing = subprocess.run(
-        [*base_git, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
-        env=_git_env(env),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    for line in listing.stdout.splitlines():
-        key = line.split(" ", 1)[0]  # e.g. filter.lfs.clean
-        driver = key.split(".", 2)[1]
-        no_filters += [
-            "-c",
-            f"filter.{driver}.clean=cat",
-            "-c",
-            f"filter.{driver}.smudge=cat",
-            "-c",
-            f"filter.{driver}.process=",
-        ]
-    git = [*base_git, *no_filters]  # every index op carries the neutralizers
     try:
+        listing = subprocess.run(
+            [*base_git, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
+            env=_git_env(env),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        for line in listing.stdout.splitlines():
+            key = line.split(" ", 1)[0]  # filter.<driver>.<op>; <driver> may contain dots
+            if not key.startswith("filter.") or "." not in key[7:]:
+                continue  # a wrapped config value on its own line — skip
+            driver = key[len("filter.") : key.rindex(".")]  # strip prefix AND the .<op> suffix
+            no_filters += [
+                "-c",
+                f"filter.{driver}.clean=cat",
+                "-c",
+                f"filter.{driver}.smudge=cat",
+                "-c",
+                f"filter.{driver}.process=",
+            ]
+        git = [*base_git, *no_filters]  # every index op carries the neutralizers
+
+        def run(args: list[str], timeout: int) -> str:
+            return subprocess.run(
+                args, env=_git_env(env), check=True, capture_output=True, text=True, timeout=timeout
+            ).stdout.strip()
+
         # seed from the base so ignore rules apply as they do to a populated
         # index (a fresh empty index would drop tracked-but-ignored files)
-        subprocess.run(
-            [*git, "read-tree", base_sha],
-            env=_git_env(env),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        subprocess.run(
-            [*git, "add", "-A"],
-            env=_git_env(env),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        tree = subprocess.run(
-            [*git, "write-tree"],
-            env=_git_env(env),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        ).stdout.strip()
-        commit = subprocess.run(
+        run([*git, "read-tree", base_sha], 60)
+        run([*git, "add", "-A"], 120)
+        tree = run([*git, "write-tree"], 60)
+        commit = run(
             [
                 *git,
                 "-c",
@@ -139,17 +147,31 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> tuple[str, str]:
                 "-m",
                 "dispatch snapshot",
             ],
-            env=_git_env(env),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        ).stdout.strip()
-        return commit, tree
+            60,
+        )
+        # retain: an unreachable commit-tree object can be pruned by gc while
+        # the eval job is still queued
+        run([*base_git, "update-ref", ref, commit], 30)
+        return Snapshot(commit=commit, tree=tree, ref=ref)
     except subprocess.CalledProcessError as exc:
         raise EvalError(f"snapshot failed: {exc.stderr.strip()[:300]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise EvalError(f"snapshot timed out: {exc}") from exc
     finally:
         index.unlink(missing_ok=True)
+
+
+def drop_snapshot(ws: Workspace, snapshot: Snapshot) -> None:
+    """Release the retaining ref (best-effort; the commit becomes gc-eligible
+    again). Called once the eval result has been read."""
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS, "update-ref", "-d", snapshot.ref],
+            env=_git_env({}),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
 
 def _git_env(extra: dict[str, str]) -> dict[str, str]:
@@ -189,32 +211,41 @@ def write_eval_job(
     """
     ev = run_dir / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
-    # a resubmitted eval must never be read as its predecessor: stale result
-    # files go before the new job is even submitted
+    # a resubmitted eval must never be read as its predecessor: every prior
+    # artifact — including a leftover extracted tree — goes before submission
     for stale in ("exit-code", "stdout", "stderr", "setup.log"):
         (ev / stale).unlink(missing_ok=True)
+    shutil.rmtree(ev / "tree", ignore_errors=True)
     (ev / "command.txt").write_text(command)
+    # extra_env matches the in-job evaluator's contract: managed keys (HOME,
+    # UV_*, PATH...) are DROPPED, never allowed to override the isolation, and
+    # keys must be shell-identifier shaped (they are exported unquoted).
+    injected = {
+        k: v
+        for k, v in (extra_env or {}).items()
+        if _SHELL_IDENT.match(k) and not managed_eval_env(k)
+    }
     safe_git = " ".join(shlex.quote(f) for f in SAFE_GIT_FLAGS)
     lines = [
         "#!/bin/sh",
         "set -u",
         f"EV={shlex.quote(str(ev))}",
         f"REPO={shlex.quote(str(repo_root))}",
-        'WT="$EV/worktree"',
+        'TREE="$EV/tree"',
         'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/dispatch-eval-$$"',
-        'mkdir -p "$SCRATCH/cache" "$SCRATCH/home"',
-        # worktree of the snapshot: detached, disposable, removed on exit.
-        # SAFE_GIT_FLAGS ride along — the repo is agent-written, and
-        # `worktree add` runs post-checkout hooks OUTSIDE the jail without
-        # them (a session can rewrite .git/config to re-enable hooksPath).
-        f'git -C "$REPO" {safe_git} worktree add --detach "$WT" {shlex.quote(snapshot_sha)} '
-        '>> "$EV/setup.log" 2>&1 || { echo 97 > "$EV/exit-code"; exit 0; }',
-        "cleanup() { "
-        f'git -C "$REPO" {safe_git} worktree remove --force "$WT" >/dev/null 2>&1; '
-        'rm -rf "$SCRATCH"; }',
+        'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$TREE"',
+        # Materialize the snapshot by EXTRACTING its tree (git archive | tar),
+        # not `git worktree add`: a worktree's .git gitfile points back into
+        # $REPO/.git/worktrees, which the jail does not bind (so in-jail git
+        # would break), and it leaves an admin entry to reap. An extracted
+        # tree is a plain directory — nothing to bind back, nothing to clean
+        # in $REPO. SAFE_GIT_FLAGS still ride the archive (agent-written repo).
+        f'git -C "$REPO" {safe_git} archive --format=tar {shlex.quote(snapshot_sha)} '
+        '| tar -x -C "$TREE" >> "$EV/setup.log" 2>&1 '
+        '|| { echo 97 > "$EV/exit-code"; exit 0; }',
+        'cleanup() { rm -rf "$SCRATCH"; }',
         # TERM/INT/HUP too: Slurm's walltime kill is SIGTERM, and a POSIX
-        # shell dying on a signal does not run its EXIT trap — the leak
-        # would land on exactly the failure the walltime slack exists for
+        # shell dying on a signal does not run its EXIT trap
         "trap 'cleanup' EXIT",
         "trap 'echo 143 > \"$EV/exit-code\"; cleanup; trap - EXIT; exit 0' TERM INT HUP",
         'export UV_CACHE_DIR="$SCRATCH/cache" UV_LINK_MODE=copy '
@@ -223,15 +254,15 @@ def write_eval_job(
         "APPTAINERENV_UV_LINK_MODE=copy "
         'APPTAINERENV_UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT"',
     ]
-    for key, value in (extra_env or {}).items():
+    for key, value in injected.items():
         lines.append(f"export {key}={shlex.quote(value)} APPTAINERENV_{key}={shlex.quote(value)}")
     lines += [
         # the jail: identical flags to SubprocessEvaluator._run; stdout is
         # redirected OUTSIDE apptainer, so the result lands in the run dir
         # without the jailed process ever seeing it
         f"{shlex.quote(apptainer_binary)} exec --containall --cleanenv "
-        '--bind "$WT:$WT" --home "$SCRATCH/home:$SCRATCH/home" '
-        '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$WT" '
+        '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
+        '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
         f"{shlex.quote(image)} "
         'sh -c "$(cat "$EV/command.txt")" '
         '> "$EV/stdout" 2> "$EV/stderr"',

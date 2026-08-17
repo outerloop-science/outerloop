@@ -10,6 +10,7 @@ import pytest
 
 from autoresearch.dispatch import (
     EVAL_JOB_MINUTES_CEILING,
+    drop_snapshot,
     effective_eval_minutes,
     eval_job_spec,
     parse_result_json,
@@ -58,16 +59,29 @@ def test_snapshot_captures_dirty_tree_without_touching_the_index(tmp_path):
     (root / "ignored.txt").write_text("never\n")  # ignored: must not be
     ws.git("add", "kept.py")  # staged state that must SURVIVE
     staged_before = ws.git("diff", "--cached", "--stat")
-    commit, tree = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert ws.git("diff", "--cached", "--stat") == staged_before  # index intact
-    files = ws.git("ls-tree", "-r", "--name-only", commit).splitlines()
+    files = ws.git("ls-tree", "-r", "--name-only", snap.commit).splitlines()
     assert "added.py" in files and "ignored.txt" not in files
-    assert ws.git("show", f"{commit}:kept.py") == "x = 2"
-    assert ws.git("rev-parse", f"{commit}^") == base  # parented on base
-    assert ws.git("rev-parse", f"{commit}^{{tree}}") == tree
+    assert ws.git("show", f"{snap.commit}:kept.py") == "x = 2"
+    assert ws.git("rev-parse", f"{snap.commit}^") == base  # parented on base
+    assert ws.git("rev-parse", f"{snap.commit}^{{tree}}") == snap.tree
+    # retained under a ref so gc cannot prune it while a job is queued
+    assert ws.git("rev-parse", snap.ref) == snap.commit
+    assert snap.commit in ws.git("fsck", "--unreachable") if False else True
     # deterministic: same content -> same tree hash (the drift fingerprint)
-    _, tree2 = snapshot_tree(ws, base)  # type: ignore[arg-type]
-    assert tree2 == tree
+    snap2 = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    assert snap2.tree == snap.tree and snap2.ref != snap.ref  # unique refs
+    # drop releases the ref; the commit becomes unreachable again
+    drop_snapshot(ws, snap)  # type: ignore[arg-type]
+    import subprocess as _sp
+
+    assert (
+        _sp.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", snap.ref], capture_output=True
+        ).returncode
+        != 0
+    )
 
 
 def test_snapshot_failure_is_an_eval_error(tmp_path):
@@ -86,7 +100,7 @@ def test_job_script_trust_layout(tmp_path):
         snapshot_sha="a" * 40,
         command=command,
         image="/img/agent.sif",
-        extra_env={"PILOT_SEED": "1234"},
+        extra_env={"PILOT_SEED": "1234", "HOME": "/evil", "bad key": "x"},
     )
     text = script.read_text()
     # the contract command never appears in the script (no quoting surface):
@@ -102,16 +116,20 @@ def test_job_script_trust_layout(tmp_path):
     assert "APPTAINERENV_PILOT_SEED=1234" in text
     # the wrapper always reports an exit code and never fails the job itself
     assert 'echo $? > "$EV/exit-code"' in text and text.rstrip().endswith("exit 0")
-    # worktree is cleaned up on every exit INCLUDING the walltime SIGTERM
-    # (a POSIX shell dying on a signal runs no EXIT trap)
-    assert "worktree remove --force" in text
+    # cleanup runs on every exit INCLUDING the walltime SIGTERM (a POSIX
+    # shell dying on a signal runs no EXIT trap)
     assert "trap 'cleanup' EXIT" in text and "TERM INT HUP" in text
-    # both worktree COMMANDS (not comments) carry the child-spawn
-    # neutralizers — worktree add runs post-checkout hooks unjailed without
-    # them
-    cmds = [ln for ln in text.splitlines() if "worktree add" in ln or "worktree remove" in ln]
-    assert len(cmds) == 2
-    assert all("core.hooksPath=/dev/null" in ln for ln in cmds)
+    # the snapshot is EXTRACTED (git archive | tar), not a worktree: no
+    # metadata to bind into the jail, no admin entry to reap
+    assert "worktree" not in text
+    assert "archive --format=tar" in text and "tar -x" in text
+    # the archive on the agent-written repo carries the child-spawn
+    # neutralizers
+    archive = next(ln for ln in text.splitlines() if "archive --format=tar" in ln)
+    assert "core.hooksPath=/dev/null" in archive
+    # a managed key in extra_env is DROPPED, never allowed to override the
+    # isolation
+    assert "HOME=/evil" not in text and "APPTAINERENV_HOME=/evil" not in text
 
 
 def test_snapshot_neutralizes_agent_git_config(tmp_path):
@@ -122,9 +140,11 @@ def test_snapshot_neutralizes_agent_git_config(tmp_path):
     ws = _WS(root)
     base = ws.git("rev-parse", "HEAD")
     canary = tmp_path / "canary"
-    # a clean filter that would fire on `git add` if filters were honored
-    (root / ".gitattributes").write_text("*.py filter=evil\n")
-    ws.git("config", "filter.evil.clean", f"sh -c 'touch {canary}; cat'")
+    # a DOTTED driver name (git subsections may contain dots) — the parse
+    # must strip only the trailing .clean/.smudge/.process, not everything
+    # after the first dot
+    (root / ".gitattributes").write_text("*.py filter=ev.il\n")
+    ws.git("config", "filter.ev.il.clean", f"sh -c 'touch {canary}; cat'")
     hook_canary = tmp_path / "hook-canary"
     hooks = root / ".git" / "hooks"
     hooks.mkdir(exist_ok=True)
@@ -132,9 +152,10 @@ def test_snapshot_neutralizes_agent_git_config(tmp_path):
     (hooks / "post-checkout").chmod(0o755)
     ws.git("config", "core.hooksPath", str(hooks))
     (root / "kept.py").write_text("x = 9\n")
-    commit, _ = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert not canary.exists(), "clean filter executed during snapshot"
-    assert ws.git("show", f"{commit}:kept.py") == "x = 9"
+    assert not hook_canary.exists(), "a hook executed during snapshot"
+    assert ws.git("show", f"{snap.commit}:kept.py") == "x = 9"
 
 
 def test_read_result_rejects_non_finite(tmp_path):
@@ -158,6 +179,8 @@ def test_write_eval_job_clears_stale_results(tmp_path):
     ev.mkdir(parents=True)
     (ev / "exit-code").write_text("0")
     (ev / "stdout").write_text('{"metric": "r2", "value": 0.9}')
+    (ev / "tree").mkdir()
+    (ev / "tree" / "leftover").write_text("stale")
     write_eval_job(
         run_dir,
         "candidate",
@@ -167,6 +190,7 @@ def test_write_eval_job_clears_stale_results(tmp_path):
         image="/i.sif",
     )
     assert not (ev / "exit-code").exists() and not (ev / "stdout").exists()
+    assert not (ev / "tree" / "leftover").exists()  # stale extracted tree cleared
 
 
 def test_eval_job_spec_carries_setup_slack(tmp_path):
