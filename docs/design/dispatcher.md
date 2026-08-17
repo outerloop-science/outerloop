@@ -49,8 +49,12 @@ The switch is a per-benchmark contract knob (schema change, phase 1): an
 `eval_minutes` hint on the benchmark entry — per-benchmark because eval
 cost is a property of the benchmark, not the run budget, so it is validated
 with its own code-side ceiling rather than riding the Budgets clamp table.
-Under the in-job threshold (code-side constant, of order EVAL_TIMEOUT_S)
-the eval runs in-job as today; above it the orchestrator dispatches. The
+Under the in-job threshold the eval runs in-job as today; above it the
+orchestrator dispatches. The threshold is sized to the JOB'S runway, not to
+EVAL_TIMEOUT_S: the climb job carries ~CLIMB_OVERHEAD_MINUTES beyond the
+session for clone + two evals + publish, so in-job evals must fit a few
+minutes each — EVAL_TIMEOUT_S stays what it is today, the in-job hard
+kill, not the dispatch line. The
 orchestrator chooses per eval site, not per repo.
 
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
@@ -83,11 +87,15 @@ is believed.
 The submitted eval job: the contract command, on a worktree of the measured
 sha — where "the measured sha" is created if it does not exist yet: the
 candidate measure happens on a dirty workspace before anything is committed,
-so dispatch snapshots the tree first with the PANEL'S mechanics (add -A /
-write-tree / commit-tree parented on the base; includes added files, never
-touches the working index). The snapshot sha doubles as the drift
-fingerprint the final commit already checks. Suite-gate baseline jobs use
-real commits as today. The job runs under the SAME containment contract as
+so dispatch snapshots the tree first: add -A / write-tree / commit-tree
+parented on the base, run against a TEMPORARY index (`GIT_INDEX_FILE`), so
+the working index is never touched — a session that resumes later finds its
+staged state intact. (The panel's current snapshot uses the working index
+plus a reset; it should adopt the temporary index too.) The fingerprint for
+the existing drift check is the snapshot's TREE hash — `write-tree` is
+deterministic for identical trees, which is what climb.py already compares —
+while the commit wrapping it exists only so a worktree can materialize the
+tree. Suite-gate baseline jobs use real commits as today. The job runs under the SAME containment contract as
 today's in-job evaluator —
 apptainer `--containall --cleanenv` in the climb's single `--image` (session
 and eval share it today; that stays), seeing only the worktree, a throwaway
@@ -107,7 +115,11 @@ plus GONE past the deadline (vanished) and PENDING past the deadline
 left alone, bounded by its own walltime; wakes that fire without producing
 progress -> `stuck` at MAX_WAKE_ATTEMPTS. A moved base during the wait -> the existing
 merged-tree re-gate covers it, since re-entry re-checks freshness like any
-other resumption.
+other resumption. Worktree cleanup has a named owner at every exit: the
+wake's own finally (primary, as in-job measures do today), the sweep's
+run-ending path when a run dies waiting (best-effort rmtree of the run
+dir's measure worktrees, same never-silent discipline), and ended-run
+retention as the floor.
 
 Suite gates and panel re-measures ride the same staging: a suite
 re-measure over N siblings becomes 2N parallel eval jobs — baseline and
