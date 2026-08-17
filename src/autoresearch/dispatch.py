@@ -24,12 +24,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import shlex
 import subprocess
 from pathlib import Path
 
 from autoresearch.compute import JobSpec
-from autoresearch.github import Workspace
+from autoresearch.github import SAFE_GIT_FLAGS, Workspace
 from autoresearch.orchestrator import EvalError, _metric_from_output
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,37 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> tuple[str, str]:
     """
     index = Path(ws.root) / ".git" / f"dispatch-index-{base_sha[:12]}"
     env = {"GIT_INDEX_FILE": str(index)}
-    git = ["git", "-C", str(ws.root)]
+    # The workspace is AGENT-WRITTEN: every invocation carries the same
+    # child-spawn neutralizers as Workspace.git (SAFE_GIT_FLAGS — hooks,
+    # fsmonitor, ssh, credential helpers), plus clean/smudge filters and
+    # attribute-driven conversion OFF for the add (a session-defined clean
+    # filter would otherwise execute on the orchestrator host).
+    # git -c takes no globs, so a session-defined clean filter is neutralized
+    # by ENUMERATING the configured filter drivers and overriding each to a
+    # passthrough (`cat` preserves content byte-for-byte; empty would error).
+    # The overrides ride EVERY index op — the clean filter runs lazily at
+    # write-tree, not at add — so they fold into the base flag list itself.
+    base_git = ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS]
+    no_filters: list[str] = ["-c", "core.attributesFile=/dev/null"]
+    listing = subprocess.run(
+        [*base_git, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
+        env=_git_env(env),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    for line in listing.stdout.splitlines():
+        key = line.split(" ", 1)[0]  # e.g. filter.lfs.clean
+        driver = key.split(".", 2)[1]
+        no_filters += [
+            "-c",
+            f"filter.{driver}.clean=cat",
+            "-c",
+            f"filter.{driver}.smudge=cat",
+            "-c",
+            f"filter.{driver}.process=",
+        ]
+    git = [*base_git, *no_filters]  # every index op carries the neutralizers
     try:
         # seed from the base so ignore rules apply as they do to a populated
         # index (a fresh empty index would drop tracked-but-ignored files)
@@ -95,7 +126,19 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> tuple[str, str]:
             timeout=60,
         ).stdout.strip()
         commit = subprocess.run(
-            [*git, "commit-tree", tree, "-p", base_sha, "-m", "dispatch snapshot"],
+            [
+                *git,
+                "-c",
+                "user.name=dispatch",
+                "-c",
+                "user.email=dispatch@localhost",
+                "commit-tree",
+                tree,
+                "-p",
+                base_sha,
+                "-m",
+                "dispatch snapshot",
+            ],
             env=_git_env(env),
             check=True,
             capture_output=True,
@@ -112,7 +155,9 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> tuple[str, str]:
 def _git_env(extra: dict[str, str]) -> dict[str, str]:
     import os
 
-    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
+    # no HOME: git must not read the orchestrator user's ~/.gitconfig while
+    # operating on an agent-written tree
+    env = {k: os.environ[k] for k in ("PATH", "LANG") if k in os.environ}
     env.update(extra)
     return env
 
@@ -144,7 +189,12 @@ def write_eval_job(
     """
     ev = run_dir / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
+    # a resubmitted eval must never be read as its predecessor: stale result
+    # files go before the new job is even submitted
+    for stale in ("exit-code", "stdout", "stderr", "setup.log"):
+        (ev / stale).unlink(missing_ok=True)
     (ev / "command.txt").write_text(command)
+    safe_git = " ".join(shlex.quote(f) for f in SAFE_GIT_FLAGS)
     lines = [
         "#!/bin/sh",
         "set -u",
@@ -153,11 +203,20 @@ def write_eval_job(
         'WT="$EV/worktree"',
         'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/dispatch-eval-$$"',
         'mkdir -p "$SCRATCH/cache" "$SCRATCH/home"',
-        # worktree of the snapshot: detached, disposable, removed on exit
-        f'git -C "$REPO" worktree add --detach "$WT" {shlex.quote(snapshot_sha)} '
+        # worktree of the snapshot: detached, disposable, removed on exit.
+        # SAFE_GIT_FLAGS ride along — the repo is agent-written, and
+        # `worktree add` runs post-checkout hooks OUTSIDE the jail without
+        # them (a session can rewrite .git/config to re-enable hooksPath).
+        f'git -C "$REPO" {safe_git} worktree add --detach "$WT" {shlex.quote(snapshot_sha)} '
         '>> "$EV/setup.log" 2>&1 || { echo 97 > "$EV/exit-code"; exit 0; }',
-        'trap \'git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1; '
-        'rm -rf "$SCRATCH"\' EXIT',
+        "cleanup() { "
+        f'git -C "$REPO" {safe_git} worktree remove --force "$WT" >/dev/null 2>&1; '
+        'rm -rf "$SCRATCH"; }',
+        # TERM/INT/HUP too: Slurm's walltime kill is SIGTERM, and a POSIX
+        # shell dying on a signal does not run its EXIT trap — the leak
+        # would land on exactly the failure the walltime slack exists for
+        "trap 'cleanup' EXIT",
+        "trap 'echo 143 > \"$EV/exit-code\"; cleanup; trap - EXIT; exit 0' TERM INT HUP",
         'export UV_CACHE_DIR="$SCRATCH/cache" UV_LINK_MODE=copy '
         'UV_PROJECT_ENVIRONMENT="$SCRATCH/cache/venv"',
         'export APPTAINERENV_UV_CACHE_DIR="$UV_CACHE_DIR" '
@@ -223,16 +282,20 @@ def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
     except (OSError, ValueError) as exc:
         raise EvalError(f"dispatched eval {name}: no exit code ({exc})") from exc
     stdout = ""
-    with contextlib.suppress(OSError):
-        stdout = (ev / "stdout").read_text()
+    with contextlib.suppress(OSError, ValueError):
+        stdout = (ev / "stdout").read_text(errors="replace")
     if code != 0:
         tail = ""
-        with contextlib.suppress(OSError):
-            tail = (ev / "stderr").read_text()[-300:]
+        with contextlib.suppress(OSError, ValueError):
+            tail = (ev / "stderr").read_text(errors="replace")[-300:]
         raise EvalError(f"dispatched eval {name} failed ({code}): {tail}")
     value = _metric_from_output(stdout, metric)
     if value is None:
         raise EvalError(f"dispatched eval {name}: no readable {metric!r} in output")
+    if not math.isfinite(value):
+        # same rule as the in-job evaluator: json parses bare NaN/Infinity,
+        # and a NaN score entering a comparison is worse than a failure
+        raise EvalError(f"dispatched eval {name}: non-finite {metric!r} ({value})")
     return value
 
 
@@ -240,12 +303,14 @@ def result_summary(run_dir: Path, name: str) -> str:
     """One line for reports/logs; never raises."""
     ev = run_dir / f"eval-{name}"
     try:
-        code = (ev / "exit-code").read_text().strip()
-    except OSError:
+        code = (ev / "exit-code").read_text(errors="replace").strip()
+    except (OSError, ValueError):
         code = "?"
     try:
-        last = [ln for ln in (ev / "stdout").read_text().splitlines() if ln.strip()][-1]
-    except (OSError, IndexError):
+        last = [
+            ln for ln in (ev / "stdout").read_text(errors="replace").splitlines() if ln.strip()
+        ][-1]
+    except (OSError, ValueError, IndexError):
         last = ""
     return f"eval-{name}: exit={code} {last[:160]}"
 
@@ -255,7 +320,7 @@ def parse_result_json(run_dir: Path, name: str) -> dict:
     empty dict when absent."""
     ev = run_dir / f"eval-{name}"
     try:
-        for line in reversed((ev / "stdout").read_text().splitlines()):
+        for line in reversed((ev / "stdout").read_text(errors="replace").splitlines()):
             line = line.strip()
             if line.startswith("{"):
                 try:

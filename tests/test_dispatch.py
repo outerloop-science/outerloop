@@ -102,8 +102,71 @@ def test_job_script_trust_layout(tmp_path):
     assert "APPTAINERENV_PILOT_SEED=1234" in text
     # the wrapper always reports an exit code and never fails the job itself
     assert 'echo $? > "$EV/exit-code"' in text and text.rstrip().endswith("exit 0")
-    # worktree is cleaned up on every exit
-    assert "worktree remove --force" in text and "trap" in text
+    # worktree is cleaned up on every exit INCLUDING the walltime SIGTERM
+    # (a POSIX shell dying on a signal runs no EXIT trap)
+    assert "worktree remove --force" in text
+    assert "trap 'cleanup' EXIT" in text and "TERM INT HUP" in text
+    # both worktree COMMANDS (not comments) carry the child-spawn
+    # neutralizers — worktree add runs post-checkout hooks unjailed without
+    # them
+    cmds = [ln for ln in text.splitlines() if "worktree add" in ln or "worktree remove" in ln]
+    assert len(cmds) == 2
+    assert all("core.hooksPath=/dev/null" in ln for ln in cmds)
+
+
+def test_snapshot_neutralizes_agent_git_config(tmp_path):
+    """A session-planted clean filter or hook must not execute on the
+    orchestrator host during the snapshot (the instruction-smuggling class:
+    the workspace is agent-written)."""
+    root = _repo(tmp_path)
+    ws = _WS(root)
+    base = ws.git("rev-parse", "HEAD")
+    canary = tmp_path / "canary"
+    # a clean filter that would fire on `git add` if filters were honored
+    (root / ".gitattributes").write_text("*.py filter=evil\n")
+    ws.git("config", "filter.evil.clean", f"sh -c 'touch {canary}; cat'")
+    hook_canary = tmp_path / "hook-canary"
+    hooks = root / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-checkout").write_text(f"#!/bin/sh\ntouch {hook_canary}\n")
+    (hooks / "post-checkout").chmod(0o755)
+    ws.git("config", "core.hooksPath", str(hooks))
+    (root / "kept.py").write_text("x = 9\n")
+    commit, _ = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    assert not canary.exists(), "clean filter executed during snapshot"
+    assert ws.git("show", f"{commit}:kept.py") == "x = 9"
+
+
+def test_read_result_rejects_non_finite(tmp_path):
+    rd = _result(tmp_path, name="n", stdout='{"metric": "r2", "value": NaN}\n')
+    with pytest.raises(EvalError, match="non-finite"):
+        read_eval_result(rd, "n", "r2")
+
+
+def test_read_result_survives_binary_output(tmp_path):
+    ev = tmp_path / "eval-bin"
+    ev.mkdir()
+    (ev / "exit-code").write_text("0")
+    (ev / "stdout").write_bytes(b"\xff\xfe garbage\n" + b'{"metric": "r2", "value": 0.5}\n')
+    assert read_eval_result(tmp_path, "bin", "r2") == 0.5
+    assert "exit=0" in result_summary(tmp_path, "bin")
+
+
+def test_write_eval_job_clears_stale_results(tmp_path):
+    run_dir = tmp_path / "run"
+    ev = run_dir / "eval-candidate"
+    ev.mkdir(parents=True)
+    (ev / "exit-code").write_text("0")
+    (ev / "stdout").write_text('{"metric": "r2", "value": 0.9}')
+    write_eval_job(
+        run_dir,
+        "candidate",
+        repo_root=tmp_path,
+        snapshot_sha="a" * 40,
+        command="true",
+        image="/i.sif",
+    )
+    assert not (ev / "exit-code").exists() and not (ev / "stdout").exists()
 
 
 def test_eval_job_spec_carries_setup_slack(tmp_path):
