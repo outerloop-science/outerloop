@@ -239,6 +239,29 @@ partition/GPU allocation fields are a phase-3 contract-schema change
 (`Benchmark` rejects unknown fields today, deliberately), validated and
 clamped by operator ceilings like every other budget.
 
+**Eval-job durability under preemption is part of that same resource
+policy.** What resumes across a park/wake is the SESSION, not the eval's
+computation: the snapshot is a *code* tree (`candidate_sha`, checked out
+fresh per attempt on node-local scratch), never a training checkpoint, and
+an eval attempt is atomic — it either finishes and atomically writes its
+result, or the attempt is lost. So a preempt or a walltime timeout that
+leaves no clean result is an `eval-error` for that round (the TERM trap
+writes exit 143 → nonzero → error; a hard SIGKILL leaves no exit-code →
+"vanished"), never a from-checkpoint continue, and the measurer never
+auto-resubmits a vanished job (a genuinely broken eval would loop forever).
+Today's design therefore assumes an eval fits one walltime on a partition
+where it will not be preempted. Making that explicit is a resource-policy
+field alongside partition/GPU: either (a) route evals to a NON-preemptible
+partition — simplest, and a single measurement is short next to a real
+train — or (b) submit with `--requeue` plus a longer walltime, which
+composes cleanly here because a requeued job KEEPS its id and name, so the
+cluster-authoritative liveness check just sees it as still-live and re-parks
+until it lands. Per-workload checkpointing to shared storage is the heavy
+last resort, warranted only once an eval grows long enough that a
+from-scratch rerun is too costly (the 8-seed ruler eval at ~68 min is the
+first workload that approaches it). Both (a) and (b) are operator-ceiling-
+clamped knobs on the same phase-3 contract schema.
+
 ## Non-goals
 
 Not a workflow engine: one job per dispatch, one wake per job, no DAGs. Not
