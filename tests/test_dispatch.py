@@ -122,6 +122,10 @@ def test_job_script_trust_layout(tmp_path):
     # metadata to bind into the jail, no admin entry to reap
     assert "worktree" not in text
     assert "archive --format=tar" in text and "tar -x" in text
+    # the tree lands on node-local scratch (dies with the job), not the run dir
+    assert 'TREE="$SCRATCH/tree"' in text
+    # a missing/empty command file is a setup failure, not a clean exit-0
+    assert '[ -s "$EV/command.txt" ]' in text
     # the archive on the agent-written repo carries the child-spawn
     # neutralizers
     archive = next(ln for ln in text.splitlines() if "archive --format=tar" in ln)
@@ -155,6 +159,30 @@ def test_snapshot_neutralizes_agent_git_config(tmp_path):
     assert not canary.exists(), "clean filter executed during snapshot"
     assert not hook_canary.exists(), "a hook executed during snapshot"
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 9"
+
+
+def test_snapshot_strips_gitattributes_so_archive_is_faithful(tmp_path):
+    """git archive honors the archived tree's export-ignore/export-subst; a
+    session-authored .gitattributes could make the extracted tree differ from
+    the fingerprinted snapshot. The snapshot must drop .gitattributes."""
+    root = _repo(tmp_path)
+    ws = _WS(root)
+    base = ws.git("rev-parse", "HEAD")
+    # export-ignore would drop kept.py from an archive if honored
+    (root / ".gitattributes").write_text("kept.py export-ignore\n")
+    (root / "kept.py").write_text("x = 7\n")
+    snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    files = ws.git("ls-tree", "-r", "--name-only", snap.commit).splitlines()
+    assert ".gitattributes" not in files  # stripped from the snapshot
+    assert "kept.py" in files  # and so export-ignore cannot drop it
+    # the archived tree therefore equals the snapshot (no attributes to honor)
+    import subprocess as sp
+
+    tar = sp.run(
+        ["git", "-C", str(root), "archive", "--format=tar", snap.commit], capture_output=True
+    ).stdout
+    names = sp.run(["tar", "-t"], input=tar, capture_output=True).stdout.decode().split()
+    assert any("kept.py" in n for n in names)
 
 
 def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
@@ -193,8 +221,6 @@ def test_write_eval_job_clears_stale_results(tmp_path):
     ev.mkdir(parents=True)
     (ev / "exit-code").write_text("0")
     (ev / "stdout").write_text('{"metric": "r2", "value": 0.9}')
-    (ev / "tree").mkdir()
-    (ev / "tree" / "leftover").write_text("stale")
     write_eval_job(
         run_dir,
         "candidate",
@@ -204,7 +230,6 @@ def test_write_eval_job_clears_stale_results(tmp_path):
         image="/i.sif",
     )
     assert not (ev / "exit-code").exists() and not (ev / "stdout").exists()
-    assert not (ev / "tree" / "leftover").exists()  # stale extracted tree cleared
 
 
 def test_job_script_archive_failure_reports_not_masks(tmp_path):
@@ -235,6 +260,9 @@ def test_eval_job_spec_carries_setup_slack(tmp_path):
     script.write_text("#!/bin/sh\n")
     spec = eval_job_spec(script, job_name="eval-x", account="a", partition="p", eval_minutes=30)
     assert spec.time_minutes == 40 and spec.script == str(script)
+    # a contract value over the ceiling cannot make a longer job than allowed
+    huge = eval_job_spec(script, job_name="e", account="a", partition="p", eval_minutes=10_000)
+    assert huge.time_minutes == EVAL_JOB_MINUTES_CEILING + 10
 
 
 def test_clamps_and_threshold():

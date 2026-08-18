@@ -123,6 +123,15 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
         # index (a fresh empty index would drop tracked-but-ignored files)
         run([*git, "read-tree", base_sha], 60)
         run([*git, "add", "-A"], 120)
+        # Drop every .gitattributes from the snapshot: `git archive` (how the
+        # job materializes the tree) honors the archived tree's OWN
+        # export-ignore/export-subst, so a session-authored .gitattributes
+        # would make the extracted tree differ from this fingerprinted one.
+        # An eval never needs .gitattributes; removing them makes the archive
+        # faithful and kills the attribute side of filter selection too.
+        attrs = run([*git, "ls-files", "-z", "--", "*.gitattributes", ".gitattributes"], 30)
+        for path in filter(None, attrs.split("\0")):
+            run([*git, "rm", "--cached", "-q", "--", path], 30)
         tree = run([*git, "write-tree"], 60)
         commit = run(
             [
@@ -260,13 +269,20 @@ def write_eval_job(
         "set -u",
         f"EV={shlex.quote(str(ev))}",
         f"REPO={shlex.quote(str(repo_root))}",
-        'TREE="$EV/tree"',
+        # the extracted tree lives on NODE-LOCAL scratch, not the shared run
+        # dir: it dies with the job (nothing to reap on the shared FS), and
+        # the wake needs only stdout/exit-code, which stay in $EV
         'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/dispatch-eval-$$"',
+        'TREE="$SCRATCH/tree"',
         'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$TREE"',
         # trap FIRST, before anything that can exit, so $SCRATCH never leaks
         'cleanup() { rm -rf "$SCRATCH"; }',
         "trap 'cleanup' EXIT",
         "trap 'echo 143 > \"$EV/exit-code\"; cleanup; trap - EXIT; exit 0' TERM INT HUP",
+        # the command file must exist and be non-empty, or sh -c "" would
+        # exit 0 with empty output and read as a clean eval that measured
+        # nothing
+        '[ -s "$EV/command.txt" ] || { echo 96 > "$EV/exit-code"; exit 0; }',
     ]
     for k, v in neutral.items():
         lines.append(f"export {k}={shlex.quote(v)}")
@@ -321,14 +337,16 @@ def eval_job_spec(
     mem: str = "8G",
     gpus: int = 0,
 ) -> JobSpec:
-    """The JobSpec for one dispatched eval: the hint (already clamped) plus
-    setup slack. GPU counts arrive with the phase-3 contract fields; the
-    parameter exists so the seam does not change shape then."""
+    """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
+    plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
+    not create a longer Slurm job than the ceiling allows. GPU counts arrive
+    with the phase-3 contract fields; the parameter exists so the seam does
+    not change shape then."""
     return JobSpec(
         job_name=job_name[:60],
         account=account,
         partition=partition,
-        time_minutes=eval_minutes + EVAL_JOB_SETUP_MINUTES,
+        time_minutes=effective_eval_minutes(eval_minutes) + EVAL_JOB_SETUP_MINUTES,
         script=str(script),
         cpus=cpus,
         mem=mem,
