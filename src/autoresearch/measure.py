@@ -136,12 +136,17 @@ class DispatchedMeasurer:
     run_tag: str = "run"  # disambiguates job names across runs on one account
 
     def _slot(self, m: Measure) -> str:
-        # Storage identity = (logical name, tree_sha). A re-measure at a NEW
-        # candidate sha (a panel revision) lands in a fresh eval dir and a
+        # Storage identity = (logical name, FULL tree_sha). A re-measure at a
+        # NEW candidate sha (a panel revision) lands in a fresh eval dir and a
         # fresh job, so it never reads the prior sha's cached result; a resume
         # at the SAME sha reuses it. `m.name` stays the caller-facing key
         # (results["candidate"]) — only where the bits live is sha-scoped.
-        return f"{m.name}-{m.tree_sha[:8]}"
+        # The full sha, not a prefix: a truncated prefix would alias two
+        # commits that share those chars into one cached result. A dir name has
+        # 255 chars to spare, so it carries the sha verbatim (debuggable); the
+        # job name folds it into a hash only because Slurm names are length-
+        # budgeted.
+        return f"{m.name}-{m.tree_sha}"
 
     def _ev(self, m: Measure) -> Path:
         return self.run_dir / f"eval-{self._slot(m)}"

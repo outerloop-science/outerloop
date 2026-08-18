@@ -48,10 +48,10 @@ def _measurer(
     )
 
 
-# storage is keyed by (logical name, tree_sha[:8]) — the on-disk slots for the
-# _measures() pair below:
-BASE = "baseline-" + "a" * 8
-CAND = "candidate-" + "b" * 8
+# storage is keyed by (logical name, full tree_sha) — the on-disk slots for
+# the _measures() pair below:
+BASE = "baseline-" + "a" * 40
+CAND = "candidate-" + "b" * 40
 
 
 def _land(tmp_path: Path, slot: str, value=None, code="0", job="101"):
@@ -247,6 +247,18 @@ def test_same_name_new_sha_gets_fresh_storage_and_job(tmp_path):
     assert m._ev(v1) != m._ev(v2)  # distinct on-disk slots
     assert m._job_name(v1) != m._job_name(v2)  # distinct cluster jobs
     # a landed v1 result is invisible to a v2 read (no stale inheritance)
-    _land(tmp_path, CAND, 0.42)  # eval-candidate-bbbbbbbb
+    _land(tmp_path, CAND, 0.42)  # eval-candidate-bbb...(40)
     with pytest.raises(MeasurementPending):
         m.results([v2])  # v2's slot has no result -> dispatched, not read
+
+
+def test_shared_sha_prefix_does_not_alias_storage(tmp_path):
+    """Two commits sharing an 8-char SHA prefix but differing later must NOT
+    share an eval dir — a truncated slot would let the second read the first's
+    cached result."""
+    m = _measurer(tmp_path, [])
+    p = "a" * 8
+    a = Measure("candidate", p + "b" * 32, "cmd", "r2")
+    b = Measure("candidate", p + "c" * 32, "cmd", "r2")
+    assert m._ev(a) != m._ev(b)
+    assert m._job_name(a) != m._job_name(b)
