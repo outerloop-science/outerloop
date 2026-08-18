@@ -48,8 +48,14 @@ def _measurer(
     )
 
 
-def _land(tmp_path: Path, name: str, value=None, code="0", job="101"):
-    ev = tmp_path / f"eval-{name}"
+# storage is keyed by (logical name, tree_sha[:8]) — the on-disk slots for the
+# _measures() pair below:
+BASE = "baseline-" + "a" * 8
+CAND = "candidate-" + "b" * 8
+
+
+def _land(tmp_path: Path, slot: str, value=None, code="0", job="101"):
+    ev = tmp_path / f"eval-{slot}"
     ev.mkdir(parents=True, exist_ok=True)
     (ev / "submitted").write_text(job)
     (ev / "exit-code").write_text(code)
@@ -57,8 +63,8 @@ def _land(tmp_path: Path, name: str, value=None, code="0", job="101"):
         (ev / "stdout").write_text(json.dumps({"metric": "r2", "value": value}) + "\n")
 
 
-def _dispatched(tmp_path: Path, name: str, job="101"):
-    ev = tmp_path / f"eval-{name}"
+def _dispatched(tmp_path: Path, slot: str, job="101"):
+    ev = tmp_path / f"eval-{slot}"
     ev.mkdir(parents=True, exist_ok=True)
     (ev / "submitted").write_text(job)
 
@@ -79,8 +85,8 @@ def test_first_pass_dispatches_all_and_parks(tmp_path):
 def test_resume_reads_completed_without_resubmitting(tmp_path):
     submitted: list = []
     m = _measurer(tmp_path, submitted)
-    _land(tmp_path, "baseline", 0.50)
-    _land(tmp_path, "candidate", 0.61)
+    _land(tmp_path, BASE, 0.50)
+    _land(tmp_path, CAND, 0.61)
     assert m.results(_measures()) == {"baseline": 0.50, "candidate": 0.61}
     assert submitted == []
 
@@ -89,8 +95,9 @@ def test_live_job_reparks_on_real_id_never_resubmits(tmp_path):
     """A job squeue reports as running is parked on its real id — even if its
     local marker is MISSING (the crash-before-marker case)."""
     submitted: list = []
-    m = _measurer(tmp_path, submitted, live={"eval-r1-candidate-f882a1f6f00a": "102"})
-    _land(tmp_path, "baseline", 0.50)
+    cand_job = _measurer(tmp_path, [])._job_name(_measures()[1])
+    m = _measurer(tmp_path, submitted, live={cand_job: "102"})
+    _land(tmp_path, BASE, 0.50)
     # candidate has NO marker (submitter died in the gap) but IS live
     with pytest.raises(MeasurementPending) as exc:
         m.results(_measures())
@@ -103,8 +110,8 @@ def test_dispatched_but_vanished_fails_not_resubmits(tmp_path):
     producing a result (SIGKILL / GONE) -> EvalError, never resubmit."""
     submitted: list = []
     m = _measurer(tmp_path, submitted, live={})  # nothing live
-    _land(tmp_path, "baseline", 0.50)
-    _dispatched(tmp_path, "candidate", job="102")  # marker, not live, no result
+    _land(tmp_path, BASE, 0.50)
+    _dispatched(tmp_path, CAND, job="102")  # marker, not live, no result
     with pytest.raises(EvalError, match="vanished"):
         m.results(_measures())
     assert submitted == []
@@ -112,8 +119,8 @@ def test_dispatched_but_vanished_fails_not_resubmits(tmp_path):
 
 def test_nonzero_exit_raises(tmp_path):
     m = _measurer(tmp_path, [])
-    _land(tmp_path, "baseline", 0.50)
-    _land(tmp_path, "candidate", code="97")
+    _land(tmp_path, BASE, 0.50)
+    _land(tmp_path, CAND, code="97")
     with pytest.raises(EvalError, match="candidate"):
         m.results(_measures())
 
@@ -123,7 +130,7 @@ def test_squeue_blind_parks_without_dispatch(tmp_path):
     marker id if any), let the sweep deadline retry; never dispatch blind."""
     submitted: list = []
     m = _measurer(tmp_path, submitted, squeue_fails=True)
-    _dispatched(tmp_path, "baseline", job="102")  # has a marker
+    _dispatched(tmp_path, BASE, job="102")  # has a marker
     # candidate has no marker; blind -> park, empty dep -> sweep handles it
     with pytest.raises(MeasurementPending) as exc:
         m.results(_measures())
@@ -141,20 +148,19 @@ def test_empty_pending_afterany_is_blank():
 
 
 def test_plan_baseline_and_candidate_paired_seed():
-    plan = plan_measures("hp", "cmd", "r2", "a" * 40, "b" * 40, seed_env="S", seed=7)
+    plan = plan_measures("cmd", "r2", "a" * 40, "b" * 40, seed_env="S", seed=7)
     assert [m.name for m in plan] == ["baseline", "candidate"]
     assert plan[0].tree_sha == "a" * 40 and plan[1].tree_sha == "b" * 40
     assert plan[0].env() == {"S": "7"} and plan[1].env() == {"S": "7"}  # common random numbers
 
 
 def test_plan_no_seed_env_no_extra_env():
-    plan = plan_measures("hp", "cmd", "r2", "a" * 40, "b" * 40)
+    plan = plan_measures("cmd", "r2", "a" * 40, "b" * 40)
     assert all(m.env() == {} for m in plan)
 
 
 def test_plan_suite_siblings_use_their_own_seed_env():
     plan = plan_measures(
-        "hp",
         "cmd",
         "r2",
         "a" * 40,
@@ -228,3 +234,19 @@ def test_long_run_tags_get_distinct_job_names(tmp_path):
     n1 = mk("heldout_probe-20260818-aaa")._job_name(meas)
     n2 = mk("heldout_probe-20260818-bbb")._job_name(meas)
     assert n1 != n2 and len(n1) <= 60 and len(n2) <= 60
+
+
+def test_same_name_new_sha_gets_fresh_storage_and_job(tmp_path):
+    """A panel revision re-measures `candidate` at a NEW sha. Storage identity
+    is (name, tree_sha), so the new sha must NOT read the old sha's cached
+    eval dir and must NOT reuse its cluster job name — otherwise a revision
+    would silently inherit the pre-revision result."""
+    m = _measurer(tmp_path, [])
+    v1 = Measure("candidate", "b" * 40, "cmd", "r2")
+    v2 = Measure("candidate", "c" * 40, "cmd", "r2")  # revised candidate
+    assert m._ev(v1) != m._ev(v2)  # distinct on-disk slots
+    assert m._job_name(v1) != m._job_name(v2)  # distinct cluster jobs
+    # a landed v1 result is invisible to a v2 read (no stale inheritance)
+    _land(tmp_path, CAND, 0.42)  # eval-candidate-bbbbbbbb
+    with pytest.raises(MeasurementPending):
+        m.results([v2])  # v2's slot has no result -> dispatched, not read

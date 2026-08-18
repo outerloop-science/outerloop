@@ -69,10 +69,13 @@ class Measure:
 @dataclass(frozen=True)
 class SiblingSpec:
     """One suite sibling's resolved measurement facts. Each sibling carries
-    its OWN seed variable and drawn seed — a sibling that resamples reads a
-    DIFFERENT env var than the climbed benchmark, and its pairing seed is its
-    own (the in-job suite gate draws one seed per benchmark, not one global
-    seed)."""
+    its OWN seed variable — a sibling that resamples reads a DIFFERENT env var
+    than the climbed benchmark (`sib.seed_env`, not the benchmark's). The
+    in-job gate draws ONE `suite_seed` and hands that single value to every
+    sibling through its own var, so callers set every sibling's `seed` to that
+    one suite_seed; the pair (base and cand) always shares it (common random
+    numbers). The per-sibling `seed` field only exists so the var, not the
+    value, can differ."""
 
     name: str
     command: str
@@ -85,7 +88,6 @@ class SiblingSpec:
 
 
 def plan_measures(
-    benchmark: str,
     command: str,
     metric: str,
     base_sha: str,
@@ -133,18 +135,28 @@ class DispatchedMeasurer:
     eval_minutes: int
     run_tag: str = "run"  # disambiguates job names across runs on one account
 
+    def _slot(self, m: Measure) -> str:
+        # Storage identity = (logical name, tree_sha). A re-measure at a NEW
+        # candidate sha (a panel revision) lands in a fresh eval dir and a
+        # fresh job, so it never reads the prior sha's cached result; a resume
+        # at the SAME sha reuses it. `m.name` stays the caller-facing key
+        # (results["candidate"]) — only where the bits live is sha-scoped.
+        return f"{m.name}-{m.tree_sha[:8]}"
+
     def _ev(self, m: Measure) -> Path:
-        return self.run_dir / f"eval-{m.name}"
+        return self.run_dir / f"eval-{self._slot(m)}"
 
     def _job_name(self, m: Measure) -> str:
-        # deterministic + unique per (run, measure): the CLUSTER can then be
-        # asked "is this measure's job live" by name, independent of any local
-        # marker. The hash covers the FULL (run_tag, measure name) identity —
-        # so no truncation of either the run tag OR the name (both readable
-        # prefixes only, for a human reading squeue) can collide two distinct
-        # jobs. The NUL separator keeps `a`+`bc` distinct from `ab`+`c`.
-        h = hashlib.sha1(f"{self.run_tag}\0{m.name}".encode()).hexdigest()[:12]
-        return f"eval-{self.run_tag[:12]}-{m.name[:12]}-{h}"
+        # deterministic + unique per (run, measure, sha): the CLUSTER can then
+        # be asked "is this measure's job live" by name, independent of any
+        # local marker. The hash covers the FULL (run_tag, name, tree_sha)
+        # identity — so no truncation of the readable prefixes (for a human
+        # reading squeue) can collide two distinct jobs, and the same name at
+        # two shas gets two distinct jobs. NUL separators keep the parts
+        # unambiguous (`a`+`bc` distinct from `ab`+`c`).
+        ident = f"{self.run_tag}\0{m.name}\0{m.tree_sha}"
+        h = hashlib.sha1(ident.encode()).hexdigest()[:12]
+        return f"eval-{self.run_tag[:10]}-{m.name[:12]}-{h}"
 
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
@@ -156,7 +168,7 @@ class DispatchedMeasurer:
     def _dispatch(self, m: Measure) -> str:
         script = write_eval_job(
             self.run_dir,
-            m.name,
+            self._slot(m),
             repo_root=self.repo_root,
             snapshot_sha=m.tree_sha,
             command=m.command,
@@ -220,4 +232,4 @@ class DispatchedMeasurer:
             pending.append(self._dispatch(m))
         if pending or blind:
             raise MeasurementPending(tuple(pending))
-        return {m.name: read_eval_result(self.run_dir, m.name, m.metric) for m in measures}
+        return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}
