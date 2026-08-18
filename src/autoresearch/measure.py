@@ -139,11 +139,12 @@ class DispatchedMeasurer:
     def _job_name(self, m: Measure) -> str:
         # deterministic + unique per (run, measure): the CLUSTER can then be
         # asked "is this measure's job live" by name, independent of any local
-        # marker. Slurm truncates long names, so a readable prefix is followed
-        # by a hash of the FULL measure name — two long names sharing a prefix
-        # get distinct jobs (a plain truncation would collide them).
-        h = hashlib.sha1(m.name.encode()).hexdigest()[:8]
-        return f"eval-{self.run_tag[:20]}-{m.name[:20]}-{h}"
+        # marker. The hash covers the FULL (run_tag, measure name) identity —
+        # so no truncation of either the run tag OR the name (both readable
+        # prefixes only, for a human reading squeue) can collide two distinct
+        # jobs. The NUL separator keeps `a`+`bc` distinct from `ab`+`c`.
+        h = hashlib.sha1(f"{self.run_tag}\0{m.name}".encode()).hexdigest()[:12]
+        return f"eval-{self.run_tag[:12]}-{m.name[:12]}-{h}"
 
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()

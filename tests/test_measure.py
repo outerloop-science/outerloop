@@ -89,7 +89,7 @@ def test_live_job_reparks_on_real_id_never_resubmits(tmp_path):
     """A job squeue reports as running is parked on its real id — even if its
     local marker is MISSING (the crash-before-marker case)."""
     submitted: list = []
-    m = _measurer(tmp_path, submitted, live={"eval-r1-candidate-266ec841": "102"})
+    m = _measurer(tmp_path, submitted, live={"eval-r1-candidate-f882a1f6f00a": "102"})
     _land(tmp_path, "baseline", 0.50)
     # candidate has NO marker (submitter died in the gap) but IS live
     with pytest.raises(MeasurementPending) as exc:
@@ -205,3 +205,26 @@ def test_long_measure_names_get_distinct_job_names(tmp_path):
     b = Measure("sib-" + "x" * 60 + "-cand", "a" * 40, "c", "r2")
     ja, jb = m._job_name(a), m._job_name(b)
     assert ja != jb and len(ja) <= 60 and len(jb) <= 60
+
+
+def test_long_run_tags_get_distinct_job_names(tmp_path):
+    """Two run tags sharing their first chars must get distinct job names for
+    the same measure (the hash covers the full run_tag, not just a prefix)."""
+    from autoresearch.compute import CommandResult, SlurmCompute
+
+    def mk(tag):
+        return DispatchedMeasurer(
+            compute=SlurmCompute(runner=lambda a, t: CommandResult(0, "", "")),
+            run_dir=tmp_path,
+            repo_root=tmp_path,
+            image="/i",
+            account="a",
+            partition="p",
+            eval_minutes=60,
+            run_tag=tag,
+        )
+
+    meas = Measure("baseline", "a" * 40, "c", "r2")
+    n1 = mk("heldout_probe-20260818-aaa")._job_name(meas)
+    n2 = mk("heldout_probe-20260818-bbb")._job_name(meas)
+    assert n1 != n2 and len(n1) <= 60 and len(n2) <= 60
