@@ -97,17 +97,26 @@ edits are done — and it is also the only non-idempotent part. So the seam is
 AFTER the session:
 
 1. Session runs, ends. Its output is the dirty workspace.
-2. The workspace is SNAPSHOTTED (`dispatch.snapshot_tree`, retained by ref):
-   `candidate_sha`. The base is `base_sha` (the clone's pre-session HEAD).
-   Both are committed shas the dispatcher can check out.
+2. The workspace is SNAPSHOTTED (`dispatch.snapshot_tree`, which retains the
+   commit behind a unique random ref so independent snapshots of the same
+   tree never share a lifecycle): `candidate_sha` + its `candidate_ref`. The
+   base is `base_sha` (the clone's pre-session HEAD — a real branch commit, so
+   it needs no ref and never leaks). Both shas are checkoutable by the
+   dispatcher.
 3. The MEASURE-AND-DECIDE phase — a pure function of `(base_sha,
    candidate_sha, contract, seed)` — dispatches its measures through the
    `DispatchedMeasurer` (baseline@base_sha + candidate@candidate_sha, one
    wake), and on `MeasurementPending` the run parks as `waiting`.
 4. The record persists exactly what a fresh process needs to re-enter step 3
-   without the session: `base_sha`, `candidate_sha`, `seed`, the benchmark,
-   and a `stage` marking "measures dispatched". Everything else (contract,
-   ruler) is re-fetched.
+   without the session: `base_sha`, `candidate_sha` + `candidate_ref`, `seed`,
+   the benchmark, and a `stage` marking "measures dispatched". The
+   `candidate_ref` is essential and cannot be reconstructed from
+   `candidate_sha` (it is random by design): it is what a terminal wake hands
+   `dispatch.drop_snapshot` to release the snapshot once the run finishes (PR
+   opened or abandoned) — omit it and every parked run leaks a ref and its
+   commit. The snapshot must OUTLIVE all park/wake cycles (each eval checks out
+   `candidate_sha`), so the drop is deferred to the terminal state, never a
+   mid-cycle wake. Everything else (contract, ruler) is re-fetched.
 
 On the wake, a fresh process loads the record, re-enters measure-and-decide:
 the `DispatchedMeasurer` reads both cached results, `improved()` /
@@ -124,8 +133,11 @@ Sub-parts, each its own PR through the panel:
   logic behind a re-enterable function over committed shas; pure, tested
   with a fake measurer.
 - **B.2b:** wire `live_climb` — session -> snapshot -> measure_and_decide;
-  on park write the `waiting` record (base_sha/candidate_sha/seed/stage +
-  `experiment_job_id` = the afterany set) and end. When a revision supersedes
+  on park write the `waiting` record (base_sha/candidate_sha/`candidate_ref`/
+  seed/stage + `experiment_job_id` = the afterany set) and end. A terminal
+  wake `drop_snapshot`s `candidate_ref` (the snapshot outlives every park/wake
+  cycle, so the drop is deferred to run end, never mid-cycle). When a revision
+  supersedes
   a candidate, the revision loop `scancel`s the superseded candidate's still-
   running eval jobs before dispatching the new ones — the measurer keys each
   measure by its full determinant (so the results never alias), but only the
@@ -250,7 +262,7 @@ single writer via lease):
 | `experiment_job_id` `wake_job_id` `followup_job_id` | Slurm handles for the dispatched work, its afterany wake, and review servicing |
 | `resume_session_id` | the harness session a wake reconstructs — the entire "pause" state for a session's mind |
 | `state` `deadline` `terminal_seen` `wake_attempts` | wake bookkeeping; a waiting record REQUIRES a deadline |
-| `stage` (phase 1) | a small object, not a label: the parked measure point PLUS the process-local state re-entry needs — the pre-eval tree fingerprints and measured paths the drift check compares (today they are locals; a resumed process without them would fail the drift check closed on every dispatch) and the expected result-file names |
+| `stage` (phase 1) | a small object, not a label: the parked measure point PLUS the process-local state re-entry needs — `base_sha`, `candidate_sha` and the candidate snapshot's `candidate_ref` (random, so it MUST be stored — a terminal wake hands it to `drop_snapshot` or the snapshot leaks), the drawn `seed`, the pre-eval tree fingerprints and measured paths the drift check compares (today they are locals; a resumed process without them would fail the drift check closed on every dispatch), and the expected result-file names |
 | `last_comment_id` `last_review_id` `last_review_comment_id` | three cursors because GitHub's three comment collections have independent id sequences |
 | `ending` `ending_note` `created` `updated` | terminal record |
 
