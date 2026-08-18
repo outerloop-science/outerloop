@@ -21,12 +21,13 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from autoresearch.compute import JobSpec, SlurmCompute
+from autoresearch.compute import JobSpec, SlurmCompute, is_terminal
 from autoresearch.dispatch import (
     eval_job_spec,
     read_eval_result,
     write_eval_job,
 )
+from autoresearch.orchestrator import EvalError
 
 log = logging.getLogger(__name__)
 
@@ -75,48 +76,72 @@ class DispatchedMeasurer:
     partition: str
     eval_minutes: int
 
-    def _done(self, m: Measure) -> bool:
-        return (self.run_dir / f"eval-{m.name}" / "exit-code").exists()
+    def _ev(self, m: Measure) -> Path:
+        return self.run_dir / f"eval-{m.name}"
 
-    def submit_missing(self, measures: list[Measure]) -> list[str]:
-        """Submit every measure whose result is not already on disk. Returns
-        the submitted job ids (empty when all are already done)."""
-        job_ids: list[str] = []
-        for m in measures:
-            if self._done(m):
-                continue  # a prior pass already dispatched-and-completed this
-            script = write_eval_job(
-                self.run_dir,
-                m.name,
-                repo_root=self.repo_root,
-                snapshot_sha=m.tree_sha,
-                command=m.command,
-                image=self.image,
-                extra_env=m.env(),
-            )
-            spec: JobSpec = eval_job_spec(
-                script,
-                job_name=f"eval-{m.name}",
-                account=self.account,
-                partition=self.partition,
-                eval_minutes=self.eval_minutes,
-            )
-            job_ids.append(self.compute.submit(spec))
-            log.info(
-                "dispatched measure %s (sha %s) as job %s", m.name, m.tree_sha[:12], job_ids[-1]
-            )
-        return job_ids
+    def _done(self, m: Measure) -> bool:
+        return (self._ev(m) / "exit-code").exists()
+
+    def _submitted_job(self, m: Measure) -> str:
+        """The job id a prior pass recorded for this measure, or "" if it was
+        never dispatched. The marker on disk is what lets a fresh process
+        (post-wake) distinguish never-submitted from already-running-or-dead
+        without threading state through the record."""
+        marker = self._ev(m) / "submitted"
+        return marker.read_text().strip() if marker.exists() else ""
+
+    def _dispatch(self, m: Measure) -> str:
+        script = write_eval_job(
+            self.run_dir,
+            m.name,
+            repo_root=self.repo_root,
+            snapshot_sha=m.tree_sha,
+            command=m.command,
+            image=self.image,
+            extra_env=m.env(),
+        )
+        spec: JobSpec = eval_job_spec(
+            script,
+            job_name=f"eval-{m.name}",
+            account=self.account,
+            partition=self.partition,
+            eval_minutes=self.eval_minutes,
+        )
+        job_id = self.compute.submit(spec)
+        (self._ev(m) / "submitted").write_text(job_id)
+        log.info("dispatched measure %s (sha %s) as job %s", m.name, m.tree_sha[:12], job_id)
+        return job_id
 
     def results(self, measures: list[Measure]) -> dict[str, float]:
-        """Every measure's value, or PARK. Submits any missing measures and
-        raises MeasurementPending if not all are done; raises EvalError if a
-        completed measure failed (the honest-negative path is the caller's to
-        interpret from the ending, exactly as an in-job eval failure is)."""
-        missing = [m for m in measures if not self._done(m)]
-        if missing:
-            ids = self.submit_missing(measures)
-            # a measure with no id here is one that completed between the
-            # done-check and now — re-check on the next wake rather than
-            # parking on an empty set
-            raise MeasurementPending(tuple(ids) or ("__recheck__",))
+        """Every measure's value, or PARK / FAIL. For each not-yet-done
+        measure: if it was never dispatched, dispatch it; if it WAS dispatched
+        but its job is terminal with no exit-code, it died before its wrapper
+        — raise EvalError, never resubmit (that would loop forever); otherwise
+        it is still running/queued — collect its real job id to park on. Any
+        pending measure -> MeasurementPending over exactly those job ids."""
+        pending: list[str] = []
+        for m in measures:
+            if self._done(m):
+                continue
+            prior = self._submitted_job(m)
+            if not prior:
+                pending.append(self._dispatch(m))
+                continue
+            try:
+                state = self.compute.status(prior)
+            except Exception:
+                # cannot tell -> treat as still pending (do NOT resubmit; the
+                # next wake re-checks). A transient sacct failure must not
+                # duplicate a running eval.
+                pending.append(prior)
+                continue
+            if is_terminal(state):
+                # terminal AND no exit-code (checked above): the wrapper never
+                # ran (SIGKILL / node death) — a real failure, not a retry
+                raise EvalError(
+                    f"measure {m.name}: job {prior} ended {state} without writing a result"
+                )
+            pending.append(prior)  # queued or running
+        if pending:
+            raise MeasurementPending(tuple(pending))
         return {m.name: read_eval_result(self.run_dir, m.name, m.metric) for m in measures}

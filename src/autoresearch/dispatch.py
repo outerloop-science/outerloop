@@ -253,7 +253,7 @@ def write_eval_job(
     ev.mkdir(parents=True, exist_ok=True)
     # a resubmitted eval must never be read as its predecessor: every prior
     # artifact — including a leftover extracted tree — goes before submission
-    for stale in ("exit-code", "stdout", "stderr", "setup.log"):
+    for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted"):
         (ev / stale).unlink(missing_ok=True)
     shutil.rmtree(ev / "tree", ignore_errors=True)
     (ev / "command.txt").write_text(command)
