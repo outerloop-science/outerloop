@@ -72,8 +72,12 @@ class FakeMeasurer:
         return {m.name: self.values[m.name] for m in measures}
 
 
-def _decide(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99):
-    contract = load_contract(CONTRACT, "x/y")
+# same contract with NO shared scope: the suite gate can never trigger.
+CONTRACT_NO_SHARED = CONTRACT.replace("  shared: [src/shared/]\n", "")
+
+
+def _decide(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, text=CONTRACT):
+    contract = load_contract(text, "x/y")
     return measure_and_decide(
         contract,
         _benchmark(contract, "main"),
@@ -241,3 +245,11 @@ def test_zero_suite_seed_for_seeded_sibling_fails_loud():
     with pytest.raises(ValueError, match="suite_seed"):
         _decide(m, measured_paths=("src/shared/util.py",), suite_seed=0)
     assert m.calls == 0  # never measured
+
+
+def test_empty_shared_scope_does_not_require_suite_seed():
+    # a seeded sibling with NO shared scope can never trigger the gate, so a
+    # 0 suite_seed is not a misconfiguration — measure, don't over-reject.
+    m = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
+    out = _decide(m, measured_paths=("src/model.py",), suite_seed=0, text=CONTRACT_NO_SHARED)
+    assert isinstance(out, MeasureOK)

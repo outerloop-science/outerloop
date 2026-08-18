@@ -704,7 +704,10 @@ def measure_and_decide(
             f"benchmark {bench.name!r} declares seed_env {seed_env!r} but seed is 0: "
             "a seeded benchmark needs a drawn seed, or baseline and candidate run unpaired"
         )
-    if any(b.seed_env for b in siblings) and not suite_seed:
+    # only when the suite gate is STRUCTURALLY possible: a contract with an
+    # empty scope.shared can never trigger it (shared_touched always empty), so
+    # a missing suite_seed there is not a misconfiguration — do not over-reject.
+    if contract.scope.shared and any(b.seed_env for b in siblings) and not suite_seed:
         raise ValueError(
             "a seeded sibling needs a nonzero suite_seed (drawn once, persisted for the wake); "
             "suite_seed 0 would run the sibling pair unpaired"
