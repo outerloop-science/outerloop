@@ -85,6 +85,13 @@ class Benchmark(_StrictModel):
     # readable by the solver session that runs between the paired evals
     # (the verifier's ruler read covers this).
     seed_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+    # Expected eval duration, minutes — a HINT that turns on dispatched
+    # evals (docs/design/dispatcher.md): above the in-job threshold the
+    # orchestrator runs this benchmark's evals as their own jobs. Clamped
+    # by dispatch.EVAL_JOB_MINUTES_CEILING (our spend cap); it governs only
+    # the first eval once measured durations exist. None = in-job (today's
+    # behavior).
+    eval_minutes: int | None = Field(default=None, ge=1)
 
     @field_validator("seed_env")
     @classmethod
