@@ -691,14 +691,23 @@ def measure_and_decide(
         )
 
     seed_env = bench.seed_env or ""
-    # A seeded benchmark with seed 0 (the "no seed recorded" sentinel) would run
-    # baseline and candidate UNPAIRED — each drawing its own internal seed — so
-    # eval noise could read as improvement. Fail loud: the caller must draw a
-    # real seed for a seeded benchmark (and persist it, for the wake to reuse).
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    # Both seed guards fire UP FRONT, before any (expensive) measurement: a
+    # seed of 0 — the "no seed recorded" sentinel — would run a pair UNPAIRED,
+    # each side drawing its own internal seed, so eval noise could read as
+    # improvement. The caller must draw a real seed (and persist it, for the
+    # wake to reuse) whenever a benchmark or a sibling declares seed_env; a
+    # seeded sibling's suite_seed is a caller-contract precondition even on a
+    # diff that won't touch shared code (the next diff might).
     if seed_env and not seed:
         raise ValueError(
             f"benchmark {bench.name!r} declares seed_env {seed_env!r} but seed is 0: "
             "a seeded benchmark needs a drawn seed, or baseline and candidate run unpaired"
+        )
+    if any(b.seed_env for b in siblings) and not suite_seed:
+        raise ValueError(
+            "a seeded sibling needs a nonzero suite_seed (drawn once, persisted for the wake); "
+            "suite_seed 0 would run the sibling pair unpaired"
         )
 
     # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
@@ -724,17 +733,8 @@ def measure_and_decide(
     # PHASE 2 — suite gate, only for a credited candidate whose diff touched
     # shared code. A second measure set (a second park for a dispatched
     # backend): an extra CPU wake, never a wasted GPU sibling eval.
-    siblings = [b for b in contract.benchmarks if b.name != bench.name]
     if not (siblings and shared_touched(measured_paths, contract)):
         return MeasureOK(baseline=baseline, candidate=candidate)
-
-    # same pairing guarantee for the siblings: a seeded sibling with suite_seed 0
-    # would run its base/cand pair unpaired.
-    if any(b.seed_env for b in siblings) and not suite_seed:
-        raise ValueError(
-            "a seeded sibling needs a nonzero suite_seed (drawn once, persisted for the wake); "
-            "suite_seed 0 would run the sibling pair unpaired"
-        )
 
     # every seeded sibling runs its pair under the ONE suite_seed, read through
     # its own seed var (mirrors the in-job gate).
@@ -752,7 +752,15 @@ def measure_and_decide(
     try:
         vals = measurer.results(sib_plan)
     except EvalError as exc:
-        return ClimbResult(outcome="eval-error", note=str(exc), run_seed=seed)
+        # phase 1 already credited the main pair — carry it into the report,
+        # exactly as the old in-job suite-error path did.
+        return ClimbResult(
+            outcome="eval-error",
+            baseline=baseline,
+            candidate=candidate,
+            note=str(exc),
+            run_seed=seed,
+        )
 
     suite_rows: list[SuiteMeasurement] = []
     for b in siblings:

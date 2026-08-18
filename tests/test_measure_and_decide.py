@@ -60,11 +60,13 @@ class FakeMeasurer:
         self.raise_exc = raise_exc
         self.raise_on_call = raise_on_call  # 1-indexed; None = raise on every call
         self.seen: list[Measure] = []
+        self.per_call: list[list[str]] = []  # measure names, one entry per call
         self.calls = 0
 
     def results(self, measures: list[Measure]) -> dict[str, float]:
         self.calls += 1
         self.seen.extend(measures)
+        self.per_call.append([m.name for m in measures])
         if self.raise_exc is not None and self.raise_on_call in (None, self.calls):
             raise self.raise_exc
         return {m.name: self.values[m.name] for m in measures}
@@ -199,6 +201,19 @@ def test_phase_two_eval_error_is_terminal():
     out = _decide(m, measured_paths=("src/shared/util.py",))
     assert m.calls == 2 and not isinstance(out, MeasureOK)
     assert out.outcome == "eval-error" and "succ" in out.note
+    # the credited main pair (measured in phase 1) survives into the report
+    assert out.baseline == 0.50 and out.candidate == 0.60
+
+
+def test_phase_two_measures_only_siblings_never_the_main_pair():
+    # pins the phase-2 filter: the second call must carry only sib-* measures,
+    # never a re-measure of baseline/candidate.
+    m = FakeMeasurer(
+        {"baseline": 0.50, "candidate": 0.60, "sib-sib-base": 0.8, "sib-sib-cand": 0.81}
+    )
+    _decide(m, measured_paths=("src/shared/util.py",))
+    assert m.per_call[0] == ["baseline", "candidate"]
+    assert m.per_call[1] == ["sib-sib-base", "sib-sib-cand"]
 
 
 def test_phase_two_measurement_pending_propagates():
@@ -220,7 +235,9 @@ def test_zero_seed_for_seeded_benchmark_fails_loud():
 
 
 def test_zero_suite_seed_for_seeded_sibling_fails_loud():
-    # reached only for a credited shared-path candidate; `sib` declares SIB_SEED.
+    # `sib` declares SIB_SEED, so suite_seed 0 is a caller-contract violation —
+    # caught UP FRONT, before any measurement, regardless of the diff.
     m = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
     with pytest.raises(ValueError, match="suite_seed"):
         _decide(m, measured_paths=("src/shared/util.py",), suite_seed=0)
+    assert m.calls == 0  # never measured
