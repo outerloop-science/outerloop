@@ -8,6 +8,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The dispatched measurer (`measure` module) — dispatcher phase 1, stage B
+  part 1: turns a climb's set of committed-tree measures into submit-all,
+  PARK (`MeasurementPending` carrying the afterany wake dependency for the
+  whole set), and on wake read-all-from-disk. Built on the eval primitive;
+  the resumable unit is the measure-and-decide phase (a pure function of
+  committed trees), so it re-runs idempotently after a process death — a
+  completed measure returns instantly, a pending one re-parks. Wiring into
+  the climb transaction and the wake path is the next part.
 - The dispatched-eval primitive (`dispatch` module) — dispatcher phase 1,
   stage A per docs/design/dispatcher.md: temp-index tree snapshots (working
   index untouched, tree hash = the drift fingerprint), the orchestrator-

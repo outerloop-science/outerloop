@@ -185,6 +185,24 @@ class SlurmCompute:
             raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
+    def job_id_for_name(self, name: str) -> str:
+        """The id of this user's PENDING/RUNNING job with exactly `name`, or
+        "" if none. Authoritative for "is this still live" independent of any
+        local bookkeeping — a dispatched job is visible here even if the
+        submitter died before recording its id. Raises SlurmQueryError on a
+        failed query (the caller must not treat blindness as 'not running')."""
+        try:
+            result = self.runner(
+                ["squeue", "--me", "--name", name, "--noheader", "-o", "%i"],
+                self.command_timeout_s,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"squeue did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
+        ids = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return ids[0] if ids else ""
+
     def cancel(self, job_id: str) -> None:
         """Cancel; idempotent (cancelling a finished job is not an error)."""
         if not job_id.isdigit():
