@@ -125,7 +125,11 @@ Sub-parts, each its own PR through the panel:
   with a fake measurer.
 - **B.2b:** wire `live_climb` — session -> snapshot -> measure_and_decide;
   on park write the `waiting` record (base_sha/candidate_sha/seed/stage +
-  `experiment_job_id` = the afterany set) and end.
+  `experiment_job_id` = the afterany set) and end. When a revision supersedes
+  a candidate, the revision loop `scancel`s the superseded candidate's still-
+  running eval jobs before dispatching the new ones — the measurer keys each
+  measure by its full determinant (so the results never alias), but only the
+  loop that owns the revision knows a prior candidate is now dead weight.
 - **B.2c:** the wake-entry CLI + the production `WakeDispatcher` (fills the
   tick's WOULD-WAKE stub with a real dependency wake job). The existing
   wake-fail-safety layers (afterany primary, sweep backup, deadline floor)

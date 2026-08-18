@@ -142,42 +142,47 @@ class DispatchedMeasurer:
     run_tag: str = "run"  # disambiguates job names across runs on one account
 
     def _det(self, m: Measure) -> str:
-        # Everything a measure's RESULT depends on and that can vary between two
-        # measures in one run: its logical role, the code (tree_sha), and the
+        # Everything a measure's RESULT depends on and that can vary across a
+        # PARK/RESUME (when a fresh measurer reads this run_dir): the container
+        # image, the measure's logical role, the code (tree_sha), and the
         # contract facts it is evaluated under (command, metric, seeded env).
         # A cache key missing any of these would return a value computed under
-        # DIFFERENT inputs — e.g. a resume that re-fetches the contract after
-        # its command or metric changed, reading the stale pre-change result.
-        # (image / account / walltime are measurer-wide constants, already
-        # scoped by run_dir for storage and run_tag for job names.) NUL
-        # separators keep the parts unambiguous (`a`+`bc` != `ab`+`c`).
+        # DIFFERENT inputs — e.g. a resume that re-fetched the contract after
+        # its command changed, or ran under a rebuilt image, reading the stale
+        # pre-change result. (account / walltime don't change a result's value,
+        # only whether it completes.) NUL separators keep the parts unambiguous
+        # (`a`+`bc` != `ab`+`c`).
         env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
-        return f"{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
+        return f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
 
     def _slot(self, m: Measure) -> str:
-        # Storage identity = the full determinant. Readable role + FULL sha
-        # (no code aliasing, debuggable) + a hash of the remaining contract
-        # facts, so a re-measure that changes the sha OR the command/metric/
-        # seed for the same role lands in a fresh eval dir, never a stale read;
-        # a resume with identical inputs reuses it. `m.name` stays the
-        # caller-facing key (results["candidate"]) — only where the bits live
-        # is scoped. A dir has 255 chars to spare, so the sha is verbatim, not
-        # a prefix.
-        h = hashlib.sha1(self._det(m).encode()).hexdigest()[:8]
+        # Storage identity = the full determinant, with NOTHING truncated: the
+        # eval dir is the durable result cache, so any prefix could alias two
+        # distinct measurements into one stale read. Readable role + FULL sha
+        # (verbatim, debuggable) + the FULL sha1 hex of the whole determinant
+        # (the collision-free disambiguator for the contract facts the sha
+        # alone does not pin — command/metric/seed). A re-measure that changes
+        # the sha OR any contract input lands in a fresh dir; a resume with
+        # identical inputs reuses it. `m.name` stays the caller-facing key
+        # (results["candidate"]). A dir has 255 chars to spare (~91 used).
+        h = hashlib.sha1(self._det(m).encode()).hexdigest()
         return f"{m.name}-{m.tree_sha}-{h}"
 
     def _ev(self, m: Measure) -> Path:
         return self.run_dir / f"eval-{self._slot(m)}"
 
     def _job_name(self, m: Measure) -> str:
-        # deterministic + unique per (run, full determinant): the CLUSTER can
-        # then be asked "is this measure's job live" by name, independent of
-        # any local marker. run_tag disambiguates jobs across runs sharing one
-        # Slurm account; the hash covers the whole determinant, so no
-        # truncation of the readable prefixes (for a human reading squeue) can
-        # collide two distinct jobs, and two measures differing in ANY input
-        # get distinct jobs.
-        h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:12]
+        # A LIVENESS HINT, not a durable key: the cluster is asked "is this
+        # measure's job live" by name. Slurm caps name length, so this hash is
+        # necessarily bounded (16 hex = 64 bits) rather than full-width like the
+        # slot. That bound is safe because a job-name collision cannot cause a
+        # stale RESULT — results are read from the collision-free slot; the
+        # worst case is one measure seeing another's job as "live" and parking
+        # instead of dispatching, which the deadline sweep then re-checks. The
+        # hash covers the whole determinant (+ run_tag, which disambiguates
+        # jobs across runs sharing one Slurm account); the readable prefixes
+        # are for a human reading squeue.
+        h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:16]
         return f"eval-{self.run_tag[:10]}-{m.name[:12]}-{h}"
 
     def _done(self, m: Measure) -> bool:

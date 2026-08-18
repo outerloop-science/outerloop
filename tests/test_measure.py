@@ -289,6 +289,9 @@ def test_changed_contract_for_same_name_and_sha_is_not_aliased(tmp_path):
     jobs = {m._job_name(x) for x in (base, new_cmd, new_metric, new_seed)}
     assert len(slots) == 4  # every determinant change gets its own storage
     assert len(jobs) == 4  # and its own cluster job
+    # the durable slot's disambiguator is the FULL sha1 hex (no truncated
+    # prefix that two distinct determinants could birthday-collide into)
+    assert len(m._slot(base).split("-")[-1]) == 40
     # a v1 result must not satisfy a v2-command read
     _land(m, base, 0.42)
     with pytest.raises(MeasurementPending):
