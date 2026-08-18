@@ -9,11 +9,12 @@ wake wiring build on these in the next stage):
     index untouched, tracked-vs-ignored parity with the drift fingerprint),
     kept reachable under a unique ref so gc cannot prune it before a queued
     job runs. Release with drop_snapshot after the eval is read.
-  * write_eval_job — the orchestrator-authored job script: EXTRACT the
-    snapshot's tree (git archive | tar, no worktree metadata to bind or
-    reap), run the contract command under the SAME jail as the in-job
-    evaluator, capture stdout OUTSIDE the containment into the run
-    directory (the jailed process never sees the run dir).
+  * write_eval_job — the orchestrator-authored job script: materialize the
+    snapshot by CHECKOUT (git worktree add, then delete the .git gitfile so
+    the jail sees a plain faithful directory — checkout keeps .gitattributes
+    and applies no export processing), run the contract command under the
+    SAME jail as the in-job evaluator, capture stdout OUTSIDE the containment
+    into the run directory (the jailed process never sees the run dir).
   * read_eval_result — the wake side: exit code + the same last-JSON-line
     metric contract the in-job evaluator parses.
 
@@ -154,7 +155,10 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
     except subprocess.TimeoutExpired as exc:
         raise EvalError(f"snapshot timed out: {exc}") from exc
     finally:
+        # the index and any .lock a timed-out git left beside it (unique per
+        # token, so it never blocks a future snapshot — just tidiness)
         index.unlink(missing_ok=True)
+        index.with_name(index.name + ".lock").unlink(missing_ok=True)
 
 
 def _filter_neutral_env(base_git: list[str], env: dict[str, str]) -> dict[str, str]:
