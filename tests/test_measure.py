@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 
 from autoresearch.compute import CommandResult, SlurmCompute
-from autoresearch.measure import DispatchedMeasurer, Measure, MeasurementPending, plan_measures
+from autoresearch.measure import (
+    DispatchedMeasurer,
+    Measure,
+    MeasurementPending,
+    SiblingSpec,
+    plan_measures,
+)
 from autoresearch.orchestrator import EvalError
 
 
@@ -146,14 +152,19 @@ def test_plan_no_seed_env_no_extra_env():
     assert all(m.env() == {} for m in plan)
 
 
-def test_plan_suite_adds_paired_siblings():
+def test_plan_suite_siblings_use_their_own_seed_env():
     plan = plan_measures(
         "hp",
         "cmd",
         "r2",
         "a" * 40,
         "b" * 40,
-        siblings=(("tsp", "tspcmd", "len"), ("reach", "rcmd", "succ")),
+        seed_env="HP_SEED",
+        seed=7,
+        siblings=(
+            SiblingSpec("tsp", "tspcmd", "len", seed_env="TSP_SEED", seed=42),
+            SiblingSpec("reach", "rcmd", "succ"),  # no seed
+        ),
     )
     names = [m.name for m in plan]
     assert names == [
@@ -164,8 +175,12 @@ def test_plan_suite_adds_paired_siblings():
         "sib-reach-base",
         "sib-reach-cand",
     ]
-    # each sibling pair is base vs candidate on the same command
-    base = next(m for m in plan if m.name == "sib-tsp-base")
-    cand = next(m for m in plan if m.name == "sib-tsp-cand")
-    assert base.tree_sha == "a" * 40 and cand.tree_sha == "b" * 40
-    assert base.command == "tspcmd" and base.metric == "len"
+    # the climbed benchmark's seed does NOT leak onto siblings
+    tsp_base = next(m for m in plan if m.name == "sib-tsp-base")
+    tsp_cand = next(m for m in plan if m.name == "sib-tsp-cand")
+    assert tsp_base.env() == {"TSP_SEED": "42"}  # its OWN var and seed
+    assert tsp_cand.env() == {"TSP_SEED": "42"}  # paired on the sibling's seed
+    assert "HP_SEED" not in tsp_base.env()
+    assert tsp_base.command == "tspcmd" and tsp_base.metric == "len"
+    # a sibling with no seed gets no env, regardless of the climbed seed
+    assert next(m for m in plan if m.name == "sib-reach-base").env() == {}

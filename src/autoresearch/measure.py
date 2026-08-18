@@ -65,6 +65,24 @@ class Measure:
         return dict(self.extra_env)
 
 
+@dataclass(frozen=True)
+class SiblingSpec:
+    """One suite sibling's resolved measurement facts. Each sibling carries
+    its OWN seed variable and drawn seed — a sibling that resamples reads a
+    DIFFERENT env var than the climbed benchmark, and its pairing seed is its
+    own (the in-job suite gate draws one seed per benchmark, not one global
+    seed)."""
+
+    name: str
+    command: str
+    metric: str
+    seed_env: str = ""
+    seed: int = 0
+
+    def env(self) -> tuple[tuple[str, str], ...]:
+        return ((self.seed_env, str(self.seed)),) if self.seed_env else ()
+
+
 def plan_measures(
     benchmark: str,
     command: str,
@@ -73,7 +91,7 @@ def plan_measures(
     candidate_sha: str,
     seed_env: str = "",
     seed: int = 0,
-    siblings: tuple[tuple[str, str, str], ...] = (),
+    siblings: tuple[SiblingSpec, ...] = (),
 ) -> list[Measure]:
     """The measures a climb needs, as a pure function of its committed shas
     and contract facts — the same inputs a wake process reconstructs from the
@@ -81,20 +99,21 @@ def plan_measures(
 
     Always: `baseline` @ base_sha and `candidate` @ candidate_sha, paired on
     the same `seed` (common random numbers) when the benchmark resamples.
-    For a suite gate, each sibling `(name, command, metric)` contributes a
-    paired `sib-<name>-base` @ base_sha and `sib-<name>-cand` @ candidate_sha
-    — the same 2N-paired comparison the in-job gate computes, now dispatched.
+    For a suite gate, each `SiblingSpec` contributes a paired `sib-<name>-base`
+    @ base_sha and `sib-<name>-cand` @ candidate_sha — each on the SIBLING's
+    OWN seed_env and seed, exactly the 2N-paired comparison the in-job gate
+    computes, now dispatched.
     """
     env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env else ()
     plan = [
         Measure("baseline", base_sha, command, metric, env),
         Measure("candidate", candidate_sha, command, metric, env),
     ]
-    for name, sib_cmd, sib_metric in siblings:
-        # each sibling draws its OWN paired seed at plan time when it
-        # resamples; here the caller has already resolved commands/metrics
-        plan.append(Measure(f"sib-{name}-base", base_sha, sib_cmd, sib_metric, env))
-        plan.append(Measure(f"sib-{name}-cand", candidate_sha, sib_cmd, sib_metric, env))
+    for sib in siblings:
+        plan.append(Measure(f"sib-{sib.name}-base", base_sha, sib.command, sib.metric, sib.env()))
+        plan.append(
+            Measure(f"sib-{sib.name}-cand", candidate_sha, sib.command, sib.metric, sib.env())
+        )
     return plan
 
 
