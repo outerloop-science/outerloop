@@ -691,6 +691,16 @@ def measure_and_decide(
         )
 
     seed_env = bench.seed_env or ""
+    # A seeded benchmark with seed 0 (the "no seed recorded" sentinel) would run
+    # baseline and candidate UNPAIRED — each drawing its own internal seed — so
+    # eval noise could read as improvement. Fail loud: the caller must draw a
+    # real seed for a seeded benchmark (and persist it, for the wake to reuse).
+    if seed_env and not seed:
+        raise ValueError(
+            f"benchmark {bench.name!r} declares seed_env {seed_env!r} but seed is 0: "
+            "a seeded benchmark needs a drawn seed, or baseline and candidate run unpaired"
+        )
+
     # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
     # candidate has cleared the threshold: a non-improving candidate must never
     # burn the (expensive) sibling evals, matching climb_once's lazy order.
@@ -717,6 +727,14 @@ def measure_and_decide(
     siblings = [b for b in contract.benchmarks if b.name != bench.name]
     if not (siblings and shared_touched(measured_paths, contract)):
         return MeasureOK(baseline=baseline, candidate=candidate)
+
+    # same pairing guarantee for the siblings: a seeded sibling with suite_seed 0
+    # would run its base/cand pair unpaired.
+    if any(b.seed_env for b in siblings) and not suite_seed:
+        raise ValueError(
+            "a seeded sibling needs a nonzero suite_seed (drawn once, persisted for the wake); "
+            "suite_seed 0 would run the sibling pair unpaired"
+        )
 
     # every seeded sibling runs its pair under the ONE suite_seed, read through
     # its own seed var (mirrors the in-job gate).

@@ -50,16 +50,22 @@ class FakeMeasurer:
     accumulates every measure across ALL calls (the decision measures in two
     phases: baseline+candidate, then — only if credited — siblings)."""
 
-    def __init__(self, values: dict[str, float] | None = None, raise_exc: Exception | None = None):
+    def __init__(
+        self,
+        values: dict[str, float] | None = None,
+        raise_exc: Exception | None = None,
+        raise_on_call: int | None = None,
+    ):
         self.values = values or {}
         self.raise_exc = raise_exc
+        self.raise_on_call = raise_on_call  # 1-indexed; None = raise on every call
         self.seen: list[Measure] = []
         self.calls = 0
 
     def results(self, measures: list[Measure]) -> dict[str, float]:
         self.calls += 1
         self.seen.extend(measures)
-        if self.raise_exc is not None:
+        if self.raise_exc is not None and self.raise_on_call in (None, self.calls):
             raise self.raise_exc
         return {m.name: self.values[m.name] for m in measures}
 
@@ -180,3 +186,41 @@ def test_no_shared_touch_does_not_dispatch_siblings():
     _decide(m, measured_paths=("src/model.py",))
     assert [mm.name for mm in m.seen] == ["baseline", "candidate"]  # no sib-* measures
     assert m.calls == 1  # env-specific diff: phase 2 never ran
+
+
+def test_phase_two_eval_error_is_terminal():
+    # a sibling EvalError (raised only in the phase-2 call) must still surface
+    # as eval-error — the phase-2 try/except is load-bearing.
+    m = FakeMeasurer(
+        {"baseline": 0.50, "candidate": 0.60},
+        raise_exc=EvalError("sib-sib-base: no readable succ"),
+        raise_on_call=2,
+    )
+    out = _decide(m, measured_paths=("src/shared/util.py",))
+    assert m.calls == 2 and not isinstance(out, MeasureOK)
+    assert out.outcome == "eval-error" and "succ" in out.note
+
+
+def test_phase_two_measurement_pending_propagates():
+    # the siblings' own park (a second afterany set) must reach the caller.
+    m = FakeMeasurer(
+        {"baseline": 0.50, "candidate": 0.60},
+        raise_exc=MeasurementPending(("201", "202")),
+        raise_on_call=2,
+    )
+    with pytest.raises(MeasurementPending) as exc:
+        _decide(m, measured_paths=("src/shared/util.py",))
+    assert exc.value.afterany() == "afterany:201:202"
+
+
+def test_zero_seed_for_seeded_benchmark_fails_loud():
+    # `main` declares seed_env MAIN_SEED; a 0 seed would run it unpaired.
+    with pytest.raises(ValueError, match="seed"):
+        _decide(FakeMeasurer({"baseline": 0.5, "candidate": 0.6}), seed=0)
+
+
+def test_zero_suite_seed_for_seeded_sibling_fails_loud():
+    # reached only for a credited shared-path candidate; `sib` declares SIB_SEED.
+    m = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
+    with pytest.raises(ValueError, match="suite_seed"):
+        _decide(m, measured_paths=("src/shared/util.py",), suite_seed=0)

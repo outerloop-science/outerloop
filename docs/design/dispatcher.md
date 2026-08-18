@@ -114,14 +114,20 @@ AFTER the session:
    eval is not.
 4. The record persists exactly what a fresh process needs to re-enter step 3
    without the session: `base_sha`, `candidate_sha` + `candidate_ref`, `seed`,
-   the benchmark, and a `stage` marking "measures dispatched". The
-   `candidate_ref` is essential and cannot be reconstructed from
+   `suite_seed`, the benchmark, and a `stage` marking "measures dispatched".
+   The `candidate_ref` is essential and cannot be reconstructed from
    `candidate_sha` (it is random by design): it is what a terminal wake hands
    `dispatch.drop_snapshot` to release the snapshot once the run finishes (PR
    opened or abandoned) — omit it and every parked run leaks a ref and its
    commit. The snapshot must OUTLIVE all park/wake cycles (each eval checks out
    `candidate_sha`), so the drop is deferred to the terminal state, never a
-   mid-cycle wake. Everything else (contract, ruler) is re-fetched.
+   mid-cycle wake. Both seeds are persisted for the same reason: `seed` and
+   `suite_seed` are DRAWN (random), so a wake cannot reproduce them — an
+   unpersisted seed would re-measure an unpaired baseline/candidate. In
+   contrast `measured_paths` (which drives the scope check and the suite
+   trigger) is NOT persisted: it is re-derived from the committed diff
+   `base_sha..candidate_sha`, the same set the session's `git add -A` staged.
+   Everything else (contract, ruler) is re-fetched.
 
 On the wake, a fresh process loads the record, re-enters measure-and-decide:
 the `DispatchedMeasurer` reads both cached results, `improved()` /
@@ -258,10 +264,17 @@ Today's design therefore assumes an eval fits one walltime on a partition
 where it will not be preempted. Making that explicit is a resource-policy
 field alongside partition/GPU: either (a) route evals to a NON-preemptible
 partition — simplest, and a single measurement is short next to a real
-train — or (b) submit with `--requeue` plus a longer walltime, which
-composes cleanly here because a requeued job KEEPS its id and name, so the
-cluster-authoritative liveness check just sees it as still-live and re-parks
-until it lands. Per-workload checkpointing to shared storage is the heavy
+train — or (b) submit with `--requeue` plus a longer walltime: a requeued
+job KEEPS its id and name, so the cluster-authoritative liveness check sees
+it as still-live and re-parks until it lands. But (b) does NOT work against
+today's eval-job script unchanged — its TERM trap writes a terminal exit
+code and exits 0, which Slurm reads as a clean completion and will not
+requeue. Making `--requeue` fire needs the script to distinguish a
+preemption TERM from a walltime TERM (e.g. re-raise the signal on
+preemption so the job exits non-zero / killed, letting Slurm requeue, while
+still writing exit 143 on the walltime deadline). That trap change ships
+WITH the requeue policy, not before it. Per-workload checkpointing to shared
+storage is the heavy
 last resort, warranted only once an eval grows long enough that a
 from-scratch rerun is too costly (the 8-seed ruler eval at ~68 min is the
 first workload that approaches it). Both (a) and (b) are operator-ceiling-
@@ -290,7 +303,7 @@ single writer via lease):
 | `experiment_job_id` `wake_job_id` `followup_job_id` | Slurm handles for the dispatched work, its afterany wake, and review servicing |
 | `resume_session_id` | the harness session a wake reconstructs — the entire "pause" state for a session's mind |
 | `state` `deadline` `terminal_seen` `wake_attempts` | wake bookkeeping; a waiting record REQUIRES a deadline |
-| `stage` (phase 1) | a small object, not a label: the parked measure point PLUS the process-local state re-entry needs — `base_sha`, `candidate_sha` and the candidate snapshot's `candidate_ref` (random, so it MUST be stored — a terminal wake hands it to `drop_snapshot` or the snapshot leaks), the drawn `seed`, the pre-eval tree fingerprints and measured paths the drift check compares (today they are locals; a resumed process without them would fail the drift check closed on every dispatch), and the expected result-file names |
+| `stage` (phase 1) | a small object, not a label: the parked measure point PLUS the process-local state re-entry needs — `base_sha`, `candidate_sha` and the candidate snapshot's `candidate_ref` (random, so it MUST be stored — a terminal wake hands it to `drop_snapshot` or the snapshot leaks), the drawn `seed` and `suite_seed` (both random, both stored so the wake re-measures PAIRED), the pre-eval tree fingerprints and measured paths the drift check compares (today they are locals; a resumed process without them would fail the drift check closed on every dispatch), and the expected result-file names |
 | `last_comment_id` `last_review_id` `last_review_comment_id` | three cursors because GitHub's three comment collections have independent id sequences |
 | `ending` `ending_note` `created` `updated` | terminal record |
 
