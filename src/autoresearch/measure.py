@@ -152,7 +152,15 @@ class DispatchedMeasurer:
             if self._marker(m):
                 # was dispatched, not live, no result -> died before result
                 raise EvalError(f"measure {m.name}: dispatched job vanished without a result")
-            pending.append(self._dispatch(m))  # never dispatched
+            # No marker, not live, no result -> never dispatched -> dispatch.
+            # RESIDUAL (bounded, accepted): if a prior process died in the
+            # microsecond gap between sbatch returning and _dispatch writing
+            # the marker, AND that orphaned job then ran and died without a
+            # result, its name is gone from squeue and this redispatches once
+            # (never loops — the redispatch writes a marker). Cost is one
+            # wasted eval in a triple-failure conjunction; fully closing it
+            # needs sacct-by-name over job history, not worth that surface.
+            pending.append(self._dispatch(m))
         if pending or blind:
             raise MeasurementPending(tuple(pending))
         return {m.name: read_eval_result(self.run_dir, m.name, m.metric) for m in measures}
