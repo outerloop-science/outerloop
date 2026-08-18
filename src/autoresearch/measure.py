@@ -84,7 +84,11 @@ class SiblingSpec:
     seed: int = 0
 
     def env(self) -> tuple[tuple[str, str], ...]:
-        return ((self.seed_env, str(self.seed)),) if self.seed_env else ()
+        # inject only a REAL drawn seed: 0 is the ledger's "no seed recorded"
+        # sentinel (draw_run_seed returns 1+), so a seeded sibling with an
+        # unset (0) seed injects no var rather than a literal "0" that would
+        # read as a real seed. Guards key off truthiness, per the convention.
+        return ((self.seed_env, str(self.seed)),) if self.seed_env and self.seed else ()
 
 
 def plan_measures(
@@ -107,7 +111,9 @@ def plan_measures(
     OWN seed_env and seed, exactly the 2N-paired comparison the in-job gate
     computes, now dispatched.
     """
-    env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env else ()
+    # inject only a REAL drawn seed (>= 1); seed 0 is the "no seed recorded"
+    # sentinel, never a value to run under (see SiblingSpec.env / draw_run_seed).
+    env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env and seed else ()
     plan = [
         Measure("baseline", base_sha, command, metric, env),
         Measure("candidate", candidate_sha, command, metric, env),
@@ -135,32 +141,43 @@ class DispatchedMeasurer:
     eval_minutes: int
     run_tag: str = "run"  # disambiguates job names across runs on one account
 
+    def _det(self, m: Measure) -> str:
+        # Everything a measure's RESULT depends on and that can vary between two
+        # measures in one run: its logical role, the code (tree_sha), and the
+        # contract facts it is evaluated under (command, metric, seeded env).
+        # A cache key missing any of these would return a value computed under
+        # DIFFERENT inputs — e.g. a resume that re-fetches the contract after
+        # its command or metric changed, reading the stale pre-change result.
+        # (image / account / walltime are measurer-wide constants, already
+        # scoped by run_dir for storage and run_tag for job names.) NUL
+        # separators keep the parts unambiguous (`a`+`bc` != `ab`+`c`).
+        env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
+        return f"{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
+
     def _slot(self, m: Measure) -> str:
-        # Storage identity = (logical name, FULL tree_sha). A re-measure at a
-        # NEW candidate sha (a panel revision) lands in a fresh eval dir and a
-        # fresh job, so it never reads the prior sha's cached result; a resume
-        # at the SAME sha reuses it. `m.name` stays the caller-facing key
-        # (results["candidate"]) — only where the bits live is sha-scoped.
-        # The full sha, not a prefix: a truncated prefix would alias two
-        # commits that share those chars into one cached result. A dir name has
-        # 255 chars to spare, so it carries the sha verbatim (debuggable); the
-        # job name folds it into a hash only because Slurm names are length-
-        # budgeted.
-        return f"{m.name}-{m.tree_sha}"
+        # Storage identity = the full determinant. Readable role + FULL sha
+        # (no code aliasing, debuggable) + a hash of the remaining contract
+        # facts, so a re-measure that changes the sha OR the command/metric/
+        # seed for the same role lands in a fresh eval dir, never a stale read;
+        # a resume with identical inputs reuses it. `m.name` stays the
+        # caller-facing key (results["candidate"]) — only where the bits live
+        # is scoped. A dir has 255 chars to spare, so the sha is verbatim, not
+        # a prefix.
+        h = hashlib.sha1(self._det(m).encode()).hexdigest()[:8]
+        return f"{m.name}-{m.tree_sha}-{h}"
 
     def _ev(self, m: Measure) -> Path:
         return self.run_dir / f"eval-{self._slot(m)}"
 
     def _job_name(self, m: Measure) -> str:
-        # deterministic + unique per (run, measure, sha): the CLUSTER can then
-        # be asked "is this measure's job live" by name, independent of any
-        # local marker. The hash covers the FULL (run_tag, name, tree_sha)
-        # identity — so no truncation of the readable prefixes (for a human
-        # reading squeue) can collide two distinct jobs, and the same name at
-        # two shas gets two distinct jobs. NUL separators keep the parts
-        # unambiguous (`a`+`bc` distinct from `ab`+`c`).
-        ident = f"{self.run_tag}\0{m.name}\0{m.tree_sha}"
-        h = hashlib.sha1(ident.encode()).hexdigest()[:12]
+        # deterministic + unique per (run, full determinant): the CLUSTER can
+        # then be asked "is this measure's job live" by name, independent of
+        # any local marker. run_tag disambiguates jobs across runs sharing one
+        # Slurm account; the hash covers the whole determinant, so no
+        # truncation of the readable prefixes (for a human reading squeue) can
+        # collide two distinct jobs, and two measures differing in ANY input
+        # get distinct jobs.
+        h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:12]
         return f"eval-{self.run_tag[:10]}-{m.name[:12]}-{h}"
 
     def _done(self, m: Measure) -> bool:
