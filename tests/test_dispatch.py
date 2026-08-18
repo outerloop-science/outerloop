@@ -118,18 +118,19 @@ def test_job_script_trust_layout(tmp_path):
     # cleanup runs on every exit INCLUDING the walltime SIGTERM (a POSIX
     # shell dying on a signal runs no EXIT trap)
     assert "trap 'cleanup' EXIT" in text and "TERM INT HUP" in text
-    # the snapshot is EXTRACTED (git archive | tar), not a worktree: no
-    # metadata to bind into the jail, no admin entry to reap
-    assert "worktree" not in text
-    assert "archive --format=tar" in text and "tar -x" in text
+    # the snapshot is materialized by CHECKOUT (worktree add), which keeps
+    # .gitattributes and applies no export processing; the .git gitfile is
+    # deleted so the jail sees a plain directory
+    assert "worktree add --detach" in text and 'rm -f "$TREE/.git"' in text
+    assert "worktree prune" in text  # the stale admin entry is reaped
     # the tree lands on node-local scratch (dies with the job), not the run dir
     assert 'TREE="$SCRATCH/tree"' in text
     # a missing/empty command file is a setup failure, not a clean exit-0
     assert '[ -s "$EV/command.txt" ]' in text
-    # the archive on the agent-written repo carries the child-spawn
+    # the checkout on the agent-written repo carries the child-spawn
     # neutralizers
-    archive = next(ln for ln in text.splitlines() if "archive --format=tar" in ln)
-    assert "core.hooksPath=/dev/null" in archive
+    co = next(ln for ln in text.splitlines() if "worktree add" in ln)
+    assert "core.hooksPath=/dev/null" in co
     # a managed key in extra_env is DROPPED, never allowed to override the
     # isolation
     assert "HOME=/evil" not in text and "APPTAINERENV_HOME=/evil" not in text
@@ -161,28 +162,30 @@ def test_snapshot_neutralizes_agent_git_config(tmp_path):
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 9"
 
 
-def test_snapshot_strips_gitattributes_so_archive_is_faithful(tmp_path):
-    """git archive honors the archived tree's export-ignore/export-subst; a
-    session-authored .gitattributes could make the extracted tree differ from
-    the fingerprinted snapshot. The snapshot must drop .gitattributes."""
+def test_snapshot_keeps_gitattributes_checkout_is_faithful(tmp_path):
+    """The snapshot KEEPS .gitattributes (fidelity — the eval sees the same
+    inputs as the workspace); checkout, not archive, materializes the tree,
+    so export-ignore/export-subst are never applied (integrity)."""
     root = _repo(tmp_path)
     ws = _WS(root)
     base = ws.git("rev-parse", "HEAD")
-    # export-ignore would drop kept.py from an archive if honored
     (root / ".gitattributes").write_text("kept.py export-ignore\n")
     (root / "kept.py").write_text("x = 7\n")
     snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
     files = ws.git("ls-tree", "-r", "--name-only", snap.commit).splitlines()
-    assert ".gitattributes" not in files  # stripped from the snapshot
-    assert "kept.py" in files  # and so export-ignore cannot drop it
-    # the archived tree therefore equals the snapshot (no attributes to honor)
+    assert ".gitattributes" in files  # kept, not stripped
+    assert "kept.py" in files
+    # a checkout of the snapshot reproduces kept.py despite export-ignore
+    # (export attrs are archive-only), so the measured tree is faithful
     import subprocess as sp
 
-    tar = sp.run(
-        ["git", "-C", str(root), "archive", "--format=tar", snap.commit], capture_output=True
-    ).stdout
-    names = sp.run(["tar", "-t"], input=tar, capture_output=True).stdout.decode().split()
-    assert any("kept.py" in n for n in names)
+    wt = tmp_path / "wt"
+    sp.run(
+        ["git", "-C", str(root), "worktree", "add", "--detach", str(wt), snap.commit],
+        check=True,
+        capture_output=True,
+    )
+    assert (wt / "kept.py").read_text() == "x = 7\n"
 
 
 def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
@@ -232,12 +235,12 @@ def test_write_eval_job_clears_stale_results(tmp_path):
     assert not (ev / "exit-code").exists() and not (ev / "stdout").exists()
 
 
-def test_job_script_archive_failure_reports_not_masks(tmp_path):
-    """A failing git archive must yield exit 97, never a silent empty-tree
-    run (the pipe-only-checks-tar trap)."""
+def test_job_script_checkout_failure_reports_not_masks(tmp_path):
+    """A failing checkout (bad sha) must yield exit 97, never a silent
+    empty-tree run."""
     import subprocess as sp
 
-    root = _repo(tmp_path)  # a real repo so the archive command can run
+    root = _repo(tmp_path)  # a real repo so the checkout command can run
     run_dir = tmp_path / "run"
     script = write_eval_job(
         run_dir,

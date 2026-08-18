@@ -123,15 +123,11 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
         # index (a fresh empty index would drop tracked-but-ignored files)
         run([*git, "read-tree", base_sha], 60)
         run([*git, "add", "-A"], 120)
-        # Drop every .gitattributes from the snapshot: `git archive` (how the
-        # job materializes the tree) honors the archived tree's OWN
-        # export-ignore/export-subst, so a session-authored .gitattributes
-        # would make the extracted tree differ from this fingerprinted one.
-        # An eval never needs .gitattributes; removing them makes the archive
-        # faithful and kills the attribute side of filter selection too.
-        attrs = run([*git, "ls-files", "-z", "--", "*.gitattributes", ".gitattributes"], 30)
-        for path in filter(None, attrs.split("\0")):
-            run([*git, "rm", "--cached", "-q", "--", path], 30)
+        # .gitattributes are KEPT: the job materializes the tree by CHECKOUT
+        # (git worktree), which reproduces content faithfully — including
+        # .gitattributes — and does NOT apply export-ignore/export-subst
+        # (those are `git archive` only). So fidelity and integrity hold
+        # together; the filter side is already neutralized via GIT_CONFIG env.
         tree = run([*git, "write-tree"], 60)
         commit = run(
             [
@@ -260,9 +256,9 @@ def write_eval_job(
         if _SHELL_IDENT.match(k) and not managed_eval_env(k)
     }
     safe_git = " ".join(shlex.quote(f) for f in SAFE_GIT_FLAGS)
-    # the archive runs on the agent-written repo too: same filter neutralizers
+    # the checkout runs on the agent-written repo too: same filter neutralizers
     # as the snapshot, injected as GIT_CONFIG_* env (robust to '=' in a driver
-    # name, unlike -c)
+    # name, unlike -c) so a smudge filter cannot execute during checkout
     neutral = _filter_neutral_env(["git", "-C", str(repo_root), *SAFE_GIT_FLAGS], {})
     lines = [
         "#!/bin/sh",
@@ -275,8 +271,11 @@ def write_eval_job(
         'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/dispatch-eval-$$"',
         'TREE="$SCRATCH/tree"',
         'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$TREE"',
-        # trap FIRST, before anything that can exit, so $SCRATCH never leaks
-        'cleanup() { rm -rf "$SCRATCH"; }',
+        # trap FIRST, before anything that can exit, so $SCRATCH never leaks.
+        # prune reaps the stale worktree admin entry in $REPO/.git/worktrees
+        # left when we deleted $TREE/.git (worktree remove can't run without it)
+        'cleanup() { rm -rf "$SCRATCH"; '
+        f'git -C "$REPO" {safe_git} worktree prune >/dev/null 2>&1 || true; }}',
         "trap 'cleanup' EXIT",
         "trap 'echo 143 > \"$EV/exit-code\"; cleanup; trap - EXIT; exit 0' TERM INT HUP",
         # the command file must exist and be non-empty, or sh -c "" would
@@ -287,17 +286,18 @@ def write_eval_job(
     for k, v in neutral.items():
         lines.append(f"export {k}={shlex.quote(v)}")
     lines += [
-        # Materialize the snapshot by EXTRACTING its tree, not `git worktree
-        # add`: a worktree's .git points into $REPO/.git/worktrees, which the
-        # jail does not bind, and leaves an admin entry to reap. An extracted
-        # tree is a plain directory. The archive is written to a FILE and its
-        # own exit status checked — a `git archive | tar` pipe under POSIX sh
-        # tests only tar, so a failing archive producing an empty stream would
-        # pass and the eval would run on an empty tree.
-        f'if git -C "$REPO" {safe_git} archive --format=tar '
-        f'{shlex.quote(snapshot_sha)} > "$SCRATCH/tree.tar" 2>> "$EV/setup.log"; then '
-        'tar -x -C "$TREE" -f "$SCRATCH/tree.tar" >> "$EV/setup.log" 2>&1 '
-        '|| { echo 97 > "$EV/exit-code"; exit 0; }; '
+        # Materialize the snapshot by CHECKOUT, not `git archive`: a checkout
+        # reproduces content faithfully — INCLUDING .gitattributes — and does
+        # NOT apply export-ignore/export-subst (archive-only), so the measured
+        # tree equals both the workspace (fidelity) and the fingerprint
+        # (integrity). Smudge filters during checkout are neutralized by the
+        # GIT_CONFIG_* env above. The worktree's .git gitfile (which would
+        # point into $REPO/.git/worktrees, unbound in the jail) is DELETED
+        # after checkout, leaving a plain directory; the stale admin entry is
+        # pruned on cleanup.
+        f'if git -C "$REPO" {safe_git} worktree add --detach "$TREE" '
+        f'{shlex.quote(snapshot_sha)} >> "$EV/setup.log" 2>&1; then '
+        'rm -f "$TREE/.git"; '  # plain dir now — nothing points back into $REPO
         'else echo 97 > "$EV/exit-code"; exit 0; fi',
         'export UV_CACHE_DIR="$SCRATCH/cache" UV_LINK_MODE=copy '
         'UV_PROJECT_ENVIRONMENT="$SCRATCH/cache/venv"',
