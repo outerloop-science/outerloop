@@ -17,6 +17,7 @@ phase flows straight through to the decision.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,8 +139,11 @@ class DispatchedMeasurer:
     def _job_name(self, m: Measure) -> str:
         # deterministic + unique per (run, measure): the CLUSTER can then be
         # asked "is this measure's job live" by name, independent of any local
-        # marker that a crashed submitter may not have written
-        return f"eval-{self.run_tag}-{m.name}"[:60]
+        # marker. Slurm truncates long names, so a readable prefix is followed
+        # by a hash of the FULL measure name — two long names sharing a prefix
+        # get distinct jobs (a plain truncation would collide them).
+        h = hashlib.sha1(m.name.encode()).hexdigest()[:8]
+        return f"eval-{self.run_tag[:20]}-{m.name[:20]}-{h}"
 
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()

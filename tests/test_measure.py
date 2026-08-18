@@ -89,7 +89,7 @@ def test_live_job_reparks_on_real_id_never_resubmits(tmp_path):
     """A job squeue reports as running is parked on its real id — even if its
     local marker is MISSING (the crash-before-marker case)."""
     submitted: list = []
-    m = _measurer(tmp_path, submitted, live={"eval-r1-candidate": "102"})
+    m = _measurer(tmp_path, submitted, live={"eval-r1-candidate-266ec841": "102"})
     _land(tmp_path, "baseline", 0.50)
     # candidate has NO marker (submitter died in the gap) but IS live
     with pytest.raises(MeasurementPending) as exc:
@@ -184,3 +184,24 @@ def test_plan_suite_siblings_use_their_own_seed_env():
     assert tsp_base.command == "tspcmd" and tsp_base.metric == "len"
     # a sibling with no seed gets no env, regardless of the climbed seed
     assert next(m for m in plan if m.name == "sib-reach-base").env() == {}
+
+
+def test_long_measure_names_get_distinct_job_names(tmp_path):
+    """Two long measure names sharing a 60-char prefix must get distinct
+    Slurm job names (a plain truncation would collide them into one job)."""
+    from autoresearch.compute import CommandResult, SlurmCompute
+
+    m = DispatchedMeasurer(
+        compute=SlurmCompute(runner=lambda a, t: CommandResult(0, "", "")),
+        run_dir=tmp_path,
+        repo_root=tmp_path,
+        image="/i",
+        account="a",
+        partition="p",
+        eval_minutes=60,
+        run_tag="r1",
+    )
+    a = Measure("sib-" + "x" * 60 + "-base", "a" * 40, "c", "r2")
+    b = Measure("sib-" + "x" * 60 + "-cand", "a" * 40, "c", "r2")
+    ja, jb = m._job_name(a), m._job_name(b)
+    assert ja != jb and len(ja) <= 60 and len(jb) <= 60
