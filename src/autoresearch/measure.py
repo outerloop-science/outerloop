@@ -17,6 +17,7 @@ phase flows straight through to the decision.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,66 @@ class Measure:
         return dict(self.extra_env)
 
 
+@dataclass(frozen=True)
+class SiblingSpec:
+    """One suite sibling's resolved measurement facts. Each sibling carries
+    its OWN seed variable — a sibling that resamples reads a DIFFERENT env var
+    than the climbed benchmark (`sib.seed_env`, not the benchmark's). The
+    in-job gate draws ONE `suite_seed` and hands that single value to every
+    sibling through its own var, so callers set every sibling's `seed` to that
+    one suite_seed; the pair (base and cand) always shares it (common random
+    numbers). The per-sibling `seed` field only exists so the var, not the
+    value, can differ."""
+
+    name: str
+    command: str
+    metric: str
+    seed_env: str = ""
+    seed: int = 0
+
+    def env(self) -> tuple[tuple[str, str], ...]:
+        # inject only a REAL drawn seed: 0 is the ledger's "no seed recorded"
+        # sentinel (draw_run_seed returns 1+), so a seeded sibling with an
+        # unset (0) seed injects no var rather than a literal "0" that would
+        # read as a real seed. Guards key off truthiness, per the convention.
+        return ((self.seed_env, str(self.seed)),) if self.seed_env and self.seed else ()
+
+
+def plan_measures(
+    command: str,
+    metric: str,
+    base_sha: str,
+    candidate_sha: str,
+    seed_env: str = "",
+    seed: int = 0,
+    siblings: tuple[SiblingSpec, ...] = (),
+) -> list[Measure]:
+    """The measures a climb needs, as a pure function of its committed shas
+    and contract facts — the same inputs a wake process reconstructs from the
+    run record, so the plan is identical before and after a park.
+
+    Always: `baseline` @ base_sha and `candidate` @ candidate_sha, paired on
+    the same `seed` (common random numbers) when the benchmark resamples.
+    For a suite gate, each `SiblingSpec` contributes a paired `sib-<name>-base`
+    @ base_sha and `sib-<name>-cand` @ candidate_sha — each on the SIBLING's
+    OWN seed_env and seed, exactly the 2N-paired comparison the in-job gate
+    computes, now dispatched.
+    """
+    # inject only a REAL drawn seed (>= 1); seed 0 is the "no seed recorded"
+    # sentinel, never a value to run under (see SiblingSpec.env / draw_run_seed).
+    env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env and seed else ()
+    plan = [
+        Measure("baseline", base_sha, command, metric, env),
+        Measure("candidate", candidate_sha, command, metric, env),
+    ]
+    for sib in siblings:
+        plan.append(Measure(f"sib-{sib.name}-base", base_sha, sib.command, sib.metric, sib.env()))
+        plan.append(
+            Measure(f"sib-{sib.name}-cand", candidate_sha, sib.command, sib.metric, sib.env())
+        )
+    return plan
+
+
 @dataclass
 class DispatchedMeasurer:
     """Submits and reads a climb's dispatched measures. Stateless beyond the
@@ -80,14 +141,49 @@ class DispatchedMeasurer:
     eval_minutes: int
     run_tag: str = "run"  # disambiguates job names across runs on one account
 
+    def _det(self, m: Measure) -> str:
+        # Everything a measure's RESULT depends on and that can vary across a
+        # PARK/RESUME (when a fresh measurer reads this run_dir): the container
+        # image, the measure's logical role, the code (tree_sha), and the
+        # contract facts it is evaluated under (command, metric, seeded env).
+        # A cache key missing any of these would return a value computed under
+        # DIFFERENT inputs — e.g. a resume that re-fetched the contract after
+        # its command changed, or ran under a rebuilt image, reading the stale
+        # pre-change result. (account / walltime don't change a result's value,
+        # only whether it completes.) NUL separators keep the parts unambiguous
+        # (`a`+`bc` != `ab`+`c`).
+        env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
+        return f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
+
+    def _slot(self, m: Measure) -> str:
+        # Storage identity = the full determinant, with NOTHING truncated: the
+        # eval dir is the durable result cache, so any prefix could alias two
+        # distinct measurements into one stale read. Readable role + FULL sha
+        # (verbatim, debuggable) + the FULL sha1 hex of the whole determinant
+        # (the collision-free disambiguator for the contract facts the sha
+        # alone does not pin — command/metric/seed). A re-measure that changes
+        # the sha OR any contract input lands in a fresh dir; a resume with
+        # identical inputs reuses it. `m.name` stays the caller-facing key
+        # (results["candidate"]). A dir has 255 chars to spare (~91 used).
+        h = hashlib.sha1(self._det(m).encode()).hexdigest()
+        return f"{m.name}-{m.tree_sha}-{h}"
+
     def _ev(self, m: Measure) -> Path:
-        return self.run_dir / f"eval-{m.name}"
+        return self.run_dir / f"eval-{self._slot(m)}"
 
     def _job_name(self, m: Measure) -> str:
-        # deterministic + unique per (run, measure): the CLUSTER can then be
-        # asked "is this measure's job live" by name, independent of any local
-        # marker that a crashed submitter may not have written
-        return f"eval-{self.run_tag}-{m.name}"[:60]
+        # A LIVENESS HINT, not a durable key: the cluster is asked "is this
+        # measure's job live" by name. Slurm caps name length, so this hash is
+        # necessarily bounded (16 hex = 64 bits) rather than full-width like the
+        # slot. That bound is safe because a job-name collision cannot cause a
+        # stale RESULT — results are read from the collision-free slot; the
+        # worst case is one measure seeing another's job as "live" and parking
+        # instead of dispatching, which the deadline sweep then re-checks. The
+        # hash covers the whole determinant (+ run_tag, which disambiguates
+        # jobs across runs sharing one Slurm account); the readable prefixes
+        # are for a human reading squeue.
+        h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:16]
+        return f"eval-{self.run_tag[:10]}-{m.name[:12]}-{h}"
 
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
@@ -99,7 +195,7 @@ class DispatchedMeasurer:
     def _dispatch(self, m: Measure) -> str:
         script = write_eval_job(
             self.run_dir,
-            m.name,
+            self._slot(m),
             repo_root=self.repo_root,
             snapshot_sha=m.tree_sha,
             command=m.command,
@@ -163,4 +259,4 @@ class DispatchedMeasurer:
             pending.append(self._dispatch(m))
         if pending or blind:
             raise MeasurementPending(tuple(pending))
-        return {m.name: read_eval_result(self.run_dir, m.name, m.metric) for m in measures}
+        return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}

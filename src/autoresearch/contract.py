@@ -179,6 +179,18 @@ class Contract(_StrictModel):
     suite: SuiteAggregate | None = None
     steward: StewardScope | None = None
 
+    @field_validator("benchmarks")
+    @classmethod
+    def _unique_names(cls, benchmarks: list[Benchmark]) -> list[Benchmark]:
+        # Benchmark names are IDENTITIES: they key branch names, ledger rows,
+        # and dispatched measure/job names. A duplicate silently collides all
+        # three (two measures share an eval dir; one result is lost).
+        names = [b.name for b in benchmarks]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"duplicate benchmark name(s): {', '.join(dupes)}")
+        return benchmarks
+
 
 _HOST_PREFIX = re.compile(r"^(?:[a-z+]+://)?(?:[^@/]*@)?(?:www\.)?github\.com[:/]+")
 

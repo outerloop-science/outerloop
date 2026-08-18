@@ -118,6 +118,21 @@ def test_empty_benchmarks_refused() -> None:
         )
 
 
+def test_duplicate_benchmark_names_refused() -> None:
+    # two benchmarks sharing a name would collide their result dirs and
+    # dispatched job names — reject at load, not silently at measure time.
+    b = {"command": "run", "metric": "r2", "direction": "max"}
+    with pytest.raises(ValidationError, match="duplicate benchmark name"):
+        Contract.model_validate(
+            {
+                "benchmarks": [{"name": "tsp", **b}, {"name": "tsp", **b}],
+                "budgets": {"gpu_hours_per_run": 0, "runs_per_week": 1},
+                "scope": {"allowed": ["src/"]},
+                "roadmap": "README.md",
+            }
+        )
+
+
 def test_seed_env_accepts_env_var_names_only() -> None:
     """seed_env reaches a subprocess environment: strict shape."""
     from autoresearch.contract import load_contract
