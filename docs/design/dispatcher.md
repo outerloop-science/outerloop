@@ -88,6 +88,50 @@ is believed.
 
 ## Phase 1 — eval as a job (climb + steward)
 
+### The resume seam (stage B)
+
+`climb_once` today fuses three things: baseline (pre-session tree), the
+SESSION (edits the workspace), and candidate (dirty post-session workspace),
+then decides. The session is the one part that must NOT re-run on wake — its
+edits are done — and it is also the only non-idempotent part. So the seam is
+AFTER the session:
+
+1. Session runs, ends. Its output is the dirty workspace.
+2. The workspace is SNAPSHOTTED (`dispatch.snapshot_tree`, retained by ref):
+   `candidate_sha`. The base is `base_sha` (the clone's pre-session HEAD).
+   Both are committed shas the dispatcher can check out.
+3. The MEASURE-AND-DECIDE phase — a pure function of `(base_sha,
+   candidate_sha, contract, seed)` — dispatches its measures through the
+   `DispatchedMeasurer` (baseline@base_sha + candidate@candidate_sha, one
+   wake), and on `MeasurementPending` the run parks as `waiting`.
+4. The record persists exactly what a fresh process needs to re-enter step 3
+   without the session: `base_sha`, `candidate_sha`, `seed`, the benchmark,
+   and a `stage` marking "measures dispatched". Everything else (contract,
+   ruler) is re-fetched.
+
+On the wake, a fresh process loads the record, re-enters measure-and-decide:
+the `DispatchedMeasurer` reads both cached results, `improved()` /
+suite-gate / panel run (panel in-job, cheap), and the PR opens — or another
+measure (a panel-revision re-measure) dispatches and it parks again. N
+park/wake cycles, each cheap because prior measures are cached. The session
+never re-runs because step 1's completion is durable: the candidate snapshot
+IS the session's persisted output.
+
+Sub-parts, each its own PR through the panel:
+- **B.1 (merged):** `DispatchedMeasurer` — submit/park/resume over committed
+  measures, cluster-authoritative liveness.
+- **B.2a:** the resumable `measure_and_decide` — extract the post-session
+  logic behind a re-enterable function over committed shas; pure, tested
+  with a fake measurer.
+- **B.2b:** wire `live_climb` — session -> snapshot -> measure_and_decide;
+  on park write the `waiting` record (base_sha/candidate_sha/seed/stage +
+  `experiment_job_id` = the afterany set) and end.
+- **B.2c:** the wake-entry CLI + the production `WakeDispatcher` (fills the
+  tick's WOULD-WAKE stub with a real dependency wake job). The existing
+  wake-fail-safety layers (afterany primary, sweep backup, deadline floor)
+  carry it unchanged.
+
+
 The submitted eval job: the contract command, on a worktree of the measured
 sha — where "the measured sha" is created if it does not exist yet: the
 candidate measure happens on a dirty workspace before anything is committed,

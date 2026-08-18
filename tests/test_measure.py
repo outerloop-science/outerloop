@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from autoresearch.compute import CommandResult, SlurmCompute
-from autoresearch.measure import DispatchedMeasurer, Measure, MeasurementPending
+from autoresearch.measure import DispatchedMeasurer, Measure, MeasurementPending, plan_measures
 from autoresearch.orchestrator import EvalError
 
 
@@ -132,3 +132,40 @@ def test_measure_carries_paired_seed():
 
 def test_empty_pending_afterany_is_blank():
     assert MeasurementPending(()).afterany() == ""
+
+
+def test_plan_baseline_and_candidate_paired_seed():
+    plan = plan_measures("hp", "cmd", "r2", "a" * 40, "b" * 40, seed_env="S", seed=7)
+    assert [m.name for m in plan] == ["baseline", "candidate"]
+    assert plan[0].tree_sha == "a" * 40 and plan[1].tree_sha == "b" * 40
+    assert plan[0].env() == {"S": "7"} and plan[1].env() == {"S": "7"}  # common random numbers
+
+
+def test_plan_no_seed_env_no_extra_env():
+    plan = plan_measures("hp", "cmd", "r2", "a" * 40, "b" * 40)
+    assert all(m.env() == {} for m in plan)
+
+
+def test_plan_suite_adds_paired_siblings():
+    plan = plan_measures(
+        "hp",
+        "cmd",
+        "r2",
+        "a" * 40,
+        "b" * 40,
+        siblings=(("tsp", "tspcmd", "len"), ("reach", "rcmd", "succ")),
+    )
+    names = [m.name for m in plan]
+    assert names == [
+        "baseline",
+        "candidate",
+        "sib-tsp-base",
+        "sib-tsp-cand",
+        "sib-reach-base",
+        "sib-reach-cand",
+    ]
+    # each sibling pair is base vs candidate on the same command
+    base = next(m for m in plan if m.name == "sib-tsp-base")
+    cand = next(m for m in plan if m.name == "sib-tsp-cand")
+    assert base.tree_sha == "a" * 40 and cand.tree_sha == "b" * 40
+    assert base.command == "tspcmd" and base.metric == "len"

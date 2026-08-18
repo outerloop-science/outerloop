@@ -65,6 +65,39 @@ class Measure:
         return dict(self.extra_env)
 
 
+def plan_measures(
+    benchmark: str,
+    command: str,
+    metric: str,
+    base_sha: str,
+    candidate_sha: str,
+    seed_env: str = "",
+    seed: int = 0,
+    siblings: tuple[tuple[str, str, str], ...] = (),
+) -> list[Measure]:
+    """The measures a climb needs, as a pure function of its committed shas
+    and contract facts — the same inputs a wake process reconstructs from the
+    run record, so the plan is identical before and after a park.
+
+    Always: `baseline` @ base_sha and `candidate` @ candidate_sha, paired on
+    the same `seed` (common random numbers) when the benchmark resamples.
+    For a suite gate, each sibling `(name, command, metric)` contributes a
+    paired `sib-<name>-base` @ base_sha and `sib-<name>-cand` @ candidate_sha
+    — the same 2N-paired comparison the in-job gate computes, now dispatched.
+    """
+    env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env else ()
+    plan = [
+        Measure("baseline", base_sha, command, metric, env),
+        Measure("candidate", candidate_sha, command, metric, env),
+    ]
+    for name, sib_cmd, sib_metric in siblings:
+        # each sibling draws its OWN paired seed at plan time when it
+        # resamples; here the caller has already resolved commands/metrics
+        plan.append(Measure(f"sib-{name}-base", base_sha, sib_cmd, sib_metric, env))
+        plan.append(Measure(f"sib-{name}-cand", candidate_sha, sib_cmd, sib_metric, env))
+    return plan
+
+
 @dataclass
 class DispatchedMeasurer:
     """Submits and reads a climb's dispatched measures. Stateless beyond the
