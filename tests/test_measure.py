@@ -1,4 +1,5 @@
-"""The dispatched measurer: submit-park-resume over committed measures."""
+"""The dispatched measurer: submit-park-resume with the cluster as the
+authoritative liveness source (crash-safe against the submit/marker gap)."""
 
 from __future__ import annotations
 
@@ -8,21 +9,26 @@ from pathlib import Path
 import pytest
 
 from autoresearch.compute import CommandResult, SlurmCompute
-from autoresearch.measure import (
-    DispatchedMeasurer,
-    Measure,
-    MeasurementPending,
-)
+from autoresearch.measure import DispatchedMeasurer, Measure, MeasurementPending
 from autoresearch.orchestrator import EvalError
 
 
-def _measurer(tmp_path: Path, submitted: list, job_state: str = "RUNNING") -> DispatchedMeasurer:
+def _measurer(
+    tmp_path: Path, submitted: list, live: dict | None = None, squeue_fails: bool = False
+) -> DispatchedMeasurer:
+    """`live` maps job-name -> id for jobs squeue should report as running."""
+    live = live or {}
+
     def runner(argv, timeout_s):
         if argv and argv[0] == "sbatch":
             submitted.append(list(argv))
             return CommandResult(0, f"{100 + len(submitted)}\n", "")
-        # sacct status query for a dispatched job
-        return CommandResult(0, f"{job_state}\n", "")
+        if argv and argv[0] == "squeue":
+            if squeue_fails:
+                return CommandResult(1, "", "squeue down")
+            name = argv[argv.index("--name") + 1]
+            return CommandResult(0, (live.get(name, "") + "\n") if live.get(name) else "", "")
+        return CommandResult(0, "COMPLETED\n", "")
 
     return DispatchedMeasurer(
         compute=SlurmCompute(runner=runner),
@@ -32,11 +38,11 @@ def _measurer(tmp_path: Path, submitted: list, job_state: str = "RUNNING") -> Di
         account="a",
         partition="p",
         eval_minutes=60,
+        run_tag="r1",
     )
 
 
 def _land(tmp_path: Path, name: str, value=None, code="0", job="101"):
-    """Simulate a dispatched eval job's output in the run dir."""
     ev = tmp_path / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
     (ev / "submitted").write_text(job)
@@ -46,85 +52,83 @@ def _land(tmp_path: Path, name: str, value=None, code="0", job="101"):
 
 
 def _dispatched(tmp_path: Path, name: str, job="101"):
-    """A measure dispatched but not yet complete (marker, no exit-code)."""
     ev = tmp_path / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
     (ev / "submitted").write_text(job)
 
 
 def _measures():
-    return [
-        Measure("baseline", "a" * 40, "cmd", "r2"),
-        Measure("candidate", "b" * 40, "cmd", "r2"),
-    ]
+    return [Measure("baseline", "a" * 40, "cmd", "r2"), Measure("candidate", "b" * 40, "cmd", "r2")]
 
 
 def test_first_pass_dispatches_all_and_parks(tmp_path):
     submitted: list = []
-    m = _measurer(tmp_path, submitted)
+    m = _measurer(tmp_path, submitted)  # nothing live -> both dispatched
     with pytest.raises(MeasurementPending) as exc:
         m.results(_measures())
-    # both measures submitted; the wake dependency covers the set with ONE job
     assert len(submitted) == 2
     assert exc.value.afterany() == "afterany:101:102"
 
 
-def test_resume_reads_completed_results_without_resubmitting(tmp_path):
+def test_resume_reads_completed_without_resubmitting(tmp_path):
     submitted: list = []
     m = _measurer(tmp_path, submitted)
-    # the jobs landed while the process was gone
     _land(tmp_path, "baseline", 0.50)
     _land(tmp_path, "candidate", 0.61)
-    out = m.results(_measures())
-    assert out == {"baseline": 0.50, "candidate": 0.61}
-    assert submitted == []  # nothing re-dispatched on resume
+    assert m.results(_measures()) == {"baseline": 0.50, "candidate": 0.61}
+    assert submitted == []
 
 
-def test_partial_completion_reparks_only_missing(tmp_path):
+def test_live_job_reparks_on_real_id_never_resubmits(tmp_path):
+    """A job squeue reports as running is parked on its real id — even if its
+    local marker is MISSING (the crash-before-marker case)."""
     submitted: list = []
-    m = _measurer(tmp_path, submitted)
-    _land(tmp_path, "baseline", 0.50)  # one done, one still pending
-    with pytest.raises(MeasurementPending):
+    m = _measurer(tmp_path, submitted, live={"eval-r1-candidate": "102"})
+    _land(tmp_path, "baseline", 0.50)
+    # candidate has NO marker (submitter died in the gap) but IS live
+    with pytest.raises(MeasurementPending) as exc:
         m.results(_measures())
-    # only the un-done candidate is re-dispatched
-    assert len(submitted) == 1
-    assert any("eval-candidate" in tok for tok in submitted[0])
+    assert exc.value.afterany() == "afterany:102"
+    assert submitted == []  # not resubmitted despite the missing marker
 
 
-def test_failed_measure_raises_eval_error(tmp_path):
+def test_dispatched_but_vanished_fails_not_resubmits(tmp_path):
+    """A measure with a marker but no live job and no result died before
+    producing a result (SIGKILL / GONE) -> EvalError, never resubmit."""
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, live={})  # nothing live
+    _land(tmp_path, "baseline", 0.50)
+    _dispatched(tmp_path, "candidate", job="102")  # marker, not live, no result
+    with pytest.raises(EvalError, match="vanished"):
+        m.results(_measures())
+    assert submitted == []
+
+
+def test_nonzero_exit_raises(tmp_path):
     m = _measurer(tmp_path, [])
     _land(tmp_path, "baseline", 0.50)
-    _land(tmp_path, "candidate", code="97")  # the job wrote a nonzero exit
+    _land(tmp_path, "candidate", code="97")
     with pytest.raises(EvalError, match="candidate"):
         m.results(_measures())
 
 
-def test_job_died_before_wrapper_fails_not_resubmits(tmp_path):
-    """A dispatched job that is TERMINAL with no exit-code (SIGKILL/node
-    death) raises EvalError — resubmitting would loop forever."""
+def test_squeue_blind_parks_without_dispatch(tmp_path):
+    """A transient squeue failure must not risk a duplicate: park (on the
+    marker id if any), let the sweep deadline retry; never dispatch blind."""
     submitted: list = []
-    m = _measurer(tmp_path, submitted, job_state="FAILED")
-    _land(tmp_path, "baseline", 0.50)
-    _dispatched(tmp_path, "candidate", job="102")  # marker, no exit-code
-    with pytest.raises(EvalError, match=r"candidate.*without writing"):
-        m.results(_measures())
-    assert submitted == []  # never resubmitted
-
-
-def test_dispatched_and_running_reparks_on_the_real_job_id(tmp_path):
-    """A measure already dispatched and still running re-parks on its real
-    job id (no sentinel, no resubmit) — the completion race is impossible
-    because the marker is authoritative."""
-    submitted: list = []
-    m = _measurer(tmp_path, submitted, job_state="RUNNING")
-    _land(tmp_path, "baseline", 0.50)
-    _dispatched(tmp_path, "candidate", job="102")
+    m = _measurer(tmp_path, submitted, squeue_fails=True)
+    _dispatched(tmp_path, "baseline", job="102")  # has a marker
+    # candidate has no marker; blind -> park, empty dep -> sweep handles it
     with pytest.raises(MeasurementPending) as exc:
         m.results(_measures())
-    assert exc.value.afterany() == "afterany:102"  # the real job id
     assert submitted == []
+    assert exc.value.afterany() in ("afterany:102", "")  # marker id, never a resubmit
 
 
 def test_measure_carries_paired_seed():
     m = Measure("sib", "c" * 40, "cmd", "r2", extra_env=(("PILOT_SEED", "7"),))
     assert m.env() == {"PILOT_SEED": "7"}
+
+
+def test_empty_pending_afterany_is_blank():
+    assert MeasurementPending(()).afterany() == ""
