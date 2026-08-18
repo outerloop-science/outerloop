@@ -690,39 +690,19 @@ def measure_and_decide(
             run_seed=seed,
         )
 
-    siblings = [b for b in contract.benchmarks if b.name != bench.name]
-    run_suite = bool(siblings) and bool(shared_touched(measured_paths, contract))
-    sib_specs: tuple[SiblingSpec, ...] = ()
-    if run_suite:
-        # every seeded sibling runs its pair under the ONE suite_seed, read
-        # through its own seed var (mirrors the in-job gate).
-        sib_specs = tuple(
-            SiblingSpec(
-                b.name,
-                b.command,
-                b.metric,
-                seed_env=b.seed_env or "",
-                seed=suite_seed if b.seed_env else 0,
-            )
-            for b in siblings
-        )
-
-    plan = plan_measures(
-        bench.command,
-        bench.metric,
-        base_sha,
-        candidate_sha,
-        seed_env=bench.seed_env or "",
-        seed=seed,
-        siblings=sib_specs,
-    )
+    seed_env = bench.seed_env or ""
+    # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
+    # candidate has cleared the threshold: a non-improving candidate must never
+    # burn the (expensive) sibling evals, matching climb_once's lazy order.
     try:
-        vals = measurer.results(plan)
+        main = measurer.results(
+            plan_measures(bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed)
+        )
     except EvalError as exc:
         return ClimbResult(outcome="eval-error", note=str(exc), run_seed=seed)
 
-    baseline = vals["baseline"]
-    candidate = vals["candidate"]
+    baseline = main["baseline"]
+    candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
         return ClimbResult(
             outcome="no-improvement",
@@ -731,8 +711,33 @@ def measure_and_decide(
             run_seed=seed,
         )
 
+    # PHASE 2 — suite gate, only for a credited candidate whose diff touched
+    # shared code. A second measure set (a second park for a dispatched
+    # backend): an extra CPU wake, never a wasted GPU sibling eval.
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    if not (siblings and shared_touched(measured_paths, contract)):
+        return MeasureOK(baseline=baseline, candidate=candidate)
+
+    # every seeded sibling runs its pair under the ONE suite_seed, read through
+    # its own seed var (mirrors the in-job gate).
+    sib_specs = tuple(
+        SiblingSpec(b.name, b.command, b.metric, seed_env=b.seed_env or "", seed=suite_seed)
+        for b in siblings
+    )
+    sib_plan = [
+        m
+        for m in plan_measures(
+            bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed, siblings=sib_specs
+        )
+        if m.name.startswith("sib-")  # baseline/candidate already measured (phase 1)
+    ]
+    try:
+        vals = measurer.results(sib_plan)
+    except EvalError as exc:
+        return ClimbResult(outcome="eval-error", note=str(exc), run_seed=seed)
+
     suite_rows: list[SuiteMeasurement] = []
-    for b in siblings if run_suite else []:
+    for b in siblings:
         sib_base = vals[f"sib-{b.name}-base"]
         sib_cand = vals[f"sib-{b.name}-cand"]
         suite_rows.append(
@@ -764,7 +769,7 @@ def measure_and_decide(
         baseline=baseline,
         candidate=candidate,
         suite=suite,
-        suite_seed=suite_seed if run_suite else 0,
+        suite_seed=suite_seed,  # reached only on the suite path
     )
 
 

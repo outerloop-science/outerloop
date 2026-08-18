@@ -104,9 +104,14 @@ AFTER the session:
    it needs no ref and never leaks). Both shas are checkoutable by the
    dispatcher.
 3. The MEASURE-AND-DECIDE phase — a pure function of `(base_sha,
-   candidate_sha, contract, seed)` — dispatches its measures through the
-   `DispatchedMeasurer` (baseline@base_sha + candidate@candidate_sha, one
-   wake), and on `MeasurementPending` the run parks as `waiting`.
+   candidate_sha, contract, seed, suite_seed)` — dispatches its measures
+   through the `Measurer`, and on `MeasurementPending` the run parks as
+   `waiting`. It measures LAZILY, in the same order `climb_once` did: first
+   baseline@base_sha + candidate@candidate_sha (one wake); only if that pair
+   clears the improvement threshold AND the diff touched shared code does it
+   dispatch the sibling pairs (a second wake). A non-improving candidate never
+   burns a sibling eval — the extra wake is cheap CPU, a wasted GPU sibling
+   eval is not.
 4. The record persists exactly what a fresh process needs to re-enter step 3
    without the session: `base_sha`, `candidate_sha` + `candidate_ref`, `seed`,
    the benchmark, and a `stage` marking "measures dispatched". The

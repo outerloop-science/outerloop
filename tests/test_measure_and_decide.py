@@ -46,15 +46,19 @@ CAND = "b" * 40
 
 
 class FakeMeasurer:
-    """Returns canned values keyed by measure name; can instead raise."""
+    """Returns canned values keyed by measure name; can instead raise. `seen`
+    accumulates every measure across ALL calls (the decision measures in two
+    phases: baseline+candidate, then — only if credited — siblings)."""
 
     def __init__(self, values: dict[str, float] | None = None, raise_exc: Exception | None = None):
         self.values = values or {}
         self.raise_exc = raise_exc
         self.seen: list[Measure] = []
+        self.calls = 0
 
     def results(self, measures: list[Measure]) -> dict[str, float]:
-        self.seen = list(measures)
+        self.calls += 1
+        self.seen.extend(measures)
         if self.raise_exc is not None:
             raise self.raise_exc
         return {m.name: self.values[m.name] for m in measures}
@@ -87,6 +91,16 @@ def test_no_improvement_is_terminal():
     assert not isinstance(out, MeasureOK)
     assert out.outcome == "no-improvement"
     assert out.baseline == 0.50 and out.candidate == 0.50 and out.run_seed == 7
+
+
+def test_non_improving_shared_path_candidate_never_measures_siblings():
+    # the lazy-order guarantee: a candidate that fails the main threshold must
+    # NOT burn any sibling eval, even when its diff touched shared code.
+    m = FakeMeasurer({"baseline": 0.50, "candidate": 0.50})
+    out = _decide(m, measured_paths=("src/shared/util.py",))
+    assert not isinstance(out, MeasureOK) and out.outcome == "no-improvement"
+    assert [mm.name for mm in m.seen] == ["baseline", "candidate"]  # no sib-* measured
+    assert m.calls == 1  # phase 2 never ran
 
 
 def test_out_of_scope_is_terminal_before_any_measurement():
@@ -151,6 +165,7 @@ def test_suite_uses_one_suite_seed_via_each_siblings_own_var():
         }
     )
     _decide(m, measured_paths=("src/shared/util.py",), seed=7, suite_seed=99)
+    assert m.calls == 2  # phase 1 (baseline+candidate), then phase 2 (siblings)
     by_name = {mm.name: mm for mm in m.seen}
     # main pair carries the climb seed on the main var; sibling pair carries
     # the ONE suite_seed on the sibling's OWN var (never the main var).
@@ -164,3 +179,4 @@ def test_no_shared_touch_does_not_dispatch_siblings():
     m = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
     _decide(m, measured_paths=("src/model.py",))
     assert [mm.name for mm in m.seen] == ["baseline", "candidate"]  # no sib-* measures
+    assert m.calls == 1  # env-specific diff: phase 2 never ran
