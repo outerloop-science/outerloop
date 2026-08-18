@@ -207,9 +207,15 @@ def drop_snapshot(ws: Workspace, snapshot: Snapshot) -> None:
 def _git_env(extra: dict[str, str]) -> dict[str, str]:
     import os
 
-    # no HOME: git must not read the orchestrator user's ~/.gitconfig while
-    # operating on an agent-written tree
+    # No HOME, and global/system config pinned to /dev/null: git must honor
+    # ONLY the repo's local config while operating on an agent-written tree.
+    # A globally-configured filter driver (in the user's ~/.gitconfig or the
+    # system config) could otherwise be SELECTED by an agent-authored
+    # .gitattributes and execute on the host — dropping HOME alone misses the
+    # system config and XDG paths.
     env = {k: os.environ[k] for k in ("PATH", "LANG") if k in os.environ}
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
     env.update(extra)
     return env
 
@@ -282,6 +288,12 @@ def write_eval_job(
         # exit 0 with empty output and read as a clean eval that measured
         # nothing
         '[ -s "$EV/command.txt" ] || { echo 96 > "$EV/exit-code"; exit 0; }',
+        # git on the node runs with the job user's HOME present, so pin global
+        # AND system config to /dev/null: a globally-configured filter driver
+        # could otherwise be selected by the agent-authored .gitattributes and
+        # execute here, outside the jail. Local repo config still applies and
+        # is neutralized by the GIT_CONFIG_KEY_* overrides below.
+        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null",
     ]
     for k, v in neutral.items():
         lines.append(f"export {k}={shlex.quote(v)}")

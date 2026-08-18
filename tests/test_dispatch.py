@@ -125,6 +125,9 @@ def test_job_script_trust_layout(tmp_path):
     assert "worktree prune" in text  # the stale admin entry is reaped
     # the tree lands on node-local scratch (dies with the job), not the run dir
     assert 'TREE="$SCRATCH/tree"' in text
+    # global/system git config is pinned off (agent .gitattributes could
+    # else select a globally-configured filter to run on the node)
+    assert "GIT_CONFIG_GLOBAL=/dev/null" in text and "GIT_CONFIG_SYSTEM=/dev/null" in text
     # a missing/empty command file is a setup failure, not a clean exit-0
     assert '[ -s "$EV/command.txt" ]' in text
     # the checkout on the agent-written repo carries the child-spawn
@@ -186,6 +189,27 @@ def test_snapshot_keeps_gitattributes_checkout_is_faithful(tmp_path):
         capture_output=True,
     )
     assert (wt / "kept.py").read_text() == "x = 7\n"
+
+
+def test_snapshot_ignores_global_filter_config(tmp_path, monkeypatch):
+    """A filter driver configured GLOBALLY (~/.gitconfig) plus an
+    agent-authored .gitattributes must not execute during the snapshot —
+    global/system config is pinned to /dev/null."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    canary = tmp_path / "globalcanary"
+    (fake_home / ".gitconfig").write_text(
+        f"[filter \"glob\"]\n\tclean = sh -c 'touch {canary}; cat'\n"
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    root = _repo(tmp_path)
+    ws = _WS(root)
+    base = ws.git("rev-parse", "HEAD")
+    (root / ".gitattributes").write_text("*.py filter=glob\n")
+    (root / "kept.py").write_text("x = 3\n")
+    snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    assert not canary.exists(), "a global filter executed during snapshot"
+    assert ws.git("show", f"{snap.commit}:kept.py") == "x = 3"
 
 
 def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
