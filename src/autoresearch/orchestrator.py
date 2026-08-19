@@ -90,8 +90,10 @@ class ClimbParked(Exception):
     """A dispatched climb submitted its measures and must hibernate until they
     finish. `climb_once` raises it (a park is an exceptional exit); the caller,
     which owns the run record and git, persists the fields below as the WAITING
-    stage, submits `afterany` as the wake dependency, and ends the process —
-    keeping the candidate snapshot alive so the wake can read it. `phase` is
+    stage — `afterany` among them, the dependency the wake PR will submit its
+    afterany wake job against (this PR only records it; `wake_job_id` stays
+    empty until then) — and ends the run's turn, keeping the candidate snapshot
+    alive so the wake can read it. `phase` is
     WHICH park: `baseline` (before the session — the wake reruns the session)
     or `candidate` (after it — the wake decides). The caller fills in the
     candidate snapshot ref (which it holds) when writing the stage."""
