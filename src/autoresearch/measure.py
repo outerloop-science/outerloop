@@ -272,24 +272,29 @@ class LocalMeasurer:
     same worktrees the synchronous climb always did. It never parks (no
     `MeasurementPending`), so `measure_and_decide` flows straight through.
 
-    CALLER CONTRACT: `trees[sha]` must be a worktree holding EXACTLY that
-    committed sha's content. Unlike `DispatchedMeasurer`, which checks the sha
-    out itself, this backend TRUSTS the map — the guarantee that measured
-    content matches the committed sha is the caller's to keep (climb_once maps
-    candidate_sha to the workspace it just snapshotted). The map is fixed for a
-    measurer's life; because a sha is content-addressed, the cache keys on the
-    sha (not the worktree path) — remapping a sha to different content mid-life
-    would violate the contract, not merely stale the cache.
+    CALLER CONTRACT: `trees[sha]` is the worktree the sha was snapshotted FROM,
+    so it holds sha's TRACKED content. This backend measures that live worktree
+    directly (no checkout) — exactly as the synchronous climb always did. That
+    is a WEAKER guarantee than the dispatched backend's fresh checkout: the
+    candidate's worktree is the session's workspace, which (like before) can
+    also carry UNTRACKED files — eval artifacts, caches — that the committed sha
+    does not. A benchmark whose result depends only on tracked code measures
+    identically either way; one that reads untracked artifacts can differ, and
+    there the dispatched clean checkout is the trustworthy one. Choose this
+    backend for cheap, self-contained evals; dispatch the rest. It TRUSTS the
+    map — it does not verify the worktree against the sha.
 
     Caches by the measure's full identity (name, tree, command, metric, env),
     so a tree measured twice in one climb — the baseline once for the brief and
-    again in the gate — is evaluated once. The cache is per-instance in memory,
+    again in the gate — is evaluated once. The key is the sha, not the worktree
+    path: a sha is content-addressed over tracked files, which is exact for the
+    tracked-only evals this backend is for. The cache is per-instance in memory,
     which is all the inline path needs: it runs to completion in one process
     and never resumes across a death (that is the dispatched path's job)."""
 
     evaluator: Evaluator
-    # tree_sha -> an existing worktree holding EXACTLY that committed content
-    # (caller-guaranteed; see the class docstring's CALLER CONTRACT).
+    # tree_sha -> the worktree the sha was snapshotted from (holds sha's tracked
+    # content; see the class docstring's CALLER CONTRACT for the untracked caveat).
     trees: dict[str, Path]
     _cache: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], float] = field(
         default_factory=dict
