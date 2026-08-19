@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from autoresearch.compute import JobSpec, SlurmCompute
@@ -28,7 +28,7 @@ from autoresearch.dispatch import (
     read_eval_result,
     write_eval_job,
 )
-from autoresearch.orchestrator import EvalError
+from autoresearch.orchestrator import EvalError, Evaluator
 
 log = logging.getLogger(__name__)
 
@@ -260,3 +260,59 @@ class DispatchedMeasurer:
         if pending or blind:
             raise MeasurementPending(tuple(pending))
         return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}
+
+
+@dataclass
+class LocalMeasurer:
+    """The inline `Measurer`: runs each measure in-process, for cheap
+    benchmarks and local runs where dispatching a job would cost more than the
+    eval. It measures the worktrees the CALLER already has — `base_sha` -> the
+    pre-session tree, `candidate_sha` -> the session's workspace — so it adds
+    no checkout and no new trust surface: it runs the same evaluator on the
+    same worktrees the synchronous climb always did. It never parks (no
+    `MeasurementPending`), so `measure_and_decide` flows straight through.
+
+    CALLER CONTRACT: `trees[sha]` is the worktree the sha was snapshotted FROM,
+    so it holds sha's TRACKED content. This backend measures that live worktree
+    directly (no checkout) — exactly as the synchronous climb always did. That
+    is a WEAKER guarantee than the dispatched backend's fresh checkout: the
+    candidate's worktree is the session's workspace, which (like before) can
+    also carry UNTRACKED files — eval artifacts, caches — that the committed sha
+    does not. A benchmark whose result depends only on tracked code measures
+    identically either way; one that reads untracked artifacts can differ, and
+    there the dispatched clean checkout is the trustworthy one. Choose this
+    backend for cheap, self-contained evals; dispatch the rest. It TRUSTS the
+    map — it does not verify the worktree against the sha.
+
+    Caches by the measure's full identity (name, tree, command, metric, env),
+    so a tree measured twice in one climb — the baseline once for the brief and
+    again in the gate — is evaluated once. The key is the sha, not the worktree
+    path: a sha is content-addressed over tracked files, which is exact for the
+    tracked-only evals this backend is for. The cache is per-instance in memory,
+    which is all the inline path needs: it runs to completion in one process
+    and never resumes across a death (that is the dispatched path's job)."""
+
+    evaluator: Evaluator
+    # tree_sha -> the worktree the sha was snapshotted from (holds sha's tracked
+    # content; see the class docstring's CALLER CONTRACT for the untracked caveat).
+    trees: dict[str, Path]
+    _cache: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], float] = field(
+        default_factory=dict
+    )
+
+    def results(self, measures: list[Measure]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for m in measures:
+            env = tuple(sorted(m.env().items()))
+            key = (m.name, m.tree_sha, m.command, m.metric, env)
+            if key not in self._cache:
+                worktree = self.trees.get(m.tree_sha)
+                if worktree is None:
+                    raise EvalError(
+                        f"local measurer has no worktree for {m.name} @ {m.tree_sha[:12]}"
+                    )
+                self._cache[key] = self.evaluator.evaluate(
+                    worktree, m.command, m.metric, extra_env=dict(env) or None
+                )
+            out[m.name] = self._cache[key]
+        return out
