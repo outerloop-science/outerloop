@@ -862,10 +862,14 @@ def climb_once(
 
     run_seed = draw_run_seed() if bench.seed_env else 0
     siblings = [b for b in contract.benchmarks if b.name != bench.name]
-    # ONE suite_seed for the whole climb, drawn once so a wake reproduces it
-    # from the record (never a re-draw); only when a seeded sibling could gate.
+    # ONE suite_seed for the whole climb, fixed up front so a wake reproduces it
+    # (never a re-draw), and only when a seeded sibling could gate. It REUSES the
+    # climbed benchmark's run_seed when there is one (as the in-job gate did),
+    # drawing a fresh seed only for an unseeded benchmark.
     suite_seed = (
-        draw_run_seed() if contract.scope.shared and any(b.seed_env for b in siblings) else 0
+        (run_seed or draw_run_seed())
+        if contract.scope.shared and any(b.seed_env for b in siblings)
+        else 0
     )
 
     # Baseline from the PRE-session tree (base_sha), through the measurer — the

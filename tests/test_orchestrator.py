@@ -635,7 +635,7 @@ roadmap: docs/roadmap.md
 def run_shared_climb(tmp_path, values, changed, contract=SHARED_CONTRACT, **kw):
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=list(values))
-    baseline_ws = kw.pop("baseline_workspace", tmp_path / "pristine")
+    baseline_ws = tmp_path / "pristine"
     baseline_ws.mkdir(exist_ok=True)
     measurer, snapshot = _wire(evaluator, tmp_path, base_ws=baseline_ws)
     result = climb_once(
@@ -732,6 +732,23 @@ def test_seeded_sibling_pair_is_pinned_to_one_suite_seed(tmp_path: Path) -> None
     assert sib_envs[0] == sib_envs[1]  # paired: same seed both sides
     assert sib_envs[0] and "PILOT_SOKOBAN_SEED" in sib_envs[0]
     assert result.suite_seed > 0
+
+
+def test_seeded_benchmark_shares_its_run_seed_with_the_suite(tmp_path: Path) -> None:
+    # the in-job gate REUSED the climbed benchmark's run_seed for the siblings;
+    # the resumable path keeps that (fixed once, persisted), rather than drawing
+    # an independent suite seed.
+    seeded = SHARED_CONTRACT.replace(
+        "    direction: min\n", "    direction: min\n    seed_env: PILOT_TSP_SEED\n", 1
+    ).replace("    direction: max\n", "    direction: max\n    seed_env: PILOT_SOKOBAN_SEED\n", 1)
+    result, _ = run_shared_climb(
+        tmp_path,
+        [13.876, 13.10, 0.8, 0.8],
+        changed=["src/pilot/model/encoder.py"],
+        contract=seeded,
+    )
+    assert result.outcome == "improved"
+    assert result.run_seed > 0 and result.suite_seed == result.run_seed
 
 
 def test_suite_regressed_is_direction_aware_and_fails_closed() -> None:

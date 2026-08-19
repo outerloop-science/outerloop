@@ -273,10 +273,14 @@ class LocalMeasurer:
 
     Two kinds of worktree, and caching turns on the difference:
 
-    * `clean` — sha -> a CLEAN checkout of exactly that sha (e.g. the pristine
-      pre-session tree for `base_sha`). Its content IS pinned by the sha, so a
-      measure here is CACHED by identity: the baseline measured once for the
-      brief is not re-measured in the gate.
+    * `clean` — sha -> a checkout of exactly that sha, PRISTINE at registration
+      (e.g. the pre-session tree for `base_sha`). Its content is pinned by the
+      sha, so a measure here is CACHED by identity: the baseline measured once
+      for the brief is not re-measured in the gate. (The eval may write into the
+      worktree, so a DIFFERENT measure sharing it — a sibling's base side — runs
+      after that write; the cache still returns each measure's OWN first,
+      pristine-time result, and the dispatched backend checks out each sha fresh
+      when that sharing matters. Same as the synchronous climb before it.)
     * `live` — sha -> the session's workspace, REGISTERED by the caller as it
       snapshots each candidate (the candidate, and each sibling's candidate
       side). Its content is NOT pinned by the sha — the sha captures only
