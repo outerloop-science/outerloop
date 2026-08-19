@@ -8,6 +8,17 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `LocalMeasurer` (`measure` module) — dispatcher phase 1, stage B part 2b(i):
+  the inline `Measurer` backend, for cheap benchmarks and local runs where a
+  dispatched job would cost more than the eval. It measures the worktrees the
+  caller already has (`base_sha` -> pre-session tree, `candidate_sha` -> the
+  session workspace), so it adds no checkout and no new trust surface — the
+  same evaluator on the same worktrees the synchronous climb always used — and
+  never parks. Caches per measure identity so a tree measured twice (baseline
+  for the brief, then in the gate) runs once. The second backend behind the
+  `Measurer` seam `measure_and_decide` already targets; wiring the seam into
+  `climb_once` (with `should_dispatch` picking inline vs dispatched) is next.
+
 - `measure_and_decide` (`orchestrator` module) — dispatcher phase 1, stage B
   part 2a: the post-session decision extracted as a PURE function of committed
   shas and a `Measurer` seam (scope, then baseline/candidate paired measure,
