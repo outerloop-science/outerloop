@@ -99,7 +99,7 @@ def test_blind_park_with_no_job_id_wakes_on_its_deadline(tmp_path: Path) -> None
     # a park the measurer could not attach a job id to (Slurm was blind) still
     # hibernated with a deadline — the deadline floor is its ONLY wake.
     waiting_run(tmp_path, experiment_job_id="", deadline=NOW - 1)
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
+    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
     assert dispatcher.dispatched == [("r1", "blind park past deadline")]
 
 
