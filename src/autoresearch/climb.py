@@ -440,11 +440,12 @@ def live_climb(
         # by the sha). `snapshot` commits the workspace's current content to a
         # candidate sha; we own the ref lifecycle and drop every snapshot once
         # the climb ends (nothing parks yet — the dispatched path is a later PR).
-        measurer = LocalMeasurer(evaluator, clean={pre_session_sha: baseline_wt}, live=workspace)
+        measurer = LocalMeasurer(evaluator, clean={pre_session_sha: baseline_wt})
         snapshots: list[Snapshot] = []
 
         def snapshot() -> str:
             snap = snapshot_tree(ws, pre_session_sha)
+            measurer.live[snap.commit] = workspace  # this candidate -> the live workspace
             snapshots.append(snap)
             return snap.commit
 

@@ -72,12 +72,14 @@ def _wire(evaluator, workspace, base_ws=None):
     workspace. Mirrors how climb.py wires the real thing, minus git."""
     from autoresearch.measure import LocalMeasurer
 
-    measurer = LocalMeasurer(evaluator, clean={"base": base_ws or workspace}, live=workspace)
+    measurer = LocalMeasurer(evaluator, clean={"base": base_ws or workspace})
     counter = {"n": 0}
 
     def snapshot() -> str:
         counter["n"] += 1
-        return f"cand{counter['n']}"
+        sha = f"cand{counter['n']}"
+        measurer.live[sha] = workspace  # register this candidate -> the live workspace
+        return sha
 
     return measurer, snapshot
 
@@ -260,7 +262,7 @@ def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
 
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.876])  # baseline only; no candidate reached
-    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path}, live=tmp_path)
+    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path})
 
     def snapshot() -> str:
         raise EvalError("git write-tree failed")
@@ -340,7 +342,7 @@ def test_out_of_scope_tree_is_rejected_before_the_snapshot(tmp_path: Path) -> No
 
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.876])
-    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path}, live=tmp_path)
+    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path})
     snapshotted: list[int] = []
 
     def snapshot() -> str:

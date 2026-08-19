@@ -277,24 +277,28 @@ class LocalMeasurer:
       pre-session tree for `base_sha`). Its content IS pinned by the sha, so a
       measure here is CACHED by identity: the baseline measured once for the
       brief is not re-measured in the gate.
-    * `live` — the session's workspace, used for every sha NOT in `clean` (the
-      candidate, and each sibling's candidate side). Its content is NOT pinned
-      by the sha — the sha captures only tracked files, but the workspace can
-      also carry UNTRACKED ones (eval artifacts, caches) — so it is NEVER
-      cached: measured FRESH every call. Otherwise a revision that changes only
-      untracked content would keep the same sha and read a stale result.
+    * `live` — sha -> the session's workspace, REGISTERED by the caller as it
+      snapshots each candidate (the candidate, and each sibling's candidate
+      side). Its content is NOT pinned by the sha — the sha captures only
+      tracked files, but the workspace can also carry UNTRACKED ones (eval
+      artifacts, caches) — so it is NEVER cached: measured FRESH every call.
+      Otherwise a revision that changes only untracked content would keep the
+      same sha and read a stale result.
 
+    A sha in NEITHER map fails closed (an EvalError), never a silent fallback.
     That is a weaker guarantee than the dispatched backend's fresh checkout of
     each sha; a benchmark that reads untracked artifacts is measured on the
     live workspace here and should be dispatched if that matters. This backend
-    TRUSTS the `clean` map — it does not verify a worktree against its sha."""
+    TRUSTS the maps — it does not verify a worktree against its sha."""
 
     evaluator: Evaluator
     # sha -> a CLEAN checkout of that sha (content == sha; cache-safe).
     clean: dict[str, Path]
-    # the live workspace, measured FRESH for any sha not in `clean` (its content
-    # is not pinned by the sha, so it must never be cached).
-    live: Path | None = None
+    # sha -> a LIVE worktree (the session workspace), REGISTERED by the caller
+    # as it snapshots each candidate. Measured fresh (never cached), and — like
+    # `clean` — an explicit map, so a sha in NEITHER fails closed rather than
+    # silently measuring some default tree.
+    live: dict[str, Path] = field(default_factory=dict)
     _cache: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], float] = field(
         default_factory=dict
     )
@@ -311,14 +315,13 @@ class LocalMeasurer:
         out: dict[str, float] = {}
         for m in measures:
             env = dict(m.env()) or None
-            worktree = self.clean.get(m.tree_sha)
-            if worktree is not None:
+            if m.tree_sha in self.clean:  # content == sha -> cache by identity
                 key = (m.name, m.tree_sha, m.command, m.metric, tuple(sorted(m.env().items())))
                 if key not in self._cache:
-                    self._cache[key] = self._eval(worktree, m, env)
+                    self._cache[key] = self._eval(self.clean[m.tree_sha], m, env)
                 out[m.name] = self._cache[key]
-            elif self.live is not None:
-                out[m.name] = self._eval(self.live, m, env)  # live tree: never cached
+            elif m.tree_sha in self.live:  # live tree -> measure fresh, never cache
+                out[m.name] = self._eval(self.live[m.tree_sha], m, env)
             else:
                 raise EvalError(f"local measurer has no worktree for {m.name} @ {m.tree_sha[:12]}")
         return out

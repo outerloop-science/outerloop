@@ -36,7 +36,7 @@ def _trees(tmp_path: Path) -> tuple[Path, Path]:
 def test_baseline_runs_clean_tree_candidate_runs_live(tmp_path):
     base, live = _trees(tmp_path)
     ev = FakeEvaluator({(base, "cmd"): 0.50, (live, "cmd"): 0.61})
-    m = LocalMeasurer(ev, clean={BASE: base}, live=live)
+    m = LocalMeasurer(ev, clean={BASE: base}, live={CAND: live})
     out = m.results(plan_measures("cmd", "r2", BASE, CAND))
     assert out == {"baseline": 0.50, "candidate": 0.61}
     assert ev.calls[0][:3] == (base, "cmd", "r2")  # baseline in the clean tree
@@ -46,7 +46,7 @@ def test_baseline_runs_clean_tree_candidate_runs_live(tmp_path):
 def test_clean_tree_is_cached_live_tree_is_not(tmp_path):
     base, live = _trees(tmp_path)
     ev = FakeEvaluator({(base, "cmd"): 0.50, (live, "cmd"): 0.61})
-    m = LocalMeasurer(ev, clean={BASE: base}, live=live)
+    m = LocalMeasurer(ev, clean={BASE: base}, live={CAND: live})
     plan = plan_measures("cmd", "r2", BASE, CAND)
     m.results(plan)
     m.results(plan)
@@ -76,6 +76,14 @@ def test_unknown_sha_without_a_live_tree_is_eval_error(tmp_path):
         m.results([Measure("baseline", BASE, "cmd", "r2")])
 
 
+def test_unregistered_candidate_sha_fails_closed(tmp_path):
+    # a sha in NEITHER map must error, not silently fall back to some tree.
+    base, live = _trees(tmp_path)
+    m = LocalMeasurer(FakeEvaluator({}), clean={BASE: base}, live={CAND: live})
+    with pytest.raises(EvalError, match="no worktree"):
+        m.results([Measure("candidate", "z" * 40, "cmd", "r2")])
+
+
 def test_eval_failure_names_the_measure(tmp_path):
     base, _ = _trees(tmp_path)
 
@@ -91,7 +99,7 @@ def test_eval_failure_names_the_measure(tmp_path):
 def test_passes_the_paired_seed_to_both_sides(tmp_path):
     base, live = _trees(tmp_path)
     ev = FakeEvaluator({(base, "cmd"): 0.50, (live, "cmd"): 0.61})
-    m = LocalMeasurer(ev, clean={BASE: base}, live=live)
+    m = LocalMeasurer(ev, clean={BASE: base}, live={CAND: live})
     m.results(plan_measures("cmd", "r2", BASE, CAND, seed_env="S", seed=7))
     assert [c[3] for c in ev.calls] == [{"S": "7"}, {"S": "7"}]  # common random numbers
 
@@ -99,7 +107,7 @@ def test_passes_the_paired_seed_to_both_sides(tmp_path):
 def test_no_seed_passes_none_not_empty_dict(tmp_path):
     base, live = _trees(tmp_path)
     ev = FakeEvaluator({(base, "cmd"): 0.50, (live, "cmd"): 0.61})
-    m = LocalMeasurer(ev, clean={BASE: base}, live=live)
+    m = LocalMeasurer(ev, clean={BASE: base}, live={CAND: live})
     m.results(plan_measures("cmd", "r2", BASE, CAND))
     assert all(c[3] is None for c in ev.calls)  # matches the evaluator's default
 
@@ -109,7 +117,7 @@ def test_siblings_run_base_clean_and_cand_live(tmp_path):
     ev = FakeEvaluator(
         {(base, "cmd"): 0.50, (live, "cmd"): 0.61, (base, "sibcmd"): 0.8, (live, "sibcmd"): 0.79}
     )
-    m = LocalMeasurer(ev, clean={BASE: base}, live=live)
+    m = LocalMeasurer(ev, clean={BASE: base}, live={CAND: live})
     plan = plan_measures(
         "cmd",
         "r2",
