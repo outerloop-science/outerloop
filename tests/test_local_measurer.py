@@ -54,6 +54,20 @@ def test_caches_repeated_identity(tmp_path):
     assert len(ev.calls) == 2  # each measured once, not four times
 
 
+def test_cache_key_is_the_full_identity_not_just_name_and_tree(tmp_path):
+    # a weaker key (name+tree only) would collide these into one stale value.
+    base, _ = _trees(tmp_path)
+    ev = FakeEvaluator({(base, "cmd1"): 0.1, (base, "cmd2"): 0.2})
+    m = LocalMeasurer(ev, {BASE: base})
+    # same name + tree, DIFFERENT command -> distinct results, not a cache hit
+    assert m.results([Measure("x", BASE, "cmd1", "r2")])["x"] == 0.1
+    assert m.results([Measure("x", BASE, "cmd2", "r2")])["x"] == 0.2
+    # same name + tree + command, DIFFERENT env (seed) -> a fresh eval each
+    m.results([Measure("x", BASE, "cmd1", "r2", extra_env=(("S", "1"),))])
+    m.results([Measure("x", BASE, "cmd1", "r2", extra_env=(("S", "2"),))])
+    assert len(ev.calls) == 4  # 4 distinct identities -> 4 evals, none collided
+
+
 def test_missing_worktree_is_eval_error(tmp_path):
     m = LocalMeasurer(FakeEvaluator({}), {})  # no trees registered
     with pytest.raises(EvalError, match="no worktree"):
