@@ -164,20 +164,19 @@ def _park_run(
     run_id: str,
     record: RunRecord,
     parked: ClimbParked,
-    snapshots: list[Snapshot],
+    candidate_ref: str,
     eval_minutes: int | None,
     now: float,
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
-    fresh process reconstructs the measure-and-decide phase from. The wake path
-    (which reads this and resumes) is a later PR."""
+    fresh process reconstructs the measure-and-decide phase from. The caller
+    passes the EXACT `candidate_ref` it will keep alive (never re-derive it from
+    the commit — two snapshots can share a commit). The wake path (which reads
+    this and resumes) is a later PR."""
     from autoresearch.dispatch import effective_eval_minutes
 
     job_ids = parked.afterany.split(":")[1:] if parked.afterany else []
-    candidate_ref = ""
-    if parked.phase == "candidate":
-        candidate_ref = next((s.ref for s in snapshots if s.commit == parked.candidate_sha), "")
     stage: dict[str, object] = {
         "phase": parked.phase,
         "base_sha": parked.base_sha,
@@ -517,6 +516,7 @@ def live_climb(
             return snap.commit
 
         parked: ClimbParked | None = None
+        kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
             result = climb_once(
                 config,
@@ -542,17 +542,21 @@ def live_climb(
             # AFTER a successful write: if _park_run raises, it stays None so the
             # finally drops every snapshot (no leak) and the outer handler ends
             # the run as an error rather than a half-written hibernation.
+            if p.phase == "candidate":
+                # keep exactly ONE snapshot for that sha (two can share a
+                # commit); record and keep that same ref, drop the rest.
+                kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
             eval_minutes = next(
                 (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
             )
-            _park_run(run_root, run_id, record, p, snapshots, eval_minutes, now)
+            _park_run(run_root, run_id, record, p, kept_ref, eval_minutes, now)
             parked = p
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
             for snap in snapshots:
-                # a candidate park must OUTLIVE the wake — keep that one snapshot;
-                # drop every other (intermediate / baseline-park) snapshot now.
-                if parked and parked.phase == "candidate" and snap.commit == parked.candidate_sha:
+                # a candidate park must OUTLIVE the wake — keep the ONE recorded
+                # snapshot (matched by ref, not commit); drop every other one.
+                if parked and kept_ref and snap.ref == kept_ref:
                     continue
                 drop_snapshot(ws, snap)  # best-effort + self-logging; never raises
             if not _best_effort(

@@ -52,7 +52,7 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
         candidate_sha="c" * 40,
         session=_session("s1"),
     )
-    _park_run(tmp_path, "tsp-1", record, parked, [snap], eval_minutes=90, now=1000.0)
+    _park_run(tmp_path, "tsp-1", record, parked, snap.ref, eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-1")
     assert r.state == "waiting"
@@ -80,7 +80,7 @@ def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
     parked = ClimbParked(
         phase="baseline", afterany="afterany:77", base_sha="b" * 40, seed=0, suite_seed=0
     )
-    _park_run(tmp_path, "tsp-3", record, parked, [], eval_minutes=90, now=1000.0)
+    _park_run(tmp_path, "tsp-3", record, parked, "", eval_minutes=90, now=1000.0)
     assert load_record(tmp_path, "tsp-3").experiment_job_id == "77"
 
 
@@ -91,7 +91,7 @@ def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
     parked = ClimbParked(
         phase="baseline", afterany="afterany:55", base_sha="b" * 40, seed=0, suite_seed=0
     )
-    _park_run(tmp_path, "tsp-2", record, parked, [], eval_minutes=90, now=1000.0)
+    _park_run(tmp_path, "tsp-2", record, parked, "", eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-2")
     assert r.state == "waiting" and r.resume_session_id == ""  # session not run yet
