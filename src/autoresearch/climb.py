@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from autoresearch.contract import load_contract
+from autoresearch.dispatch import Snapshot, drop_snapshot, snapshot_tree
 from autoresearch.github import (
     FileTokenProvider,
     GitError,
@@ -30,6 +31,7 @@ from autoresearch.github import (
     Workspace,
 )
 from autoresearch.harness import ClaudeCodeHarness, Harness, redact
+from autoresearch.measure import LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
     Evaluator,
@@ -431,23 +433,41 @@ def live_climb(
             if panel_lenses
             else None
         )
+        # The measurer runs the eval inline in the caller's worktrees: the
+        # pre-session tree (baseline_wt) for base_sha, and the session's live
+        # workspace for each candidate snapshot. `snapshot` commits the
+        # workspace's current content to a candidate sha the measurer keys on;
+        # we own the ref lifecycle and drop every snapshot once the climb ends
+        # (nothing parks yet — the dispatched path is a later PR).
+        measurer = LocalMeasurer(evaluator, {pre_session_sha: baseline_wt})
+        snapshots: list[Snapshot] = []
+
+        def snapshot() -> str:
+            snap = snapshot_tree(ws, pre_session_sha)
+            measurer.trees[snap.commit] = workspace
+            snapshots.append(snap)
+            return snap.commit
+
         try:
             result = climb_once(
                 config,
                 contract_text,
                 workspace,
                 harness,
-                evaluator,
+                measurer,
+                pre_session_sha,
+                snapshot,
                 ruler=RULER,
                 changed_paths=changed_paths,
                 created=created,
                 task_hypothesis=task_hypothesis,
-                baseline_workspace=baseline_wt,
                 spec=spec,
                 panel_runner=panel_runner,
                 panel_revisions=panel_revisions,
             )
         finally:
+            for snap in snapshots:
+                _best_effort("snapshot drop", partial(drop_snapshot, ws, snap))
             if not _best_effort(
                 "baseline worktree cleanup",
                 lambda: ws.git("worktree", "remove", "--force", str(baseline_wt)),

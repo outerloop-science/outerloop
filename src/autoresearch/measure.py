@@ -311,8 +311,14 @@ class LocalMeasurer:
                     raise EvalError(
                         f"local measurer has no worktree for {m.name} @ {m.tree_sha[:12]}"
                     )
-                self._cache[key] = self.evaluator.evaluate(
-                    worktree, m.command, m.metric, extra_env=dict(env) or None
-                )
+                try:
+                    value = self.evaluator.evaluate(
+                        worktree, m.command, m.metric, extra_env=dict(env) or None
+                    )
+                except EvalError as exc:
+                    # name the failing measure, as the dispatched backend does,
+                    # so the caller's note says WHICH eval broke.
+                    raise EvalError(f"{m.name}: {exc}") from exc
+                self._cache[key] = value
             out[m.name] = self._cache[key]
         return out

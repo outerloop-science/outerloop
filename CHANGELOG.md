@@ -6,6 +6,22 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- `climb_once` now measures through the `Measurer` seam — dispatcher phase 1,
+  stage B part 2b(ii). Its synchronous baseline/candidate/suite evals are
+  replaced by one `measure_and_decide` call over committed shas; it takes a
+  `measurer` + `base_sha` + a `snapshot()` callback (all git stays in the
+  caller, `climb.py`, which builds a `LocalMeasurer`, snapshots each candidate,
+  and drops the snapshot refs when the climb ends) instead of an `evaluator` +
+  `baseline_workspace`. Behavior-preserving: same eval order and count (the
+  baseline is cached after the brief, so the gate does not re-measure it), same
+  decisions, same panel loop. This is the seam that lets a later PR swap in the
+  dispatched backend for expensive evals. Also: `LocalMeasurer` now names the
+  failing measure in its `EvalError` (matching the dispatched backend), and the
+  removed "no pristine baseline workspace" branch is gone (baseline is always a
+  committed sha now, so the suite gate can always measure siblings).
+
 ### Added
 
 - `LocalMeasurer` (`measure` module) — dispatcher phase 1, stage B part 2b(i):
