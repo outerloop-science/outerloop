@@ -255,6 +255,34 @@ def test_candidate_eval_failure_is_eval_error_with_session(tmp_path: Path) -> No
     assert result.session is not None
 
 
+def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
+    """A snapshot failure (the session ran, the tree could not be captured) is
+    an eval-error result with the session — never an escaping exception."""
+    from autoresearch.measure import LocalMeasurer
+
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=[13.876])  # baseline only; no candidate reached
+    measurer = LocalMeasurer(evaluator, {"base": tmp_path})
+
+    def snapshot() -> str:
+        raise EvalError("git write-tree failed")
+
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+    )
+    assert result.outcome == "eval-error"
+    assert result.session is not None and "snapshot" in result.note
+
+
 def test_unknown_benchmark_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not in contract"):
         run_climb(tmp_path, [1.0], config=ClimbConfig(target="org/pilot", benchmark="chess"))

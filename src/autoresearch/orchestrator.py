@@ -928,8 +928,22 @@ def climb_once(
         measured = tuple(changed_paths())
         # Snapshot the session's current output to a committed sha the measurer
         # keys on; the caller (which owns git) registers its worktree and the
-        # ref. A revision re-snapshots -> a NEW candidate_sha -> a fresh eval.
-        candidate_sha = snapshot()
+        # ref. A revision re-snapshots -> a NEW candidate_sha -> a fresh eval. A
+        # snapshot failure is an eval failure (the session ran, the tree just
+        # could not be captured), not a climb crash — same as a candidate eval
+        # that raises.
+        try:
+            candidate_sha = snapshot()
+        except EvalError as exc:
+            return ClimbResult(
+                outcome="eval-error",
+                baseline=baseline,
+                session=session,
+                note=f"snapshot: {exc}",
+                run_seed=run_seed,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
         outcome = measure_and_decide(
             contract,
             bench,
