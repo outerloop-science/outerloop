@@ -161,7 +161,6 @@ PARK_QUEUE_SLACK_MIN = 12 * 60
 
 def _park_run(
     run_root: Path,
-    run_id: str,
     record: RunRecord,
     parked: ClimbParked,
     candidate_ref: str,
@@ -205,11 +204,13 @@ def _park_run(
             "resume_session_id": parked.session.session_id if parked.session else "",
             "deadline": deadline,
             "stage": stage,
-            # a fresh hibernation from IMPLEMENTING: the run just LEFT waiting to
-            # do work (the session, a measure), so wake_attempts — "wakes since
-            # the run last left waiting" — resets; a productive park/wake cycle
-            # must not creep toward the stuck cap. The NEW experiment has not
-            # been seen terminal and carries no wake job yet.
+            # Reset only valid because THIS is the IMPLEMENTING->park entry: the
+            # run just LEFT waiting to do work (a session, a measure), so
+            # wake_attempts — "wakes since the run last left waiting" — is stale;
+            # a productive park/wake cycle must not creep toward the stuck cap.
+            # The wake path (a later PR) must NOT route a no-progress blind
+            # re-park (results still pending) back through here — resetting on
+            # that would defeat the stuck cap; a blind re-park keeps the counter.
             "wake_attempts": 0,
             "terminal_seen": 0.0,
             "wake_job_id": "",
@@ -556,7 +557,7 @@ def live_climb(
             # anchor the deadline to the PARK (when the evals were submitted),
             # not the run's start `now` — a session lasting hours would otherwise
             # eat the queue budget and let the sweep cancel a still-queued eval.
-            _park_run(run_root, run_id, record, p, kept_ref, eval_minutes, time.time())
+            _park_run(run_root, record, p, kept_ref, eval_minutes, time.time())
             parked = p
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
