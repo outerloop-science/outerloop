@@ -623,9 +623,10 @@ class Measurer(Protocol):
     keyed by its name, or — for a dispatched backend — raises
     `MeasurementPending` after submitting the not-yet-done jobs, for the caller
     to park on. Two backends behind this one seam: `LocalMeasurer` (inline
-    checkout + eval, for cheap benchmarks and local runs) and
-    `measure.DispatchedMeasurer` (cluster jobs, for expensive evals); the seam
-    is what lets `measure_and_decide` be re-enterable without knowing which."""
+    eval in the caller's existing worktrees, for cheap benchmarks and local
+    runs) and `measure.DispatchedMeasurer` (cluster jobs on a fresh checkout of
+    each committed sha, for expensive evals); the seam is what lets
+    `measure_and_decide` be re-enterable without knowing which."""
 
     def results(self, measures: list[Measure]) -> dict[str, float]: ...
 

@@ -272,6 +272,15 @@ class LocalMeasurer:
     same worktrees the synchronous climb always did. It never parks (no
     `MeasurementPending`), so `measure_and_decide` flows straight through.
 
+    CALLER CONTRACT: `trees[sha]` must be a worktree holding EXACTLY that
+    committed sha's content. Unlike `DispatchedMeasurer`, which checks the sha
+    out itself, this backend TRUSTS the map — the guarantee that measured
+    content matches the committed sha is the caller's to keep (climb_once maps
+    candidate_sha to the workspace it just snapshotted). The map is fixed for a
+    measurer's life; because a sha is content-addressed, the cache keys on the
+    sha (not the worktree path) — remapping a sha to different content mid-life
+    would violate the contract, not merely stale the cache.
+
     Caches by the measure's full identity (name, tree, command, metric, env),
     so a tree measured twice in one climb — the baseline once for the brief and
     again in the gate — is evaluated once. The cache is per-instance in memory,
@@ -279,7 +288,8 @@ class LocalMeasurer:
     and never resumes across a death (that is the dispatched path's job)."""
 
     evaluator: Evaluator
-    # tree_sha -> an existing worktree holding exactly that committed content.
+    # tree_sha -> an existing worktree holding EXACTLY that committed content
+    # (caller-guaranteed; see the class docstring's CALLER CONTRACT).
     trees: dict[str, Path]
     _cache: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], float] = field(
         default_factory=dict
