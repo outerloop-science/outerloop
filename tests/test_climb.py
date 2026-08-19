@@ -52,12 +52,15 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
         candidate_sha="c" * 40,
         session=_session("s1"),
     )
-    _park_run(tmp_path, "tsp-1", record, parked, [snap], now=1000.0)
+    _park_run(tmp_path, "tsp-1", record, parked, [snap], eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-1")
     assert r.state == "waiting"
     assert r.experiment_job_id == "101"  # first of the afterany set
-    assert r.deadline > 1000.0  # the waiting-record invariant (has a deadline)
+    # deadline is walltime-aware (eval walltime + queue slack), not a flat 24h,
+    # so the sweep never cancels a still-queued job of a legitimately slow eval
+    assert r.deadline == 1000.0 + (90 + 12 * 60) * 60
+    assert r.terminal_seen == 0.0  # the NEW experiment has not been seen terminal
     assert r.resume_session_id == "s1"  # the candidate park resumes the session
     assert r.stage["phase"] == "candidate"
     assert r.stage["base_sha"] == "b" * 40 and r.stage["candidate_sha"] == "c" * 40
@@ -73,7 +76,7 @@ def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
     parked = ClimbParked(
         phase="baseline", afterany="afterany:55", base_sha="b" * 40, seed=0, suite_seed=0
     )
-    _park_run(tmp_path, "tsp-2", record, parked, [], now=1000.0)
+    _park_run(tmp_path, "tsp-2", record, parked, [], eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-2")
     assert r.state == "waiting" and r.resume_session_id == ""  # session not run yet

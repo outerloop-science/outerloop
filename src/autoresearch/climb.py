@@ -152,18 +152,28 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
         return False
 
 
+# A parked run's deadline is the FLOOR beneath the afterany wake: submit +
+# eval walltime + a generous queue/grace allowance. It must exceed the time a
+# healthy eval can legitimately sit queued-then-running, or `tick._sweep_one`
+# would cancel a still-queued job as "unschedulable".
+PARK_QUEUE_SLACK_MIN = 12 * 60
+
+
 def _park_run(
     run_root: Path,
     run_id: str,
     record: RunRecord,
     parked: ClimbParked,
     snapshots: list[Snapshot],
+    eval_minutes: int | None,
     now: float,
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
     fresh process reconstructs the measure-and-decide phase from. The wake path
     (which reads this and resumes) is a later PR."""
+    from autoresearch.dispatch import effective_eval_minutes
+
     job_ids = parked.afterany.split(":")[1:] if parked.afterany else []
     candidate_ref = ""
     if parked.phase == "candidate":
@@ -177,17 +187,20 @@ def _park_run(
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
     }
+    deadline = now + (effective_eval_minutes(eval_minutes) + PARK_QUEUE_SLACK_MIN) * 60
     waiting = RunRecord(
         **{
             **record.__dict__,
             "state": WAITING,
             "experiment_job_id": job_ids[0] if job_ids else "",
             "resume_session_id": parked.session.session_id if parked.session else "",
-            # a nominal deadline floor now; the real walltime-based one lands
-            # with the wake dispatcher (deadline > 0 is required for a waiting
-            # run carrying an experiment job).
-            "deadline": now + 24 * 3600,
+            "deadline": deadline,
             "stage": stage,
+            # a fresh hibernation: the NEW experiment has not been seen terminal
+            # and carries no wake job yet (wake_attempts is KEPT — it is the
+            # stuck-detector across the whole run, not per park).
+            "terminal_seen": 0.0,
+            "wake_job_id": "",
         }
     )
     save_record(run_root, waiting, now)
@@ -518,7 +531,10 @@ def live_climb(
             # AFTER a successful write: if _park_run raises, it stays None so the
             # finally drops every snapshot (no leak) and the outer handler ends
             # the run as an error rather than a half-written hibernation.
-            _park_run(run_root, run_id, record, p, snapshots, now)
+            eval_minutes = next(
+                (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
+            )
+            _park_run(run_root, run_id, record, p, snapshots, eval_minutes, now)
             parked = p
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
