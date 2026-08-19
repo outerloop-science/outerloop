@@ -335,6 +335,36 @@ def test_forbidden_paths_are_scope_violations(tmp_path: Path) -> None:
     assert result.outcome == "scope-violation"
 
 
+def test_out_of_scope_tree_is_rejected_before_the_snapshot(tmp_path: Path) -> None:
+    # the out-of-scope edit could be to the ruler itself — it is never
+    # snapshotted OR measured, not merely rejected after the fact.
+    from autoresearch.measure import LocalMeasurer
+
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=[13.876])
+    measurer = LocalMeasurer(evaluator, {"base": tmp_path})
+    snapshotted: list[int] = []
+
+    def snapshot() -> str:
+        snapshotted.append(1)
+        return "cand1"
+
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["docs/secret.md"],
+        created="t",
+    )
+    assert result.outcome == "scope-violation"
+    assert snapshotted == []  # never snapshotted the out-of-scope tree
+
+
 def test_improved_rejects_nonfinite_and_zero_baseline_uses_absolute() -> None:
     assert not improved(float("nan"), 1.0, "max", 0.005)
     assert not improved(1.0, float("inf"), "max", 0.005)

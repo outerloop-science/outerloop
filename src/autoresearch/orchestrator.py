@@ -926,6 +926,22 @@ def climb_once(
     measured: tuple[str, ...] = ()
     while True:
         measured = tuple(changed_paths())
+        # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
+        # OR measured — the out-of-scope edit could be to the ruler itself. This
+        # early exit keeps the snapshot off a rejected tree; measure_and_decide
+        # re-checks as the authoritative gate on every entry (including a wake,
+        # which re-enters it directly).
+        violations = out_of_scope(list(measured), contract)
+        if violations:
+            return ClimbResult(
+                outcome="scope-violation",
+                baseline=baseline,
+                session=session,
+                note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                run_seed=run_seed,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
         # Snapshot the session's current output to a committed sha the measurer
         # keys on; the caller (which owns git) registers its worktree and the
         # ref. A revision re-snapshots -> a NEW candidate_sha -> a fresh eval. A
