@@ -514,9 +514,12 @@ def live_climb(
             # The climb dispatched its measures and hibernated. Persist the
             # re-entry stage as a WAITING record (not an error), keep the
             # candidate snapshot alive for the wake, and end. The wake re-enters
-            # from the record (the wake path is a later PR).
-            parked = p
+            # from the record (the wake path is a later PR). `parked` is set only
+            # AFTER a successful write: if _park_run raises, it stays None so the
+            # finally drops every snapshot (no leak) and the outer handler ends
+            # the run as an error rather than a half-written hibernation.
             _park_run(run_root, run_id, record, p, snapshots, now)
+            parked = p
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
             for snap in snapshots:
