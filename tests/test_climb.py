@@ -56,7 +56,9 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
 
     r = load_record(tmp_path, "tsp-1")
     assert r.state == "waiting"
-    assert r.experiment_job_id == "101"  # first of the afterany set
+    # a MULTI-job park records no single experiment job — the sweep must not
+    # wake when job 101 finishes while 102 runs; it rides the deadline floor.
+    assert r.experiment_job_id == ""
     # deadline is walltime-aware (eval walltime + queue slack), not a flat 24h,
     # so the sweep never cancels a still-queued job of a legitimately slow eval
     assert r.deadline == 1000.0 + (90 + 12 * 60) * 60
@@ -67,6 +69,19 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["candidate_ref"] == "refs/dispatch/tok"  # for drop at the terminal
     assert r.stage["seed"] == 7 and r.stage["suite_seed"] == 9
     assert r.stage["afterany"] == "afterany:101:102"
+
+
+def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
+    # one eval job (a baseline park, or a candidate with no siblings): the sweep
+    # CAN poll it directly for a terminal+grace wake.
+    record = RunRecord(
+        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    parked = ClimbParked(
+        phase="baseline", afterany="afterany:77", base_sha="b" * 40, seed=0, suite_seed=0
+    )
+    _park_run(tmp_path, "tsp-3", record, parked, [], eval_minutes=90, now=1000.0)
+    assert load_record(tmp_path, "tsp-3").experiment_job_id == "77"
 
 
 def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:

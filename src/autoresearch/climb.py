@@ -187,12 +187,23 @@ def _park_run(
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
     }
+    # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
+    # is right for a single-job park (baseline, or a candidate with no siblings):
+    # poll it. But a MULTI-job park (candidate + siblings) must not wake when the
+    # FIRST job finishes while the rest run — so it records no single job and
+    # rides the DEADLINE floor instead (which sits past every eval's walltime).
+    # The precise "all jobs done" fast wake is the afterany wake job (a later PR).
+    experiment_job_id = job_ids[0] if len(job_ids) == 1 else ""
+    # The deadline is a FLOOR anchored to the run's start (`now`); its generous
+    # queue/grace slack absorbs the session's own duration, and the sweep
+    # re-bases it from `terminal_seen`. The wake dispatcher sets the precise
+    # park-time deadline later.
     deadline = now + (effective_eval_minutes(eval_minutes) + PARK_QUEUE_SLACK_MIN) * 60
     waiting = RunRecord(
         **{
             **record.__dict__,
             "state": WAITING,
-            "experiment_job_id": job_ids[0] if job_ids else "",
+            "experiment_job_id": experiment_job_id,
             "resume_session_id": parked.session.session_id if parked.session else "",
             "deadline": deadline,
             "stage": stage,
