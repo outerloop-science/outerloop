@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.climb import live_climb
+from autoresearch.climb import _park_run, live_climb
+from autoresearch.dispatch import Snapshot
 from autoresearch.harness import SessionResult
-from autoresearch.orchestrator import ClimbConfig
-from autoresearch.runstate import load_record
+from autoresearch.orchestrator import ClimbConfig, ClimbParked
+from autoresearch.runstate import RunRecord, load_record
 
 CONTRACT = """\
 benchmarks:
@@ -23,6 +24,61 @@ budgets: {gpu_hours_per_run: 1, runs_per_week: 10}
 scope: {allowed: [src/pilot/solvers/]}
 roadmap: docs/roadmap.md
 """
+
+
+def _session(sid: str = "s1") -> SessionResult:
+    return SessionResult(
+        stop_reason="end_turn",
+        is_error=False,
+        cost_usd=1.0,
+        num_turns=5,
+        session_id=sid,
+        final_text="report",
+        transcript_path="",
+    )
+
+
+def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> None:
+    record = RunRecord(
+        run_id="tsp-1", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    snap = Snapshot(commit="c" * 40, tree="d" * 40, ref="refs/dispatch/tok")
+    parked = ClimbParked(
+        phase="candidate",
+        afterany="afterany:101:102",
+        base_sha="b" * 40,
+        seed=7,
+        suite_seed=9,
+        candidate_sha="c" * 40,
+        session=_session("s1"),
+    )
+    _park_run(tmp_path, "tsp-1", record, parked, [snap], now=1000.0)
+
+    r = load_record(tmp_path, "tsp-1")
+    assert r.state == "waiting"
+    assert r.experiment_job_id == "101"  # first of the afterany set
+    assert r.deadline > 1000.0  # the waiting-record invariant (has a deadline)
+    assert r.resume_session_id == "s1"  # the candidate park resumes the session
+    assert r.stage["phase"] == "candidate"
+    assert r.stage["base_sha"] == "b" * 40 and r.stage["candidate_sha"] == "c" * 40
+    assert r.stage["candidate_ref"] == "refs/dispatch/tok"  # for drop at the terminal
+    assert r.stage["seed"] == 7 and r.stage["suite_seed"] == 9
+    assert r.stage["afterany"] == "afterany:101:102"
+
+
+def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
+    record = RunRecord(
+        run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    parked = ClimbParked(
+        phase="baseline", afterany="afterany:55", base_sha="b" * 40, seed=0, suite_seed=0
+    )
+    _park_run(tmp_path, "tsp-2", record, parked, [], now=1000.0)
+
+    r = load_record(tmp_path, "tsp-2")
+    assert r.state == "waiting" and r.resume_session_id == ""  # session not run yet
+    assert r.stage["phase"] == "baseline"
+    assert r.stage["candidate_sha"] == "" and r.stage["candidate_ref"] == ""
 
 
 def _git(cwd: Path, *args: str) -> str:

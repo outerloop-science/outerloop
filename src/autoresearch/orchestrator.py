@@ -86,6 +86,37 @@ class EvalError(RuntimeError):
     """The benchmark command failed or produced no readable metric."""
 
 
+class ClimbParked(Exception):
+    """A dispatched climb submitted its measures and must hibernate until they
+    finish. `climb_once` raises it (a park is an exceptional exit); the caller,
+    which owns the run record and git, persists the fields below as the WAITING
+    stage, submits `afterany` as the wake dependency, and ends the process —
+    keeping the candidate snapshot alive so the wake can read it. `phase` is
+    WHICH park: `baseline` (before the session — the wake reruns the session)
+    or `candidate` (after it — the wake decides). The caller fills in the
+    candidate snapshot ref (which it holds) when writing the stage."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+        afterany: str,
+        base_sha: str,
+        seed: int,
+        suite_seed: int,
+        candidate_sha: str = "",
+        session: SessionResult | None = None,
+    ):
+        self.phase = phase
+        self.afterany = afterany
+        self.base_sha = base_sha
+        self.seed = seed
+        self.suite_seed = suite_seed
+        self.candidate_sha = candidate_sha
+        self.session = session
+        super().__init__(f"climb parked at {phase} on {afterany or '(no dep)'}")
+
+
 class Evaluator(Protocol):
     """Runs a benchmark command in a workspace, returns the metric value."""
 
@@ -858,7 +889,7 @@ def climb_once(
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
     # orchestrator for the eval primitives).
-    from autoresearch.measure import plan_measures
+    from autoresearch.measure import MeasurementPending, plan_measures
 
     run_seed = draw_run_seed() if bench.seed_env else 0
     siblings = [b for b in contract.benchmarks if b.name != bench.name]
@@ -886,6 +917,16 @@ def climb_once(
     except EvalError as exc:
         # the measurer already names the failing measure ("baseline: ...").
         return ClimbResult(outcome="eval-error", note=str(exc))
+    except MeasurementPending as pending:
+        # PARK 1 (dispatched baseline, before the session): the wake reads the
+        # baseline, then runs the session and re-enters. No candidate yet.
+        raise ClimbParked(
+            phase="baseline",
+            afterany=pending.afterany(),
+            base_sha=base_sha,
+            seed=run_seed,
+            suite_seed=suite_seed,
+        ) from None
 
     task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
     brief = build_brief(
@@ -964,17 +1005,32 @@ def climb_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-        outcome = measure_and_decide(
-            contract,
-            bench,
-            base_sha=base_sha,
-            candidate_sha=candidate_sha,
-            seed=run_seed,
-            suite_seed=suite_seed,
-            measured_paths=measured,
-            measurer=measurer,
-            min_relative_improvement=config.min_relative_improvement,
-        )
+        try:
+            outcome = measure_and_decide(
+                contract,
+                bench,
+                base_sha=base_sha,
+                candidate_sha=candidate_sha,
+                seed=run_seed,
+                suite_seed=suite_seed,
+                measured_paths=measured,
+                measurer=measurer,
+                min_relative_improvement=config.min_relative_improvement,
+            )
+        except MeasurementPending as pending:
+            # PARK 2 (dispatched candidate/suite, after the session): the wake
+            # reads the cached results and decides. Carries the candidate sha
+            # and the session so the caller persists the snapshot ref (drop at
+            # the terminal state) and the resume session id.
+            raise ClimbParked(
+                phase="candidate",
+                afterany=pending.afterany(),
+                base_sha=base_sha,
+                seed=run_seed,
+                suite_seed=suite_seed,
+                candidate_sha=candidate_sha,
+                session=session,
+            ) from None
         if isinstance(outcome, ClimbResult):
             # a terminal measurement outcome (scope-violation / eval-error /
             # no-improvement / suite-regression): add the session + panel

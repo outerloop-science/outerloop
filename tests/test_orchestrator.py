@@ -204,6 +204,83 @@ def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
     assert not clears_min_delta(float("nan"), 11.9, "min", 0.5)
 
 
+class ParkingMeasurer:
+    """A Measurer that PARKS (raises MeasurementPending) on a chosen call —
+    stands in for the dispatched backend without a cluster."""
+
+    def __init__(self, park_on_call: int, values: dict[str, float] | None = None):
+        self.park_on = park_on_call
+        self.values = values or {}
+        self.calls = 0
+
+    def results(self, measures):
+        from autoresearch.measure import MeasurementPending
+
+        self.calls += 1
+        if self.calls == self.park_on:
+            raise MeasurementPending(("101", "102"))
+        return {m.name: self.values[m.name] for m in measures}
+
+
+def _bare_snapshot():
+    n = {"i": 0}
+
+    def snapshot() -> str:
+        n["i"] += 1
+        return f"cand{n['i']}"
+
+    return snapshot
+
+
+def test_baseline_measure_parks_before_the_session(tmp_path: Path) -> None:
+    # PARK 1: a dispatched baseline hibernates before the session even runs.
+    from autoresearch.orchestrator import ClimbParked
+
+    harness = FakeHarness(result=ok_session())
+    m = ParkingMeasurer(park_on_call=1)  # baseline is the first measure
+    with pytest.raises(ClimbParked) as exc:
+        climb_once(
+            CONFIG,
+            CONTRACT,
+            tmp_path,
+            harness,
+            m,
+            "base",
+            _bare_snapshot(),
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            created="t",
+        )
+    assert exc.value.phase == "baseline" and exc.value.base_sha == "base"
+    assert exc.value.afterany == "afterany:101:102"
+    assert harness.calls == []  # the session never started
+
+
+def test_candidate_measure_parks_after_the_session(tmp_path: Path) -> None:
+    # PARK 2: baseline read, session ran, candidate dispatched -> hibernate.
+    from autoresearch.orchestrator import ClimbParked
+
+    harness = FakeHarness(result=ok_session())
+    m = ParkingMeasurer(park_on_call=2, values={"baseline": 13.876})
+    with pytest.raises(ClimbParked) as exc:
+        climb_once(
+            CONFIG,
+            CONTRACT,
+            tmp_path,
+            harness,
+            m,
+            "base",
+            _bare_snapshot(),
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            created="t",
+        )
+    assert exc.value.phase == "candidate"
+    assert exc.value.candidate_sha == "cand1"
+    assert exc.value.session is not None  # the session ran before this park
+    assert harness.calls  # the session did start
+
+
 def test_session_error_short_circuits_before_second_eval(tmp_path: Path) -> None:
     bad = SessionResult(
         stop_reason="spawn-error",

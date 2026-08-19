@@ -34,6 +34,7 @@ from autoresearch.harness import ClaudeCodeHarness, Harness, redact
 from autoresearch.measure import LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
+    ClimbParked,
     Evaluator,
     SubprocessEvaluator,
     SuiteMeasurement,
@@ -63,6 +64,7 @@ from autoresearch.runstate import (
     IN_REVIEW,
     NEGATIVE_RESULT,
     STUCK,
+    WAITING,
     RunRecord,
     save_record,
     stamp_outage,
@@ -148,6 +150,47 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
     except Exception as exc:
         log.warning("%s failed: %s", what, redact(f"{type(exc).__name__}: {exc}", secrets))
         return False
+
+
+def _park_run(
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    parked: ClimbParked,
+    snapshots: list[Snapshot],
+    now: float,
+) -> None:
+    """Persist a dispatched climb's re-entry point as a WAITING record: the
+    committed shas, drawn seeds, candidate snapshot ref, and afterany set a
+    fresh process reconstructs the measure-and-decide phase from. The wake path
+    (which reads this and resumes) is a later PR."""
+    job_ids = parked.afterany.split(":")[1:] if parked.afterany else []
+    candidate_ref = ""
+    if parked.phase == "candidate":
+        candidate_ref = next((s.ref for s in snapshots if s.commit == parked.candidate_sha), "")
+    stage: dict[str, object] = {
+        "phase": parked.phase,
+        "base_sha": parked.base_sha,
+        "candidate_sha": parked.candidate_sha,
+        "candidate_ref": candidate_ref,
+        "seed": parked.seed,
+        "suite_seed": parked.suite_seed,
+        "afterany": parked.afterany,
+    }
+    waiting = RunRecord(
+        **{
+            **record.__dict__,
+            "state": WAITING,
+            "experiment_job_id": job_ids[0] if job_ids else "",
+            "resume_session_id": parked.session.session_id if parked.session else "",
+            # a nominal deadline floor now; the real walltime-based one lands
+            # with the wake dispatcher (deadline > 0 is required for a waiting
+            # run carrying an experiment job).
+            "deadline": now + 24 * 3600,
+            "stage": stage,
+        }
+    )
+    save_record(run_root, waiting, now)
 
 
 def _measure_committed(
@@ -449,6 +492,7 @@ def live_climb(
             snapshots.append(snap)
             return snap.commit
 
+        parked: ClimbParked | None = None
         try:
             result = climb_once(
                 config,
@@ -466,8 +510,20 @@ def live_climb(
                 panel_runner=panel_runner,
                 panel_revisions=panel_revisions,
             )
+        except ClimbParked as p:
+            # The climb dispatched its measures and hibernated. Persist the
+            # re-entry stage as a WAITING record (not an error), keep the
+            # candidate snapshot alive for the wake, and end. The wake re-enters
+            # from the record (the wake path is a later PR).
+            parked = p
+            _park_run(run_root, run_id, record, p, snapshots, now)
+            return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
             for snap in snapshots:
+                # a candidate park must OUTLIVE the wake — keep that one snapshot;
+                # drop every other (intermediate / baseline-park) snapshot now.
+                if parked and parked.phase == "candidate" and snap.commit == parked.candidate_sha:
+                    continue
                 drop_snapshot(ws, snap)  # best-effort + self-logging; never raises
             if not _best_effort(
                 "baseline worktree cleanup",

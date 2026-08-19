@@ -18,7 +18,7 @@ import contextlib
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -140,6 +140,12 @@ class RunRecord:
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
     terminal_seen: float = 0.0  # when the sweep first saw the experiment terminal
+    # A WAITING climb's re-entry point: the committed shas, drawn seeds, and the
+    # candidate snapshot ref a fresh process reconstructs the measure-and-decide
+    # phase from. `phase` says WHICH park (baseline, before the session; or
+    # candidate, after it). A JSON dict — small, forward-compatible — not the
+    # session state (that is `resume_session_id`).
+    stage: dict[str, object] = field(default_factory=dict)
     ending: str = ""  # one of ENDINGS once state == ENDED
     ending_note: str = ""
     created: float = 0.0
