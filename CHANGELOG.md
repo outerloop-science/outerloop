@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `measure_and_decide` (`orchestrator` module) — dispatcher phase 1, stage B
+  part 2a: the post-session decision extracted as a PURE function of committed
+  shas and a `Measurer` seam (scope, then baseline/candidate paired measure,
+  the improvement threshold, and the suite gate). No session and no git, so a
+  wake reconstructs the same plan and reads cached results — the re-enterable
+  core the resume path needs. Two `Measurer` backends will sit behind the one
+  seam (inline for cheap benchmarks, the dispatched measurer for expensive
+  ones), chosen per `eval_minutes`; the suite seed is now an input (drawn once,
+  persisted) rather than drawn inline, which a resume could not reproduce.
+  Wiring `climb_once`/`live_climb` onto it is the next part.
 - The dispatched measurer (`measure` module) — dispatcher phase 1, stage B
   part 1: turns a climb's set of committed-tree measures into submit-all,
   PARK (`MeasurementPending` carrying the afterany wake dependency for the

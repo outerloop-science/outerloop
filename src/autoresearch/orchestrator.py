@@ -23,10 +23,14 @@ from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from pathlib import Path
 from secrets import randbits
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from autoresearch.measure import Measure
 
 from autoresearch.brief import BriefInputs, BudgetState, Task, build_brief, render
 from autoresearch.contract import (
+    Benchmark,
     Contract,
     _fold,
     load_contract,
@@ -611,6 +615,190 @@ def make_task(
                 else ""
             )
         ),
+    )
+
+
+class Measurer(Protocol):
+    """Obtains a climb's measurements. `results` returns every measure's value
+    keyed by its name, or — for a dispatched backend — raises
+    `MeasurementPending` after submitting the not-yet-done jobs, for the caller
+    to park on. Two backends behind this one seam: `LocalMeasurer` (inline
+    checkout + eval, for cheap benchmarks and local runs) and
+    `measure.DispatchedMeasurer` (cluster jobs, for expensive evals); the seam
+    is what lets `measure_and_decide` be re-enterable without knowing which."""
+
+    def results(self, measures: list[Measure]) -> dict[str, float]: ...
+
+
+@dataclass(frozen=True)
+class MeasureOK:
+    """A credited measurement: the candidate cleared the improvement threshold
+    and, when the diff touched shared code, no sibling regressed. The caller's
+    panel/PR path proceeds from here."""
+
+    baseline: float
+    candidate: float
+    suite: tuple[SuiteMeasurement, ...] = ()
+    suite_seed: int = 0
+
+
+def measure_and_decide(
+    contract: Contract,
+    bench: Benchmark,
+    *,
+    base_sha: str,
+    candidate_sha: str,
+    seed: int,
+    suite_seed: int,
+    measured_paths: Sequence[str],
+    measurer: Measurer,
+    min_relative_improvement: float,
+) -> ClimbResult | MeasureOK:
+    """The post-session decision as a PURE function of committed shas and a
+    `Measurer` — the re-enterable core a wake reconstructs from the record.
+
+    Measures baseline@base_sha and candidate@candidate_sha (paired on `seed`,
+    common random numbers) and, when the diff touches shared code, each
+    sibling's paired base/cand (on the sibling's OWN seed var, all sharing the
+    single `suite_seed`), then applies the improvement threshold and the suite
+    gate. Returns a TERMINAL `ClimbResult` on any stop (scope-violation,
+    eval-error, no-improvement, suite-regression), or a `MeasureOK` carrying
+    the credited values. No session and no git: the same shas rebuild the same
+    plan and read cached results, so a wake re-enters here unchanged. A
+    dispatched measurer's `MeasurementPending` propagates untouched, for the
+    caller to write the waiting record and park on.
+
+    `suite_seed` is an INPUT, not drawn here: a wake must reproduce the seed the
+    first pass used, so the caller draws it once and persists it (the in-job
+    path drew it inline, which a resume could not reproduce). And because the
+    baseline is a committed sha rather than a live pre-session workspace, the
+    gate can always measure its siblings — the old "no pristine baseline
+    workspace" fail-closed branch is gone.
+    """
+    # deferred like contract.py's managed_eval_env import: measure -> dispatch
+    # -> orchestrator for the eval primitives, so orchestrator imports measure
+    # at call time to keep the module graph acyclic.
+    from autoresearch.measure import SiblingSpec, plan_measures
+
+    # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
+    # because the out-of-scope edit could be to the ruler itself.
+    violations = out_of_scope(list(measured_paths), contract)
+    if violations:
+        return ClimbResult(
+            outcome="scope-violation",
+            note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+            run_seed=seed,
+        )
+
+    seed_env = bench.seed_env or ""
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    # Both seed guards fire UP FRONT, before any (expensive) measurement: a
+    # seed of 0 — the "no seed recorded" sentinel — would run a pair UNPAIRED,
+    # each side drawing its own internal seed, so eval noise could read as
+    # improvement. The caller must draw a real seed (and persist it, for the
+    # wake to reuse) whenever a benchmark or a sibling declares seed_env; a
+    # seeded sibling's suite_seed is a caller-contract precondition even on a
+    # diff that won't touch shared code (the next diff might).
+    if seed_env and not seed:
+        raise ValueError(
+            f"benchmark {bench.name!r} declares seed_env {seed_env!r} but seed is 0: "
+            "a seeded benchmark needs a drawn seed, or baseline and candidate run unpaired"
+        )
+    # only when the suite gate is STRUCTURALLY possible: a contract with an
+    # empty scope.shared can never trigger it (shared_touched always empty), so
+    # a missing suite_seed there is not a misconfiguration — do not over-reject.
+    if contract.scope.shared and any(b.seed_env for b in siblings) and not suite_seed:
+        raise ValueError(
+            "a seeded sibling needs a nonzero suite_seed (drawn once, persisted for the wake); "
+            "suite_seed 0 would run the sibling pair unpaired"
+        )
+
+    # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
+    # candidate has cleared the threshold: a non-improving candidate must never
+    # burn the (expensive) sibling evals, matching climb_once's lazy order.
+    try:
+        main = measurer.results(
+            plan_measures(bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed)
+        )
+    except EvalError as exc:
+        return ClimbResult(outcome="eval-error", note=str(exc), run_seed=seed)
+
+    baseline = main["baseline"]
+    candidate = main["candidate"]
+    if not improved(baseline, candidate, bench.direction, min_relative_improvement):
+        return ClimbResult(
+            outcome="no-improvement",
+            baseline=baseline,
+            candidate=candidate,
+            run_seed=seed,
+        )
+
+    # PHASE 2 — suite gate, only for a credited candidate whose diff touched
+    # shared code. A second measure set (a second park for a dispatched
+    # backend): an extra CPU wake, never a wasted GPU sibling eval.
+    if not (siblings and shared_touched(measured_paths, contract)):
+        return MeasureOK(baseline=baseline, candidate=candidate)
+
+    # every seeded sibling runs its pair under the ONE suite_seed, read through
+    # its own seed var (mirrors the in-job gate).
+    sib_specs = tuple(
+        SiblingSpec(b.name, b.command, b.metric, seed_env=b.seed_env or "", seed=suite_seed)
+        for b in siblings
+    )
+    sib_plan = [
+        m
+        for m in plan_measures(
+            bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed, siblings=sib_specs
+        )
+        if m.name.startswith("sib-")  # baseline/candidate already measured (phase 1)
+    ]
+    try:
+        vals = measurer.results(sib_plan)
+    except EvalError as exc:
+        # phase 1 already credited the main pair — carry it into the report,
+        # exactly as the old in-job suite-error path did.
+        return ClimbResult(
+            outcome="eval-error",
+            baseline=baseline,
+            candidate=candidate,
+            note=str(exc),
+            run_seed=seed,
+        )
+
+    suite_rows: list[SuiteMeasurement] = []
+    for b in siblings:
+        sib_base = vals[f"sib-{b.name}-base"]
+        sib_cand = vals[f"sib-{b.name}-cand"]
+        suite_rows.append(
+            SuiteMeasurement(
+                name=b.name,
+                baseline=sib_base,
+                candidate=sib_cand,
+                regressed=suite_regressed(
+                    sib_base, sib_cand, b.direction, b.min_delta, b.min_delta_rel
+                ),
+                display_digits=b.display_digits,
+            )
+        )
+    suite = tuple(suite_rows)
+    regressed = [r for r in suite if r.regressed]
+    if regressed:
+        named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
+        return ClimbResult(
+            outcome="suite-regression",
+            baseline=baseline,
+            candidate=candidate,
+            note=f"shared-path diff regressed sibling benchmark(s): {named}",
+            run_seed=seed,
+            suite=suite,
+            suite_seed=suite_seed,
+        )
+
+    return MeasureOK(
+        baseline=baseline,
+        candidate=candidate,
+        suite=suite,
+        suite_seed=suite_seed,  # reached only on the suite path
     )
 
 
