@@ -266,59 +266,59 @@ class DispatchedMeasurer:
 class LocalMeasurer:
     """The inline `Measurer`: runs each measure in-process, for cheap
     benchmarks and local runs where dispatching a job would cost more than the
-    eval. It measures the worktrees the CALLER already has — `base_sha` -> the
-    pre-session tree, `candidate_sha` -> the session's workspace — so it adds
-    no checkout and no new trust surface: it runs the same evaluator on the
-    same worktrees the synchronous climb always did. It never parks (no
-    `MeasurementPending`), so `measure_and_decide` flows straight through.
+    eval. It measures the worktrees the CALLER already has — no checkout and no
+    new trust surface, the same evaluator on the same worktrees the synchronous
+    climb always used. It never parks (no `MeasurementPending`), so
+    `measure_and_decide` flows straight through.
 
-    CALLER CONTRACT: `trees[sha]` is the worktree the sha was snapshotted FROM,
-    so it holds sha's TRACKED content. This backend measures that live worktree
-    directly (no checkout) — exactly as the synchronous climb always did. That
-    is a WEAKER guarantee than the dispatched backend's fresh checkout: the
-    candidate's worktree is the session's workspace, which (like before) can
-    also carry UNTRACKED files — eval artifacts, caches — that the committed sha
-    does not. A benchmark whose result depends only on tracked code measures
-    identically either way; one that reads untracked artifacts can differ, and
-    there the dispatched clean checkout is the trustworthy one. Choose this
-    backend for cheap, self-contained evals; dispatch the rest. It TRUSTS the
-    map — it does not verify the worktree against the sha.
+    Two kinds of worktree, and caching turns on the difference:
 
-    Caches by the measure's full identity (name, tree, command, metric, env),
-    so a tree measured twice in one climb — the baseline once for the brief and
-    again in the gate — is evaluated once. The key is the sha, not the worktree
-    path: a sha is content-addressed over tracked files, which is exact for the
-    tracked-only evals this backend is for. The cache is per-instance in memory,
-    which is all the inline path needs: it runs to completion in one process
-    and never resumes across a death (that is the dispatched path's job)."""
+    * `clean` — sha -> a CLEAN checkout of exactly that sha (e.g. the pristine
+      pre-session tree for `base_sha`). Its content IS pinned by the sha, so a
+      measure here is CACHED by identity: the baseline measured once for the
+      brief is not re-measured in the gate.
+    * `live` — the session's workspace, used for every sha NOT in `clean` (the
+      candidate, and each sibling's candidate side). Its content is NOT pinned
+      by the sha — the sha captures only tracked files, but the workspace can
+      also carry UNTRACKED ones (eval artifacts, caches) — so it is NEVER
+      cached: measured FRESH every call. Otherwise a revision that changes only
+      untracked content would keep the same sha and read a stale result.
+
+    That is a weaker guarantee than the dispatched backend's fresh checkout of
+    each sha; a benchmark that reads untracked artifacts is measured on the
+    live workspace here and should be dispatched if that matters. This backend
+    TRUSTS the `clean` map — it does not verify a worktree against its sha."""
 
     evaluator: Evaluator
-    # tree_sha -> the worktree the sha was snapshotted from (holds sha's tracked
-    # content; see the class docstring's CALLER CONTRACT for the untracked caveat).
-    trees: dict[str, Path]
+    # sha -> a CLEAN checkout of that sha (content == sha; cache-safe).
+    clean: dict[str, Path]
+    # the live workspace, measured FRESH for any sha not in `clean` (its content
+    # is not pinned by the sha, so it must never be cached).
+    live: Path | None = None
     _cache: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], float] = field(
         default_factory=dict
     )
 
+    def _eval(self, worktree: Path, m: Measure, env: dict[str, str] | None) -> float:
+        try:
+            return self.evaluator.evaluate(worktree, m.command, m.metric, extra_env=env)
+        except EvalError as exc:
+            # name the failing measure, as the dispatched backend does, so the
+            # caller's note says WHICH eval broke.
+            raise EvalError(f"{m.name}: {exc}") from exc
+
     def results(self, measures: list[Measure]) -> dict[str, float]:
         out: dict[str, float] = {}
         for m in measures:
-            env = tuple(sorted(m.env().items()))
-            key = (m.name, m.tree_sha, m.command, m.metric, env)
-            if key not in self._cache:
-                worktree = self.trees.get(m.tree_sha)
-                if worktree is None:
-                    raise EvalError(
-                        f"local measurer has no worktree for {m.name} @ {m.tree_sha[:12]}"
-                    )
-                try:
-                    value = self.evaluator.evaluate(
-                        worktree, m.command, m.metric, extra_env=dict(env) or None
-                    )
-                except EvalError as exc:
-                    # name the failing measure, as the dispatched backend does,
-                    # so the caller's note says WHICH eval broke.
-                    raise EvalError(f"{m.name}: {exc}") from exc
-                self._cache[key] = value
-            out[m.name] = self._cache[key]
+            env = dict(m.env()) or None
+            worktree = self.clean.get(m.tree_sha)
+            if worktree is not None:
+                key = (m.name, m.tree_sha, m.command, m.metric, tuple(sorted(m.env().items())))
+                if key not in self._cache:
+                    self._cache[key] = self._eval(worktree, m, env)
+                out[m.name] = self._cache[key]
+            elif self.live is not None:
+                out[m.name] = self._eval(self.live, m, env)  # live tree: never cached
+            else:
+                raise EvalError(f"local measurer has no worktree for {m.name} @ {m.tree_sha[:12]}")
         return out

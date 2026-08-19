@@ -434,17 +434,17 @@ def live_climb(
             else None
         )
         # The measurer runs the eval inline in the caller's worktrees: the
-        # pre-session tree (baseline_wt) for base_sha, and the session's live
-        # workspace for each candidate snapshot. `snapshot` commits the
-        # workspace's current content to a candidate sha the measurer keys on;
-        # we own the ref lifecycle and drop every snapshot once the climb ends
-        # (nothing parks yet — the dispatched path is a later PR).
-        measurer = LocalMeasurer(evaluator, {pre_session_sha: baseline_wt})
+        # pristine pre-session tree (baseline_wt, a CLEAN checkout of base_sha,
+        # so cache-safe) for base_sha, and the session's LIVE workspace for
+        # every candidate snapshot (measured fresh — its content is not pinned
+        # by the sha). `snapshot` commits the workspace's current content to a
+        # candidate sha; we own the ref lifecycle and drop every snapshot once
+        # the climb ends (nothing parks yet — the dispatched path is a later PR).
+        measurer = LocalMeasurer(evaluator, clean={pre_session_sha: baseline_wt}, live=workspace)
         snapshots: list[Snapshot] = []
 
         def snapshot() -> str:
             snap = snapshot_tree(ws, pre_session_sha)
-            measurer.trees[snap.commit] = workspace
             snapshots.append(snap)
             return snap.commit
 

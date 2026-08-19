@@ -30,8 +30,13 @@ Versions follow [SemVer](https://semver.org).
   caller already has (`base_sha` -> pre-session tree, `candidate_sha` -> the
   session workspace), so it adds no checkout and no new trust surface — the
   same evaluator on the same worktrees the synchronous climb always used — and
-  never parks. Caches per measure identity so a tree measured twice (baseline
-  for the brief, then in the gate) runs once. The second backend behind the
+  never parks. Caching turns on the worktree kind: `clean` checkouts (content
+  == sha, e.g. the pristine baseline tree) are cached by identity, so the
+  baseline measured for the brief is not re-measured in the gate; the `live`
+  workspace (the candidate) is measured FRESH every call, because its content
+  is not pinned by the sha (untracked files) and a revision changing only
+  untracked content must not read a stale cached result. The second backend
+  behind the
   `Measurer` seam `measure_and_decide` already targets; wiring the seam into
   `climb_once` (with `should_dispatch` picking inline vs dispatched) is next.
 
