@@ -468,7 +468,7 @@ def live_climb(
             )
         finally:
             for snap in snapshots:
-                _best_effort("snapshot drop", partial(drop_snapshot, ws, snap))
+                drop_snapshot(ws, snap)  # best-effort + self-logging; never raises
             if not _best_effort(
                 "baseline worktree cleanup",
                 lambda: ws.git("worktree", "remove", "--force", str(baseline_wt)),

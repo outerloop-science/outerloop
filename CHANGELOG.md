@@ -14,13 +14,18 @@ Versions follow [SemVer](https://semver.org).
   `measurer` + `base_sha` + a `snapshot()` callback (all git stays in the
   caller, `climb.py`, which builds a `LocalMeasurer`, snapshots each candidate,
   and drops the snapshot refs when the climb ends) instead of an `evaluator` +
-  `baseline_workspace`. Behavior-preserving: same eval order and count (the
-  baseline is cached after the brief, so the gate does not re-measure it), same
-  decisions, same panel loop. This is the seam that lets a later PR swap in the
-  dispatched backend for expensive evals. Also: `LocalMeasurer` now names the
-  failing measure in its `EvalError` (matching the dispatched backend), and the
-  removed "no pristine baseline workspace" branch is gone (baseline is always a
-  committed sha now, so the suite gate can always measure siblings).
+  `baseline_workspace`. Same decisions and same panel loop; the eval sequence
+  is nearly identical, with two deliberate improvements from the clean/live
+  split: the baseline (a clean tree) is cached after the brief so the gate does
+  not re-measure it, and on a panel revision the sibling BASELINES are no longer
+  re-measured either (they too are the stable clean tree) — only the candidate
+  and sibling-candidate sides re-run. The `suite_seed` is also drawn once up
+  front (persisted-shape, for a wake to reproduce) instead of inside the loop.
+  This is the seam that lets a later PR swap in the dispatched backend for
+  expensive evals. Also: `LocalMeasurer` now names the failing measure in its
+  `EvalError` (matching the dispatched backend), and the removed "no pristine
+  baseline workspace" branch is gone (baseline is always a committed sha now,
+  so the suite gate can always measure siblings).
 
 ### Added
 
@@ -36,9 +41,9 @@ Versions follow [SemVer](https://semver.org).
   workspace (the candidate) is measured FRESH every call, because its content
   is not pinned by the sha (untracked files) and a revision changing only
   untracked content must not read a stale cached result. The second backend
-  behind the
-  `Measurer` seam `measure_and_decide` already targets; wiring the seam into
-  `climb_once` (with `should_dispatch` picking inline vs dispatched) is next.
+  behind the `Measurer` seam `measure_and_decide` already targets; the inline
+  wiring into `climb_once` landed in part 2b(ii), and `should_dispatch` picking
+  the dispatched backend for expensive evals is next.
 
 - `measure_and_decide` (`orchestrator` module) — dispatcher phase 1, stage B
   part 2a: the post-session decision extracted as a PURE function of committed
@@ -49,15 +54,16 @@ Versions follow [SemVer](https://semver.org).
   seam (inline for cheap benchmarks, the dispatched measurer for expensive
   ones), chosen per `eval_minutes`; the suite seed is now an input (drawn once,
   persisted) rather than drawn inline, which a resume could not reproduce.
-  Wiring `climb_once`/`live_climb` onto it is the next part.
+  `climb_once`/`live_climb` are now wired onto it (inline backend); the
+  dispatched backend + park/wake are the next part.
 - The dispatched measurer (`measure` module) — dispatcher phase 1, stage B
   part 1: turns a climb's set of committed-tree measures into submit-all,
   PARK (`MeasurementPending` carrying the afterany wake dependency for the
   whole set), and on wake read-all-from-disk. Built on the eval primitive;
   the resumable unit is the measure-and-decide phase (a pure function of
   committed trees), so it re-runs idempotently after a process death — a
-  completed measure returns instantly, a pending one re-parks. Wiring into
-  the climb transaction and the wake path is the next part.
+  completed measure returns instantly, a pending one re-parks. Selecting it for
+  expensive evals (`should_dispatch`) and the park/wake path are the next part.
 - The dispatched-eval primitive (`dispatch` module) — dispatcher phase 1,
   stage A per docs/design/dispatcher.md: temp-index tree snapshots (working
   index untouched, tree hash = the drift fingerprint), the orchestrator-
