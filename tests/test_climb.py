@@ -84,6 +84,25 @@ def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
     assert load_record(tmp_path, "tsp-3").experiment_job_id == "77"
 
 
+def test_park_resets_wake_attempts_a_productive_park_left_waiting(tmp_path) -> None:
+    # the run reached IMPLEMENTING (left waiting, did work) before this park, so
+    # "wakes since it last left waiting" resets — a productive park/wake cycle
+    # must not creep toward the stuck cap.
+    record = RunRecord(
+        run_id="tsp-4",
+        target="org/pilot",
+        task_title="t",
+        state="implementing",
+        benchmark="tsp",
+        wake_attempts=2,
+    )
+    parked = ClimbParked(
+        phase="baseline", afterany="afterany:9", base_sha="b" * 40, seed=0, suite_seed=0
+    )
+    _park_run(tmp_path, "tsp-4", record, parked, "", eval_minutes=90, now=1000.0)
+    assert load_record(tmp_path, "tsp-4").wake_attempts == 0
+
+
 def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
     record = RunRecord(
         run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"

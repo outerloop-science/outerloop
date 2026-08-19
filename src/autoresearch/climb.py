@@ -193,10 +193,9 @@ def _park_run(
     # rides the DEADLINE floor instead (which sits past every eval's walltime).
     # The precise "all jobs done" fast wake is the afterany wake job (a later PR).
     experiment_job_id = job_ids[0] if len(job_ids) == 1 else ""
-    # The deadline is a FLOOR anchored to the run's start (`now`); its generous
-    # queue/grace slack absorbs the session's own duration, and the sweep
-    # re-bases it from `terminal_seen`. The wake dispatcher sets the precise
-    # park-time deadline later.
+    # The deadline is a FLOOR: park time (`now` here is the park moment, passed
+    # by the caller) + the eval walltime + a generous queue/grace slack, so a
+    # healthy queued-then-running eval never trips the sweep's cancel-on-pending.
     deadline = now + (effective_eval_minutes(eval_minutes) + PARK_QUEUE_SLACK_MIN) * 60
     waiting = RunRecord(
         **{
@@ -206,9 +205,12 @@ def _park_run(
             "resume_session_id": parked.session.session_id if parked.session else "",
             "deadline": deadline,
             "stage": stage,
-            # a fresh hibernation: the NEW experiment has not been seen terminal
-            # and carries no wake job yet (wake_attempts is KEPT — it is the
-            # stuck-detector across the whole run, not per park).
+            # a fresh hibernation from IMPLEMENTING: the run just LEFT waiting to
+            # do work (the session, a measure), so wake_attempts — "wakes since
+            # the run last left waiting" — resets; a productive park/wake cycle
+            # must not creep toward the stuck cap. The NEW experiment has not
+            # been seen terminal and carries no wake job yet.
+            "wake_attempts": 0,
             "terminal_seen": 0.0,
             "wake_job_id": "",
         }
@@ -549,7 +551,12 @@ def live_climb(
             eval_minutes = next(
                 (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
             )
-            _park_run(run_root, run_id, record, p, kept_ref, eval_minutes, now)
+            import time
+
+            # anchor the deadline to the PARK (when the evals were submitted),
+            # not the run's start `now` — a session lasting hours would otherwise
+            # eat the queue budget and let the sweep cancel a still-queued eval.
+            _park_run(run_root, run_id, record, p, kept_ref, eval_minutes, time.time())
             parked = p
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
