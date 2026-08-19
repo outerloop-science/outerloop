@@ -196,16 +196,23 @@ def _filter_neutral_env(base_git: list[str], env: dict[str, str]) -> dict[str, s
 
 
 def drop_snapshot(ws: Workspace, snapshot: Snapshot) -> None:
-    """Release the retaining ref (best-effort; the commit becomes gc-eligible
-    again). Called once the eval result has been read."""
-    with contextlib.suppress(Exception):
-        subprocess.run(
+    """Release the retaining ref (the commit becomes gc-eligible again). Called
+    once the eval result has been read. Best-effort — it never RAISES, so a
+    caller's ending sequence cannot hinge on it — but not SILENT: a ref that
+    fails to drop keeps its commit alive forever, so the failure is logged."""
+    try:
+        result = subprocess.run(
             ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS, "update-ref", "-d", snapshot.ref],
             env=_git_env({}),
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
+        if result.returncode != 0:
+            log.warning("snapshot ref drop failed for %s: %s", snapshot.ref, result.stderr[:200])
+    except Exception as exc:
+        log.warning("snapshot ref drop errored for %s: %s", snapshot.ref, exc)
 
 
 def _git_env(extra: dict[str, str]) -> dict[str, str]:

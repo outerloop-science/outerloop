@@ -808,14 +808,15 @@ def climb_once(
     contract_text: str,
     workspace: Path,
     harness: Harness,
-    evaluator: Evaluator,
+    measurer: Measurer,
+    base_sha: str,
+    snapshot: Callable[[], str],
     ruler: str,
     changed_paths: Callable[[], Sequence[str]],
     lessons: str = "",
     recent_reports: tuple[str, ...] = (),
     created: str = "",
     task_hypothesis: str = "",
-    baseline_workspace: Path | None = None,
     spec: RoleSpec | None = None,
     panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
     panel_revisions: int = 1,
@@ -823,10 +824,14 @@ def climb_once(
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
     The caller owns the git side (clone before, diff/commit/push/PR after) —
-    same split as the harness: this function owns the science loop only.
-    `changed_paths` reports every path the session touched (the caller wires
-    it to `git add -A` + staged paths); scope is enforced on it BEFORE the
-    candidate eval runs.
+    same split as the harness: this function owns the science loop only. It
+    measures through a `Measurer` over committed shas: `base_sha` is the
+    pre-session tree, and `snapshot()` — a caller callback, since snapshotting
+    is git — commits the session's current workspace and returns its
+    `candidate_sha`. The caller registers each sha's worktree with the measurer
+    and owns the snapshot ref lifecycle. `changed_paths` reports every path the
+    session touched (the caller wires it to `git add -A` + staged paths); scope
+    is enforced on it BEFORE the candidate eval runs.
 
     The session runs as the author role on the role-runner (`spec` defaults
     to `author_spec`; the caller that built the harness passes its spec so
@@ -837,8 +842,8 @@ def climb_once(
     With `panel_runner` (docs/design/orchestrator-verify.md), a credited
     claim is read by the verification panel BEFORE it can become a PR:
     blocking findings wake the same session (data-fenced), the revision is
-    fully re-measured and re-gated, and the panel re-reads — up to
-    `panel_revisions` revisions after the initial read. Blocking findings
+    re-snapshotted, fully re-measured and re-gated, and the panel re-reads —
+    up to `panel_revisions` revisions after the initial read. Blocking findings
     still open at the cap set `panel_blocking_open` (the caller posts a
     DRAFT PR carrying them). The caller supplies the runner because the
     panel's checkouts are git work (this function owns no git).
@@ -851,21 +856,36 @@ def climb_once(
     if not spec.scope:
         spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
 
-    # Baseline from the PRE-session tree — never from a stored number
-    # (architecture: "baseline re-run at the merge-base, not a trusted
-    # static file").
+    # deferred like measure_and_decide's import (measure -> dispatch ->
+    # orchestrator for the eval primitives).
+    from autoresearch.measure import plan_measures
+
+    run_seed = draw_run_seed() if bench.seed_env else 0
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    # ONE suite_seed for the whole climb, fixed up front so a wake reproduces it
+    # (never a re-draw), and only when a seeded sibling could gate. It REUSES the
+    # climbed benchmark's run_seed when there is one (as the in-job gate did),
+    # drawing a fresh seed only for an unseeded benchmark.
+    suite_seed = (
+        (run_seed or draw_run_seed())
+        if contract.scope.shared and any(b.seed_env for b in siblings)
+        else 0
+    )
+
+    # Baseline from the PRE-session tree (base_sha), through the measurer — the
+    # SAME number the gate re-reads from cache, so the brief and the decision
+    # agree (architecture: "baseline re-run at the merge-base, not a trusted
+    # static file"). Its worktree is the caller's pristine pre-session tree, so
+    # eval artifacts land outside what the session sees next (no pool
+    # foreknowledge).
+    baseline_plan = plan_measures(
+        bench.command, bench.metric, base_sha, base_sha, bench.seed_env or "", run_seed
+    )[0]
     try:
-        run_seed = draw_run_seed() if bench.seed_env else 0
-        seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env else None
-        # measured in the caller's pristine snapshot when one is given: any
-        # artifact the eval persists (a seed file, sampled instances) lands
-        # OUTSIDE the workspace the solver session sees next, so a pinned
-        # seed cannot become pool foreknowledge (round-4 review finding)
-        baseline = evaluator.evaluate(
-            baseline_workspace or workspace, bench.command, bench.metric, extra_env=seed_env
-        )
+        baseline = measurer.results([baseline_plan])["baseline"]
     except EvalError as exc:
-        return ClimbResult(outcome="eval-error", note=f"baseline: {exc}")
+        # the measurer already names the failing measure ("baseline: ...").
+        return ClimbResult(outcome="eval-error", note=str(exc))
 
     task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
     brief = build_brief(
@@ -904,121 +924,81 @@ def climb_once(
     panel_sections: list[str] = []
     panel_blocking_open = False
     panel_degraded = False
+    candidate = baseline
+    suite: tuple[SuiteMeasurement, ...] = ()
+    suite_seed_ran = 0
+    measured: tuple[str, ...] = ()
     while True:
-        # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
-        # because the out-of-scope edit could be to the ruler itself.
         measured = tuple(changed_paths())
-        violations = out_of_scope(list(measured), load_contract(contract_text, config.target))
+        # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
+        # OR measured — the out-of-scope edit could be to the ruler itself. This
+        # early exit keeps the snapshot off a rejected tree; measure_and_decide
+        # re-checks as the authoritative gate on every entry (including a wake,
+        # which re-enters it directly).
+        violations = out_of_scope(list(measured), contract)
         if violations:
             return ClimbResult(
                 outcome="scope-violation",
                 baseline=baseline,
                 session=session,
                 note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                run_seed=run_seed,
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-
+        # Snapshot the session's current output to a committed sha the measurer
+        # keys on; the caller (which owns git) registers its worktree and the
+        # ref. A revision re-snapshots -> a NEW candidate_sha -> a fresh eval. A
+        # snapshot failure is an eval failure (the session ran, the tree just
+        # could not be captured), not a climb crash — same as a candidate eval
+        # that raises.
         try:
-            # SAME seed as the baseline: paired measurement (common random
-            # numbers) — the improvement claim compares like against like even
-            # on a resampled pool, and the seed is fresh per climb so nothing
-            # about the pool was knowable when the solver wrote its code
-            candidate = evaluator.evaluate(
-                workspace, bench.command, bench.metric, extra_env=seed_env
-            )
+            candidate_sha = snapshot()
         except EvalError as exc:
             return ClimbResult(
                 outcome="eval-error",
                 baseline=baseline,
                 session=session,
-                note=f"candidate: {exc}",
-                panel_transcript="\n\n".join(panel_sections),
-                panel_rounds=panel_reads,
-            )
-
-        if not improved(baseline, candidate, bench.direction, config.min_relative_improvement):
-            return ClimbResult(
-                outcome="no-improvement",
-                baseline=baseline,
-                candidate=candidate,
-                session=session,
-                note=(
-                    "the revision addressing panel findings lost the improvement"
-                    if panel_reads
-                    else "a negative result reported clearly is a success"
-                ),
+                note=f"snapshot: {exc}",
                 run_seed=run_seed,
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-
-        # Suite gate: a diff touching shared code must not buy its improvement
-        # by regressing a sibling benchmark (the recurring gamed-climb shape:
-        # a real lever that exploits one benchmark's structure). Runs only on
-        # an otherwise-credited claim — a negative result needs no gate.
-        suite: tuple[SuiteMeasurement, ...] = ()
-        suite_seed = 0
-        siblings = [b for b in contract.benchmarks if b.name != bench.name]
-        if siblings and shared_touched(measured, contract):
-            if baseline_workspace is None:
-                # fail closed: without a pristine pre-session tree the sibling
-                # baselines cannot be measured, and an ungated shared diff must
-                # never read as a clean pass
-                return ClimbResult(
-                    outcome="eval-error",
-                    baseline=baseline,
-                    candidate=candidate,
-                    session=session,
-                    note="suite gate: no pristine baseline workspace to measure siblings",
-                    run_seed=run_seed,
+        outcome = measure_and_decide(
+            contract,
+            bench,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            seed=run_seed,
+            suite_seed=suite_seed,
+            measured_paths=measured,
+            measurer=measurer,
+            min_relative_improvement=config.min_relative_improvement,
+        )
+        if isinstance(outcome, ClimbResult):
+            # a terminal measurement outcome (scope-violation / eval-error /
+            # no-improvement / suite-regression): add the session + panel
+            # context this function owns, and the credited baseline.
+            note = outcome.note
+            if outcome.outcome == "no-improvement":
+                note = (
+                    "the revision addressing panel findings lost the improvement"
+                    if panel_reads
+                    else "a negative result reported clearly is a success"
                 )
-            suite_seed = run_seed or draw_run_seed()
-            rows = []
-            for sib in siblings:
-                env = {sib.seed_env: str(suite_seed)} if sib.seed_env else None
-                try:
-                    # paired like the climbed benchmark: same seed both sides
-                    sib_base = evaluator.evaluate(
-                        baseline_workspace, sib.command, sib.metric, extra_env=env
-                    )
-                    sib_cand = evaluator.evaluate(workspace, sib.command, sib.metric, extra_env=env)
-                except EvalError as exc:
-                    return ClimbResult(
-                        outcome="eval-error",
-                        baseline=baseline,
-                        candidate=candidate,
-                        session=session,
-                        note=f"suite {sib.name}: {exc}",
-                        run_seed=run_seed,
-                    )
-                rows.append(
-                    SuiteMeasurement(
-                        name=sib.name,
-                        baseline=sib_base,
-                        candidate=sib_cand,
-                        regressed=suite_regressed(
-                            sib_base, sib_cand, sib.direction, sib.min_delta, sib.min_delta_rel
-                        ),
-                        display_digits=sib.display_digits,
-                    )
-                )
-            suite = tuple(rows)
-            regressed = [r for r in suite if r.regressed]
-            if regressed:
-                named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
-                return ClimbResult(
-                    outcome="suite-regression",
-                    baseline=baseline,
-                    candidate=candidate,
-                    session=session,
-                    note=f"shared-path diff regressed sibling benchmark(s): {named}",
-                    run_seed=run_seed,
-                    suite=suite,
-                    suite_seed=suite_seed,
-                    panel_transcript="\n\n".join(panel_sections),
-                    panel_rounds=panel_reads,
-                )
+            return dc_replace(
+                outcome,
+                baseline=baseline,
+                session=session,
+                note=note,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
+        # credited: candidate cleared the threshold and no sibling regressed.
+        baseline = outcome.baseline
+        candidate = outcome.candidate
+        suite = outcome.suite
+        suite_seed_ran = outcome.suite_seed
 
         if panel_runner is None:
             break
@@ -1070,7 +1050,7 @@ def climb_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-        # loop: the revision is a NEW candidate — scope, drift fingerprints,
+        # loop: the revision is a NEW candidate — re-snapshot, then scope,
         # paired eval, improvement threshold, and the suite gate all re-apply
 
     return ClimbResult(
@@ -1082,7 +1062,7 @@ def climb_once(
         measured_paths=measured,
         run_seed=run_seed,
         suite=suite,
-        suite_seed=suite_seed,
+        suite_seed=suite_seed_ran,
         panel_transcript="\n\n".join(panel_sections),
         panel_rounds=panel_reads,
         panel_blocking_open=panel_blocking_open,

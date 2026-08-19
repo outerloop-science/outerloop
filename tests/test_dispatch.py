@@ -83,6 +83,18 @@ def test_snapshot_captures_dirty_tree_without_touching_the_index(tmp_path):
     )
 
 
+def test_drop_snapshot_logs_a_failure_without_raising(tmp_path, caplog):
+    import logging
+
+    from autoresearch.dispatch import Snapshot
+
+    ws = _WS(tmp_path / "not-a-repo")  # no git dir -> update-ref fails
+    snap = Snapshot(commit="a" * 40, tree="b" * 40, ref="refs/dispatch/nope")
+    with caplog.at_level(logging.WARNING):
+        drop_snapshot(ws, snap)  # type: ignore[arg-type]  # best-effort: must NOT raise
+    assert "snapshot ref drop" in caplog.text  # but the failure is visible, not silent
+
+
 def test_snapshot_failure_is_an_eval_error(tmp_path):
     root = _repo(tmp_path)
     with pytest.raises(EvalError, match="snapshot failed"):

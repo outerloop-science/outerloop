@@ -66,15 +66,36 @@ class FakeEvaluator:
         return value
 
 
+def _wire(evaluator, workspace, base_ws=None):
+    """A LocalMeasurer over the fake evaluator + a fake snapshot: base_sha is a
+    clean pre-session tree, each candidate snapshot is measured on the live
+    workspace. Mirrors how climb.py wires the real thing, minus git."""
+    from autoresearch.measure import LocalMeasurer
+
+    measurer = LocalMeasurer(evaluator, clean={"base": base_ws or workspace})
+    counter = {"n": 0}
+
+    def snapshot() -> str:
+        counter["n"] += 1
+        sha = f"cand{counter['n']}"
+        measurer.live[sha] = workspace  # register this candidate -> the live workspace
+        return sha
+
+    return measurer, snapshot
+
+
 def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, **kw):
     harness = FakeHarness(result=session or ok_session())
     evaluator = FakeEvaluator(values=list(values))
+    measurer, snapshot = _wire(evaluator, tmp_path)
     result = climb_once(
         config,
         CONTRACT,
         tmp_path,
         harness,
-        evaluator,
+        measurer,
+        "base",
+        snapshot,
         ruler="mean tour length over the frozen pool",
         changed_paths=lambda: changed if changed is not None else ["src/pilot/solvers/tsp.py"],
         created="2026-08-06T00:00:00Z",
@@ -125,12 +146,15 @@ def test_seeded_benchmark_measures_both_sides_under_one_fresh_seed(tmp_path: Pat
     ledger — nothing about the pool was knowable when the solver wrote."""
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.876, 13.10])
+    measurer, snapshot = _wire(evaluator, tmp_path)
     result = climb_once(
         CONFIG,
         SEEDED_CONTRACT,
         tmp_path,
         harness,
-        evaluator,
+        measurer,
+        "base",
+        snapshot,
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="2026-08-09T00:00:00Z",
@@ -231,6 +255,34 @@ def test_candidate_eval_failure_is_eval_error_with_session(tmp_path: Path) -> No
     assert result.session is not None
 
 
+def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
+    """A snapshot failure (the session ran, the tree could not be captured) is
+    an eval-error result with the session — never an escaping exception."""
+    from autoresearch.measure import LocalMeasurer
+
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=[13.876])  # baseline only; no candidate reached
+    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path})
+
+    def snapshot() -> str:
+        raise EvalError("git write-tree failed")
+
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+    )
+    assert result.outcome == "eval-error"
+    assert result.session is not None and "snapshot" in result.note
+
+
 def test_unknown_benchmark_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not in contract"):
         run_climb(tmp_path, [1.0], config=ClimbConfig(target="org/pilot", benchmark="chess"))
@@ -281,6 +333,36 @@ def test_scope_violation_blocks_before_candidate_eval(tmp_path: Path) -> None:
 def test_forbidden_paths_are_scope_violations(tmp_path: Path) -> None:
     result, _, _ = run_climb(tmp_path, [13.876, 1.0], changed=[".github/workflows/ci.yml"])
     assert result.outcome == "scope-violation"
+
+
+def test_out_of_scope_tree_is_rejected_before_the_snapshot(tmp_path: Path) -> None:
+    # the out-of-scope edit could be to the ruler itself — it is never
+    # snapshotted OR measured, not merely rejected after the fact.
+    from autoresearch.measure import LocalMeasurer
+
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=[13.876])
+    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path})
+    snapshotted: list[int] = []
+
+    def snapshot() -> str:
+        snapshotted.append(1)
+        return "cand1"
+
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["docs/secret.md"],
+        created="t",
+    )
+    assert result.outcome == "scope-violation"
+    assert snapshotted == []  # never snapshotted the out-of-scope tree
 
 
 def test_improved_rejects_nonfinite_and_zero_baseline_uses_absolute() -> None:
@@ -555,16 +637,18 @@ def run_shared_climb(tmp_path, values, changed, contract=SHARED_CONTRACT, **kw):
     evaluator = FakeEvaluator(values=list(values))
     baseline_ws = tmp_path / "pristine"
     baseline_ws.mkdir(exist_ok=True)
+    measurer, snapshot = _wire(evaluator, tmp_path, base_ws=baseline_ws)
     result = climb_once(
         CONFIG,
         contract,
         tmp_path,
         harness,
-        evaluator,
+        measurer,
+        "base",
+        snapshot,
         ruler="mean tour length over the frozen pool",
         changed_paths=lambda: changed,
         created="2026-08-06T00:00:00Z",
-        baseline_workspace=kw.pop("baseline_workspace", baseline_ws),
         **kw,
     )
     return result, evaluator
@@ -623,17 +707,6 @@ def test_sibling_floor_gives_a_stochastic_eval_its_tolerance(tmp_path: Path) -> 
     assert not row.regressed
 
 
-def test_shared_diff_without_pristine_baseline_fails_closed(tmp_path: Path) -> None:
-    result, _ = run_shared_climb(
-        tmp_path,
-        [13.876, 13.10],
-        changed=["src/pilot/model/encoder.py"],
-        baseline_workspace=None,
-    )
-    assert result.outcome == "eval-error"
-    assert "no pristine baseline workspace" in result.note
-
-
 def test_sibling_eval_failure_is_an_eval_error_naming_it(tmp_path: Path) -> None:
     result, _ = run_shared_climb(
         tmp_path,
@@ -641,7 +714,7 @@ def test_sibling_eval_failure_is_an_eval_error_naming_it(tmp_path: Path) -> None
         changed=["src/pilot/model/encoder.py"],
     )
     assert result.outcome == "eval-error"
-    assert "suite sokoban" in result.note
+    assert "sokoban" in result.note  # the failing sibling measure is named
 
 
 def test_seeded_sibling_pair_is_pinned_to_one_suite_seed(tmp_path: Path) -> None:
@@ -659,6 +732,23 @@ def test_seeded_sibling_pair_is_pinned_to_one_suite_seed(tmp_path: Path) -> None
     assert sib_envs[0] == sib_envs[1]  # paired: same seed both sides
     assert sib_envs[0] and "PILOT_SOKOBAN_SEED" in sib_envs[0]
     assert result.suite_seed > 0
+
+
+def test_seeded_benchmark_shares_its_run_seed_with_the_suite(tmp_path: Path) -> None:
+    # the in-job gate REUSED the climbed benchmark's run_seed for the siblings;
+    # the resumable path keeps that (fixed once, persisted), rather than drawing
+    # an independent suite seed.
+    seeded = SHARED_CONTRACT.replace(
+        "    direction: min\n", "    direction: min\n    seed_env: PILOT_TSP_SEED\n", 1
+    ).replace("    direction: max\n", "    direction: max\n    seed_env: PILOT_SOKOBAN_SEED\n", 1)
+    result, _ = run_shared_climb(
+        tmp_path,
+        [13.876, 13.10, 0.8, 0.8],
+        changed=["src/pilot/model/encoder.py"],
+        contract=seeded,
+    )
+    assert result.outcome == "improved"
+    assert result.run_seed > 0 and result.suite_seed == result.run_seed
 
 
 def test_suite_regressed_is_direction_aware_and_fails_closed() -> None:
@@ -773,12 +863,15 @@ def _run_panel_climb(tmp_path, values, verdicts, texts=None, revisions=1):
     harness = _SeqHarness(texts or ["report r1", "report r2"])
     evaluator = FakeEvaluator(values=list(values))
     panel = _QueuedPanel(verdicts)
+    measurer, snapshot = _wire(evaluator, tmp_path)
     result = climb_once(
         CONFIG,
         CONTRACT,
         tmp_path,
         harness,
-        evaluator,
+        measurer,
+        "base",
+        snapshot,
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -865,12 +958,15 @@ def test_wake_without_a_session_id_fails_closed_to_draft(tmp_path: Path) -> None
     harness = _NoIdHarness(["report r1"])
     evaluator = FakeEvaluator(values=[13.9, 13.1])
     panel = _QueuedPanel([_verdict(True, 1)])
+    measurer, snapshot = _wire(evaluator, tmp_path)
     result = climb_once(
         CONFIG,
         CONTRACT,
         tmp_path,
         harness,
-        evaluator,
+        measurer,
+        "base",
+        snapshot,
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",

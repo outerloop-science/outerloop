@@ -171,6 +171,23 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert "improved" in report
 
 
+def test_snapshot_refs_are_dropped_after_a_climb(tmp_path, target_repo) -> None:
+    # the candidate snapshots are retained by ref during measurement; the climb
+    # must drop every one when it ends, or each parked-or-finished run leaks a
+    # ref and its commit (terra's #102 round-9 concern, now enforced in code).
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+    )
+    # an improved outcome means a candidate was measured, which REQUIRES a
+    # snapshot — so refs-empty here proves dropped, not never-created.
+    assert outcome.outcome == "improved"
+    ws = tmp_path / "state" / "runs" / "tsp-1" / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
 def test_no_improvement_ends_negative_result_and_pushes_nothing(tmp_path, target_repo) -> None:
     outcome, github = run_live(
         tmp_path,
