@@ -23,7 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from autoresearch.contract import load_contract
-from autoresearch.dispatch import Snapshot, drop_snapshot, should_dispatch, snapshot_tree
+from autoresearch.dispatch import (
+    Snapshot,
+    afterany_ids,
+    drop_snapshot,
+    should_dispatch,
+    snapshot_tree,
+)
 from autoresearch.github import (
     FileTokenProvider,
     GitError,
@@ -176,7 +182,7 @@ def _park_run(
     this and resumes) is a later PR."""
     from autoresearch.dispatch import effective_eval_minutes
 
-    job_ids = parked.afterany.split(":")[1:] if parked.afterany else []
+    job_ids = afterany_ids(parked.afterany)
     stage: dict[str, object] = {
         "phase": parked.phase,
         "base_sha": parked.base_sha,
@@ -583,7 +589,19 @@ def live_climb(
             # anchor the deadline to the PARK (when the evals were submitted),
             # not the run's start `now` — a session lasting hours would otherwise
             # eat the queue budget and let the sweep cancel a still-queued eval.
-            _park_run(run_root, record, p, kept_ref, eval_minutes, time.time())
+            try:
+                _park_run(run_root, record, p, kept_ref, eval_minutes, time.time())
+            except Exception:
+                # The WAITING record did not persist, so nothing will ever wake
+                # the eval jobs this park already submitted. Cancel them so they
+                # don't sit in the queue as orphans (best-effort, self-logging),
+                # then fall through to the error handler — `parked` stays None,
+                # so the finally still drops every snapshot. A park only happens
+                # on the dispatched path, so `dispatch` is set here.
+                assert dispatch is not None
+                for job_id in afterany_ids(p.afterany):
+                    dispatch.compute.cancel(job_id)
+                raise
             parked = p
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:

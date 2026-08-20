@@ -21,8 +21,10 @@ Versions follow [SemVer](https://semver.org).
   dispatched path the climb skips the local baseline worktree (the eval jobs
   check out each sha themselves) and `snapshot` registers no live map. An
   expensive benchmark now parks its baseline before the session (PARK 1) and
-  its candidate after (PARK 2). The wake path that resumes from these parks is
-  the next part.
+  its candidate after (PARK 2). If the WAITING record fails to persist, the
+  already-submitted eval jobs are cancelled rather than orphaned in the queue
+  (nothing would ever wake them). The wake path that resumes from these parks
+  is the next part.
 - The climb PARK mechanics — dispatcher phase 1, stage B part 2c(i). When a
   measurer parks (`MeasurementPending`), `climb_once` raises `ClimbParked` at
   whichever point hibernated: `baseline` (before the session even runs — the

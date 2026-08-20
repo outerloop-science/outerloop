@@ -252,10 +252,11 @@ def run_live(tmp_path, target_repo, edits, values, run_id="tsp-1", dispatch=None
     return outcome, github
 
 
-def _fake_dispatch(image="/img.sif", account="acct", partition="cpu"):
+def _fake_dispatch(image="/img.sif", account="acct", partition="cpu", cancelled=None):
     """A DispatchSettings whose SlurmCompute never touches real Slurm: sbatch
     returns a fresh numeric id, squeue reports no live job (so results()
-    dispatches then parks on the ids it just submitted)."""
+    dispatches then parks on the ids it just submitted). `cancelled`, if given,
+    records the job ids passed to scancel."""
     from autoresearch.compute import CommandResult, SlurmCompute
     from autoresearch.measure import DispatchSettings
 
@@ -266,6 +267,10 @@ def _fake_dispatch(image="/img.sif", account="acct", partition="cpu"):
             return CommandResult(0, f"{next(ids)}\n", "")
         if argv[0] == "squeue":
             return CommandResult(0, "", "")  # nothing live -> dispatch
+        if argv[0] == "scancel":
+            if cancelled is not None:
+                cancelled.append(argv[1])
+            return CommandResult(0, "", "")
         raise AssertionError(f"unexpected slurm call: {argv[0]}")
 
     return DispatchSettings(
@@ -1598,3 +1603,29 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
     )
     assert outcome.outcome == "improved"
     assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"
+
+
+def test_failed_park_write_cancels_orphaned_eval_jobs(
+    tmp_path, target_repo_dispatch, monkeypatch
+) -> None:
+    # the baseline dispatched one job; if the WAITING record then fails to
+    # write, nothing will ever wake that job, so it must be cancelled rather
+    # than left orphaned in the queue.
+    from autoresearch import climb as climb_mod
+
+    cancelled: list[str] = []
+    dispatch = _fake_dispatch(cancelled=cancelled)
+
+    def boom(*args, **kwargs):
+        raise OSError("state dir full")
+
+    monkeypatch.setattr(climb_mod, "_park_run", boom)
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo_dispatch,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[],
+        dispatch=dispatch,
+    )
+    assert outcome.outcome == "climb-error"  # the failed park ends the run
+    assert cancelled == ["1000"]  # the one dispatched baseline job was cancelled
