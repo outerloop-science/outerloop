@@ -8,6 +8,23 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Dispatched measurement is now SELECTED per benchmark — dispatcher phase 1,
+  stage B part 2c(ii), the switch that first makes a park fire. `live_climb`
+  reads the benchmark's `eval_minutes` once and, when it exceeds the in-job
+  runway (`should_dispatch`) and cluster coordinates are present, measures
+  through a `DispatchedMeasurer` (each eval its own Slurm job) instead of the
+  inline `LocalMeasurer`; otherwise nothing changes. The coordinates are a new
+  `DispatchSettings` group (compute + image + account + partition) the climb
+  CLI reads once from `--account`/`--partition`/`--image` (defaulting to the
+  `AUTORESEARCH_*` chain env the tick already sets on the climb job); absent
+  any of them, measurement stays inline regardless of the hint. On the
+  dispatched path the climb skips the local baseline worktree (the eval jobs
+  check out each sha themselves) and `snapshot` registers no live map. An
+  expensive benchmark now parks its baseline before the session (PARK 1) and
+  its candidate after (PARK 2). If the WAITING record fails to persist, the
+  already-submitted eval jobs are cancelled rather than orphaned in the queue
+  (nothing would ever wake them). The wake path that resumes from these parks
+  is the next part.
 - The climb PARK mechanics — dispatcher phase 1, stage B part 2c(i). When a
   measurer parks (`MeasurementPending`), `climb_once` raises `ClimbParked` at
   whichever point hibernated: `baseline` (before the session even runs — the

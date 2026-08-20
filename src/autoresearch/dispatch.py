@@ -68,6 +68,12 @@ def should_dispatch(eval_minutes: int | None) -> bool:
     return effective_eval_minutes(eval_minutes) > IN_JOB_EVAL_MINUTES
 
 
+def afterany_ids(afterany: str) -> list[str]:
+    """The job ids inside an ``afterany:<id>:<id>...`` dependency string, or
+    ``[]`` when there are none (a blind park carries an empty dependency)."""
+    return afterany.split(":")[1:] if afterany else []
+
+
 @dataclass(frozen=True)
 class Snapshot:
     """A retained snapshot of a dirty workspace. `ref` keeps the commit
