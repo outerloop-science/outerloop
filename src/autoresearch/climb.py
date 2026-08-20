@@ -580,6 +580,38 @@ def resume_run(
         from datetime import datetime as _dt
 
         branch = f"{config.branch_prefix}/{run_id}"
+
+        # IDEMPOTENCY: a prior wake may have opened the PR but died before
+        # recording it (leaving the run WAITING). On re-entry, if a PR is
+        # already open for this head, reconcile the record to it — do NOT
+        # re-push (non-fast-forward) or open a duplicate. Best-effort: a lookup
+        # failure just falls through to the normal publish.
+        existing_pr = ""
+        try:
+            existing_pr = github.find_open_pull_for_head(config.target, branch) or ""
+        except Exception as exc:
+            log.warning(
+                "idempotency PR lookup failed for %s: %s",
+                run_id,
+                redact(f"{type(exc).__name__}: {exc}", secrets),
+            )
+        if existing_pr:
+            log.info("run %s: PR %s already open; reconciling the record", run_id, existing_pr)
+            final = _clear_stage(
+                RunRecord(
+                    **{
+                        **record.__dict__,
+                        "state": IN_REVIEW,
+                        "pr_url": existing_pr,
+                        "resume_session_id": result.session.session_id if result.session else "",
+                        "ending_note": existing_pr,
+                    }
+                )
+            )
+            if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+                drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+            return LiveClimbOutcome(run_id=run_id, outcome="improved", pr_url=existing_pr)
+
         try:
             # FORCE-checkout the sealed candidate: at wake the workspace still
             # holds the session's dirty tree (HEAD is pre_session_sha), so a

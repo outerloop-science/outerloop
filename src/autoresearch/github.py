@@ -251,6 +251,21 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)
 
+    def find_open_pull_for_head(self, repo: str, head_branch: str) -> str | None:
+        """The html url of the OPEN PR whose head is `head_branch`, or None.
+        Used for idempotency: a wake that died after opening the PR but before
+        recording it must, on re-entry, reconcile to that PR instead of pushing
+        again (non-fast-forward) and opening a duplicate."""
+        owner = repo.split("/")[0]
+        query = urllib.parse.urlencode({"head": f"{owner}:{head_branch}", "state": "open"})
+        path = f"/repos/{urllib.parse.quote(repo)}/pulls?{query}"
+        data = self._request("GET", path)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("html_url"):
+                    return str(item["html_url"])
+        return None
+
     BODY_EDIT_MARKER = "<!-- autoresearch:body-edit -->"
     # the orchestrator-owned candidate row in pr_body's results table
     # \r-tolerant: a human web-UI edit can normalize the body to CRLF
