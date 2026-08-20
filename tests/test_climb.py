@@ -25,6 +25,12 @@ scope: {allowed: [src/pilot/solvers/]}
 roadmap: docs/roadmap.md
 """
 
+# Same contract with an eval hint past the in-job runway, so `should_dispatch`
+# selects the dispatched backend.
+CONTRACT_DISPATCH = CONTRACT.replace(
+    "    direction: min\n", "    direction: min\n    eval_minutes: 30\n"
+)
+
 
 def _session(sid: str = "s1") -> SessionResult:
     return SessionResult(
@@ -124,14 +130,13 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
-@pytest.fixture
-def target_repo(tmp_path: Path, monkeypatch) -> Path:
+def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
     """A bare 'github' repo seeded with a pilot-shaped tree; Workspace.clone
     is monkeypatched to clone from it instead of github.com."""
     seed = tmp_path / "seed"
     (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
     (seed / "docs").mkdir()
-    (seed / ".autoresearch.yaml").write_text(CONTRACT)
+    (seed / ".autoresearch.yaml").write_text(contract)
     (seed / "docs" / "roadmap.md").write_text("# roadmap\n")
     (seed / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     _git(seed, "init", "-q", "-b", "main")
@@ -150,6 +155,16 @@ def target_repo(tmp_path: Path, monkeypatch) -> Path:
 
     monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(fake_clone))
     return bare
+
+
+@pytest.fixture
+def target_repo(tmp_path: Path, monkeypatch) -> Path:
+    return _seed_target(tmp_path, monkeypatch, CONTRACT)
+
+
+@pytest.fixture
+def target_repo_dispatch(tmp_path: Path, monkeypatch) -> Path:
+    return _seed_target(tmp_path, monkeypatch, CONTRACT_DISPATCH)
 
 
 @dataclass
@@ -219,7 +234,7 @@ class NoAuth:
         return "unused"
 
 
-def run_live(tmp_path, target_repo, edits, values, run_id="tsp-1") -> tuple:
+def run_live(tmp_path, target_repo, edits, values, run_id="tsp-1", dispatch=None) -> tuple:
     github = FakeGitHub()
     outcome = live_climb(
         config=ClimbConfig(target="org/pilot", benchmark="tsp"),
@@ -232,8 +247,33 @@ def run_live(tmp_path, target_repo, edits, values, run_id="tsp-1") -> tuple:
         now=1_000_000.0,
         created="2026-08-06T00:00:00Z",
         secrets=("sk-live-key",),
+        dispatch=dispatch,
     )
     return outcome, github
+
+
+def _fake_dispatch(image="/img.sif", account="acct", partition="cpu"):
+    """A DispatchSettings whose SlurmCompute never touches real Slurm: sbatch
+    returns a fresh numeric id, squeue reports no live job (so results()
+    dispatches then parks on the ids it just submitted)."""
+    from autoresearch.compute import CommandResult, SlurmCompute
+    from autoresearch.measure import DispatchSettings
+
+    ids = iter(range(1000, 1100))
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            return CommandResult(0, f"{next(ids)}\n", "")
+        if argv[0] == "squeue":
+            return CommandResult(0, "", "")  # nothing live -> dispatch
+        raise AssertionError(f"unexpected slurm call: {argv[0]}")
+
+    return DispatchSettings(
+        compute=SlurmCompute(runner=runner),
+        image=image,
+        account=account,
+        partition=partition,
+    )
 
 
 def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> None:
@@ -1519,3 +1559,42 @@ def test_moved_base_gets_a_fresh_panel_read_and_blocking_drafts(tmp_path, target
     assert "merged-tree interaction looks gamed" in pr["body"]
     assert "Verification round 2" in pr["body"]  # numbering continued post-merge
     assert github.armed == []
+
+
+def test_expensive_benchmark_dispatches_baseline_and_parks(tmp_path, target_repo_dispatch) -> None:
+    # eval_minutes=30 is past the in-job runway, so the baseline measures as a
+    # dispatched job BEFORE the session — the climb parks (PARK 1) instead of
+    # running the harness.
+    outcome, github = run_live(
+        tmp_path,
+        target_repo_dispatch,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[],  # the inline evaluator is never called on the dispatched path
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "parked"
+    assert github.prs == []  # session never ran; no PR
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.state == "waiting"
+    # PARK 1 is the baseline (no candidate yet); the afterany carries the one
+    # submitted eval job the wake depends on.
+    assert record.stage["phase"] == "baseline"
+    assert record.stage["afterany"] == "afterany:1000"
+    assert record.experiment_job_id == "1000"  # single-job park: the sweep polls it
+    # the dispatched backend checks out each sha in its own job, so no local
+    # baseline worktree was ever created
+    assert not (tmp_path / "state" / "runs" / "tsp-1" / "measure-baseline").exists()
+
+
+def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_repo) -> None:
+    # dispatch settings are present, but the benchmark has no eval hint, so
+    # should_dispatch() is False and the climb measures inline as usual.
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"

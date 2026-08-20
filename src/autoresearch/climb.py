@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from autoresearch.contract import load_contract
-from autoresearch.dispatch import Snapshot, drop_snapshot, snapshot_tree
+from autoresearch.dispatch import Snapshot, drop_snapshot, should_dispatch, snapshot_tree
 from autoresearch.github import (
     FileTokenProvider,
     GitError,
@@ -31,11 +31,12 @@ from autoresearch.github import (
     Workspace,
 )
 from autoresearch.harness import ClaudeCodeHarness, Harness, redact
-from autoresearch.measure import LocalMeasurer
+from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
     ClimbParked,
     Evaluator,
+    Measurer,
     SubprocessEvaluator,
     SuiteMeasurement,
     benchmark_floor,
@@ -392,6 +393,7 @@ def live_climb(
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
     panel_revisions: int = 1,
+    dispatch: DispatchSettings | None = None,
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo. With `panel_lenses`, the
     pre-PR verification panel gates the claim before any PR exists
@@ -477,12 +479,25 @@ def live_climb(
                     f"(benchmark `{config.benchmark}`). A report will follow here.",
                 )
 
+        # Expensive benchmarks measure as dispatched cluster jobs; cheap ones
+        # (and any run with no cluster coordinates) measure inline. The choice
+        # is the benchmark's eval-time hint against the in-job runway, decided
+        # ONCE here so the baseline setup, the measurer, and the park deadline
+        # all agree on it.
+        eval_minutes = next(
+            (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
+        )
+        dispatched = dispatch is not None and should_dispatch(eval_minutes)
+
         # The baseline is measured in a throwaway worktree of the pre-session
         # commit — the session never sees the directory the baseline eval ran
         # in, so eval artifacts (even gitignored ones) cannot leak the run
-        # seed or the sampled pool into the solver's view.
+        # seed or the sampled pool into the solver's view. The dispatched
+        # backend checks out each sha in its own eval job, so it needs no such
+        # worktree.
         baseline_wt = run_dir / "measure-baseline"
-        ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
+        if not dispatched:
+            ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
         # the panel's base is the PRE-SESSION commit — the exact tree the
         # baseline was measured on — never origin/<base_branch>, which can
         # name a different branch than the clone's checkout (terra, #95 r3)
@@ -502,19 +517,33 @@ def live_climb(
             if panel_lenses
             else None
         )
-        # The measurer runs the eval inline in the caller's worktrees: the
-        # pristine pre-session tree (baseline_wt, a CLEAN checkout of base_sha,
-        # so cache-safe) for base_sha, and the session's LIVE workspace for
-        # every candidate snapshot (measured fresh — its content is not pinned
-        # by the sha). `snapshot` commits the workspace's current content to a
-        # candidate sha; we own the ref lifecycle and drop every snapshot once
-        # the climb ends (nothing parks yet — the dispatched path is a later PR).
-        measurer = LocalMeasurer(evaluator, clean={pre_session_sha: baseline_wt})
+        # DISPATCHED: each measure runs as its own eval job, checking out its
+        # tree sha fresh from this workspace's `refs/dispatch/*` — so the
+        # measurer needs only the repo, and a not-yet-done measure PARKS the
+        # climb. INLINE: the eval runs in the caller's worktrees — the pristine
+        # pre-session tree (baseline_wt, a CLEAN checkout, cache-safe) for
+        # base_sha and the session's LIVE workspace for every candidate
+        # snapshot (measured fresh — its content is not pinned by the sha) —
+        # and never parks. Either way `snapshot` commits the workspace's
+        # current content to a candidate sha and we own the ref lifecycle,
+        # keeping the one candidate ref a park needs and dropping the rest when
+        # the climb ends.
+        measurer: Measurer
+        if dispatched:
+            assert dispatch is not None and eval_minutes is not None  # should_dispatch(None) False
+            measurer = dispatch.measurer(
+                run_dir, repo_root=workspace, eval_minutes=eval_minutes, run_tag=run_id
+            )
+        else:
+            measurer = LocalMeasurer(evaluator, clean={pre_session_sha: baseline_wt})
         snapshots: list[Snapshot] = []
 
         def snapshot() -> str:
             snap = snapshot_tree(ws, pre_session_sha)
-            measurer.live[snap.commit] = workspace  # this candidate -> the live workspace
+            # inline only: register the live workspace for this candidate sha.
+            # dispatched jobs check the sha out fresh, so they need no map.
+            if isinstance(measurer, LocalMeasurer):
+                measurer.live[snap.commit] = workspace
             snapshots.append(snap)
             return snap.commit
 
@@ -549,9 +578,6 @@ def live_climb(
                 # keep exactly ONE snapshot for that sha (two can share a
                 # commit); record and keep that same ref, drop the rest.
                 kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
-            eval_minutes = next(
-                (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
-            )
             import time
 
             # anchor the deadline to the PARK (when the evals were submitted),
@@ -567,7 +593,9 @@ def live_climb(
                 if parked and kept_ref and snap.ref == kept_ref:
                     continue
                 drop_snapshot(ws, snap)  # best-effort + self-logging; never raises
-            if not _best_effort(
+            # the baseline worktree exists only on the inline path (the
+            # dispatched backend never created one).
+            if not dispatched and not _best_effort(
                 "baseline worktree cleanup",
                 lambda: ws.git("worktree", "remove", "--force", str(baseline_wt)),
             ):
@@ -1140,6 +1168,12 @@ def main() -> int:
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument("--image", default="", help="apptainer image for session+eval")
+    # Cluster coordinates for DISPATCHED measurement (expensive benchmarks run
+    # each eval as its own Slurm job). Default from the chain env the tick
+    # already sets on the climb job; absent any of the three, measurement stays
+    # inline regardless of the benchmark's eval hint.
+    parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
+    parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
     parser.add_argument(
         "--uncontained",
         action="store_true",
@@ -1268,6 +1302,20 @@ def main() -> int:
                 parser.error(f"panel entry {kind}:{backend}: {exc}")
             lenses.append(PanelLens(kind=kind, harness=judge))
         panel_lenses = tuple(lenses)
+
+    # Dispatched measurement needs the full cluster triple AND a real image
+    # file to bind against; missing any, the climb measures inline (the tick
+    # sets these on the climb job's env, a bare CLI run leaves them empty).
+    dispatch: DispatchSettings | None = None
+    if args.account and args.partition and args.image and Path(args.image).is_file():
+        from autoresearch.compute import SlurmCompute
+
+        dispatch = DispatchSettings(
+            compute=SlurmCompute(),
+            image=args.image,
+            account=args.account,
+            partition=args.partition,
+        )
     try:
         try:
             outcome = live_climb(
@@ -1284,6 +1332,7 @@ def main() -> int:
                 spec=spec,
                 panel_lenses=panel_lenses,
                 panel_revisions=args.panel_revisions,
+                dispatch=dispatch,
                 evaluator=SubprocessEvaluator(container_image=args.image),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,

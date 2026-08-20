@@ -262,6 +262,39 @@ class DispatchedMeasurer:
         return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}
 
 
+@dataclass(frozen=True)
+class DispatchSettings:
+    """The cluster coordinates a dispatched measurer needs, grouped so the
+    composition root (the climb CLI) reads them ONCE from its args/env and the
+    climb just carries them. The per-run pieces (run dir, snapshot repo, the
+    benchmark's eval hint, the run tag) are bound at build time by `measurer`,
+    so this stays a static description of WHERE to dispatch, not a live handle
+    to one run."""
+
+    compute: SlurmCompute
+    image: str
+    account: str
+    partition: str
+
+    def measurer(
+        self, run_dir: Path, repo_root: Path, eval_minutes: int, run_tag: str
+    ) -> DispatchedMeasurer:
+        """Bind these coordinates to one run's dispatched measurer. `repo_root`
+        is the workspace whose `refs/dispatch/*` snapshots the eval jobs check
+        out; `eval_minutes` is the benchmark's contract hint (clamped in the
+        job spec)."""
+        return DispatchedMeasurer(
+            compute=self.compute,
+            run_dir=run_dir,
+            repo_root=repo_root,
+            image=self.image,
+            account=self.account,
+            partition=self.partition,
+            eval_minutes=eval_minutes,
+            run_tag=run_tag,
+        )
+
+
 @dataclass
 class LocalMeasurer:
     """The inline `Measurer`: runs each measure in-process, for cheap
