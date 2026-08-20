@@ -1657,9 +1657,15 @@ class JobWakeDispatcher:
             # the wake runs the SAME verification panel as the fresh climb, so a
             # dispatched improvement is verified before it is published.
             *_climb_panel_argv(self.spec),
+            # session budget for the depth-axis REVISION (a blocking panel
+            # finding wakes the author to revise).
+            "--max-turns",
+            str(self.spec.max_turns),
         ]
         if self.spec.pat_file:
             argv += ["--pat-file", self.spec.pat_file]
+        if self.spec.key_file:
+            argv += ["--key-file", self.spec.key_file]
         name = f"wake-{record.run_id}"[:60]
         afterany = str(record.stage.get("afterany", ""))
         return self.compute.submit(
@@ -1678,17 +1684,19 @@ class JobWakeDispatcher:
 
 def _wake_panel_minutes(spec: FollowupSpec) -> int:
     """Extra wake walltime for the verification panel it now runs — the base
-    `wake_minutes` covers only reading results + opening the PR. One read per
-    lens on the judge budget (slice 1: no revision yet). Grounded in the same
-    judge budgets `_panel_job_minutes` uses; the revision wake's session budget
-    is added when slice 2 lands."""
+    `wake_minutes` covers only reading results + opening the PR. Budgeted for
+    the worst case a single wake reaches: one read per lens PLUS one revision
+    author session (the depth-axis wake-to-revise). The revision's re-measure
+    only DISPATCHES (then the job ends, parked), so it needs no extra time.
+    Grounded in the same judge/author budgets the climb job uses."""
     lenses = [entry for entry in spec.panel.split(",") if entry.strip()]
     if not lenses:
         return 0
-    from autoresearch.roles import reviewer_spec, verifier_spec
+    from autoresearch.roles import author_spec, reviewer_spec, verifier_spec
 
     judge_minutes = max(reviewer_spec().budget.walltime_s, verifier_spec().budget.walltime_s) // 60
-    return len(lenses) * judge_minutes
+    session_minutes = author_spec().budget.walltime_s // 60
+    return len(lenses) * judge_minutes + session_minutes
 
 
 def _wake_dispatcher_from_env(

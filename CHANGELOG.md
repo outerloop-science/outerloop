@@ -8,6 +8,22 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Panel-on-wake, slice 2 — the first depth-axis build (docs/design/research-loop.md,
+  "wake the agent with evidence"): a BLOCKING panel finding on a dispatched
+  improvement now WAKES THE AGENT to revise instead of drafting. `resume_run`
+  re-runs the author session with the findings (`run_role` over the checked-out
+  candidate), re-snapshots the revised tree, and re-measures through the
+  dispatched measurer — which re-parks, so the NEXT wake runs the panel again.
+  Each revision is one park/wake cycle; `panel_reads` persists in the stage and
+  bounds the loop at `panel_revisions`, after which a still-blocking finding
+  DRAFTs for a human. The revision keeps the new candidate snapshot and drops
+  the superseded one; a revision that goes out of scope (or otherwise fails the
+  gate) ends the run. The `--resume` CLI builds the editor harness (author key)
+  and `JobWakeDispatcher` forwards `--key-file`/`--max-turns` + sizes the wake
+  walltime for the revision session (`_wake_panel_minutes`). A revision session
+  that cannot run falls back to a DRAFT — the improvement is real, just
+  unrevised.
+
 - Panel-on-wake, slice 1 — a dispatched improvement now runs the SAME pre-PR
   verification panel as an inline climb (docs/design/orchestrator-verify.md), so
   it is not published unverified. `resume_run` runs the read-only lenses over
