@@ -251,19 +251,25 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)
 
-    def find_open_pull_for_head(self, repo: str, head_branch: str) -> str | None:
-        """The html url of the OPEN PR whose head is `head_branch`, or None.
-        Used for idempotency: a wake that died after opening the PR but before
-        recording it must, on re-entry, reconcile to that PR instead of pushing
-        again (non-fast-forward) and opening a duplicate."""
+    def find_open_pull_for_head(
+        self, repo: str, head_branch: str, base: str
+    ) -> dict[str, Any] | None:
+        """The OPEN PR from `head_branch` INTO `base` (owner:branch, base-scoped
+        so a same-branch PR to a different base is never matched), or None.
+        Returns the raw PR dict (`html_url`, `number`, `draft`, …). Used for
+        idempotency: a wake that died after opening the PR but before recording
+        it reconciles to that PR instead of re-pushing (non-fast-forward) and
+        opening a duplicate."""
         owner = repo.split("/")[0]
-        query = urllib.parse.urlencode({"head": f"{owner}:{head_branch}", "state": "open"})
+        query = urllib.parse.urlencode(
+            {"head": f"{owner}:{head_branch}", "base": base, "state": "open"}
+        )
         path = f"/repos/{urllib.parse.quote(repo)}/pulls?{query}"
         data = self._request("GET", path)
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict) and item.get("html_url"):
-                    return str(item["html_url"])
+                    return item
         return None
 
     BODY_EDIT_MARKER = "<!-- autoresearch:body-edit -->"

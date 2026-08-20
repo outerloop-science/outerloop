@@ -582,35 +582,70 @@ def resume_run(
         branch = f"{config.branch_prefix}/{run_id}"
 
         # IDEMPOTENCY: a prior wake may have opened the PR but died before
-        # recording it (leaving the run WAITING). On re-entry, if a PR is
-        # already open for this head, reconcile the record to it — do NOT
-        # re-push (non-fast-forward) or open a duplicate. Best-effort: a lookup
+        # recording it (leaving the run WAITING). On re-entry, if a PR is already
+        # open for this head->base, reconcile to it — do NOT re-push
+        # (non-fast-forward) or open a duplicate. The reconcile does the FULL
+        # terminal (branch checkout, arm, report, issue, in-review record); it
+        # only SKIPS the push + create_pull the prior wake already did. A lookup
         # failure just falls through to the normal publish.
-        existing_pr = ""
+        existing: dict[str, object] | None = None
         try:
-            existing_pr = github.find_open_pull_for_head(config.target, branch) or ""
+            existing = github.find_open_pull_for_head(config.target, branch, base_branch)
         except Exception as exc:
             log.warning(
                 "idempotency PR lookup failed for %s: %s",
                 run_id,
                 redact(f"{type(exc).__name__}: {exc}", secrets),
             )
-        if existing_pr:
-            log.info("run %s: PR %s already open; reconciling the record", run_id, existing_pr)
+        if existing:
+            pr_url = str(existing.get("html_url", ""))
+            log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
+            # put the workspace on the branch (a later follow-up expects it) and
+            # finish the steps the prior wake may have died before completing.
+            _best_effort(
+                "reconcile checkout", lambda: ws.git("checkout", "-f", "-B", branch, candidate_sha)
+            )
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if pr_number.isdigit() and not existing.get("draft"):
+                _best_effort(
+                    "auto-merge arming",
+                    lambda: github.arm_auto_merge_when_review_required(
+                        config.target, int(pr_number)
+                    ),
+                    secrets,
+                )
+            report_path = run_dir / "report.md"
+            _best_effort(
+                "run report",
+                lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+                secrets,
+            )
             final = _clear_stage(
                 RunRecord(
                     **{
                         **record.__dict__,
                         "state": IN_REVIEW,
-                        "pr_url": existing_pr,
+                        "pr_url": pr_url,
                         "resume_session_id": result.session.session_id if result.session else "",
-                        "ending_note": existing_pr,
+                        "ending_note": pr_url,
                     }
                 )
             )
             if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
                 drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-            return LiveClimbOutcome(run_id=run_id, outcome="improved", pr_url=existing_pr)
+            _post_issue_finished(
+                github,
+                config.target,
+                issue_number,
+                run_id,
+                "improved",
+                pr_url,
+                redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+                secrets,
+            )
+            return LiveClimbOutcome(
+                run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
+            )
 
         try:
             # FORCE-checkout the sealed candidate: at wake the workspace still

@@ -243,8 +243,11 @@ class FakeGitHub:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body, draft=draft))
         return f"https://github.com/{repo}/pull/1"
 
-    def find_open_pull_for_head(self, repo, head_branch) -> str | None:
-        return self.existing_pr or None
+    def find_open_pull_for_head(self, repo, head_branch, base):
+        if not self.existing_pr:
+            return None
+        num = self.existing_pr.rstrip("/").rsplit("/", 1)[-1]
+        return {"html_url": self.existing_pr, "number": int(num), "draft": False}
 
     def arm_auto_merge_when_review_required(self, repo, number) -> bool:
         if self.arming_error:
@@ -2395,8 +2398,8 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
         now=1_000_100.0,
     )
     assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/7")
-    assert github.prs == []  # NO duplicate PR created
-    assert github.armed == []  # not re-armed
+    assert github.prs == []  # NO duplicate PR created (the key idempotency property)
+    assert github.armed == [("org/pilot", 7)]  # the ADOPTED PR is armed (prior wake may not have)
     record = load_record(state, run_id)
     assert record.state == "in-review" and "pull/7" in record.pr_url
     # the snapshot is released (the candidate is already published)
