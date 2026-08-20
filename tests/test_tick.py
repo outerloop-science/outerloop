@@ -1883,3 +1883,33 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
     assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
     assert "--account=acct" in argv and "--partition=cpu_short" in argv
+
+
+def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
+    # dispatched climbing must NOT deliver wakes unless the operator flips the
+    # explicit on-switch AND the chain env is complete.
+    from autoresearch.tick import (
+        FollowupSpec,
+        JobWakeDispatcher,
+        LoggingDispatcher,
+        _wake_dispatcher_from_env,
+    )
+
+    compute = SlurmCompute(runner=lambda argv, t: CommandResult(0, "", ""))
+    spec = FollowupSpec(
+        account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path
+    )
+
+    # default: no on-switch -> dry sweep, logging dispatcher
+    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
+
+    # on-switch + complete env -> live sweep, real dispatcher
+    monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW)
+    assert isinstance(dispatcher, JobWakeDispatcher) and live is True
+
+    # on-switch but incomplete env -> fail SAFE to dry, not a wake that can't run
+    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
