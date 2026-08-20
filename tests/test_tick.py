@@ -1838,3 +1838,48 @@ roadmap: docs/roadmap.md
     assert out2 is not None
     assert f"--time={MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
     assert f"--job-minutes {MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
+
+
+def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, monkeypatch):
+    # the production WakeDispatcher: a wake becomes a Slurm job that runs the
+    # wake CLI (`climb --resume <run_id>`), depending on the eval jobs so it
+    # fires when they finish.
+    from autoresearch.runstate import RunRecord
+    from autoresearch.tick import FollowupSpec, JobWakeDispatcher
+
+    submits = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submits.append(list(argv))
+            return CommandResult(0, "9001\n", "")
+        raise AssertionError(argv)
+
+    compute = SlurmCompute(runner=runner)
+    spec = FollowupSpec(
+        account="acct",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=tmp_path,
+        pat_file="/pat",
+    )
+    # isolate the dispatcher's job spec from flight_checkout's git dependency
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    record = RunRecord(
+        run_id="tsp-1",
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        stage={"afterany": "afterany:501:502"},
+    )
+    job_id = JobWakeDispatcher(compute, spec, now=NOW).dispatch(record, "eval done")
+    assert job_id == "9001"  # async: the wake job now owns the lease
+    argv = submits[0]
+    joined = " ".join(argv)
+    assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
+    assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
+    assert "--account=acct" in argv and "--partition=cpu_short" in argv

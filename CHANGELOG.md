@@ -37,6 +37,16 @@ Versions follow [SemVer](https://semver.org).
   agent-driven too"): a stale PR is a re-wake, not an orchestrator auto-merge.
   `WakeDispatcher` (the delivery that fires this on the eval jobs finishing) is
   the slice after.
+- The wake delivery — dispatcher phase 1, stage B part 2c, slices 2a+2b: a
+  `--resume RUN_ID` mode on the climb CLI (no session/api-key/panel — it rebuilds
+  the dispatched measurer and calls `resume_run`), and `JobWakeDispatcher`, the
+  production `WakeDispatcher` that submits a short CPU wake job running that CLI,
+  depending on the run's eval jobs (`afterany`) so it fires when they finish (or
+  immediately if already done). Still INERT: `tick.main` runs the sweep
+  `dry_run=True` with the `LoggingDispatcher`, so no wake is delivered yet.
+  Wiring `JobWakeDispatcher` in + flipping the dry-run stub + submitting the
+  afterany wake job at park (the deliberate ACTIVATION that unpauses yolo) is
+  the final slice.
 
 - Dispatched measurement is now SELECTED per benchmark — dispatcher phase 1,
   stage B part 2c(ii), the switch that first makes a park fire. `live_climb`

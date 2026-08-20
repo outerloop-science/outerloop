@@ -1623,6 +1623,56 @@ class LoggingDispatcher:
         return ""
 
 
+@dataclass
+class JobWakeDispatcher:
+    """Delivers a wake by submitting a Slurm job that runs the wake CLI
+    (`climb --resume <run_id>`), depending on the run's eval jobs (the record's
+    `afterany`) so it fires when they finish — or immediately if they already
+    have. CPU-only and short: a wake reads cached results and opens a PR, it
+    never holds a GPU. Returns the wake job id (async: it owns the lease until
+    it completes)."""
+
+    compute: SlurmCompute
+    spec: FollowupSpec
+    now: float
+    wake_minutes: int = 20
+
+    def dispatch(self, record: RunRecord, reason: str) -> str:
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "autoresearch.climb",
+            "--resume",
+            record.run_id,
+            "--run-root",
+            str(self.spec.run_root),
+            "--image",
+            self.spec.image,
+            "--account",
+            self.spec.account,
+            "--partition",
+            self.spec.partition,
+        ]
+        if self.spec.pat_file:
+            argv += ["--pat-file", self.spec.pat_file]
+        name = f"wake-{record.run_id}"[:60]
+        afterany = str(record.stage.get("afterany", ""))
+        return self.compute.submit(
+            JobSpec(
+                job_name=name,
+                account=self.spec.account,
+                partition=self.spec.job_partition or self.spec.partition,
+                time_minutes=self.wake_minutes,
+                command=_flight_command(self.spec.home, name, self.now, argv),
+                dependency=afterany,
+                cpus=2,
+                mem="4G",
+            )
+        )
+
+
 def _max_job_minutes_from_env() -> int:
     """AUTORESEARCH_MAX_JOB_MINUTES, clamped into what the code can honor:
     at least the climb-job floor (an operator on a short-MaxTime partition

@@ -1396,9 +1396,18 @@ def main() -> int:
     arm_sigterm_containment()
 
     parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
-    parser.add_argument("--target", required=True)
-    parser.add_argument("--benchmark", required=True)
+    # --target/--benchmark drive a fresh climb; they are read from the record
+    # on a --resume wake instead, so they are optional (validated below).
+    parser.add_argument("--target", default="")
+    parser.add_argument("--benchmark", default="")
     parser.add_argument("--run-root", required=True, type=Path)
+    parser.add_argument(
+        "--resume",
+        default="",
+        metavar="RUN_ID",
+        help="wake a parked dispatched run instead of starting a fresh climb",
+    )
+    parser.add_argument("--base-branch", default="main")
     # All three default from the chain env the tick sets on the climb job, so
     # a contained run with AUTORESEARCH_{IMAGE,ACCOUNT,PARTITION} set selects
     # dispatched measurement without extra flags. The image also containers the
@@ -1466,9 +1475,42 @@ def main() -> int:
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
+    bot_auth = FileTokenProvider(Path(args.pat_file))
+
+    # --resume WAKES a parked dispatched run: no session, no api key, no panel —
+    # just rebuild the dispatched measurer and re-enter the decision. The wake
+    # job the WakeDispatcher submits runs exactly this.
+    if args.resume:
+        if not (args.account and args.partition and args.image and Path(args.image).is_file()):
+            parser.error(
+                "--resume needs the cluster triple (--account/--partition/--image) "
+                "to rebuild the dispatched measurer"
+            )
+        from autoresearch.compute import SlurmCompute
+
+        resumed = resume_run(
+            args.run_root,
+            args.resume,
+            dispatch=DispatchSettings(
+                compute=SlurmCompute(),
+                image=args.image,
+                account=args.account,
+                partition=args.partition,
+            ),
+            github=GitHubClient(auth=bot_auth),
+            bot_auth=bot_auth,
+            now=time.time(),
+            secrets=(bot_auth.token(),),
+            base_branch=args.base_branch,
+        )
+        print(f"outcome={resumed.outcome} pr={resumed.pr_url or '-'} report={resumed.report_path}")
+        return 0
+
+    if not (args.target and args.benchmark):
+        parser.error("--target and --benchmark are required for a fresh climb")
+
     # same 0600 discipline as the PAT: this key spends real money
     api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
-    bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
 
