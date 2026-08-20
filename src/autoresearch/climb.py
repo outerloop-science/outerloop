@@ -448,9 +448,20 @@ def resume_run(
         if not wake_result.ok:
             log.warning("wake revision session failed for %s; drafting the original", run_id)
             return None
-        # the revised tree is a NEW candidate; snapshot it (parented on base) and
-        # re-measure through the dispatched measurer, which re-parks.
-        new_snap = snapshot_tree(ws, base_sha)
+        # the revised tree is a NEW candidate; snapshot it (parented on base).
+        # A snapshot failure (git write-tree, disk) must NOT escape and leave the
+        # run WAITING to retry — that would re-spend a revision session on the
+        # same finding. Fall back to DRAFTING the original (its improvement is
+        # real and measured); the caller commits candidate_sha, not the revision.
+        try:
+            new_snap = snapshot_tree(ws, base_sha)
+        except Exception as exc:
+            log.warning(
+                "wake revision snapshot failed for %s (%s); drafting the original",
+                run_id,
+                redact(f"{type(exc).__name__}: {exc}", secrets),
+            )
+            return None
         new_measured = tuple(
             p
             for p in ws.git("diff", "--name-only", "-z", base_sha, new_snap.commit).split("\0")
