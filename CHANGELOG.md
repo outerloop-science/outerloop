@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The improved-wake publish is now idempotent across a crash mid-open. A wake
+  that opened the PR but died before recording it left the run WAITING; the
+  re-wake would re-push non-fast-forward and open a duplicate (or record ABORTED
+  over a live PR). Now `resume_run` first asks `find_open_pull_for_head` (new
+  `GitHubClient` method, `GET /pulls?head=…&state=open`) and, if a PR is already
+  open for the run's head, reconciles the record to `in-review` on that PR —
+  no re-push, no duplicate. This is the last dispatcher activation-blocker; the
+  path can now be turned on (`AUTORESEARCH_DISPATCH_WAKE`).
+
 - Panel-on-wake, slice 2 — the first depth-axis build (docs/design/research-loop.md,
   "wake the agent with evidence"): a BLOCKING panel finding on a dispatched
   improvement now WAKES THE AGENT to revise instead of drafting. `resume_run`

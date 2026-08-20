@@ -237,10 +237,17 @@ class FakeGitHub:
     prs: list[dict] = field(default_factory=list)
     armed: list[tuple[str, int]] = field(default_factory=list)
     arming_error: str = ""
+    existing_pr: str = ""  # find_open_pull_for_head returns this (idempotency)
 
     def create_pull(self, repo, title, head, base, body, draft=False) -> str:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body, draft=draft))
         return f"https://github.com/{repo}/pull/1"
+
+    def find_open_pull_for_head(self, repo, head_branch, base):
+        if not self.existing_pr:
+            return None
+        num = self.existing_pr.rstrip("/").rsplit("/", 1)[-1]
+        return {"html_url": self.existing_pr, "number": int(num), "draft": False}
 
     def arm_auto_merge_when_review_required(self, repo, number) -> bool:
         if self.arming_error:
@@ -2372,3 +2379,29 @@ def test_resume_revision_remeasure_failure_drafts_the_original(tmp_path, monkeyp
     )
     assert outcome.outcome == "improved"  # the original is drafted, not aborted
     assert github.prs[0]["draft"] is True and load_record(state, run_id).state == "in-review"
+
+
+def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> None:
+    # a prior wake opened the PR but died before recording it (run left WAITING).
+    # the re-wake must reconcile to that PR: no duplicate PR, no re-push, record
+    # goes in-review.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub(existing_pr="https://github.com/org/pilot/pull/7")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/7")
+    assert github.prs == []  # NO duplicate PR created (the key idempotency property)
+    assert github.armed == [("org/pilot", 7)]  # the ADOPTED PR is armed (prior wake may not have)
+    record = load_record(state, run_id)
+    assert record.state == "in-review" and "pull/7" in record.pr_url
+    # the snapshot is released (the candidate is already published)
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
