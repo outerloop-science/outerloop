@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from autoresearch.contract import load_contract
+from autoresearch.harness import SessionResult
 from autoresearch.measure import Measure, MeasurementPending
 from autoresearch.orchestrator import (
     ClimbParked,
@@ -262,6 +263,18 @@ def test_empty_shared_scope_does_not_require_suite_seed():
 REPORT = "swapped the construction heuristic; tours shortened."
 
 
+def _woke_session():
+    return SessionResult(
+        stop_reason="resumed",
+        is_error=False,
+        cost_usd=0.0,
+        num_turns=0,
+        session_id="s-woke",
+        final_text=REPORT,
+        transcript_path="",
+    )
+
+
 def _resume(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, text=CONTRACT):
     contract = load_contract(text, "x/y")
     return resume_climb(
@@ -272,8 +285,7 @@ def _resume(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, t
         seed=seed,
         suite_seed=suite_seed,
         measured_paths=measured_paths,
-        report=REPORT,
-        resume_session_id="s-woke",
+        session=_woke_session(),
         measurer=measurer,
         min_relative_improvement=0.005,
     )
@@ -295,6 +307,9 @@ def test_resume_no_improvement_is_terminal_with_the_report():
     out = _resume(FakeMeasurer({"baseline": 0.50, "candidate": 0.50}))
     assert out.outcome == "no-improvement"
     assert out.session is not None and out.session.final_text == REPORT
+    # the wake gives a bare negative the same framing the in-job path sets,
+    # so a resumed negative never ends note-less
+    assert out.note == "a negative result reported clearly is a success"
 
 
 def test_resume_reparks_when_a_measure_is_not_done():

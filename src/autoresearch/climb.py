@@ -36,7 +36,7 @@ from autoresearch.github import (
     GitHubClient,
     Workspace,
 )
-from autoresearch.harness import ClaudeCodeHarness, Harness, redact
+from autoresearch.harness import ClaudeCodeHarness, Harness, SessionResult, redact
 from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
@@ -176,6 +176,7 @@ def _park_run(
     candidate_ref: str,
     eval_minutes: int | None,
     now: float,
+    secrets: tuple[str, ...] = (),
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
@@ -194,11 +195,15 @@ def _park_run(
         "seed": parked.seed,
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
-        # the session's write-up, saved so a candidate wake can build the PR
-        # body and the panel claim WITHOUT re-running the session (its edits
-        # are already captured in candidate_sha). Empty for a baseline park —
-        # the session has not run yet.
-        "report": parked.session.final_text if parked.session else "",
+        # the session's write-up + spend, saved so a candidate wake can build
+        # the PR body / panel claim and report the real cost WITHOUT re-running
+        # the session (its edits are already in candidate_sha). REDACTED before
+        # it lands in the durable record, like every other persisted final_text
+        # — a session that echoed a credential must not leave it in record.json.
+        # Empty/zero for a baseline park (the session has not run yet).
+        "report": redact(parked.session.final_text, secrets) if parked.session else "",
+        "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
+        "session_turns": parked.session.num_turns if parked.session else 0,
     }
     # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
     # is right for a single-job park (baseline, or a candidate with no siblings):
@@ -283,6 +288,17 @@ def resume_run(
     # candidate, never `changed_paths()` on a live tree that may have drifted.
     measured_paths = tuple(ws.git("diff", "--name-only", base_sha, candidate_sha).split())
 
+    # rebuild the session from what the park saved: the (redacted) write-up and
+    # its real spend, so the report shows true cost/turns. It is never re-run.
+    session = SessionResult(
+        stop_reason="resumed",
+        is_error=False,
+        cost_usd=float(stage.get("session_cost_usd", 0.0)),  # type: ignore[arg-type]
+        num_turns=int(stage.get("session_turns", 0)),  # type: ignore[call-overload]
+        session_id=record.resume_session_id,
+        final_text=str(stage.get("report", "")),
+        transcript_path="",
+    )
     try:
         result = resume_climb(
             contract,
@@ -292,15 +308,14 @@ def resume_run(
             seed=int(stage["seed"]),  # type: ignore[call-overload]
             suite_seed=int(stage["suite_seed"]),  # type: ignore[call-overload]
             measured_paths=measured_paths,
-            report=str(stage.get("report", "")),
-            resume_session_id=record.resume_session_id,
+            session=session,
             measurer=measurer,
             min_relative_improvement=config.min_relative_improvement,
         )
     except ClimbParked as parked:
         # another measure this wake dispatched is not done — re-park on the new
         # afterany, keeping the SAME candidate snapshot the next wake reads.
-        _park_run(run_root, record, parked, candidate_ref, eval_minutes, now)
+        _park_run(run_root, record, parked, candidate_ref, eval_minutes, now, secrets)
         return LiveClimbOutcome(run_id=run_id, outcome="parked")
 
     if result.outcome == "improved":
@@ -700,7 +715,7 @@ def live_climb(
             # not the run's start `now` — a session lasting hours would otherwise
             # eat the queue budget and let the sweep cancel a still-queued eval.
             try:
-                _park_run(run_root, record, p, kept_ref, eval_minutes, time.time())
+                _park_run(run_root, record, p, kept_ref, eval_minutes, time.time(), secrets)
             except Exception:
                 # The WAITING record did not persist, so nothing will ever wake
                 # the eval jobs this park already submitted. Cancel them so they

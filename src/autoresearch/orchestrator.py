@@ -845,17 +845,17 @@ def resume_climb(
     seed: int,
     suite_seed: int,
     measured_paths: Sequence[str],
-    report: str,
-    resume_session_id: str,
+    session: SessionResult,
     measurer: Measurer,
     min_relative_improvement: float,
 ) -> ClimbResult:
     """Re-enter a parked climb's post-session decision — the WAKE side of a
     dispatched candidate park. The candidate is already committed (its sha is in
     the record), so the session does NOT re-run: its edits are captured in
-    `candidate_sha` and its write-up in `report` (which reconstructs the PR body
-    and the panel claim without the session object). `measured_paths` is the
-    caller's re-derivation of the `base_sha..candidate_sha` diff.
+    `candidate_sha` and it was reconstructed by the caller from the record
+    (`session.final_text` is the saved write-up, and its cost/turns the saved
+    spend) so the PR body and panel claim need no live session. `measured_paths`
+    is the caller's re-derivation of the `base_sha..candidate_sha` diff.
 
     The measurer reads the cached eval results and this returns the decision, OR
     the decision needs a measure not yet done — the suite pairs after an
@@ -869,17 +869,6 @@ def resume_climb(
     """
     from autoresearch.measure import MeasurementPending
 
-    # the session is gone; rebuild just enough of it (the write-up + its id) for
-    # the outcome the caller renders. It is never re-run.
-    session = SessionResult(
-        stop_reason="resumed",
-        is_error=False,
-        cost_usd=0.0,
-        num_turns=0,
-        session_id=resume_session_id,
-        final_text=report,
-        transcript_path="",
-    )
     try:
         outcome = measure_and_decide(
             contract,
@@ -906,8 +895,13 @@ def resume_climb(
         ) from None
     if isinstance(outcome, ClimbResult):
         # a terminal measurement outcome (no-improvement / suite-regression /
-        # eval-error): carry the reconstructed session for the caller's report
-        return dc_replace(outcome, session=session)
+        # eval-error): carry the reconstructed session, and give a bare
+        # no-improvement the same framing the in-job path sets (a clear
+        # negative is a success), so a resumed negative does not end note-less.
+        note = outcome.note
+        if outcome.outcome == "no-improvement":
+            note = "a negative result reported clearly is a success"
+        return dc_replace(outcome, session=session, note=note)
     # credited: candidate cleared the threshold and no sibling regressed. The
     # caller sets `branch` when it opens the PR.
     return ClimbResult(

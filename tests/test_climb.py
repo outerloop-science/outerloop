@@ -75,6 +75,38 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["candidate_ref"] == "refs/dispatch/tok"  # for drop at the terminal
     assert r.stage["seed"] == 7 and r.stage["suite_seed"] == 9
     assert r.stage["afterany"] == "afterany:101:102"
+    # the session's write-up + spend ride the stage so a candidate wake can
+    # build the PR body and report the real cost without re-running the session
+    assert r.stage["report"] == "report"
+    assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
+
+
+def test_park_run_redacts_the_saved_report(tmp_path) -> None:
+    # a session that echoed a secret must not leave it readable in record.json
+    record = RunRecord(
+        run_id="tsp-9", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    leaky = SessionResult(
+        stop_reason="end_turn",
+        is_error=False,
+        cost_usd=1.0,
+        num_turns=5,
+        session_id="s1",
+        final_text="used key sk-secret-123 to fetch",
+        transcript_path="",
+    )
+    parked = ClimbParked(
+        phase="candidate",
+        afterany="afterany:1",
+        base_sha="b" * 40,
+        seed=1,
+        suite_seed=1,
+        candidate_sha="c" * 40,
+        session=leaky,
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", 90, 1000.0, ("sk-secret-123",))
+    report = str(load_record(tmp_path, "tsp-9").stage["report"])
+    assert "sk-secret-123" not in report and "used key" in report
 
 
 def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
