@@ -159,17 +159,20 @@ def outage(result: SessionResult) -> bool:
     work order's attempts."""
     if not result.is_error:
         return False
-    # error_detail is backend error text and always wins; final_text is
-    # consulted ONLY when no detail exists AND it carries the legacy CLI
-    # error shape ("API Error ..."), never agent prose — a failed session's
-    # report that merely MENTIONS billing or limits must not trip a latch
+    # Union two backend surfaces: error_detail, and the machine "API Error ..."
+    # shape a CLI may put in final_text. The latter is backend text too, never
+    # agent prose, so it must count even when error_detail is non-empty — some
+    # backends stamp a content-free subtype ("success") into error_detail while
+    # the real cause (e.g. "API Error: 400 ... usage limits") sits only in
+    # final_text. final_text is taken ONLY in that "api error" shape, so a
+    # report that merely MENTIONS billing or limits still cannot trip a latch
     # that pauses every lane (review findings, rounds 1 and 2).
     surface = result.error_detail.casefold()
-    if not surface:
-        text = result.final_text.strip().casefold()
-        if not text.startswith("api error"):
-            return False
-        surface = text
+    text = result.final_text.strip().casefold()
+    if text.startswith("api error"):
+        surface = f"{surface}\n{text}"
+    if not surface.strip():
+        return False
     return any(pattern in surface for pattern in OUTAGE_PATTERNS)
 
 

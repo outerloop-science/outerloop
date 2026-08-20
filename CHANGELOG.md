@@ -64,6 +64,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `outage()` now catches an API refusal the CLI reports as a `subtype: "success"`
+  error with the real cause in `final_text`. Surfaced on Torch: a session hit the
+  author key's workspace usage cap and came back `is_error` with
+  `error_detail="success"` and `result="API Error: 400 ... usage limits"`. The
+  old classifier treated a non-empty `error_detail` as authoritative, scanned
+  `"success"`, matched nothing, and billed a genuine outage as a `session-error`
+  — so the lanes would NOT pause and the failure would count against the run's
+  retry caps. `outage()` now unions the machine-shaped (`"API Error ..."`)
+  `final_text` into the surface even when `error_detail` is non-empty, while
+  still never consulting agent prose (the round-1/2 anti-false-latch invariant
+  holds — prose does not carry that shape).
+
 - Wake-path hardening from the self-review + advisory review of the dispatched
   wake (all pre-activation, the path is still dark):
   - the improved wake now FORCE-checks-out the sealed candidate sha (at wake the

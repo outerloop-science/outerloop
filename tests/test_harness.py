@@ -235,6 +235,25 @@ def test_outage_classification_matches_api_refusals_only() -> None:
     # empty detail: prose is consulted only in the legacy "API Error" shape
     assert outage(result(True, text="API Error (400): credit balance is too low"))
     assert not outage(result(True, text="Report: raise the usage limit, cut billing costs."))
+    # a content-free subtype ("success") in error_detail must NOT mask a real
+    # API-refusal that the CLI put in final_text (observed on Torch: is_error
+    # with subtype "success" and result "API Error: 400 ... usage limits")
+    assert outage(
+        result(
+            True,
+            detail="success",
+            text="API Error: 400 You have reached your specified workspace API usage limits.",
+        )
+    )
+    # ...but a real non-outage detail plus agent prose still never latches,
+    # even when that prose is the machine-shaped path's near-miss
+    assert not outage(
+        result(
+            True,
+            detail="error_max_turns: Reached maximum number of turns",
+            text="Report: we hit the usage limit on our billing plan; cache more.",
+        )
+    )
 
 
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
