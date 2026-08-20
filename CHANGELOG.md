@@ -6,6 +6,31 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Wake-path hardening from the self-review + advisory review of the dispatched
+  wake (all pre-activation, the path is still dark):
+  - the improved wake now FORCE-checks-out the sealed candidate sha (at wake the
+    workspace is the session's dirty tree) and commits ONLY the ledger files on
+    top of it — never `git add -A`, which would sweep in untracked cruft the
+    session/eval left, unmeasured and unscoped;
+  - a no-progress re-park (a blind re-park with an empty afterany, or the same
+    jobs still pending) KEEPS `wake_attempts` instead of resetting it, so the
+    stuck cap still bites a run that wakes without advancing; a productive
+    re-park (a new job set) still resets;
+  - the wake never arms auto-merge — it runs no verification panel yet
+    (panel-on-wake is a later slice), so every dispatched improvement waits for
+    a human;
+  - the IN_REVIEW record is saved BEFORE the snapshot is dropped, so a failed
+    save leaves the run recoverable rather than an ABORTED record over a live
+    PR; a publish failure drops the snapshot (ENDED runs are never swept, so
+    keeping it only leaked the ref);
+  - terminal records clear the WAITING-only fields (`stage`, `deadline`,
+    `wake_attempts`, …) so a woken run does not carry a shrunk follow-up retry
+    budget into `in-review`;
+  - `measured_paths` is re-derived NUL-delimited (`-z`), so a path with a space
+    cannot slip past the scope check.
+
 ### Changed
 
 - A dispatched climb now has ONE park, not two. The pre-session baseline

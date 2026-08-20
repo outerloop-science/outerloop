@@ -1701,28 +1701,40 @@ class _FakeMeasurer:
 
 
 def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=None, run_id="tsp-1"):
-    """A candidate-parked run on disk: a ws with base+candidate commits and the
-    kept snapshot ref, plus a WAITING record carrying the re-entry stage. The
-    dispatched measurer is monkeypatched to a fake so no cluster is touched."""
+    """A candidate-parked run on disk in the REAL park state: HEAD is still the
+    pre-session commit, the session's edits are UNCOMMITTED in the working tree,
+    there is untracked cruft an eval left behind, and `candidate_sha` is a
+    snapshot commit (via `snapshot_tree`, off any branch) kept alive by its ref.
+    Plus a WAITING record with the re-entry stage. The dispatched measurer is
+    monkeypatched to a fake so no cluster is touched."""
+    from autoresearch.dispatch import snapshot_tree
+    from autoresearch.github import Workspace
     from autoresearch.measure import DispatchSettings
 
     state = tmp_path / "state"
-    ws = state / "runs" / run_id / "ws"
-    (ws / "src" / "pilot" / "solvers").mkdir(parents=True)
-    (ws / ".autoresearch.yaml").write_text(CONTRACT_DISPATCH)
-    (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
-    _git(ws, "init", "-q", "-b", "main")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
-    base_sha = _git(ws, "rev-parse", "HEAD").strip()
-    (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'better'\n")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-aqm", "candidate")
-    candidate_sha = _git(ws, "rev-parse", "HEAD").strip()
-    _git(ws, "update-ref", "refs/dispatch/tok", candidate_sha)
-    # a bare 'origin' so an improved wake can push its branch
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "clone", "-q", "--bare", str(ws), str(bare))
-    _git(ws, "remote", "add", "origin", str(bare))
+    wsroot = state / "runs" / run_id / "ws"
+    (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
+    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_DISPATCH)
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base_sha = _git(wsroot, "rev-parse", "HEAD").strip()
+    # the session's edit, left UNCOMMITTED (HEAD stays at base) — the snapshot
+    # captures it into candidate_sha.
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'better'\n")
+    ws = Workspace(root=wsroot)
+    snap = snapshot_tree(ws, base_sha)  # candidate_sha, retained under its ref
+    # cruft that appears AFTER the snapshot (a dispatched eval / session
+    # leftover): it is in the wake's working tree but NOT in candidate_sha, so
+    # the finish's force-checkout keeps it around and the ledger-only commit
+    # must NOT sweep it into the PR.
+    (wsroot / "eval-cache.tmp").write_text("junk an eval left behind\n")
+    candidate_sha = snap.commit
+    # a bare 'origin' (unique per run) so an improved wake can push its branch
+    bare = tmp_path / f"origin-{run_id}.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
 
     record = RunRecord(
         run_id=run_id,
@@ -1735,7 +1747,7 @@ def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=Non
             "phase": "candidate",
             "base_sha": base_sha,
             "candidate_sha": candidate_sha,
-            "candidate_ref": "refs/dispatch/tok",
+            "candidate_ref": snap.ref,
             "seed": 7,
             "suite_seed": 9,
             "afterany": "afterany:501",
@@ -1817,7 +1829,56 @@ def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     assert pr["head"] == "feat/auto/agent-01/tsp-1" and pr["base"] == "main"
     assert "swapped the construction heuristic" in pr["body"]
     # the branch landed in the bare origin; the candidate snapshot was dropped
-    bare = tmp_path / "origin.git"
+    bare = tmp_path / "origin-tsp-1.git"
     assert "feat/auto/agent-01/tsp-1" in _git(bare, "branch", "--list")
     ws = state / "runs" / run_id / "ws"
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+    # the pushed tree carries the sealed candidate edit + the two ledger files,
+    # and NOT the untracked eval cruft the session left in the workspace
+    files = set(_git(bare, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-1").split())
+    assert "src/pilot/solvers/tsp.py" in files
+    assert {"BENCHMARKS.md", "results/leader.json"} <= files
+    assert "eval-cache.tmp" not in files
+    assert "def solve(): return 'better'" in _git(
+        bare, "show", "feat/auto/agent-01/tsp-1:src/pilot/solvers/tsp.py"
+    )
+    # no verification panel ran on the wake, so auto-merge is never armed
+    assert github.armed == []
+
+
+def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, monkeypatch):
+    # a no-progress re-park (blind: empty afterany) must KEEP wake_attempts so
+    # the stuck cap still bites; a productive re-park (a NEW job set) resets it.
+    import dataclasses
+
+    from autoresearch.measure import MeasurementPending
+
+    # blind re-park: MeasurementPending(()) -> empty afterany -> no progress
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch, raise_exc=MeasurementPending(()))
+    rec = dataclasses.replace(load_record(state, run_id), wake_attempts=2)
+    save_record(state, rec, 1_000_050.0)
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert load_record(state, run_id).wake_attempts == 2  # kept, cap still counts
+
+    # productive re-park: a NEW afterany (old was afterany:501) -> progress
+    state2, rid2 = _write_parked_candidate(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602")), run_id="tsp-2"
+    )
+    rec2 = dataclasses.replace(load_record(state2, rid2), wake_attempts=2)
+    save_record(state2, rec2, 1_000_050.0)
+    resume_run(
+        state2,
+        rid2,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert load_record(state2, rid2).wake_attempts == 0  # reset on progress

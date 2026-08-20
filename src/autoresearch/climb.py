@@ -163,6 +163,23 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
         return False
 
 
+def _clear_stage(record: RunRecord) -> RunRecord:
+    """Strip the WAITING-only bookkeeping from a record leaving `waiting` for a
+    terminal state. Otherwise a dispatched run's `stage`, `deadline`, and
+    especially `wake_attempts` ride into `in-review`, where in-review follow-up
+    servicing reuses `wake_attempts` as its OWN retry cap — so a run that woke
+    once would reach review with a shrunk follow-up budget."""
+    return dc_replace(
+        record,
+        stage={},
+        experiment_job_id="",
+        deadline=0.0,
+        terminal_seen=0.0,
+        wake_job_id="",
+        wake_attempts=0,
+    )
+
+
 # A parked run's deadline is the FLOOR beneath the afterany wake: submit +
 # eval walltime + a generous queue/grace allowance. It must exceed the time a
 # healthy eval can legitimately sit queued-then-running, or `tick._sweep_one`
@@ -178,6 +195,7 @@ def _park_run(
     eval_minutes: int | None,
     now: float,
     secrets: tuple[str, ...] = (),
+    keep_wake_attempts: bool = False,
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
@@ -225,14 +243,14 @@ def _park_run(
             "resume_session_id": parked.session.session_id if parked.session else "",
             "deadline": deadline,
             "stage": stage,
-            # Reset only valid because THIS is the IMPLEMENTING->park entry: the
-            # run just LEFT waiting to do work (a session, a measure), so
-            # wake_attempts — "wakes since the run last left waiting" — is stale;
-            # a productive park/wake cycle must not creep toward the stuck cap.
-            # The wake path (a later PR) must NOT route a no-progress blind
-            # re-park (results still pending) back through here — resetting on
-            # that would defeat the stuck cap; a blind re-park keeps the counter.
-            "wake_attempts": 0,
+            # wake_attempts = "wakes since the run last made progress"; the
+            # stuck cap ends a run that keeps waking without advancing. Reset on
+            # a PRODUCTIVE park (the IMPLEMENTING->park entry ran a session; a
+            # wake that resolved its measures and dispatched NEW ones). A
+            # no-progress re-park — results still pending, or a blind re-park
+            # (squeue unreachable, nothing new dispatched) — must KEEP the
+            # counter (`keep_wake_attempts`), or the loop never reaches the cap.
+            "wake_attempts": record.wake_attempts if keep_wake_attempts else 0,
             "terminal_seen": 0.0,
             "wake_job_id": "",
         }
@@ -296,7 +314,11 @@ def resume_run(
     )
     # measured_paths from the COMMITTED base..candidate diff — the sealed
     # candidate, never `changed_paths()` on a live tree that may have drifted.
-    measured_paths = tuple(ws.git("diff", "--name-only", base_sha, candidate_sha).split())
+    # NUL-delimited (like Workspace.staged_paths) so a path with a space is one
+    # entry, not two that could each slip past the scope check.
+    measured_paths = tuple(
+        p for p in ws.git("diff", "--name-only", "-z", base_sha, candidate_sha).split("\0") if p
+    )
 
     # rebuild the session from what the park saved: the (redacted) write-up and
     # its real spend, so the report shows true cost/turns. It is never re-run.
@@ -325,7 +347,22 @@ def resume_run(
     except ClimbParked as parked:
         # another measure this wake dispatched is not done — re-park on the new
         # afterany, keeping the SAME candidate snapshot the next wake reads.
-        _park_run(run_root, record, parked, candidate_ref, eval_minutes, now, secrets)
+        # PROGRESS only if this wake dispatched a NEW job set (e.g. the candidate
+        # resolved and the suite pairs fanned out); a blind re-park (empty
+        # afterany) or the same jobs still pending is NO progress, so the stuck
+        # cap must keep counting.
+        old_afterany = str(record.stage.get("afterany", ""))
+        made_progress = bool(parked.afterany) and parked.afterany != old_afterany
+        _park_run(
+            run_root,
+            record,
+            parked,
+            candidate_ref,
+            eval_minutes,
+            now,
+            secrets,
+            keep_wake_attempts=not made_progress,
+        )
         return LiveClimbOutcome(run_id=run_id, outcome="parked")
 
     if result.outcome == "improved":
@@ -338,7 +375,11 @@ def resume_run(
         baseline, candidate = result.baseline, result.candidate
         branch = f"{config.branch_prefix}/{run_id}"
         try:
-            ws.git("checkout", "-B", branch, candidate_sha)
+            # FORCE-checkout the sealed candidate: at wake the workspace still
+            # holds the session's dirty tree (HEAD is pre_session_sha), so a
+            # plain checkout could be blocked; the sha already captured exactly
+            # the measured content.
+            ws.git("checkout", "-f", "-B", branch, candidate_sha)
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -356,14 +397,27 @@ def resume_run(
                 config.target,
                 digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
             )
-            # only the ledger files change on top of the sealed candidate; the
-            # veto re-checks scope as defense in depth (the candidate diff was
-            # already scope-checked in measure_and_decide).
-            ws.commit_all(
+            # Stage ONLY the ledger files on top of the sealed candidate — never
+            # `git add -A`, which would sweep in untracked cruft the session left
+            # (eval caches) that was neither measured nor scope-checked. The
+            # candidate content is already vetted (measure_and_decide's scope
+            # check on measured_paths); assert nothing but the ledger is staged.
+            ws.git("add", "--", *PROGRESS_PATHS)
+            staged = ws.staged_paths()
+            extra = [p for p in staged if p not in PROGRESS_PATHS]
+            if extra:
+                raise WorkspaceDrift(f"wake commit would stage non-ledger paths: {extra[:10]}")
+            if not staged:
+                raise WorkspaceDrift("wake produced no ledger change to commit")
+            ws.git(
+                "-c",
+                f"user.name={config.bot_login}",
+                "-c",
+                f"user.email={config.bot_login}@users.noreply.github.com",
+                "commit",
+                "-m",
                 f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
                 f"\n\nAgent: {config.agent_id}",
-                author=config.bot_login,
-                forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
             )
             ws.push(branch)
             body = pr_body(
@@ -375,45 +429,53 @@ def resume_run(
                 head=branch,
                 base=base_branch,
                 body=body,
-                draft=result.panel_blocking_open or result.panel_degraded,
+                # the wake runs NO verification panel yet (panel-on-wake is a
+                # later slice), so the PR is never auto-merge-armed — a human
+                # reviews every dispatched improvement. Open non-draft; it is a
+                # real, measured improvement, just not panel-certified.
+                draft=False,
             )
-            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
-                _best_effort(
-                    "auto-merge arming",
-                    lambda: github.arm_auto_merge_when_review_required(
-                        config.target, int(pr_number)
-                    ),
-                    secrets,
-                )
         except Exception as exc:
-            # push / PR / commit failed — end as an error, KEEP the snapshot (a
-            # later wake can retry) and never delete a remote branch.
+            # push / PR / commit failed — end as an error. Drop the snapshot:
+            # ENDED runs are never swept, so keeping it would only LEAK the ref;
+            # a retry is a fresh climb, not a re-wake of this dead record. Never
+            # delete a remote branch (a push may have half-succeeded).
             note = redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
             log.warning("wake publish failed for %s: %s", run_id, note)
-            failed = RunRecord(
-                **{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note}
+            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+            failed = _clear_stage(
+                RunRecord(
+                    **{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note}
+                )
             )
             _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
             return LiveClimbOutcome(run_id=run_id, outcome="publish-error")
-        # PR opened: the snapshot is no longer needed (the candidate is pushed).
-        drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+        # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
+        # fails, the record stays `waiting` with the snapshot intact, so the run
+        # is recoverable rather than an ABORTED record over a live PR.
         report_path = run_dir / "report.md"
         _best_effort(
             "run report",
             lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
             secrets,
         )
-        final = RunRecord(
-            **{
-                **record.__dict__,
-                "state": IN_REVIEW,
-                "pr_url": pr_url,
-                "resume_session_id": result.session.session_id if result.session else "",
-                "ending_note": pr_url,
-            }
+        final = _clear_stage(
+            RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": IN_REVIEW,
+                    "pr_url": pr_url,
+                    "resume_session_id": result.session.session_id if result.session else "",
+                    "ending_note": pr_url,
+                }
+            )
         )
-        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+        if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+        else:
+            log.warning(
+                "run %s: PR %s opened but in-review record unsaved; snapshot kept", run_id, pr_url
+            )
         return LiveClimbOutcome(
             run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
         )
@@ -426,13 +488,15 @@ def resume_run(
         lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
         secrets,
     )
-    final = RunRecord(
-        **{
-            **record.__dict__,
-            "state": ENDED,
-            "ending": _ENDINGS_BY_OUTCOME[result.outcome],
-            "ending_note": redact(result.note, secrets),
-        }
+    final = _clear_stage(
+        RunRecord(
+            **{
+                **record.__dict__,
+                "state": ENDED,
+                "ending": _ENDINGS_BY_OUTCOME[result.outcome],
+                "ending_note": redact(result.note, secrets),
+            }
+        )
     )
     _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
     return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
