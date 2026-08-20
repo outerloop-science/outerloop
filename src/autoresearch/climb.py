@@ -45,11 +45,13 @@ from autoresearch.orchestrator import (
     Measurer,
     SubprocessEvaluator,
     SuiteMeasurement,
+    _benchmark,
     benchmark_floor,
     clears_min_delta,
     climb_once,
     out_of_scope,
     pr_body,
+    resume_climb,
     suite_regressed,
 )
 from autoresearch.orchestrator import improved as orch_improved
@@ -73,6 +75,7 @@ from autoresearch.runstate import (
     STUCK,
     WAITING,
     RunRecord,
+    load_record,
     save_record,
     stamp_outage,
 )
@@ -229,6 +232,98 @@ def _park_run(
         }
     )
     save_record(run_root, waiting, now)
+
+
+def resume_run(
+    run_root: Path,
+    run_id: str,
+    *,
+    dispatch: DispatchSettings,
+    now: float,
+    secrets: tuple[str, ...] = (),
+) -> LiveClimbOutcome:
+    """Wake a parked dispatched climb and re-enter its decision WITHOUT the
+    session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
+
+    Slice 1b handles the two exits that reuse existing machinery:
+
+    * **re-park** — the wake dispatched a measure that is not done yet (the
+      suite pairs an improving candidate fans out, "another round of
+      experiments"): `resume_climb` raises `ClimbParked`, and this re-persists
+      the WAITING stage on the new afterany, keeping the same candidate
+      snapshot;
+    * **a negative terminal** (no-improvement / suite-regression / eval-error):
+      drop the candidate snapshot and end the record.
+
+    The improved outcome commits `candidate_sha` (the SEALED snapshot, never the
+    live tree — it may have drifted since the park) to a branch and opens the
+    PR; that is the next slice. It is unreachable here because dispatch is not
+    yet activated on any target, so an improved wake raises `NotImplementedError`
+    rather than pretend to publish.
+    """
+    run_dir = run_root / "runs" / run_id
+    workspace = run_dir / "ws"
+    record = load_record(run_root, run_id)
+    stage = record.stage
+    ws = Workspace(root=workspace)
+    contract = load_contract((workspace / ".autoresearch.yaml").read_text(), record.target)
+    bench = _benchmark(contract, record.benchmark)
+    config = ClimbConfig(target=record.target, benchmark=record.benchmark)
+
+    base_sha = str(stage["base_sha"])
+    candidate_sha = str(stage["candidate_sha"])
+    candidate_ref = str(stage["candidate_ref"])
+    eval_minutes = next(
+        (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
+    )
+    measurer = dispatch.measurer(
+        run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
+    )
+    # measured_paths from the COMMITTED base..candidate diff — the sealed
+    # candidate, never `changed_paths()` on a live tree that may have drifted.
+    measured_paths = tuple(ws.git("diff", "--name-only", base_sha, candidate_sha).split())
+
+    try:
+        result = resume_climb(
+            contract,
+            bench,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            seed=int(stage["seed"]),  # type: ignore[call-overload]
+            suite_seed=int(stage["suite_seed"]),  # type: ignore[call-overload]
+            measured_paths=measured_paths,
+            report=str(stage.get("report", "")),
+            resume_session_id=record.resume_session_id,
+            measurer=measurer,
+            min_relative_improvement=config.min_relative_improvement,
+        )
+    except ClimbParked as parked:
+        # another measure this wake dispatched is not done — re-park on the new
+        # afterany, keeping the SAME candidate snapshot the next wake reads.
+        _park_run(run_root, record, parked, candidate_ref, eval_minutes, now)
+        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+
+    if result.outcome == "improved":
+        raise NotImplementedError("improved-wake publish (commit candidate_sha -> PR) is slice 1c")
+
+    # a negative terminal: release the snapshot and end the record.
+    drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+    report_path = run_dir / "report.md"
+    _best_effort(
+        "run report",
+        lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+        secrets,
+    )
+    final = RunRecord(
+        **{
+            **record.__dict__,
+            "state": ENDED,
+            "ending": _ENDINGS_BY_OUTCOME[result.outcome],
+            "ending_note": redact(result.note, secrets),
+        }
+    )
+    _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+    return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
 def _measure_committed(

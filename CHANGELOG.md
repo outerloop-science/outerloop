@@ -21,6 +21,19 @@ Versions follow [SemVer](https://semver.org).
   seam the depth axis (docs/design/research-loop.md) grows from: slice 1 wakes
   the grader with the panel off; waking the AGENT with the result lands next.
   The wake-entry CLI + `WakeDispatcher` (delivery) are the following slices.
+- `resume_run` (`climb` module) — dispatcher phase 1, stage B part 2c, slice
+  1b: the wake-entry that rebuilds a parked climb's context from its record and
+  drives `resume_climb`. It re-derives `measured_paths` from the COMMITTED
+  `base..candidate` diff (the sealed candidate, never a live tree that may have
+  drifted since the park), and handles the two exits that reuse existing
+  machinery — a RE-PARK (a measure the wake just dispatched isn't done — the
+  suite pairs an improving candidate fans out) re-persists the WAITING stage on
+  the new afterany keeping the same snapshot; a NEGATIVE terminal drops the
+  snapshot and ends the record. The improved outcome commits `candidate_sha`
+  (the sealed snapshot) to a branch and opens the PR — the sha-not-live-tree
+  path — and is the next slice; it is unreachable here (dispatch is not yet
+  activated on any target). `WakeDispatcher` (the delivery that fires this on
+  the eval jobs finishing) is the slice after.
 
 - Dispatched measurement is now SELECTED per benchmark — dispatcher phase 1,
   stage B part 2c(ii), the switch that first makes a park fire. `live_climb`

@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.climb import _park_run, live_climb
+from autoresearch.climb import _park_run, live_climb, resume_run
 from autoresearch.dispatch import Snapshot
 from autoresearch.harness import SessionResult
 from autoresearch.orchestrator import ClimbConfig, ClimbParked
-from autoresearch.runstate import RunRecord, load_record
+from autoresearch.runstate import RunRecord, load_record, save_record
 
 CONTRACT = """\
 benchmarks:
@@ -1649,3 +1649,95 @@ def test_expensive_benchmark_without_coords_falls_back_inline(
     assert outcome.outcome == "improved"  # inline fallback measured it
     assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"
     assert "wants dispatched eval" in caplog.text
+
+
+# --- resume_run: waking a parked candidate (slice 1b: re-park + negative end) ---
+
+
+class _FakeMeasurer:
+    """A measurer for the wake path: returns canned values by measure name, or
+    raises (e.g. MeasurementPending to force a re-park)."""
+
+    def __init__(self, values=None, raise_exc=None):
+        self.values = values or {}
+        self.raise_exc = raise_exc
+
+    def results(self, measures):
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return {m.name: self.values[m.name] for m in measures}
+
+
+def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=None, run_id="tsp-1"):
+    """A candidate-parked run on disk: a ws with base+candidate commits and the
+    kept snapshot ref, plus a WAITING record carrying the re-entry stage. The
+    dispatched measurer is monkeypatched to a fake so no cluster is touched."""
+    from autoresearch.measure import DispatchSettings
+
+    state = tmp_path / "state"
+    ws = state / "runs" / run_id / "ws"
+    (ws / "src" / "pilot" / "solvers").mkdir(parents=True)
+    (ws / ".autoresearch.yaml").write_text(CONTRACT_DISPATCH)
+    (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
+    _git(ws, "init", "-q", "-b", "main")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base_sha = _git(ws, "rev-parse", "HEAD").strip()
+    (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'better'\n")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-aqm", "candidate")
+    candidate_sha = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "update-ref", "refs/dispatch/tok", candidate_sha)
+
+    record = RunRecord(
+        run_id=run_id,
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        resume_session_id="s1",
+        stage={
+            "phase": "candidate",
+            "base_sha": base_sha,
+            "candidate_sha": candidate_sha,
+            "candidate_ref": "refs/dispatch/tok",
+            "seed": 7,
+            "suite_seed": 9,
+            "afterany": "afterany:501",
+            "report": "swapped the construction heuristic",
+        },
+    )
+    save_record(state, record, 1_000_000.0)
+    fake = _FakeMeasurer(values=values, raise_exc=raise_exc)
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
+    return state, run_id
+
+
+def test_resume_negative_ends_run_and_drops_snapshot(tmp_path, monkeypatch) -> None:
+    # candidate did not beat baseline (min direction) -> honest negative: end
+    # the record and release the candidate snapshot.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    outcome = resume_run(state, run_id, dispatch=_fake_dispatch(), now=1_000_100.0)
+    assert outcome.outcome == "no-improvement"
+    record = load_record(state, run_id)
+    assert record.state == "ended" and record.ending == "negative-result"
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # snapshot dropped
+
+
+def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None:
+    # a needed measure isn't done -> re-park on the new afterany, KEEP the
+    # candidate snapshot for the next wake.
+    from autoresearch.measure import MeasurementPending
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602"))
+    )
+    outcome = resume_run(state, run_id, dispatch=_fake_dispatch(), now=1_000_100.0)
+    assert outcome.outcome == "parked"
+    record = load_record(state, run_id)
+    assert record.state == "waiting"
+    assert record.stage["afterany"] == "afterany:601:602"
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept
