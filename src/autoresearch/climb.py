@@ -191,6 +191,11 @@ def _park_run(
         "seed": parked.seed,
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
+        # the session's write-up, saved so a candidate wake can build the PR
+        # body and the panel claim WITHOUT re-running the session (its edits
+        # are already captured in candidate_sha). Empty for a baseline park —
+        # the session has not run yet.
+        "report": parked.session.final_text if parked.session else "",
     }
     # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
     # is right for a single-job park (baseline, or a candidate with no siblings):

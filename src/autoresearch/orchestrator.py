@@ -836,6 +836,92 @@ def measure_and_decide(
     )
 
 
+def resume_climb(
+    contract: Contract,
+    bench: Benchmark,
+    *,
+    base_sha: str,
+    candidate_sha: str,
+    seed: int,
+    suite_seed: int,
+    measured_paths: Sequence[str],
+    report: str,
+    resume_session_id: str,
+    measurer: Measurer,
+    min_relative_improvement: float,
+) -> ClimbResult:
+    """Re-enter a parked climb's post-session decision — the WAKE side of a
+    dispatched candidate park. The candidate is already committed (its sha is in
+    the record), so the session does NOT re-run: its edits are captured in
+    `candidate_sha` and its write-up in `report` (which reconstructs the PR body
+    and the panel claim without the session object). `measured_paths` is the
+    caller's re-derivation of the `base_sha..candidate_sha` diff.
+
+    The measurer reads the cached eval results and this returns the decision, OR
+    the decision needs a measure not yet done — the suite pairs after an
+    improving candidate, "another round of experiments" — and it re-parks by
+    raising `ClimbParked`, exactly as the first pass did.
+
+    This is the seam the depth axis (docs/design/research-loop.md) grows from:
+    slice 1 wakes the GRADER with the panel off; waking the AGENT with the
+    result — a panel revision, or a deeper experiment round it drives itself —
+    reuses this same re-entry and lands next.
+    """
+    from autoresearch.measure import MeasurementPending
+
+    # the session is gone; rebuild just enough of it (the write-up + its id) for
+    # the outcome the caller renders. It is never re-run.
+    session = SessionResult(
+        stop_reason="resumed",
+        is_error=False,
+        cost_usd=0.0,
+        num_turns=0,
+        session_id=resume_session_id,
+        final_text=report,
+        transcript_path="",
+    )
+    try:
+        outcome = measure_and_decide(
+            contract,
+            bench,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            seed=seed,
+            suite_seed=suite_seed,
+            measured_paths=measured_paths,
+            measurer=measurer,
+            min_relative_improvement=min_relative_improvement,
+        )
+    except MeasurementPending as pending:
+        # a measure is not done yet (the suite pairs this wake just dispatched):
+        # re-park on the new afterany set, same shape as the first candidate park
+        raise ClimbParked(
+            phase="candidate",
+            afterany=pending.afterany(),
+            base_sha=base_sha,
+            seed=seed,
+            suite_seed=suite_seed,
+            candidate_sha=candidate_sha,
+            session=session,
+        ) from None
+    if isinstance(outcome, ClimbResult):
+        # a terminal measurement outcome (no-improvement / suite-regression /
+        # eval-error): carry the reconstructed session for the caller's report
+        return dc_replace(outcome, session=session)
+    # credited: candidate cleared the threshold and no sibling regressed. The
+    # caller sets `branch` when it opens the PR.
+    return ClimbResult(
+        outcome="improved",
+        baseline=outcome.baseline,
+        candidate=outcome.candidate,
+        session=session,
+        measured_paths=tuple(measured_paths),
+        run_seed=seed,
+        suite=outcome.suite,
+        suite_seed=outcome.suite_seed,
+    )
+
+
 def climb_once(
     config: ClimbConfig,
     contract_text: str,

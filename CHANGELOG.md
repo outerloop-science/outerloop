@@ -8,6 +8,20 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `resume_climb` (`orchestrator` module) — dispatcher phase 1, stage B part 2c,
+  slice 1: the WAKE side of a dispatched candidate park, as a re-enterable
+  function. It re-runs the post-session decision (`measure_and_decide`) over the
+  committed shas the record persisted, WITHOUT re-running the session — the
+  session's edits are already in `candidate_sha` and its write-up is now saved
+  on the park (a new `report` field in the WAITING `stage`) so the wake can
+  build the PR body and panel claim from it. The measurer reads the cached eval
+  results and it returns the decision, or a measure is not done yet (the suite
+  pairs after an improving candidate — "another round of experiments") and it
+  re-parks by raising `ClimbParked`, same shape as the first pass. This is the
+  seam the depth axis (docs/design/research-loop.md) grows from: slice 1 wakes
+  the grader with the panel off; waking the AGENT with the result lands next.
+  The wake-entry CLI + `WakeDispatcher` (delivery) are the following slices.
+
 - Dispatched measurement is now SELECTED per benchmark — dispatcher phase 1,
   stage B part 2c(ii), the switch that first makes a park fire. `live_climb`
   reads the benchmark's `eval_minutes` once and, when it exceeds the in-job

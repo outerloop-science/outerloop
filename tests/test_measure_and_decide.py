@@ -9,10 +9,12 @@ import pytest
 from autoresearch.contract import load_contract
 from autoresearch.measure import Measure, MeasurementPending
 from autoresearch.orchestrator import (
+    ClimbParked,
     EvalError,
     MeasureOK,
     _benchmark,
     measure_and_decide,
+    resume_climb,
 )
 
 # main benchmark + one sibling; a `shared` scope path drives the suite gate.
@@ -253,3 +255,64 @@ def test_empty_shared_scope_does_not_require_suite_seed():
     m = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
     out = _decide(m, measured_paths=("src/model.py",), suite_seed=0, text=CONTRACT_NO_SHARED)
     assert isinstance(out, MeasureOK)
+
+
+# --- resume_climb: the wake side, re-entering the decision without a session ---
+
+REPORT = "swapped the construction heuristic; tours shortened."
+
+
+def _resume(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, text=CONTRACT):
+    contract = load_contract(text, "x/y")
+    return resume_climb(
+        contract,
+        _benchmark(contract, "main"),
+        base_sha=BASE,
+        candidate_sha=CAND,
+        seed=seed,
+        suite_seed=suite_seed,
+        measured_paths=measured_paths,
+        report=REPORT,
+        resume_session_id="s-woke",
+        measurer=measurer,
+        min_relative_improvement=0.005,
+    )
+
+
+def test_resume_improved_carries_the_saved_report():
+    out = _resume(FakeMeasurer({"baseline": 0.50, "candidate": 0.60}))
+    assert out.outcome == "improved"
+    assert out.baseline == 0.50 and out.candidate == 0.60
+    # the session never re-runs: it is rebuilt from the saved write-up + its id
+    assert out.session is not None
+    assert out.session.final_text == REPORT
+    assert out.session.session_id == "s-woke"
+    assert out.session.num_turns == 0  # a wake ran no turns
+    assert out.measured_paths == ("src/model.py",) and out.run_seed == 7
+
+
+def test_resume_no_improvement_is_terminal_with_the_report():
+    out = _resume(FakeMeasurer({"baseline": 0.50, "candidate": 0.50}))
+    assert out.outcome == "no-improvement"
+    assert out.session is not None and out.session.final_text == REPORT
+
+
+def test_resume_reparks_when_a_measure_is_not_done():
+    # a measure this wake needs isn't finished (its eval still queued) -> re-park
+    # on the new afterany set, same shape as the first candidate park, carrying
+    # the reconstructed session so a later wake still has the write-up.
+    m = FakeMeasurer(raise_exc=MeasurementPending(("501", "502")))
+    with pytest.raises(ClimbParked) as excinfo:
+        _resume(m)
+    parked = excinfo.value
+    assert parked.phase == "candidate"
+    assert parked.candidate_sha == CAND
+    assert parked.afterany == "afterany:501:502"
+    assert parked.seed == 7 and parked.suite_seed == 99
+    assert parked.session is not None and parked.session.final_text == REPORT
+
+
+def test_resume_eval_error_is_terminal():
+    out = _resume(FakeMeasurer(raise_exc=EvalError("candidate: no readable r2")))
+    assert out.outcome == "eval-error"
+    assert "no readable r2" in out.note
