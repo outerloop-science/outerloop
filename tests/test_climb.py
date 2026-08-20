@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.climb import _park_run, live_climb
+from autoresearch.climb import _park_run, live_climb, resume_run
 from autoresearch.dispatch import Snapshot
 from autoresearch.harness import SessionResult
 from autoresearch.orchestrator import ClimbConfig, ClimbParked
-from autoresearch.runstate import RunRecord, load_record
+from autoresearch.runstate import RunRecord, load_record, save_record
 
 CONTRACT = """\
 benchmarks:
@@ -75,6 +75,38 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["candidate_ref"] == "refs/dispatch/tok"  # for drop at the terminal
     assert r.stage["seed"] == 7 and r.stage["suite_seed"] == 9
     assert r.stage["afterany"] == "afterany:101:102"
+    # the session's write-up + spend ride the stage so a candidate wake can
+    # build the PR body and report the real cost without re-running the session
+    assert r.stage["report"] == "report"
+    assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
+
+
+def test_park_run_redacts_the_saved_report(tmp_path) -> None:
+    # a session that echoed a secret must not leave it readable in record.json
+    record = RunRecord(
+        run_id="tsp-9", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    leaky = SessionResult(
+        stop_reason="end_turn",
+        is_error=False,
+        cost_usd=1.0,
+        num_turns=5,
+        session_id="s1",
+        final_text="used key sk-secret-123 to fetch",
+        transcript_path="",
+    )
+    parked = ClimbParked(
+        phase="candidate",
+        afterany="afterany:1",
+        base_sha="b" * 40,
+        seed=1,
+        suite_seed=1,
+        candidate_sha="c" * 40,
+        session=leaky,
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", 90, 1000.0, ("sk-secret-123",))
+    report = str(load_record(tmp_path, "tsp-9").stage["report"])
+    assert "sk-secret-123" not in report and "used key" in report
 
 
 def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
@@ -649,49 +681,6 @@ def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> 
     assert "branch left on remote: feat/auto/agent-01/tsp-orphan" in record.ending_note
 
 
-def test_not_beating_recorded_best_is_rejected_loudly(tmp_path, target_repo) -> None:
-    """Improved vs a stale baseline but worse than the ledger's best: no PR,
-    and the reason is recorded."""
-    import json as _json
-
-    # seed a leader in the origin whose best is better than this run's candidate
-    seed = tmp_path / "leaderseed"
-    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
-    (seed / "results").mkdir(exist_ok=True)
-    (seed / "results" / "leader.json").write_text(
-        _json.dumps(
-            {
-                "tsp": {
-                    "benchmark": "tsp",
-                    "metric": "mean_tour_length",
-                    "direction": "min",
-                    "baseline": 13.876,
-                    "best": 12.0,
-                    "best_run": "r0",
-                    "updated": "d",
-                }
-            }
-        )
-    )
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
-    _git(seed, "push", "-q", "origin", "main")
-
-    outcome, github = run_live(
-        tmp_path,
-        target_repo,
-        edits={"src/pilot/solvers/tsp.py": "w=9\n"},
-        values=[13.876, 13.1],  # improved vs own baseline, worse than best 12.0
-        run_id="tsp-stale",
-    )
-    assert outcome.outcome == "publish-error"
-    assert github.prs == []
-    assert (
-        "does not beat the recorded best"
-        in load_record(tmp_path / "state", "tsp-stale").ending_note
-    )
-
-
 def _push_contract(tmp_path, target_repo, contract_text: str, name: str) -> None:
     seed = tmp_path / f"contract-{name}"
     _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
@@ -701,18 +690,14 @@ def _push_contract(tmp_path, target_repo, contract_text: str, name: str) -> None
     _git(seed, "push", "-q", "origin", "main")
 
 
-def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None:
-    """Beats the recorded best, but by less than min_delta: the recorded
-    best was measured under a DIFFERENT seed, so the delta is pool luck —
-    an honest negative result, never a PR and never an abort."""
+def test_beats_baseline_but_not_recorded_best_still_opens_a_pr(tmp_path, target_repo) -> None:
+    """We credit beating YOUR baseline (docs/design/research-loop.md): a clean
+    win over base_sha opens a PR even when it does not beat the ledger's best.
+    The ledger's `best` is unchanged (SOTA tracked, not required), so the finish
+    pushes the candidate with no leaderboard commit on top."""
     import json as _json
 
-    _push_contract(
-        tmp_path,
-        target_repo,
-        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
-        "floor",
-    )
+    # seed a leader whose best (12.0) is better than this run's candidate (13.1)
     seed = tmp_path / "leaderseed"
     _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
     (seed / "results").mkdir(exist_ok=True)
@@ -739,64 +724,11 @@ def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None
         tmp_path,
         target_repo,
         edits={"src/pilot/solvers/tsp.py": "w=9\n"},
-        values=[13.876, 11.8],  # beats best 12.0, but only by 0.2 < 0.5
-        run_id="tsp-floor",
+        values=[13.876, 13.1],  # beats own baseline, worse than recorded best 12.0
+        run_id="tsp-composable",
     )
-    assert outcome.outcome == "no-improvement"
-    assert github.prs == []
-    record = load_record(tmp_path / "state", "tsp-floor")
-    assert record.ending == "negative-result"
-    assert "noise floor" in record.ending_note and "0.5" in record.ending_note
-
-
-def test_sub_threshold_delta_on_floored_benchmark_is_negative_not_abort(
-    tmp_path, target_repo
-) -> None:
-    """Round-4 finding: with min_delta declared, EVERY sub-floor delta over
-    the recorded best — including one below the relative threshold — is an
-    honest negative, not a stale-clone abort."""
-    import json as _json
-
-    _push_contract(
-        tmp_path,
-        target_repo,
-        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
-        "subrel",
-    )
-    seed = tmp_path / "leaderseed2"
-    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
-    (seed / "results").mkdir(exist_ok=True)
-    (seed / "results" / "leader.json").write_text(
-        _json.dumps(
-            {
-                "tsp": {
-                    "benchmark": "tsp",
-                    "metric": "mean_tour_length",
-                    "direction": "min",
-                    "baseline": 13.876,
-                    "best": 12.0,
-                    "best_run": "r0",
-                    "updated": "d",
-                }
-            }
-        )
-    )
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
-    _git(seed, "push", "-q", "origin", "main")
-
-    outcome, github = run_live(
-        tmp_path,
-        target_repo,
-        edits={"src/pilot/solvers/tsp.py": "w=11\n"},
-        values=[13.876, 11.999],  # 0.001 over best: below rel threshold AND floor
-        run_id="tsp-subrel",
-    )
-    assert outcome.outcome == "no-improvement"
-    assert github.prs == []
-    record = load_record(tmp_path / "state", "tsp-subrel")
-    assert record.ending == "negative-result"
-    assert "noise floor" in record.ending_note
+    assert outcome.outcome == "improved"  # a composable win, not a rejection
+    assert github.prs and github.prs[0]["head"] == "feat/auto/agent-01/tsp-composable"
 
 
 def test_baseline_eval_runs_outside_the_session_workspace(tmp_path, target_repo) -> None:
@@ -1566,10 +1498,10 @@ def test_moved_base_gets_a_fresh_panel_read_and_blocking_drafts(tmp_path, target
     assert github.armed == []
 
 
-def test_expensive_benchmark_dispatches_baseline_and_parks(tmp_path, target_repo_dispatch) -> None:
-    # eval_minutes=30 is past the in-job runway, so the baseline measures as a
-    # dispatched job BEFORE the session — the climb parks (PARK 1) instead of
-    # running the harness.
+def test_expensive_benchmark_runs_session_then_parks_candidate(tmp_path, target_repo_dispatch):
+    # eval_minutes=30 is past the in-job runway. There is NO pre-session baseline
+    # park: the session runs, then the gate dispatches baseline+candidate
+    # together and the climb parks the CANDIDATE.
     outcome, github = run_live(
         tmp_path,
         target_repo_dispatch,
@@ -1578,17 +1510,17 @@ def test_expensive_benchmark_dispatches_baseline_and_parks(tmp_path, target_repo
         dispatch=_fake_dispatch(),
     )
     assert outcome.outcome == "parked"
-    assert github.prs == []  # session never ran; no PR
+    assert github.prs == []  # not decided yet; no PR
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "waiting"
-    # PARK 1 is the baseline (no candidate yet); the afterany carries the one
-    # submitted eval job the wake depends on.
-    assert record.stage["phase"] == "baseline"
-    assert record.stage["afterany"] == "afterany:1000"
-    assert record.experiment_job_id == "1000"  # single-job park: the sweep polls it
-    # the dispatched backend checks out each sha in its own job, so no local
-    # baseline worktree was ever created
-    assert not (tmp_path / "state" / "runs" / "tsp-1" / "measure-baseline").exists()
+    # the only park is the candidate; baseline+candidate dispatched together, so
+    # the afterany carries BOTH jobs and the run rides the multi-job deadline
+    assert record.stage["phase"] == "candidate"
+    assert record.stage["candidate_sha"]  # a real snapshot was taken
+    assert record.stage["afterany"] == "afterany:1000:1001"
+    assert record.experiment_job_id == ""  # multi-job park: rides the deadline floor
+    # the session ran and its write-up was saved for the wake
+    assert record.stage["report"]
 
 
 def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_repo) -> None:
@@ -1608,9 +1540,9 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
 def test_failed_park_write_cancels_orphaned_eval_jobs(
     tmp_path, target_repo_dispatch, monkeypatch
 ) -> None:
-    # the baseline dispatched one job; if the WAITING record then fails to
-    # write, nothing will ever wake that job, so it must be cancelled rather
-    # than left orphaned in the queue.
+    # the candidate park dispatched baseline+candidate (two jobs); if the
+    # WAITING record then fails to write, nothing will ever wake those jobs, so
+    # BOTH must be cancelled rather than left orphaned in the queue.
     from autoresearch import climb as climb_mod
 
     cancelled: list[str] = []
@@ -1628,7 +1560,7 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
         dispatch=dispatch,
     )
     assert outcome.outcome == "climb-error"  # the failed park ends the run
-    assert cancelled == ["1000"]  # the one dispatched baseline job was cancelled
+    assert cancelled == ["1000", "1001"]  # both dispatched jobs were cancelled
 
 
 def test_expensive_benchmark_without_coords_falls_back_inline(
@@ -1649,3 +1581,325 @@ def test_expensive_benchmark_without_coords_falls_back_inline(
     assert outcome.outcome == "improved"  # inline fallback measured it
     assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"
     assert "wants dispatched eval" in caplog.text
+
+
+# --- resume_run: waking a parked candidate (slice 1b: re-park + negative end) ---
+
+
+class _FakeMeasurer:
+    """A measurer for the wake path: returns canned values by measure name, or
+    raises (e.g. MeasurementPending to force a re-park)."""
+
+    def __init__(self, values=None, raise_exc=None):
+        self.values = values or {}
+        self.raise_exc = raise_exc
+
+    def results(self, measures):
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return {m.name: self.values[m.name] for m in measures}
+
+
+def _write_parked_candidate(
+    tmp_path, monkeypatch, *, values=None, raise_exc=None, run_id="tsp-1", base_branch="main"
+):
+    """A candidate-parked run on disk in the REAL park state: HEAD is still the
+    pre-session commit, the session's edits are UNCOMMITTED in the working tree,
+    there is untracked cruft an eval left behind, and `candidate_sha` is a
+    snapshot commit (via `snapshot_tree`, off any branch) kept alive by its ref.
+    Plus a WAITING record with the re-entry stage. The dispatched measurer is
+    monkeypatched to a fake so no cluster is touched."""
+    from autoresearch.dispatch import snapshot_tree
+    from autoresearch.github import Workspace
+    from autoresearch.measure import DispatchSettings
+
+    state = tmp_path / "state"
+    wsroot = state / "runs" / run_id / "ws"
+    (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
+    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_DISPATCH)
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base_sha = _git(wsroot, "rev-parse", "HEAD").strip()
+    # the session's edit, left UNCOMMITTED (HEAD stays at base) — the snapshot
+    # captures it into candidate_sha.
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'better'\n")
+    ws = Workspace(root=wsroot)
+    snap = snapshot_tree(ws, base_sha)  # candidate_sha, retained under its ref
+    # cruft that appears AFTER the snapshot (a dispatched eval / session
+    # leftover): it is in the wake's working tree but NOT in candidate_sha, so
+    # the finish's force-checkout keeps it around and the ledger-only commit
+    # must NOT sweep it into the PR.
+    (wsroot / "eval-cache.tmp").write_text("junk an eval left behind\n")
+    candidate_sha = snap.commit
+    # a bare 'origin' (unique per run) so an improved wake can push its branch
+    bare = tmp_path / f"origin-{run_id}.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
+
+    record = RunRecord(
+        run_id=run_id,
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        resume_session_id="s1",
+        stage={
+            "phase": "candidate",
+            "base_sha": base_sha,
+            "candidate_sha": candidate_sha,
+            "candidate_ref": snap.ref,
+            "seed": 7,
+            "suite_seed": 9,
+            "afterany": "afterany:501",
+            "report": "swapped the construction heuristic",
+            "base_branch": base_branch,
+        },
+    )
+    save_record(state, record, 1_000_000.0)
+    fake = _FakeMeasurer(values=values, raise_exc=raise_exc)
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
+    # the wake pushes to the canonical target URL (never the ws git config);
+    # point that at this run's local bare so the improved-wake test can push.
+    monkeypatch.setattr("autoresearch.climb._target_clone_url", lambda target: str(bare))
+    return state, run_id
+
+
+def test_resume_negative_ends_run_and_drops_snapshot(tmp_path, monkeypatch) -> None:
+    # candidate did not beat baseline (min direction) -> honest negative: end
+    # the record and release the candidate snapshot.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "no-improvement"
+    record = load_record(state, run_id)
+    assert record.state == "ended" and record.ending == "negative-result"
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # snapshot dropped
+
+
+def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None:
+    # a needed measure isn't done -> re-park on the new afterany, KEEP the
+    # candidate snapshot for the next wake.
+    from autoresearch.measure import MeasurementPending
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602"))
+    )
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "parked"
+    record = load_record(state, run_id)
+    assert record.state == "waiting"
+    assert record.stage["afterany"] == "afterany:601:602"
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept
+
+
+def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
+    # candidate beats baseline -> branch the sealed sha, fold in the ledger,
+    # push, open the PR against main; the record goes in-review.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "improved"
+    assert outcome.pr_url.endswith("/pull/1")
+    record = load_record(state, run_id)
+    assert record.state == "in-review" and "pull/1" in record.pr_url
+    # the PR opened against main from the run's branch, carrying the saved report
+    pr = github.prs[0]
+    assert pr["head"] == "feat/auto/agent-01/tsp-1" and pr["base"] == "main"
+    assert "swapped the construction heuristic" in pr["body"]
+    # the branch landed in the bare origin; the candidate snapshot was dropped
+    bare = tmp_path / "origin-tsp-1.git"
+    assert "feat/auto/agent-01/tsp-1" in _git(bare, "branch", "--list")
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+    # the pushed tree carries the sealed candidate edit + the two ledger files,
+    # and NOT the untracked eval cruft the session left in the workspace
+    files = set(_git(bare, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-1").split())
+    assert "src/pilot/solvers/tsp.py" in files
+    assert {"BENCHMARKS.md", "results/leader.json"} <= files
+    assert "eval-cache.tmp" not in files
+    assert "def solve(): return 'better'" in _git(
+        bare, "show", "feat/auto/agent-01/tsp-1:src/pilot/solvers/tsp.py"
+    )
+    # no verification panel ran on the wake, so auto-merge is never armed
+    assert github.armed == []
+
+
+def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, monkeypatch):
+    # a no-progress re-park (blind: empty afterany) must KEEP wake_attempts so
+    # the stuck cap still bites; a productive re-park (a NEW job set) resets it.
+    import dataclasses
+
+    from autoresearch.measure import MeasurementPending
+
+    # blind re-park: MeasurementPending(()) -> empty afterany -> no progress
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch, raise_exc=MeasurementPending(()))
+    rec = dataclasses.replace(load_record(state, run_id), wake_attempts=2)
+    save_record(state, rec, 1_000_050.0)
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert load_record(state, run_id).wake_attempts == 2  # kept, cap still counts
+
+    # productive re-park: a NEW afterany (old was afterany:501) -> progress
+    state2, rid2 = _write_parked_candidate(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602")), run_id="tsp-2"
+    )
+    rec2 = dataclasses.replace(load_record(state2, rid2), wake_attempts=2)
+    save_record(state2, rec2, 1_000_050.0)
+    resume_run(
+        state2,
+        rid2,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert load_record(state2, rid2).wake_attempts == 0  # reset on progress
+
+
+def test_resume_reads_contract_from_base_not_the_dirty_tree(tmp_path, monkeypatch) -> None:
+    # a session could rewrite .autoresearch.yaml in the working tree to widen
+    # its own scope; the wake must gate on the BASE commit's contract, not the
+    # dirty tree. Corrupt the working-tree contract: if the wake read it, it
+    # would crash; reading base, it still succeeds.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    (state / "runs" / run_id / "ws" / ".autoresearch.yaml").write_text("}{ not valid yaml :\n")
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "improved"  # base's contract was used, not the corrupt tree
+    assert github.prs and github.prs[0]["base"] == "main"
+
+
+def test_resume_negative_keeps_snapshot_if_the_record_save_fails(tmp_path, monkeypatch) -> None:
+    # a negative wake must save the ENDED record BEFORE dropping the snapshot:
+    # if the save fails, the run stays recoverable (snapshot intact), never
+    # WAITING with the candidate gone.
+    from autoresearch import climb as climb_mod
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    real_save = climb_mod.save_record
+
+    def failing_save(root, record, now):
+        if record.state == "ended":
+            raise OSError("disk full")
+        return real_save(root, record, now)
+
+    monkeypatch.setattr(climb_mod, "save_record", failing_save)
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept for a re-wake
+
+
+def test_resume_opens_pr_against_the_runs_base_branch_from_the_stage(tmp_path, monkeypatch) -> None:
+    # a run started with --base-branch=dev must, on wake, open its PR against
+    # dev — the wake job carries no --base-branch, so the branch rides the stage.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}, base_branch="dev"
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        base_branch="main",  # the CLI default — must be OVERRIDDEN by the stage
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["base"] == "dev"  # not the CLI default "main"
+
+
+def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
+    # the wake job holds the run's lease (transferred by the sweep on dispatch);
+    # the --resume CLI must release it on every exit so a re-parked run is
+    # immediately eligible for the next sweep, not stuck until the TTL reap.
+    from autoresearch import climb as climb_mod
+    from autoresearch.climb import LiveClimbOutcome, main
+    from autoresearch.runstate import acquire_lease, run_dir
+
+    run_id = "tsp-wake"
+    (tmp_path / "runs" / run_id).mkdir(parents=True)
+    (tmp_path / "pat").write_text("ghp_x\n")
+    (tmp_path / "pat").chmod(0o600)  # token() enforces 0600
+    (tmp_path / "img.sif").write_text("")  # just needs to be a file
+    assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
+    assert (run_dir(tmp_path, run_id) / "lease.json").exists()
+
+    monkeypatch.setattr(climb_mod, "arm_sigterm_containment", lambda: None)
+    monkeypatch.setattr(
+        climb_mod,
+        "resume_run",
+        lambda *a, **k: LiveClimbOutcome(run_id=run_id, outcome="parked"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "climb",
+            "--resume",
+            run_id,
+            "--run-root",
+            str(tmp_path),
+            "--account",
+            "acct",
+            "--partition",
+            "cpu",
+            "--image",
+            str(tmp_path / "img.sif"),
+            "--pat-file",
+            str(tmp_path / "pat"),
+        ],
+    )
+    assert main() == 0
+    assert not (run_dir(tmp_path, run_id) / "lease.json").exists()  # released

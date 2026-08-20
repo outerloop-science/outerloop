@@ -1838,3 +1838,78 @@ roadmap: docs/roadmap.md
     assert out2 is not None
     assert f"--time={MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
     assert f"--job-minutes {MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
+
+
+def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, monkeypatch):
+    # the production WakeDispatcher: a wake becomes a Slurm job that runs the
+    # wake CLI (`climb --resume <run_id>`), depending on the eval jobs so it
+    # fires when they finish.
+    from autoresearch.runstate import RunRecord
+    from autoresearch.tick import FollowupSpec, JobWakeDispatcher
+
+    submits = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submits.append(list(argv))
+            return CommandResult(0, "9001\n", "")
+        raise AssertionError(argv)
+
+    compute = SlurmCompute(runner=runner)
+    spec = FollowupSpec(
+        account="acct",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=tmp_path,
+        pat_file="/pat",
+    )
+    # isolate the dispatcher's job spec from flight_checkout's git dependency
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    record = RunRecord(
+        run_id="tsp-1",
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        stage={"afterany": "afterany:501:502"},
+    )
+    job_id = JobWakeDispatcher(compute, spec, now=NOW).dispatch(record, "eval done")
+    assert job_id == "9001"  # async: the wake job now owns the lease
+    argv = submits[0]
+    joined = " ".join(argv)
+    assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
+    assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
+    assert "--account=acct" in argv and "--partition=cpu_short" in argv
+
+
+def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
+    # dispatched climbing must NOT deliver wakes unless the operator flips the
+    # explicit on-switch AND the chain env is complete.
+    from autoresearch.tick import (
+        FollowupSpec,
+        JobWakeDispatcher,
+        LoggingDispatcher,
+        _wake_dispatcher_from_env,
+    )
+
+    compute = SlurmCompute(runner=lambda argv, t: CommandResult(0, "", ""))
+    spec = FollowupSpec(
+        account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path
+    )
+
+    # default: no on-switch -> dry sweep, logging dispatcher
+    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
+
+    # on-switch + complete env -> live sweep, real dispatcher
+    monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW)
+    assert isinstance(dispatcher, JobWakeDispatcher) and live is True
+
+    # on-switch but incomplete env -> fail SAFE to dry, not a wake that can't run
+    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False

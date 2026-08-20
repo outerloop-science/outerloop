@@ -6,7 +6,105 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- We credit **beating your own baseline**, not only beating the recorded best
+  (docs/design/research-loop.md, "two kinds of win"). The first-pass climb no
+  longer hard-fails a candidate that improves over `base_sha` by the gate's
+  threshold but does not beat the ledger's recorded best — that clean composable
+  win now opens a PR (a human, later a planner, judges). The `NoiseFloored`
+  ending and the recorded-best/stale-clone abort are removed; the gate
+  (`measure_and_decide`) still requires candidate to beat `base_sha` on paired
+  seeds, and the ledger's `best` still only advances on a genuine improvement
+  (SOTA stays tracked, just not required). The dispatched wake matches: when the
+  ledger does not move, it pushes the sealed candidate with no leaderboard commit
+  on top (this also fixes an empty-commit abort the reviewer caught).
+
+### Fixed
+
+- Wake-path hardening from the self-review + advisory review of the dispatched
+  wake (all pre-activation, the path is still dark):
+  - the improved wake now FORCE-checks-out the sealed candidate sha (at wake the
+    workspace is the session's dirty tree) and commits ONLY the ledger files on
+    top of it — never `git add -A`, which would sweep in untracked cruft the
+    session/eval left, unmeasured and unscoped;
+  - a no-progress re-park (a blind re-park with an empty afterany, or the same
+    jobs still pending) KEEPS `wake_attempts` instead of resetting it, so the
+    stuck cap still bites a run that wakes without advancing; a productive
+    re-park (a new job set) still resets;
+  - the wake never arms auto-merge — it runs no verification panel yet
+    (panel-on-wake is a later slice), so every dispatched improvement waits for
+    a human;
+  - the IN_REVIEW record is saved BEFORE the snapshot is dropped, so a failed
+    save leaves the run recoverable rather than an ABORTED record over a live
+    PR; a publish failure drops the snapshot (ENDED runs are never swept, so
+    keeping it only leaked the ref);
+  - terminal records clear the WAITING-only fields (`stage`, `deadline`,
+    `wake_attempts`, …) so a woken run does not carry a shrunk follow-up retry
+    budget into `in-review`;
+  - `measured_paths` is re-derived NUL-delimited (`-z`), so a path with a space
+    cannot slip past the scope check.
+
+### Changed
+
+- A dispatched climb now has ONE park, not two. The pre-session baseline
+  measurement is dropped: `climb_once` no longer measures `base_sha` before the
+  session (and never raises a `phase="baseline"` park). The baseline is measured
+  by the GATE (`measure_and_decide`, `base_sha` vs `candidate_sha`) after the
+  session, and the brief's reference number comes from the ledger's last-known
+  best (`brief_baseline`, `None` on a benchmark's first run) — so the agent
+  still sees "improve from ~X" without a dispatched pre-pass. This removes the
+  baseline-wake path entirely (a dispatched climb only ever candidate-parks),
+  and matches what `dispatcher.md`'s resume seam already specified (the seam is
+  after the session). Tradeoff: a broken eval command now costs a session before
+  it surfaces in the gate, instead of failing fast pre-session. `resume_run`
+  guards that every park it wakes is a candidate park.
+
 ### Added
+
+- `resume_climb` (`orchestrator` module) — dispatcher phase 1, stage B part 2c,
+  slice 1: the WAKE side of a dispatched candidate park, as a re-enterable
+  function. It re-runs the post-session decision (`measure_and_decide`) over the
+  committed shas the record persisted, WITHOUT re-running the session — the
+  session's edits are already in `candidate_sha` and its write-up is now saved
+  on the park (a new `report` field in the WAITING `stage`) so the wake can
+  build the PR body and panel claim from it. The measurer reads the cached eval
+  results and it returns the decision, or a measure is not done yet (the suite
+  pairs after an improving candidate — "another round of experiments") and it
+  re-parks by raising `ClimbParked`, same shape as the first pass. This is the
+  seam the depth axis (docs/design/research-loop.md) grows from: slice 1 wakes
+  the grader with the panel off; waking the AGENT with the result lands next.
+  The wake-entry CLI + `WakeDispatcher` (delivery) are the following slices.
+- `resume_run` (`climb` module) — dispatcher phase 1, stage B part 2c, slice
+  1b: the wake-entry that rebuilds a parked climb's context from its record and
+  drives `resume_climb`. It re-derives `measured_paths` from the COMMITTED
+  `base..candidate` diff (the sealed candidate, never a live tree that may have
+  drifted since the park), and handles the two exits that reuse existing
+  machinery — a RE-PARK (a measure the wake just dispatched isn't done — the
+  suite pairs an improving candidate fans out) re-persists the WAITING stage on
+  the new afterany keeping the same snapshot; a NEGATIVE terminal drops the
+  snapshot and ends the record; an IMPROVED terminal branches the sealed
+  `candidate_sha` (never the live tree — the scope-checked diff carries only
+  in-scope changes), folds the leaderboard update on top, pushes, opens the PR,
+  and ends the run in-review. The mechanical moved-base merge the first pass
+  does is deliberately NOT here (docs/design/research-loop.md, "the finish is
+  agent-driven too"): a stale PR is a re-wake, not an orchestrator auto-merge.
+  `WakeDispatcher` (the delivery that fires this on the eval jobs finishing) is
+  the slice after.
+- The wake delivery — dispatcher phase 1, stage B part 2c, slices 2a+2b: a
+  `--resume RUN_ID` mode on the climb CLI (no session/api-key/panel — it rebuilds
+  the dispatched measurer and calls `resume_run`), and `JobWakeDispatcher`, the
+  production `WakeDispatcher` that submits a short CPU wake job running that CLI,
+  depending on the run's eval jobs (`afterany`) so it fires when they finish (or
+  immediately if already done). `tick.main` now selects the wake delivery behind
+  an EXPLICIT on-switch (`_wake_dispatcher_from_env`, slice 2c): with
+  `AUTORESEARCH_DISPATCH_WAKE` set AND the chain env complete, the waiting-run
+  sweep runs LIVE with `JobWakeDispatcher`; otherwise it stays dry with the
+  `LoggingDispatcher` — dispatched climbing lands DARK, and a half-configured
+  environment fails safe to dry. With the switch on, the sweep delivers wakes: a
+  single-job park wakes on its eval's terminal, a multi-job park on the deadline
+  floor. The faster afterany wake submitted AT PARK (a wake the instant the eval
+  jobs finish, not on the next sweep) is the remaining responsiveness follow-up.
 
 - Dispatched measurement is now SELECTED per benchmark — dispatcher phase 1,
   stage B part 2c(ii), the switch that first makes a park fire. `live_climb`

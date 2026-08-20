@@ -1623,6 +1623,80 @@ class LoggingDispatcher:
         return ""
 
 
+@dataclass
+class JobWakeDispatcher:
+    """Delivers a wake by submitting a Slurm job that runs the wake CLI
+    (`climb --resume <run_id>`), depending on the run's eval jobs (the record's
+    `afterany`) so it fires when they finish — or immediately if they already
+    have. CPU-only and short: a wake reads cached results and opens a PR, it
+    never holds a GPU. Returns the wake job id (async: it owns the lease until
+    it completes)."""
+
+    compute: SlurmCompute
+    spec: FollowupSpec
+    now: float
+    wake_minutes: int = 20
+
+    def dispatch(self, record: RunRecord, reason: str) -> str:
+        argv = [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "autoresearch.climb",
+            "--resume",
+            record.run_id,
+            "--run-root",
+            str(self.spec.run_root),
+            "--image",
+            self.spec.image,
+            "--account",
+            self.spec.account,
+            "--partition",
+            self.spec.partition,
+        ]
+        if self.spec.pat_file:
+            argv += ["--pat-file", self.spec.pat_file]
+        name = f"wake-{record.run_id}"[:60]
+        afterany = str(record.stage.get("afterany", ""))
+        return self.compute.submit(
+            JobSpec(
+                job_name=name,
+                account=self.spec.account,
+                partition=self.spec.job_partition or self.spec.partition,
+                time_minutes=self.wake_minutes,
+                command=_flight_command(self.spec.home, name, self.now, argv),
+                dependency=afterany,
+                cpus=2,
+                mem="4G",
+            )
+        )
+
+
+def _wake_dispatcher_from_env(
+    compute: SlurmCompute, followup_spec: FollowupSpec | None, now: float
+) -> tuple[WakeDispatcher, bool]:
+    """The wake delivery for this tick, behind an EXPLICIT on-switch so the
+    dispatched-wake path lands DARK. Returns `(dispatcher, live)`:
+
+    * `AUTORESEARCH_DISPATCH_WAKE` set AND the chain env carries what a wake job
+      needs -> the real `JobWakeDispatcher` and a LIVE sweep;
+    * otherwise -> the `LoggingDispatcher` and a DRY sweep (today's behavior).
+
+    So an operator turns dispatched climbing on deliberately, and a
+    half-configured environment fails safe to dry rather than to a wake job
+    that cannot run."""
+    if not os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip():
+        return LoggingDispatcher(), False
+    if followup_spec is None:
+        log.warning(
+            "AUTORESEARCH_DISPATCH_WAKE set but the chain env is incomplete; wake stays dry"
+        )
+        return LoggingDispatcher(), False
+    log.info("dispatched-wake ON: the waiting-run sweep delivers real wakes this tick")
+    return JobWakeDispatcher(compute, followup_spec, now), True
+
+
 def _max_job_minutes_from_env() -> int:
     """AUTORESEARCH_MAX_JOB_MINUTES, clamped into what the code can honor:
     at least the climb-job floor (an operator on a short-MaxTime partition
@@ -1718,19 +1792,24 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     args.root.mkdir(parents=True, exist_ok=True)
-    # The waiting-run sweep stays dry until the experiment dispatcher lands;
-    # in-review servicing is LIVE when credentials + image are available in
-    # the chain environment.
+    # In-review servicing is LIVE when credentials + image are available in the
+    # chain environment. The waiting-run sweep delivers real wakes only when the
+    # operator flips AUTORESEARCH_DISPATCH_WAKE (and the env is complete); by
+    # default it stays dry with the LoggingDispatcher — dispatched climbing
+    # lands DARK.
     github, followup_spec = _followup_spec_from_env(args.root)
+    compute = SlurmCompute()
+    now = time.time()
+    dispatcher, wake_live = _wake_dispatcher_from_env(compute, followup_spec, now)
 
     report = tick(
         args.root,
-        SlurmCompute(),
-        LoggingDispatcher(),
-        now=time.time(),
+        compute,
+        dispatcher,
+        now=now,
         grace_s=args.grace_s,
         lease_ttl_s=args.lease_ttl_s,
-        dry_run=True,
+        dry_run=not wake_live,
         github=github,
         followup_spec=followup_spec,
         followup_dry_run=False,

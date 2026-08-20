@@ -36,27 +36,27 @@ from autoresearch.github import (
     GitHubClient,
     Workspace,
 )
-from autoresearch.harness import ClaudeCodeHarness, Harness, redact
+from autoresearch.harness import ClaudeCodeHarness, Harness, SessionResult, redact
 from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
     ClimbParked,
+    EvalError,
     Evaluator,
     Measurer,
     SubprocessEvaluator,
     SuiteMeasurement,
-    benchmark_floor,
-    clears_min_delta,
+    _benchmark,
     climb_once,
     out_of_scope,
     pr_body,
+    resume_climb,
     suite_regressed,
 )
 from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.panel import PanelLens, PanelVerdict, run_panel
 from autoresearch.progress import (
     PROGRESS_PATHS,
-    fmt_metric,
     load_leader,
     update_leader,
     write_progress,
@@ -73,6 +73,7 @@ from autoresearch.runstate import (
     STUCK,
     WAITING,
     RunRecord,
+    load_record,
     save_record,
     stamp_outage,
 )
@@ -87,12 +88,6 @@ PANEL_KEY_DEFAULT = "~/.config/autoresearch/verifier_key"
 HARNESS_KEY_DEFAULT = "~/.config/autoresearch/harness_key"
 
 
-class NoiseFloored(RuntimeError):
-    """The candidate beat the recorded best, but by less than the
-    benchmark's cross-seed noise floor — pool luck, not progress. An
-    honest negative result, never an abort."""
-
-
 class WorkspaceDrift(RuntimeError):
     """The tree changed between measurement and commit."""
 
@@ -101,6 +96,13 @@ class SuiteRegressed(RuntimeError):
     """A sibling benchmark regressed beyond its floor on the landing tree —
     the improvement was bought by breaking siblings. An honest negative
     result wherever it is caught, never an abort."""
+
+
+def _target_clone_url(target: str) -> str:
+    """The canonical HTTPS clone URL for `owner/repo`. The one source of truth
+    for where a run's git pushes go — derived from the target, never read from
+    the session-writable `remote.origin.url`."""
+    return f"https://github.com/{target}.git"
 
 
 def _title_pair(a: float, b: float) -> str:
@@ -159,6 +161,23 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
         return False
 
 
+def _clear_stage(record: RunRecord) -> RunRecord:
+    """Strip the WAITING-only bookkeeping from a record leaving `waiting` for a
+    terminal state. Otherwise a dispatched run's `stage`, `deadline`, and
+    especially `wake_attempts` ride into `in-review`, where in-review follow-up
+    servicing reuses `wake_attempts` as its OWN retry cap — so a run that woke
+    once would reach review with a shrunk follow-up budget."""
+    return dc_replace(
+        record,
+        stage={},
+        experiment_job_id="",
+        deadline=0.0,
+        terminal_seen=0.0,
+        wake_job_id="",
+        wake_attempts=0,
+    )
+
+
 # A parked run's deadline is the FLOOR beneath the afterany wake: submit +
 # eval walltime + a generous queue/grace allowance. It must exceed the time a
 # healthy eval can legitimately sit queued-then-running, or `tick._sweep_one`
@@ -173,6 +192,9 @@ def _park_run(
     candidate_ref: str,
     eval_minutes: int | None,
     now: float,
+    secrets: tuple[str, ...] = (),
+    keep_wake_attempts: bool = False,
+    base_branch: str = "main",
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
@@ -191,6 +213,21 @@ def _park_run(
         "seed": parked.seed,
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
+        # the branch the run targets, so a wake opens its PR against the SAME
+        # branch a non-default `--base-branch` selected — the wake CLI otherwise
+        # defaults to main and would mis-target.
+        "base_branch": base_branch,
+        # the session's write-up + spend, saved so a candidate wake can build
+        # the PR body / panel claim and report the real cost WITHOUT re-running
+        # the session (its edits are already in candidate_sha). REDACTED before
+        # it lands in the durable record, like every other persisted final_text
+        # — a session that echoed a credential must not leave it in record.json.
+        # Empty/zero for a baseline park (the session has not run yet).
+        "report": redact(parked.session.final_text, secrets)[:MAX_CLAIM_CHARS]
+        if parked.session
+        else "",
+        "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
+        "session_turns": parked.session.num_turns if parked.session else 0,
     }
     # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
     # is right for a single-job park (baseline, or a candidate with no siblings):
@@ -211,19 +248,305 @@ def _park_run(
             "resume_session_id": parked.session.session_id if parked.session else "",
             "deadline": deadline,
             "stage": stage,
-            # Reset only valid because THIS is the IMPLEMENTING->park entry: the
-            # run just LEFT waiting to do work (a session, a measure), so
-            # wake_attempts — "wakes since the run last left waiting" — is stale;
-            # a productive park/wake cycle must not creep toward the stuck cap.
-            # The wake path (a later PR) must NOT route a no-progress blind
-            # re-park (results still pending) back through here — resetting on
-            # that would defeat the stuck cap; a blind re-park keeps the counter.
-            "wake_attempts": 0,
+            # wake_attempts = "wakes since the run last made progress"; the
+            # stuck cap ends a run that keeps waking without advancing. Reset on
+            # a PRODUCTIVE park (the IMPLEMENTING->park entry ran a session; a
+            # wake that resolved its measures and dispatched NEW ones). A
+            # no-progress re-park — results still pending, or a blind re-park
+            # (squeue unreachable, nothing new dispatched) — must KEEP the
+            # counter (`keep_wake_attempts`), or the loop never reaches the cap.
+            "wake_attempts": record.wake_attempts if keep_wake_attempts else 0,
             "terminal_seen": 0.0,
             "wake_job_id": "",
         }
     )
     save_record(run_root, waiting, now)
+
+
+def resume_run(
+    run_root: Path,
+    run_id: str,
+    *,
+    dispatch: DispatchSettings,
+    github: GitHubClient,
+    bot_auth: FileTokenProvider,
+    now: float,
+    secrets: tuple[str, ...] = (),
+    base_branch: str = "main",
+) -> LiveClimbOutcome:
+    """Wake a parked dispatched climb and re-enter its decision WITHOUT the
+    session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
+    The three exits:
+
+    * **re-park** — the wake dispatched a measure that is not done yet (the
+      suite pairs an improving candidate fans out, "another round of
+      experiments"): `resume_climb` raises `ClimbParked`, and this re-persists
+      the WAITING stage on the new afterany, keeping the same candidate
+      snapshot;
+    * **a negative terminal** (no-improvement / suite-regression / eval-error):
+      drop the candidate snapshot and end the record;
+    * **improved** — branch the SEALED `candidate_sha` (never the live tree,
+      which may have drifted since the park; the diff was scope-checked so it
+      carries only in-scope changes), layer the ledger update on top, push, and
+      open the PR. The mechanical moved-base merge the first pass does is
+      deliberately NOT here (docs/design/research-loop.md): a stale PR is a
+      re-wake, not an orchestrator auto-merge.
+    """
+    run_dir = run_root / "runs" / run_id
+    workspace = run_dir / "ws"
+    record = load_record(run_root, run_id)
+    stage = record.stage
+    # Push to the CANONICAL target URL, never the workspace's remote.origin.url:
+    # the session could have rewritten that config to exfil the bot token / code
+    # to another remote. Passing `url` here means `Workspace.push` uses it
+    # instead of reading `remote.origin.url`.
+    ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
+
+    # Every dispatched park is a CANDIDATE park (the baseline is measured by the
+    # gate after the session, not before it), so a candidate sha must be
+    # present. Guard rather than crash on `git diff base ""` if a stray
+    # baseline-shaped record ever reached here.
+    if stage.get("phase") != "candidate" or not stage.get("candidate_sha"):
+        raise EvalError(f"resume_run: run {run_id} is not a candidate park (stage={stage!r})")
+
+    base_sha = str(stage["base_sha"])
+    candidate_sha = str(stage["candidate_sha"])
+    candidate_ref = str(stage["candidate_ref"])
+    # the run's target branch rides the stage, so a wake opens its PR against
+    # the branch the ORIGINAL climb selected — not the CLI's default (the wake
+    # job carries no --base-branch).
+    base_branch = str(stage.get("base_branch") or base_branch)
+
+    # The contract gates scope and names the eval command, so read it from the
+    # BASE commit (the tree the run started on), NOT the working tree the
+    # session left dirty — a session that widened its own scope in
+    # `.autoresearch.yaml` must not have the wake gate on the doctored rules.
+    contract = load_contract(ws.git("show", f"{base_sha}:.autoresearch.yaml"), record.target)
+    bench = _benchmark(contract, record.benchmark)
+    config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
+    eval_minutes = next(
+        (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
+    )
+    measurer = dispatch.measurer(
+        run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
+    )
+    # measured_paths from the COMMITTED base..candidate diff — the sealed
+    # candidate, never `changed_paths()` on a live tree that may have drifted.
+    # NUL-delimited (like Workspace.staged_paths) so a path with a space is one
+    # entry, not two that could each slip past the scope check.
+    measured_paths = tuple(
+        p for p in ws.git("diff", "--name-only", "-z", base_sha, candidate_sha).split("\0") if p
+    )
+
+    # rebuild the session from what the park saved: the (redacted) write-up and
+    # its real spend, so the report shows true cost/turns. It is never re-run.
+    session = SessionResult(
+        stop_reason="resumed",
+        is_error=False,
+        cost_usd=float(stage.get("session_cost_usd", 0.0)),  # type: ignore[arg-type]
+        num_turns=int(stage.get("session_turns", 0)),  # type: ignore[call-overload]
+        session_id=record.resume_session_id,
+        final_text=str(stage.get("report", "")),
+        transcript_path="",
+    )
+    try:
+        result = resume_climb(
+            contract,
+            bench,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            seed=int(stage["seed"]),  # type: ignore[call-overload]
+            suite_seed=int(stage["suite_seed"]),  # type: ignore[call-overload]
+            measured_paths=measured_paths,
+            session=session,
+            measurer=measurer,
+            min_relative_improvement=config.min_relative_improvement,
+        )
+    except ClimbParked as parked:
+        # another measure this wake dispatched is not done — re-park on the new
+        # afterany, keeping the SAME candidate snapshot the next wake reads.
+        # PROGRESS only if this wake dispatched a NEW job set (e.g. the candidate
+        # resolved and the suite pairs fanned out); a blind re-park (empty
+        # afterany) or the same jobs still pending is NO progress, so the stuck
+        # cap must keep counting.
+        old_afterany = str(record.stage.get("afterany", ""))
+        made_progress = bool(parked.afterany) and parked.afterany != old_afterany
+        _park_run(
+            run_root,
+            record,
+            parked,
+            candidate_ref,
+            eval_minutes,
+            now,
+            secrets,
+            keep_wake_attempts=not made_progress,
+            base_branch=base_branch,
+        )
+        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+
+    if result.outcome == "improved":
+        # Publish: branch the SEALED candidate sha, fold in the ledger, push,
+        # open the PR. No moved-base merge (research-loop.md) — a stale PR is a
+        # re-wake, not an auto-merge.
+        from datetime import UTC, datetime
+
+        assert result.baseline is not None and result.candidate is not None
+        baseline, candidate = result.baseline, result.candidate
+        # a zero-change "improvement" is metric noise, not progress — never a PR
+        # (defense in depth; measure_and_decide already requires a real delta,
+        # and an empty base..candidate diff implies baseline == candidate).
+        if not measured_paths:
+            result = dc_replace(
+                result, outcome="no-improvement", note="no code change; metric noise"
+            )
+            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+            final = _clear_stage(
+                RunRecord(**{**record.__dict__, "state": ENDED, "ending": NEGATIVE_RESULT})
+            )
+            _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+            return LiveClimbOutcome(run_id=run_id, outcome="no-improvement")
+        branch = f"{config.branch_prefix}/{run_id}"
+        try:
+            # FORCE-checkout the sealed candidate: at wake the workspace still
+            # holds the session's dirty tree (HEAD is pre_session_sha), so a
+            # plain checkout could be blocked; the sha already captured exactly
+            # the measured content.
+            ws.git("checkout", "-f", "-B", branch, candidate_sha)
+            entries = update_leader(
+                load_leader(workspace),
+                benchmark=bench.name,
+                metric=bench.metric,
+                direction=bench.direction,
+                baseline=baseline,
+                candidate=candidate,
+                run_id=run_id,
+                date=datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d"),
+                run_seed=result.run_seed,
+            )
+            write_progress(
+                workspace,
+                entries,
+                config.target,
+                digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+            )
+            # Stage ONLY the ledger files on top of the sealed candidate — never
+            # `git add -A`, which would sweep in untracked cruft the session left
+            # (eval caches) that was neither measured nor scope-checked. The
+            # candidate content is already vetted (measure_and_decide's scope
+            # check on measured_paths); assert nothing but the ledger is staged.
+            ws.git("add", "--", *PROGRESS_PATHS)
+            staged = ws.staged_paths()
+            extra = [p for p in staged if p not in PROGRESS_PATHS]
+            if extra:
+                raise WorkspaceDrift(f"wake commit would stage non-ledger paths: {extra[:10]}")
+            # Commit the ledger update on top of the sealed candidate ONLY when
+            # it actually moved. When the candidate beat its baseline but not the
+            # recorded best, update_leader is a no-op (the ledger's `best` does
+            # not advance) — a valid composable win with no leaderboard change,
+            # so push the candidate as-is rather than an empty commit.
+            if staged:
+                ws.git(
+                    "-c",
+                    f"user.name={config.bot_login}",
+                    "-c",
+                    f"user.email={config.bot_login}@users.noreply.github.com",
+                    "commit",
+                    "-m",
+                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                    f"\n\nAgent: {config.agent_id}",
+                )
+            ws.push(branch)
+            body = pr_body(
+                result, config, redact_secrets=secrets, display_digits=bench.display_digits
+            )
+            pr_url = github.create_pull(
+                config.target,
+                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
+                head=branch,
+                base=base_branch,
+                body=body,
+                # the wake runs NO verification panel yet (panel-on-wake is a
+                # later slice), so the PR is never auto-merge-armed — a human
+                # reviews every dispatched improvement. Open non-draft; it is a
+                # real, measured improvement, just not panel-certified.
+                draft=False,
+            )
+        except Exception as exc:
+            # push / PR / commit failed — end as an error. Save the ENDED record
+            # BEFORE dropping the snapshot (same ordering as the other terminals):
+            # a failed save then leaves the run WAITING with its snapshot intact
+            # (recoverable), never WAITING with the candidate already gone. On a
+            # successful end, drop the snapshot — ENDED runs are never swept, so
+            # keeping it would only leak the ref (a retry is a fresh climb, not a
+            # re-wake). Never delete a remote branch (a push may have
+            # half-succeeded).
+            note = redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
+            log.warning("wake publish failed for %s: %s", run_id, note)
+            failed = _clear_stage(
+                RunRecord(
+                    **{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note}
+                )
+            )
+            if _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets):
+                drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+            return LiveClimbOutcome(run_id=run_id, outcome="publish-error")
+        # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
+        # fails, the record stays `waiting` with the snapshot intact, so the run
+        # is recoverable rather than an ABORTED record over a live PR.
+        report_path = run_dir / "report.md"
+        _best_effort(
+            "run report",
+            lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+            secrets,
+        )
+        final = _clear_stage(
+            RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": IN_REVIEW,
+                    "pr_url": pr_url,
+                    "resume_session_id": result.session.session_id if result.session else "",
+                    "ending_note": pr_url,
+                }
+            )
+        )
+        if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+        else:
+            log.warning(
+                "run %s: PR %s opened but in-review record unsaved; snapshot kept", run_id, pr_url
+            )
+        return LiveClimbOutcome(
+            run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
+        )
+
+    # a negative terminal: end the record, THEN release the snapshot. Save
+    # BEFORE dropping (same ordering as the improved path): if the save fails,
+    # the run stays WAITING with its snapshot intact, so a re-wake can still
+    # reconstruct — never WAITING with the snapshot already gone.
+    report_path = run_dir / "report.md"
+    _best_effort(
+        "run report",
+        lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+        secrets,
+    )
+    final = _clear_stage(
+        RunRecord(
+            **{
+                **record.__dict__,
+                "state": ENDED,
+                "ending": _ENDINGS_BY_OUTCOME[result.outcome],
+                "ending_note": redact(result.note, secrets),
+            }
+        )
+    )
+    if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+        drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+    else:
+        log.warning(
+            "run %s: ended negative but record unsaved; snapshot kept for a re-wake", run_id
+        )
+    return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
 def _measure_committed(
@@ -452,7 +775,7 @@ def live_climb(
 
     tree_hashes: list[str] = []
     try:
-        ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
+        ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # the BASE BRANCH tip, not HEAD: they differ if the PR base is ever
         # not the clone's default branch, and the freshness comparison below
         # must be against the branch the PR will actually land on
@@ -566,6 +889,9 @@ def live_climb(
         parked: ClimbParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
+            # the last-known score orients the brief only; the gate re-measures
+            # both sides after the session, so None (a first run) is fine.
+            prior_best = load_leader(workspace).get(config.benchmark)
             result = climb_once(
                 config,
                 contract_text,
@@ -581,6 +907,7 @@ def live_climb(
                 spec=spec,
                 panel_runner=panel_runner,
                 panel_revisions=panel_revisions,
+                brief_baseline=prior_best.best if prior_best else None,
             )
         except ClimbParked as p:
             # The climb dispatched its measures and hibernated. Persist the
@@ -600,7 +927,16 @@ def live_climb(
             # not the run's start `now` — a session lasting hours would otherwise
             # eat the queue budget and let the sweep cancel a still-queued eval.
             try:
-                _park_run(run_root, record, p, kept_ref, eval_minutes, time.time())
+                _park_run(
+                    run_root,
+                    record,
+                    p,
+                    kept_ref,
+                    eval_minutes,
+                    time.time(),
+                    secrets,
+                    base_branch=base_branch,
+                )
             except Exception:
                 # The WAITING record did not persist, so nothing will ever wake
                 # the eval jobs this park already submitted. Cancel them so they
@@ -880,42 +1216,14 @@ def live_climb(
             # by the orchestrator from ITS measurements after the drift check
             # — read from the (possibly merged) tree, so the leader check runs
             # against the FRESH ledger, not the clone's snapshot.
-            prior = load_leader(workspace).get(config.benchmark)
-            if prior is not None:
-                rel_ok = orch_improved(
-                    prior.best, candidate, bench.direction, config.min_relative_improvement
-                )
-                if bench.min_delta or bench.min_delta_rel:
-                    # A resampled pool re-rolls between runs, so ANY
-                    # sub-floor delta over the recorded best — including
-                    # one below the relative threshold — is an expected
-                    # honest negative, never an anomaly (round-4 review
-                    # finding: the abort band contradicted the promise).
-                    floored = not clears_min_delta(
-                        prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
-                    )
-                    if not rel_ok or floored:
-                        # name the check that actually failed, not just
-                        # whichever floor happens to exist
-                        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
-                        if floored and floor > 0:
-                            shown = fmt_metric(floor, bench.display_digits)
-                            why = f"the cross-seed noise floor ({shown})"
-                        elif floored:
-                            why = f"a usable baseline (recorded best {prior.best})"
-                        else:
-                            why = "the relative-improvement threshold"
-                        raise NoiseFloored(
-                            f"candidate {candidate} does not clear the recorded "
-                            f"best {prior.best} beyond {why}"
-                        )
-                elif not rel_ok:
-                    # fixed pool: the ledger says this run's own baseline
-                    # was stale — an anomaly worth a loud ending
-                    raise WorkspaceDrift(
-                        f"candidate {candidate} does not beat the recorded "
-                        f"best {prior.best} by the noise floor (stale clone or eval noise)"
-                    )
+            # We credit BEATING YOUR OWN BASELINE, not only beating the recorded
+            # best (docs/design/research-loop.md, "two kinds of win"): a clean
+            # composable win — improving over base_sha by the gate's threshold —
+            # is a valid PR even when it is not the new SOTA. So there is no
+            # recorded-best hard-fail here; the gate (`measure_and_decide`) has
+            # already required candidate to beat base_sha on paired seeds. The
+            # ledger's `best` still only advances on a genuine improvement over
+            # it (update_leader), so SOTA stays tracked — just not required.
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -996,19 +1304,6 @@ def live_climb(
                     "pr_url": pr_url,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
-                }
-            )
-        except NoiseFloored as exc:
-            # honest negative: the work was fine, the delta is not evidence
-            outcome_name = "no-improvement"
-            result = dc_replace(result, outcome="no-improvement", note=str(exc))
-            log.info("noise-floored for %s: %s", run_id, exc)
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": NEGATIVE_RESULT,
-                    "ending_note": redact(str(exc), secrets)[:480],
                 }
             )
         except SuiteRegressed as exc:
@@ -1192,9 +1487,18 @@ def main() -> int:
     arm_sigterm_containment()
 
     parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
-    parser.add_argument("--target", required=True)
-    parser.add_argument("--benchmark", required=True)
+    # --target/--benchmark drive a fresh climb; they are read from the record
+    # on a --resume wake instead, so they are optional (validated below).
+    parser.add_argument("--target", default="")
+    parser.add_argument("--benchmark", default="")
     parser.add_argument("--run-root", required=True, type=Path)
+    parser.add_argument(
+        "--resume",
+        default="",
+        metavar="RUN_ID",
+        help="wake a parked dispatched run instead of starting a fresh climb",
+    )
+    parser.add_argument("--base-branch", default="main")
     # All three default from the chain env the tick sets on the climb job, so
     # a contained run with AUTORESEARCH_{IMAGE,ACCOUNT,PARTITION} set selects
     # dispatched measurement without extra flags. The image also containers the
@@ -1262,9 +1566,50 @@ def main() -> int:
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
+    bot_auth = FileTokenProvider(Path(args.pat_file))
+
+    # --resume WAKES a parked dispatched run: no session, no api key, no panel —
+    # just rebuild the dispatched measurer and re-enter the decision. The wake
+    # job the WakeDispatcher submits runs exactly this.
+    if args.resume:
+        if not (args.account and args.partition and args.image and Path(args.image).is_file()):
+            parser.error(
+                "--resume needs the cluster triple (--account/--partition/--image) "
+                "to rebuild the dispatched measurer"
+            )
+        from autoresearch.compute import SlurmCompute
+        from autoresearch.runstate import release_lease
+
+        try:
+            resumed = resume_run(
+                args.run_root,
+                args.resume,
+                dispatch=DispatchSettings(
+                    compute=SlurmCompute(),
+                    image=args.image,
+                    account=args.account,
+                    partition=args.partition,
+                ),
+                github=GitHubClient(auth=bot_auth),
+                bot_auth=bot_auth,
+                now=time.time(),
+                secrets=(bot_auth.token(),),
+                base_branch=args.base_branch,
+            )
+        finally:
+            # This wake job HOLDS the run's lease (the sweep transferred it on
+            # dispatch); release it on every exit so a re-parked run is
+            # immediately eligible for the next sweep instead of waiting out the
+            # TTL reap. Idempotent (no-op if no lease file).
+            release_lease(args.run_root, args.resume)
+        print(f"outcome={resumed.outcome} pr={resumed.pr_url or '-'} report={resumed.report_path}")
+        return 0
+
+    if not (args.target and args.benchmark):
+        parser.error("--target and --benchmark are required for a fresh climb")
+
     # same 0600 discipline as the PAT: this key spends real money
     api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
-    bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
 
@@ -1353,6 +1698,7 @@ def main() -> int:
         try:
             outcome = live_climb(
                 config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+                base_branch=args.base_branch,
                 run_root=args.run_root,
                 run_id=run_id,
                 harness=build_editor_harness(

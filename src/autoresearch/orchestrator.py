@@ -624,11 +624,16 @@ def improved(baseline: float, candidate: float, direction: str, min_rel: float) 
 
 
 def make_task(
-    contract: Contract, benchmark_name: str, baseline: float, hypothesis: str = ""
+    contract: Contract, benchmark_name: str, baseline: float | None, hypothesis: str = ""
 ) -> Task:
     bench = _benchmark(contract, benchmark_name)
     better = "up" if bench.direction == "max" else "down"
     suite_gated = bool(contract.scope.shared) and len(contract.benchmarks) > 1
+    # `baseline` orients the brief only (the last-known score from the ledger);
+    # the GATE re-measures both sides after the session, so a missing baseline
+    # (a benchmark's first run) just drops the reference number, never the gate.
+    versus = f" from {baseline}" if baseline is not None else ""
+    against = f" versus {baseline}" if baseline is not None else ""
     return Task(
         hypothesis=hypothesis
         or (
@@ -637,10 +642,10 @@ def make_task(
             f"for why it underperforms, and implement it."
         ),
         benchmark=bench.name,
-        expected_effect=f"{bench.metric} {better} from {baseline}",
+        expected_effect=f"{bench.metric} {better}{versus}",
         done_criteria=(
-            f"`{bench.command}` runs clean and {bench.metric} moves {better} "
-            f"versus {baseline}; repository tests pass"
+            f"`{bench.command}` runs clean and {bench.metric} moves {better}"
+            f"{against}; repository tests pass"
             + (
                 "; a change touching shared paths is suite-gated — no sibling "
                 "benchmark may regress beyond its floor"
@@ -836,6 +841,86 @@ def measure_and_decide(
     )
 
 
+def resume_climb(
+    contract: Contract,
+    bench: Benchmark,
+    *,
+    base_sha: str,
+    candidate_sha: str,
+    seed: int,
+    suite_seed: int,
+    measured_paths: Sequence[str],
+    session: SessionResult,
+    measurer: Measurer,
+    min_relative_improvement: float,
+) -> ClimbResult:
+    """Re-enter a parked climb's post-session decision — the WAKE side of a
+    dispatched candidate park. The candidate is already committed (its sha is in
+    the record), so the session does NOT re-run: its edits are captured in
+    `candidate_sha` and it was reconstructed by the caller from the record
+    (`session.final_text` is the saved write-up, and its cost/turns the saved
+    spend) so the PR body and panel claim need no live session. `measured_paths`
+    is the caller's re-derivation of the `base_sha..candidate_sha` diff.
+
+    The measurer reads the cached eval results and this returns the decision, OR
+    the decision needs a measure not yet done — the suite pairs after an
+    improving candidate, "another round of experiments" — and it re-parks by
+    raising `ClimbParked`, exactly as the first pass did.
+
+    This is the seam the depth axis (docs/design/research-loop.md) grows from:
+    slice 1 wakes the GRADER with the panel off; waking the AGENT with the
+    result — a panel revision, or a deeper experiment round it drives itself —
+    reuses this same re-entry and lands next.
+    """
+    from autoresearch.measure import MeasurementPending
+
+    try:
+        outcome = measure_and_decide(
+            contract,
+            bench,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            seed=seed,
+            suite_seed=suite_seed,
+            measured_paths=measured_paths,
+            measurer=measurer,
+            min_relative_improvement=min_relative_improvement,
+        )
+    except MeasurementPending as pending:
+        # a measure is not done yet (the suite pairs this wake just dispatched):
+        # re-park on the new afterany set, same shape as the first candidate park
+        raise ClimbParked(
+            phase="candidate",
+            afterany=pending.afterany(),
+            base_sha=base_sha,
+            seed=seed,
+            suite_seed=suite_seed,
+            candidate_sha=candidate_sha,
+            session=session,
+        ) from None
+    if isinstance(outcome, ClimbResult):
+        # a terminal measurement outcome (no-improvement / suite-regression /
+        # eval-error): carry the reconstructed session, and give a bare
+        # no-improvement the same framing the in-job path sets (a clear
+        # negative is a success), so a resumed negative does not end note-less.
+        note = outcome.note
+        if outcome.outcome == "no-improvement":
+            note = "a negative result reported clearly is a success"
+        return dc_replace(outcome, session=session, note=note)
+    # credited: candidate cleared the threshold and no sibling regressed. The
+    # caller sets `branch` when it opens the PR.
+    return ClimbResult(
+        outcome="improved",
+        baseline=outcome.baseline,
+        candidate=outcome.candidate,
+        session=session,
+        measured_paths=tuple(measured_paths),
+        run_seed=seed,
+        suite=outcome.suite,
+        suite_seed=outcome.suite_seed,
+    )
+
+
 def climb_once(
     config: ClimbConfig,
     contract_text: str,
@@ -853,6 +938,7 @@ def climb_once(
     spec: RoleSpec | None = None,
     panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
     panel_revisions: int = 1,
+    brief_baseline: float | None = None,
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -891,7 +977,7 @@ def climb_once(
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
     # orchestrator for the eval primitives).
-    from autoresearch.measure import MeasurementPending, plan_measures
+    from autoresearch.measure import MeasurementPending
 
     run_seed = draw_run_seed() if bench.seed_env else 0
     siblings = [b for b in contract.benchmarks if b.name != bench.name]
@@ -905,31 +991,13 @@ def climb_once(
         else 0
     )
 
-    # Baseline from the PRE-session tree (base_sha), through the measurer — the
-    # SAME number the gate re-reads from cache, so the brief and the decision
-    # agree (architecture: "baseline re-run at the merge-base, not a trusted
-    # static file"). Its worktree is the caller's pristine pre-session tree, so
-    # eval artifacts land outside what the session sees next (no pool
-    # foreknowledge).
-    baseline_plan = plan_measures(
-        bench.command, bench.metric, base_sha, base_sha, bench.seed_env or "", run_seed
-    )[0]
-    try:
-        baseline = measurer.results([baseline_plan])["baseline"]
-    except EvalError as exc:
-        # the measurer already names the failing measure ("baseline: ...").
-        return ClimbResult(outcome="eval-error", note=str(exc))
-    except MeasurementPending as pending:
-        # PARK 1 (dispatched baseline, before the session): the wake reads the
-        # baseline, then runs the session and re-enters. No candidate yet.
-        raise ClimbParked(
-            phase="baseline",
-            afterany=pending.afterany(),
-            base_sha=base_sha,
-            seed=run_seed,
-            suite_seed=suite_seed,
-        ) from None
-
+    # The baseline is NOT measured before the session — it is measured by the
+    # GATE (`measure_and_decide`, base_sha vs candidate_sha) after the session,
+    # so a dispatched climb has ONE park (the candidate), never a pre-session
+    # baseline park. `brief_baseline` is the last-known score from the ledger,
+    # for orienting the brief only ("improve from ~13.8"); it is None on a
+    # benchmark's first run, and the gate re-measures either way.
+    baseline: float | None = brief_baseline
     task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
     brief = build_brief(
         BriefInputs(
@@ -967,7 +1035,7 @@ def climb_once(
     panel_sections: list[str] = []
     panel_blocking_open = False
     panel_degraded = False
-    candidate = baseline
+    candidate: float | None = baseline
     suite: tuple[SuiteMeasurement, ...] = ()
     suite_seed_ran = 0
     measured: tuple[str, ...] = ()
@@ -1036,7 +1104,9 @@ def climb_once(
         if isinstance(outcome, ClimbResult):
             # a terminal measurement outcome (scope-violation / eval-error /
             # no-improvement / suite-regression): add the session + panel
-            # context this function owns, and the credited baseline.
+            # context this function owns. The baseline stays whatever the GATE
+            # measured (None when it never got that far, e.g. scope-violation),
+            # never overwritten with the ledger's brief number.
             note = outcome.note
             if outcome.outcome == "no-improvement":
                 note = (
@@ -1046,7 +1116,6 @@ def climb_once(
                 )
             return dc_replace(
                 outcome,
-                baseline=baseline,
                 session=session,
                 note=note,
                 panel_transcript="\n\n".join(panel_sections),
