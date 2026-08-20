@@ -1863,6 +1863,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
         image="/img/a.sif",
         home=tmp_path,
         pat_file="/pat",
+        panel="verify,review",
     )
     # isolate the dispatcher's job spec from flight_checkout's git dependency
     monkeypatch.setattr(
@@ -1882,6 +1883,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     joined = " ".join(argv)
     assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
     assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
+    assert "--panel verify,review" in joined  # the wake runs the verification panel
     assert "--account=acct" in argv and "--partition=cpu_short" in argv
 
 

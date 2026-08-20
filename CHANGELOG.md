@@ -6,6 +6,23 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- Panel-on-wake, slice 1 — a dispatched improvement now runs the SAME pre-PR
+  verification panel as an inline climb (docs/design/orchestrator-verify.md), so
+  it is not published unverified. `resume_run` runs the read-only lenses over
+  `base_sha` vs the sealed `candidate_sha` (checked out first, so the panel
+  judges exactly what was measured — the dispatched evals ran on node-local
+  scratch, so the tree is unchanged); a blocking or degraded verdict opens a
+  DRAFT PR carrying the findings and never arms auto-merge, a clean verdict (or
+  no panel) arms only where branch protection requires a review — same policy as
+  the inline path. The `--resume` CLI and `JobWakeDispatcher` forward
+  `--panel`/`--panel-key-file` (via the shared `_panel_lenses_from_args` and
+  `_climb_panel_argv`), and `build_panel_runner`/lens-building are now shared by
+  both paths. Slice 2 — WAKING the agent to REVISE on a blocking finding (the
+  first depth-axis build, docs/design/research-loop.md) — is next; for now a
+  human triages the draft.
+
 ### Changed
 
 - We credit **beating your own baseline**, not only beating the recorded best

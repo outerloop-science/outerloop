@@ -1654,6 +1654,9 @@ class JobWakeDispatcher:
             self.spec.account,
             "--partition",
             self.spec.partition,
+            # the wake runs the SAME verification panel as the fresh climb, so a
+            # dispatched improvement is verified before it is published.
+            *_climb_panel_argv(self.spec),
         ]
         if self.spec.pat_file:
             argv += ["--pat-file", self.spec.pat_file]
