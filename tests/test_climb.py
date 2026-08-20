@@ -1756,8 +1756,10 @@ def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     assert "def solve(): return 'better'" in _git(
         bare, "show", "feat/auto/agent-01/tsp-1:src/pilot/solvers/tsp.py"
     )
-    # no verification panel ran on the wake, so auto-merge is never armed
-    assert github.armed == []
+    # no panel configured here -> a clean improvement arms auto-merge (only
+    # where branch protection requires a review), same policy as the inline path
+    assert github.armed and github.armed[0][0] == "org/pilot"
+    assert github.prs[0]["draft"] is False
 
 
 def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, monkeypatch):
@@ -1962,3 +1964,140 @@ def test_resume_negative_releases_the_issue_claim(tmp_path, monkeypatch) -> None
     num, body = github.issue_comments[-1]
     assert num == 7 and "finished (no-improvement)" in body
     assert RELEASE_MARKER in body  # the claim is freed for re-selection
+
+
+def _panel_lens(text):
+    from autoresearch.panel import PanelLens
+
+    return (PanelLens("review", _panel_judge([text])),)
+
+
+def test_resume_clean_panel_arms_and_records_transcript(tmp_path, monkeypatch) -> None:
+    # a dispatched improvement now runs the SAME verification panel as inline; a
+    # clean read -> non-draft PR + arm auto-merge, with the transcript in the body.
+    import json as _json
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=_panel_lens(_json.dumps({"findings": [], "notes": "clean"})),
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["draft"] is False
+    assert github.armed and github.armed[0][0] == "org/pilot"
+    assert "Verification" in github.prs[0]["body"]  # transcript rode the PR body
+
+
+def test_resume_blocking_panel_opens_a_draft_and_never_arms(tmp_path, monkeypatch) -> None:
+    # a blocking panel finding -> DRAFT PR carrying the findings, no arm (slice 1:
+    # a human triages; waking the agent to revise is the next slice).
+    import json as _json
+
+    blocking = _json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/pilot/solvers/tsp.py",
+                    "line": 1,
+                    "confidence": "high",
+                    "summary": "suspicious",
+                    "detail": "looks structural",
+                    "blocking": True,
+                }
+            ],
+            "notes": "",
+        }
+    )
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=_panel_lens(blocking),
+    )
+    assert outcome.outcome == "improved"  # PR still opens...
+    assert github.prs[0]["draft"] is True  # ...as a DRAFT
+    assert github.armed == []  # and never armed
+
+
+def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypatch) -> None:
+    # after checkout -f candidate_sha the workspace keeps post-snapshot untracked
+    # files (the fixture's eval-cache.tmp); the panel's git add -A would sweep
+    # them into the judged tree unless they are cleaned first. A judge inspects
+    # its pr-head checkout to prove the cruft is absent.
+    import json as _json
+    from dataclasses import dataclass, field
+
+    from autoresearch.panel import PanelLens
+
+    @dataclass
+    class _SpyJudge:
+        saw_cruft: list = field(default_factory=list)
+
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.saw_cruft.append((Path(workspace) / "eval-cache.tmp").exists())
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.0,
+                num_turns=1,
+                session_id="judge",
+                final_text=_json.dumps({"findings": [], "notes": "clean"}),
+                transcript_path="",
+            )
+
+    judge = _SpyJudge()
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=FakeGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", judge),),
+    )
+    assert judge.saw_cruft == [False]  # the panel judged candidate_sha, not the cruft
+
+
+def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) -> None:
+    # a panel ERROR (not a finding) must not abort the publish and drop the
+    # candidate snapshot — the improvement is real. Fail closed to a DRAFT.
+    from autoresearch import climb as climb_mod
+    from autoresearch.panel import PanelLens
+
+    def boom(*a, **k):
+        raise RuntimeError("worktree add failed")
+
+    monkeypatch.setattr(climb_mod, "build_panel_runner", boom)
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", object()),),  # type: ignore[arg-type]  # runner monkeypatched to raise
+    )
+    assert outcome.outcome == "improved"  # NOT publish-error
+    assert github.prs[0]["draft"] is True and github.armed == []  # degraded -> draft, no arm

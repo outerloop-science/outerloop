@@ -308,6 +308,7 @@ def resume_run(
     now: float,
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
+    panel_lenses: tuple[PanelLens, ...] = (),
 ) -> LiveClimbOutcome:
     """Wake a parked dispatched climb and re-enter its decision WITHOUT the
     session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
@@ -357,7 +358,8 @@ def resume_run(
     # BASE commit (the tree the run started on), NOT the working tree the
     # session left dirty — a session that widened its own scope in
     # `.autoresearch.yaml` must not have the wake gate on the doctored rules.
-    contract = load_contract(ws.git("show", f"{base_sha}:.autoresearch.yaml"), record.target)
+    contract_text = ws.git("show", f"{base_sha}:.autoresearch.yaml")
+    contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
     config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
     eval_minutes = next(
@@ -441,6 +443,10 @@ def resume_run(
             )
             _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
             return LiveClimbOutcome(run_id=run_id, outcome="no-improvement")
+
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+
         branch = f"{config.branch_prefix}/{run_id}"
         try:
             # FORCE-checkout the sealed candidate: at wake the workspace still
@@ -448,6 +454,61 @@ def resume_run(
             # plain checkout could be blocked; the sha already captured exactly
             # the measured content.
             ws.git("checkout", "-f", "-B", branch, candidate_sha)
+            # `checkout -f` does NOT remove untracked files, and the panel's
+            # `git add -A` (in build_panel_runner) would sweep any post-snapshot
+            # cruft into the tree it judges. Clean untracked (non-ignored) files
+            # so the panel reads EXACTLY candidate_sha. The ledger commit stages
+            # only PROGRESS_PATHS, so it was never affected.
+            ws.git("clean", "-fd")
+
+            # Verification panel on the credited claim — the SAME gate the
+            # inline path runs (docs/design/orchestrator-verify.md), so a
+            # dispatched improvement is not published unverified. It reads the
+            # workspace tree, now checked out to the SEALED candidate_sha (the
+            # dispatched evals ran on node-local scratch, so the tree is exactly
+            # what was measured), over base_sha. Slice 1: a blocking or degraded
+            # verdict opens a DRAFT PR carrying the findings and never arms
+            # auto-merge; a clean verdict (or no panel) arms. Waking the agent
+            # to REVISE on a blocking finding — the depth axis — is the next
+            # slice; for now a human triages the draft.
+            if panel_lenses:
+                # A panel ERROR (a git op in build_panel_runner, not a finding)
+                # must NOT abort the publish and drop the candidate snapshot —
+                # the improvement is real and measured. Fail closed to DEGRADED:
+                # open a DRAFT for a human, keep the candidate. (run_panel itself
+                # already fails closed per-lens; this catches the git setup.)
+                try:
+                    verdict = build_panel_runner(
+                        ws,
+                        run_dir,
+                        base_sha,
+                        panel_lenses,
+                        contract_text,
+                        config.target,
+                        config.benchmark,
+                        config.bot_login,
+                        _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
+                    )(baseline, candidate, str(stage.get("report", "")))
+                    result = dc_replace(
+                        result,
+                        panel_transcript=verdict.transcript,
+                        panel_rounds=1,
+                        panel_blocking_open=bool(verdict.blocking),
+                        panel_degraded=verdict.degraded,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "wake panel errored for %s (%s); opening a DRAFT",
+                        run_id,
+                        redact(f"{type(exc).__name__}: {exc}", secrets),
+                    )
+                    result = dc_replace(
+                        result,
+                        panel_degraded=True,
+                        panel_transcript="panel setup failed — NOT a clean read",
+                        panel_rounds=1,
+                    )
+
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -497,18 +558,29 @@ def resume_run(
             )
             if issue_number:
                 body = f"Addresses #{issue_number}.\n\n{body}"
+            # blocking findings still open at the panel, or a degraded final
+            # read, mean a human must look: open a DRAFT and never arm. A clean
+            # verdict (or no panel configured) opens non-draft and arms
+            # auto-merge only where branch protection requires a review — same
+            # policy as the inline path.
+            draft = result.panel_blocking_open or result.panel_degraded
             pr_url = github.create_pull(
                 config.target,
                 title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
                 head=branch,
                 base=base_branch,
                 body=body,
-                # the wake runs NO verification panel yet (panel-on-wake is a
-                # later slice), so the PR is never auto-merge-armed — a human
-                # reviews every dispatched improvement. Open non-draft; it is a
-                # real, measured improvement, just not panel-certified.
-                draft=False,
+                draft=draft,
             )
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if pr_number.isdigit() and not draft:
+                _best_effort(
+                    "auto-merge arming",
+                    lambda: github.arm_auto_merge_when_review_required(
+                        config.target, int(pr_number)
+                    ),
+                    secrets,
+                )
         except Exception as exc:
             # push / PR / commit failed — end as an error. Save the ENDED record
             # BEFORE dropping the snapshot (same ordering as the other terminals):
@@ -638,6 +710,39 @@ def _measure_committed(
             # directory itself first
             _best_effort("worktree dir removal", lambda: shutil.rmtree(wt, ignore_errors=True))
             _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
+
+
+def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
+    """Build the verification-panel lenses from the CLI args (empty `--panel`
+    disables it). Shared by the fresh-climb and the `--resume` wake paths so a
+    dispatched improvement runs the SAME panel as an inline one. Raises
+    ValueError on a bad panel/backend config — a configured gate must never
+    silently vanish."""
+    import os
+
+    if not args.panel.strip():
+        return ()
+    from autoresearch.panel import parse_lenses
+    from autoresearch.review_agent import build_reviewer_harness
+
+    panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+    lenses = []
+    for kind, backend, model in parse_lenses(args.panel):
+        hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+        try:
+            judge = build_reviewer_harness(
+                panel_key,
+                backend=backend,
+                binary=args.claude_bin if backend == "claude" else None,
+                model=model or None,
+                container_image=args.image if backend == "claude" else "",
+                hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
+                provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
+            )
+        except ValueError as exc:
+            raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
+        lenses.append(PanelLens(kind=kind, harness=judge))
+    return tuple(lenses)
 
 
 def build_editor_harness(
@@ -1637,6 +1742,17 @@ def main() -> int:
         from autoresearch.compute import SlurmCompute
         from autoresearch.runstate import release_lease
 
+        # the wake runs the SAME verification panel as a fresh climb, so a
+        # dispatched improvement is not published unverified.
+        try:
+            wake_lenses = _panel_lenses_from_args(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+        wake_panel_key = (
+            FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+            if args.panel.strip()
+            else ""
+        )
         try:
             resumed = resume_run(
                 args.run_root,
@@ -1650,8 +1766,9 @@ def main() -> int:
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
-                secrets=(bot_auth.token(),),
+                secrets=tuple(k for k in (bot_auth.token(), wake_panel_key) if k),
                 base_branch=args.base_branch,
+                panel_lenses=wake_lenses,
             )
         finally:
             # This wake job HOLDS the run's lease (the sweep transferred it on
@@ -1706,37 +1823,17 @@ def main() -> int:
 
     # Pre-PR panel lenses: judge sessions on the verifier's own key (separate
     # identity from the author). kind[:backend[:model]]; claude by default.
-    panel_lenses: tuple[PanelLens, ...] = ()
-    panel_key = ""
-    if args.panel.strip():
-        from autoresearch.panel import parse_lenses
-        from autoresearch.review_agent import build_reviewer_harness
-
-        panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-        try:
-            # grammar + claude-only rule live in parse_lenses (one owner,
-            # shared with the tick's pre-claim preflight): a typo'd kind or
-            # backend must never silently disable a gate
-            entries = parse_lenses(args.panel)
-        except ValueError as exc:
-            parser.error(str(exc))
-        lenses = []
-        for kind, backend, model in entries:
-            hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
-            try:
-                judge = build_reviewer_harness(
-                    panel_key,
-                    backend=backend,
-                    binary=args.claude_bin if backend == "claude" else None,
-                    model=model or None,
-                    container_image=args.image if backend == "claude" else "",
-                    hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
-                    provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
-                )
-            except ValueError as exc:
-                parser.error(f"panel entry {kind}:{backend}: {exc}")
-            lenses.append(PanelLens(kind=kind, harness=judge))
-        panel_lenses = tuple(lenses)
+    try:
+        panel_lenses = _panel_lenses_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    # the panel key joins the redaction set: judge error text can echo request
+    # material like any other model error.
+    panel_key = (
+        FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+        if args.panel.strip()
+        else ""
+    )
 
     # Dispatched measurement needs the full cluster triple AND a real image
     # file to bind against; missing any, the climb measures inline (the tick
