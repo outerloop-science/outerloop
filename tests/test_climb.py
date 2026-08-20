@@ -1601,7 +1601,14 @@ class _FakeMeasurer:
 
 
 def _write_parked_candidate(
-    tmp_path, monkeypatch, *, values=None, raise_exc=None, run_id="tsp-1", base_branch="main"
+    tmp_path,
+    monkeypatch,
+    *,
+    values=None,
+    raise_exc=None,
+    run_id="tsp-1",
+    base_branch="main",
+    issue_number=0,
 ):
     """A candidate-parked run on disk in the REAL park state: HEAD is still the
     pre-session commit, the session's edits are UNCOMMITTED in the working tree,
@@ -1645,6 +1652,7 @@ def _write_parked_candidate(
         benchmark="tsp",
         state="waiting",
         resume_session_id="s1",
+        issue_number=issue_number,
         stage={
             "phase": "candidate",
             "base_sha": base_sha,
@@ -1903,3 +1911,54 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     )
     assert main() == 0
     assert not (run_dir(tmp_path, run_id) / "lease.json").exists()  # released
+
+
+def test_resume_reports_terminal_back_to_the_requesting_issue(tmp_path, monkeypatch) -> None:
+    # an issue-requested dispatched run must post its outcome back on wake, or
+    # the issue stays claimed forever. Improved -> comment with the PR link +
+    # "Addresses #N" in the PR body.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}, issue_number=42
+    )
+    github = CommentingGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["body"].startswith("Addresses #42.")
+    assert github.issue_comments  # posted back to the issue
+    num, body = github.issue_comments[-1]
+    assert num == 42 and "finished (improved)" in body and outcome.pr_url in body
+    # improved KEEPS the claim (the PR is the ongoing work) -> no release marker
+    from autoresearch.intake import RELEASE_MARKER
+
+    assert RELEASE_MARKER not in body
+
+
+def test_resume_negative_releases_the_issue_claim(tmp_path, monkeypatch) -> None:
+    # a negative run opens no PR, so nothing will ever resolve the issue -> the
+    # terminal comment must carry RELEASE_MARKER, or intake keeps it claimed and
+    # it can never be re-selected (a comment alone does NOT un-claim).
+    from autoresearch.intake import RELEASE_MARKER
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}, issue_number=7
+    )
+    github = CommentingGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "no-improvement"
+    num, body = github.issue_comments[-1]
+    assert num == 7 and "finished (no-improvement)" in body
+    assert RELEASE_MARKER in body  # the claim is freed for re-selection
