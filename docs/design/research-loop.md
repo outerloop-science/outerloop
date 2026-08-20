@@ -160,3 +160,42 @@ composes-with, might-replace — scored on performance *and* simplicity *and*
 optionality, never a single number. Composition itself becomes a search: "is
 `A+E` a cleaner path to near-SOTA?" and "can `E` replace `B+C+D`?" are
 experiments the portfolio generates.
+
+## Who picks the comparison — the agent frames, the gate keeps it honest
+
+The `A+E` win only makes sense against the *right* comparison, and choosing it
+is where the current design falls short of the vision.
+
+**Where the gate is today.** The gate measures `base_sha` (the full current
+`main`, e.g. `A+B+C+D`) against the candidate, head-to-head. So a candidate that
+is `A+E` — `E` swapped in for `B+C+D` — must beat the *whole* stack: `E` alone
+has to match everything `B+C+D` contributed. That bar rejects exactly the wins
+we want to credit: `A+E` landing *near* SOTA with fewer parts, or `E` as a
+viable *substitute*, both lose on the single number even though they are real
+contributions. Head-to-head-vs-`main` only ever credits SOTA.
+
+**Where it needs to go.** The fix is not "always compare to `A`" — letting an
+agent pick a weak baseline is the gaming door we must not open. It is to split
+the two roles cleanly:
+
+- **The agent frames the comparison.** It constructs the configs its story needs
+  — `A`, `A+E`, `A+B+C+D`, `A+E`-minus-`B+C+D` — runs those ablations itself (the
+  depth axis, via an eval tool), and makes a *specific* claim: "`A+E` is within
+  noise of `A+B+C+D` with three fewer components," or "`E` replaces `B+C+D`:
+  `A+E ≥ A+B+C+D`."
+- **The gate keeps it honest.** It re-runs *exactly the comparison the agent
+  declared* on the fixed benchmark. The agent chooses the framing; it can never
+  fake the numbers. This is the same un-gameable measurement that made the whole
+  system trustworthy, pointed at a claim instead of a fixed head-to-head.
+- **Transparency, not prohibition, stops weak-baseline gaming.** Every portfolio
+  entry is legible about the baseline it was measured against, so "measured vs
+  `A`, not the SOTA stack" is *visible* — and the well-rounded judge (and the
+  human) weighs whether the framing is honest and the win is real. A weak
+  baseline is allowed but exposed, not hidden.
+
+**The concrete gap.** Today `candidate_sha = base_sha + the agent's edits`, and
+there is no notion of measuring config `X` vs config `Y` beyond base-vs-candidate
+— and `A` is not even a commit that exists when `main` is `A+B+C+D`. Closing
+this is the agent-runs-experiments / declared-claim work: the same depth-axis
+substrate, letting the agent build and compare the configs its claim needs while
+the gate verifies the one it declared.
