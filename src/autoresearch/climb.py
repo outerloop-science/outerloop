@@ -178,6 +178,34 @@ def _clear_stage(record: RunRecord) -> RunRecord:
     )
 
 
+def _post_issue_finished(
+    github: GitHubClient,
+    target: str,
+    issue_number: int,
+    run_id: str,
+    outcome_name: str,
+    pr_url: str,
+    summary: str,
+    secrets: tuple[str, ...],
+) -> None:
+    """Post a run's terminal result back to the issue that requested it, so the
+    claim is released and a human sees the outcome (same as `live_climb`). A
+    woken run must report too, or an issue-requested dispatched climb ends
+    silently and the issue stays claimed forever."""
+    if not issue_number:
+        return
+    link = f"\n\nPull request: {pr_url}" if pr_url else ""
+    _best_effort(
+        "issue report",
+        lambda: github.comment(
+            target,
+            issue_number,
+            f"Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
+        ),
+        secrets,
+    )
+
+
 # A parked run's deadline is the FLOOR beneath the afterany wake: submit +
 # eval walltime + a generous queue/grace allowance. It must exceed the time a
 # healthy eval can legitimately sit queued-then-running, or `tick._sweep_one`
@@ -312,6 +340,7 @@ def resume_run(
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
     candidate_ref = str(stage["candidate_ref"])
+    issue_number = record.issue_number
     # the run's target branch rides the stage, so a wake opens its PR against
     # the branch the ORIGINAL climb selected — not the CLI's default (the wake
     # job carries no --base-branch).
@@ -459,6 +488,8 @@ def resume_run(
             body = pr_body(
                 result, config, redact_secrets=secrets, display_digits=bench.display_digits
             )
+            if issue_number:
+                body = f"Addresses #{issue_number}.\n\n{body}"
             pr_url = github.create_pull(
                 config.target,
                 title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
@@ -516,6 +547,16 @@ def resume_run(
             log.warning(
                 "run %s: PR %s opened but in-review record unsaved; snapshot kept", run_id, pr_url
             )
+        _post_issue_finished(
+            github,
+            config.target,
+            issue_number,
+            run_id,
+            "improved",
+            pr_url,
+            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+            secrets,
+        )
         return LiveClimbOutcome(
             run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
         )
@@ -546,6 +587,16 @@ def resume_run(
         log.warning(
             "run %s: ended negative but record unsaved; snapshot kept for a re-wake", run_id
         )
+    _post_issue_finished(
+        github,
+        config.target,
+        issue_number,
+        run_id,
+        result.outcome,
+        "",
+        redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+        secrets,
+    )
     return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
