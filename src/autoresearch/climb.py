@@ -1578,22 +1578,30 @@ def main() -> int:
                 "to rebuild the dispatched measurer"
             )
         from autoresearch.compute import SlurmCompute
+        from autoresearch.runstate import release_lease
 
-        resumed = resume_run(
-            args.run_root,
-            args.resume,
-            dispatch=DispatchSettings(
-                compute=SlurmCompute(),
-                image=args.image,
-                account=args.account,
-                partition=args.partition,
-            ),
-            github=GitHubClient(auth=bot_auth),
-            bot_auth=bot_auth,
-            now=time.time(),
-            secrets=(bot_auth.token(),),
-            base_branch=args.base_branch,
-        )
+        try:
+            resumed = resume_run(
+                args.run_root,
+                args.resume,
+                dispatch=DispatchSettings(
+                    compute=SlurmCompute(),
+                    image=args.image,
+                    account=args.account,
+                    partition=args.partition,
+                ),
+                github=GitHubClient(auth=bot_auth),
+                bot_auth=bot_auth,
+                now=time.time(),
+                secrets=(bot_auth.token(),),
+                base_branch=args.base_branch,
+            )
+        finally:
+            # This wake job HOLDS the run's lease (the sweep transferred it on
+            # dispatch); release it on every exit so a re-parked run is
+            # immediately eligible for the next sweep instead of waiting out the
+            # TTL reap. Idempotent (no-op if no lease file).
+            release_lease(args.run_root, args.resume)
         print(f"outcome={resumed.outcome} pr={resumed.pr_url or '-'} report={resumed.report_path}")
         return 0
 

@@ -1859,3 +1859,47 @@ def test_resume_opens_pr_against_the_runs_base_branch_from_the_stage(tmp_path, m
     )
     assert outcome.outcome == "improved"
     assert github.prs[0]["base"] == "dev"  # not the CLI default "main"
+
+
+def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
+    # the wake job holds the run's lease (transferred by the sweep on dispatch);
+    # the --resume CLI must release it on every exit so a re-parked run is
+    # immediately eligible for the next sweep, not stuck until the TTL reap.
+    from autoresearch import climb as climb_mod
+    from autoresearch.climb import LiveClimbOutcome, main
+    from autoresearch.runstate import acquire_lease, run_dir
+
+    run_id = "tsp-wake"
+    (tmp_path / "runs" / run_id).mkdir(parents=True)
+    (tmp_path / "pat").write_text("ghp_x\n")
+    (tmp_path / "pat").chmod(0o600)  # token() enforces 0600
+    (tmp_path / "img.sif").write_text("")  # just needs to be a file
+    assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
+    assert (run_dir(tmp_path, run_id) / "lease.json").exists()
+
+    monkeypatch.setattr(climb_mod, "arm_sigterm_containment", lambda: None)
+    monkeypatch.setattr(
+        climb_mod,
+        "resume_run",
+        lambda *a, **k: LiveClimbOutcome(run_id=run_id, outcome="parked"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "climb",
+            "--resume",
+            run_id,
+            "--run-root",
+            str(tmp_path),
+            "--account",
+            "acct",
+            "--partition",
+            "cpu",
+            "--image",
+            str(tmp_path / "img.sif"),
+            "--pat-file",
+            str(tmp_path / "pat"),
+        ],
+    )
+    assert main() == 0
+    assert not (run_dir(tmp_path, run_id) / "lease.json").exists()  # released
