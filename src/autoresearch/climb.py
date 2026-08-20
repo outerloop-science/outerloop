@@ -392,6 +392,19 @@ def resume_run(
 
         assert result.baseline is not None and result.candidate is not None
         baseline, candidate = result.baseline, result.candidate
+        # a zero-change "improvement" is metric noise, not progress — never a PR
+        # (defense in depth; measure_and_decide already requires a real delta,
+        # and an empty base..candidate diff implies baseline == candidate).
+        if not measured_paths:
+            result = dc_replace(
+                result, outcome="no-improvement", note="no code change; metric noise"
+            )
+            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+            final = _clear_stage(
+                RunRecord(**{**record.__dict__, "state": ENDED, "ending": NEGATIVE_RESULT})
+            )
+            _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+            return LiveClimbOutcome(run_id=run_id, outcome="no-improvement")
         branch = f"{config.branch_prefix}/{run_id}"
         try:
             # FORCE-checkout the sealed candidate: at wake the workspace still
