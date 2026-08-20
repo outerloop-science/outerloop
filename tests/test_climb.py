@@ -681,49 +681,6 @@ def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> 
     assert "branch left on remote: feat/auto/agent-01/tsp-orphan" in record.ending_note
 
 
-def test_not_beating_recorded_best_is_rejected_loudly(tmp_path, target_repo) -> None:
-    """Improved vs a stale baseline but worse than the ledger's best: no PR,
-    and the reason is recorded."""
-    import json as _json
-
-    # seed a leader in the origin whose best is better than this run's candidate
-    seed = tmp_path / "leaderseed"
-    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
-    (seed / "results").mkdir(exist_ok=True)
-    (seed / "results" / "leader.json").write_text(
-        _json.dumps(
-            {
-                "tsp": {
-                    "benchmark": "tsp",
-                    "metric": "mean_tour_length",
-                    "direction": "min",
-                    "baseline": 13.876,
-                    "best": 12.0,
-                    "best_run": "r0",
-                    "updated": "d",
-                }
-            }
-        )
-    )
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
-    _git(seed, "push", "-q", "origin", "main")
-
-    outcome, github = run_live(
-        tmp_path,
-        target_repo,
-        edits={"src/pilot/solvers/tsp.py": "w=9\n"},
-        values=[13.876, 13.1],  # improved vs own baseline, worse than best 12.0
-        run_id="tsp-stale",
-    )
-    assert outcome.outcome == "publish-error"
-    assert github.prs == []
-    assert (
-        "does not beat the recorded best"
-        in load_record(tmp_path / "state", "tsp-stale").ending_note
-    )
-
-
 def _push_contract(tmp_path, target_repo, contract_text: str, name: str) -> None:
     seed = tmp_path / f"contract-{name}"
     _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
@@ -733,18 +690,14 @@ def _push_contract(tmp_path, target_repo, contract_text: str, name: str) -> None
     _git(seed, "push", "-q", "origin", "main")
 
 
-def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None:
-    """Beats the recorded best, but by less than min_delta: the recorded
-    best was measured under a DIFFERENT seed, so the delta is pool luck —
-    an honest negative result, never a PR and never an abort."""
+def test_beats_baseline_but_not_recorded_best_still_opens_a_pr(tmp_path, target_repo) -> None:
+    """We credit beating YOUR baseline (docs/design/research-loop.md): a clean
+    win over base_sha opens a PR even when it does not beat the ledger's best.
+    The ledger's `best` is unchanged (SOTA tracked, not required), so the finish
+    pushes the candidate with no leaderboard commit on top."""
     import json as _json
 
-    _push_contract(
-        tmp_path,
-        target_repo,
-        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
-        "floor",
-    )
+    # seed a leader whose best (12.0) is better than this run's candidate (13.1)
     seed = tmp_path / "leaderseed"
     _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
     (seed / "results").mkdir(exist_ok=True)
@@ -771,64 +724,11 @@ def test_within_noise_floor_is_an_honest_negative(tmp_path, target_repo) -> None
         tmp_path,
         target_repo,
         edits={"src/pilot/solvers/tsp.py": "w=9\n"},
-        values=[13.876, 11.8],  # beats best 12.0, but only by 0.2 < 0.5
-        run_id="tsp-floor",
+        values=[13.876, 13.1],  # beats own baseline, worse than recorded best 12.0
+        run_id="tsp-composable",
     )
-    assert outcome.outcome == "no-improvement"
-    assert github.prs == []
-    record = load_record(tmp_path / "state", "tsp-floor")
-    assert record.ending == "negative-result"
-    assert "noise floor" in record.ending_note and "0.5" in record.ending_note
-
-
-def test_sub_threshold_delta_on_floored_benchmark_is_negative_not_abort(
-    tmp_path, target_repo
-) -> None:
-    """Round-4 finding: with min_delta declared, EVERY sub-floor delta over
-    the recorded best — including one below the relative threshold — is an
-    honest negative, not a stale-clone abort."""
-    import json as _json
-
-    _push_contract(
-        tmp_path,
-        target_repo,
-        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
-        "subrel",
-    )
-    seed = tmp_path / "leaderseed2"
-    _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
-    (seed / "results").mkdir(exist_ok=True)
-    (seed / "results" / "leader.json").write_text(
-        _json.dumps(
-            {
-                "tsp": {
-                    "benchmark": "tsp",
-                    "metric": "mean_tour_length",
-                    "direction": "min",
-                    "baseline": 13.876,
-                    "best": 12.0,
-                    "best_run": "r0",
-                    "updated": "d",
-                }
-            }
-        )
-    )
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "leader")
-    _git(seed, "push", "-q", "origin", "main")
-
-    outcome, github = run_live(
-        tmp_path,
-        target_repo,
-        edits={"src/pilot/solvers/tsp.py": "w=11\n"},
-        values=[13.876, 11.999],  # 0.001 over best: below rel threshold AND floor
-        run_id="tsp-subrel",
-    )
-    assert outcome.outcome == "no-improvement"
-    assert github.prs == []
-    record = load_record(tmp_path / "state", "tsp-subrel")
-    assert record.ending == "negative-result"
-    assert "noise floor" in record.ending_note
+    assert outcome.outcome == "improved"  # a composable win, not a rejection
+    assert github.prs and github.prs[0]["head"] == "feat/auto/agent-01/tsp-composable"
 
 
 def test_baseline_eval_runs_outside_the_session_workspace(tmp_path, target_repo) -> None:

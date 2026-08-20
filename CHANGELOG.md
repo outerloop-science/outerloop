@@ -6,6 +6,20 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- We credit **beating your own baseline**, not only beating the recorded best
+  (docs/design/research-loop.md, "two kinds of win"). The first-pass climb no
+  longer hard-fails a candidate that improves over `base_sha` by the gate's
+  threshold but does not beat the ledger's recorded best — that clean composable
+  win now opens a PR (a human, later a planner, judges). The `NoiseFloored`
+  ending and the recorded-best/stale-clone abort are removed; the gate
+  (`measure_and_decide`) still requires candidate to beat `base_sha` on paired
+  seeds, and the ledger's `best` still only advances on a genuine improvement
+  (SOTA stays tracked, just not required). The dispatched wake matches: when the
+  ledger does not move, it pushes the sealed candidate with no leaderboard commit
+  on top (this also fixes an empty-commit abort the reviewer caught).
+
 ### Fixed
 
 - Wake-path hardening from the self-review + advisory review of the dispatched

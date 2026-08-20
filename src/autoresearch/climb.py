@@ -47,8 +47,6 @@ from autoresearch.orchestrator import (
     SubprocessEvaluator,
     SuiteMeasurement,
     _benchmark,
-    benchmark_floor,
-    clears_min_delta,
     climb_once,
     out_of_scope,
     pr_body,
@@ -59,7 +57,6 @@ from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.panel import PanelLens, PanelVerdict, run_panel
 from autoresearch.progress import (
     PROGRESS_PATHS,
-    fmt_metric,
     load_leader,
     update_leader,
     write_progress,
@@ -89,12 +86,6 @@ log = logging.getLogger(__name__)
 # role separation) before claiming/submitting.
 PANEL_KEY_DEFAULT = "~/.config/autoresearch/verifier_key"
 HARNESS_KEY_DEFAULT = "~/.config/autoresearch/harness_key"
-
-
-class NoiseFloored(RuntimeError):
-    """The candidate beat the recorded best, but by less than the
-    benchmark's cross-seed noise floor — pool luck, not progress. An
-    honest negative result, never an abort."""
 
 
 class WorkspaceDrift(RuntimeError):
@@ -407,18 +398,22 @@ def resume_run(
             extra = [p for p in staged if p not in PROGRESS_PATHS]
             if extra:
                 raise WorkspaceDrift(f"wake commit would stage non-ledger paths: {extra[:10]}")
-            if not staged:
-                raise WorkspaceDrift("wake produced no ledger change to commit")
-            ws.git(
-                "-c",
-                f"user.name={config.bot_login}",
-                "-c",
-                f"user.email={config.bot_login}@users.noreply.github.com",
-                "commit",
-                "-m",
-                f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
-                f"\n\nAgent: {config.agent_id}",
-            )
+            # Commit the ledger update on top of the sealed candidate ONLY when
+            # it actually moved. When the candidate beat its baseline but not the
+            # recorded best, update_leader is a no-op (the ledger's `best` does
+            # not advance) — a valid composable win with no leaderboard change,
+            # so push the candidate as-is rather than an empty commit.
+            if staged:
+                ws.git(
+                    "-c",
+                    f"user.name={config.bot_login}",
+                    "-c",
+                    f"user.email={config.bot_login}@users.noreply.github.com",
+                    "commit",
+                    "-m",
+                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                    f"\n\nAgent: {config.agent_id}",
+                )
             ws.push(branch)
             body = pr_body(
                 result, config, redact_secrets=secrets, display_digits=bench.display_digits
@@ -1160,42 +1155,14 @@ def live_climb(
             # by the orchestrator from ITS measurements after the drift check
             # — read from the (possibly merged) tree, so the leader check runs
             # against the FRESH ledger, not the clone's snapshot.
-            prior = load_leader(workspace).get(config.benchmark)
-            if prior is not None:
-                rel_ok = orch_improved(
-                    prior.best, candidate, bench.direction, config.min_relative_improvement
-                )
-                if bench.min_delta or bench.min_delta_rel:
-                    # A resampled pool re-rolls between runs, so ANY
-                    # sub-floor delta over the recorded best — including
-                    # one below the relative threshold — is an expected
-                    # honest negative, never an anomaly (round-4 review
-                    # finding: the abort band contradicted the promise).
-                    floored = not clears_min_delta(
-                        prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
-                    )
-                    if not rel_ok or floored:
-                        # name the check that actually failed, not just
-                        # whichever floor happens to exist
-                        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
-                        if floored and floor > 0:
-                            shown = fmt_metric(floor, bench.display_digits)
-                            why = f"the cross-seed noise floor ({shown})"
-                        elif floored:
-                            why = f"a usable baseline (recorded best {prior.best})"
-                        else:
-                            why = "the relative-improvement threshold"
-                        raise NoiseFloored(
-                            f"candidate {candidate} does not clear the recorded "
-                            f"best {prior.best} beyond {why}"
-                        )
-                elif not rel_ok:
-                    # fixed pool: the ledger says this run's own baseline
-                    # was stale — an anomaly worth a loud ending
-                    raise WorkspaceDrift(
-                        f"candidate {candidate} does not beat the recorded "
-                        f"best {prior.best} by the noise floor (stale clone or eval noise)"
-                    )
+            # We credit BEATING YOUR OWN BASELINE, not only beating the recorded
+            # best (docs/design/research-loop.md, "two kinds of win"): a clean
+            # composable win — improving over base_sha by the gate's threshold —
+            # is a valid PR even when it is not the new SOTA. So there is no
+            # recorded-best hard-fail here; the gate (`measure_and_decide`) has
+            # already required candidate to beat base_sha on paired seeds. The
+            # ledger's `best` still only advances on a genuine improvement over
+            # it (update_leader), so SOTA stays tracked — just not required.
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -1276,19 +1243,6 @@ def live_climb(
                     "pr_url": pr_url,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
-                }
-            )
-        except NoiseFloored as exc:
-            # honest negative: the work was fine, the delta is not evidence
-            outcome_name = "no-improvement"
-            result = dc_replace(result, outcome="no-improvement", note=str(exc))
-            log.info("noise-floored for %s: %s", run_id, exc)
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": NEGATIVE_RESULT,
-                    "ending_note": redact(str(exc), secrets)[:480],
                 }
             )
         except SuiteRegressed as exc:
