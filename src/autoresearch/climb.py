@@ -454,6 +454,12 @@ def resume_run(
             # plain checkout could be blocked; the sha already captured exactly
             # the measured content.
             ws.git("checkout", "-f", "-B", branch, candidate_sha)
+            # `checkout -f` does NOT remove untracked files, and the panel's
+            # `git add -A` (in build_panel_runner) would sweep any post-snapshot
+            # cruft into the tree it judges. Clean untracked (non-ignored) files
+            # so the panel reads EXACTLY candidate_sha. The ledger commit stages
+            # only PROGRESS_PATHS, so it was never affected.
+            ws.git("clean", "-fd")
 
             # Verification panel on the credited claim — the SAME gate the
             # inline path runs (docs/design/orchestrator-verify.md), so a

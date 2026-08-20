@@ -2032,3 +2032,45 @@ def test_resume_blocking_panel_opens_a_draft_and_never_arms(tmp_path, monkeypatc
     assert outcome.outcome == "improved"  # PR still opens...
     assert github.prs[0]["draft"] is True  # ...as a DRAFT
     assert github.armed == []  # and never armed
+
+
+def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypatch) -> None:
+    # after checkout -f candidate_sha the workspace keeps post-snapshot untracked
+    # files (the fixture's eval-cache.tmp); the panel's git add -A would sweep
+    # them into the judged tree unless they are cleaned first. A judge inspects
+    # its pr-head checkout to prove the cruft is absent.
+    import json as _json
+    from dataclasses import dataclass, field
+
+    from autoresearch.panel import PanelLens
+
+    @dataclass
+    class _SpyJudge:
+        saw_cruft: list = field(default_factory=list)
+
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.saw_cruft.append((Path(workspace) / "eval-cache.tmp").exists())
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.0,
+                num_turns=1,
+                session_id="judge",
+                final_text=_json.dumps({"findings": [], "notes": "clean"}),
+                transcript_path="",
+            )
+
+    judge = _SpyJudge()
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=FakeGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", judge),),
+    )
+    assert judge.saw_cruft == [False]  # the panel judged candidate_sha, not the cruft
