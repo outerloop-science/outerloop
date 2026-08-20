@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-dark.svg">
+  <img alt="autoresearch" src="docs/assets/icon-light.svg" width="132">
+</picture>
+
 # autoresearch
 
 [![ci](https://github.com/agentic-learning-ai-lab/autoresearch/actions/workflows/ci.yml/badge.svg)](https://github.com/agentic-learning-ai-lab/autoresearch/actions/workflows/ci.yml)
