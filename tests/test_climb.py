@@ -1807,3 +1807,32 @@ def test_resume_reads_contract_from_base_not_the_dirty_tree(tmp_path, monkeypatc
     )
     assert outcome.outcome == "improved"  # base's contract was used, not the corrupt tree
     assert github.prs and github.prs[0]["base"] == "main"
+
+
+def test_resume_negative_keeps_snapshot_if_the_record_save_fails(tmp_path, monkeypatch) -> None:
+    # a negative wake must save the ENDED record BEFORE dropping the snapshot:
+    # if the save fails, the run stays recoverable (snapshot intact), never
+    # WAITING with the candidate gone.
+    from autoresearch import climb as climb_mod
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    real_save = climb_mod.save_record
+
+    def failing_save(root, record, now):
+        if record.state == "ended":
+            raise OSError("disk full")
+        return real_save(root, record, now)
+
+    monkeypatch.setattr(climb_mod, "save_record", failing_save)
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept for a re-wake

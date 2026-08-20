@@ -491,8 +491,10 @@ def resume_run(
             run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
         )
 
-    # a negative terminal: release the snapshot and end the record.
-    drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+    # a negative terminal: end the record, THEN release the snapshot. Save
+    # BEFORE dropping (same ordering as the improved path): if the save fails,
+    # the run stays WAITING with its snapshot intact, so a re-wake can still
+    # reconstruct — never WAITING with the snapshot already gone.
     report_path = run_dir / "report.md"
     _best_effort(
         "run report",
@@ -509,7 +511,12 @@ def resume_run(
             }
         )
     )
-    _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+    if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+        drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+    else:
+        log.warning(
+            "run %s: ended negative but record unsaved; snapshot kept for a re-wake", run_id
+        )
     return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
