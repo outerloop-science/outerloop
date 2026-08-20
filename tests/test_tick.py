@@ -1915,3 +1915,35 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
     # on-switch but incomplete env -> fail SAFE to dry, not a wake that can't run
     dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
+
+
+def test_job_wake_dispatcher_walltime_includes_the_panel(tmp_path, monkeypatch):
+    # the wake now runs the verification panel, so its Slurm walltime must be
+    # more than the bare read+PR base when a panel is configured.
+    from autoresearch.runstate import RunRecord
+    from autoresearch.tick import FollowupSpec, JobWakeDispatcher, _wake_panel_minutes
+
+    times = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            for a in argv:
+                if a.startswith("--time="):
+                    times.append(int(a.split("=")[1]))
+            return CommandResult(0, "9001\n", "")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    record = RunRecord(
+        run_id="tsp-1", target="o/r", task_title="t", benchmark="tsp", state="waiting", stage={}
+    )
+    base = dict(account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path)
+    with_panel = FollowupSpec(**base, panel="verify,review")
+    no_panel = FollowupSpec(**base, panel="")
+    JobWakeDispatcher(SlurmCompute(runner=runner), with_panel, now=NOW).dispatch(record, "x")
+    JobWakeDispatcher(SlurmCompute(runner=runner), no_panel, now=NOW).dispatch(record, "x")
+    assert _wake_panel_minutes(with_panel) > 0 and _wake_panel_minutes(no_panel) == 0
+    assert times[0] == 20 + _wake_panel_minutes(with_panel)  # panel allowance added
+    assert times[1] == 20  # no panel -> just the base

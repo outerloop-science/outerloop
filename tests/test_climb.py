@@ -2074,3 +2074,30 @@ def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypat
         panel_lenses=(PanelLens("review", judge),),
     )
     assert judge.saw_cruft == [False]  # the panel judged candidate_sha, not the cruft
+
+
+def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) -> None:
+    # a panel ERROR (not a finding) must not abort the publish and drop the
+    # candidate snapshot — the improvement is real. Fail closed to a DRAFT.
+    from autoresearch import climb as climb_mod
+    from autoresearch.panel import PanelLens
+
+    def boom(*a, **k):
+        raise RuntimeError("worktree add failed")
+
+    monkeypatch.setattr(climb_mod, "build_panel_runner", boom)
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", object()),),  # type: ignore[arg-type]  # runner monkeypatched to raise
+    )
+    assert outcome.outcome == "improved"  # NOT publish-error
+    assert github.prs[0]["draft"] is True and github.armed == []  # degraded -> draft, no arm

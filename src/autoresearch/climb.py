@@ -472,24 +472,42 @@ def resume_run(
             # to REVISE on a blocking finding — the depth axis — is the next
             # slice; for now a human triages the draft.
             if panel_lenses:
-                verdict = build_panel_runner(
-                    ws,
-                    run_dir,
-                    base_sha,
-                    panel_lenses,
-                    contract_text,
-                    config.target,
-                    config.benchmark,
-                    config.bot_login,
-                    _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
-                )(baseline, candidate, str(stage.get("report", "")))
-                result = dc_replace(
-                    result,
-                    panel_transcript=verdict.transcript,
-                    panel_rounds=1,
-                    panel_blocking_open=bool(verdict.blocking),
-                    panel_degraded=verdict.degraded,
-                )
+                # A panel ERROR (a git op in build_panel_runner, not a finding)
+                # must NOT abort the publish and drop the candidate snapshot —
+                # the improvement is real and measured. Fail closed to DEGRADED:
+                # open a DRAFT for a human, keep the candidate. (run_panel itself
+                # already fails closed per-lens; this catches the git setup.)
+                try:
+                    verdict = build_panel_runner(
+                        ws,
+                        run_dir,
+                        base_sha,
+                        panel_lenses,
+                        contract_text,
+                        config.target,
+                        config.benchmark,
+                        config.bot_login,
+                        _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
+                    )(baseline, candidate, str(stage.get("report", "")))
+                    result = dc_replace(
+                        result,
+                        panel_transcript=verdict.transcript,
+                        panel_rounds=1,
+                        panel_blocking_open=bool(verdict.blocking),
+                        panel_degraded=verdict.degraded,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "wake panel errored for %s (%s); opening a DRAFT",
+                        run_id,
+                        redact(f"{type(exc).__name__}: {exc}", secrets),
+                    )
+                    result = dc_replace(
+                        result,
+                        panel_degraded=True,
+                        panel_transcript="panel setup failed — NOT a clean read",
+                        panel_rounds=1,
+                    )
 
             entries = update_leader(
                 load_leader(workspace),

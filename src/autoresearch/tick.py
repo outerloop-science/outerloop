@@ -1667,13 +1667,28 @@ class JobWakeDispatcher:
                 job_name=name,
                 account=self.spec.account,
                 partition=self.spec.job_partition or self.spec.partition,
-                time_minutes=self.wake_minutes,
+                time_minutes=self.wake_minutes + _wake_panel_minutes(self.spec),
                 command=_flight_command(self.spec.home, name, self.now, argv),
                 dependency=afterany,
                 cpus=2,
                 mem="4G",
             )
         )
+
+
+def _wake_panel_minutes(spec: FollowupSpec) -> int:
+    """Extra wake walltime for the verification panel it now runs — the base
+    `wake_minutes` covers only reading results + opening the PR. One read per
+    lens on the judge budget (slice 1: no revision yet). Grounded in the same
+    judge budgets `_panel_job_minutes` uses; the revision wake's session budget
+    is added when slice 2 lands."""
+    lenses = [entry for entry in spec.panel.split(",") if entry.strip()]
+    if not lenses:
+        return 0
+    from autoresearch.roles import reviewer_spec, verifier_spec
+
+    judge_minutes = max(reviewer_spec().budget.walltime_s, verifier_spec().budget.walltime_s) // 60
+    return len(lenses) * judge_minutes
 
 
 def _wake_dispatcher_from_env(
