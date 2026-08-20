@@ -1934,9 +1934,18 @@ def test_resume_reports_terminal_back_to_the_requesting_issue(tmp_path, monkeypa
     assert github.issue_comments  # posted back to the issue
     num, body = github.issue_comments[-1]
     assert num == 42 and "finished (improved)" in body and outcome.pr_url in body
+    # improved KEEPS the claim (the PR is the ongoing work) -> no release marker
+    from autoresearch.intake import RELEASE_MARKER
+
+    assert RELEASE_MARKER not in body
 
 
-def test_resume_negative_reports_back_to_the_requesting_issue(tmp_path, monkeypatch) -> None:
+def test_resume_negative_releases_the_issue_claim(tmp_path, monkeypatch) -> None:
+    # a negative run opens no PR, so nothing will ever resolve the issue -> the
+    # terminal comment must carry RELEASE_MARKER, or intake keeps it claimed and
+    # it can never be re-selected (a comment alone does NOT un-claim).
+    from autoresearch.intake import RELEASE_MARKER
+
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}, issue_number=7
     )
@@ -1952,3 +1961,4 @@ def test_resume_negative_reports_back_to_the_requesting_issue(tmp_path, monkeypa
     assert outcome.outcome == "no-improvement"
     num, body = github.issue_comments[-1]
     assert num == 7 and "finished (no-improvement)" in body
+    assert RELEASE_MARKER in body  # the claim is freed for re-selection

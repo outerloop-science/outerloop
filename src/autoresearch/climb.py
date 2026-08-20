@@ -188,19 +188,26 @@ def _post_issue_finished(
     summary: str,
     secrets: tuple[str, ...],
 ) -> None:
-    """Post a run's terminal result back to the issue that requested it, so the
-    claim is released and a human sees the outcome (same as `live_climb`). A
-    woken run must report too, or an issue-requested dispatched climb ends
-    silently and the issue stays claimed forever."""
+    """Post a run's terminal result back to the issue that requested it. When
+    the run ends WITHOUT a PR (a negative or an error), include the
+    `RELEASE_MARKER` so `intake.pick_issue` can re-select the issue — a comment
+    alone does NOT un-claim it. An improved run KEEPS the claim: its PR
+    (`Addresses #N`) is the ongoing work, and `followup` releases the claim if
+    that PR later closes unmerged."""
     if not issue_number:
         return
+    from autoresearch.intake import RELEASE_MARKER
+
     link = f"\n\nPull request: {pr_url}" if pr_url else ""
+    # no PR opened -> nothing will ever resolve this issue, so free the claim
+    # (bounded by intake's per-issue attempt cap).
+    release = f"{RELEASE_MARKER}\n" if not pr_url else ""
     _best_effort(
         "issue report",
         lambda: github.comment(
             target,
             issue_number,
-            f"Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
+            f"{release}Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
         ),
         secrets,
     )
@@ -1429,15 +1436,14 @@ def live_climb(
                 secrets,
             )
     if issue_number:
-        summary = redact(result.report(config, redact_secrets=secrets), secrets)[:8000]
-        link = f"\n\nPull request: {pr_url}" if pr_url else ""
-        _best_effort(
-            "issue report",
-            lambda: github.comment(
-                config.target,
-                issue_number,
-                f"Run `{run_id}` finished ({outcome_name}).{link}\n\n{summary}",
-            ),
+        _post_issue_finished(
+            github,
+            config.target,
+            issue_number,
+            run_id,
+            outcome_name,
+            pr_url,
+            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
