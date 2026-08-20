@@ -824,7 +824,13 @@ def _sweep_one(
             return
 
         if not record.experiment_job_id:
-            return  # not yet submitted; not the sweep's business
+            # No job id to poll. A BLIND PARK (the measurer could not read Slurm,
+            # so `MeasurementPending` carried no ids) still hibernated with a
+            # deadline — the deadline floor is its ONLY wake, so fire on it. A
+            # genuinely mid-write record has no deadline and is left alone.
+            if record.deadline > 0 and now > record.deadline:
+                wake(record, "blind park past deadline", "deadline")
+            return
 
         try:
             state = compute.status(record.experiment_job_id)

@@ -6,6 +6,19 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- The climb PARK mechanics — dispatcher phase 1, stage B part 2c(i). When a
+  measurer parks (`MeasurementPending`), `climb_once` raises `ClimbParked` at
+  whichever point hibernated: `baseline` (before the session even runs — the
+  wake will rerun it) or `candidate` (after it — the wake decides). `live_climb`
+  catches it and writes a `WAITING` record carrying the re-entry `stage` (a new
+  `RunRecord` field: committed shas, drawn seeds, the candidate snapshot ref,
+  and the afterany set), keeps the candidate snapshot alive so the wake can read
+  it (dropping every other), and ends — never an error. Selecting the dispatched
+  backend for expensive evals (so parks actually fire) and the wake path that
+  resumes from the record are the next parts.
+
 ### Changed
 
 - `climb_once` now measures through the `Measurer` seam — dispatcher phase 1,

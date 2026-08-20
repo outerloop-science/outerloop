@@ -34,6 +34,7 @@ from autoresearch.harness import ClaudeCodeHarness, Harness, redact
 from autoresearch.measure import LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
+    ClimbParked,
     Evaluator,
     SubprocessEvaluator,
     SuiteMeasurement,
@@ -63,6 +64,7 @@ from autoresearch.runstate import (
     IN_REVIEW,
     NEGATIVE_RESULT,
     STUCK,
+    WAITING,
     RunRecord,
     save_record,
     stamp_outage,
@@ -148,6 +150,73 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
     except Exception as exc:
         log.warning("%s failed: %s", what, redact(f"{type(exc).__name__}: {exc}", secrets))
         return False
+
+
+# A parked run's deadline is the FLOOR beneath the afterany wake: submit +
+# eval walltime + a generous queue/grace allowance. It must exceed the time a
+# healthy eval can legitimately sit queued-then-running, or `tick._sweep_one`
+# would cancel a still-queued job as "unschedulable".
+PARK_QUEUE_SLACK_MIN = 12 * 60
+
+
+def _park_run(
+    run_root: Path,
+    record: RunRecord,
+    parked: ClimbParked,
+    candidate_ref: str,
+    eval_minutes: int | None,
+    now: float,
+) -> None:
+    """Persist a dispatched climb's re-entry point as a WAITING record: the
+    committed shas, drawn seeds, candidate snapshot ref, and afterany set a
+    fresh process reconstructs the measure-and-decide phase from. The caller
+    passes the EXACT `candidate_ref` it will keep alive (never re-derive it from
+    the commit — two snapshots can share a commit). The wake path (which reads
+    this and resumes) is a later PR."""
+    from autoresearch.dispatch import effective_eval_minutes
+
+    job_ids = parked.afterany.split(":")[1:] if parked.afterany else []
+    stage: dict[str, object] = {
+        "phase": parked.phase,
+        "base_sha": parked.base_sha,
+        "candidate_sha": parked.candidate_sha,
+        "candidate_ref": candidate_ref,
+        "seed": parked.seed,
+        "suite_seed": parked.suite_seed,
+        "afterany": parked.afterany,
+    }
+    # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
+    # is right for a single-job park (baseline, or a candidate with no siblings):
+    # poll it. But a MULTI-job park (candidate + siblings) must not wake when the
+    # FIRST job finishes while the rest run — so it records no single job and
+    # rides the DEADLINE floor instead (which sits past every eval's walltime).
+    # The precise "all jobs done" fast wake is the afterany wake job (a later PR).
+    experiment_job_id = job_ids[0] if len(job_ids) == 1 else ""
+    # The deadline is a FLOOR: park time (`now` here is the park moment, passed
+    # by the caller) + the eval walltime + a generous queue/grace slack, so a
+    # healthy queued-then-running eval never trips the sweep's cancel-on-pending.
+    deadline = now + (effective_eval_minutes(eval_minutes) + PARK_QUEUE_SLACK_MIN) * 60
+    waiting = RunRecord(
+        **{
+            **record.__dict__,
+            "state": WAITING,
+            "experiment_job_id": experiment_job_id,
+            "resume_session_id": parked.session.session_id if parked.session else "",
+            "deadline": deadline,
+            "stage": stage,
+            # Reset only valid because THIS is the IMPLEMENTING->park entry: the
+            # run just LEFT waiting to do work (a session, a measure), so
+            # wake_attempts — "wakes since the run last left waiting" — is stale;
+            # a productive park/wake cycle must not creep toward the stuck cap.
+            # The wake path (a later PR) must NOT route a no-progress blind
+            # re-park (results still pending) back through here — resetting on
+            # that would defeat the stuck cap; a blind re-park keeps the counter.
+            "wake_attempts": 0,
+            "terminal_seen": 0.0,
+            "wake_job_id": "",
+        }
+    )
+    save_record(run_root, waiting, now)
 
 
 def _measure_committed(
@@ -449,6 +518,8 @@ def live_climb(
             snapshots.append(snap)
             return snap.commit
 
+        parked: ClimbParked | None = None
+        kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
             result = climb_once(
                 config,
@@ -466,8 +537,35 @@ def live_climb(
                 panel_runner=panel_runner,
                 panel_revisions=panel_revisions,
             )
+        except ClimbParked as p:
+            # The climb dispatched its measures and hibernated. Persist the
+            # re-entry stage as a WAITING record (not an error), keep the
+            # candidate snapshot alive for the wake, and end. The wake re-enters
+            # from the record (the wake path is a later PR). `parked` is set only
+            # AFTER a successful write: if _park_run raises, it stays None so the
+            # finally drops every snapshot (no leak) and the outer handler ends
+            # the run as an error rather than a half-written hibernation.
+            if p.phase == "candidate":
+                # keep exactly ONE snapshot for that sha (two can share a
+                # commit); record and keep that same ref, drop the rest.
+                kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
+            eval_minutes = next(
+                (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
+            )
+            import time
+
+            # anchor the deadline to the PARK (when the evals were submitted),
+            # not the run's start `now` — a session lasting hours would otherwise
+            # eat the queue budget and let the sweep cancel a still-queued eval.
+            _park_run(run_root, record, p, kept_ref, eval_minutes, time.time())
+            parked = p
+            return LiveClimbOutcome(run_id=run_id, outcome="parked")
         finally:
             for snap in snapshots:
+                # a candidate park must OUTLIVE the wake — keep the ONE recorded
+                # snapshot (matched by ref, not commit); drop every other one.
+                if parked and kept_ref and snap.ref == kept_ref:
+                    continue
                 drop_snapshot(ws, snap)  # best-effort + self-logging; never raises
             if not _best_effort(
                 "baseline worktree cleanup",

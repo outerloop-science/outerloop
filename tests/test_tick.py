@@ -95,6 +95,20 @@ def test_terminal_experiment_past_grace_gets_backup_wake(tmp_path: Path) -> None
     assert load_record(tmp_path, "r1").wake_attempts == 1
 
 
+def test_blind_park_with_no_job_id_wakes_on_its_deadline(tmp_path: Path) -> None:
+    # a park the measurer could not attach a job id to (Slurm was blind) still
+    # hibernated with a deadline — the deadline floor is its ONLY wake.
+    waiting_run(tmp_path, experiment_job_id="", deadline=NOW - 1)
+    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
+    assert dispatcher.dispatched == [("r1", "blind park past deadline")]
+
+
+def test_blind_park_before_its_deadline_is_left_alone(tmp_path: Path) -> None:
+    waiting_run(tmp_path, experiment_job_id="", deadline=NOW + 10_000)
+    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
+    assert dispatcher.dispatched == []
+
+
 def test_terminal_within_grace_leaves_it_to_the_afterany_job(tmp_path: Path) -> None:
     waiting_run(tmp_path, terminal_seen=NOW - 10)  # first seen moments ago
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
