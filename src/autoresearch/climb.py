@@ -218,7 +218,9 @@ def _park_run(
         # it lands in the durable record, like every other persisted final_text
         # — a session that echoed a credential must not leave it in record.json.
         # Empty/zero for a baseline park (the session has not run yet).
-        "report": redact(parked.session.final_text, secrets) if parked.session else "",
+        "report": redact(parked.session.final_text, secrets)[:MAX_CLAIM_CHARS]
+        if parked.session
+        else "",
         "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
         "session_turns": parked.session.num_turns if parked.session else 0,
     }
@@ -1652,6 +1654,7 @@ def main() -> int:
         try:
             outcome = live_climb(
                 config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+                base_branch=args.base_branch,
                 run_root=args.run_root,
                 run_id=run_id,
                 harness=build_editor_harness(
