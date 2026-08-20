@@ -1657,6 +1657,9 @@ def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=Non
     save_record(state, record, 1_000_000.0)
     fake = _FakeMeasurer(values=values, raise_exc=raise_exc)
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
+    # the wake pushes to the canonical target URL (never the ws git config);
+    # point that at this run's local bare so the improved-wake test can push.
+    monkeypatch.setattr("autoresearch.climb._target_clone_url", lambda target: str(bare))
     return state, run_id
 
 
@@ -1782,3 +1785,25 @@ def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, m
         now=1_000_100.0,
     )
     assert load_record(state2, rid2).wake_attempts == 0  # reset on progress
+
+
+def test_resume_reads_contract_from_base_not_the_dirty_tree(tmp_path, monkeypatch) -> None:
+    # a session could rewrite .autoresearch.yaml in the working tree to widen
+    # its own scope; the wake must gate on the BASE commit's contract, not the
+    # dirty tree. Corrupt the working-tree contract: if the wake read it, it
+    # would crash; reading base, it still succeeds.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    (state / "runs" / run_id / "ws" / ".autoresearch.yaml").write_text("}{ not valid yaml :\n")
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "improved"  # base's contract was used, not the corrupt tree
+    assert github.prs and github.prs[0]["base"] == "main"

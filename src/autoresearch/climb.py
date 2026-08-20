@@ -98,6 +98,13 @@ class SuiteRegressed(RuntimeError):
     result wherever it is caught, never an abort."""
 
 
+def _target_clone_url(target: str) -> str:
+    """The canonical HTTPS clone URL for `owner/repo`. The one source of truth
+    for where a run's git pushes go — derived from the target, never read from
+    the session-writable `remote.origin.url`."""
+    return f"https://github.com/{target}.git"
+
+
 def _title_pair(a: float, b: float) -> str:
     """Compact but never ambiguous: widen precision until the two numbers
     render differently (a title reading '10.00 -> 10.00' looks like no
@@ -282,10 +289,11 @@ def resume_run(
     workspace = run_dir / "ws"
     record = load_record(run_root, run_id)
     stage = record.stage
-    ws = Workspace(root=workspace, auth=bot_auth)
-    contract = load_contract((workspace / ".autoresearch.yaml").read_text(), record.target)
-    bench = _benchmark(contract, record.benchmark)
-    config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
+    # Push to the CANONICAL target URL, never the workspace's remote.origin.url:
+    # the session could have rewritten that config to exfil the bot token / code
+    # to another remote. Passing `url` here means `Workspace.push` uses it
+    # instead of reading `remote.origin.url`.
+    ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
 
     # Every dispatched park is a CANDIDATE park (the baseline is measured by the
     # gate after the session, not before it), so a candidate sha must be
@@ -297,6 +305,14 @@ def resume_run(
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
     candidate_ref = str(stage["candidate_ref"])
+
+    # The contract gates scope and names the eval command, so read it from the
+    # BASE commit (the tree the run started on), NOT the working tree the
+    # session left dirty — a session that widened its own scope in
+    # `.autoresearch.yaml` must not have the wake gate on the doctored rules.
+    contract = load_contract(ws.git("show", f"{base_sha}:.autoresearch.yaml"), record.target)
+    bench = _benchmark(contract, record.benchmark)
+    config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
     eval_minutes = next(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
@@ -723,7 +739,7 @@ def live_climb(
 
     tree_hashes: list[str] = []
     try:
-        ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
+        ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # the BASE BRANCH tip, not HEAD: they differ if the PR base is ever
         # not the clone's default branch, and the freshness comparison below
         # must be against the branch the PR will actually land on
