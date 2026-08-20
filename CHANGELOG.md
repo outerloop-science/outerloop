@@ -29,11 +29,14 @@ Versions follow [SemVer](https://semver.org).
   machinery — a RE-PARK (a measure the wake just dispatched isn't done — the
   suite pairs an improving candidate fans out) re-persists the WAITING stage on
   the new afterany keeping the same snapshot; a NEGATIVE terminal drops the
-  snapshot and ends the record. The improved outcome commits `candidate_sha`
-  (the sealed snapshot) to a branch and opens the PR — the sha-not-live-tree
-  path — and is the next slice; it is unreachable here (dispatch is not yet
-  activated on any target). `WakeDispatcher` (the delivery that fires this on
-  the eval jobs finishing) is the slice after.
+  snapshot and ends the record; an IMPROVED terminal branches the sealed
+  `candidate_sha` (never the live tree — the scope-checked diff carries only
+  in-scope changes), folds the leaderboard update on top, pushes, opens the PR,
+  and ends the run in-review. The mechanical moved-base merge the first pass
+  does is deliberately NOT here (docs/design/research-loop.md, "the finish is
+  agent-driven too"): a stale PR is a re-wake, not an orchestrator auto-merge.
+  `WakeDispatcher` (the delivery that fires this on the eval jobs finishing) is
+  the slice after.
 
 - Dispatched measurement is now SELECTED per benchmark — dispatcher phase 1,
   stage B part 2c(ii), the switch that first makes a park fire. `live_climb`

@@ -244,13 +244,15 @@ def resume_run(
     run_id: str,
     *,
     dispatch: DispatchSettings,
+    github: GitHubClient,
+    bot_auth: FileTokenProvider,
     now: float,
     secrets: tuple[str, ...] = (),
+    base_branch: str = "main",
 ) -> LiveClimbOutcome:
     """Wake a parked dispatched climb and re-enter its decision WITHOUT the
     session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
-
-    Slice 1b handles the two exits that reuse existing machinery:
+    The three exits:
 
     * **re-park** — the wake dispatched a measure that is not done yet (the
       suite pairs an improving candidate fans out, "another round of
@@ -258,22 +260,22 @@ def resume_run(
       the WAITING stage on the new afterany, keeping the same candidate
       snapshot;
     * **a negative terminal** (no-improvement / suite-regression / eval-error):
-      drop the candidate snapshot and end the record.
-
-    The improved outcome commits `candidate_sha` (the SEALED snapshot, never the
-    live tree — it may have drifted since the park) to a branch and opens the
-    PR; that is the next slice. It is unreachable here because dispatch is not
-    yet activated on any target, so an improved wake raises `NotImplementedError`
-    rather than pretend to publish.
+      drop the candidate snapshot and end the record;
+    * **improved** — branch the SEALED `candidate_sha` (never the live tree,
+      which may have drifted since the park; the diff was scope-checked so it
+      carries only in-scope changes), layer the ledger update on top, push, and
+      open the PR. The mechanical moved-base merge the first pass does is
+      deliberately NOT here (docs/design/research-loop.md): a stale PR is a
+      re-wake, not an orchestrator auto-merge.
     """
     run_dir = run_root / "runs" / run_id
     workspace = run_dir / "ws"
     record = load_record(run_root, run_id)
     stage = record.stage
-    ws = Workspace(root=workspace)
+    ws = Workspace(root=workspace, auth=bot_auth)
     contract = load_contract((workspace / ".autoresearch.yaml").read_text(), record.target)
     bench = _benchmark(contract, record.benchmark)
-    config = ClimbConfig(target=record.target, benchmark=record.benchmark)
+    config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
 
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
@@ -319,7 +321,94 @@ def resume_run(
         return LiveClimbOutcome(run_id=run_id, outcome="parked")
 
     if result.outcome == "improved":
-        raise NotImplementedError("improved-wake publish (commit candidate_sha -> PR) is slice 1c")
+        # Publish: branch the SEALED candidate sha, fold in the ledger, push,
+        # open the PR. No moved-base merge (research-loop.md) — a stale PR is a
+        # re-wake, not an auto-merge.
+        from datetime import UTC, datetime
+
+        assert result.baseline is not None and result.candidate is not None
+        baseline, candidate = result.baseline, result.candidate
+        branch = f"{config.branch_prefix}/{run_id}"
+        try:
+            ws.git("checkout", "-B", branch, candidate_sha)
+            entries = update_leader(
+                load_leader(workspace),
+                benchmark=bench.name,
+                metric=bench.metric,
+                direction=bench.direction,
+                baseline=baseline,
+                candidate=candidate,
+                run_id=run_id,
+                date=datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d"),
+                run_seed=result.run_seed,
+            )
+            write_progress(
+                workspace,
+                entries,
+                config.target,
+                digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+            )
+            # only the ledger files change on top of the sealed candidate; the
+            # veto re-checks scope as defense in depth (the candidate diff was
+            # already scope-checked in measure_and_decide).
+            ws.commit_all(
+                f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                f"\n\nAgent: {config.agent_id}",
+                author=config.bot_login,
+                forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
+            )
+            ws.push(branch)
+            body = pr_body(
+                result, config, redact_secrets=secrets, display_digits=bench.display_digits
+            )
+            pr_url = github.create_pull(
+                config.target,
+                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
+                head=branch,
+                base=base_branch,
+                body=body,
+                draft=result.panel_blocking_open or result.panel_degraded,
+            )
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
+                _best_effort(
+                    "auto-merge arming",
+                    lambda: github.arm_auto_merge_when_review_required(
+                        config.target, int(pr_number)
+                    ),
+                    secrets,
+                )
+        except Exception as exc:
+            # push / PR / commit failed — end as an error, KEEP the snapshot (a
+            # later wake can retry) and never delete a remote branch.
+            note = redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
+            log.warning("wake publish failed for %s: %s", run_id, note)
+            failed = RunRecord(
+                **{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note}
+            )
+            _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
+            return LiveClimbOutcome(run_id=run_id, outcome="publish-error")
+        # PR opened: the snapshot is no longer needed (the candidate is pushed).
+        drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+        report_path = run_dir / "report.md"
+        _best_effort(
+            "run report",
+            lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+            secrets,
+        )
+        final = RunRecord(
+            **{
+                **record.__dict__,
+                "state": IN_REVIEW,
+                "pr_url": pr_url,
+                "resume_session_id": result.session.session_id if result.session else "",
+                "ending_note": pr_url,
+            }
+        )
+        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+        return LiveClimbOutcome(
+            run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
+        )
 
     # a negative terminal: release the snapshot and end the record.
     drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))

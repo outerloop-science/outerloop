@@ -1719,6 +1719,10 @@ def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=Non
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-aqm", "candidate")
     candidate_sha = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "update-ref", "refs/dispatch/tok", candidate_sha)
+    # a bare 'origin' so an improved wake can push its branch
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(ws), str(bare))
+    _git(ws, "remote", "add", "origin", str(bare))
 
     record = RunRecord(
         run_id=run_id,
@@ -1750,7 +1754,14 @@ def test_resume_negative_ends_run_and_drops_snapshot(tmp_path, monkeypatch) -> N
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
     )
-    outcome = resume_run(state, run_id, dispatch=_fake_dispatch(), now=1_000_100.0)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
     assert outcome.outcome == "no-improvement"
     record = load_record(state, run_id)
     assert record.state == "ended" and record.ending == "negative-result"
@@ -1766,10 +1777,47 @@ def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602"))
     )
-    outcome = resume_run(state, run_id, dispatch=_fake_dispatch(), now=1_000_100.0)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
     assert outcome.outcome == "parked"
     record = load_record(state, run_id)
     assert record.state == "waiting"
     assert record.stage["afterany"] == "afterany:601:602"
     ws = state / "runs" / run_id / "ws"
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept
+
+
+def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
+    # candidate beats baseline -> branch the sealed sha, fold in the ledger,
+    # push, open the PR against main; the record goes in-review.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "improved"
+    assert outcome.pr_url.endswith("/pull/1")
+    record = load_record(state, run_id)
+    assert record.state == "in-review" and "pull/1" in record.pr_url
+    # the PR opened against main from the run's branch, carrying the saved report
+    pr = github.prs[0]
+    assert pr["head"] == "feat/auto/agent-01/tsp-1" and pr["base"] == "main"
+    assert "swapped the construction heuristic" in pr["body"]
+    # the branch landed in the bare origin; the candidate snapshot was dropped
+    bare = tmp_path / "origin.git"
+    assert "feat/auto/agent-01/tsp-1" in _git(bare, "branch", "--list")
+    ws = state / "runs" / run_id / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""

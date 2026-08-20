@@ -84,3 +84,79 @@ to decide) comes first — it is needed regardless of the depth dial, it de-risk
 the exact pause/resume plumbing the depth loop reuses, and it unpauses the outer
 loop. Building it agent-first (resume with evidence, the panel revision as the
 first instance) means turning up depth later is a **knob, not a rewrite**.
+
+## The finish is agent-driven too
+
+Turning a credited improvement into a PR is not the orchestrator's job to
+mechanize. The first-pass finish today does the rigid thing — merge the base
+branch as it stands *now*, re-measure, and hard-fail if the candidate no longer
+beats the freshly-merged base. That is fragile (a concurrent merge can kill a
+real improvement) and it miscasts the orchestrator as the judge of research.
+
+The finish belongs to the agent, on the same wake machinery:
+
+- **Show a benefit; don't stack on top.** Like a research paper, a change
+  demonstrates its method beats *its baseline* — it does not have to be rebased
+  onto the newest `main` to be valid. Keep the paired baseline/candidate claim;
+  do not force "re-beat whatever `main` became."
+- **Complications go back to the agent.** A moved base, a conflict, a suite
+  that no longer looks clean — the wake hands these to the agent, which pulls
+  the latest, merges, does more research/coding if it needs to, and opens the PR
+  only when there is no conflict *and* the experiments still show the benefit.
+  Same "wake the agent with new information" as every other depth step.
+- **Staleness is re-waking, not merging.** A PR that goes stale later wakes the
+  agent again (perhaps a human pings it) to pull the latest and edit the PR —
+  never an orchestrator auto-merge.
+- **Humans merge, for now.** The human merges at their discretion. Eventually a
+  planner agent may hold some merge authority — a deliberate, later exception to
+  the README's "humans hold merge authority," decided explicitly rather than
+  drifted into.
+
+So the improved-wake is not a mechanical commit-and-push; it is the first place
+the depth axis touches the outside world. Build it as an agent-wake, not as
+orchestrator plumbing.
+
+## Two kinds of win
+
+A contribution does not have to be state-of-the-art to be real. We credit two
+kinds, and want **both**:
+
+1. **SOTA** — the best absolute number on the benchmark. Inherently
+   competitive: it is about being on top, so it does care about the current
+   best.
+2. **A composable win** — beat your own baseline with a clean, orthogonal story
+   that plugs into other methods on the leaderboard and still delivers. Not
+   necessarily the single best number, but a genuine building block: "+2% that
+   composes with anything."
+
+This is what "show a benefit, like a research paper" means concretely — a paper
+can be a new SOTA *or* a composable technique, and both are valid.
+
+Two consequences:
+
+- **The gate credits beating your baseline (type 2 by default); SOTA is a
+  separate, tracked-but-not-required axis.** We do not collapse everything into
+  "must beat the freshest `main`" — that only ever credits type 1 and throws
+  away real composable wins. It is also exactly the fragile moved-base hard-fail
+  we are dropping.
+- **The leaderboard is a portfolio, not a single champion.** It carries the
+  SOTA entry *and* the composable contributions, each legible about which
+  baseline/method it is measured relative to, so composability is visible. Two
+  orthogonal +2% wins are two entries — and combining them is itself a third
+  experiment worth running.
+
+The agent's finish declares which kind of win it is claiming, and the PR tells
+that story; the human (or, later, a planner) judges.
+
+**Composability with SOTA is a bonus, not a bar — and simplicity is its own
+win.** A composable block need not stack onto the full SOTA. If SOTA is
+`A+B+C+D` and we find `E`, then `A+E` landing *near* SOTA is a **cleaner** result
+than `A+B+C+D+E` — fewer moving parts for the same place, and parsimony is a
+real research value, not just the number. And even when `E` adds nothing on top
+of the full stack (`A+B+C+D+E ≈ A+B+C+D` within noise), `E` is worth keeping as
+a **future choice** if it could *substitute* for part of the stack (`E` in place
+of `B+C+D`). So the portfolio holds building blocks and their relationships —
+composes-with, might-replace — scored on performance *and* simplicity *and*
+optionality, never a single number. Composition itself becomes a search: "is
+`A+E` a cleaner path to near-SOTA?" and "can `E` replace `B+C+D`?" are
+experiments the portfolio generates.
