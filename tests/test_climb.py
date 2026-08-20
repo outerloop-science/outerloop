@@ -2292,9 +2292,9 @@ def test_resume_revision_snapshot_failure_drafts_the_original(tmp_path, monkeypa
         state,
         run_id,
         dispatch=_fake_dispatch(),
-        github=github,
-        bot_auth=NoAuth(),
-        now=1_000_100.0,  # type: ignore[arg-type]
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
         panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
         harness=RevisingHarness(),
         spec=author_spec(),
@@ -2303,3 +2303,72 @@ def test_resume_revision_snapshot_failure_drafts_the_original(tmp_path, monkeypa
     assert outcome.outcome == "improved"  # drafted, not parked/aborted
     assert github.prs[0]["draft"] is True and github.armed == []
     assert load_record(state, run_id).state == "in-review"  # ended, not left waiting
+
+
+def test_resume_revision_remeasure_failure_drafts_the_original(tmp_path, monkeypatch) -> None:
+    # if the revision's re-measure cannot even dispatch (e.g. Slurm submit), the
+    # ORIGINAL's real improvement must NOT be discarded — draft it.
+    import json as _json
+    from dataclasses import dataclass
+
+    from autoresearch.measure import DispatchSettings
+    from autoresearch.orchestrator import author_spec
+    from autoresearch.panel import PanelLens
+
+    @dataclass
+    class RevisingHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.5,
+                num_turns=3,
+                session_id="s1",
+                final_text="revised",
+                transcript_path="",
+            )
+
+    class _RaiseOnRemeasure:
+        def __init__(self):
+            self.calls = 0
+
+        def results(self, measures):
+            self.calls += 1
+            if self.calls == 1:
+                return {"baseline": 13.0, "candidate": 12.0}
+            raise RuntimeError("sbatch failed")  # not EvalError/MeasurementPending
+
+    blocking = _json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/pilot/solvers/tsp.py",
+                    "line": 1,
+                    "confidence": "high",
+                    "summary": "s",
+                    "detail": "d",
+                    "blocking": True,
+                }
+            ],
+            "notes": "",
+        }
+    )
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: _RaiseOnRemeasure())
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
+        harness=RevisingHarness(),
+        spec=author_spec(),
+        panel_revisions=1,
+    )
+    assert outcome.outcome == "improved"  # the original is drafted, not aborted
+    assert github.prs[0]["draft"] is True and load_record(state, run_id).state == "in-review"

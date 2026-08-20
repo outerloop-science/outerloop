@@ -497,8 +497,29 @@ def resume_run(
             )
             drop_snapshot(ws, old_snap)
             return LiveClimbOutcome(run_id=run_id, outcome="parked")
-        # the re-measure returned a TERMINAL (e.g. the revision went out of scope,
-        # or a dispatch-free measurer decided): end the run, drop BOTH snapshots.
+        except Exception as exc:
+            # the re-measure could not even dispatch (e.g. Slurm submit) — do NOT
+            # discard the ORIGINAL's real, measured improvement; drop the new
+            # snapshot and DRAFT the original (the caller keeps candidate_sha).
+            log.warning(
+                "wake revision re-measure failed for %s (%s); drafting the original",
+                run_id,
+                redact(f"{type(exc).__name__}: {exc}", secrets),
+            )
+            drop_snapshot(ws, new_snap)
+            return None
+        if revised.outcome == "improved":
+            # the dispatched re-measure should have PARKED; an inline 'improved'
+            # here (a cached result) is unexpected and unverified — draft the
+            # original rather than ABORT with no PR.
+            log.warning(
+                "wake revision re-measure returned improved without parking for %s; drafting",
+                run_id,
+            )
+            drop_snapshot(ws, new_snap)
+            return None
+        # the re-measure returned a NEGATIVE terminal (the revision went out of
+        # scope, regressed, or eval-errored): end the run, drop BOTH snapshots.
         drop_snapshot(ws, old_snap)
         drop_snapshot(ws, new_snap)
         report_path = run_dir / "report.md"
