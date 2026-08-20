@@ -41,6 +41,7 @@ from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
     ClimbParked,
+    EvalError,
     Evaluator,
     Measurer,
     SubprocessEvaluator,
@@ -276,6 +277,13 @@ def resume_run(
     contract = load_contract((workspace / ".autoresearch.yaml").read_text(), record.target)
     bench = _benchmark(contract, record.benchmark)
     config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
+
+    # Every dispatched park is a CANDIDATE park (the baseline is measured by the
+    # gate after the session, not before it), so a candidate sha must be
+    # present. Guard rather than crash on `git diff base ""` if a stray
+    # baseline-shaped record ever reached here.
+    if stage.get("phase") != "candidate" or not stage.get("candidate_sha"):
+        raise EvalError(f"resume_run: run {run_id} is not a candidate park (stage={stage!r})")
 
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
@@ -770,6 +778,9 @@ def live_climb(
         parked: ClimbParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
+            # the last-known score orients the brief only; the gate re-measures
+            # both sides after the session, so None (a first run) is fine.
+            prior_best = load_leader(workspace).get(config.benchmark)
             result = climb_once(
                 config,
                 contract_text,
@@ -785,6 +796,7 @@ def live_climb(
                 spec=spec,
                 panel_runner=panel_runner,
                 panel_revisions=panel_revisions,
+                brief_baseline=prior_best.best if prior_best else None,
             )
         except ClimbParked as p:
             # The climb dispatched its measures and hibernated. Persist the

@@ -105,21 +105,32 @@ def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, **kw)
 
 
 def test_improvement_end_to_end(tmp_path: Path) -> None:
-    result, harness, evaluator = run_climb(tmp_path, [13.876, 13.10])
+    # brief_baseline is the ledger's last-known score, for the brief; the gate
+    # re-measures both sides ([13.876, 13.10]) after the session.
+    result, harness, evaluator = run_climb(tmp_path, [13.876, 13.10], brief_baseline=13.876)
     assert result.outcome == "improved"
-    assert result.baseline == 13.876
+    assert result.baseline == 13.876  # measured by the gate
     assert result.candidate == 13.10
     assert result.branch == "feat/auto/agent-01/tsp"
-    # the brief carried the real baseline and the contract verbatim
+    # the brief carried the ledger baseline and the contract verbatim
     brief_text = harness.calls[0][0]
     assert "13.876" in brief_text
     assert "mean_tour_length down from 13.876" in brief_text
     assert "src/pilot/solvers/" in brief_text
-    # eval ran twice with the contract's command
+    # eval ran twice (baseline + candidate) with the contract's command
     assert (
         evaluator.calls
         == [("uv run python -m pilot.eval --benchmark tsp --json", "mean_tour_length")] * 2
     )
+
+
+def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:
+    # a benchmark's first climb has no ledger entry -> the brief drops the
+    # reference number (never the gate, which still measures both sides).
+    result, harness, _ = run_climb(tmp_path, [13.876, 13.10])  # brief_baseline defaults None
+    assert result.outcome == "improved" and result.baseline == 13.876
+    brief_text = harness.calls[0][0]
+    assert "mean_tour_length down" in brief_text and "down from" not in brief_text
 
 
 def test_direction_min_regression_is_no_improvement(tmp_path: Path) -> None:
@@ -232,36 +243,14 @@ def _bare_snapshot():
     return snapshot
 
 
-def test_baseline_measure_parks_before_the_session(tmp_path: Path) -> None:
-    # PARK 1: a dispatched baseline hibernates before the session even runs.
-    from autoresearch.orchestrator import ClimbParked
-
-    harness = FakeHarness(result=ok_session())
-    m = ParkingMeasurer(park_on_call=1)  # baseline is the first measure
-    with pytest.raises(ClimbParked) as exc:
-        climb_once(
-            CONFIG,
-            CONTRACT,
-            tmp_path,
-            harness,
-            m,
-            "base",
-            _bare_snapshot(),
-            ruler="r",
-            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
-            created="t",
-        )
-    assert exc.value.phase == "baseline" and exc.value.base_sha == "base"
-    assert exc.value.afterany == "afterany:101:102"
-    assert harness.calls == []  # the session never started
-
-
 def test_candidate_measure_parks_after_the_session(tmp_path: Path) -> None:
-    # PARK 2: baseline read, session ran, candidate dispatched -> hibernate.
+    # The ONLY park: the session runs (no pre-session baseline), then the gate
+    # dispatches baseline+candidate together and hibernates. A dispatched climb
+    # never has a baseline park.
     from autoresearch.orchestrator import ClimbParked
 
     harness = FakeHarness(result=ok_session())
-    m = ParkingMeasurer(park_on_call=2, values={"baseline": 13.876})
+    m = ParkingMeasurer(park_on_call=1)  # the gate's first (baseline+candidate) call parks
     with pytest.raises(ClimbParked) as exc:
         climb_once(
             CONFIG,
@@ -281,7 +270,9 @@ def test_candidate_measure_parks_after_the_session(tmp_path: Path) -> None:
     assert harness.calls  # the session did start
 
 
-def test_session_error_short_circuits_before_second_eval(tmp_path: Path) -> None:
+def test_session_error_runs_no_eval(tmp_path: Path) -> None:
+    # nothing is measured before the session, so a session error measures
+    # nothing at all (the gate, which measures baseline+candidate, never runs).
     bad = SessionResult(
         stop_reason="spawn-error",
         is_error=True,
@@ -293,8 +284,8 @@ def test_session_error_short_circuits_before_second_eval(tmp_path: Path) -> None
     )
     result, _, evaluator = run_climb(tmp_path, [13.876, 999.0], session=bad)
     assert result.outcome == "session-error"
-    assert len(evaluator.calls) == 1  # baseline only
-    assert result.baseline == 13.876
+    assert evaluator.calls == []  # no measurement without a candidate
+    assert result.baseline is None
 
 
 def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path: Path) -> None:
@@ -317,12 +308,6 @@ def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path: Path) -> No
         result, _, _evaluator = run_climb(tmp_path, [13.876, 999.0], session=dry)
         assert result.outcome == "session-budget"
         assert result.note == detail
-
-
-def test_baseline_eval_failure_never_starts_a_session(tmp_path: Path) -> None:
-    result, harness, _ = run_climb(tmp_path, [EvalError("boom")])
-    assert result.outcome == "eval-error"
-    assert harness.calls == []  # no session was paid for
 
 
 def test_candidate_eval_failure_is_eval_error_with_session(tmp_path: Path) -> None:
@@ -404,7 +389,7 @@ def test_scope_violation_blocks_before_candidate_eval(tmp_path: Path) -> None:
     )
     assert result.outcome == "scope-violation"
     assert "src/pilot/eval.py" in result.note
-    assert len(evaluator.calls) == 1  # baseline only; doctored tree unmeasured
+    assert evaluator.calls == []  # scope checked before any measure; nothing ran
 
 
 def test_forbidden_paths_are_scope_violations(tmp_path: Path) -> None:

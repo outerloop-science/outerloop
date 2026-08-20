@@ -1598,10 +1598,10 @@ def test_moved_base_gets_a_fresh_panel_read_and_blocking_drafts(tmp_path, target
     assert github.armed == []
 
 
-def test_expensive_benchmark_dispatches_baseline_and_parks(tmp_path, target_repo_dispatch) -> None:
-    # eval_minutes=30 is past the in-job runway, so the baseline measures as a
-    # dispatched job BEFORE the session — the climb parks (PARK 1) instead of
-    # running the harness.
+def test_expensive_benchmark_runs_session_then_parks_candidate(tmp_path, target_repo_dispatch):
+    # eval_minutes=30 is past the in-job runway. There is NO pre-session baseline
+    # park: the session runs, then the gate dispatches baseline+candidate
+    # together and the climb parks the CANDIDATE.
     outcome, github = run_live(
         tmp_path,
         target_repo_dispatch,
@@ -1610,17 +1610,17 @@ def test_expensive_benchmark_dispatches_baseline_and_parks(tmp_path, target_repo
         dispatch=_fake_dispatch(),
     )
     assert outcome.outcome == "parked"
-    assert github.prs == []  # session never ran; no PR
+    assert github.prs == []  # not decided yet; no PR
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "waiting"
-    # PARK 1 is the baseline (no candidate yet); the afterany carries the one
-    # submitted eval job the wake depends on.
-    assert record.stage["phase"] == "baseline"
-    assert record.stage["afterany"] == "afterany:1000"
-    assert record.experiment_job_id == "1000"  # single-job park: the sweep polls it
-    # the dispatched backend checks out each sha in its own job, so no local
-    # baseline worktree was ever created
-    assert not (tmp_path / "state" / "runs" / "tsp-1" / "measure-baseline").exists()
+    # the only park is the candidate; baseline+candidate dispatched together, so
+    # the afterany carries BOTH jobs and the run rides the multi-job deadline
+    assert record.stage["phase"] == "candidate"
+    assert record.stage["candidate_sha"]  # a real snapshot was taken
+    assert record.stage["afterany"] == "afterany:1000:1001"
+    assert record.experiment_job_id == ""  # multi-job park: rides the deadline floor
+    # the session ran and its write-up was saved for the wake
+    assert record.stage["report"]
 
 
 def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_repo) -> None:
@@ -1640,9 +1640,9 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
 def test_failed_park_write_cancels_orphaned_eval_jobs(
     tmp_path, target_repo_dispatch, monkeypatch
 ) -> None:
-    # the baseline dispatched one job; if the WAITING record then fails to
-    # write, nothing will ever wake that job, so it must be cancelled rather
-    # than left orphaned in the queue.
+    # the candidate park dispatched baseline+candidate (two jobs); if the
+    # WAITING record then fails to write, nothing will ever wake those jobs, so
+    # BOTH must be cancelled rather than left orphaned in the queue.
     from autoresearch import climb as climb_mod
 
     cancelled: list[str] = []
@@ -1660,7 +1660,7 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
         dispatch=dispatch,
     )
     assert outcome.outcome == "climb-error"  # the failed park ends the run
-    assert cancelled == ["1000"]  # the one dispatched baseline job was cancelled
+    assert cancelled == ["1000", "1001"]  # both dispatched jobs were cancelled
 
 
 def test_expensive_benchmark_without_coords_falls_back_inline(

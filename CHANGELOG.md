@@ -6,6 +6,21 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- A dispatched climb now has ONE park, not two. The pre-session baseline
+  measurement is dropped: `climb_once` no longer measures `base_sha` before the
+  session (and never raises a `phase="baseline"` park). The baseline is measured
+  by the GATE (`measure_and_decide`, `base_sha` vs `candidate_sha`) after the
+  session, and the brief's reference number comes from the ledger's last-known
+  best (`brief_baseline`, `None` on a benchmark's first run) — so the agent
+  still sees "improve from ~X" without a dispatched pre-pass. This removes the
+  baseline-wake path entirely (a dispatched climb only ever candidate-parks),
+  and matches what `dispatcher.md`'s resume seam already specified (the seam is
+  after the session). Tradeoff: a broken eval command now costs a session before
+  it surfaces in the gate, instead of failing fast pre-session. `resume_run`
+  guards that every park it wakes is a candidate park.
+
 ### Added
 
 - `resume_climb` (`orchestrator` module) — dispatcher phase 1, stage B part 2c,
