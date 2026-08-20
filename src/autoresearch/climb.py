@@ -194,6 +194,7 @@ def _park_run(
     now: float,
     secrets: tuple[str, ...] = (),
     keep_wake_attempts: bool = False,
+    base_branch: str = "main",
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
@@ -212,6 +213,10 @@ def _park_run(
         "seed": parked.seed,
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
+        # the branch the run targets, so a wake opens its PR against the SAME
+        # branch a non-default `--base-branch` selected — the wake CLI otherwise
+        # defaults to main and would mis-target.
+        "base_branch": base_branch,
         # the session's write-up + spend, saved so a candidate wake can build
         # the PR body / panel claim and report the real cost WITHOUT re-running
         # the session (its edits are already in candidate_sha). REDACTED before
@@ -307,6 +312,10 @@ def resume_run(
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
     candidate_ref = str(stage["candidate_ref"])
+    # the run's target branch rides the stage, so a wake opens its PR against
+    # the branch the ORIGINAL climb selected — not the CLI's default (the wake
+    # job carries no --base-branch).
+    base_branch = str(stage.get("base_branch") or base_branch)
 
     # The contract gates scope and names the eval command, so read it from the
     # BASE commit (the tree the run started on), NOT the working tree the
@@ -371,6 +380,7 @@ def resume_run(
             now,
             secrets,
             keep_wake_attempts=not made_progress,
+            base_branch=base_branch,
         )
         return LiveClimbOutcome(run_id=run_id, outcome="parked")
 
@@ -449,19 +459,23 @@ def resume_run(
                 draft=False,
             )
         except Exception as exc:
-            # push / PR / commit failed — end as an error. Drop the snapshot:
-            # ENDED runs are never swept, so keeping it would only LEAK the ref;
-            # a retry is a fresh climb, not a re-wake of this dead record. Never
-            # delete a remote branch (a push may have half-succeeded).
+            # push / PR / commit failed — end as an error. Save the ENDED record
+            # BEFORE dropping the snapshot (same ordering as the other terminals):
+            # a failed save then leaves the run WAITING with its snapshot intact
+            # (recoverable), never WAITING with the candidate already gone. On a
+            # successful end, drop the snapshot — ENDED runs are never swept, so
+            # keeping it would only leak the ref (a retry is a fresh climb, not a
+            # re-wake). Never delete a remote branch (a push may have
+            # half-succeeded).
             note = redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
             log.warning("wake publish failed for %s: %s", run_id, note)
-            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
             failed = _clear_stage(
                 RunRecord(
                     **{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note}
                 )
             )
-            _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
+            if _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets):
+                drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
             return LiveClimbOutcome(run_id=run_id, outcome="publish-error")
         # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
         # fails, the record stays `waiting` with the snapshot intact, so the run
@@ -900,7 +914,16 @@ def live_climb(
             # not the run's start `now` — a session lasting hours would otherwise
             # eat the queue budget and let the sweep cancel a still-queued eval.
             try:
-                _park_run(run_root, record, p, kept_ref, eval_minutes, time.time(), secrets)
+                _park_run(
+                    run_root,
+                    record,
+                    p,
+                    kept_ref,
+                    eval_minutes,
+                    time.time(),
+                    secrets,
+                    base_branch=base_branch,
+                )
             except Exception:
                 # The WAITING record did not persist, so nothing will ever wake
                 # the eval jobs this park already submitted. Cancel them so they

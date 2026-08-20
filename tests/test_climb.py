@@ -1600,7 +1600,9 @@ class _FakeMeasurer:
         return {m.name: self.values[m.name] for m in measures}
 
 
-def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=None, run_id="tsp-1"):
+def _write_parked_candidate(
+    tmp_path, monkeypatch, *, values=None, raise_exc=None, run_id="tsp-1", base_branch="main"
+):
     """A candidate-parked run on disk in the REAL park state: HEAD is still the
     pre-session commit, the session's edits are UNCOMMITTED in the working tree,
     there is untracked cruft an eval left behind, and `candidate_sha` is a
@@ -1652,6 +1654,7 @@ def _write_parked_candidate(tmp_path, monkeypatch, *, values=None, raise_exc=Non
             "suite_seed": 9,
             "afterany": "afterany:501",
             "report": "swapped the construction heuristic",
+            "base_branch": base_branch,
         },
     )
     save_record(state, record, 1_000_000.0)
@@ -1836,3 +1839,23 @@ def test_resume_negative_keeps_snapshot_if_the_record_save_fails(tmp_path, monke
     )
     ws = state / "runs" / run_id / "ws"
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept for a re-wake
+
+
+def test_resume_opens_pr_against_the_runs_base_branch_from_the_stage(tmp_path, monkeypatch) -> None:
+    # a run started with --base-branch=dev must, on wake, open its PR against
+    # dev — the wake job carries no --base-branch, so the branch rides the stage.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}, base_branch="dev"
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        base_branch="main",  # the CLI default — must be OVERRIDDEN by the stage
+    )
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["base"] == "dev"  # not the CLI default "main"
