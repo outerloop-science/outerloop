@@ -1629,3 +1629,23 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
     )
     assert outcome.outcome == "climb-error"  # the failed park ends the run
     assert cancelled == ["1000"]  # the one dispatched baseline job was cancelled
+
+
+def test_expensive_benchmark_without_coords_falls_back_inline(
+    tmp_path, target_repo_dispatch, caplog
+) -> None:
+    # eval_minutes=30 wants dispatch, but no cluster coordinates reached us
+    # (dispatch=None) — measure inline rather than fail, and say so.
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        outcome, github = run_live(
+            tmp_path,
+            target_repo_dispatch,
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+            values=[13.876, 13.1],
+            dispatch=None,
+        )
+    assert outcome.outcome == "improved"  # inline fallback measured it
+    assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"
+    assert "wants dispatched eval" in caplog.text

@@ -493,7 +493,17 @@ def live_climb(
         eval_minutes = next(
             (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
         )
-        dispatched = dispatch is not None and should_dispatch(eval_minutes)
+        wants_dispatch = should_dispatch(eval_minutes)
+        dispatched = dispatch is not None and wants_dispatch
+        if wants_dispatch and dispatch is None:
+            # a benchmark asked to be dispatched but no cluster coordinates
+            # reached us — never silently: name it, then measure inline
+            log.warning(
+                "benchmark %s wants dispatched eval (eval_minutes=%s) but no cluster "
+                "coordinates (image/account/partition) are set; measuring inline",
+                config.benchmark,
+                eval_minutes,
+            )
 
         # The baseline is measured in a throwaway worktree of the pre-session
         # commit — the session never sees the directory the baseline eval ran
@@ -1185,11 +1195,16 @@ def main() -> int:
     parser.add_argument("--target", required=True)
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
-    parser.add_argument("--image", default="", help="apptainer image for session+eval")
-    # Cluster coordinates for DISPATCHED measurement (expensive benchmarks run
-    # each eval as its own Slurm job). Default from the chain env the tick
-    # already sets on the climb job; absent any of the three, measurement stays
-    # inline regardless of the benchmark's eval hint.
+    # All three default from the chain env the tick sets on the climb job, so
+    # a contained run with AUTORESEARCH_{IMAGE,ACCOUNT,PARTITION} set selects
+    # dispatched measurement without extra flags. The image also containers the
+    # session + inline eval; absent any of the three, measurement stays inline
+    # regardless of the benchmark's eval hint.
+    parser.add_argument(
+        "--image",
+        default=os.environ.get("AUTORESEARCH_IMAGE", ""),
+        help="apptainer image for session+eval",
+    )
     parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
     parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
     parser.add_argument(
