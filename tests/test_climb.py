@@ -1883,6 +1883,8 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     (tmp_path / "runs" / run_id).mkdir(parents=True)
     (tmp_path / "pat").write_text("ghp_x\n")
     (tmp_path / "pat").chmod(0o600)  # token() enforces 0600
+    (tmp_path / "key").write_text("sk-x\n")  # author key for the revision harness
+    (tmp_path / "key").chmod(0o600)
     (tmp_path / "img.sif").write_text("")  # just needs to be a file
     assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
     assert (run_dir(tmp_path, run_id) / "lease.json").exists()
@@ -1909,6 +1911,8 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
             str(tmp_path / "img.sif"),
             "--pat-file",
             str(tmp_path / "pat"),
+            "--key-file",
+            str(tmp_path / "key"),
         ],
     )
     assert main() == 0
@@ -2101,3 +2105,136 @@ def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) ->
     )
     assert outcome.outcome == "improved"  # NOT publish-error
     assert github.prs[0]["draft"] is True and github.armed == []  # degraded -> draft, no arm
+
+
+def test_resume_blocking_panel_wakes_the_agent_to_revise_and_reparks(tmp_path, monkeypatch) -> None:
+    # THE DEPTH-AXIS CORE: a blocking panel finding wakes the agent to revise —
+    # re-run the session with the findings, re-snapshot, re-measure -> re-park
+    # (panel_reads incremented), instead of drafting.
+    import json as _json
+    from dataclasses import dataclass
+
+    from autoresearch.orchestrator import author_spec
+    from autoresearch.panel import PanelLens
+
+    @dataclass
+    class RevisingHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            # the agent revises in response to the findings
+            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text(
+                "def solve(): return 'revised'\n"
+            )
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.5,
+                num_turns=3,
+                session_id="s1",
+                final_text="addressed the finding",
+                transcript_path="",
+            )
+
+    blocking = _json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/pilot/solvers/tsp.py",
+                    "line": 1,
+                    "confidence": "high",
+                    "summary": "suspicious",
+                    "detail": "structural",
+                    "blocking": True,
+                }
+            ],
+            "notes": "",
+        }
+    )
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    # the INITIAL measure returns improved (-> panel -> revise); the re-measure
+    # of the revised candidate PARKS, exactly as the dispatched backend does.
+    from autoresearch.measure import DispatchSettings, MeasurementPending
+
+    class _TwoPhase:
+        def __init__(self):
+            self.calls = 0
+
+        def results(self, measures):
+            self.calls += 1
+            if self.calls == 1:
+                return {"baseline": 13.0, "candidate": 12.0}
+            raise MeasurementPending(("601", "602"))
+
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: _TwoPhase())
+    old = load_record(state, run_id).stage["candidate_sha"]
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
+        harness=RevisingHarness(),
+        spec=author_spec(),
+        panel_revisions=1,
+    )
+    assert outcome.outcome == "parked"  # re-parked to measure the REVISED candidate
+    assert github.prs == []  # no PR — the revision must be verified first
+    rec = load_record(state, run_id)
+    assert rec.state == "waiting"
+    assert rec.stage["panel_reads"] == 1  # one revision taken; the cap advances
+    assert rec.stage["candidate_sha"] != old  # a NEW candidate (the revision)
+    # the revised edit landed in the new candidate; the old snapshot was dropped
+    ws = state / "runs" / run_id / "ws"
+    kept = _git(ws, "for-each-ref", "--format=%(objectname)", "refs/dispatch/").split()
+    assert str(rec.stage["candidate_sha"]) in kept and str(old) not in kept
+
+
+def test_resume_blocking_panel_at_the_cap_drafts_without_revising(tmp_path, monkeypatch) -> None:
+    # once panel_reads has hit panel_revisions, a further blocking finding stops
+    # revising and DRAFTs (the human sees the unconverged findings).
+    import json as _json
+
+    from autoresearch.orchestrator import author_spec
+    from autoresearch.panel import PanelLens
+
+    blocking = _json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "x",
+                    "line": 1,
+                    "confidence": "high",
+                    "summary": "s",
+                    "detail": "d",
+                    "blocking": True,
+                }
+            ],
+            "notes": "",
+        }
+    )
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    # simulate a run that already used its one revision
+    rec = load_record(state, run_id)
+    rec.stage["panel_reads"] = 1
+    save_record(state, rec, 1_000_050.0)
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
+        harness=object(),  # type: ignore[arg-type]
+        spec=author_spec(),
+        panel_revisions=1,
+    )
+    assert outcome.outcome == "improved"  # publishes...
+    assert github.prs[0]["draft"] is True and github.armed == []  # ...as a DRAFT, no revise

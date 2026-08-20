@@ -62,6 +62,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import PullRequest
+from autoresearch.role_runner import run_role
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -230,6 +231,7 @@ def _park_run(
     secrets: tuple[str, ...] = (),
     keep_wake_attempts: bool = False,
     base_branch: str = "main",
+    panel_reads: int = 0,
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
@@ -252,6 +254,9 @@ def _park_run(
         # branch a non-default `--base-branch` selected — the wake CLI otherwise
         # defaults to main and would mis-target.
         "base_branch": base_branch,
+        # verification-panel revisions taken so far — persisted so the next wake
+        # knows the cap position after a panel-driven revision re-park.
+        "panel_reads": panel_reads,
         # the session's write-up + spend, saved so a candidate wake can build
         # the PR body / panel claim and report the real cost WITHOUT re-running
         # the session (its edits are already in candidate_sha). REDACTED before
@@ -309,6 +314,9 @@ def resume_run(
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
     panel_lenses: tuple[PanelLens, ...] = (),
+    harness: Harness | None = None,
+    spec: RoleSpec | None = None,
+    panel_revisions: int = 1,
 ) -> LiveClimbOutcome:
     """Wake a parked dispatched climb and re-enter its decision WITHOUT the
     session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
@@ -375,6 +383,9 @@ def resume_run(
     measured_paths = tuple(
         p for p in ws.git("diff", "--name-only", "-z", base_sha, candidate_sha).split("\0") if p
     )
+    seed = int(stage["seed"])  # type: ignore[call-overload]
+    suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]
+    panel_reads = int(stage.get("panel_reads", 0))  # type: ignore[call-overload]
 
     # rebuild the session from what the park saved: the (redacted) write-up and
     # its real spend, so the report shows true cost/turns. It is never re-run.
@@ -393,8 +404,8 @@ def resume_run(
             bench,
             base_sha=base_sha,
             candidate_sha=candidate_sha,
-            seed=int(stage["seed"]),  # type: ignore[call-overload]
-            suite_seed=int(stage["suite_seed"]),  # type: ignore[call-overload]
+            seed=seed,
+            suite_seed=suite_seed,
             measured_paths=measured_paths,
             session=session,
             measurer=measurer,
@@ -419,8 +430,97 @@ def resume_run(
             secrets,
             keep_wake_attempts=not made_progress,
             base_branch=base_branch,
+            panel_reads=panel_reads,
         )
         return LiveClimbOutcome(run_id=run_id, outcome="parked")
+
+    def _do_revise(verdict: PanelVerdict, reads: int) -> LiveClimbOutcome | None:
+        """A blocking panel finding -> wake the agent to revise (the depth
+        axis). Re-run the session with the findings, re-snapshot the revised
+        tree, and re-measure — which re-parks (dispatched) so the NEXT wake
+        runs the panel again. Returns the parked/terminal outcome, or None when
+        the revision session could not run (the caller then DRAFTs the original
+        candidate — the improvement is real, it just could not be revised)."""
+        assert harness is not None and spec is not None
+        wake_result = run_role(
+            spec, harness, verdict.wake_text, workspace, resume_session_id=record.resume_session_id
+        )
+        if not wake_result.ok:
+            log.warning("wake revision session failed for %s; drafting the original", run_id)
+            return None
+        # the revised tree is a NEW candidate; snapshot it (parented on base) and
+        # re-measure through the dispatched measurer, which re-parks.
+        new_snap = snapshot_tree(ws, base_sha)
+        new_measured = tuple(
+            p
+            for p in ws.git("diff", "--name-only", "-z", base_sha, new_snap.commit).split("\0")
+            if p
+        )
+        old_snap = Snapshot(commit=candidate_sha, tree="", ref=candidate_ref)
+        try:
+            revised = resume_climb(
+                contract,
+                bench,
+                base_sha=base_sha,
+                candidate_sha=new_snap.commit,
+                seed=seed,
+                suite_seed=suite_seed,
+                measured_paths=new_measured,
+                session=wake_result.session,
+                measurer=measurer,
+                min_relative_improvement=config.min_relative_improvement,
+            )
+        except ClimbParked as p:
+            # re-park on the NEW candidate; carry the revision count so the next
+            # wake honors the cap. Keep the new snapshot, drop the superseded old.
+            _park_run(
+                run_root,
+                record,
+                p,
+                new_snap.ref,
+                eval_minutes,
+                now,
+                secrets,
+                base_branch=base_branch,
+                panel_reads=reads,
+            )
+            drop_snapshot(ws, old_snap)
+            return LiveClimbOutcome(run_id=run_id, outcome="parked")
+        # the re-measure returned a TERMINAL (e.g. the revision went out of scope,
+        # or a dispatch-free measurer decided): end the run, drop BOTH snapshots.
+        drop_snapshot(ws, old_snap)
+        drop_snapshot(ws, new_snap)
+        report_path = run_dir / "report.md"
+        _best_effort(
+            "run report",
+            lambda: report_path.write_text(revised.report(config, redact_secrets=secrets)),
+            secrets,
+        )
+        ending = _ENDINGS_BY_OUTCOME.get(revised.outcome, ABORTED)
+        final = _clear_stage(
+            RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": ending,
+                    "ending_note": redact(revised.note, secrets),
+                }
+            )
+        )
+        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+        _post_issue_finished(
+            github,
+            config.target,
+            issue_number,
+            run_id,
+            revised.outcome,
+            "",
+            redact(revised.report(config, redact_secrets=secrets), secrets)[:8000],
+            secrets,
+        )
+        return LiveClimbOutcome(
+            run_id=run_id, outcome=revised.outcome, report_path=str(report_path)
+        )
 
     if result.outcome == "improved":
         # Publish: branch the SEALED candidate sha, fold in the ledger, push,
@@ -489,24 +589,49 @@ def resume_run(
                         config.bot_login,
                         _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
                     )(baseline, candidate, str(stage.get("report", "")))
-                    result = dc_replace(
-                        result,
-                        panel_transcript=verdict.transcript,
-                        panel_rounds=1,
-                        panel_blocking_open=bool(verdict.blocking),
-                        panel_degraded=verdict.degraded,
-                    )
                 except Exception as exc:
                     log.warning(
                         "wake panel errored for %s (%s); opening a DRAFT",
                         run_id,
                         redact(f"{type(exc).__name__}: {exc}", secrets),
                     )
+                    verdict = PanelVerdict(
+                        blocking=(),
+                        transcript="panel setup failed — NOT a clean read",
+                        wake_text="",
+                        degraded=True,
+                    )
+                reads = panel_reads + 1
+                # DEPTH AXIS (docs/design/research-loop.md): a blocking finding
+                # WAKES THE AGENT to revise — re-run the session with the
+                # findings, re-snapshot, re-measure (-> re-park) — instead of
+                # drafting, bounded by panel_revisions. Fall through to a DRAFT
+                # when we cannot resume (no harness/session) or the cap is hit.
+                can_revise = (
+                    bool(verdict.blocking)
+                    and harness is not None
+                    and spec is not None
+                    and bool(record.resume_session_id)
+                    and reads <= panel_revisions
+                )
+                if can_revise:
+                    revised = _do_revise(verdict, reads)
+                    if revised is not None:
+                        return revised
+                    # the revision session could not run — DRAFT the original
                     result = dc_replace(
                         result,
-                        panel_degraded=True,
-                        panel_transcript="panel setup failed — NOT a clean read",
-                        panel_rounds=1,
+                        panel_transcript=verdict.transcript,
+                        panel_rounds=reads,
+                        panel_blocking_open=True,
+                    )
+                else:
+                    result = dc_replace(
+                        result,
+                        panel_transcript=verdict.transcript,
+                        panel_rounds=reads,
+                        panel_blocking_open=bool(verdict.blocking),
+                        panel_degraded=verdict.degraded,
                     )
 
             entries = update_leader(
@@ -1753,6 +1878,17 @@ def main() -> int:
             if args.panel.strip()
             else ""
         )
+        # the editor harness for the depth-axis REVISION: a blocking panel
+        # finding wakes the author to revise, which spends the author key.
+        wake_api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
+        wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
+        wake_harness = build_editor_harness(
+            wake_api_key,
+            wake_spec,
+            binary=args.claude_bin,
+            model=args.model,
+            container_image=args.image,
+        )
         try:
             resumed = resume_run(
                 args.run_root,
@@ -1766,9 +1902,12 @@ def main() -> int:
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
-                secrets=tuple(k for k in (bot_auth.token(), wake_panel_key) if k),
+                secrets=tuple(k for k in (bot_auth.token(), wake_panel_key, wake_api_key) if k),
                 base_branch=args.base_branch,
                 panel_lenses=wake_lenses,
+                harness=wake_harness,
+                spec=wake_spec,
+                panel_revisions=args.panel_revisions,
             )
         finally:
             # This wake job HOLDS the run's lease (the sweep transferred it on
