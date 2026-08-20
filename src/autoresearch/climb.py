@@ -1873,22 +1873,25 @@ def main() -> int:
             wake_lenses = _panel_lenses_from_args(args)
         except ValueError as exc:
             parser.error(str(exc))
-        wake_panel_key = (
-            FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-            if args.panel.strip()
-            else ""
-        )
-        # the editor harness for the depth-axis REVISION: a blocking panel
-        # finding wakes the author to revise, which spends the author key.
-        wake_api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
-        wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
-        wake_harness = build_editor_harness(
-            wake_api_key,
-            wake_spec,
-            binary=args.claude_bin,
-            model=args.model,
-            container_image=args.image,
-        )
+        wake_panel_key = ""
+        wake_api_key = ""
+        wake_harness = None
+        wake_spec = None
+        # The editor harness for the depth-axis REVISION is built ONLY when a
+        # panel is configured — no panel means no blocking finding, so no
+        # revision and no author key to read. A panel-less wake stays a pure
+        # read-decide-publish job and must not require the author key.
+        if wake_lenses:
+            wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+            wake_api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
+            wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
+            wake_harness = build_editor_harness(
+                wake_api_key,
+                wake_spec,
+                binary=args.claude_bin,
+                model=args.model,
+                container_image=args.image,
+            )
         try:
             resumed = resume_run(
                 args.run_root,

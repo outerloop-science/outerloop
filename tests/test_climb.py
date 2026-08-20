@@ -1883,9 +1883,10 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     (tmp_path / "runs" / run_id).mkdir(parents=True)
     (tmp_path / "pat").write_text("ghp_x\n")
     (tmp_path / "pat").chmod(0o600)  # token() enforces 0600
-    (tmp_path / "key").write_text("sk-x\n")  # author key for the revision harness
-    (tmp_path / "key").chmod(0o600)
     (tmp_path / "img.sif").write_text("")  # just needs to be a file
+    # deliberately NO --panel and NO author key file: a panel-less wake never
+    # revises, so it must not require the author key (regression: the CLI once
+    # always read it and failed).
     assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
     assert (run_dir(tmp_path, run_id) / "lease.json").exists()
 
@@ -1911,8 +1912,8 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
             str(tmp_path / "img.sif"),
             "--pat-file",
             str(tmp_path / "pat"),
-            "--key-file",
-            str(tmp_path / "key"),
+            "--panel",
+            "",  # no panel -> no revision -> no author key needed
         ],
     )
     assert main() == 0
