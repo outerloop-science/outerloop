@@ -313,25 +313,25 @@ def test_parse_keeps_backend_error_messages_over_a_success_subtype(tmp_path: Pat
     assert outage(res)  # classified from the real cause (overloaded_error)
 
 
-def test_parse_lifts_the_api_error_for_a_content_free_wrapper_subtype(tmp_path: Path) -> None:
-    """`error_during_execution` is a generic wrapper, not a specific cause: with
-    no messages and a machine API-error result, the real cause must be lifted so
-    the latch sees it. The gate protects only `error_max_turns` (the one prefix
-    budget_exhausted reads), so every other wrapper subtype is lifted."""
+def test_parse_does_not_lift_a_real_subtype_so_agent_prose_cannot_latch(tmp_path: Path) -> None:
+    """The lift is scoped to the observed "success"/empty contradiction. For a
+    REAL subtype (error_during_execution), `result` may be the agent's own
+    closing message, so a message that merely starts "API Error" must NOT be
+    lifted — a false outage that pauses every lane is worse than a rare
+    mis-scoped one. The subtype is kept and the latch does not fire on prose."""
     payload = json.dumps(
         {
             "is_error": True,
             "subtype": "error_during_execution",
-            "result": "API Error: 429 rate_limit_error — too many requests.",
+            "result": "API Error: 429 the agent quoted while writing its report.",
         }
     )
     binary = fake_claude(tmp_path, payload)
     ws = tmp_path / "ws"
     ws.mkdir()
     res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
-    assert res.error_detail.startswith("API Error: 429")  # wrapper lifted
-    assert outage(res)  # classified from the real cause
-    assert not budget_exhausted(res)
+    assert res.error_detail.startswith("error_during_execution")  # NOT lifted
+    assert not outage(res)  # agent prose does not trip the latch
 
 
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:

@@ -458,16 +458,19 @@ class ClaudeCodeHarness:
         # the operator log, and the outage latch (its classifier AND its
         # throttle-duration check, which reads rate_limit/overloaded off the
         # detail) all then see the real error instead of "success". Lift ONLY
-        # when the CLI left no real cause: no `errors` messages, and not the one
-        # subtype a caller reads off the detail — budget_exhausted() keys on the
-        # `error_max_turns` prefix, and it is the ONLY such reader. Every other
-        # subtype ("success", "error_during_execution", empty) is a content-free
-        # wrapper whose real cause is the result text; keeping error_max_turns
-        # intact preserves the budget-ending classification.
+        # for the contradiction we have actually observed: an is_error whose
+        # subtype is empty or the self-contradictory "success", with no `errors`
+        # of any form. Under those, `result` is machine error text, not agent
+        # prose. A REAL subtype (error_max_turns, error_during_execution, ...) is
+        # left alone: `result` there may be the agent's own closing message, and
+        # lifting a message that merely starts "API Error" would let agent prose
+        # trip the latch — a false outage pausing every lane is worse than the
+        # rare mis-scoped one. `not errors` (the raw field) also holds when the
+        # CLI returns errors in a non-list form.
         if (
             is_error
-            and not messages
-            and not subtype.startswith("error_max_turns")
+            and not errors
+            and subtype in ("", "success")
             and final_text.strip().casefold().startswith("api error")
         ):
             detail = final_text.strip()
