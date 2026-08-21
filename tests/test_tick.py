@@ -157,6 +157,24 @@ def test_mark_tick_complete_stamps_only_a_worked_tick_at_completion_time(tmp_pat
     assert _last_worked_ts(tmp_path) == NOW + 999
 
 
+def test_last_worked_ts_survives_a_corrupt_marker(tmp_path: Path) -> None:
+    from autoresearch.tick import _last_worked_ts
+
+    marker = tmp_path / WORK_MARKER_NAME
+    for bad in (
+        '{"ts": 1e400}',  # parses to inf
+        '{"ts": ' + "9" * 400 + "}",  # huge int -> float() OverflowError
+        '{"ts": true}',  # bool (int subclass) must not count
+        '{"ts": "x"}',  # wrong type
+        "not json",  # unparseable
+        "[]",  # not a dict
+    ):
+        marker.write_text(bad)
+        assert _last_worked_ts(tmp_path) is None  # None, never a crash
+    _mark_worked(tmp_path, NOW)  # a normal marker still reads back
+    assert _last_worked_ts(tmp_path) == NOW
+
+
 def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
     from autoresearch.tick import MAX_MIN_TICK_S, _min_tick_s_from_env
 

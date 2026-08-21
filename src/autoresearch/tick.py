@@ -575,7 +575,16 @@ def _last_worked_ts(root: Path) -> float | None:
     except (OSError, ValueError):
         return None
     ts = payload.get("ts") if isinstance(payload, dict) else None
-    return float(ts) if isinstance(ts, int | float) else None
+    # bool is an int subclass; exclude it. float() of a huge JSON integer raises
+    # OverflowError, and inf/nan are not usable elapsed anchors — a corrupt
+    # marker must return None, never crash the tick before its heartbeat.
+    if not isinstance(ts, int | float) or isinstance(ts, bool):
+        return None
+    try:
+        val = float(ts)
+    except (OverflowError, ValueError):
+        return None
+    return val if math.isfinite(val) else None
 
 
 def _mark_worked(root: Path, now: float) -> None:
