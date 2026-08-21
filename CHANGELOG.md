@@ -11,10 +11,11 @@ Versions follow [SemVer](https://semver.org).
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would
   run back-to-back and redundantly re-sweep. A tick now no-ops if another tick
-  *completed its work* within `AUTORESEARCH_MIN_TICK_MINUTES`. The default and any
-  explicit value are cadence-aware: capped at half of `AUTORESEARCH_CADENCE_MIN`
-  (default 10 min, absolute ceiling 60 min), so a window can never reach the
-  cadence and swallow normal ticks; 0 disables; non-finite/corrupt inputs fall
+  *completed its work* within `AUTORESEARCH_MIN_TICK_MINUTES`. The window is
+  cadence-aware: both the default and any explicit value are capped at half of
+  `AUTORESEARCH_CADENCE_MIN` (the default additionally capped at 10 min, the
+  ceiling at 60 min), so it can never reach the cadence and swallow normal ticks
+  — a short cadence scales it down; 0 disables; non-finite/corrupt inputs fall
   back safely. The guard keys on a work-completion marker written at a tick's END
   (at real completion time), not the start-of-tick heartbeat, so a tick that
   crashes mid-work never suppresses the next (recovery) tick; the heartbeat is
