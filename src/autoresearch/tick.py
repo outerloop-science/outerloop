@@ -64,6 +64,11 @@ from autoresearch.runstate import (
 log = logging.getLogger(__name__)
 
 PAUSE_SENTINEL = "PAUSE"
+# Operator on-switch for dispatched-wake, mirroring PAUSE: a root-relative
+# sentinel an operator arms/disarms with a touch/rm — no chain restart, no
+# env-var surgery on a live tick. The AUTORESEARCH_DISPATCH_WAKE env var still
+# works too (either arms it); the sentinel is the reversible, restart-free path.
+DISPATCH_WAKE_SENTINEL = "DISPATCH_WAKE"
 HEARTBEAT_NAME = "heartbeat.json"
 
 # Grace between "experiment terminal" and the sweep stepping in: the afterany
@@ -1700,24 +1705,28 @@ def _wake_panel_minutes(spec: FollowupSpec) -> int:
 
 
 def _wake_dispatcher_from_env(
-    compute: SlurmCompute, followup_spec: FollowupSpec | None, now: float
+    compute: SlurmCompute, followup_spec: FollowupSpec | None, now: float, root: Path
 ) -> tuple[WakeDispatcher, bool]:
     """The wake delivery for this tick, behind an EXPLICIT on-switch so the
     dispatched-wake path lands DARK. Returns `(dispatcher, live)`:
 
-    * `AUTORESEARCH_DISPATCH_WAKE` set AND the chain env carries what a wake job
-      needs -> the real `JobWakeDispatcher` and a LIVE sweep;
+    * armed (the `AUTORESEARCH_DISPATCH_WAKE` env var OR a `<root>/DISPATCH_WAKE`
+      sentinel file) AND the chain env carries what a wake job needs -> the real
+      `JobWakeDispatcher` and a LIVE sweep;
     * otherwise -> the `LoggingDispatcher` and a DRY sweep (today's behavior).
 
-    So an operator turns dispatched climbing on deliberately, and a
+    The sentinel mirrors PAUSE: an operator arms/disarms with a touch/rm, no
+    chain restart. So dispatched climbing is turned on deliberately, and a
     half-configured environment fails safe to dry rather than to a wake job
     that cannot run."""
-    if not os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip():
+    armed = (
+        bool(os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip())
+        or (root / DISPATCH_WAKE_SENTINEL).exists()
+    )
+    if not armed:
         return LoggingDispatcher(), False
     if followup_spec is None:
-        log.warning(
-            "AUTORESEARCH_DISPATCH_WAKE set but the chain env is incomplete; wake stays dry"
-        )
+        log.warning("dispatch-wake armed but the chain env is incomplete; wake stays dry")
         return LoggingDispatcher(), False
     log.info("dispatched-wake ON: the waiting-run sweep delivers real wakes this tick")
     return JobWakeDispatcher(compute, followup_spec, now), True
@@ -1820,13 +1829,13 @@ def main() -> int:
     args.root.mkdir(parents=True, exist_ok=True)
     # In-review servicing is LIVE when credentials + image are available in the
     # chain environment. The waiting-run sweep delivers real wakes only when the
-    # operator flips AUTORESEARCH_DISPATCH_WAKE (and the env is complete); by
-    # default it stays dry with the LoggingDispatcher — dispatched climbing
-    # lands DARK.
+    # operator arms it — the AUTORESEARCH_DISPATCH_WAKE env var or a
+    # <root>/DISPATCH_WAKE sentinel — and the env is complete; by default it
+    # stays dry with the LoggingDispatcher — dispatched climbing lands DARK.
     github, followup_spec = _followup_spec_from_env(args.root)
     compute = SlurmCompute()
     now = time.time()
-    dispatcher, wake_live = _wake_dispatcher_from_env(compute, followup_spec, now)
+    dispatcher, wake_live = _wake_dispatcher_from_env(compute, followup_spec, now, args.root)
 
     report = tick(
         args.root,

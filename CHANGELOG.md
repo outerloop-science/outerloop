@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The dispatched-wake on-switch can now be armed with a `<root>/DISPATCH_WAKE`
+  sentinel file, mirroring the `PAUSE` sentinel — an operator arms/disarms with
+  a `touch`/`rm`, no tick-chain restart or env-var surgery on a live chain. The
+  `AUTORESEARCH_DISPATCH_WAKE` env var still works too (either arms it); a
+  half-configured chain env still fails safe to the dry `LoggingDispatcher`.
+
 - The improved-wake publish is now idempotent across a crash mid-open. A wake
   that opened the PR but died before recording it left the run WAITING; the
   re-wake would re-push non-fast-forward and open a duplicate (or record ABORTED

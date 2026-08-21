@@ -1891,6 +1891,7 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
     # dispatched climbing must NOT deliver wakes unless the operator flips the
     # explicit on-switch AND the chain env is complete.
     from autoresearch.tick import (
+        DISPATCH_WAKE_SENTINEL,
         FollowupSpec,
         JobWakeDispatcher,
         LoggingDispatcher,
@@ -1902,18 +1903,31 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
         account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path
     )
 
-    # default: no on-switch -> dry sweep, logging dispatcher
+    # default: no env, no sentinel -> dry sweep, logging dispatcher
     monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
-    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW)
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
 
-    # on-switch + complete env -> live sweep, real dispatcher
+    # env on-switch + complete env -> live sweep, real dispatcher
     monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
-    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW)
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
 
-    # on-switch but incomplete env -> fail SAFE to dry, not a wake that can't run
-    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW)
+    # env on-switch but incomplete env -> fail SAFE to dry, not a wake that can't run
+    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
+
+    # sentinel file arms it too (mirrors PAUSE) — no env var needed
+    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    (tmp_path / DISPATCH_WAKE_SENTINEL).touch()
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
+    assert isinstance(dispatcher, JobWakeDispatcher) and live is True
+    # ...still fail-safe to dry on an incomplete env
+    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
+    # disarming removes the sentinel -> back to dry (reversible, like PAUSE)
+    (tmp_path / DISPATCH_WAKE_SENTINEL).unlink()
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
 
 
