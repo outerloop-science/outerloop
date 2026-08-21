@@ -983,16 +983,24 @@ def tick(
     # min_tick_s, this one is redundant (that recent tick already swept and
     # launched). Keyed on the work marker (stamped by the CALLER at real
     # completion time), not the heartbeat, so a tick that crashed mid-work does
-    # not suppress this recovery tick. `0 <=` guards a marker in the future
-    # (clock skew) from latching. Heartbeat still written above, so the watchdog
-    # stays fed and the chain stays alive.
-    if min_tick_s > 0 and prior_worked is not None and 0 <= (now - prior_worked) < min_tick_s:
-        log.info(
-            "coalescing: last completed tick %.0fs ago (< %.0fs); tick is a no-op",
-            now - prior_worked,
-            min_tick_s,
-        )
-        return TickReport(coalesced=True)
+    # not suppress this recovery tick. Heartbeat still written above, so the
+    # watchdog stays fed and the chain stays alive.
+    if min_tick_s > 0 and prior_worked is not None:
+        elapsed = now - prior_worked
+        if elapsed < 0:
+            # marker dated in the future -> the clock jumped back; never coalesce
+            # on it (that could stall the loop), and surface it rather than fail
+            # silently.
+            log.warning(
+                "work marker is %.0fs in the future (clock skew?); not coalescing", -elapsed
+            )
+        elif elapsed < min_tick_s:
+            log.info(
+                "coalescing: last completed tick %.0fs ago (< %.0fs); tick is a no-op",
+                elapsed,
+                min_tick_s,
+            )
+            return TickReport(coalesced=True)
     report = sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
@@ -1829,22 +1837,40 @@ def _max_job_minutes_from_env() -> int:
     return clamped
 
 
+def _default_min_tick_s() -> float:
+    """The coalesce window when none is set: half the configured cadence
+    (AUTORESEARCH_CADENCE_MIN, the same knob the chain uses), capped at
+    DEFAULT_MIN_TICK_S. Half-cadence never coalesces an on-cadence tick (those
+    are a full cadence apart) yet still catches late-bunched pile-ups — and it
+    scales down for a short cadence, where a fixed 10-min window would wrongly
+    swallow every tick."""
+    raw = os.environ.get("AUTORESEARCH_CADENCE_MIN", "").strip()
+    try:
+        cadence_s = float(raw) * 60 if raw else 30 * 60
+    except ValueError:
+        cadence_s = 30 * 60
+    if not math.isfinite(cadence_s) or cadence_s <= 0:
+        cadence_s = 30 * 60
+    return min(DEFAULT_MIN_TICK_S, cadence_s / 2)
+
+
 def _min_tick_s_from_env() -> float:
-    """AUTORESEARCH_MIN_TICK_MINUTES -> the coalesce window in seconds. Unset or
-    non-numeric uses the default; negative clamps to 0 (coalesce disabled)."""
+    """AUTORESEARCH_MIN_TICK_MINUTES -> the coalesce window in seconds. Unset
+    derives a cadence-aware default; non-numeric/non-finite also fall back to it;
+    negative clamps to 0 (coalesce disabled); too-large clamps to the ceiling."""
     raw = os.environ.get("AUTORESEARCH_MIN_TICK_MINUTES", "").strip()
     if not raw:
-        return DEFAULT_MIN_TICK_S
+        return _default_min_tick_s()
     try:
         minutes = float(raw)
     except ValueError:
         log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not a number; using default", raw)
-        return DEFAULT_MIN_TICK_S
+        return _default_min_tick_s()
     # reject inf/nan: an infinite window would coalesce every future tick and
     # freeze the loop (a finite elapsed time is always < inf)
     if not math.isfinite(minutes):
         log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not finite; using default", raw)
-        return DEFAULT_MIN_TICK_S
+        return _default_min_tick_s()
     seconds = max(0.0, minutes * 60)
     if seconds > MAX_MIN_TICK_S:
         log.warning(

@@ -101,16 +101,21 @@ def test_pause_sentinel_noops_but_heartbeats(tmp_path: Path) -> None:
 
 def test_coalesce_skips_a_pileup_below_the_window_but_feeds_the_watchdog(tmp_path: Path) -> None:
     slurm = FakeSlurm(states={})
-    # first tick (no work marker yet) -> proceeds, and stamps the marker at NOW
-    report, _ = run_tick(tmp_path, slurm)
-    assert not report.coalesced
-    # a second tick at the same instant is a pile-up (< 10-min window) -> coalesce
+    # a completed tick 60s ago -> the next tick is a pile-up (< 10-min window)
+    _mark_worked(tmp_path, NOW - 60)
+    # seed a STALE heartbeat so the assertion below proves the COALESCED tick
+    # refreshed it (not just that some earlier tick did)
+    write_heartbeat(tmp_path, NOW - 9999)
     report, _ = run_tick(tmp_path, slurm)
     assert report.coalesced and not report.paused
-    # ...but the heartbeat is still refreshed, so the watchdog stays fed
+    # the coalesced tick advanced the heartbeat NOW-9999 -> NOW: watchdog fed
     assert json.loads((tmp_path / "heartbeat.json").read_text())["ts"] == NOW
     # a completed tick 30 min ago (>= window) -> proceeds normally
     _mark_worked(tmp_path, NOW - 1800)
+    report, _ = run_tick(tmp_path, slurm)
+    assert not report.coalesced
+    # a marker dated in the FUTURE (clock skew) -> never coalesce, always proceed
+    _mark_worked(tmp_path, NOW + 5000)
     report, _ = run_tick(tmp_path, slurm)
     assert not report.coalesced
 
@@ -166,6 +171,28 @@ def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
         assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S
     monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "9999")  # huge -> clamped
     assert _min_tick_s_from_env() == float(MAX_MIN_TICK_S)
+
+
+def test_default_coalesce_window_scales_with_cadence(monkeypatch) -> None:
+    from autoresearch.tick import _default_min_tick_s, _min_tick_s_from_env
+
+    monkeypatch.delenv("AUTORESEARCH_MIN_TICK_MINUTES", raising=False)
+    # no cadence set -> assume 30-min cadence -> min(10, 15) = 10 min
+    monkeypatch.delenv("AUTORESEARCH_CADENCE_MIN", raising=False)
+    assert _default_min_tick_s() == DEFAULT_MIN_TICK_S
+    # a SHORT cadence scales the window down (half-cadence), so the default can't
+    # swallow every on-cadence tick
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "6")
+    assert _default_min_tick_s() == 180.0  # 6-min cadence -> 3-min window
+    # a long cadence stays capped at the ceiling
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "120")
+    assert _default_min_tick_s() == DEFAULT_MIN_TICK_S
+    # garbage cadence -> 30-min fallback -> 10 min
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "abc")
+    assert _default_min_tick_s() == DEFAULT_MIN_TICK_S
+    # and the unset MIN_TICK path uses this cadence-aware default
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "6")
+    assert _min_tick_s_from_env() == 180.0
 
 
 def test_terminal_experiment_past_grace_gets_backup_wake(tmp_path: Path) -> None:
