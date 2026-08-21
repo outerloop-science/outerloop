@@ -159,20 +159,17 @@ def outage(result: SessionResult) -> bool:
     work order's attempts."""
     if not result.is_error:
         return False
-    # Union two backend surfaces: error_detail, and the machine "API Error ..."
-    # shape a CLI may put in final_text. The latter is backend text too, never
-    # agent prose, so it must count even when error_detail is non-empty — some
-    # backends stamp a content-free subtype ("success") into error_detail while
-    # the real cause (e.g. "API Error: 400 ... usage limits") sits only in
-    # final_text. final_text is taken ONLY in that "api error" shape, so a
-    # report that merely MENTIONS billing or limits still cannot trip a latch
+    # error_detail is backend error text and always wins; final_text is
+    # consulted ONLY when no detail exists AND it carries the legacy CLI
+    # error shape ("API Error ..."), never agent prose — a failed session's
+    # report that merely MENTIONS billing or limits must not trip a latch
     # that pauses every lane (review findings, rounds 1 and 2).
     surface = result.error_detail.casefold()
-    text = result.final_text.strip().casefold()
-    if text.startswith("api error"):
-        surface = f"{surface}\n{text}"
-    if not surface.strip():
-        return False
+    if not surface:
+        text = result.final_text.strip().casefold()
+        if not text.startswith("api error"):
+            return False
+        surface = text
     return any(pattern in surface for pattern in OUTAGE_PATTERNS)
 
 
@@ -452,6 +449,17 @@ class ClaudeCodeHarness:
         errors = data.get("errors")
         messages = "; ".join(str(e) for e in errors if e) if isinstance(errors, list) else ""
         detail = f"{subtype}: {messages}" if subtype and messages else (subtype or messages)
+        final_text = str(data.get("result") or "")
+        # The CLI can flag is_error while stamping a content-free subtype
+        # ("success") and leaving the real cause only in `result` — observed on
+        # Torch: is_error, subtype "success", result "API Error: 400 ... usage
+        # limits". That machine "API Error ..." text (never agent prose) is the
+        # authoritative cause, so surface it as the detail: downstream notes,
+        # the operator log, and the outage latch (its classifier AND its
+        # throttle-duration check, which reads rate_limit/overloaded off the
+        # detail) all then see the real error instead of "success".
+        if is_error and final_text.strip().casefold().startswith("api error"):
+            detail = final_text.strip()
         # bounded here so every downstream note/report/comment inherits it
         detail = detail[:500]
         return SessionResult(
@@ -461,7 +469,7 @@ class ClaudeCodeHarness:
             cost_usd=_float(data.get("total_cost_usd")),
             num_turns=_int(data.get("num_turns")),
             session_id=str(data.get("session_id") or ""),
-            final_text=str(data.get("result") or ""),
+            final_text=final_text,
             transcript_path=transcript_path,
         )
 

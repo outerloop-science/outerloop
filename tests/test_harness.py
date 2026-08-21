@@ -235,25 +235,34 @@ def test_outage_classification_matches_api_refusals_only() -> None:
     # empty detail: prose is consulted only in the legacy "API Error" shape
     assert outage(result(True, text="API Error (400): credit balance is too low"))
     assert not outage(result(True, text="Report: raise the usage limit, cut billing costs."))
-    # a content-free subtype ("success") in error_detail must NOT mask a real
-    # API-refusal that the CLI put in final_text (observed on Torch: is_error
-    # with subtype "success" and result "API Error: 400 ... usage limits")
-    assert outage(
-        result(
-            True,
-            detail="success",
-            text="API Error: 400 You have reached your specified workspace API usage limits.",
-        )
+
+
+def test_error_detail_carries_the_real_cause_when_subtype_is_success(tmp_path: Path) -> None:
+    """The CLI can flag is_error while stamping a content-free subtype
+    ("success"), leaving the real cause only in `result`. The parse must lift
+    that machine "API Error ..." text into error_detail so the outage latch
+    sees it (classifier AND throttle-duration read the detail), not "success".
+    Observed on Torch: a session hit the workspace usage cap this exact way."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "stop_reason": "stop_sequence",
+            "num_turns": 14,
+            "total_cost_usd": 0.95,
+            "result": "API Error: 400 You have reached your specified workspace API usage limits.",
+        }
     )
-    # ...but a real non-outage detail plus agent prose still never latches,
-    # even when that prose is the machine-shaped path's near-miss
-    assert not outage(
-        result(
-            True,
-            detail="error_max_turns: Reached maximum number of turns",
-            text="Report: we hit the usage limit on our billing plan; cache more.",
-        )
-    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.is_error
+    # the detail is the real error, not the useless "success" subtype
+    assert res.error_detail.startswith("API Error: 400")
+    assert "usage limits" in res.error_detail
+    # so the outage latch fires off the detail (no final_text fallback needed)
+    assert outage(res)
 
 
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:

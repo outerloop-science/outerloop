@@ -64,17 +64,20 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- `outage()` now catches an API refusal the CLI reports as a `subtype: "success"`
-  error with the real cause in `final_text`. Surfaced on Torch: a session hit the
-  author key's workspace usage cap and came back `is_error` with
-  `error_detail="success"` and `result="API Error: 400 ... usage limits"`. The
-  old classifier treated a non-empty `error_detail` as authoritative, scanned
-  `"success"`, matched nothing, and billed a genuine outage as a `session-error`
-  — so the lanes would NOT pause and the failure would count against the run's
-  retry caps. `outage()` now unions the machine-shaped (`"API Error ..."`)
-  `final_text` into the surface even when `error_detail` is non-empty, while
-  still never consulting agent prose (the round-1/2 anti-false-latch invariant
-  holds — prose does not carry that shape).
+- A genuine API refusal the Claude CLI reports as a `subtype: "success"` error
+  is no longer misclassified as a `session-error`. Surfaced on Torch: a session
+  hit the author key's workspace usage cap and came back `is_error` with a
+  content-free `subtype: "success"` and the real cause only in
+  `result="API Error: 400 ... usage limits"`. The parse stamped `"success"` into
+  `error_detail`, so `outage()` scanned `"success"`, matched nothing, and billed
+  a genuine outage as a `session-error` — the lanes would NOT pause and the
+  failure would count against the run's retry caps. The Claude harness parse now
+  lifts that machine-shaped (`"API Error ..."`) `result` into `error_detail`, so
+  the real cause reaches the operator log AND the outage latch — both its
+  classifier and its throttle-duration check (which reads `rate_limit`/
+  `overloaded` off the detail). Fixed at the parse, not in `outage()`, so the
+  classifier keeps consulting `final_text` only when `error_detail` is empty —
+  agent prose (Codex/Hermes `final_text`) still cannot trip the latch.
 
 - Wake-path hardening from the self-review + advisory review of the dispatched
   wake (all pre-activation, the path is still dark):
