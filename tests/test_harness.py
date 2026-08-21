@@ -334,6 +334,27 @@ def test_parse_does_not_lift_a_real_subtype_so_agent_prose_cannot_latch(tmp_path
     assert not outage(res)  # agent prose does not trip the latch
 
 
+def test_parse_captures_a_non_list_errors_cause_and_skips_the_lift(tmp_path: Path) -> None:
+    """A real backend cause in a non-list `errors` form (a dict) is still
+    captured into the detail, so the lift does not fire and does not leave a
+    bare "success" — classification comes from the real cause, not the result."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "errors": {"type": "overloaded_error", "message": "temporarily overloaded"},
+            "result": "API Error: 400 something the agent echoed",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert "overloaded_error" in res.error_detail  # non-list cause captured
+    assert not res.error_detail.startswith("API Error")  # lift skipped
+    assert outage(res)  # classified from the real cause
+
+
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
     binary = fake_claude(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"

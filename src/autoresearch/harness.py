@@ -447,7 +447,15 @@ class ClaudeCodeHarness:
         is_error = bool(data.get("is_error", process.returncode != 0))
         subtype = str(data.get("subtype") or "")
         errors = data.get("errors")
-        messages = "; ".join(str(e) for e in errors if e) if isinstance(errors, list) else ""
+        # capture a real backend cause in ANY form — a list of messages, or a
+        # non-list (dict/str) the CLI might return — so the lift guard below
+        # never mistakes a present cause for an absent one.
+        if isinstance(errors, list):
+            messages = "; ".join(str(e) for e in errors if e)
+        elif errors:
+            messages = str(errors)
+        else:
+            messages = ""
         detail = f"{subtype}: {messages}" if subtype and messages else (subtype or messages)
         final_text = str(data.get("result") or "")
         # The CLI can flag is_error while stamping a content-free subtype
@@ -459,17 +467,16 @@ class ClaudeCodeHarness:
         # throttle-duration check, which reads rate_limit/overloaded off the
         # detail) all then see the real error instead of "success". Lift ONLY
         # for the contradiction we have actually observed: an is_error whose
-        # subtype is empty or the self-contradictory "success", with no `errors`
-        # of any form. Under those, `result` is machine error text, not agent
+        # subtype is empty or the self-contradictory "success", with no backend
+        # `messages`. Under those, `result` is machine error text, not agent
         # prose. A REAL subtype (error_max_turns, error_during_execution, ...) is
         # left alone: `result` there may be the agent's own closing message, and
         # lifting a message that merely starts "API Error" would let agent prose
         # trip the latch — a false outage pausing every lane is worse than the
-        # rare mis-scoped one. `not errors` (the raw field) also holds when the
-        # CLI returns errors in a non-list form.
+        # rare mis-scoped one.
         if (
             is_error
-            and not errors
+            and not messages
             and subtype in ("", "success")
             and final_text.strip().casefold().startswith("api error")
         ):
