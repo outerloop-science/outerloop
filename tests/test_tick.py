@@ -25,6 +25,7 @@ from autoresearch.tick import (
     WORK_MARKER_NAME,
     RecordingDispatcher,
     _mark_worked,
+    mark_tick_complete,
     tick,
     write_heartbeat,
 )
@@ -84,6 +85,8 @@ def run_tick(
 ):
     dispatcher = dispatcher if dispatcher is not None else RecordingDispatcher()
     report = tick(root, slurm.compute(), dispatcher, now=now, min_tick_s=min_tick_s)
+    # mirror main(): the caller stamps the coalesce marker at completion
+    mark_tick_complete(root, report, now)
     return report, dispatcher
 
 
@@ -134,6 +137,19 @@ def test_coalesce_is_disablable_and_pause_takes_precedence(tmp_path: Path) -> No
     _mark_worked(tmp_path, NOW - 1)
     report = tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW)
     assert report.paused and not report.coalesced
+
+
+def test_mark_tick_complete_stamps_only_a_worked_tick_at_completion_time(tmp_path: Path) -> None:
+    from autoresearch.tick import TickReport, _last_worked_ts
+
+    # a worked tick stamps the marker at the COMPLETION time the caller passes
+    # (not the start-of-tick `now`) — so a long tick leaves a fresh marker
+    mark_tick_complete(tmp_path, TickReport(), NOW + 999)
+    assert _last_worked_ts(tmp_path) == NOW + 999
+    # a paused or coalesced tick did no work -> marker left untouched
+    mark_tick_complete(tmp_path, TickReport(paused=True), NOW + 5000)
+    mark_tick_complete(tmp_path, TickReport(coalesced=True), NOW + 6000)
+    assert _last_worked_ts(tmp_path) == NOW + 999
 
 
 def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:

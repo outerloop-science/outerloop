@@ -589,6 +589,16 @@ def _mark_worked(root: Path, now: float) -> None:
         log.warning("work-marker write failed: %s", exc)
 
 
+def mark_tick_complete(root: Path, report: TickReport, now: float) -> None:
+    """Stamp the coalesce marker iff the tick actually did work, at real
+    COMPLETION time (the caller passes time.time() AFTER tick() returns). A
+    paused/coalesced tick leaves it untouched; a tick that raised never reaches
+    here — so only a genuinely completed tick can coalesce the next one, and a
+    long tick's marker reflects when it finished, not when it started."""
+    if not report.paused and not report.coalesced:
+        _mark_worked(root, now)
+
+
 def write_heartbeat(root: Path, now: float, disk: dict[str, object] | None = None) -> None:
     """Best-effort: a heartbeat that cannot be written (full disk) must not
     kill the tick — the tick can still end runs and post to GitHub."""
@@ -971,10 +981,12 @@ def tick(
         return TickReport(paused=True)
     # Coalesce a congestion pile-up: if a tick COMPLETED its work within
     # min_tick_s, this one is redundant (that recent tick already swept and
-    # launched). Keyed on the work marker, not the heartbeat, so a tick that
-    # crashed mid-work does not suppress this recovery tick. Heartbeat still
-    # written above, so the watchdog stays fed and the chain stays alive.
-    if min_tick_s > 0 and prior_worked is not None and (now - prior_worked) < min_tick_s:
+    # launched). Keyed on the work marker (stamped by the CALLER at real
+    # completion time), not the heartbeat, so a tick that crashed mid-work does
+    # not suppress this recovery tick. `0 <=` guards a marker in the future
+    # (clock skew) from latching. Heartbeat still written above, so the watchdog
+    # stays fed and the chain stays alive.
+    if min_tick_s > 0 and prior_worked is not None and 0 <= (now - prior_worked) < min_tick_s:
         log.info(
             "coalescing: last completed tick %.0fs ago (< %.0fs); tick is a no-op",
             now - prior_worked,
@@ -1092,9 +1104,9 @@ def tick(
             not launch_ok,
             steward_job,
         )
-    # A full tick completed its work — stamp the coalesce marker LAST, so only a
-    # tick that actually finished can suppress the next one.
-    _mark_worked(root, now)
+    # The coalesce marker is stamped by the CALLER at real completion time (see
+    # main / mark_tick_complete) — not here with the start-of-tick `now`, which
+    # a tick longer than the window would leave stale.
     return report
 
 
@@ -1940,6 +1952,9 @@ def main() -> int:
         min_free_bytes=int(args.min_free_gb * 1024**3),
         min_tick_s=_min_tick_s_from_env(),
     )
+    # Stamp the coalesce marker at REAL completion time (a fresh time.time(),
+    # not the start-of-tick `now`), so a long tick does not leave a stale marker.
+    mark_tick_complete(args.root, report, time.time())
     log.info(
         "tick done: paused=%s coalesced=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
         "impl_ended=%s review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s "
