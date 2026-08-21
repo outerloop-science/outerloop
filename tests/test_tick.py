@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from autoresearch.tick import (
     PAUSE_SENTINEL,
     RecordingDispatcher,
     tick,
+    write_heartbeat,
 )
 
 NOW = 1_000_000.0
@@ -85,6 +87,36 @@ def test_pause_sentinel_noops_but_heartbeats(tmp_path: Path) -> None:
     assert (tmp_path / "heartbeat.json").exists()
 
 
+def test_coalesce_skips_a_pileup_below_the_window_but_feeds_the_watchdog(tmp_path: Path) -> None:
+    slurm = FakeSlurm(states={})
+    # first tick (no prior heartbeat) -> proceeds
+    report, _ = run_tick(tmp_path, slurm)
+    assert not report.coalesced
+    # a tick ran 60s ago (< the 10-min default window) -> this one coalesces
+    write_heartbeat(tmp_path, NOW - 60)
+    report, _ = run_tick(tmp_path, slurm)
+    assert report.coalesced and not report.paused
+    # ...but the heartbeat is still refreshed, so the watchdog stays fed
+    assert json.loads((tmp_path / "heartbeat.json").read_text())["ts"] == NOW
+    # a tick 30 min ago (>= window) -> proceeds normally
+    write_heartbeat(tmp_path, NOW - 1800)
+    report, _ = run_tick(tmp_path, slurm)
+    assert not report.coalesced
+
+
+def test_coalesce_is_disablable_and_pause_takes_precedence(tmp_path: Path) -> None:
+    slurm = FakeSlurm(states={})
+    # min_tick_s=0 disables coalescing even right after a tick
+    write_heartbeat(tmp_path, NOW - 1)
+    report = tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW, min_tick_s=0)
+    assert not report.coalesced
+    # PAUSE wins over coalesce (paused reported, not coalesced)
+    (tmp_path / PAUSE_SENTINEL).touch()
+    write_heartbeat(tmp_path, NOW - 1)
+    report = tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW)
+    assert report.paused and not report.coalesced
+
+
 def test_terminal_experiment_past_grace_gets_backup_wake(tmp_path: Path) -> None:
     waiting_run(tmp_path)
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "FAILED"}))
@@ -143,7 +175,11 @@ def test_dry_run_reports_without_any_writes(tmp_path: Path) -> None:
     slurm = FakeSlurm(states={"100": "COMPLETED"})
     dispatcher = RD()
     for i in range(5):
-        report = tick_fn(tmp_path, slurm.compute(), dispatcher, now=NOW + i * 60, dry_run=True)
+        # min_tick_s=0: this test exercises dry-run idempotency across repeated
+        # sweeps, not the coalesce guard (which would skip these 60s-apart ticks)
+        report = tick_fn(
+            tmp_path, slurm.compute(), dispatcher, now=NOW + i * 60, dry_run=True, min_tick_s=0
+        )
         assert report.woken == (("r1", "COMPLETED"),)
     after = load_record(tmp_path, "r1")
     assert after.wake_attempts == 0

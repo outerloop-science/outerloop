@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Tick coalescing: under partition congestion, queued ticks bunch up and become
+  eligible together (the singleton dependency serializes them), so they would
+  run back-to-back and redundantly re-sweep. A tick now no-ops if another ran
+  within `AUTORESEARCH_MIN_TICK_MINUTES` (default 10, well below the 30-min
+  cadence; 0 disables) — it still writes the heartbeat so the watchdog stays fed
+  and the chain stays alive. Only late-bunched pile-ups fall inside the window;
+  on-cadence ticks are untouched. (Partition routing for the heavy climb/eval
+  jobs already exists — `AUTORESEARCH_JOB_PARTITION`.)
+
 - The dispatched-wake on-switch can now be armed with a `<root>/DISPATCH_WAKE`
   sentinel file, mirroring the `PAUSE` sentinel — an operator arms/disarms with
   a `touch`/`rm`, no tick-chain restart or env-var surgery on a live chain. The

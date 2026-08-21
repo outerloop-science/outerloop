@@ -76,6 +76,13 @@ HEARTBEAT_NAME = "heartbeat.json"
 DEFAULT_GRACE_S = 15 * 60
 # A held lease is stale after the session timeout plus slack.
 DEFAULT_LEASE_TTL_S = 3600 + 15 * 60
+# Coalesce guard: skip a tick's work if another ran within this window. Under
+# partition congestion, queued ticks bunch up and become eligible together
+# (serialized by the singleton dependency), so they would run back-to-back and
+# redundantly re-sweep. The chain schedules ticks a full cadence apart by
+# begin-time, so only late-bunched pile-ups fall inside this window; keep it
+# well BELOW the cadence (default 30 min). 0 disables. Env: AUTORESEARCH_MIN_TICK_MINUTES.
+DEFAULT_MIN_TICK_S = 10 * 60
 
 
 class WakeDispatcher(Protocol):
@@ -108,6 +115,7 @@ class RecordingDispatcher:
 @dataclass(frozen=True)
 class TickReport:
     paused: bool = False
+    coalesced: bool = False  # skipped as a redundant pile-up (a tick ran too recently)
     swept: int = 0
     woken: tuple[tuple[str, str], ...] = ()  # (run_id, reason)
     deferred: tuple[str, ...] = ()  # runs skipped on "Slurm unknown"
@@ -545,6 +553,18 @@ def service_in_review(
     return ended, submitted
 
 
+def _last_tick_ts(root: Path) -> float | None:
+    """The `ts` of the previous tick's heartbeat, or None when there is no
+    readable heartbeat yet (first tick, or a corrupt/missing file). Read this
+    BEFORE write_heartbeat overwrites it — it is the coalesce guard's signal."""
+    try:
+        payload = json.loads((root / HEARTBEAT_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    ts = payload.get("ts") if isinstance(payload, dict) else None
+    return float(ts) if isinstance(ts, int | float) else None
+
+
 def write_heartbeat(root: Path, now: float, disk: dict[str, object] | None = None) -> None:
     """Best-effort: a heartbeat that cannot be written (full disk) must not
     kill the tick — the tick can still end runs and post to GitHub."""
@@ -901,6 +921,7 @@ def tick(
     followup_spec: FollowupSpec | None = None,
     followup_dry_run: bool = False,
     min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+    min_tick_s: float = DEFAULT_MIN_TICK_S,
 ) -> TickReport:
     """One full tick. Pause sentinel wins over everything: a paused loop
     heartbeats (so the watchdog stays quiet) but touches nothing.
@@ -913,7 +934,9 @@ def tick(
     """
     # Heartbeat FIRST, before any probe: check_disk touches $HOME (a
     # different filesystem), and a hung mount there must not starve the
-    # watchdog signal. The disk-annotated heartbeat follows once known.
+    # watchdog signal. The disk-annotated heartbeat follows once known. Read the
+    # PRIOR tick's timestamp before overwriting it — the coalesce guard needs it.
+    prior_ts = _last_tick_ts(root)
     write_heartbeat(root, now)
     disk_health = check_disk(root, min_free_bytes=min_free_bytes)
     write_heartbeat(root, now, disk=disk_health.as_dict())
@@ -922,6 +945,16 @@ def tick(
     if (root / PAUSE_SENTINEL).exists():
         log.info("pause sentinel present; tick is a no-op")
         return TickReport(paused=True)
+    # Coalesce a congestion pile-up: if a tick ran within min_tick_s, this one
+    # is redundant (the recent tick already swept/launched). Heartbeat still
+    # written above, so the watchdog stays fed and the chain stays alive.
+    if min_tick_s > 0 and prior_ts is not None and (now - prior_ts) < min_tick_s:
+        log.info(
+            "coalescing: previous tick %.0fs ago (< %.0fs); tick is a no-op",
+            now - prior_ts,
+            min_tick_s,
+        )
+        return TickReport(coalesced=True)
     report = sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
@@ -1755,6 +1788,19 @@ def _max_job_minutes_from_env() -> int:
     return clamped
 
 
+def _min_tick_s_from_env() -> float:
+    """AUTORESEARCH_MIN_TICK_MINUTES -> the coalesce window in seconds. Unset or
+    non-numeric uses the default; negative clamps to 0 (coalesce disabled)."""
+    raw = os.environ.get("AUTORESEARCH_MIN_TICK_MINUTES", "").strip()
+    if not raw:
+        return DEFAULT_MIN_TICK_S
+    try:
+        return max(0.0, float(raw) * 60)
+    except ValueError:
+        log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not a number; using default", raw)
+        return DEFAULT_MIN_TICK_S
+
+
 def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     """GitHub client + FollowupSpec from the chain environment, or Nones when
     the environment is incomplete (the tick then runs without in-review
@@ -1849,12 +1895,14 @@ def main() -> int:
         followup_spec=followup_spec,
         followup_dry_run=False,
         min_free_bytes=int(args.min_free_gb * 1024**3),
+        min_tick_s=_min_tick_s_from_env(),
     )
     log.info(
-        "tick done: paused=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d impl_ended=%s "
-        "review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s disk=%s "
-        "launch_blocked=%s",
+        "tick done: paused=%s coalesced=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
+        "impl_ended=%s review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s "
+        "disk=%s launch_blocked=%s",
         report.paused,
+        report.coalesced,
         report.swept,
         len(report.woken),
         len(report.deferred),
