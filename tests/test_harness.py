@@ -265,6 +265,31 @@ def test_error_detail_carries_the_real_cause_when_subtype_is_success(tmp_path: P
     assert outage(res)
 
 
+def test_parse_keeps_a_real_subtype_when_the_result_quotes_an_api_error(tmp_path: Path) -> None:
+    """The result-lift is ONLY for the content-free "success" subtype. A
+    caps-hit ending (error_max_turns) whose last message happens to quote an
+    API error must KEEP its subtype, so budget_exhausted() still fires and the
+    ending is not reclassified as an outage. Drives the real parse, not a hand-
+    built SessionResult (the outage() unit test cannot exercise the lift)."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "error_max_turns",
+            "stop_reason": "error_max_turns",
+            "num_turns": 50,
+            "result": "API Error: 429 rate limit — retried, then hit the turn cap.",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.is_error
+    assert res.error_detail.startswith("error_max_turns")  # subtype NOT clobbered
+    assert budget_exhausted(res)  # still a budget ending
+    assert not outage(res)  # and NOT misclassified as an outage
+
+
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
     binary = fake_claude(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"

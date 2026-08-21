@@ -457,8 +457,16 @@ class ClaudeCodeHarness:
         # authoritative cause, so surface it as the detail: downstream notes,
         # the operator log, and the outage latch (its classifier AND its
         # throttle-duration check, which reads rate_limit/overloaded off the
-        # detail) all then see the real error instead of "success".
-        if is_error and final_text.strip().casefold().startswith("api error"):
+        # detail) all then see the real error instead of "success". Lift ONLY
+        # when the CLI left no real cause — the contradictory "success" subtype
+        # or an empty detail — so a genuine ending subtype (error_max_turns,
+        # error_during_execution) is KEPT and budget_exhausted()/the classifier
+        # still see it.
+        if (
+            is_error
+            and (not detail or subtype == "success")
+            and final_text.strip().casefold().startswith("api error")
+        ):
             detail = final_text.strip()
         # bounded here so every downstream note/report/comment inherits it
         detail = detail[:500]
