@@ -313,6 +313,27 @@ def test_parse_keeps_backend_error_messages_over_a_success_subtype(tmp_path: Pat
     assert outage(res)  # classified from the real cause (overloaded_error)
 
 
+def test_parse_lifts_the_api_error_for_a_content_free_wrapper_subtype(tmp_path: Path) -> None:
+    """`error_during_execution` is a generic wrapper, not a specific cause: with
+    no messages and a machine API-error result, the real cause must be lifted so
+    the latch sees it. The gate protects only `error_max_turns` (the one prefix
+    budget_exhausted reads), so every other wrapper subtype is lifted."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "error_during_execution",
+            "result": "API Error: 429 rate_limit_error — too many requests.",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.error_detail.startswith("API Error: 429")  # wrapper lifted
+    assert outage(res)  # classified from the real cause
+    assert not budget_exhausted(res)
+
+
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
     binary = fake_claude(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"
