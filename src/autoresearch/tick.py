@@ -1846,27 +1846,40 @@ def _max_job_minutes_from_env() -> int:
     return clamped
 
 
-def _default_min_tick_s() -> float:
-    """The coalesce window when none is set: half the configured cadence
-    (AUTORESEARCH_CADENCE_MIN, the same knob the chain uses), capped at
-    DEFAULT_MIN_TICK_S. Half-cadence never coalesces an on-cadence tick (those
-    are a full cadence apart) yet still catches late-bunched pile-ups — and it
-    scales down for a short cadence, where a fixed 10-min window would wrongly
-    swallow every tick."""
+def _cadence_s() -> float:
+    """The chain's tick cadence in seconds (AUTORESEARCH_CADENCE_MIN, the same
+    knob tick_chain.sbatch uses), defaulting to 30 min when unset/invalid."""
     raw = os.environ.get("AUTORESEARCH_CADENCE_MIN", "").strip()
     try:
         cadence_s = float(raw) * 60 if raw else 30 * 60
     except ValueError:
         cadence_s = 30 * 60
-    if not math.isfinite(cadence_s) or cadence_s <= 0:
-        cadence_s = 30 * 60
-    return min(DEFAULT_MIN_TICK_S, cadence_s / 2)
+    return cadence_s if (math.isfinite(cadence_s) and cadence_s > 0) else 30 * 60
+
+
+def _coalesce_ceiling_s() -> float:
+    """The largest SAFE coalesce window, bounding both the default and an
+    explicit AUTORESEARCH_MIN_TICK_MINUTES: half the cadence (so an on-cadence
+    tick is never coalesced even when the previous one ran a little late), and
+    never above the absolute MAX_MIN_TICK_S. A window at/above the cadence would
+    swallow every normal tick and stall the loop — this is what forbids it."""
+    return min(float(MAX_MIN_TICK_S), _cadence_s() / 2)
+
+
+def _default_min_tick_s() -> float:
+    """The coalesce window when none is set: the safe ceiling, further capped at
+    the 10-min DEFAULT_MIN_TICK_S — small enough to only catch pile-ups, and
+    cadence-aware so a short cadence scales it down instead of swallowing every
+    tick."""
+    return min(DEFAULT_MIN_TICK_S, _coalesce_ceiling_s())
 
 
 def _min_tick_s_from_env() -> float:
     """AUTORESEARCH_MIN_TICK_MINUTES -> the coalesce window in seconds. Unset
     derives a cadence-aware default; non-numeric/non-finite also fall back to it;
-    negative clamps to 0 (coalesce disabled); too-large clamps to the ceiling."""
+    negative clamps to 0 (coalesce disabled); a value at/above the safe ceiling
+    (half the cadence, capped at MAX_MIN_TICK_S) clamps down so it cannot stall
+    the loop."""
     raw = os.environ.get("AUTORESEARCH_MIN_TICK_MINUTES", "").strip()
     if not raw:
         return _default_min_tick_s()
@@ -1881,13 +1894,15 @@ def _min_tick_s_from_env() -> float:
         log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not finite; using default", raw)
         return _default_min_tick_s()
     seconds = max(0.0, minutes * 60)
-    if seconds > MAX_MIN_TICK_S:
+    ceiling = _coalesce_ceiling_s()
+    if seconds > ceiling:
         log.warning(
-            "AUTORESEARCH_MIN_TICK_MINUTES=%s exceeds the %d-min ceiling; clamping",
+            "AUTORESEARCH_MIN_TICK_MINUTES=%s exceeds the safe ceiling "
+            "(%.0f min, ~half the cadence); clamping so normal ticks are not coalesced",
             raw,
-            MAX_MIN_TICK_S // 60,
+            ceiling / 60,
         )
-        return float(MAX_MIN_TICK_S)
+        return ceiling
     return seconds
 
 

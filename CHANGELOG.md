@@ -11,14 +11,17 @@ Versions follow [SemVer](https://semver.org).
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would
   run back-to-back and redundantly re-sweep. A tick now no-ops if another tick
-  *completed its work* within `AUTORESEARCH_MIN_TICK_MINUTES` (default 10, well
-  below the 30-min cadence; 0 disables, clamped to a 60-min ceiling, non-finite
-  rejected). The guard keys on a work-completion marker written at a tick's END,
-  not the start-of-tick heartbeat, so a tick that crashes mid-work never
-  suppresses the next (recovery) tick; the heartbeat is still written so the
-  watchdog stays fed. Only late-bunched pile-ups fall inside the window;
-  on-cadence ticks are untouched. (Partition routing for the heavy climb/eval
-  jobs already exists — `AUTORESEARCH_JOB_PARTITION`.)
+  *completed its work* within `AUTORESEARCH_MIN_TICK_MINUTES`. The default and any
+  explicit value are cadence-aware: capped at half of `AUTORESEARCH_CADENCE_MIN`
+  (default 10 min, absolute ceiling 60 min), so a window can never reach the
+  cadence and swallow normal ticks; 0 disables; non-finite/corrupt inputs fall
+  back safely. The guard keys on a work-completion marker written at a tick's END
+  (at real completion time), not the start-of-tick heartbeat, so a tick that
+  crashes mid-work never suppresses the next (recovery) tick; the heartbeat is
+  still written so the watchdog stays fed; a corrupt marker file degrades to "no
+  marker" rather than crashing the tick. Only late-bunched pile-ups fall inside
+  the window; on-cadence ticks are untouched. (Partition routing for the heavy
+  climb/eval jobs already exists — `AUTORESEARCH_JOB_PARTITION`.)
 
 - The dispatched-wake on-switch can now be armed with a `<root>/DISPATCH_WAKE`
   sentinel file, mirroring the `PAUSE` sentinel — an operator arms/disarms with

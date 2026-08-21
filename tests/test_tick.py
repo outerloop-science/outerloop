@@ -177,10 +177,12 @@ def test_last_worked_ts_survives_a_corrupt_marker(tmp_path: Path) -> None:
 
 
 def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
-    from autoresearch.tick import MAX_MIN_TICK_S, _min_tick_s_from_env
+    from autoresearch.tick import _min_tick_s_from_env
 
+    # default cadence (30 min) -> safe ceiling = half-cadence = 15 min = 900s
+    monkeypatch.delenv("AUTORESEARCH_CADENCE_MIN", raising=False)
     monkeypatch.delenv("AUTORESEARCH_MIN_TICK_MINUTES", raising=False)
-    assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S  # unset -> default
+    assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S  # unset -> default (10 min < ceiling)
     monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "5")
     assert _min_tick_s_from_env() == 300.0
     monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "0")
@@ -188,8 +190,13 @@ def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
     for bad in ("inf", "nan", "-inf", "abc"):  # non-finite / non-numeric -> default
         monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", bad)
         assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S
-    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "9999")  # huge -> clamped
-    assert _min_tick_s_from_env() == float(MAX_MIN_TICK_S)
+    # a window at/above half the cadence is clamped so normal ticks aren't coalesced
+    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "9999")
+    assert _min_tick_s_from_env() == 900.0  # clamped to the 15-min ceiling
+    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "25")  # > 15 (half of 30-min cadence)
+    assert _min_tick_s_from_env() == 900.0
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "10")  # ceiling tracks the cadence
+    assert _min_tick_s_from_env() == 300.0  # clamped to half of 10 min = 5 min
 
 
 def test_default_coalesce_window_scales_with_cadence(monkeypatch) -> None:
