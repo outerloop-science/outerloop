@@ -237,6 +237,124 @@ def test_outage_classification_matches_api_refusals_only() -> None:
     assert not outage(result(True, text="Report: raise the usage limit, cut billing costs."))
 
 
+def test_error_detail_carries_the_real_cause_when_subtype_is_success(tmp_path: Path) -> None:
+    """The CLI can flag is_error while stamping a content-free subtype
+    ("success"), leaving the real cause only in `result`. The parse must lift
+    that machine "API Error ..." text into error_detail so the outage latch
+    sees it (classifier AND throttle-duration read the detail), not "success".
+    Observed on Torch: a session hit the workspace usage cap this exact way."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "stop_reason": "stop_sequence",
+            "num_turns": 14,
+            "total_cost_usd": 0.95,
+            "result": "API Error: 400 You have reached your specified workspace API usage limits.",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.is_error
+    # the detail is the real error, not the useless "success" subtype
+    assert res.error_detail.startswith("API Error: 400")
+    assert "usage limits" in res.error_detail
+    # so the outage latch fires off the detail (no final_text fallback needed)
+    assert outage(res)
+
+
+def test_parse_keeps_a_real_subtype_when_the_result_quotes_an_api_error(tmp_path: Path) -> None:
+    """The result-lift is ONLY for the content-free "success" subtype. A
+    caps-hit ending (error_max_turns) whose last message happens to quote an
+    API error must KEEP its subtype, so budget_exhausted() still fires and the
+    ending is not reclassified as an outage. Drives the real parse, not a hand-
+    built SessionResult (the outage() unit test cannot exercise the lift)."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "error_max_turns",
+            "stop_reason": "error_max_turns",
+            "num_turns": 50,
+            "result": "API Error: 429 rate limit — retried, then hit the turn cap.",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.is_error
+    assert res.error_detail.startswith("error_max_turns")  # subtype NOT clobbered
+    assert budget_exhausted(res)  # still a budget ending
+    assert not outage(res)  # and NOT misclassified as an outage
+
+
+def test_parse_keeps_backend_error_messages_over_a_success_subtype(tmp_path: Path) -> None:
+    """A "success" subtype can still carry real `errors` — the lift must NOT
+    clobber them with the result text. The backend message is the authoritative
+    cause and classification must come from it, not the quoted result."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "errors": ["overloaded_error: the model is temporarily overloaded"],
+            "result": "API Error: 400 something the agent echoed",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.is_error
+    # the real backend cause is kept, not replaced by the result text
+    assert "overloaded_error" in res.error_detail
+    assert not res.error_detail.startswith("API Error")
+    assert outage(res)  # classified from the real cause (overloaded_error)
+
+
+def test_parse_does_not_lift_a_real_subtype_so_agent_prose_cannot_latch(tmp_path: Path) -> None:
+    """The lift is scoped to the observed "success"/empty contradiction. For a
+    REAL subtype (error_during_execution), `result` may be the agent's own
+    closing message, so a message that merely starts "API Error" must NOT be
+    lifted — a false outage that pauses every lane is worse than a rare
+    mis-scoped one. The subtype is kept and the latch does not fire on prose."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "error_during_execution",
+            "result": "API Error: 429 the agent quoted while writing its report.",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.error_detail.startswith("error_during_execution")  # NOT lifted
+    assert not outage(res)  # agent prose does not trip the latch
+
+
+def test_parse_captures_a_non_list_errors_cause_and_skips_the_lift(tmp_path: Path) -> None:
+    """A real backend cause in a non-list `errors` form (a dict) is still
+    captured into the detail, so the lift does not fire and does not leave a
+    bare "success" — classification comes from the real cause, not the result."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "errors": {"type": "overloaded_error", "message": "temporarily overloaded"},
+            "result": "API Error: 400 something the agent echoed",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert "overloaded_error" in res.error_detail  # non-list cause captured
+    assert not res.error_detail.startswith("API Error")  # lift skipped
+    assert outage(res)  # classified from the real cause
+
+
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
     binary = fake_claude(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"

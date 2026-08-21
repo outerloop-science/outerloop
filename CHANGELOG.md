@@ -64,6 +64,21 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A genuine API refusal the Claude CLI reports as a `subtype: "success"` error
+  is no longer misclassified as a `session-error`. Surfaced on Torch: a session
+  hit the author key's workspace usage cap and came back `is_error` with a
+  content-free `subtype: "success"` and the real cause only in
+  `result="API Error: 400 ... usage limits"`. The parse stamped `"success"` into
+  `error_detail`, so `outage()` scanned `"success"`, matched nothing, and billed
+  a genuine outage as a `session-error` — the lanes would NOT pause and the
+  failure would count against the run's retry caps. The Claude harness parse now
+  lifts that machine-shaped (`"API Error ..."`) `result` into `error_detail`, so
+  the real cause reaches the operator log AND the outage latch — both its
+  classifier and its throttle-duration check (which reads `rate_limit`/
+  `overloaded` off the detail). Fixed at the parse, not in `outage()`, so the
+  classifier keeps consulting `final_text` only when `error_detail` is empty —
+  agent prose (Codex/Hermes `final_text`) still cannot trip the latch.
+
 - Wake-path hardening from the self-review + advisory review of the dispatched
   wake (all pre-activation, the path is still dark):
   - the improved wake now FORCE-checks-out the sealed candidate sha (at wake the
