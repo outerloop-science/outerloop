@@ -458,13 +458,15 @@ class ClaudeCodeHarness:
         # the operator log, and the outage latch (its classifier AND its
         # throttle-duration check, which reads rate_limit/overloaded off the
         # detail) all then see the real error instead of "success". Lift ONLY
-        # when the CLI left no real cause — the contradictory "success" subtype
-        # or an empty detail — so a genuine ending subtype (error_max_turns,
-        # error_during_execution) is KEPT and budget_exhausted()/the classifier
-        # still see it.
+        # when the CLI left no real cause: a bare/contradictory subtype ("" or
+        # "success") AND no `errors` messages. A genuine ending subtype
+        # (error_max_turns, error_during_execution) is KEPT so budget_exhausted()
+        # /the classifier still see it, and real backend `errors` text is kept
+        # too (a "success" subtype can still carry messages).
         if (
             is_error
-            and (not detail or subtype == "success")
+            and not messages
+            and subtype in ("", "success")
             and final_text.strip().casefold().startswith("api error")
         ):
             detail = final_text.strip()

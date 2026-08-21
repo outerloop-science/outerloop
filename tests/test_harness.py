@@ -290,6 +290,29 @@ def test_parse_keeps_a_real_subtype_when_the_result_quotes_an_api_error(tmp_path
     assert not outage(res)  # and NOT misclassified as an outage
 
 
+def test_parse_keeps_backend_error_messages_over_a_success_subtype(tmp_path: Path) -> None:
+    """A "success" subtype can still carry real `errors` — the lift must NOT
+    clobber them with the result text. The backend message is the authoritative
+    cause and classification must come from it, not the quoted result."""
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "errors": ["overloaded_error: the model is temporarily overloaded"],
+            "result": "API Error: 400 something the agent echoed",
+        }
+    )
+    binary = fake_claude(tmp_path, payload)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    res = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
+    assert res.is_error
+    # the real backend cause is kept, not replaced by the result text
+    assert "overloaded_error" in res.error_detail
+    assert not res.error_detail.startswith("API Error")
+    assert outage(res)  # classified from the real cause (overloaded_error)
+
+
 def test_clean_sessions_and_real_failures_are_not_budget_endings(tmp_path: Path) -> None:
     binary = fake_claude(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"
