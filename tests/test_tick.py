@@ -168,6 +168,7 @@ def test_last_worked_ts_survives_a_corrupt_marker(tmp_path: Path) -> None:
         '{"ts": "x"}',  # wrong type
         "not json",  # unparseable
         "[]",  # not a dict
+        "[" * 6000 + "]" * 6000,  # deeply nested -> RecursionError
     ):
         marker.write_text(bad)
         assert _last_worked_ts(tmp_path) is None  # None, never a crash

@@ -570,21 +570,21 @@ def _last_worked_ts(root: Path) -> float | None:
     heartbeat — coalescing on that would suppress the very recovery tick. The
     work marker is written only at a full tick's END, so a failed tick never
     hides behind it."""
+    # The marker is a best-effort optimization we write ourselves; ANY failure
+    # reading/parsing/converting a corrupt file (OSError, ValueError,
+    # OverflowError on a huge int, RecursionError on deep nesting, ...) must
+    # degrade to "no marker" so coalesce simply proceeds — it can never crash the
+    # tick before its heartbeat. bool is an int subclass, so exclude it; inf/nan
+    # are not usable elapsed anchors.
     try:
         payload = json.loads((root / WORK_MARKER_NAME).read_text())
-    except (OSError, ValueError):
-        return None
-    ts = payload.get("ts") if isinstance(payload, dict) else None
-    # bool is an int subclass; exclude it. float() of a huge JSON integer raises
-    # OverflowError, and inf/nan are not usable elapsed anchors — a corrupt
-    # marker must return None, never crash the tick before its heartbeat.
-    if not isinstance(ts, int | float) or isinstance(ts, bool):
-        return None
-    try:
+        ts = payload.get("ts") if isinstance(payload, dict) else None
+        if not isinstance(ts, int | float) or isinstance(ts, bool):
+            return None
         val = float(ts)
-    except (OverflowError, ValueError):
+        return val if math.isfinite(val) else None
+    except Exception:
         return None
-    return val if math.isfinite(val) else None
 
 
 def _mark_worked(root: Path, now: float) -> None:
