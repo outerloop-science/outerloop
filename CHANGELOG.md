@@ -10,10 +10,13 @@ Versions follow [SemVer](https://semver.org).
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would
-  run back-to-back and redundantly re-sweep. A tick now no-ops if another ran
-  within `AUTORESEARCH_MIN_TICK_MINUTES` (default 10, well below the 30-min
-  cadence; 0 disables) — it still writes the heartbeat so the watchdog stays fed
-  and the chain stays alive. Only late-bunched pile-ups fall inside the window;
+  run back-to-back and redundantly re-sweep. A tick now no-ops if another tick
+  *completed its work* within `AUTORESEARCH_MIN_TICK_MINUTES` (default 10, well
+  below the 30-min cadence; 0 disables, clamped to a 60-min ceiling, non-finite
+  rejected). The guard keys on a work-completion marker written at a tick's END,
+  not the start-of-tick heartbeat, so a tick that crashes mid-work never
+  suppresses the next (recovery) tick; the heartbeat is still written so the
+  watchdog stays fed. Only late-bunched pile-ups fall inside the window;
   on-cadence ticks are untouched. (Partition routing for the heavy climb/eval
   jobs already exists — `AUTORESEARCH_JOB_PARTITION`.)
 

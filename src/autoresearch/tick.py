@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -70,6 +71,9 @@ PAUSE_SENTINEL = "PAUSE"
 # works too (either arms it); the sentinel is the reversible, restart-free path.
 DISPATCH_WAKE_SENTINEL = "DISPATCH_WAKE"
 HEARTBEAT_NAME = "heartbeat.json"
+# Written at a full tick's END (not its start) — the coalesce guard's signal, so
+# a tick that crashes mid-work cannot suppress the next (recovery) tick.
+WORK_MARKER_NAME = "last_worked.json"
 
 # Grace between "experiment terminal" and the sweep stepping in: the afterany
 # job gets this long to deliver before the backup assumes it lost.
@@ -83,6 +87,11 @@ DEFAULT_LEASE_TTL_S = 3600 + 15 * 60
 # begin-time, so only late-bunched pile-ups fall inside this window; keep it
 # well BELOW the cadence (default 30 min). 0 disables. Env: AUTORESEARCH_MIN_TICK_MINUTES.
 DEFAULT_MIN_TICK_S = 10 * 60
+# Ceiling for the coalesce window: a value above this is almost certainly a typo
+# (a window near/over the cadence would coalesce every on-cadence tick and stall
+# the loop). Clamp + warn rather than silently freeze. The operator is still
+# responsible for keeping it below their configured cadence.
+MAX_MIN_TICK_S = 60 * 60
 
 
 class WakeDispatcher(Protocol):
@@ -553,16 +562,31 @@ def service_in_review(
     return ended, submitted
 
 
-def _last_tick_ts(root: Path) -> float | None:
-    """The `ts` of the previous tick's heartbeat, or None when there is no
-    readable heartbeat yet (first tick, or a corrupt/missing file). Read this
-    BEFORE write_heartbeat overwrites it — it is the coalesce guard's signal."""
+def _last_worked_ts(root: Path) -> float | None:
+    """The `ts` of the last tick that COMPLETED its work, or None if there is no
+    readable marker (first tick, or a corrupt/missing file). The coalesce guard
+    keys on this, NOT the heartbeat: the heartbeat is stamped at tick START (for
+    the watchdog), so a tick that crashes mid-work still leaves a fresh
+    heartbeat — coalescing on that would suppress the very recovery tick. The
+    work marker is written only at a full tick's END, so a failed tick never
+    hides behind it."""
     try:
-        payload = json.loads((root / HEARTBEAT_NAME).read_text())
+        payload = json.loads((root / WORK_MARKER_NAME).read_text())
     except (OSError, ValueError):
         return None
     ts = payload.get("ts") if isinstance(payload, dict) else None
     return float(ts) if isinstance(ts, int | float) else None
+
+
+def _mark_worked(root: Path, now: float) -> None:
+    """Record that a tick completed its work at `now` — the coalesce signal.
+    Best-effort: a marker that cannot be written must not fail the tick."""
+    try:
+        tmp = root / f".{WORK_MARKER_NAME}.tmp"
+        tmp.write_text(json.dumps({"ts": now}))
+        os.replace(tmp, root / WORK_MARKER_NAME)
+    except OSError as exc:
+        log.warning("work-marker write failed: %s", exc)
 
 
 def write_heartbeat(root: Path, now: float, disk: dict[str, object] | None = None) -> None:
@@ -934,9 +958,9 @@ def tick(
     """
     # Heartbeat FIRST, before any probe: check_disk touches $HOME (a
     # different filesystem), and a hung mount there must not starve the
-    # watchdog signal. The disk-annotated heartbeat follows once known. Read the
-    # PRIOR tick's timestamp before overwriting it — the coalesce guard needs it.
-    prior_ts = _last_tick_ts(root)
+    # watchdog signal. The disk-annotated heartbeat follows once known. The
+    # coalesce guard reads the last COMPLETED tick's marker (not the heartbeat).
+    prior_worked = _last_worked_ts(root)
     write_heartbeat(root, now)
     disk_health = check_disk(root, min_free_bytes=min_free_bytes)
     write_heartbeat(root, now, disk=disk_health.as_dict())
@@ -945,13 +969,15 @@ def tick(
     if (root / PAUSE_SENTINEL).exists():
         log.info("pause sentinel present; tick is a no-op")
         return TickReport(paused=True)
-    # Coalesce a congestion pile-up: if a tick ran within min_tick_s, this one
-    # is redundant (the recent tick already swept/launched). Heartbeat still
+    # Coalesce a congestion pile-up: if a tick COMPLETED its work within
+    # min_tick_s, this one is redundant (that recent tick already swept and
+    # launched). Keyed on the work marker, not the heartbeat, so a tick that
+    # crashed mid-work does not suppress this recovery tick. Heartbeat still
     # written above, so the watchdog stays fed and the chain stays alive.
-    if min_tick_s > 0 and prior_ts is not None and (now - prior_ts) < min_tick_s:
+    if min_tick_s > 0 and prior_worked is not None and (now - prior_worked) < min_tick_s:
         log.info(
-            "coalescing: previous tick %.0fs ago (< %.0fs); tick is a no-op",
-            now - prior_ts,
+            "coalescing: last completed tick %.0fs ago (< %.0fs); tick is a no-op",
+            now - prior_worked,
             min_tick_s,
         )
         return TickReport(coalesced=True)
@@ -1066,6 +1092,9 @@ def tick(
             not launch_ok,
             steward_job,
         )
+    # A full tick completed its work — stamp the coalesce marker LAST, so only a
+    # tick that actually finished can suppress the next one.
+    _mark_worked(root, now)
     return report
 
 
@@ -1795,10 +1824,24 @@ def _min_tick_s_from_env() -> float:
     if not raw:
         return DEFAULT_MIN_TICK_S
     try:
-        return max(0.0, float(raw) * 60)
+        minutes = float(raw)
     except ValueError:
         log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not a number; using default", raw)
         return DEFAULT_MIN_TICK_S
+    # reject inf/nan: an infinite window would coalesce every future tick and
+    # freeze the loop (a finite elapsed time is always < inf)
+    if not math.isfinite(minutes):
+        log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not finite; using default", raw)
+        return DEFAULT_MIN_TICK_S
+    seconds = max(0.0, minutes * 60)
+    if seconds > MAX_MIN_TICK_S:
+        log.warning(
+            "AUTORESEARCH_MIN_TICK_MINUTES=%s exceeds the %d-min ceiling; clamping",
+            raw,
+            MAX_MIN_TICK_S // 60,
+        )
+        return float(MAX_MIN_TICK_S)
+    return seconds
 
 
 def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:

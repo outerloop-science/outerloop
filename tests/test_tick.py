@@ -20,8 +20,11 @@ from autoresearch.runstate import (
     save_record,
 )
 from autoresearch.tick import (
+    DEFAULT_MIN_TICK_S,
     PAUSE_SENTINEL,
+    WORK_MARKER_NAME,
     RecordingDispatcher,
+    _mark_worked,
     tick,
     write_heartbeat,
 )
@@ -72,9 +75,15 @@ def waiting_run(root: Path, run_id: str = "r1", **overrides) -> RunRecord:
     return record
 
 
-def run_tick(root: Path, slurm: FakeSlurm, dispatcher=None, now: float = NOW):
+def run_tick(
+    root: Path,
+    slurm: FakeSlurm,
+    dispatcher=None,
+    now: float = NOW,
+    min_tick_s: float = DEFAULT_MIN_TICK_S,
+):
     dispatcher = dispatcher if dispatcher is not None else RecordingDispatcher()
-    report = tick(root, slurm.compute(), dispatcher, now=now)
+    report = tick(root, slurm.compute(), dispatcher, now=now, min_tick_s=min_tick_s)
     return report, dispatcher
 
 
@@ -89,32 +98,58 @@ def test_pause_sentinel_noops_but_heartbeats(tmp_path: Path) -> None:
 
 def test_coalesce_skips_a_pileup_below_the_window_but_feeds_the_watchdog(tmp_path: Path) -> None:
     slurm = FakeSlurm(states={})
-    # first tick (no prior heartbeat) -> proceeds
+    # first tick (no work marker yet) -> proceeds, and stamps the marker at NOW
     report, _ = run_tick(tmp_path, slurm)
     assert not report.coalesced
-    # a tick ran 60s ago (< the 10-min default window) -> this one coalesces
-    write_heartbeat(tmp_path, NOW - 60)
+    # a second tick at the same instant is a pile-up (< 10-min window) -> coalesce
     report, _ = run_tick(tmp_path, slurm)
     assert report.coalesced and not report.paused
     # ...but the heartbeat is still refreshed, so the watchdog stays fed
     assert json.loads((tmp_path / "heartbeat.json").read_text())["ts"] == NOW
-    # a tick 30 min ago (>= window) -> proceeds normally
-    write_heartbeat(tmp_path, NOW - 1800)
+    # a completed tick 30 min ago (>= window) -> proceeds normally
+    _mark_worked(tmp_path, NOW - 1800)
     report, _ = run_tick(tmp_path, slurm)
     assert not report.coalesced
 
 
+def test_a_crashed_tick_does_not_suppress_the_recovery_tick(tmp_path: Path) -> None:
+    # the coalesce guard keys on WORK COMPLETION, not tick start: a tick that
+    # crashed mid-work leaves a fresh heartbeat but NO work marker, so the next
+    # tick must still run (recovery), not coalesce on the crashed tick's start.
+    write_heartbeat(tmp_path, NOW - 5)  # crashed tick started 5s ago (very recent)
+    # (no work marker — the crashed tick never reached its end)
+    report, _ = run_tick(tmp_path, FakeSlurm(states={}))
+    assert not report.coalesced  # recovery proceeds despite the fresh heartbeat
+    assert (tmp_path / WORK_MARKER_NAME).exists()  # and this tick stamped the marker
+
+
 def test_coalesce_is_disablable_and_pause_takes_precedence(tmp_path: Path) -> None:
     slurm = FakeSlurm(states={})
-    # min_tick_s=0 disables coalescing even right after a tick
-    write_heartbeat(tmp_path, NOW - 1)
+    # min_tick_s=0 disables coalescing even right after a completed tick
+    _mark_worked(tmp_path, NOW - 1)
     report = tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW, min_tick_s=0)
     assert not report.coalesced
     # PAUSE wins over coalesce (paused reported, not coalesced)
     (tmp_path / PAUSE_SENTINEL).touch()
-    write_heartbeat(tmp_path, NOW - 1)
+    _mark_worked(tmp_path, NOW - 1)
     report = tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW)
     assert report.paused and not report.coalesced
+
+
+def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
+    from autoresearch.tick import MAX_MIN_TICK_S, _min_tick_s_from_env
+
+    monkeypatch.delenv("AUTORESEARCH_MIN_TICK_MINUTES", raising=False)
+    assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S  # unset -> default
+    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "5")
+    assert _min_tick_s_from_env() == 300.0
+    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "0")
+    assert _min_tick_s_from_env() == 0.0  # disables
+    for bad in ("inf", "nan", "-inf", "abc"):  # non-finite / non-numeric -> default
+        monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", bad)
+        assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S
+    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "9999")  # huge -> clamped
+    assert _min_tick_s_from_env() == float(MAX_MIN_TICK_S)
 
 
 def test_terminal_experiment_past_grace_gets_backup_wake(tmp_path: Path) -> None:
@@ -320,12 +355,13 @@ def test_legacy_zero_deadline_still_wakes_gone_runs(tmp_path: Path) -> None:
         updated=NOW - 5000,
     )
     (directory / "state.json").write_text(_json.dumps(record))
-    report, _ = run_tick(tmp_path, FakeSlurm(states={}))  # GONE
+    # min_tick_s=0: this test exercises the sweep twice, not the coalesce guard
+    report, _ = run_tick(tmp_path, FakeSlurm(states={}), min_tick_s=0)  # GONE
     assert report.woken == (("legacy", "vanished"),)
 
     (directory / "state.json").write_text(_json.dumps(record))
     slurm = FakeSlurm(states={"100": "PENDING"})
-    _report2, _ = run_tick(tmp_path, slurm)
+    _report2, _ = run_tick(tmp_path, slurm, min_tick_s=0)
     assert slurm.cancelled == []  # healthy pending job never cancelled
 
 
@@ -357,8 +393,10 @@ def test_double_tick_no_double_wake_with_async_dispatch(tmp_path: Path) -> None:
     waiting_run(tmp_path)
     slurm = FakeSlurm(states={"100": "COMPLETED", "777": "RUNNING"})
     dispatcher = RecordingDispatcher(holder_job_id="777")
-    run_tick(tmp_path, slurm, dispatcher)
-    run_tick(tmp_path, slurm, dispatcher, now=NOW + 60)
+    # min_tick_s=0: both sweeps must run — the lease (not coalescing) is what
+    # makes the second wake idempotent, which is exactly what this asserts
+    run_tick(tmp_path, slurm, dispatcher, min_tick_s=0)
+    run_tick(tmp_path, slurm, dispatcher, now=NOW + 60, min_tick_s=0)
     assert len(dispatcher.dispatched) == 1
 
 
