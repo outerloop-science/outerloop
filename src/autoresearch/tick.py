@@ -1254,24 +1254,30 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
-def _climb_author_argv(spec: FollowupSpec) -> list[str]:
+def _author_argv(backend: str, model: str, codex_bin: str) -> list[str]:
     """Author-backend flags for a climb job; empty for the default Claude author.
 
     The panel keeps its own backend/key (`_climb_panel_argv`); this only selects
     who does the *authoring*. `key_file` is passed by the caller as `--key-file`
-    and holds the author backend's key, so it is not repeated here."""
-    backend = spec.author_backend.strip()
+    and holds the author backend's key, so it is not repeated here. `model` is
+    stripped so a stray-whitespace env value does not reach codex as a bad id."""
+    backend = backend.strip()
     if not backend or backend == "claude":
         return []
     argv = ["--author-backend", backend]
-    if spec.author_model:
-        argv += ["--model", spec.author_model]
-    if spec.codex_bin:
-        argv += ["--codex-bin", spec.codex_bin]
+    if model.strip():
+        argv += ["--model", model.strip()]
+    if codex_bin:
+        argv += ["--codex-bin", codex_bin]
     return argv
 
 
-def _author_preflight_error(spec: FollowupSpec) -> str:
+def _climb_author_argv(spec: FollowupSpec) -> list[str]:
+    """Author flags for the fleet's configured backend (self-initiated, intake)."""
+    return _author_argv(spec.author_backend, spec.author_model, spec.codex_bin)
+
+
+def _author_config_error(backend: str, model: str) -> str:
     """Why a climb would die at startup on this author config ("" when it won't).
 
     The Claude author is always valid. The codex author needs a non-Claude model
@@ -1279,17 +1285,22 @@ def _author_preflight_error(spec: FollowupSpec) -> str:
     image is already guaranteed by the tick's env-load. Preflighted so a lane
     skips rather than submits a job that would fail at startup — and, for intake,
     skips before it claims an issue."""
-    backend = spec.author_backend.strip()
+    backend = backend.strip()
     if not backend or backend == "claude":
         return ""
     if backend != "codex":
         return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
-    model = spec.author_model.strip()
-    if not model or model.startswith("claude"):
+    if not model.strip() or model.strip().startswith("claude"):
         return (
-            f"author backend 'codex' needs a non-Claude AUTORESEARCH_AUTHOR_MODEL (got {model!r})"
+            "author backend 'codex' needs a non-Claude "
+            f"AUTORESEARCH_AUTHOR_MODEL (got {model.strip()!r})"
         )
     return ""
+
+
+def _author_preflight_error(spec: FollowupSpec) -> str:
+    """`_author_config_error` for the fleet's configured author backend."""
+    return _author_config_error(spec.author_backend, spec.author_model)
 
 
 def _panel_preflight_error(spec: FollowupSpec) -> str:
@@ -1800,12 +1811,18 @@ class JobWakeDispatcher:
     wake_minutes: int = 20
 
     def dispatch(self, record: RunRecord, reason: str) -> str:
+        # Reproduce the PARKED run's author, not the current fleet default: a
+        # fleet flip (claude->codex) must not wake a parked Claude run as codex,
+        # which cannot resume its Claude session. The backend is persisted on the
+        # record ("" = legacy, before this field -> fall back to the spec). The
+        # codex model/binary come from the spec (stable fleet config).
+        backend = record.author_backend or self.spec.author_backend
         # Fail safe rather than submit a doomed resume: a misconfigured codex
         # author would die at the climb's startup validation. Raising lets _wake
         # release the lease and count the attempt toward the stuck threshold
         # (same as any dispatch failure), instead of burning a Slurm job each
         # tick. Fresh climbs preflight this before submit; the wake does too.
-        author_error = _author_preflight_error(self.spec)
+        author_error = _author_config_error(backend, self.spec.author_model)
         if author_error:
             raise ValueError(f"author misconfigured for wake: {author_error}")
         argv = [
@@ -1830,7 +1847,7 @@ class JobWakeDispatcher:
             # the author backend must match the parked run's: a no-resume backend
             # (codex) drafts the blocking finding instead of resuming (the climb's
             # supports_resume gate), and key_file below is that backend's key.
-            *_climb_author_argv(self.spec),
+            *_author_argv(backend, self.spec.author_model, self.spec.codex_bin),
             # session budget for the depth-axis REVISION (a blocking panel
             # finding wakes the author to revise).
             "--max-turns",

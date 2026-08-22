@@ -33,8 +33,11 @@ Versions follow [SemVer](https://semver.org).
   verify/review panel keeps its own `AUTORESEARCH_PANEL_KEY_FILE`). A
   misconfigured codex author (missing or Claude `AUTORESEARCH_AUTHOR_MODEL`) is
   preflighted, so the self-initiated lane skips and intake skips *before*
-  claiming an issue, rather than submitting a job that dies at startup. The
-  default is unchanged — the Claude author.
+  claiming an issue, rather than submitting a job that dies at startup. A run's
+  author backend is persisted on its record, so a wake reproduces the *parked
+  run's* author rather than the current fleet default — a mid-flight fleet flip
+  never wakes a parked Claude run as codex (which cannot resume it). The default
+  is unchanged — the Claude author.
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would

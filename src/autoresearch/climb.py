@@ -1137,6 +1137,7 @@ def live_climb(
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
     issue_number: int = 0,
+    author_backend: str = "claude",
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -1166,6 +1167,7 @@ def live_climb(
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
+        author_backend=author_backend,
         climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
@@ -2194,6 +2196,7 @@ def main() -> int:
                     if k
                 ),
                 issue_number=args.issue,
+                author_backend=args.author_backend,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()
                     if args.hypothesis_b64

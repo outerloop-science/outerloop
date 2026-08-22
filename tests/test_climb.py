@@ -273,7 +273,9 @@ class NoAuth:
         return "unused"
 
 
-def run_live(tmp_path, target_repo, edits, values, run_id="tsp-1", dispatch=None) -> tuple:
+def run_live(
+    tmp_path, target_repo, edits, values, run_id="tsp-1", dispatch=None, author_backend="claude"
+) -> tuple:
     github = FakeGitHub()
     outcome = live_climb(
         config=ClimbConfig(target="org/pilot", benchmark="tsp"),
@@ -287,6 +289,7 @@ def run_live(tmp_path, target_repo, edits, values, run_id="tsp-1", dispatch=None
         created="2026-08-06T00:00:00Z",
         secrets=("sk-live-key",),
         dispatch=dispatch,
+        author_backend=author_backend,
     )
     return outcome, github
 
@@ -346,6 +349,19 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     # report exists and is redacted-safe
     report = Path(outcome.report_path).read_text()
     assert "improved" in report
+
+
+def test_run_record_persists_the_author_backend(tmp_path, target_repo) -> None:
+    # a wake must reproduce the parked run's author, so the backend it was
+    # started with is stamped on the record (the default is the Claude author).
+    run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+        author_backend="codex",
+    )
+    assert load_record(tmp_path / "state", "tsp-1").author_backend == "codex"
 
 
 def test_snapshot_refs_are_dropped_after_a_climb(tmp_path, target_repo) -> None:

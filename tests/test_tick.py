@@ -2062,19 +2062,33 @@ def test_wake_dispatcher_threads_the_author_backend(tmp_path: Path, monkeypatch:
         author_model="gpt-5.6-terra",
         codex_bin="/opt/codex",
     )
-    record = RunRecord(
-        run_id="tsp-1",
-        target="org/pilot",
-        task_title="improve tsp",
-        benchmark="tsp",
-        state="waiting",
-        stage={"afterany": "afterany:501"},
-    )
-    JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(record, "eval done")
+
+    def record(**kw: Any) -> RunRecord:
+        return RunRecord(
+            run_id="tsp-1",
+            target="org/pilot",
+            task_title="improve tsp",
+            benchmark="tsp",
+            state="waiting",
+            stage={"afterany": "afterany:501"},
+            **kw,
+        )
+
+    # a legacy record (no persisted backend) falls back to the fleet spec
+    JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(record(), "done")
     joined = " ".join(submits[0])
     assert "--resume tsp-1" in joined
     assert "--author-backend codex" in joined and "--model gpt-5.6-terra" in joined
     assert "--codex-bin /opt/codex" in joined
+
+    # the record's backend WINS over the fleet's: a parked Claude run under a
+    # now-codex fleet wakes as Claude (resumes its session), not codex (drafts)
+    submits.clear()
+    JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(
+        record(author_backend="claude"), "done"
+    )
+    joined = " ".join(submits[0])
+    assert "--resume tsp-1" in joined and "--author-backend" not in joined
 
     # a misconfigured codex author raises instead of submitting a doomed resume:
     # _wake then releases the lease (a raising dispatch is a failed delivery),
@@ -2084,7 +2098,7 @@ def test_wake_dispatcher_threads_the_author_backend(tmp_path: Path, monkeypatch:
     submits.clear()
     bad = replace(spec, author_model="")
     with pytest.raises(ValueError, match="author misconfigured"):
-        JobWakeDispatcher(SlurmCompute(runner=runner), bad, now=NOW).dispatch(record, "eval done")
+        JobWakeDispatcher(SlurmCompute(runner=runner), bad, now=NOW).dispatch(record(), "done")
     assert submits == []
 
 
