@@ -1140,10 +1140,12 @@ def climb_once(
             # a degraded clean read is NOT a certified pass: no wake (nothing
             # for the author to fix), but the caller drafts the PR
             break
-        if not session.session_id:
-            # cannot resume a session with no id, and a FRESH session seeing
-            # only the findings text would revise blind — fail closed to the
-            # draft path instead (review question, #95 round 1)
+        if not session.session_id or not getattr(harness, "supports_resume", True):
+            # cannot resume: no session id, OR a backend whose headless resume
+            # is not bench-validated (codex/hermes). A FRESH session seeing only
+            # the findings would revise blind, and an unvalidated resume that
+            # fails would lose this verified improvement as a session-error —
+            # so fail closed to the draft path (review question, #95 round 1).
             panel_blocking_open = True
             break
         if panel_reads > panel_revisions:

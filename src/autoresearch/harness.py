@@ -77,7 +77,13 @@ class Harness(Protocol):
     agent with `resume_session_id` — restoring its full working context — and
     a wake prompt carrying the results. Session state lives in the per-run
     HOME next to the workspace, so wakes survive orchestrator restarts and can
-    land on a different cluster node (shared filesystem)."""
+    land on a different cluster node (shared filesystem).
+
+    A backend MAY declare a class attribute `supports_resume = False` when its
+    headless resume is not trustworthy (codex/hermes). The revise loop checks it
+    (via getattr, default True) and DRAFTS instead of calling run() with a resume
+    id — an untrusted resume that starts fresh or fails would revise blind or
+    lose a verified improvement. Optional, so test doubles need not declare it."""
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -308,6 +314,7 @@ class ClaudeCodeHarness:
     apptainer_binary: str = "apptainer"
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
+    supports_resume = True  # native --resume, bench-validated
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -631,8 +638,18 @@ class CodexHarness:
     (docs/design/consolidation.md): Codex's own `--sandbox read-only` plus a
     judge RoleSpec's tool set. CLI flags are verified against codex-cli 0.130.0;
     the `--json` event field names still need a live authed run, so `session_id`
-    and cost parsing are best-effort until then. No apptainer wrapper yet (the
-    reviewer runs read-only); the author-on-Codex path adds one later.
+    and cost parsing are best-effort until then.
+
+    AUTHOR mode (`container_image` set): both `codex login` and `codex exec` run
+    inside `apptainer exec --containall --cleanenv`, sharing a bound `--home` so
+    the login's auth.json is visible to the exec. That layers TWO boundaries:
+    apptainer (no host FS beyond the two binds; `--cleanenv` scrubs the env down
+    to the author's own key, so the process tree carries no foreign token for a
+    /proc read to lift — the boundary is the scrubbed env, not PID isolation,
+    the same posture as the Claude author) around codex's own `--sandbox
+    workspace-write` (writes confined to the clone). codex is taken from the
+    image (on PATH), not bound from the host. The reviewer path (no
+    `container_image`) is unchanged: uncontained, `--sandbox read-only`.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
@@ -644,14 +661,56 @@ class CodexHarness:
     sandbox: str = "read-only"  # judge default; authors pass "workspace-write"
     timeout_s: int = DEFAULT_TIMEOUT_S
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    # AUTHOR mode: when set, login+exec run inside this apptainer image. Empty =
+    # uncontained (the read-only reviewer path).
+    container_image: str = ""
+    apptainer_binary: str = "apptainer"
+    # codex on the image PATH (contained runs never bind the host binary); a
+    # bare class attribute (no annotation) so the dataclass does not treat it
+    # as a field, matching ClaudeCodeHarness.CONTAINER_CLAUDE.
+    CONTAINER_CODEX = "codex"
+    # codex --json session-id parsing is best-effort until a live authed run
+    # verifies the event fields, so headless resume is NOT trusted yet: the
+    # revise loop drafts instead of resuming (flip to True once validated).
+    supports_resume = False
+
+    def _apptainer_argv(
+        self, inner: list[str], session_home: Path, workspace: Path | None
+    ) -> list[str]:
+        """Wrap a codex argv in `apptainer exec --containall --cleanenv`. The
+        run-home is bound via `--home` (auth.json survives login->exec and lands
+        on the shared FS); the workspace is bound and set as --pwd only for the
+        exec, never the login."""
+        argv = [
+            self.apptainer_binary,
+            "exec",
+            "--containall",
+            "--cleanenv",
+            "--home",
+            f"{session_home}:{session_home}",
+        ]
+        if workspace is not None:
+            argv += ["--bind", f"{workspace}:{workspace}", "--pwd", str(workspace)]
+        return [*argv, self.container_image, *inner]
 
     def _login(self, session_home: Path) -> SessionResult | None:
         """Write auth.json into the per-run HOME. None on success, an error
-        SessionResult on failure. The key travels on stdin, never argv."""
+        SessionResult on failure. The key travels on stdin, never argv. In
+        AUTHOR mode the login runs inside apptainer with the same bound --home,
+        so auth.json lands where the contained exec will read it."""
         env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
+        if self.container_image:
+            # --cleanenv drops host env inside the container except APPTAINERENV_*
+            # (prefix stripped by apptainer): the key travels via env, not argv.
+            env["APPTAINERENV_OPENAI_API_KEY"] = self.api_key
+            login_argv = self._apptainer_argv(
+                [self.CONTAINER_CODEX, "login", "--with-api-key"], session_home, None
+            )
+        else:
+            login_argv = [self.binary, "login", "--with-api-key"]
         try:
             proc = subprocess.run(
-                [self.binary, "login", "--with-api-key"],
+                login_argv,
                 input=self.api_key,
                 cwd=session_home,
                 env=env,
@@ -679,6 +738,12 @@ class CodexHarness:
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
+        # Contained runs bind workspace + home into apptainer, whose bind sources
+        # must be ABSOLUTE (a relative one fails at mount time); resolving here
+        # also keeps codex's --cd / --output-last-message aligned with the mount
+        # points inside the container.
+        if self.container_image:
+            workspace = workspace.resolve()
         transcript_stem = f"{workspace.name}-codex"
         session_home = workspace.parent / f"{workspace.name}-home"
         try:
@@ -701,8 +766,10 @@ class CodexHarness:
         last_message_path = session_home / "codex-last-message.txt"
         with contextlib.suppress(OSError):
             last_message_path.unlink()
-        command = _codex_command(
-            self.binary,
+        # contained runs invoke the image's codex (on PATH); uncontained the
+        # host binary. The exec binds the workspace and sets it as --pwd.
+        codex_argv = _codex_command(
+            self.CONTAINER_CODEX if self.container_image else self.binary,
             self.model,
             self.sandbox,
             workspace,
@@ -710,8 +777,15 @@ class CodexHarness:
             resume_session_id,
             self.extra_args,
         )
+        command = (
+            self._apptainer_argv(codex_argv, session_home, workspace)
+            if self.container_image
+            else codex_argv
+        )
         try:
             env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
+            if self.container_image:
+                env["APPTAINERENV_OPENAI_API_KEY"] = self.api_key
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -895,6 +969,10 @@ class HermesHarness:
     `run` never raises: every failure comes back as an error SessionResult.
     """
 
+    # no headless resume seam (run() refuses a resume id), so the revise loop
+    # drafts rather than resuming.
+    supports_resume = False
+
     api_key: str  # exported via key_env (never argv)
     repo_dir: Path  # pinned hermes-agent checkout
     # hermes resolves credentials from provider-specific env vars (a registry:
@@ -1041,6 +1119,7 @@ class FakeHarness:
     result: SessionResult
     script: Any = None  # optional callable(brief_text, workspace) for side effects
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
+    supports_resume: bool = True  # a field so tests can exercise the no-resume path
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None

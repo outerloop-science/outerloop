@@ -13,6 +13,7 @@ import pytest
 from autoresearch.harness import (
     SESSION_ENV_ALLOWLIST,
     ClaudeCodeHarness,
+    CodexHarness,
     FakeHarness,
     SessionResult,
     budget_exhausted,
@@ -579,6 +580,77 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path) -> None:
     assert "sk-c" not in argv  # the key travels via env, never argv
     seen_env = (tmp_path / "seen_env").read_text()
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen_env
+
+
+def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]:
+    """A fake apptainer that APPENDS every invocation's argv+env to logs, so a
+    test can assert BOTH codex calls (login then exec) — not just the last."""
+    calls, envs = tmp_path / "calls.log", tmp_path / "envs.log"
+    script = tmp_path / "fake-apptainer"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> {calls}\n'
+        f"env | grep APPTAINERENV >> {envs}\n"
+        f"cat <<'EOF'\n{payload}\nEOF\n"
+        "exit 0\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return str(script), calls, envs
+
+
+def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
+    """AUTHOR mode: BOTH codex login and codex exec run inside apptainer
+    (--containall/--cleanenv), so neither exposes the author key to the host —
+    login is contained too, not only the exec. exec binds the workspace + --pwd,
+    codex from the image PATH, author sandbox workspace-write, key via
+    APPTAINERENV_ (never argv)."""
+    binary, calls, envs = _recording_apptainer(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(
+        api_key="sk-o",
+        binary="/real/codex",
+        model="gpt-5.6-terra",
+        sandbox="workspace-write",
+        container_image="/img/agent.sif",
+        apptainer_binary=binary,
+    )
+    harness.run("task", ws)
+    logged = calls.read_text()
+    login = next(ln for ln in logged.splitlines() if "codex login" in ln)
+    exec_ = next(ln for ln in logged.splitlines() if "codex exec" in ln)
+    home = f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}"
+    # the LOGIN is contained too (the finding: an uncontained login leaks the key)
+    assert login.startswith("exec --containall --cleanenv")
+    assert home in login
+    assert "/img/agent.sif codex login --with-api-key" in login
+    assert f"--bind {ws}" not in login  # login needs no workspace
+    # the EXEC is contained, binds+pwd the workspace, author sandbox, image codex
+    assert exec_.startswith("exec --containall --cleanenv")
+    assert f"--bind {ws}:{ws}" in exec_ and f"--pwd {ws}" in exec_ and home in exec_
+    assert "/img/agent.sif codex exec" in exec_
+    assert "--sandbox workspace-write" in exec_
+    # the key is never in ANY argv, and rides APPTAINERENV for both calls
+    assert "sk-o" not in logged
+    assert envs.read_text().count("APPTAINERENV_OPENAI_API_KEY=sk-o") == 2
+
+
+def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch) -> None:
+    """apptainer bind sources must be absolute; a relative workspace is resolved
+    (else the mount fails deep inside apptainer)."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    (tmp_path / "ws").mkdir()
+    monkeypatch.chdir(tmp_path)
+    harness = CodexHarness(
+        api_key="k",
+        sandbox="workspace-write",
+        container_image="/img/agent.sif",
+        apptainer_binary=binary,
+    )
+    harness.run("task", Path("ws"))  # relative
+    argv = (tmp_path / "seen_argv").read_text()
+    assert f"--bind {tmp_path / 'ws'}:{tmp_path / 'ws'}" in argv  # absolute
+    assert "--bind ws:ws" not in argv
 
 
 def test_container_requires_absolute_binary(tmp_path: Path) -> None:

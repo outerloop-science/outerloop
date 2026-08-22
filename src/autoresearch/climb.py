@@ -36,7 +36,7 @@ from autoresearch.github import (
     GitHubClient,
     Workspace,
 )
-from autoresearch.harness import ClaudeCodeHarness, Harness, SessionResult, redact
+from autoresearch.harness import ClaudeCodeHarness, CodexHarness, Harness, SessionResult, redact
 from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
@@ -709,6 +709,8 @@ def resume_run(
                 can_revise = (
                     bool(verdict.blocking)
                     and harness is not None
+                    # codex/hermes declare supports_resume=False -> draft, don't resume
+                    and getattr(harness, "supports_resume", True)
                     and spec is not None
                     and bool(record.resume_session_id)
                     and reads <= panel_revisions
@@ -973,24 +975,48 @@ def build_editor_harness(
     api_key: str,
     spec: RoleSpec | None = None,
     *,
+    backend: str = "claude",
     binary: str | None = None,
     model: str | None = None,
     container_image: str = "",
-) -> ClaudeCodeHarness:
-    """Construct an editing role's harness from its RoleSpec — the same
-    deployment wiring the judges use (`spec.budget` drives turns and walltime,
-    `spec.tools` the tool set, so manifest and harness cannot disagree). The
-    session runs contained (apptainer) and KEEPS instruction-file discovery —
-    the target repo's CLAUDE.md is legitimate guidance for an editing role,
-    unlike a judge's untrusted checkout.
+    codex_extra_args: tuple[str, ...] = (),
+) -> Harness:
+    """Construct an editing role's harness from its RoleSpec, for the chosen
+    backend — the same deployment wiring the judges use (`spec.budget` drives
+    turns and walltime). The session runs contained (apptainer) and KEEPS
+    instruction-file discovery — the target repo's CLAUDE.md is legitimate
+    guidance for an editing role, unlike a judge's untrusted checkout.
 
-    Claude-only by validation status, not by design: the seam (`run_role`,
-    `climb_once`) takes any Harness. A codex or hermes editor needs its
-    resume and write+execute containment story bench-validated first; then
-    it is a new branch here, zero kernel change (the reviewer's rollout)."""
+    The seam (`run_role`, `climb_once`) takes any Harness, so a backend is one
+    branch here, zero kernel change (the reviewer's rollout):
+    - claude: native tool set, apptainer-contained; the trusted default.
+    - codex: apptainer-contained + `--sandbox workspace-write`. An author MUST
+      be contained (it writes+executes), so container_image is REQUIRED — the
+      read-only reviewer could skip it, an author cannot. Codex declares
+      `supports_resume=False` (its headless resume is not bench-validated), so a
+      blocking panel finding DRAFTS instead of attempting a resume — both the
+      inline and wake revise paths gate on `supports_resume`, so there is no
+      blind revise and no improvement lost to a failed resume."""
     spec = spec or author_spec()
     if not spec.execution.can_execute:
         raise ValueError("build_editor_harness is for editing roles")
+    if backend == "codex":
+        if not container_image:
+            # an author writes+executes; it must not run uncontained
+            raise ValueError("codex editor backend requires a container_image (apptainer)")
+        return CodexHarness(
+            api_key=api_key,
+            binary=binary or "codex",
+            model=model or "",  # "" -> codex's configured default; pin a verified id
+            sandbox="workspace-write",
+            timeout_s=spec.budget.walltime_s,
+            container_image=container_image,
+            # host-specific codex config (e.g. -c use_legacy_landlock=true),
+            # mirroring the reviewer branch's sandbox_extra
+            extra_args=codex_extra_args,
+        )
+    if backend != "claude":
+        raise ValueError(f"unknown editor backend: {backend!r}")
     return ClaudeCodeHarness(
         api_key=api_key,
         binary=binary or "claude",
@@ -1905,6 +1931,22 @@ def main() -> int:
     )
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument(
+        "--author-backend",
+        choices=("claude", "codex"),
+        default="claude",
+        help="agent backend for the author/editor role. codex runs contained "
+        "(apptainer + --sandbox workspace-write) and REQUIRES --image and a "
+        "codex/openai --model (e.g. gpt-5.6-terra).",
+    )
+    parser.add_argument(
+        "--codex-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="codex `-c KEY=VALUE` config for the codex author (repeatable), "
+        "e.g. --codex-config use_legacy_landlock=true for a host that needs it.",
+    )
     parser.add_argument("--max-turns", type=int, default=60)
     parser.add_argument("--session-minutes", type=int, default=60)
     parser.add_argument(
@@ -1951,6 +1993,18 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
+    if args.author_backend == "codex":
+        # a codex author writes+executes: it must be contained, and the claude
+        # default model would 404 on codex — fail early, before any spend.
+        if not args.image:
+            parser.error("--author-backend codex requires --image (it runs contained)")
+        if args.model.startswith("claude"):
+            parser.error(
+                "--author-backend codex needs a codex/openai --model "
+                "(e.g. gpt-5.6-terra), not the claude default"
+            )
+    # each --codex-config KEY=VALUE becomes a `-c KEY=VALUE` pair for codex
+    codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
 
     bot_auth = FileTokenProvider(Path(args.pat_file))
 
@@ -1987,9 +2041,11 @@ def main() -> int:
             wake_harness = build_editor_harness(
                 wake_api_key,
                 wake_spec,
-                binary=args.claude_bin,
+                backend=args.author_backend,
+                binary=args.claude_bin if args.author_backend == "claude" else None,
                 model=args.model,
                 container_image=args.image,
+                codex_extra_args=codex_extra,
             )
         try:
             resumed = resume_run(
@@ -2099,9 +2155,11 @@ def main() -> int:
                 harness=build_editor_harness(
                     api_key,
                     spec,
-                    binary=args.claude_bin,
+                    backend=args.author_backend,
+                    binary=args.claude_bin if args.author_backend == "claude" else None,
                     model=args.model,
                     container_image=args.image,
+                    codex_extra_args=codex_extra,
                 ),
                 spec=spec,
                 panel_lenses=panel_lenses,
