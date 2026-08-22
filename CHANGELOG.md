@@ -38,9 +38,14 @@ Versions follow [SemVer](https://semver.org).
   change, not a key swap, and no in-flight run breaks. The tick no longer threads
   the author backend or key into the climb/intake/wake/follow-up jobs — a new
   author backend needs ZERO tick change (only the steward keeps its own explicit
-  key, a distinct role). A run's backend is persisted on its record, so a wake or
-  follow-up reproduces that run's OWN author (and key), not the current fleet
-  default — a mid-flight fleet flip never resumes a run on the wrong backend.
+  key, a distinct role). A run's author `(backend, model)` PAIR is persisted on
+  its record, so a wake or follow-up reproduces that run's OWN author, model, and
+  key — never the current fleet default (a legacy record with no backend is
+  treated as claude, not the fleet's). A mid-flight fleet flip therefore never
+  resumes a run on the wrong backend, pairs a codex backend with a claude model,
+  or reaches for the wrong key. The codex author is validated on the EFFECTIVE
+  author per path (fresh args vs the parked run's persisted pair), so the check
+  never judges a fleet backend against a run's model.
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would

@@ -686,15 +686,13 @@ def main() -> int:
         or os.path.expanduser("~/.local/bin/codex"),
     )
     parser.add_argument(
-        "--model", default=os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
+        "--model",
+        default=os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5",
+        help="fallback model only; a run's OWN (backend, model) from its record wins",
     )
-    parser.add_argument(
-        "--author-backend",
-        choices=("claude", "codex"),
-        default=os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude",
-        help="fallback author backend when the run's record has none (legacy); a "
-        "run's OWN backend, persisted on its record, always wins.",
-    )
+    # No --author-backend: a follow-up services ONE run, whose backend+model are
+    # persisted on its record (legacy records are claude). It never uses a fleet
+    # default that could mismatch the run.
     parser.add_argument(
         "--codex-config",
         action="append",
@@ -727,18 +725,25 @@ def main() -> int:
 
     from datetime import UTC, datetime
 
-    from autoresearch.climb import resolve_author_key_file
+    from autoresearch.climb import (
+        codex_author_config_error,
+        resolve_author_key_file,
+        resume_author,
+    )
 
-    # a follow-up services ONE run: reproduce THAT run's author (persisted on the
-    # record), not the current fleet default, so a codex-authored PR is revised
-    # by codex (native resume of its session) and picks the codex key. Legacy
-    # records with no backend (or an unreadable one) fall back to the CLI/env
-    # default; respond_once re-reads the record and handles a truly missing one.
+    # a follow-up services ONE run: reproduce THAT run's author (the persisted
+    # (backend, model) PAIR), not the current fleet default, so a codex-authored
+    # PR is revised by codex (native resume of its session), with the codex model
+    # and codex key. Legacy/unreadable records are treated as claude; respond_once
+    # re-reads the record and handles a truly missing one.
     try:
-        author_backend = load_record(args.run_root, args.run_id).author_backend
+        _rec: object | None = load_record(args.run_root, args.run_id)
     except (OSError, ValueError):
-        author_backend = ""
-    author_backend = author_backend or args.author_backend
+        _rec = None
+    author_backend, author_model = resume_author(_rec, args.model)
+    _err = codex_author_config_error(author_backend, author_model, args.image)
+    if _err:
+        parser.error(f"run {args.run_id}: {_err}")
     args.key_file = resolve_author_key_file(author_backend, args.key_file)
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
     api_key = FileTokenProvider(Path(args.key_file)).token()
@@ -773,7 +778,7 @@ def main() -> int:
                 spec,
                 backend=author_backend,
                 binary=args.claude_bin if author_backend == "claude" else args.codex_bin,
-                model=args.model,
+                model=author_model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
             ),

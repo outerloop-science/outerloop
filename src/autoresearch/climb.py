@@ -95,16 +95,48 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     codex's both on disk), selected by backend — so the author backend is a
     config choice, not a key swap, and an in-flight run of either backend can
     still be woken/serviced after a fleet flip. An explicit path always wins;
-    otherwise the per-backend env var, then the packaged default path."""
-    if explicit:
-        return explicit
-    if backend == "codex":
-        return os.environ.get("AUTORESEARCH_CODEX_KEY_FILE") or os.path.expanduser(
-            CODEX_KEY_DEFAULT
+    otherwise the per-backend env var, then the packaged default path. The result
+    is always ~-expanded, so every caller gets a real path (an env value like
+    "~/.config/..." must not reach the token provider verbatim)."""
+    if not explicit:
+        if backend == "codex":
+            explicit = os.environ.get("AUTORESEARCH_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
+        else:
+            explicit = os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE") or HARNESS_KEY_DEFAULT
+    return os.path.expanduser(explicit)
+
+
+def codex_author_config_error(backend: str, model: str, image: str) -> str:
+    """Why a codex author would die at startup ("" when it won't). Validates the
+    EFFECTIVE (backend, model) — the fresh climb passes args; a wake/follow-up
+    passes the PARKED RUN's persisted pair — so backend and model are checked as
+    a unit and never a fleet backend against a run's model. codex writes+executes,
+    so it must be contained (--image) and needs a non-claude model."""
+    if backend != "codex":
+        return ""
+    if not image:
+        return "author-backend codex requires --image (it runs contained)"
+    if not model or model.startswith("claude"):
+        return (
+            "author-backend codex needs a codex/openai model "
+            f"(e.g. gpt-5.6-terra), not the claude default (got {model!r})"
         )
-    return os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE") or os.path.expanduser(
-        HARNESS_KEY_DEFAULT
+    return ""
+
+
+def resume_author(record: object, fleet_model: str) -> tuple[str, str]:
+    """The (backend, model) a wake/follow-up must reproduce for a parked run.
+
+    Both come from the RECORD, not the current fleet: an empty backend is a
+    legacy record (written before the field) and is therefore CLAUDE, never the
+    fleet default; the model pairs with that backend (a claude backend falls back
+    to the claude default, a codex backend to the fleet model only as a last
+    resort — codex records always carry their model)."""
+    backend = getattr(record, "author_backend", "") or "claude"
+    model = getattr(record, "author_model", "") or (
+        "claude-opus-5" if backend == "claude" else fleet_model
     )
+    return backend, model
 
 
 class WorkspaceDrift(RuntimeError):
@@ -1158,6 +1190,7 @@ def live_climb(
     base_branch: str = "main",
     issue_number: int = 0,
     author_backend: str = "claude",
+    author_model: str = "",
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -1188,6 +1221,7 @@ def live_climb(
         deadline=now + 24 * 3600,
         issue_number=issue_number,
         author_backend=author_backend,
+        author_model=author_model,
         climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
@@ -2036,16 +2070,10 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
-    if args.author_backend == "codex":
-        # a codex author writes+executes: it must be contained, and the claude
-        # default model would 404 on codex — fail early, before any spend.
-        if not args.image:
-            parser.error("--author-backend codex requires --image (it runs contained)")
-        if args.model.startswith("claude"):
-            parser.error(
-                "--author-backend codex needs a codex/openai --model "
-                "(e.g. gpt-5.6-terra), not the claude default"
-            )
+    # NOTE: the codex author is validated on the EFFECTIVE author per path — the
+    # fresh climb on args (below), a wake on the parked run's persisted pair — not
+    # here, where args.author_backend is the FLEET default and would misjudge a
+    # resume after a fleet flip (review: terra blocking).
     # each --codex-config KEY=VALUE becomes a `-c KEY=VALUE` pair for codex
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
 
@@ -2064,15 +2092,18 @@ def main() -> int:
         from autoresearch.runstate import load_record, release_lease
 
         # Reproduce the PARKED run's author, not the current fleet default: the
-        # backend is persisted on the record (a fleet flip must not wake a codex
-        # run as claude, or vice versa), falling back to the CLI/env default for
-        # legacy records or an unreadable record. The key then resolves for THAT
-        # backend (keys coexist).
+        # (backend, model) PAIR is persisted on the record — a fleet flip must not
+        # wake a codex run as claude (or with the new fleet's model). A legacy or
+        # unreadable record is treated as claude (resume_author). The key then
+        # resolves for THAT backend (keys coexist).
         try:
-            wake_backend = load_record(args.run_root, args.resume).author_backend
+            _wake_record: object | None = load_record(args.run_root, args.resume)
         except (OSError, ValueError):
-            wake_backend = ""
-        wake_backend = wake_backend or args.author_backend
+            _wake_record = None
+        wake_backend, wake_model = resume_author(_wake_record, args.model)
+        _err = codex_author_config_error(wake_backend, wake_model, args.image)
+        if _err:
+            parser.error(f"parked run {args.resume}: {_err}")
         wake_key_file = resolve_author_key_file(wake_backend, args.key_file)
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
@@ -2090,14 +2121,14 @@ def main() -> int:
         # read-decide-publish job and must not require the author key.
         if wake_lenses:
             wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-            wake_api_key = FileTokenProvider(Path(wake_key_file).expanduser()).token()
+            wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_editor_harness(
                 wake_api_key,
                 wake_spec,
                 backend=wake_backend,
                 binary=args.claude_bin if wake_backend == "claude" else args.codex_bin,
-                model=args.model,
+                model=wake_model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
             )
@@ -2133,11 +2164,16 @@ def main() -> int:
     if not (args.target and args.benchmark):
         parser.error("--target and --benchmark are required for a fresh climb")
 
+    # a fresh climb authors on the FLEET's configured backend; validate it (codex
+    # writes+executes, so --image + a non-claude model) before any spend.
+    _err = codex_author_config_error(args.author_backend, args.model, args.image)
+    if _err:
+        parser.error(_err)
     # config-driven: the author key defaults per backend (claude vs codex) so the
-    # tick never threads it — see resolve_author_key_file.
+    # tick never threads it — see resolve_author_key_file (result is ~-expanded).
     args.key_file = resolve_author_key_file(args.author_backend, args.key_file)
     # same 0600 discipline as the PAT: this key spends real money
-    api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
+    api_key = FileTokenProvider(Path(args.key_file)).token()
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
 
@@ -2240,6 +2276,7 @@ def main() -> int:
                 ),
                 issue_number=args.issue,
                 author_backend=args.author_backend,
+                author_model=args.model,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()
                     if args.hypothesis_b64

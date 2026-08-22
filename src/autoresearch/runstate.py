@@ -129,11 +129,13 @@ class RunRecord:
     resume_session_id: str = ""  # harness session to resume on wake
     pr_url: str = ""  # the run's open PR, once one exists
     benchmark: str = ""  # contract benchmark this run works on
-    # The author backend this run was STARTED with ("" = legacy/claude). A wake
-    # or follow-up reproduces the run's OWN author from this, not the current
-    # fleet default, so a fleet backend flip never resumes a run on the wrong
-    # backend (and picks that backend's key).
+    # The author this run was STARTED with ("" backend = legacy/claude). A wake or
+    # follow-up reproduces the run's OWN author from these, not the current fleet
+    # default, so a fleet backend flip never resumes a run on the wrong backend,
+    # model, or key. backend and model are a PAIR — a claude backend needs a
+    # claude model and vice versa — so both are persisted together.
     author_backend: str = ""
+    author_model: str = ""
     # Per-source comment cursors: issue comments, top-level reviews, and
     # inline review comments are three REST collections with independent id
     # sequences — one cursor across them drops comments forever.

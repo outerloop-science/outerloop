@@ -274,7 +274,14 @@ class NoAuth:
 
 
 def run_live(
-    tmp_path, target_repo, edits, values, run_id="tsp-1", dispatch=None, author_backend="claude"
+    tmp_path,
+    target_repo,
+    edits,
+    values,
+    run_id="tsp-1",
+    dispatch=None,
+    author_backend="claude",
+    author_model="claude-opus-5",
 ) -> tuple:
     github = FakeGitHub()
     outcome = live_climb(
@@ -290,6 +297,7 @@ def run_live(
         secrets=("sk-live-key",),
         dispatch=dispatch,
         author_backend=author_backend,
+        author_model=author_model,
     )
     return outcome, github
 
@@ -351,17 +359,48 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert "improved" in report
 
 
-def test_run_record_persists_the_author_backend(tmp_path, target_repo) -> None:
-    # a wake/follow-up reproduces the parked run's author, so the backend it was
-    # started with is stamped on the record (the default is the claude author).
+def test_run_record_persists_the_author_pair(tmp_path, target_repo) -> None:
+    # a wake/follow-up reproduces the parked run's author, so the (backend, model)
+    # PAIR it was started with is stamped on the record — a codex record must not
+    # be resumed with a claude model.
     run_live(
         tmp_path,
         target_repo,
         edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
         values=[13.876, 13.1],
         author_backend="codex",
+        author_model="gpt-5.6-terra",
     )
-    assert load_record(tmp_path / "state", "tsp-1").author_backend == "codex"
+    rec = load_record(tmp_path / "state", "tsp-1")
+    assert rec.author_backend == "codex" and rec.author_model == "gpt-5.6-terra"
+
+
+def test_resume_author_reproduces_the_run_not_the_fleet() -> None:
+    """A wake/follow-up derives (backend, model) from the record, never the fleet:
+    a legacy record is claude (not the fleet default), a claude record keeps a
+    claude model, a codex record keeps its own model."""
+    from types import SimpleNamespace
+
+    from autoresearch.climb import resume_author
+
+    legacy = SimpleNamespace(author_backend="", author_model="")
+    assert resume_author(legacy, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5")
+    claude_rec = SimpleNamespace(author_backend="claude", author_model="claude-opus-5")
+    assert resume_author(claude_rec, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5")
+    codex_rec = SimpleNamespace(author_backend="codex", author_model="gpt-5.6-terra")
+    assert resume_author(codex_rec, fleet_model="claude-opus-5") == ("codex", "gpt-5.6-terra")
+    assert resume_author(None, fleet_model="x") == ("claude", "claude-opus-5")
+
+
+def test_codex_author_config_error() -> None:
+    """codex needs --image and a non-claude model; claude is always fine."""
+    from autoresearch.climb import codex_author_config_error
+
+    assert codex_author_config_error("claude", "claude-opus-5", "") == ""
+    assert codex_author_config_error("codex", "gpt-5.6-terra", "img.sif") == ""
+    assert "requires --image" in codex_author_config_error("codex", "gpt-5.6-terra", "")
+    assert "claude default" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
+    assert "claude default" in codex_author_config_error("codex", "", "img.sif")
 
 
 def test_resolve_author_key_file(monkeypatch) -> None:
