@@ -635,11 +635,14 @@ class CodexHarness:
 
     AUTHOR mode (`container_image` set): both `codex login` and `codex exec` run
     inside `apptainer exec --containall --cleanenv`, sharing a bound `--home` so
-    the login's auth.json is visible to the exec. That layers TWO boundaries —
-    apptainer (no host FS, scrubbed env, no /proc reach to a parent token) around
-    codex's own `--sandbox workspace-write` (writes confined to the clone). codex
-    is taken from the image (on PATH), not bound from the host. The reviewer path
-    (no `container_image`) is unchanged: uncontained, `--sandbox read-only`.
+    the login's auth.json is visible to the exec. That layers TWO boundaries:
+    apptainer (no host FS beyond the two binds; `--cleanenv` scrubs the env down
+    to the author's own key, so the process tree carries no foreign token for a
+    /proc read to lift — the boundary is the scrubbed env, not PID isolation,
+    the same posture as the Claude author) around codex's own `--sandbox
+    workspace-write` (writes confined to the clone). codex is taken from the
+    image (on PATH), not bound from the host. The reviewer path (no
+    `container_image`) is unchanged: uncontained, `--sandbox read-only`.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
