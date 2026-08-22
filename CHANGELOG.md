@@ -8,6 +8,17 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Alternative AUTHOR backend: `climb --author-backend codex` runs the editing
+  role on the OpenAI Codex CLI instead of Claude, to try a cheaper author (e.g.
+  `--model gpt-5.6-terra`). It runs **contained** — `codex login` and `codex
+  exec` both inside `apptainer exec --containall --cleanenv` (shared bound
+  `--home` for auth.json) around codex's own `--sandbox workspace-write`, so an
+  author's writes+execution are fenced the same way the Claude author is.
+  `--image` and a non-claude `--model` are required (guarded early). codex
+  session resume is not bench-validated yet, so a blocking panel finding drafts
+  rather than revising. The read-only codex/hermes reviewer path is unchanged.
+  (Reachable but unexercised end-to-end; needs codex added to the `.sif` image.)
+
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would
   run back-to-back and redundantly re-sweep. A tick now no-ops if another tick
