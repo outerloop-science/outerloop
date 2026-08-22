@@ -1930,6 +1930,12 @@ def main() -> int:
         "same-user files, including credential files)",
     )
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
+    parser.add_argument(
+        "--codex-bin",
+        default=os.path.expanduser("~/.local/bin/codex"),
+        help="host codex binary for the codex author; bind-mounted into apptainer "
+        "(must be an absolute path).",
+    )
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument(
         "--author-backend",
@@ -2042,7 +2048,7 @@ def main() -> int:
                 wake_api_key,
                 wake_spec,
                 backend=args.author_backend,
-                binary=args.claude_bin if args.author_backend == "claude" else None,
+                binary=args.claude_bin if args.author_backend == "claude" else args.codex_bin,
                 model=args.model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
@@ -2156,7 +2162,7 @@ def main() -> int:
                     api_key,
                     spec,
                     backend=args.author_backend,
-                    binary=args.claude_bin if args.author_backend == "claude" else None,
+                    binary=args.claude_bin if args.author_backend == "claude" else args.codex_bin,
                     model=args.model,
                     container_image=args.image,
                     codex_extra_args=codex_extra,

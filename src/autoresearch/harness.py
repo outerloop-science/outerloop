@@ -647,9 +647,11 @@ class CodexHarness:
     to the author's own key, so the process tree carries no foreign token for a
     /proc read to lift — the boundary is the scrubbed env, not PID isolation,
     the same posture as the Claude author) around codex's own `--sandbox
-    workspace-write` (writes confined to the clone). codex is taken from the
-    image (on PATH), not bound from the host. The reviewer path (no
-    `container_image`) is unchanged: uncontained, `--sandbox read-only`.
+    workspace-write` (writes confined to the clone). The host codex binary is
+    bind-mounted read-only into the container (like the claude author), so the
+    image stays codex-free and codex updates by swapping one host binary. The
+    reviewer path (no `container_image`) is unchanged: uncontained,
+    `--sandbox read-only`.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
@@ -665,10 +667,11 @@ class CodexHarness:
     # uncontained (the read-only reviewer path).
     container_image: str = ""
     apptainer_binary: str = "apptainer"
-    # codex on the image PATH (contained runs never bind the host binary); a
-    # bare class attribute (no annotation) so the dataclass does not treat it
-    # as a field, matching ClaudeCodeHarness.CONTAINER_CLAUDE.
-    CONTAINER_CODEX = "codex"
+    # in-container path the host codex binary is bound to (bind-from-host, like
+    # ClaudeCodeHarness.CONTAINER_CLAUDE — the image stays codex-free, and codex
+    # is updated by swapping one host binary, no rebuild). A bare class attribute
+    # (no annotation) so the dataclass does not treat it as a field.
+    CONTAINER_CODEX = "/opt/agent/codex"
     # codex --json session-id parsing is best-effort until a live authed run
     # verifies the event fields, so headless resume is NOT trusted yet: the
     # revise loop drafts instead of resuming (flip to True once validated).
@@ -679,7 +682,8 @@ class CodexHarness:
     ) -> list[str]:
         """Wrap a codex argv in `apptainer exec --containall --cleanenv`. The
         run-home is bound via `--home` (auth.json survives login->exec and lands
-        on the shared FS); the workspace is bound and set as --pwd only for the
+        on the shared FS); the host codex binary is bind-mounted read-only (like
+        the claude author); the workspace is bound and set as --pwd only for the
         exec, never the login."""
         argv = [
             self.apptainer_binary,
@@ -688,6 +692,8 @@ class CodexHarness:
             "--cleanenv",
             "--home",
             f"{session_home}:{session_home}",
+            "--bind",
+            f"{self.binary}:{self.CONTAINER_CODEX}:ro",
         ]
         if workspace is not None:
             argv += ["--bind", f"{workspace}:{workspace}", "--pwd", str(workspace)]
@@ -744,6 +750,11 @@ class CodexHarness:
         # points inside the container.
         if self.container_image:
             workspace = workspace.resolve()
+            if not os.path.isabs(self.binary):
+                # the host codex is bind-mounted; a relative bind source fails at
+                # mount time deep inside apptainer — catch it here instead
+                log.warning("contained codex needs an absolute binary path")
+                return _error_result("config-error")
         transcript_stem = f"{workspace.name}-codex"
         session_home = workspace.parent / f"{workspace.name}-home"
         try:

@@ -601,9 +601,10 @@ def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]
 def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     """AUTHOR mode: BOTH codex login and codex exec run inside apptainer
     (--containall/--cleanenv), so neither exposes the author key to the host —
-    login is contained too, not only the exec. exec binds the workspace + --pwd,
-    codex from the image PATH, author sandbox workspace-write, key via
-    APPTAINERENV_ (never argv)."""
+    login is contained too, not only the exec. The host codex binary is
+    bind-mounted read-only to /opt/agent/codex (like claude); exec binds the
+    workspace + --pwd, author sandbox workspace-write, key via APPTAINERENV_
+    (never argv)."""
     binary, calls, envs = _recording_apptainer(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -620,15 +621,17 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     login = next(ln for ln in logged.splitlines() if "codex login" in ln)
     exec_ = next(ln for ln in logged.splitlines() if "codex exec" in ln)
     home = f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}"
+    codex_bind = "--bind /real/codex:/opt/agent/codex:ro"  # host codex, read-only
     # the LOGIN is contained too (the finding: an uncontained login leaks the key)
     assert login.startswith("exec --containall --cleanenv")
-    assert home in login
-    assert "/img/agent.sif codex login --with-api-key" in login
+    assert home in login and codex_bind in login
+    assert "/img/agent.sif /opt/agent/codex login --with-api-key" in login
     assert f"--bind {ws}" not in login  # login needs no workspace
-    # the EXEC is contained, binds+pwd the workspace, author sandbox, image codex
+    # the EXEC is contained, binds+pwd the workspace, author sandbox, bound codex
     assert exec_.startswith("exec --containall --cleanenv")
     assert f"--bind {ws}:{ws}" in exec_ and f"--pwd {ws}" in exec_ and home in exec_
-    assert "/img/agent.sif codex exec" in exec_
+    assert codex_bind in exec_
+    assert "/img/agent.sif /opt/agent/codex exec" in exec_
     assert "--sandbox workspace-write" in exec_
     # the key is never in ANY argv, and rides APPTAINERENV for both calls
     assert "sk-o" not in logged
@@ -643,6 +646,7 @@ def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     harness = CodexHarness(
         api_key="k",
+        binary="/real/codex",  # absolute (bind source)
         sandbox="workspace-write",
         container_image="/img/agent.sif",
         apptainer_binary=binary,
@@ -651,6 +655,18 @@ def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch)
     argv = (tmp_path / "seen_argv").read_text()
     assert f"--bind {tmp_path / 'ws'}:{tmp_path / 'ws'}" in argv  # absolute
     assert "--bind ws:ws" not in argv
+
+
+def test_contained_codex_requires_an_absolute_binary(tmp_path: Path) -> None:
+    """A relative codex binary is a bind source that fails at mount time — caught
+    before any spend (mirrors the claude author's guard)."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(
+        api_key="k", binary="codex", container_image="/img/agent.sif", apptainer_binary="apptainer"
+    )
+    result = harness.run("task", ws)
+    assert result.is_error and result.stop_reason == "config-error"
 
 
 def test_container_requires_absolute_binary(tmp_path: Path) -> None:
