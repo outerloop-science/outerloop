@@ -613,6 +613,24 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     assert "APPTAINERENV_OPENAI_API_KEY=sk-o" in seen_env
 
 
+def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch) -> None:
+    """apptainer bind sources must be absolute; a relative workspace is resolved
+    (else the mount fails deep inside apptainer)."""
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    (tmp_path / "ws").mkdir()
+    monkeypatch.chdir(tmp_path)
+    harness = CodexHarness(
+        api_key="k",
+        sandbox="workspace-write",
+        container_image="/img/agent.sif",
+        apptainer_binary=binary,
+    )
+    harness.run("task", Path("ws"))  # relative
+    argv = (tmp_path / "seen_argv").read_text()
+    assert f"--bind {tmp_path / 'ws'}:{tmp_path / 'ws'}" in argv  # absolute
+    assert "--bind ws:ws" not in argv
+
+
 def test_container_requires_absolute_binary(tmp_path: Path) -> None:
     """A relative bind source fails at mount time deep inside apptainer —
     catch the misconfiguration before any money is spent."""

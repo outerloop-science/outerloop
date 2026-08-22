@@ -724,6 +724,12 @@ class CodexHarness:
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
+        # Contained runs bind workspace + home into apptainer, whose bind sources
+        # must be ABSOLUTE (a relative one fails at mount time); resolving here
+        # also keeps codex's --cd / --output-last-message aligned with the mount
+        # points inside the container.
+        if self.container_image:
+            workspace = workspace.resolve()
         transcript_stem = f"{workspace.name}-codex"
         session_home = workspace.parent / f"{workspace.name}-home"
         try:
