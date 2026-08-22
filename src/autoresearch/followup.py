@@ -680,7 +680,27 @@ def main() -> int:
     parser.add_argument("--image", default="")
     parser.add_argument("--uncontained", action="store_true")
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
-    parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument(
+        "--codex-bin",
+        default=os.path.expanduser(
+            os.environ.get("AUTORESEARCH_CODEX_BIN") or "~/.local/bin/codex"
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5",
+        help="fallback model only; a run's OWN (backend, model) from its record wins",
+    )
+    # No --author-backend: a follow-up services ONE run, whose backend+model are
+    # persisted on its record (legacy records are claude). It never uses a fleet
+    # default that could mismatch the run.
+    parser.add_argument(
+        "--codex-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="codex `-c KEY=VALUE` config for the codex author (repeatable)",
+    )
     # the tick passes the effective limit explicitly; this fallback follows
     # the harness ceiling so a bare CLI run is never silently starved (a
     # 40-turn default cost a live steward follow-up its whole session)
@@ -694,7 +714,10 @@ def main() -> int:
     )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
-        "--key-file", default=os.path.expanduser("~/.config/autoresearch/harness_key")
+        "--key-file",
+        default="",
+        help="author key file; default resolves per backend (config-driven): "
+        "AUTORESEARCH_HARNESS_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -703,6 +726,32 @@ def main() -> int:
 
     from datetime import UTC, datetime
 
+    from autoresearch.climb import (
+        codex_author_config_error,
+        resolve_author_key_file,
+        resume_author,
+    )
+
+    # a follow-up services ONE run: reproduce THAT run's author (the persisted
+    # (backend, model) PAIR), not the current fleet default, so a codex-authored
+    # PR is revised by codex (native resume of its session), with the codex model
+    # and codex key. Legacy/unreadable records are treated as claude; respond_once
+    # re-reads the record and handles a truly missing one.
+    try:
+        _rec: object | None = load_record(args.run_root, args.run_id)
+    except Exception:
+        # never crash on an unreadable/odd record — fall back to the claude
+        # author (resume_author); respond_once re-reads and handles a missing one
+        _rec = None
+    author_backend, author_model, author_key = resume_author(_rec, args.model)
+    _err = codex_author_config_error(author_backend, author_model, args.image)
+    if _err:
+        parser.error(f"run {args.run_id}: {_err}")
+    # an explicit --key-file still overrides; otherwise the run's recorded key
+    args.key_file = (
+        resolve_author_key_file(author_backend, args.key_file) if args.key_file else author_key
+    )
+    codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
     api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))
 
@@ -733,9 +782,11 @@ def main() -> int:
             harness=build_editor_harness(
                 api_key,
                 spec,
-                binary=args.claude_bin,
-                model=args.model,
+                backend=author_backend,
+                binary=args.claude_bin if author_backend == "claude" else args.codex_bin,
+                model=author_model,
                 container_image=args.image,
+                codex_extra_args=codex_extra,
             ),
             spec=spec,
             evaluator=SubprocessEvaluator(container_image=args.image),

@@ -1036,6 +1036,10 @@ roadmap: docs/roadmap.md
     assert "--session-minutes 25" in wrap
     assert "--job-minutes 325" in wrap  # the ACTUAL walltime, for the alarm
     assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
+    # config-driven author: the tick threads neither the author key nor the
+    # backend — climb resolves them from AUTORESEARCH_AUTHOR_* env by backend.
+    # (FollowupSpec has no author key_file field at all — the tick can't thread it.)
+    assert "--key-file" not in wrap and "--author-backend" not in wrap
 
 
 def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
@@ -1090,7 +1094,6 @@ def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/k",
     )
     _, followups = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec, NOW)
     assert followups
@@ -1491,7 +1494,6 @@ roadmap: docs/roadmap.md
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/k",
         steward_key_file="/k",
         panel="",  # the outage latch must be what returns None, not the preflight
     )
@@ -1655,8 +1657,10 @@ roadmap: docs/roadmap.md
 
 
 def test_followup_key_routing_by_role(tmp_path: Path) -> None:
-    """Steward records get the STEWARD'S key in the follow-up job; without
-    one the steward record is skipped while solver servicing continues."""
+    """The STEWARD follow-up carries the steward's key explicitly; the author
+    (solver) follow-up threads NO key — it resolves its key per the run's backend
+    from env (config-driven). Without a steward key the steward record is skipped
+    while solver servicing continues."""
     from autoresearch.runstate import IN_REVIEW
     from autoresearch.tick import FollowupSpec, service_in_review
 
@@ -1709,14 +1713,13 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/solver-key",
         steward_key_file="/steward-key",
     )
     _, subs = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec, NOW)
     assert len(subs) == 2
     solver_cmd = next(c for c in submitted if "followup-tsp-r1" in c)
     steward_cmd = next(c for c in submitted if "steward-tsp-r1" in c)
-    assert "--key-file /solver-key" in solver_cmd
+    assert "--key-file" not in solver_cmd  # author resolves its key from env
     assert "--key-file /steward-key" in steward_cmd
     # no steward key -> steward record skipped, solver still serviced
     submitted.clear()
@@ -1727,7 +1730,6 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/solver-key",
     )
     for run_id in ("tsp-r1", "steward-tsp-r1"):
         rec = load_record(tmp_path, run_id)
@@ -1803,6 +1805,53 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     assert capped is not None and capped.max_job_minutes == 600
 
 
+def test_author_config_preflight_blocks_before_side_effects(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A codex misconfig (backend=codex, no non-claude model) is caught on the
+    tick host BEFORE self-initiated submits or intake claims — the same
+    strand-safety the panel preflight has, now for the config-driven author."""
+    from autoresearch.tick import FollowupSpec, _author_config_error, service_self_initiated
+
+    # a VALID panel key, so the panel preflight passes and the AUTHOR gate is what
+    # blocks below (else "submits nothing" could be the panel preflight, not us)
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+
+    def make(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            panel_key_file=str(panel_key),
+            **kw,
+        )
+
+    monkeypatch.delenv("AUTORESEARCH_AUTHOR_MODEL", raising=False)
+    # claude (default) is always fine; codex with the claude default model is not
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "claude")
+    assert _author_config_error(make()) == ""
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
+    assert _author_config_error(make()) != ""  # codex + default claude model
+    # a codex fleet with no valid model submits NOTHING (no wasted job)
+    contract = _self_contract()
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(" ".join(argv))
+        return CommandResult(0, "1\n", "")
+
+    out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), make(), contract, NOW)
+    assert out is None and submitted == []
+    # once the model is set, codex is accepted
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_MODEL", "gpt-5.6-terra")
+    assert _author_config_error(make()) == ""
+
+
 def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
     """Panel on + a key the climb would reject (missing, group-readable,
     empty): the intake lane claims nothing and the self-initiated lane
@@ -1855,14 +1904,17 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
         make(panel="verify:hermes", panel_key_file=str(good))
     )
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
-    # role separation: the panel key must not BE the author key
-    same = make(panel_key_file=str(good), key_file=str(good))
-    assert "author key" in _panel_preflight_error(same)
-    # ... and a RELATIVE author path fails too: the climb resolves it from a
-    # flight dir, so the comparison above could pass where the runtime collides
-    rel = make(panel_key_file=str(good), key_file="keys/author")
-    assert "author key path" in _panel_preflight_error(rel)
-    assert "relative" in _panel_preflight_error(rel)
+    # role separation: the panel key must not BE the (resolved) author key. The
+    # author key is now config-driven — resolved per the fleet backend from env —
+    # so the collision is set via AUTORESEARCH_HARNESS_KEY_FILE, not spec.key_file.
+    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", str(good))
+    assert "author key" in _panel_preflight_error(make(panel_key_file=str(good)))
+    # ... and a RELATIVE author key path fails too (the climb resolves from a
+    # flight dir): a relative env value survives ~-expansion as non-absolute
+    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "keys/author")
+    rel_err = _panel_preflight_error(make(panel_key_file=str(good)))
+    assert "author key path" in rel_err and "relative" in rel_err
+    monkeypatch.delenv("AUTORESEARCH_HARNESS_KEY_FILE")
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))

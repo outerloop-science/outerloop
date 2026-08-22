@@ -166,7 +166,6 @@ class FollowupSpec:
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
     max_turns: int = DEFAULT_MAX_TURNS  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
-    key_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
@@ -530,9 +529,11 @@ def service_in_review(
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
-            key_file = spec.steward_key_file if is_steward else spec.key_file
-            if key_file:
-                argv += ["--key-file", key_file]
+            # config-driven author: the author follow-up resolves its key per the
+            # RUN's backend (from the record) inside followup.main — the tick does
+            # not thread it. The steward is a distinct role with its own key.
+            if is_steward and spec.steward_key_file:
+                argv += ["--key-file", spec.steward_key_file]
             job_id = compute.submit(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
@@ -1246,6 +1247,19 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
+def _author_config_error(spec: FollowupSpec) -> str:
+    """Why the config-driven author would die at the climb's startup ("" when it
+    won't), checked on the tick host BEFORE a claim/submit so a codex misconfig
+    (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex with no non-claude model) never
+    strands a claimed intake issue. Reads the fleet author config from env — the
+    same source the climb defaults from — and the image the tick already knows."""
+    from autoresearch.climb import codex_author_config_error
+
+    backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
+    model = os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
+    return codex_author_config_error(backend, model, spec.image)
+
+
 def _panel_preflight_error(spec: FollowupSpec) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
@@ -1260,7 +1274,7 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from autoresearch.climb import HARNESS_KEY_DEFAULT, PANEL_KEY_DEFAULT
+        from autoresearch.climb import PANEL_KEY_DEFAULT, resolve_author_key_file
         from autoresearch.github import FileTokenProvider
         from autoresearch.panel import parse_lenses
 
@@ -1273,7 +1287,12 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
             # the climb runs from a flight directory, not the tick's cwd — a
             # relative path that resolves here could still miss there
             return f"panel key path {path} is relative; only absolute paths fly"
-        author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
+        # the AUTHOR key the climb will actually use resolves per the fleet backend
+        # (claude vs codex keys coexist), config-driven like the climb itself — so
+        # the role-separation check compares the panel key against the RIGHT author
+        # key, and a codex run is never judged by a stray Claude key.
+        fleet_backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
+        author = Path(resolve_author_key_file(fleet_backend))
         if not author.is_absolute():
             # same rule as the panel key: the climb resolves paths from a
             # flight directory, so a relative author path both misconfigures
@@ -1411,6 +1430,15 @@ def service_self_initiated(
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
             return None
+        author_error = _author_config_error(spec)
+        if author_error:
+            log.error(
+                "climb on %s not launched: author misconfigured — %s "
+                "(fix AUTORESEARCH_AUTHOR_BACKEND/_MODEL)",
+                benchmark,
+                author_error,
+            )
+            return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
             log.error(
@@ -1442,8 +1470,9 @@ def service_self_initiated(
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        if spec.key_file:
-            argv += ["--key-file", spec.key_file]
+        # config-driven author: climb resolves the author backend/model/key from
+        # AUTORESEARCH_AUTHOR_* env (inherited by the job), so the tick threads
+        # neither the backend nor its key — a new backend needs zero tick change.
         job_id = compute.submit(
             JobSpec(
                 job_name=f"climb-{benchmark}"[:60],
@@ -1625,6 +1654,15 @@ def service_intake(
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
+        author_error = _author_config_error(spec)
+        if author_error:
+            log.error(
+                "issue #%d not claimed: author misconfigured — %s "
+                "(fix AUTORESEARCH_AUTHOR_BACKEND/_MODEL)",
+                task.number,
+                author_error,
+            )
+            return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
             log.error(
@@ -1673,8 +1711,8 @@ def service_intake(
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        if spec.key_file:
-            argv += ["--key-file", spec.key_file]
+        # config-driven author: climb resolves the author key from the
+        # AUTORESEARCH_AUTHOR_* env by backend; the tick does not thread it.
         try:
             job_id = compute.submit(
                 JobSpec(
@@ -1760,8 +1798,9 @@ class JobWakeDispatcher:
         ]
         if self.spec.pat_file:
             argv += ["--pat-file", self.spec.pat_file]
-        if self.spec.key_file:
-            argv += ["--key-file", self.spec.key_file]
+        # config-driven author: `climb --resume` resolves the author key from the
+        # PARKED RUN's backend (persisted on its record) inside climb.main — the
+        # tick does not thread the key, so a fleet flip picks the right one.
         name = f"wake-{record.run_id}"[:60]
         afterany = str(record.stage.get("afterany", ""))
         return self.compute.submit(
@@ -1930,7 +1969,6 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 image=image,
                 home=Path(home),
                 pat_file=pat_file,
-                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
                 target=os.environ.get(
                     "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
                 ),
