@@ -1369,13 +1369,20 @@ def test_editor_harness_codex_backend_is_contained() -> None:
 
     spec = author_spec(max_turns=9, walltime_s=300)
     harness = build_editor_harness(
-        "sk-o", spec, backend="codex", model="gpt-5.6-terra", container_image="img.sif"
+        "sk-o",
+        spec,
+        backend="codex",
+        model="gpt-5.6-terra",
+        container_image="img.sif",
+        codex_extra_args=("-c", "use_legacy_landlock=true"),
     )
     assert isinstance(harness, CodexHarness)
     assert harness.sandbox == "workspace-write"
     assert harness.container_image == "img.sif"
     assert harness.model == "gpt-5.6-terra"
     assert harness.timeout_s == 300
+    assert harness.extra_args == ("-c", "use_legacy_landlock=true")  # host codex config
+    assert harness.supports_resume is False  # revise loop drafts, never resumes
     # an author MUST be contained
     with pytest.raises(ValueError, match="container_image"):
         build_editor_harness("sk-o", spec, backend="codex", container_image="")

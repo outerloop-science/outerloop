@@ -979,6 +979,7 @@ def build_editor_harness(
     binary: str | None = None,
     model: str | None = None,
     container_image: str = "",
+    codex_extra_args: tuple[str, ...] = (),
 ) -> Harness:
     """Construct an editing role's harness from its RoleSpec, for the chosen
     backend — the same deployment wiring the judges use (`spec.budget` drives
@@ -1010,6 +1011,9 @@ def build_editor_harness(
             sandbox="workspace-write",
             timeout_s=spec.budget.walltime_s,
             container_image=container_image,
+            # host-specific codex config (e.g. -c use_legacy_landlock=true),
+            # mirroring the reviewer branch's sandbox_extra
+            extra_args=codex_extra_args,
         )
     if backend != "claude":
         raise ValueError(f"unknown editor backend: {backend!r}")
@@ -1935,6 +1939,14 @@ def main() -> int:
         "(apptainer + --sandbox workspace-write) and REQUIRES --image and a "
         "codex/openai --model (e.g. gpt-5.6-terra).",
     )
+    parser.add_argument(
+        "--codex-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="codex `-c KEY=VALUE` config for the codex author (repeatable), "
+        "e.g. --codex-config use_legacy_landlock=true for a host that needs it.",
+    )
     parser.add_argument("--max-turns", type=int, default=60)
     parser.add_argument("--session-minutes", type=int, default=60)
     parser.add_argument(
@@ -1991,6 +2003,8 @@ def main() -> int:
                 "--author-backend codex needs a codex/openai --model "
                 "(e.g. gpt-5.6-terra), not the claude default"
             )
+    # each --codex-config KEY=VALUE becomes a `-c KEY=VALUE` pair for codex
+    codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
 
     bot_auth = FileTokenProvider(Path(args.pat_file))
 
@@ -2031,6 +2045,7 @@ def main() -> int:
                 binary=args.claude_bin if args.author_backend == "claude" else None,
                 model=args.model,
                 container_image=args.image,
+                codex_extra_args=codex_extra,
             )
         try:
             resumed = resume_run(
@@ -2144,6 +2159,7 @@ def main() -> int:
                     binary=args.claude_bin if args.author_backend == "claude" else None,
                     model=args.model,
                     container_image=args.image,
+                    codex_extra_args=codex_extra,
                 ),
                 spec=spec,
                 panel_lenses=panel_lenses,
