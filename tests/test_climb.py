@@ -426,6 +426,8 @@ def test_codex_author_config_error() -> None:
     assert "requires --image" in codex_author_config_error("codex", "gpt-5.6-terra", "")
     assert "claude default" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
     assert "claude default" in codex_author_config_error("codex", "", "img.sif")
+    # an unknown backend (typo'd env default) is rejected, not silently accepted
+    assert "unknown author backend" in codex_author_config_error("hermes", "m", "img.sif")
 
 
 def test_resolve_author_key_file(monkeypatch) -> None:

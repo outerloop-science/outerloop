@@ -112,6 +112,12 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     passes the PARKED RUN's persisted pair — so backend and model are checked as
     a unit and never a fleet backend against a run's model. codex writes+executes,
     so it must be contained (--image) and needs a non-claude model."""
+    if backend not in ("claude", "codex"):
+        # a typo'd AUTORESEARCH_AUTHOR_BACKEND passes the env DEFAULT silently
+        # (argparse validates the flag, not its default) and the climb rejects it
+        # at build_editor_harness — catch it on the tick host so a claimed intake
+        # issue never strands on it
+        return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
     if backend != "codex":
         return ""
     if not image:
