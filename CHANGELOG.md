@@ -27,6 +27,15 @@ Versions follow [SemVer](https://semver.org).
   adds `--dangerously-bypass-approvals-and-sandbox` to also skip approvals. The
   read-only codex/hermes reviewer path is unchanged. (Needs codex on the host.)
 
+- Deploy plumbing for the config-driven author: `scripts/install_codex.sh`
+  idempotently installs the harness-verified codex binary (0.130.0) on the host
+  (fast path is a local `codex --version`; only downloads on a version
+  mismatch/missing binary), and `tick_chain.sbatch` now sources
+  `~/.config/autoresearch/.env` each tick and runs the install best-effort when
+  `AUTORESEARCH_AUTHOR_BACKEND=codex`. So enabling codex on the live loop is a
+  `.env` edit (no chain restart) plus provisioning the codex key file — nothing
+  in the chain breaks if either is absent.
+
 - Config-driven author selection: the author backend is now a CONFIG choice the
   role runners resolve themselves, not something the tick threads per lane. The
   `climb` and `followup` CLIs default `--author-backend`/`--model`/`--codex-bin`

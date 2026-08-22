@@ -15,6 +15,9 @@
 #   AUTORESEARCH_CADENCE_MIN  tick cadence, default 30
 #   AUTORESEARCH_PAT_FILE     bot PAT for the deploy pull (optional; no file
 #                             means run whatever code is already deployed)
+# Further config also loads from ~/.config/autoresearch/.env (0600) each tick, so
+# a live config change (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex + its key file)
+# needs no chain restart — just an edit to that file.
 #
 #SBATCH --job-name=autoresearch-tick
 #SBATCH --time=15
@@ -101,6 +104,26 @@ export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$AUTORESEARCH_ROOT/cache/apptai
 mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
+
+# --- config knobs: source the operator .env (0600) so live config changes need
+# no chain restart. This is where AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the
+# per-backend key files live; the config-driven climb/followup default from them
+# and the tick preflights them. The submitted work jobs inherit this env.
+ENV_FILE="$HOME/.config/autoresearch/.env"
+if [ -r "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE" || echo "deploy: .env source failed"
+    set +a
+fi
+
+# The codex author binary is a host prerequisite; install it (idempotent, fast
+# path is a local version check) only when the fleet author is codex. Best-effort:
+# a failure here must never break the chain — the climb will report a missing
+# codex clearly if it comes to that.
+if [ "${AUTORESEARCH_AUTHOR_BACKEND:-}" = "codex" ]; then
+    bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
+fi
 
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
 #        further down in the harness) ---
