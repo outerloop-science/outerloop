@@ -108,10 +108,13 @@ mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 # --- config knobs: source the operator .env so live config changes need no chain
 # restart. This is where AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the per-backend
 # key files live; the config-driven climb/followup default from them and the tick
-# preflights them. The submitted work jobs inherit this env. NOTE: this is
-# per-tick config only — the chain-scheduling vars (AUTORESEARCH_CADENCE_MIN,
-# HOME/ROOT/ACCOUNT/PARTITION) come from the chain's --export and are read at the
-# TOP of this script, before this point, so setting them here has NO effect.
+# preflights them. The submitted work jobs inherit this env.
+#
+# .env is PER-TICK CONFIG ONLY: it must not be able to hijack the chain's
+# identity (where it runs, its state root, its placement) — those are set from
+# the chain --export and are USED below (install path, tick --root). So snapshot
+# them, source .env, then restore, and the "no effect on chain vars" holds even
+# though the vars are referenced after this point.
 ENV_FILE="$HOME/.config/autoresearch/.env"
 if [ -r "$ENV_FILE" ]; then
     # sourcing EXECUTES the file, so refuse one that others could have written:
@@ -120,10 +123,20 @@ if [ -r "$ENV_FILE" ]; then
     perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
     owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
     if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
+        _keep_home="$AUTORESEARCH_HOME"; _keep_root="$AUTORESEARCH_ROOT"
+        _keep_acct="$AUTORESEARCH_ACCOUNT"; _keep_part="$AUTORESEARCH_PARTITION"
+        _keep_uv="$UV_CACHE_DIR"; _keep_apptainer="$APPTAINER_CACHEDIR"
+        # set +u for the source: a .env that references an unset var must not
+        # abort the tick (the || echo cannot catch an unbound-variable exit)
+        set +u
         set -a
         # shellcheck disable=SC1090
         . "$ENV_FILE" || echo "deploy: .env source failed"
         set +a
+        set -u
+        AUTORESEARCH_HOME="$_keep_home"; AUTORESEARCH_ROOT="$_keep_root"
+        AUTORESEARCH_ACCOUNT="$_keep_acct"; AUTORESEARCH_PARTITION="$_keep_part"
+        UV_CACHE_DIR="$_keep_uv"; APPTAINER_CACHEDIR="$_keep_apptainer"
     else
         echo "deploy: refusing to source $ENV_FILE (owner=$owner perms=$perms;" \
              "needs to be yours and not group/world-writable)"

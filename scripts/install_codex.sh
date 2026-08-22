@@ -37,22 +37,24 @@ staged="$TARGET.tmp.$$"
 # clean BOTH the work dir and any staged binary on every exit, so a failed
 # download/mv never leaves a stale temp next to the target
 trap 'rm -rf "$tmp" "$staged"' EXIT
-# bounded: a stalled download must not hang the tick until Slurm kills it
-curl -fsSL --connect-timeout 20 --max-time 300 --retry 2 "$url" -o "$tmp/codex.tar.gz"
+# bounded so a stalled download can't eat the tick's own walltime: this runs
+# INSIDE the ~15-min tick job, so cap the whole fetch well under it (one retry)
+curl -fsSL --connect-timeout 15 --max-time 120 --retry 1 "$url" -o "$tmp/codex.tar.gz"
 tar -xzf "$tmp/codex.tar.gz" -C "$tmp"
 # the tarball holds one binary, named `codex` or `codex-<target-triple>`; don't
 # assume its depth in the archive
 bin="$(find "$tmp" -type f \( -name codex -o -name 'codex-*' \) | head -1)"
 [ -n "$bin" ] || { echo "install_codex: no codex binary in the tarball" >&2; exit 1; }
-mkdir -p "$(dirname "$TARGET")"
-# atomic replace on the same filesystem: never leave a half-written binary
 install -m 0755 "$bin" "$staged"
-mv -f "$staged" "$TARGET"
-# verify we actually installed the version we wanted (the release asset is
-# mutable; a wrong/corrupt binary must fail loudly, not run as the author)
-got="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+# VERIFY BEFORE publishing: check the staged binary reports the pinned version
+# while it is still off to the side, so a wrong/corrupt download (the release
+# asset is mutable) never lands at the author's codex path
+got="$("$staged" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
 if [ "$got" != "$WANT" ]; then
-    echo "install_codex: installed codex reports '$got', wanted '$WANT'" >&2
+    echo "install_codex: downloaded codex reports '$got', wanted '$WANT' — not installing" >&2
     exit 1
 fi
+mkdir -p "$(dirname "$TARGET")"
+# atomic replace on the same filesystem: never leave a half-written binary
+mv -f "$staged" "$TARGET"
 echo "install_codex: installed codex $got at $TARGET"
