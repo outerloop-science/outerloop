@@ -21,8 +21,20 @@ Versions follow [SemVer](https://semver.org).
   (guarded early); `--codex-config KEY=VALUE` passes host-specific codex config.
   codex session resume is not bench-validated yet (`supports_resume=False`), so a
   blocking panel finding drafts rather than revising. The read-only codex/hermes
-  reviewer path is unchanged. (Reachable but unexercised end-to-end; needs codex
-  installed on the host.)
+  reviewer path is unchanged. Validated end-to-end on Slurm: the contained codex
+  author (codex 0.130.0, `gpt-5.6-terra`) logs in and edits inside apptainer with
+  zero sandbox errors; needs codex installed on the host.
+
+- The tick can drive the codex author for its self-initiated, intake, and wake
+  (revise) climb lanes: set `AUTORESEARCH_AUTHOR_BACKEND=codex` with
+  `AUTORESEARCH_AUTHOR_MODEL` (a non-Claude id, e.g. `gpt-5.6-terra`) and,
+  optionally, `AUTORESEARCH_CODEX_BIN`. The author backend is a fleet-wide
+  choice, so `AUTORESEARCH_HARNESS_KEY_FILE` then holds that backend's key (the
+  verify/review panel keeps its own `AUTORESEARCH_PANEL_KEY_FILE`). A
+  misconfigured codex author (missing or Claude `AUTORESEARCH_AUTHOR_MODEL`) is
+  preflighted, so the self-initiated lane skips and intake skips *before*
+  claiming an issue, rather than submitting a job that dies at startup. The
+  default is unchanged — the Claude author.
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would

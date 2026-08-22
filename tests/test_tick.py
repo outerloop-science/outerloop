@@ -1803,6 +1803,280 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     assert capped is not None and capped.max_job_minutes == 600
 
 
+def test_climb_author_argv(tmp_path: Path) -> None:
+    """The default (claude) author adds no flags; codex rides its backend,
+    model, and (optional) binary into the climb argv."""
+    from autoresearch.tick import FollowupSpec, _climb_author_argv
+
+    def make(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="i.sif",
+            home=tmp_path,
+            **kw,
+        )
+
+    assert _climb_author_argv(make()) == []
+    assert _climb_author_argv(make(author_backend="claude")) == []
+    assert _climb_author_argv(make(author_backend="codex", author_model="gpt-5.6-terra")) == [
+        "--author-backend",
+        "codex",
+        "--model",
+        "gpt-5.6-terra",
+    ]
+    assert _climb_author_argv(
+        make(author_backend="codex", author_model="gpt-5.6-terra", codex_bin="/opt/codex")
+    ) == ["--author-backend", "codex", "--model", "gpt-5.6-terra", "--codex-bin", "/opt/codex"]
+
+
+def test_author_preflight_error(tmp_path: Path) -> None:
+    """Claude is always valid; codex needs a non-Claude model; an unknown
+    backend is rejected."""
+    from autoresearch.tick import FollowupSpec, _author_preflight_error
+
+    def make(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="i.sif",
+            home=tmp_path,
+            **kw,
+        )
+
+    assert _author_preflight_error(make()) == ""
+    assert _author_preflight_error(make(author_backend="claude")) == ""
+    assert _author_preflight_error(make(author_backend="codex")) != ""  # no model
+    assert (
+        _author_preflight_error(make(author_backend="codex", author_model="claude-opus-5")) != ""
+    )  # a Claude id on the codex backend
+    assert _author_preflight_error(make(author_backend="codex", author_model="gpt-5.6-terra")) == ""
+    assert _author_preflight_error(make(author_backend="hermes")) != ""  # unknown
+
+
+def test_author_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) -> None:
+    """AUTORESEARCH_AUTHOR_BACKEND/_MODEL and AUTORESEARCH_CODEX_BIN reach the
+    FollowupSpec through the chain environment."""
+    from autoresearch.tick import _followup_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "AUTORESEARCH_ACCOUNT": "a",
+        "AUTORESEARCH_PARTITION": "p",
+        "AUTORESEARCH_IMAGE": str(image),
+        "AUTORESEARCH_HOME": str(tmp_path),
+        "AUTORESEARCH_AUTHOR_BACKEND": "codex",
+        "AUTORESEARCH_AUTHOR_MODEL": "gpt-5.6-terra",
+        "AUTORESEARCH_CODEX_BIN": "/opt/codex",
+    }
+    import autoresearch.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None
+    assert spec.author_backend == "codex"
+    assert spec.author_model == "gpt-5.6-terra"
+    assert spec.codex_bin == "/opt/codex"
+
+
+def test_self_initiated_launches_the_codex_author(tmp_path: Path) -> None:
+    """A codex-configured spec threads --author-backend/--model/--codex-bin into
+    the submitted climb argv; a codex backend without a model submits nothing."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 3
+  session_max_turns: 30
+  session_minutes: 25
+  climb_job_minutes: 60
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+
+    def spec(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="acct",
+            partition="part",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            panel_key_file=str(panel_key),
+            **kw,
+        )
+
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "123\n", "")
+
+    ok = spec(author_backend="codex", author_model="gpt-5.6-terra", codex_bin="/opt/codex")
+    out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), ok, contract, NOW)
+    assert out == ("tsp", "123")
+    wrap = submitted[0][-1]
+    assert "--author-backend codex" in wrap
+    assert "--model gpt-5.6-terra" in wrap
+    assert "--codex-bin /opt/codex" in wrap
+
+    # a codex backend missing its model is caught before submit (nothing runs).
+    # Fresh root so no pending marker from the first submit masks the reason.
+    submitted.clear()
+    bad_root = tmp_path / "bad"
+    bad_root.mkdir()
+    bad = spec(author_backend="codex")
+    assert service_self_initiated(bad_root, SlurmCompute(runner=runner), bad, contract, NOW) is None
+    assert submitted == []
+
+
+def test_intake_launches_the_codex_author(tmp_path: Path) -> None:
+    """The intake lane threads the author backend into its climb argv, and a
+    codex backend without a model is caught before the issue is claimed."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_intake
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 3
+  session_max_turns: 30
+  session_minutes: 25
+  climb_job_minutes: 60
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+
+    class IntakeGitHub:
+        def __init__(self) -> None:
+            self.comments: list[str] = []
+
+        def list_open_issues(self, repo: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "number": 5,
+                    "title": "improve tsp",
+                    "body": "",
+                    "user": {"login": "mengye"},
+                    "author_association": "OWNER",
+                    "labels": [],
+                }
+            ]
+
+        def list_comments(self, repo: str, number: int) -> list[Any]:
+            return []
+
+        def comment(self, repo: str, number: int, body: str) -> None:
+            self.comments.append(body)
+
+    def spec(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="acct",
+            partition="part",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            panel_key_file=str(panel_key),
+            **kw,
+        )
+
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "123\n", "")
+
+    gh = IntakeGitHub()
+    ok = spec(author_backend="codex", author_model="gpt-5.6-terra", codex_bin="/opt/codex")
+    out = service_intake(tmp_path, gh, SlurmCompute(runner=runner), ok, NOW, contract=contract)
+    assert out is not None
+    wrap = submitted[0][-1]
+    assert "--author-backend codex" in wrap and "--model gpt-5.6-terra" in wrap
+    assert "--codex-bin /opt/codex" in wrap
+
+    # a codex backend missing its model is caught BEFORE the claim comment
+    gh2 = IntakeGitHub()
+    submitted.clear()
+    bad = spec(author_backend="codex")
+    assert (
+        service_intake(tmp_path, gh2, SlurmCompute(runner=runner), bad, NOW, contract=contract)
+        is None
+    )
+    assert submitted == [] and gh2.comments == []  # nothing claimed, nothing submitted
+
+
+def test_wake_dispatcher_threads_the_author_backend(tmp_path: Path, monkeypatch: Any) -> None:
+    """A parked run's wake carries the author backend so a codex resume drafts
+    (via the climb's supports_resume gate) instead of resuming with the wrong
+    harness."""
+    from autoresearch.runstate import RunRecord
+    from autoresearch.tick import FollowupSpec, JobWakeDispatcher
+
+    submits: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submits.append(list(argv))
+            return CommandResult(0, "9001\n", "")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    spec = FollowupSpec(
+        account="acct",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=tmp_path,
+        pat_file="/pat",
+        panel="verify,review",
+        author_backend="codex",
+        author_model="gpt-5.6-terra",
+        codex_bin="/opt/codex",
+    )
+    record = RunRecord(
+        run_id="tsp-1",
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        stage={"afterany": "afterany:501"},
+    )
+    JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(record, "eval done")
+    joined = " ".join(submits[0])
+    assert "--resume tsp-1" in joined
+    assert "--author-backend codex" in joined and "--model gpt-5.6-terra" in joined
+    assert "--codex-bin /opt/codex" in joined
+
+
 def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
     """Panel on + a key the climb would reject (missing, group-readable,
     empty): the intake lane claims nothing and the self-initiated lane

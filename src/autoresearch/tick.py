@@ -190,6 +190,14 @@ class FollowupSpec:
     # Partition MaxTime for work jobs — the panel-augmented walltime clamps
     # here (see MAX_CLIMB_JOB_MINUTES). Raise together with job_partition.
     max_job_minutes: int = MAX_CLIMB_JOB_MINUTES
+    # Author backend for climb jobs. "" / "claude" = the default Claude author
+    # (key_file is an Anthropic key). "codex" runs the contained codex author,
+    # in which case author_model must be a non-Claude id and key_file holds that
+    # backend's key (e.g. an OpenAI key for terra). The verify/review panel keeps
+    # its own key (panel_key_file) regardless of the author backend.
+    author_backend: str = ""
+    author_model: str = ""  # required (non-claude) when author_backend == "codex"
+    codex_bin: str = ""  # "" = the climb CLI's default codex path
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -1246,6 +1254,44 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
+def _climb_author_argv(spec: FollowupSpec) -> list[str]:
+    """Author-backend flags for a climb job; empty for the default Claude author.
+
+    The panel keeps its own backend/key (`_climb_panel_argv`); this only selects
+    who does the *authoring*. `key_file` is passed by the caller as `--key-file`
+    and holds the author backend's key, so it is not repeated here."""
+    backend = spec.author_backend.strip()
+    if not backend or backend == "claude":
+        return []
+    argv = ["--author-backend", backend]
+    if spec.author_model:
+        argv += ["--model", spec.author_model]
+    if spec.codex_bin:
+        argv += ["--codex-bin", spec.codex_bin]
+    return argv
+
+
+def _author_preflight_error(spec: FollowupSpec) -> str:
+    """Why a climb would die at startup on this author config ("" when it won't).
+
+    The Claude author is always valid. The codex author needs a non-Claude model
+    (the climb CLI rejects a Claude id on a non-Claude backend); its container
+    image is already guaranteed by the tick's env-load. Preflighted so a lane
+    skips rather than submits a job that would fail at startup — and, for intake,
+    skips before it claims an issue."""
+    backend = spec.author_backend.strip()
+    if not backend or backend == "claude":
+        return ""
+    if backend != "codex":
+        return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
+    model = spec.author_model.strip()
+    if not model or model.startswith("claude"):
+        return (
+            f"author backend 'codex' needs a non-Claude AUTORESEARCH_AUTHOR_MODEL (got {model!r})"
+        )
+    return ""
+
+
 def _panel_preflight_error(spec: FollowupSpec) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
@@ -1411,6 +1457,15 @@ def service_self_initiated(
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
             return None
+        author_error = _author_preflight_error(spec)
+        if author_error:
+            log.error(
+                "climb on %s not launched: author misconfigured — %s "
+                "(fix AUTORESEARCH_AUTHOR_* or unset AUTORESEARCH_AUTHOR_BACKEND)",
+                benchmark,
+                author_error,
+            )
+            return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
             log.error(
@@ -1439,6 +1494,7 @@ def service_self_initiated(
             spec.image,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
+            *_climb_author_argv(spec),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1625,6 +1681,15 @@ def service_intake(
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
+        author_error = _author_preflight_error(spec)
+        if author_error:
+            log.error(
+                "issue #%d not claimed: author misconfigured — %s "
+                "(fix AUTORESEARCH_AUTHOR_* or unset AUTORESEARCH_AUTHOR_BACKEND)",
+                task.number,
+                author_error,
+            )
+            return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
             log.error(
@@ -1670,6 +1735,7 @@ def service_intake(
             hypothesis_b64,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
+            *_climb_author_argv(spec),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1753,6 +1819,10 @@ class JobWakeDispatcher:
             # the wake runs the SAME verification panel as the fresh climb, so a
             # dispatched improvement is verified before it is published.
             *_climb_panel_argv(self.spec),
+            # the author backend must match the parked run's: a no-resume backend
+            # (codex) drafts the blocking finding instead of resuming (the climb's
+            # supports_resume gate), and key_file below is that backend's key.
+            *_climb_author_argv(self.spec),
             # session budget for the depth-axis REVISION (a blocking panel
             # finding wakes the author to revise).
             "--max-turns",
@@ -1939,6 +2009,9 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
                 job_partition=os.environ.get("AUTORESEARCH_JOB_PARTITION", ""),
                 max_job_minutes=_max_job_minutes_from_env(),
+                author_backend=os.environ.get("AUTORESEARCH_AUTHOR_BACKEND", ""),
+                author_model=os.environ.get("AUTORESEARCH_AUTHOR_MODEL", ""),
+                codex_bin=os.environ.get("AUTORESEARCH_CODEX_BIN", ""),
             )
             return github, followup_spec
         except Exception as exc:
