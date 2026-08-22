@@ -79,11 +79,12 @@ class Harness(Protocol):
     HOME next to the workspace, so wakes survive orchestrator restarts and can
     land on a different cluster node (shared filesystem).
 
-    A backend MAY declare a class attribute `supports_resume = False` when its
-    headless resume is not trustworthy (codex/hermes). The revise loop checks it
-    (via getattr, default True) and DRAFTS instead of calling run() with a resume
-    id — an untrusted resume that starts fresh or fails would revise blind or
-    lose a verified improvement. Optional, so test doubles need not declare it."""
+    A backend MAY declare a class attribute `supports_resume = False` when it
+    has no trustworthy headless resume (hermes). The revise loop checks it (via
+    getattr, default True) and DRAFTS instead of calling run() with a resume id —
+    a resume that silently starts fresh or fails would revise blind or lose a
+    verified improvement. Claude and codex both resume (`supports_resume=True`).
+    Optional, so test doubles need not declare it."""
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -547,12 +548,15 @@ def _codex_command(
     --output-last-message, --skip-git-repo-check, and the stdin prompt behavior.
 
     Fresh and resume take DIFFERENT flags. `codex exec` has `--sandbox` and
-    `--cd`; `codex exec resume <id>` has NEITHER — it restores the recorded
-    session (and its cwd; the process cwd is the workspace anyway) and expresses
-    danger-full-access as `--dangerously-bypass-approvals-and-sandbox`. Passing
-    the fresh flags to resume is an argparse error (verified). Resume is an
-    author-only path (readers are stateless), so the bypass flag is emitted only
-    for the author's danger-full-access sandbox.
+    `--cd`; `codex exec resume <id>` has NEITHER (passing them is an argparse
+    error) — it restores the recorded session, INCLUDING that session's sandbox
+    and cwd. Verified on codex-cli 0.130.0: resuming a `--sandbox read-only`
+    session with no sandbox flag still refuses writes, so a resumed read-only
+    reviewer stays jailed by inheritance, not by luck. The author adds
+    `--dangerously-bypass-approvals-and-sandbox` on resume anyway — its
+    danger-full-access is inherited, but the flag also skips approvals so a
+    headless write-heavy revise turn cannot stall. (Both authors and readers can
+    resume — readers via the structured-output repair turn.)
     """
     # --model is omitted when empty so codex uses its configured default; a
     # wrong model id is a 404 ("Model not found"), so only pin a verified one.
@@ -564,7 +568,9 @@ def _codex_command(
         *extra_args,
     ]
     if resume_session_id:
-        # no --sandbox/--cd on resume; bypass == danger-full-access
+        # no --sandbox/--cd on resume: the recorded session's sandbox is
+        # inherited (read-only stays read-only). The author adds the bypass flag
+        # to also skip approvals headlessly; a reader inherits its read-only jail.
         bypass = (
             ["--dangerously-bypass-approvals-and-sandbox"]
             if sandbox == "danger-full-access"

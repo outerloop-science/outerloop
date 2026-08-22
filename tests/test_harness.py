@@ -640,10 +640,12 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
 
 def test_codex_command_resume_uses_bypass_not_sandbox_cd(tmp_path: Path) -> None:
     """`codex exec resume` has neither --sandbox nor --cd (passing them is an
-    argparse error, verified on 0.130.0): resume expresses danger-full-access as
-    --dangerously-bypass-approvals-and-sandbox, and a fresh exec keeps
-    --sandbox/--cd. Resume is author-only, so the bypass rides only for the
-    author's danger-full-access sandbox."""
+    argparse error, verified on 0.130.0). A fresh exec keeps --sandbox/--cd. On
+    resume the recorded session's sandbox is inherited: the author adds the
+    bypass flag (to also skip approvals), a read-only reader (the structured-
+    output repair turn also resumes) adds NO sandbox flag and stays read-only by
+    inheritance — verified on 0.130.0 that a resumed read-only session still
+    refuses writes."""
     from autoresearch.harness import _codex_command
 
     ws = tmp_path / "ws"
@@ -654,12 +656,19 @@ def test_codex_command_resume_uses_bypass_not_sandbox_cd(tmp_path: Path) -> None
     assert "--cd" in fresh and str(ws) in fresh
     assert "--dangerously-bypass-approvals-and-sandbox" not in fresh
 
-    resumed = _codex_command("codex", "gpt-5.6-terra", "danger-full-access", ws, last, "sess-7", ())
-    assert resumed[:4] == ["codex", "exec", "resume", "sess-7"]
-    assert "--dangerously-bypass-approvals-and-sandbox" in resumed
-    assert "--sandbox" not in resumed  # rejected by `exec resume`
-    assert "--cd" not in resumed  # rejected by `exec resume`
-    assert "--json" in resumed and "--output-last-message" in resumed
+    author = _codex_command("codex", "gpt-5.6-terra", "danger-full-access", ws, last, "sess-7", ())
+    assert author[:4] == ["codex", "exec", "resume", "sess-7"]
+    assert "--dangerously-bypass-approvals-and-sandbox" in author
+    assert "--sandbox" not in author  # rejected by `exec resume`
+    assert "--cd" not in author  # rejected by `exec resume`
+    assert "--json" in author and "--output-last-message" in author
+
+    # a read-only reader resume: NO bypass (that would unjail it), NO --sandbox
+    # (rejected) — read-only is inherited from the recorded session
+    reader = _codex_command("codex", "", "read-only", ws, last, "sess-7", ())
+    assert reader[:4] == ["codex", "exec", "resume", "sess-7"]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in reader
+    assert "--sandbox" not in reader and "--cd" not in reader
 
 
 def test_codex_author_resumes_contained(tmp_path: Path) -> None:

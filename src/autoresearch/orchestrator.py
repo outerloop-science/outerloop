@@ -1141,11 +1141,11 @@ def climb_once(
             # for the author to fix), but the caller drafts the PR
             break
         if not session.session_id or not getattr(harness, "supports_resume", True):
-            # cannot resume: no session id, OR a backend whose headless resume
-            # is not bench-validated (codex/hermes). A FRESH session seeing only
-            # the findings would revise blind, and an unvalidated resume that
-            # fails would lose this verified improvement as a session-error —
-            # so fail closed to the draft path (review question, #95 round 1).
+            # cannot resume: no session id, OR a no-resume backend (hermes;
+            # claude and codex both resume). A FRESH session seeing only the
+            # findings would revise blind, and a resume the backend can't do
+            # would lose this verified improvement as a session-error — so fail
+            # closed to the draft path (review question, #95 round 1).
             panel_blocking_open = True
             break
         if panel_reads > panel_revisions:

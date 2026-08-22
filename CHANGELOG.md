@@ -20,11 +20,12 @@ Versions follow [SemVer](https://semver.org).
   swapping one host binary. `--image` and a non-claude `--model` are required
   (guarded early); `--codex-config KEY=VALUE` passes host-specific codex config.
   Headless session resume is validated on codex-cli 0.130.0 (`supports_resume=True`):
-  `codex exec resume <thread_id>` recalls the session, so a blocking panel finding
-  WAKES codex to revise like Claude (`codex exec resume` takes neither `--sandbox`
-  nor `--cd` — it uses `--dangerously-bypass-approvals-and-sandbox` and the
-  recorded cwd). The read-only codex/hermes reviewer path is unchanged. (The
-  author path is validated end-to-end on Slurm; needs codex installed on the host.)
+  a contained `codex exec resume <thread_id>` recalled prior-turn context, so a
+  blocking panel finding WAKES codex to revise like Claude. `codex exec resume`
+  takes neither `--sandbox` nor `--cd`: it inherits the recorded session's sandbox
+  (a resumed read-only reviewer stays read-only — verified) and cwd; the author
+  adds `--dangerously-bypass-approvals-and-sandbox` to also skip approvals. The
+  read-only codex/hermes reviewer path is unchanged. (Needs codex on the host.)
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would
