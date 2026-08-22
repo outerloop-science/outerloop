@@ -1800,6 +1800,14 @@ class JobWakeDispatcher:
     wake_minutes: int = 20
 
     def dispatch(self, record: RunRecord, reason: str) -> str:
+        # Fail safe rather than submit a doomed resume: a misconfigured codex
+        # author would die at the climb's startup validation. Raising lets _wake
+        # release the lease and count the attempt toward the stuck threshold
+        # (same as any dispatch failure), instead of burning a Slurm job each
+        # tick. Fresh climbs preflight this before submit; the wake does too.
+        author_error = _author_preflight_error(self.spec)
+        if author_error:
+            raise ValueError(f"author misconfigured for wake: {author_error}")
         argv = [
             "uv",
             "run",

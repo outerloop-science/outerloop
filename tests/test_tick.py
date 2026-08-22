@@ -2076,6 +2076,17 @@ def test_wake_dispatcher_threads_the_author_backend(tmp_path: Path, monkeypatch:
     assert "--author-backend codex" in joined and "--model gpt-5.6-terra" in joined
     assert "--codex-bin /opt/codex" in joined
 
+    # a misconfigured codex author raises instead of submitting a doomed resume:
+    # _wake then releases the lease (a raising dispatch is a failed delivery),
+    # rather than burning a Slurm job that would die at startup every tick.
+    import pytest
+
+    submits.clear()
+    bad = replace(spec, author_model="")
+    with pytest.raises(ValueError, match="author misconfigured"):
+        JobWakeDispatcher(SlurmCompute(runner=runner), bad, now=NOW).dispatch(record, "eval done")
+    assert submits == []
+
 
 def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
     """Panel on + a key the climb would reject (missing, group-readable,
