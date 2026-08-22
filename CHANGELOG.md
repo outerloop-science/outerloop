@@ -13,11 +13,15 @@ Versions follow [SemVer](https://semver.org).
   `--model gpt-5.6-terra`). It runs **contained** — `codex login` and `codex
   exec` both inside `apptainer exec --containall --cleanenv` (shared bound
   `--home` for auth.json) around codex's own `--sandbox workspace-write`, so an
-  author's writes+execution are fenced the same way the Claude author is.
-  `--image` and a non-claude `--model` are required (guarded early). codex
-  session resume is not bench-validated yet, so a blocking panel finding drafts
-  rather than revising. The read-only codex/hermes reviewer path is unchanged.
-  (Reachable but unexercised end-to-end; needs codex added to the `.sif` image.)
+  author's writes+execution are fenced the same way the Claude author is. The
+  host codex binary is bind-mounted read-only into the container (`--codex-bin`,
+  like `--claude-bin`) so the image stays codex-free and codex updates by
+  swapping one host binary. `--image` and a non-claude `--model` are required
+  (guarded early); `--codex-config KEY=VALUE` passes host-specific codex config.
+  codex session resume is not bench-validated yet (`supports_resume=False`), so a
+  blocking panel finding drafts rather than revising. The read-only codex/hermes
+  reviewer path is unchanged. (Reachable but unexercised end-to-end; needs codex
+  installed on the host.)
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would
