@@ -1382,7 +1382,7 @@ def test_editor_harness_codex_backend_is_contained() -> None:
     assert harness.model == "gpt-5.6-terra"
     assert harness.timeout_s == 300
     assert harness.extra_args == ("-c", "use_legacy_landlock=true")  # host codex config
-    assert harness.supports_resume is False  # revise loop drafts, never resumes
+    assert harness.supports_resume is True  # codex exec resume, validated on 0.130.0
     # an author MUST be contained
     with pytest.raises(ValueError, match="container_image"):
         build_editor_harness("sk-o", spec, backend="codex", container_image="")

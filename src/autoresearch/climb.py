@@ -709,7 +709,8 @@ def resume_run(
                 can_revise = (
                     bool(verdict.blocking)
                     and harness is not None
-                    # codex/hermes declare supports_resume=False -> draft, don't resume
+                    # a no-resume backend (hermes) declares supports_resume=False
+                    # -> draft, don't resume (claude and codex both resume)
                     and getattr(harness, "supports_resume", True)
                     and spec is not None
                     and bool(record.resume_session_id)
@@ -994,11 +995,12 @@ def build_editor_harness(
       (no inner OS sandbox) and relies on apptainer as the boundary, exactly as
       the claude author does — codex's own sandbox needs bubblewrap, absent in
       the image. An author MUST be contained (it writes+executes), so
-      container_image is REQUIRED — the read-only reviewer could skip it. Codex declares
-      `supports_resume=False` (its headless resume is not bench-validated), so a
-      blocking panel finding DRAFTS instead of attempting a resume — both the
-      inline and wake revise paths gate on `supports_resume`, so there is no
-      blind revise and no improvement lost to a failed resume."""
+      container_image is REQUIRED — the read-only reviewer could skip it. Codex
+      resumes like claude (`codex exec resume`, validated on 0.130.0), so a
+      blocking panel finding WAKES it to revise. A no-resume backend (hermes)
+      would DRAFT instead — the inline and wake revise paths gate on
+      `supports_resume`, so a backend that cannot resume never blind-revises and
+      never loses an improvement to a failed resume."""
     spec = spec or author_spec()
     if not spec.execution.can_execute:
         raise ValueError("build_editor_harness is for editing roles")
