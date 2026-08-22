@@ -582,13 +582,29 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path) -> None:
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen_env
 
 
+def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]:
+    """A fake apptainer that APPENDS every invocation's argv+env to logs, so a
+    test can assert BOTH codex calls (login then exec) — not just the last."""
+    calls, envs = tmp_path / "calls.log", tmp_path / "envs.log"
+    script = tmp_path / "fake-apptainer"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> {calls}\n'
+        f"env | grep APPTAINERENV >> {envs}\n"
+        f"cat <<'EOF'\n{payload}\nEOF\n"
+        "exit 0\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return str(script), calls, envs
+
+
 def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
-    """AUTHOR mode: codex exec runs inside apptainer (--containall/--cleanenv,
-    workspace + run-home bound, --pwd the workspace), codex from the image PATH,
-    author sandbox workspace-write, key via APPTAINERENV_ (never argv)."""
-    # the fake stands in for apptainer; codex login then exec both go through it,
-    # so seen_argv holds the last (exec) call's arguments.
-    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    """AUTHOR mode: BOTH codex login and codex exec run inside apptainer
+    (--containall/--cleanenv), so neither exposes the author key to the host —
+    login is contained too, not only the exec. exec binds the workspace + --pwd,
+    codex from the image PATH, author sandbox workspace-write, key via
+    APPTAINERENV_ (never argv)."""
+    binary, calls, envs = _recording_apptainer(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"
     ws.mkdir()
     harness = CodexHarness(
@@ -600,17 +616,23 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
         apptainer_binary=binary,
     )
     harness.run("task", ws)
-    argv = (tmp_path / "seen_argv").read_text()
-    assert argv.startswith("exec --containall --cleanenv")
-    assert f"--bind {ws}:{ws}" in argv
-    assert f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
-    assert f"--pwd {ws}" in argv
-    # codex is taken from the image PATH (not the host /real/codex), author sandbox
-    assert "/img/agent.sif codex exec" in argv
-    assert "--sandbox workspace-write" in argv
-    assert "sk-o" not in argv  # key travels via env, never argv
-    seen_env = (tmp_path / "seen_env").read_text()
-    assert "APPTAINERENV_OPENAI_API_KEY=sk-o" in seen_env
+    logged = calls.read_text()
+    login = next(ln for ln in logged.splitlines() if "codex login" in ln)
+    exec_ = next(ln for ln in logged.splitlines() if "codex exec" in ln)
+    home = f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}"
+    # the LOGIN is contained too (the finding: an uncontained login leaks the key)
+    assert login.startswith("exec --containall --cleanenv")
+    assert home in login
+    assert "/img/agent.sif codex login --with-api-key" in login
+    assert f"--bind {ws}" not in login  # login needs no workspace
+    # the EXEC is contained, binds+pwd the workspace, author sandbox, image codex
+    assert exec_.startswith("exec --containall --cleanenv")
+    assert f"--bind {ws}:{ws}" in exec_ and f"--pwd {ws}" in exec_ and home in exec_
+    assert "/img/agent.sif codex exec" in exec_
+    assert "--sandbox workspace-write" in exec_
+    # the key is never in ANY argv, and rides APPTAINERENV for both calls
+    assert "sk-o" not in logged
+    assert envs.read_text().count("APPTAINERENV_OPENAI_API_KEY=sk-o") == 2
 
 
 def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch) -> None:
