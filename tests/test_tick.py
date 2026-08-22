@@ -1016,6 +1016,7 @@ roadmap: docs/roadmap.md
         image="img.sif",
         home=tmp_path,
         panel_key_file=str(panel_key),
+        key_file="/legacy/harness-key",  # set, to prove the tick DROPS it (config-driven)
     )
     submitted: list[list[str]] = []
 
@@ -1037,8 +1038,10 @@ roadmap: docs/roadmap.md
     assert "--job-minutes 325" in wrap  # the ACTUAL walltime, for the alarm
     assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
     # config-driven author: the tick threads neither the author key nor the
-    # backend — climb resolves them from AUTORESEARCH_AUTHOR_* env by backend
-    assert "--key-file" not in wrap and "--author-backend" not in wrap
+    # backend — climb resolves them from AUTORESEARCH_AUTHOR_* env by backend.
+    # spec.key_file is SET above, so this proves the tick actively drops it.
+    assert "--key-file" not in wrap and "/legacy/harness-key" not in wrap
+    assert "--author-backend" not in wrap
 
 
 def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
