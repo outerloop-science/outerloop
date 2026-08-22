@@ -105,40 +105,31 @@ mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
 
-# --- config knobs: source the operator .env so live config changes need no chain
-# restart. This is where AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the per-backend
-# key files live; the config-driven climb/followup default from them and the tick
-# preflights them. The submitted work jobs inherit this env.
+# --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
+# live config changes need no chain restart. These are where
+# AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the per-backend key files live; the
+# config-driven climb/followup default from them and the tick preflights them.
 #
-# .env is PER-TICK CONFIG ONLY: it must not be able to hijack the chain's
-# identity (where it runs, its state root, its placement) — those are set from
-# the chain --export and are USED below (install path, tick --root). So snapshot
-# them, source .env, then restore, and the "no effect on chain vars" holds even
-# though the vars are referenced after this point.
+# We do NOT source .env: sourcing would execute it and let it set ANY variable
+# (the chain's own HOME/ROOT/PATH/cadence, arbitrary code). Instead we extract
+# only an ALLOWLIST of author knobs — so .env is structurally per-tick author
+# config and can never hijack the chain's identity or scheduling. And only from a
+# file that is ours and not group/world-writable (a writable one could still
+# inject a malicious VALUE, e.g. a bad codex binary path).
 ENV_FILE="$HOME/.config/autoresearch/.env"
 if [ -r "$ENV_FILE" ]; then
-    # sourcing EXECUTES the file, so refuse one that others could have written:
-    # it must be owned by us and not group/world-writable (else it is arbitrary
-    # code execution as the tick user). Fail closed to "not sourced".
     perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
     owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
     if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
-        _keep_home="$AUTORESEARCH_HOME"; _keep_root="$AUTORESEARCH_ROOT"
-        _keep_acct="$AUTORESEARCH_ACCOUNT"; _keep_part="$AUTORESEARCH_PARTITION"
-        _keep_uv="$UV_CACHE_DIR"; _keep_apptainer="$APPTAINER_CACHEDIR"
-        # set +u for the source: a .env that references an unset var must not
-        # abort the tick (the || echo cannot catch an unbound-variable exit)
-        set +u
-        set -a
-        # shellcheck disable=SC1090
-        . "$ENV_FILE" || echo "deploy: .env source failed"
-        set +a
-        set -u
-        AUTORESEARCH_HOME="$_keep_home"; AUTORESEARCH_ROOT="$_keep_root"
-        AUTORESEARCH_ACCOUNT="$_keep_acct"; AUTORESEARCH_PARTITION="$_keep_part"
-        UV_CACHE_DIR="$_keep_uv"; APPTAINER_CACHEDIR="$_keep_apptainer"
+        for _k in AUTORESEARCH_AUTHOR_BACKEND AUTORESEARCH_AUTHOR_MODEL \
+                  AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
+                  AUTORESEARCH_HARNESS_KEY_FILE; do
+            _v=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
+            _v=${_v#\"}; _v=${_v%\"}  # strip optional surrounding double quotes
+            [ -n "$_v" ] && export "$_k=$_v"
+        done
     else
-        echo "deploy: refusing to source $ENV_FILE (owner=$owner perms=$perms;" \
+        echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
              "needs to be yours and not group/world-writable)"
     fi
 fi
