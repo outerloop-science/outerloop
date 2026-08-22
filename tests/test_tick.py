@@ -1833,8 +1833,8 @@ def test_climb_author_argv(tmp_path: Path) -> None:
 
 
 def test_author_preflight_error(tmp_path: Path) -> None:
-    """Claude is always valid; codex needs a non-Claude model; an unknown
-    backend is rejected."""
+    """Claude is always valid; codex needs a non-Claude model and an absolute
+    (or empty) binary path; an unknown backend is rejected."""
     from autoresearch.tick import FollowupSpec, _author_preflight_error
 
     def make(**kw: Any) -> FollowupSpec:
@@ -1856,6 +1856,11 @@ def test_author_preflight_error(tmp_path: Path) -> None:
     )  # a Claude id on the codex backend
     assert _author_preflight_error(make(author_backend="codex", author_model="gpt-5.6-terra")) == ""
     assert _author_preflight_error(make(author_backend="hermes")) != ""  # unknown
+    # codex_bin: empty is fine (CLI default), absolute is fine, relative strands
+    ok = dict(author_backend="codex", author_model="gpt-5.6-terra")
+    assert _author_preflight_error(make(**ok, codex_bin="/opt/codex")) == ""
+    assert _author_preflight_error(make(**ok, codex_bin="~/.local/bin/codex")) == ""
+    assert "relative" in _author_preflight_error(make(**ok, codex_bin="bin/codex"))
 
 
 def test_author_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) -> None:

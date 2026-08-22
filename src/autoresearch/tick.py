@@ -1277,14 +1277,17 @@ def _climb_author_argv(spec: FollowupSpec) -> list[str]:
     return _author_argv(spec.author_backend, spec.author_model, spec.codex_bin)
 
 
-def _author_config_error(backend: str, model: str) -> str:
+def _author_config_error(backend: str, model: str, codex_bin: str = "") -> str:
     """Why a climb would die at startup on this author config ("" when it won't).
 
     The Claude author is always valid. The codex author needs a non-Claude model
     (the climb CLI rejects a Claude id on a non-Claude backend); its container
-    image is already guaranteed by the tick's env-load. Preflighted so a lane
-    skips rather than submits a job that would fail at startup — and, for intake,
-    skips before it claims an issue."""
+    image is already guaranteed by the tick's env-load. A set `codex_bin` must be
+    absolute — the climb runs from a flight dir, not the tick's cwd, so a relative
+    path both misses there and trips CodexHarness's own absolute-path guard (empty
+    is fine: the climb CLI falls back to its default codex path). Preflighted so a
+    lane skips rather than submits a job that would fail at startup — and, for
+    intake, skips before it claims an issue."""
     backend = backend.strip()
     if not backend or backend == "claude":
         return ""
@@ -1295,12 +1298,14 @@ def _author_config_error(backend: str, model: str) -> str:
             "author backend 'codex' needs a non-Claude "
             f"AUTORESEARCH_AUTHOR_MODEL (got {model.strip()!r})"
         )
+    if codex_bin and not os.path.isabs(os.path.expanduser(codex_bin)):
+        return f"AUTORESEARCH_CODEX_BIN {codex_bin!r} is relative; only absolute paths fly"
     return ""
 
 
 def _author_preflight_error(spec: FollowupSpec) -> str:
     """`_author_config_error` for the fleet's configured author backend."""
-    return _author_config_error(spec.author_backend, spec.author_model)
+    return _author_config_error(spec.author_backend, spec.author_model, spec.codex_bin)
 
 
 def _panel_preflight_error(spec: FollowupSpec) -> str:
@@ -1815,14 +1820,23 @@ class JobWakeDispatcher:
         # fleet flip (claude->codex) must not wake a parked Claude run as codex,
         # which cannot resume its Claude session. The backend is persisted on the
         # record ("" = legacy, before this field -> fall back to the spec). The
-        # codex model/binary come from the spec (stable fleet config).
+        # codex model/binary/key come from the spec (stable fleet config).
+        #
+        # A backend is NOT hot-swappable with runs in flight: the fleet has one
+        # author key (repointed at a flip), so a parked codex run cannot wake once
+        # the fleet is on claude (its key is gone), and vice versa. That case
+        # fails safe HERE — the preflight below raises before any sbatch, so no
+        # Slurm job is burned; _wake counts the attempt and the run converges to
+        # the stuck terminal. Operationally: DRAIN in-flight parked runs before
+        # flipping AUTORESEARCH_AUTHOR_BACKEND. (Dispatch/park is dark on the pilot,
+        # so no run is in flight to strand today.)
         backend = record.author_backend or self.spec.author_backend
         # Fail safe rather than submit a doomed resume: a misconfigured codex
         # author would die at the climb's startup validation. Raising lets _wake
         # release the lease and count the attempt toward the stuck threshold
         # (same as any dispatch failure), instead of burning a Slurm job each
         # tick. Fresh climbs preflight this before submit; the wake does too.
-        author_error = _author_config_error(backend, self.spec.author_model)
+        author_error = _author_config_error(backend, self.spec.author_model, self.spec.codex_bin)
         if author_error:
             raise ValueError(f"author misconfigured for wake: {author_error}")
         argv = [
