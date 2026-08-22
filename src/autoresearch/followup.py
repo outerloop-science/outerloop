@@ -742,11 +742,14 @@ def main() -> int:
         # never crash on an unreadable/odd record — fall back to the claude
         # author (resume_author); respond_once re-reads and handles a missing one
         _rec = None
-    author_backend, author_model = resume_author(_rec, args.model)
+    author_backend, author_model, author_key = resume_author(_rec, args.model)
     _err = codex_author_config_error(author_backend, author_model, args.image)
     if _err:
         parser.error(f"run {args.run_id}: {_err}")
-    args.key_file = resolve_author_key_file(author_backend, args.key_file)
+    # an explicit --key-file still overrides; otherwise the run's recorded key
+    args.key_file = (
+        resolve_author_key_file(author_backend, args.key_file) if args.key_file else author_key
+    )
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
     api_key = FileTokenProvider(Path(args.key_file)).token()
     bot_auth = FileTokenProvider(Path(args.pat_file))

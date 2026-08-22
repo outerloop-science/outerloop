@@ -136,6 +136,11 @@ class RunRecord:
     # claude model and vice versa — so both are persisted together.
     author_backend: str = ""
     author_model: str = ""
+    # The resolved author key FILE PATH (not the key) this run used, so a wake or
+    # follow-up reproduces the exact key — an explicit --key-file survives, and an
+    # in-flight run is immune to a later env change. "" = resolve per backend
+    # (legacy records, and the common config-driven case).
+    author_key_file: str = ""
     # Per-source comment cursors: issue comments, top-level reviews, and
     # inline review comments are three REST collections with independent id
     # sequences — one cursor across them drops comments forever.

@@ -124,19 +124,23 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     return ""
 
 
-def resume_author(record: object, fleet_model: str) -> tuple[str, str]:
-    """The (backend, model) a wake/follow-up must reproduce for a parked run.
+def resume_author(record: object, fleet_model: str) -> tuple[str, str, str]:
+    """The (backend, model, key_file) a wake/follow-up must reproduce for a parked
+    run — all from the RECORD, not the current fleet.
 
-    Both come from the RECORD, not the current fleet: an empty backend is a
-    legacy record (written before the field) and is therefore CLAUDE, never the
-    fleet default; the model pairs with that backend (a claude backend falls back
-    to the claude default, a codex backend to the fleet model only as a last
-    resort — codex records always carry their model)."""
+    An empty backend is a legacy record (written before the field) and is
+    therefore CLAUDE, never the fleet default; the model pairs with that backend
+    (a claude backend falls back to the claude default, a codex backend to the
+    fleet model only as a last resort — codex records always carry their model);
+    the key file is the exact resolved path the run used (so an explicit
+    --key-file survives), falling back to the per-backend resolution for legacy
+    records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
     model = getattr(record, "author_model", "") or (
         "claude-opus-5" if backend == "claude" else fleet_model
     )
-    return backend, model
+    key_file = getattr(record, "author_key_file", "") or resolve_author_key_file(backend)
+    return backend, model, key_file
 
 
 class WorkspaceDrift(RuntimeError):
@@ -1191,6 +1195,7 @@ def live_climb(
     issue_number: int = 0,
     author_backend: str = "claude",
     author_model: str = "",
+    author_key_file: str = "",
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -1222,6 +1227,7 @@ def live_climb(
         issue_number=issue_number,
         author_backend=author_backend,
         author_model=author_model,
+        author_key_file=author_key_file,
         climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
@@ -2102,11 +2108,13 @@ def main() -> int:
             # a wake must never crash on an unreadable/odd record — fall back to
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
-        wake_backend, wake_model = resume_author(_wake_record, args.model)
+        wake_backend, wake_model, wake_key_file = resume_author(_wake_record, args.model)
+        # an explicit --key-file still overrides (a manual re-run pinning a key)
+        if args.key_file:
+            wake_key_file = os.path.expanduser(args.key_file)
         _err = codex_author_config_error(wake_backend, wake_model, args.image)
         if _err:
             parser.error(f"parked run {args.resume}: {_err}")
-        wake_key_file = resolve_author_key_file(wake_backend, args.key_file)
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
@@ -2279,6 +2287,7 @@ def main() -> int:
                 issue_number=args.issue,
                 author_backend=args.author_backend,
                 author_model=args.model,
+                author_key_file=args.key_file,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()
                     if args.hypothesis_b64

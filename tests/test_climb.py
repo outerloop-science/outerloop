@@ -282,6 +282,7 @@ def run_live(
     dispatch=None,
     author_backend="claude",
     author_model="claude-opus-5",
+    author_key_file="",
 ) -> tuple:
     github = FakeGitHub()
     outcome = live_climb(
@@ -298,6 +299,7 @@ def run_live(
         dispatch=dispatch,
         author_backend=author_backend,
         author_model=author_model,
+        author_key_file=author_key_file,
     )
     return outcome, github
 
@@ -370,26 +372,49 @@ def test_run_record_persists_the_author_pair(tmp_path, target_repo) -> None:
         values=[13.876, 13.1],
         author_backend="codex",
         author_model="gpt-5.6-terra",
+        author_key_file="/keys/codex",
     )
     rec = load_record(tmp_path / "state", "tsp-1")
     assert rec.author_backend == "codex" and rec.author_model == "gpt-5.6-terra"
+    assert rec.author_key_file == "/keys/codex"  # exact key survives for the wake
 
 
-def test_resume_author_reproduces_the_run_not_the_fleet() -> None:
-    """A wake/follow-up derives (backend, model) from the record, never the fleet:
-    a legacy record is claude (not the fleet default), a claude record keeps a
-    claude model, a codex record keeps its own model."""
+def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
+    """A wake/follow-up derives (backend, model, key_file) from the record, never
+    the fleet: a legacy record is claude (not the fleet default), a claude record
+    keeps a claude model, a codex record keeps its own model, and an explicit
+    recorded key path survives (else it resolves per backend)."""
     from types import SimpleNamespace
 
     from autoresearch.climb import resume_author
 
-    legacy = SimpleNamespace(author_backend="", author_model="")
-    assert resume_author(legacy, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5")
-    claude_rec = SimpleNamespace(author_backend="claude", author_model="claude-opus-5")
-    assert resume_author(claude_rec, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5")
-    codex_rec = SimpleNamespace(author_backend="codex", author_model="gpt-5.6-terra")
-    assert resume_author(codex_rec, fleet_model="claude-opus-5") == ("codex", "gpt-5.6-terra")
-    assert resume_author(None, fleet_model="x") == ("claude", "claude-opus-5")
+    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "/h")
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/c")
+
+    legacy = SimpleNamespace(author_backend="", author_model="", author_key_file="")
+    assert resume_author(legacy, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5", "/h")
+    claude_rec = SimpleNamespace(
+        author_backend="claude", author_model="claude-opus-5", author_key_file=""
+    )
+    assert resume_author(claude_rec, fleet_model="gpt-5.6-terra") == (
+        "claude",
+        "claude-opus-5",
+        "/h",
+    )
+    codex_rec = SimpleNamespace(
+        author_backend="codex", author_model="gpt-5.6-terra", author_key_file=""
+    )
+    assert resume_author(codex_rec, fleet_model="claude-opus-5") == (
+        "codex",
+        "gpt-5.6-terra",
+        "/c",
+    )
+    # an explicit recorded key path wins over the per-backend env
+    pinned = SimpleNamespace(
+        author_backend="codex", author_model="gpt-5.6-terra", author_key_file="/custom/key"
+    )
+    assert resume_author(pinned, fleet_model="x") == ("codex", "gpt-5.6-terra", "/custom/key")
+    assert resume_author(None, fleet_model="x") == ("claude", "claude-opus-5", "/h")
 
 
 def test_codex_author_config_error() -> None:
