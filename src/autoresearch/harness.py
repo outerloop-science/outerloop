@@ -79,11 +79,12 @@ class Harness(Protocol):
     HOME next to the workspace, so wakes survive orchestrator restarts and can
     land on a different cluster node (shared filesystem).
 
-    A backend MAY declare a class attribute `supports_resume = False` when its
-    headless resume is not trustworthy (codex/hermes). The revise loop checks it
-    (via getattr, default True) and DRAFTS instead of calling run() with a resume
-    id — an untrusted resume that starts fresh or fails would revise blind or
-    lose a verified improvement. Optional, so test doubles need not declare it."""
+    A backend MAY declare a class attribute `supports_resume = False` when it
+    has no trustworthy headless resume (hermes). The revise loop checks it (via
+    getattr, default True) and DRAFTS instead of calling run() with a resume id —
+    a resume that silently starts fresh or fails would revise blind or lose a
+    verified improvement. Claude and codex both resume (`supports_resume=True`).
+    Optional, so test doubles need not declare it."""
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -543,26 +544,49 @@ def _codex_command(
     The prompt is NOT an argument: `codex exec` reads it from stdin when no
     positional prompt is given, keeping the brief out of world-readable /proc
     argv (the same rule as the Claude adapter). Flags verified against
-    codex-cli 0.130.0 (`codex exec --help`): exec/resume, --json, --model,
-    --sandbox read-only, --cd, --output-last-message, --skip-git-repo-check,
-    and the stdin prompt behavior.
+    codex-cli 0.130.0 (`codex exec[ resume] --help`): --json, --model,
+    --output-last-message, --skip-git-repo-check, and the stdin prompt behavior.
+
+    Fresh and resume take DIFFERENT flags. `codex exec` has `--sandbox` and
+    `--cd`; `codex exec resume <id>` has NEITHER (passing them is an argparse
+    error) — it restores the recorded session, INCLUDING that session's sandbox
+    and cwd. Verified on codex-cli 0.130.0: resuming a `--sandbox read-only`
+    session with no sandbox flag still refuses writes, so a resumed read-only
+    reviewer stays jailed by inheritance, not by luck. The author adds
+    `--dangerously-bypass-approvals-and-sandbox` on resume anyway — its
+    danger-full-access is inherited, but the flag also skips approvals so a
+    headless write-heavy revise turn cannot stall. (Both authors and readers can
+    resume — readers via the structured-output repair turn.)
     """
-    head = [binary, "exec", "resume", resume_session_id] if resume_session_id else [binary, "exec"]
     # --model is omitted when empty so codex uses its configured default; a
     # wrong model id is a 404 ("Model not found"), so only pin a verified one.
     model_flag = ["--model", model] if model else []
-    return [
-        *head,
-        "--json",  # JSONL events on stdout (session id, usage)
-        *model_flag,
-        "--sandbox",
-        sandbox,  # "read-only" for judge roles; "workspace-write" for authors
-        "--cd",
-        str(workspace),
+    tail = [
         "--output-last-message",  # final message -> file (reliable final_text)
         str(last_message_path),
         "--skip-git-repo-check",
         *extra_args,
+    ]
+    if resume_session_id:
+        # no --sandbox/--cd on resume: the recorded session's sandbox is
+        # inherited (read-only stays read-only). The author adds the bypass flag
+        # to also skip approvals headlessly; a reader inherits its read-only jail.
+        bypass = (
+            ["--dangerously-bypass-approvals-and-sandbox"]
+            if sandbox == "danger-full-access"
+            else []
+        )
+        return [binary, "exec", "resume", resume_session_id, "--json", *model_flag, *bypass, *tail]
+    return [
+        binary,
+        "exec",
+        "--json",  # JSONL events on stdout (session id, usage)
+        *model_flag,
+        "--sandbox",
+        sandbox,  # "read-only" for judge roles; "danger-full-access" for authors
+        "--cd",
+        str(workspace),
+        *tail,
     ]
 
 
@@ -572,11 +596,10 @@ def _parse_codex_result(
     """Best-effort SessionResult from `codex exec --json` output.
 
     `final_text` comes from the --output-last-message file, which is reliable.
-    `session_id` is pulled from the JSONL events defensively; the CLI flags are
-    verified (codex-cli 0.130.0), but the exact `--json` event field names still
-    need a live authed run, so resume may be unavailable until then. Cost is left
-    at 0 (these backends are subscription or token metered; the budget layer
-    meters them by a session/token proxy). Never raises.
+    `session_id` is the `thread.started` event's `thread_id`, verified against
+    codex-cli 0.130.0 (a `codex exec resume <thread_id>` recalls the session).
+    Cost is left at 0 (these backends are subscription or token metered; the
+    budget layer meters them by a session/token proxy). Never raises.
     """
     # Event schema verified against codex-cli 0.130.0 (cluster0):
     #   thread.started -> thread_id (the session id)
@@ -636,9 +659,10 @@ class CodexHarness:
 
     Stage 1's swappability proof, first used for the read-only reviewer
     (docs/design/consolidation.md): Codex's own `--sandbox read-only` plus a
-    judge RoleSpec's tool set. CLI flags are verified against codex-cli 0.130.0;
-    the `--json` event field names still need a live authed run, so `session_id`
-    and cost parsing are best-effort until then.
+    judge RoleSpec's tool set. CLI flags AND headless resume are verified against
+    codex-cli 0.130.0 (`session_id` = the `thread.started` `thread_id`; resume
+    recalls it); cost parsing stays best-effort (these backends are metered by a
+    session/token proxy in the budget layer).
 
     AUTHOR mode (`container_image` set): both `codex login` and `codex exec` run
     inside `apptainer exec --containall --cleanenv`, sharing a bound `--home` so
@@ -674,10 +698,11 @@ class CodexHarness:
     # is updated by swapping one host binary, no rebuild). A bare class attribute
     # (no annotation) so the dataclass does not treat it as a field.
     CONTAINER_CODEX = "/opt/agent/codex"
-    # codex --json session-id parsing is best-effort until a live authed run
-    # verifies the event fields, so headless resume is NOT trusted yet: the
-    # revise loop drafts instead of resuming (flip to True once validated).
-    supports_resume = False
+    # Headless resume is validated on codex-cli 0.130.0: a contained
+    # `codex exec resume <thread_id>` recalls prior-turn context (the session id
+    # is the `thread.started` event's `thread_id`, restored from the bound
+    # --home). So the revise/wake/followup loops resume codex like Claude.
+    supports_resume = True
 
     def _apptainer_argv(
         self, inner: list[str], session_home: Path, workspace: Path | None

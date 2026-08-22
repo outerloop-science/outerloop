@@ -970,9 +970,10 @@ def test_blocking_then_clean_revises_and_remeasures(tmp_path: Path) -> None:
 
 
 def test_a_backend_that_cannot_resume_drafts_a_blocking_finding(tmp_path: Path) -> None:
-    """codex/hermes declare supports_resume=False: a blocking finding must DRAFT
-    the verified improvement, never attempt an unvalidated resume that would lose
-    it as a session-error (review #119 r2, terra)."""
+    """a no-resume backend (hermes) declares supports_resume=False: a blocking
+    finding must DRAFT the verified improvement, never attempt a resume the
+    backend can't do that would lose it as a session-error (review #119 r2,
+    terra). Claude and codex both resume; hermes exercises this path."""
     result, harness, evaluator, _panel = _run_panel_climb(
         tmp_path, [13.9, 13.1], [_verdict(True, 1)], supports_resume=False
     )

@@ -19,10 +19,13 @@ Versions follow [SemVer](https://semver.org).
   like `--claude-bin`) so the image stays codex-free and codex updates by
   swapping one host binary. `--image` and a non-claude `--model` are required
   (guarded early); `--codex-config KEY=VALUE` passes host-specific codex config.
-  codex session resume is not bench-validated yet (`supports_resume=False`), so a
-  blocking panel finding drafts rather than revising. The read-only codex/hermes
-  reviewer path is unchanged. (Reachable but unexercised end-to-end; needs codex
-  installed on the host.)
+  Headless session resume is validated on codex-cli 0.130.0 (`supports_resume=True`):
+  a contained `codex exec resume <thread_id>` recalled prior-turn context, so a
+  blocking panel finding WAKES codex to revise like Claude. `codex exec resume`
+  takes neither `--sandbox` nor `--cd`: it inherits the recorded session's sandbox
+  (a resumed read-only reviewer stays read-only — verified) and cwd; the author
+  adds `--dangerously-bypass-approvals-and-sandbox` to also skip approvals. The
+  read-only codex/hermes reviewer path is unchanged. (Needs codex on the host.)
 
 - Tick coalescing: under partition congestion, queued ticks bunch up and become
   eligible together (the singleton dependency serializes them), so they would

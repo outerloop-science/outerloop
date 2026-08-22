@@ -638,6 +638,64 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     assert envs.read_text().count("APPTAINERENV_OPENAI_API_KEY=sk-o") == 2
 
 
+def test_codex_command_resume_uses_bypass_not_sandbox_cd(tmp_path: Path) -> None:
+    """`codex exec resume` has neither --sandbox nor --cd (passing them is an
+    argparse error, verified on 0.130.0). A fresh exec keeps --sandbox/--cd. On
+    resume the recorded session's sandbox is inherited: the author adds the
+    bypass flag (to also skip approvals), a read-only reader (the structured-
+    output repair turn also resumes) adds NO sandbox flag and stays read-only by
+    inheritance — verified on 0.130.0 that a resumed read-only session still
+    refuses writes."""
+    from autoresearch.harness import _codex_command
+
+    ws = tmp_path / "ws"
+    last = tmp_path / "last.txt"
+    fresh = _codex_command("codex", "gpt-5.6-terra", "danger-full-access", ws, last, None, ())
+    assert "resume" not in fresh
+    assert "--sandbox" in fresh and "danger-full-access" in fresh
+    assert "--cd" in fresh and str(ws) in fresh
+    assert "--dangerously-bypass-approvals-and-sandbox" not in fresh
+
+    author = _codex_command("codex", "gpt-5.6-terra", "danger-full-access", ws, last, "sess-7", ())
+    assert author[:4] == ["codex", "exec", "resume", "sess-7"]
+    assert "--dangerously-bypass-approvals-and-sandbox" in author
+    assert "--sandbox" not in author  # rejected by `exec resume`
+    assert "--cd" not in author  # rejected by `exec resume`
+    assert "--json" in author and "--output-last-message" in author
+
+    # a read-only reader resume: NO bypass (that would unjail it), NO --sandbox
+    # (rejected) — read-only is inherited from the recorded session
+    reader = _codex_command("codex", "", "read-only", ws, last, "sess-7", ())
+    assert reader[:4] == ["codex", "exec", "resume", "sess-7"]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in reader
+    assert "--sandbox" not in reader and "--cd" not in reader
+
+
+def test_codex_author_resumes_contained(tmp_path: Path) -> None:
+    """A contained resume runs `codex exec resume <id>` inside apptainer with the
+    same bound --home (so the recorded session is visible) and the bypass flag,
+    never --sandbox/--cd."""
+    binary, calls, _envs = _recording_apptainer(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(
+        api_key="sk-o",
+        binary="/real/codex",
+        model="gpt-5.6-terra",
+        sandbox="danger-full-access",
+        container_image="/img/agent.sif",
+        apptainer_binary=binary,
+    )
+    assert harness.supports_resume is True
+    harness.run("revise per the finding", ws, resume_session_id="01a0-thread")
+    exec_ = next(ln for ln in calls.read_text().splitlines() if "codex exec resume" in ln)
+    home = f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}"
+    assert "/img/agent.sif /opt/agent/codex exec resume 01a0-thread" in exec_
+    assert home in exec_  # same run-home -> recorded session is visible
+    assert "--dangerously-bypass-approvals-and-sandbox" in exec_
+    assert "--sandbox" not in exec_ and "--cd" not in exec_
+
+
 def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch) -> None:
     """apptainer bind sources must be absolute; a relative workspace is resolved
     (else the mount fails deep inside apptainer)."""
