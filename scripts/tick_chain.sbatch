@@ -125,7 +125,8 @@ if [ -r "$ENV_FILE" ]; then
                   AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
                   AUTORESEARCH_HARNESS_KEY_FILE; do
             _v=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
-            _v=${_v#\"}; _v=${_v%\"}  # strip optional surrounding double quotes
+            _v=${_v%$'\r'}                         # CRLF-edited file
+            _v=${_v#[\"\']}; _v=${_v%[\"\']}       # optional surrounding quote
             [ -n "$_v" ] && export "$_k=$_v"
         done
     else
