@@ -15,6 +15,11 @@ set -euo pipefail
 # Pinned: 0.130.0 is harness-verified — it needs neither the code-mode-host helper
 # that 0.149.x requires nor bubblewrap on the (danger-full-access) author path.
 WANT="0.130.0"
+# SHA256 of codex-x86_64-unknown-linux-musl.tar.gz for rust-v0.130.0. The download
+# is verified against this BEFORE anything in it is extracted or run, so a swapped
+# release asset can never execute on the host (integrity, not self-reported
+# version). To bump WANT: fetch the new asset and `sha256sum` it, then update both.
+WANT_SHA256="16779e7b7857508a768a36d7d4e084eec336ec23946ed70a9b09489b8f861190"
 TARGET="${1:-${AUTORESEARCH_CODEX_BIN:-$HOME/.local/bin/codex}}"
 
 have="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
@@ -41,6 +46,14 @@ trap 'rm -rf "$tmp" "$staged"' EXIT
 # INSIDE the ~15-min tick job, so cap the fetch well under it (single attempt —
 # a transient failure is retried by the next tick, since the install is idempotent)
 curl -fsSL --connect-timeout 15 --max-time 120 --retry 0 "$url" -o "$tmp/codex.tar.gz"
+# INTEGRITY GATE: verify the archive's sha256 against the pin BEFORE extracting or
+# executing anything from it — never run an unverified download on the host (a
+# self-reported --version proves nothing; a swapped asset could print anything).
+got_sha=$(sha256sum "$tmp/codex.tar.gz" | cut -d' ' -f1)
+if [ "$got_sha" != "$WANT_SHA256" ]; then
+    echo "install_codex: sha256 mismatch (got $got_sha, want $WANT_SHA256) — refusing" >&2
+    exit 1
+fi
 tar -xzf "$tmp/codex.tar.gz" -C "$tmp"
 # the tarball holds one binary, named `codex` or `codex-<target-triple>`; don't
 # assume its depth in the archive
@@ -50,9 +63,8 @@ bin="$(find "$tmp" -type f \( -name codex -o -name 'codex-*' \) | head -1)"
 # TARGET so the final mv is atomic on the same filesystem)
 mkdir -p "$(dirname "$TARGET")"
 install -m 0755 "$bin" "$staged"
-# VERIFY BEFORE publishing: check the staged binary reports the pinned version
-# while it is still off to the side, so a wrong/corrupt download (the release
-# asset is mutable) never lands at the author's codex path
+# secondary sanity (integrity is already the sha256 gate above, so this runs
+# VERIFIED bytes): the staged binary reports the pinned version before the mv
 got="$("$staged" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
 if [ "$got" != "$WANT" ]; then
     echo "install_codex: downloaded codex reports '$got', wanted '$WANT' — not installing" >&2
