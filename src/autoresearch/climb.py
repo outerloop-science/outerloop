@@ -86,7 +86,25 @@ log = logging.getLogger(__name__)
 # tick preflights the panel key (and compares it against the author key —
 # role separation) before claiming/submitting.
 PANEL_KEY_DEFAULT = "~/.config/autoresearch/verifier_key"
-HARNESS_KEY_DEFAULT = "~/.config/autoresearch/harness_key"
+HARNESS_KEY_DEFAULT = "~/.config/autoresearch/harness_key"  # the claude author key
+CODEX_KEY_DEFAULT = "~/.config/autoresearch/codex_key"  # the codex author key
+
+
+def resolve_author_key_file(backend: str, explicit: str = "") -> str:
+    """The author key file for `backend`. Per-backend keys COEXIST (claude's and
+    codex's both on disk), selected by backend — so the author backend is a
+    config choice, not a key swap, and an in-flight run of either backend can
+    still be woken/serviced after a fleet flip. An explicit path always wins;
+    otherwise the per-backend env var, then the packaged default path."""
+    if explicit:
+        return explicit
+    if backend == "codex":
+        return os.environ.get("AUTORESEARCH_CODEX_KEY_FILE") or os.path.expanduser(
+            CODEX_KEY_DEFAULT
+        )
+    return os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE") or os.path.expanduser(
+        HARNESS_KEY_DEFAULT
+    )
 
 
 class WorkspaceDrift(RuntimeError):
@@ -1139,6 +1157,7 @@ def live_climb(
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
     issue_number: int = 0,
+    author_backend: str = "claude",
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -1168,6 +1187,7 @@ def live_climb(
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
+        author_backend=author_backend,
         climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
@@ -1940,18 +1960,22 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument(
         "--codex-bin",
-        default=os.path.expanduser("~/.local/bin/codex"),
+        default=os.environ.get("AUTORESEARCH_CODEX_BIN")
+        or os.path.expanduser("~/.local/bin/codex"),
         help="host codex binary for the codex author; bind-mounted into apptainer "
         "(must be an absolute path).",
     )
-    parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument(
+        "--model", default=os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
+    )
     parser.add_argument(
         "--author-backend",
         choices=("claude", "codex"),
-        default="claude",
-        help="agent backend for the author/editor role. codex runs contained "
-        "(apptainer + --sandbox workspace-write) and REQUIRES --image and a "
-        "codex/openai --model (e.g. gpt-5.6-terra).",
+        default=os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude",
+        help="agent backend for the author/editor role (config-driven: default "
+        "from AUTORESEARCH_AUTHOR_BACKEND). codex runs contained (apptainer + "
+        "--sandbox danger-full-access) and REQUIRES --image and a codex/openai "
+        "--model (e.g. gpt-5.6-terra).",
     )
     parser.add_argument(
         "--codex-config",
@@ -1992,7 +2016,12 @@ def main() -> int:
         help="how long before the walltime the self-deadline fires (floor 60)",
     )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
-    parser.add_argument("--key-file", default=os.path.expanduser(HARNESS_KEY_DEFAULT))
+    parser.add_argument(
+        "--key-file",
+        default="",
+        help="author key file; default resolves per backend (config-driven): "
+        "AUTORESEARCH_HARNESS_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
+    )
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(
         "--min-free-gb",
@@ -2032,8 +2061,19 @@ def main() -> int:
                 "to rebuild the dispatched measurer"
             )
         from autoresearch.compute import SlurmCompute
-        from autoresearch.runstate import release_lease
+        from autoresearch.runstate import load_record, release_lease
 
+        # Reproduce the PARKED run's author, not the current fleet default: the
+        # backend is persisted on the record (a fleet flip must not wake a codex
+        # run as claude, or vice versa), falling back to the CLI/env default for
+        # legacy records or an unreadable record. The key then resolves for THAT
+        # backend (keys coexist).
+        try:
+            wake_backend = load_record(args.run_root, args.resume).author_backend
+        except (OSError, ValueError):
+            wake_backend = ""
+        wake_backend = wake_backend or args.author_backend
+        wake_key_file = resolve_author_key_file(wake_backend, args.key_file)
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
@@ -2050,13 +2090,13 @@ def main() -> int:
         # read-decide-publish job and must not require the author key.
         if wake_lenses:
             wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-            wake_api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
+            wake_api_key = FileTokenProvider(Path(wake_key_file).expanduser()).token()
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_editor_harness(
                 wake_api_key,
                 wake_spec,
-                backend=args.author_backend,
-                binary=args.claude_bin if args.author_backend == "claude" else args.codex_bin,
+                backend=wake_backend,
+                binary=args.claude_bin if wake_backend == "claude" else args.codex_bin,
                 model=args.model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
@@ -2093,6 +2133,9 @@ def main() -> int:
     if not (args.target and args.benchmark):
         parser.error("--target and --benchmark are required for a fresh climb")
 
+    # config-driven: the author key defaults per backend (claude vs codex) so the
+    # tick never threads it — see resolve_author_key_file.
+    args.key_file = resolve_author_key_file(args.author_backend, args.key_file)
     # same 0600 discipline as the PAT: this key spends real money
     api_key = FileTokenProvider(Path(args.key_file).expanduser()).token()
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -2196,6 +2239,7 @@ def main() -> int:
                     if k
                 ),
                 issue_number=args.issue,
+                author_backend=args.author_backend,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()
                     if args.hypothesis_b64

@@ -1036,6 +1036,9 @@ roadmap: docs/roadmap.md
     assert "--session-minutes 25" in wrap
     assert "--job-minutes 325" in wrap  # the ACTUAL walltime, for the alarm
     assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
+    # config-driven author: the tick threads neither the author key nor the
+    # backend — climb resolves them from AUTORESEARCH_AUTHOR_* env by backend
+    assert "--key-file" not in wrap and "--author-backend" not in wrap
 
 
 def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
@@ -1655,8 +1658,10 @@ roadmap: docs/roadmap.md
 
 
 def test_followup_key_routing_by_role(tmp_path: Path) -> None:
-    """Steward records get the STEWARD'S key in the follow-up job; without
-    one the steward record is skipped while solver servicing continues."""
+    """The STEWARD follow-up carries the steward's key explicitly; the author
+    (solver) follow-up threads NO key — it resolves its key per the run's backend
+    from env (config-driven). Without a steward key the steward record is skipped
+    while solver servicing continues."""
     from autoresearch.runstate import IN_REVIEW
     from autoresearch.tick import FollowupSpec, service_in_review
 
@@ -1716,7 +1721,7 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
     assert len(subs) == 2
     solver_cmd = next(c for c in submitted if "followup-tsp-r1" in c)
     steward_cmd = next(c for c in submitted if "steward-tsp-r1" in c)
-    assert "--key-file /solver-key" in solver_cmd
+    assert "--key-file" not in solver_cmd  # author resolves its key from env
     assert "--key-file /steward-key" in steward_cmd
     # no steward key -> steward record skipped, solver still serviced
     submitted.clear()

@@ -530,9 +530,11 @@ def service_in_review(
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
-            key_file = spec.steward_key_file if is_steward else spec.key_file
-            if key_file:
-                argv += ["--key-file", key_file]
+            # config-driven author: the author follow-up resolves its key per the
+            # RUN's backend (from the record) inside followup.main — the tick does
+            # not thread it. The steward is a distinct role with its own key.
+            if is_steward and spec.steward_key_file:
+                argv += ["--key-file", spec.steward_key_file]
             job_id = compute.submit(
                 JobSpec(
                     job_name=f"followup-{record.run_id}"[:60],
@@ -1442,8 +1444,9 @@ def service_self_initiated(
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        if spec.key_file:
-            argv += ["--key-file", spec.key_file]
+        # config-driven author: climb resolves the author backend/model/key from
+        # AUTORESEARCH_AUTHOR_* env (inherited by the job), so the tick threads
+        # neither the backend nor its key — a new backend needs zero tick change.
         job_id = compute.submit(
             JobSpec(
                 job_name=f"climb-{benchmark}"[:60],
@@ -1673,8 +1676,8 @@ def service_intake(
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        if spec.key_file:
-            argv += ["--key-file", spec.key_file]
+        # config-driven author: climb resolves the author key from the
+        # AUTORESEARCH_AUTHOR_* env by backend; the tick does not thread it.
         try:
             job_id = compute.submit(
                 JobSpec(
@@ -1760,8 +1763,9 @@ class JobWakeDispatcher:
         ]
         if self.spec.pat_file:
             argv += ["--pat-file", self.spec.pat_file]
-        if self.spec.key_file:
-            argv += ["--key-file", self.spec.key_file]
+        # config-driven author: `climb --resume` resolves the author key from the
+        # PARKED RUN's backend (persisted on its record) inside climb.main — the
+        # tick does not thread the key, so a fleet flip picks the right one.
         name = f"wake-{record.run_id}"[:60]
         afterany = str(record.stage.get("afterany", ""))
         return self.compute.submit(
