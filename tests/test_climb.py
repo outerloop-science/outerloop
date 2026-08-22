@@ -1346,15 +1346,41 @@ def test_author_harness_is_built_from_the_spec() -> None:
     """The spec is the single source for the session budget: manifest and
     harness cannot disagree (the judges' build_reviewer_harness pattern)."""
     from autoresearch.climb import build_editor_harness
+    from autoresearch.harness import ClaudeCodeHarness
     from autoresearch.roles import author_spec, reviewer_spec
 
     spec = author_spec(max_turns=7, walltime_s=120)
     harness = build_editor_harness("sk-key", spec, container_image="img.sif")
+    assert isinstance(harness, ClaudeCodeHarness)  # default backend; narrows the type
     assert harness.max_turns == 7
     assert harness.timeout_s == 120
     assert harness.container_image == "img.sif"
     with pytest.raises(ValueError, match="editing roles"):
         build_editor_harness("sk-key", reviewer_spec())
+
+
+def test_editor_harness_codex_backend_is_contained() -> None:
+    """The codex author backend is one branch, zero kernel change: contained
+    (apptainer) + --sandbox workspace-write, and container_image is REQUIRED
+    (an author writes+executes, so it must not run uncontained)."""
+    from autoresearch.climb import build_editor_harness
+    from autoresearch.harness import CodexHarness
+    from autoresearch.roles import author_spec
+
+    spec = author_spec(max_turns=9, walltime_s=300)
+    harness = build_editor_harness(
+        "sk-o", spec, backend="codex", model="gpt-5.6-terra", container_image="img.sif"
+    )
+    assert isinstance(harness, CodexHarness)
+    assert harness.sandbox == "workspace-write"
+    assert harness.container_image == "img.sif"
+    assert harness.model == "gpt-5.6-terra"
+    assert harness.timeout_s == 300
+    # an author MUST be contained
+    with pytest.raises(ValueError, match="container_image"):
+        build_editor_harness("sk-o", spec, backend="codex", container_image="")
+    with pytest.raises(ValueError, match="unknown editor backend"):
+        build_editor_harness("sk-o", spec, backend="bogus", container_image="img.sif")
 
 
 def _panel_judge(texts):
