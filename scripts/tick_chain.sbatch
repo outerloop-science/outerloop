@@ -105,16 +105,29 @@ mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
 
-# --- config knobs: source the operator .env (0600) so live config changes need
-# no chain restart. This is where AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the
-# per-backend key files live; the config-driven climb/followup default from them
-# and the tick preflights them. The submitted work jobs inherit this env.
+# --- config knobs: source the operator .env so live config changes need no chain
+# restart. This is where AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the per-backend
+# key files live; the config-driven climb/followup default from them and the tick
+# preflights them. The submitted work jobs inherit this env. NOTE: this is
+# per-tick config only — the chain-scheduling vars (AUTORESEARCH_CADENCE_MIN,
+# HOME/ROOT/ACCOUNT/PARTITION) come from the chain's --export and are read at the
+# TOP of this script, before this point, so setting them here has NO effect.
 ENV_FILE="$HOME/.config/autoresearch/.env"
 if [ -r "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$ENV_FILE" || echo "deploy: .env source failed"
-    set +a
+    # sourcing EXECUTES the file, so refuse one that others could have written:
+    # it must be owned by us and not group/world-writable (else it is arbitrary
+    # code execution as the tick user). Fail closed to "not sourced".
+    perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
+    owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
+    if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "$ENV_FILE" || echo "deploy: .env source failed"
+        set +a
+    else
+        echo "deploy: refusing to source $ENV_FILE (owner=$owner perms=$perms;" \
+             "needs to be yours and not group/world-writable)"
+    fi
 fi
 
 # The codex author binary is a host prerequisite; install it (idempotent, fast
