@@ -13,6 +13,7 @@ import pytest
 from autoresearch.harness import (
     SESSION_ENV_ALLOWLIST,
     ClaudeCodeHarness,
+    CodexHarness,
     FakeHarness,
     SessionResult,
     budget_exhausted,
@@ -579,6 +580,37 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path) -> None:
     assert "sk-c" not in argv  # the key travels via env, never argv
     seen_env = (tmp_path / "seen_env").read_text()
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen_env
+
+
+def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
+    """AUTHOR mode: codex exec runs inside apptainer (--containall/--cleanenv,
+    workspace + run-home bound, --pwd the workspace), codex from the image PATH,
+    author sandbox workspace-write, key via APPTAINERENV_ (never argv)."""
+    # the fake stands in for apptainer; codex login then exec both go through it,
+    # so seen_argv holds the last (exec) call's arguments.
+    binary = fake_claude(tmp_path, json.dumps(CANNED))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(
+        api_key="sk-o",
+        binary="/real/codex",
+        model="gpt-5.6-terra",
+        sandbox="workspace-write",
+        container_image="/img/agent.sif",
+        apptainer_binary=binary,
+    )
+    harness.run("task", ws)
+    argv = (tmp_path / "seen_argv").read_text()
+    assert argv.startswith("exec --containall --cleanenv")
+    assert f"--bind {ws}:{ws}" in argv
+    assert f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
+    assert f"--pwd {ws}" in argv
+    # codex is taken from the image PATH (not the host /real/codex), author sandbox
+    assert "/img/agent.sif codex exec" in argv
+    assert "--sandbox workspace-write" in argv
+    assert "sk-o" not in argv  # key travels via env, never argv
+    seen_env = (tmp_path / "seen_env").read_text()
+    assert "APPTAINERENV_OPENAI_API_KEY=sk-o" in seen_env
 
 
 def test_container_requires_absolute_binary(tmp_path: Path) -> None:
