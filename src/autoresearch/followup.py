@@ -682,8 +682,9 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument(
         "--codex-bin",
-        default=os.environ.get("AUTORESEARCH_CODEX_BIN")
-        or os.path.expanduser("~/.local/bin/codex"),
+        default=os.path.expanduser(
+            os.environ.get("AUTORESEARCH_CODEX_BIN") or "~/.local/bin/codex"
+        ),
     )
     parser.add_argument(
         "--model",

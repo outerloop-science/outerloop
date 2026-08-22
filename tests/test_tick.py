@@ -1813,6 +1813,12 @@ def test_author_config_preflight_blocks_before_side_effects(
     strand-safety the panel preflight has, now for the config-driven author."""
     from autoresearch.tick import FollowupSpec, _author_config_error, service_self_initiated
 
+    # a VALID panel key, so the panel preflight passes and the AUTHOR gate is what
+    # blocks below (else "submits nothing" could be the panel preflight, not us)
+    panel_key = tmp_path / "verifier_key"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+
     def make(**kw: Any) -> FollowupSpec:
         return FollowupSpec(
             target="org/pilot",
@@ -1821,6 +1827,7 @@ def test_author_config_preflight_blocks_before_side_effects(
             run_root=tmp_path,
             image="img.sif",
             home=tmp_path,
+            panel_key_file=str(panel_key),
             **kw,
         )
 

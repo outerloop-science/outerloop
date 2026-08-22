@@ -118,7 +118,12 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
         # at build_editor_harness — catch it on the tick host so a claimed intake
         # issue never strands on it
         return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
-    if backend != "codex":
+    if backend == "claude":
+        # symmetric to the codex check: a claude harness 404s on a non-claude
+        # model (e.g. AUTORESEARCH_AUTHOR_MODEL left on a codex id while the
+        # backend is claude) — catch that misconfig before spend
+        if model and not model.startswith("claude"):
+            return f"author-backend claude needs a claude model (got {model!r})"
         return ""
     if not image:
         return "author-backend codex requires --image (it runs contained)"
@@ -2006,8 +2011,9 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument(
         "--codex-bin",
-        default=os.environ.get("AUTORESEARCH_CODEX_BIN")
-        or os.path.expanduser("~/.local/bin/codex"),
+        default=os.path.expanduser(
+            os.environ.get("AUTORESEARCH_CODEX_BIN") or "~/.local/bin/codex"
+        ),
         help="host codex binary for the codex author; bind-mounted into apptainer "
         "(must be an absolute path).",
     )
