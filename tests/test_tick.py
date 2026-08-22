@@ -1016,7 +1016,6 @@ roadmap: docs/roadmap.md
         image="img.sif",
         home=tmp_path,
         panel_key_file=str(panel_key),
-        key_file="/legacy/harness-key",  # set, to prove the tick DROPS it (config-driven)
     )
     submitted: list[list[str]] = []
 
@@ -1039,9 +1038,8 @@ roadmap: docs/roadmap.md
     assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
     # config-driven author: the tick threads neither the author key nor the
     # backend — climb resolves them from AUTORESEARCH_AUTHOR_* env by backend.
-    # spec.key_file is SET above, so this proves the tick actively drops it.
-    assert "--key-file" not in wrap and "/legacy/harness-key" not in wrap
-    assert "--author-backend" not in wrap
+    # (FollowupSpec has no author key_file field at all — the tick can't thread it.)
+    assert "--key-file" not in wrap and "--author-backend" not in wrap
 
 
 def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
@@ -1096,7 +1094,6 @@ def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/k",
     )
     _, followups = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec, NOW)
     assert followups
@@ -1497,7 +1494,6 @@ roadmap: docs/roadmap.md
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/k",
         steward_key_file="/k",
         panel="",  # the outage latch must be what returns None, not the preflight
     )
@@ -1717,7 +1713,6 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/solver-key",
         steward_key_file="/steward-key",
     )
     _, subs = service_in_review(tmp_path, G(), SlurmCompute(runner=runner), spec, NOW)
@@ -1735,7 +1730,6 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
         run_root=tmp_path,
         image="img.sif",
         home=tmp_path,
-        key_file="/solver-key",
     )
     for run_id in ("tsp-r1", "steward-tsp-r1"):
         rec = load_record(tmp_path, run_id)
@@ -1809,6 +1803,46 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     env["AUTORESEARCH_MAX_JOB_MINUTES"] = "9000"  # above the ceiling
     _github, capped = _followup_spec_from_env(tmp_path)
     assert capped is not None and capped.max_job_minutes == 600
+
+
+def test_author_config_preflight_blocks_before_side_effects(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A codex misconfig (backend=codex, no non-claude model) is caught on the
+    tick host BEFORE self-initiated submits or intake claims — the same
+    strand-safety the panel preflight has, now for the config-driven author."""
+    from autoresearch.tick import FollowupSpec, _author_config_error, service_self_initiated
+
+    def make(**kw: Any) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            **kw,
+        )
+
+    monkeypatch.delenv("AUTORESEARCH_AUTHOR_MODEL", raising=False)
+    # claude (default) is always fine; codex with the claude default model is not
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "claude")
+    assert _author_config_error(make()) == ""
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
+    assert _author_config_error(make()) != ""  # codex + default claude model
+    # a codex fleet with no valid model submits NOTHING (no wasted job)
+    contract = _self_contract()
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(" ".join(argv))
+        return CommandResult(0, "1\n", "")
+
+    out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), make(), contract, NOW)
+    assert out is None and submitted == []
+    # once the model is set, codex is accepted
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_MODEL", "gpt-5.6-terra")
+    assert _author_config_error(make()) == ""
 
 
 def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:

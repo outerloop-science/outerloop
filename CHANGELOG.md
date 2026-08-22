@@ -44,7 +44,9 @@ Versions follow [SemVer](https://semver.org).
   record with no backend is treated as claude, not the fleet's; an explicit
   `--key-file` survives resume). A mid-flight fleet flip therefore never resumes a
   run on the wrong backend, pairs a codex backend with a claude model, or reaches
-  for the wrong key. The codex author is validated on the EFFECTIVE
+  for the wrong key. The tick preflights the fleet author config (a codex backend
+  needs a non-claude model + image) before self-initiated submits or intake
+  claims, so a misconfig never strands a claimed issue. The codex author is validated on the EFFECTIVE
   author per path (fresh args vs the parked run's persisted pair), so the check
   never judges a fleet backend against a run's model.
 

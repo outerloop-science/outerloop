@@ -2114,6 +2114,10 @@ def main() -> int:
             wake_key_file = os.path.expanduser(args.key_file)
         _err = codex_author_config_error(wake_backend, wake_model, args.image)
         if _err:
+            # this wake job HOLDS the run's lease (transferred on dispatch); release
+            # it before exiting so a misconfig doesn't strand the run until the TTL
+            # reap (the resume_run finally below only runs once we reach it)
+            release_lease(args.run_root, args.resume)
             parser.error(f"parked run {args.resume}: {_err}")
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.

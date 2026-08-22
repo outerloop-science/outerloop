@@ -166,7 +166,6 @@ class FollowupSpec:
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
     max_turns: int = DEFAULT_MAX_TURNS  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
-    key_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
@@ -1248,6 +1247,19 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
     return argv
 
 
+def _author_config_error(spec: FollowupSpec) -> str:
+    """Why the config-driven author would die at the climb's startup ("" when it
+    won't), checked on the tick host BEFORE a claim/submit so a codex misconfig
+    (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex with no non-claude model) never
+    strands a claimed intake issue. Reads the fleet author config from env — the
+    same source the climb defaults from — and the image the tick already knows."""
+    from autoresearch.climb import codex_author_config_error
+
+    backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
+    model = os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
+    return codex_author_config_error(backend, model, spec.image)
+
+
 def _panel_preflight_error(spec: FollowupSpec) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
@@ -1417,6 +1429,15 @@ def service_self_initiated(
                 pending_attempt = (str(pending.get("benchmark", "")), submitted_at)
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
+            return None
+        author_error = _author_config_error(spec)
+        if author_error:
+            log.error(
+                "climb on %s not launched: author misconfigured — %s "
+                "(fix AUTORESEARCH_AUTHOR_BACKEND/_MODEL)",
+                benchmark,
+                author_error,
+            )
             return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
@@ -1632,6 +1653,15 @@ def service_intake(
         limits = limits if limits is not None else effective_limits(contract.budgets)
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
+            return None
+        author_error = _author_config_error(spec)
+        if author_error:
+            log.error(
+                "issue #%d not claimed: author misconfigured — %s "
+                "(fix AUTORESEARCH_AUTHOR_BACKEND/_MODEL)",
+                task.number,
+                author_error,
+            )
             return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
@@ -1939,7 +1969,6 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 image=image,
                 home=Path(home),
                 pat_file=pat_file,
-                key_file=os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE", ""),
                 target=os.environ.get(
                     "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
                 ),
