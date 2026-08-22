@@ -15,6 +15,9 @@
 #   AUTORESEARCH_CADENCE_MIN  tick cadence, default 30
 #   AUTORESEARCH_PAT_FILE     bot PAT for the deploy pull (optional; no file
 #                             means run whatever code is already deployed)
+# Further config also loads from ~/.config/autoresearch/.env (0600) each tick, so
+# a live config change (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex + its key file)
+# needs no chain restart — just an edit to that file.
 #
 #SBATCH --job-name=autoresearch-tick
 #SBATCH --time=15
@@ -101,6 +104,44 @@ export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$AUTORESEARCH_ROOT/cache/apptai
 mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
+
+# --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
+# live config changes need no chain restart. These are where
+# AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the per-backend key files live; the
+# config-driven climb/followup default from them and the tick preflights them.
+#
+# We do NOT source .env: sourcing would execute it and let it set ANY variable
+# (the chain's own HOME/ROOT/PATH/cadence, arbitrary code). Instead we extract
+# only an ALLOWLIST of author knobs — so .env is structurally per-tick author
+# config and can never hijack the chain's identity or scheduling. And only from a
+# file that is ours and not group/world-writable (a writable one could still
+# inject a malicious VALUE, e.g. a bad codex binary path).
+ENV_FILE="$HOME/.config/autoresearch/.env"
+if [ -r "$ENV_FILE" ]; then
+    perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
+    owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
+    if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
+        for _k in AUTORESEARCH_AUTHOR_BACKEND AUTORESEARCH_AUTHOR_MODEL \
+                  AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
+                  AUTORESEARCH_HARNESS_KEY_FILE; do
+            _v=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
+            _v=${_v%$'\r'}                         # CRLF-edited file
+            _v=${_v#[\"\']}; _v=${_v%[\"\']}       # optional surrounding quote
+            [ -n "$_v" ] && export "$_k=$_v"
+        done
+    else
+        echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
+             "needs to be yours and not group/world-writable)"
+    fi
+fi
+
+# The codex author binary is a host prerequisite; install it (idempotent, fast
+# path is a local version check) only when the fleet author is codex. Best-effort:
+# a failure here must never break the chain — the climb will report a missing
+# codex clearly if it comes to that.
+if [ "${AUTORESEARCH_AUTHOR_BACKEND:-}" = "codex" ]; then
+    bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
+fi
 
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
 #        further down in the harness) ---
