@@ -1262,7 +1262,7 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from autoresearch.climb import HARNESS_KEY_DEFAULT, PANEL_KEY_DEFAULT
+        from autoresearch.climb import PANEL_KEY_DEFAULT, resolve_author_key_file
         from autoresearch.github import FileTokenProvider
         from autoresearch.panel import parse_lenses
 
@@ -1275,7 +1275,12 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
             # the climb runs from a flight directory, not the tick's cwd — a
             # relative path that resolves here could still miss there
             return f"panel key path {path} is relative; only absolute paths fly"
-        author = Path(spec.key_file or HARNESS_KEY_DEFAULT).expanduser()
+        # the AUTHOR key the climb will actually use resolves per the fleet backend
+        # (claude vs codex keys coexist), config-driven like the climb itself — so
+        # the role-separation check compares the panel key against the RIGHT author
+        # key, and a codex run is never judged by a stray Claude key.
+        fleet_backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
+        author = Path(resolve_author_key_file(fleet_backend))
         if not author.is_absolute():
             # same rule as the panel key: the climb resolves paths from a
             # flight directory, so a relative author path both misconfigures

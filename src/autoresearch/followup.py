@@ -738,7 +738,9 @@ def main() -> int:
     # re-reads the record and handles a truly missing one.
     try:
         _rec: object | None = load_record(args.run_root, args.run_id)
-    except (OSError, ValueError):
+    except Exception:
+        # never crash on an unreadable/odd record — fall back to the claude
+        # author (resume_author); respond_once re-reads and handles a missing one
         _rec = None
     author_backend, author_model = resume_author(_rec, args.model)
     _err = codex_author_config_error(author_backend, author_model, args.image)

@@ -1860,14 +1860,17 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
         make(panel="verify:hermes", panel_key_file=str(good))
     )
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
-    # role separation: the panel key must not BE the author key
-    same = make(panel_key_file=str(good), key_file=str(good))
-    assert "author key" in _panel_preflight_error(same)
-    # ... and a RELATIVE author path fails too: the climb resolves it from a
-    # flight dir, so the comparison above could pass where the runtime collides
-    rel = make(panel_key_file=str(good), key_file="keys/author")
-    assert "author key path" in _panel_preflight_error(rel)
-    assert "relative" in _panel_preflight_error(rel)
+    # role separation: the panel key must not BE the (resolved) author key. The
+    # author key is now config-driven — resolved per the fleet backend from env —
+    # so the collision is set via AUTORESEARCH_HARNESS_KEY_FILE, not spec.key_file.
+    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", str(good))
+    assert "author key" in _panel_preflight_error(make(panel_key_file=str(good)))
+    # ... and a RELATIVE author key path fails too (the climb resolves from a
+    # flight dir): a relative env value survives ~-expansion as non-absolute
+    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "keys/author")
+    rel_err = _panel_preflight_error(make(panel_key_file=str(good)))
+    assert "author key path" in rel_err and "relative" in rel_err
+    monkeypatch.delenv("AUTORESEARCH_HARNESS_KEY_FILE")
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))

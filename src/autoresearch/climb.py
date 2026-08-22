@@ -2098,7 +2098,9 @@ def main() -> int:
         # resolves for THAT backend (keys coexist).
         try:
             _wake_record: object | None = load_record(args.run_root, args.resume)
-        except (OSError, ValueError):
+        except Exception:
+            # a wake must never crash on an unreadable/odd record — fall back to
+            # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
         wake_backend, wake_model = resume_author(_wake_record, args.model)
         _err = codex_author_config_error(wake_backend, wake_model, args.image)
