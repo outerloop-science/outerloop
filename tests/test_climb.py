@@ -1361,8 +1361,8 @@ def test_author_harness_is_built_from_the_spec() -> None:
 
 def test_editor_harness_codex_backend_is_contained() -> None:
     """The codex author backend is one branch, zero kernel change: contained
-    (apptainer) + --sandbox workspace-write, and container_image is REQUIRED
-    (an author writes+executes, so it must not run uncontained)."""
+    (apptainer) with --sandbox danger-full-access (apptainer is the boundary; no
+    bwrap), and container_image is REQUIRED (an author writes+executes)."""
     from autoresearch.climb import build_editor_harness
     from autoresearch.harness import CodexHarness
     from autoresearch.roles import author_spec
@@ -1377,7 +1377,7 @@ def test_editor_harness_codex_backend_is_contained() -> None:
         codex_extra_args=("-c", "use_legacy_landlock=true"),
     )
     assert isinstance(harness, CodexHarness)
-    assert harness.sandbox == "workspace-write"
+    assert harness.sandbox == "danger-full-access"  # apptainer is the boundary; no bwrap
     assert harness.container_image == "img.sif"
     assert harness.model == "gpt-5.6-terra"
     assert harness.timeout_s == 300

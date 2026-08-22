@@ -12,8 +12,9 @@ Versions follow [SemVer](https://semver.org).
   role on the OpenAI Codex CLI instead of Claude, to try a cheaper author (e.g.
   `--model gpt-5.6-terra`). It runs **contained** — `codex login` and `codex
   exec` both inside `apptainer exec --containall --cleanenv` (shared bound
-  `--home` for auth.json) around codex's own `--sandbox workspace-write`, so an
-  author's writes+execution are fenced the same way the Claude author is. The
+  `--home` for auth.json). codex runs `--sandbox danger-full-access` and relies
+  on apptainer as the boundary (codex's own sandbox needs bubblewrap, absent in
+  the image) — the same single-boundary posture as the Claude author. The
   host codex binary is bind-mounted read-only into the container (`--codex-bin`,
   like `--claude-bin`) so the image stays codex-free and codex updates by
   swapping one host binary. `--image` and a non-claude `--model` are required

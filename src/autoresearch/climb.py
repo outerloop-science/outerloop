@@ -990,9 +990,11 @@ def build_editor_harness(
     The seam (`run_role`, `climb_once`) takes any Harness, so a backend is one
     branch here, zero kernel change (the reviewer's rollout):
     - claude: native tool set, apptainer-contained; the trusted default.
-    - codex: apptainer-contained + `--sandbox workspace-write`. An author MUST
-      be contained (it writes+executes), so container_image is REQUIRED — the
-      read-only reviewer could skip it, an author cannot. Codex declares
+    - codex: apptainer-contained; codex runs `--sandbox danger-full-access`
+      (no inner OS sandbox) and relies on apptainer as the boundary, exactly as
+      the claude author does — codex's own sandbox needs bubblewrap, absent in
+      the image. An author MUST be contained (it writes+executes), so
+      container_image is REQUIRED — the read-only reviewer could skip it. Codex declares
       `supports_resume=False` (its headless resume is not bench-validated), so a
       blocking panel finding DRAFTS instead of attempting a resume — both the
       inline and wake revise paths gate on `supports_resume`, so there is no
@@ -1008,11 +1010,15 @@ def build_editor_harness(
             api_key=api_key,
             binary=binary or "codex",
             model=model or "",  # "" -> codex's configured default; pin a verified id
-            sandbox="workspace-write",
+            # apptainer IS the sandbox here (like the claude author, which has no
+            # inner OS sandbox). codex's own `workspace-write` needs bubblewrap,
+            # which isn't in the image and is unreliable nested inside apptainer;
+            # `danger-full-access` skips codex's sandbox and relies on apptainer's
+            # boundary (no host FS beyond the ws+home binds, scrubbed env), which
+            # already confines writes to the workspace.
+            sandbox="danger-full-access",
             timeout_s=spec.budget.walltime_s,
             container_image=container_image,
-            # host-specific codex config (e.g. -c use_legacy_landlock=true),
-            # mirroring the reviewer branch's sandbox_extra
             extra_args=codex_extra_args,
         )
     if backend != "claude":

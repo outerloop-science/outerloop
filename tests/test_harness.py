@@ -603,7 +603,7 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     (--containall/--cleanenv), so neither exposes the author key to the host —
     login is contained too, not only the exec. The host codex binary is
     bind-mounted read-only to /opt/agent/codex (like claude); exec binds the
-    workspace + --pwd, author sandbox workspace-write, key via APPTAINERENV_
+    workspace + --pwd, passes the given --sandbox, key via APPTAINERENV_
     (never argv)."""
     binary, calls, envs = _recording_apptainer(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"
@@ -612,7 +612,7 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
         api_key="sk-o",
         binary="/real/codex",
         model="gpt-5.6-terra",
-        sandbox="workspace-write",
+        sandbox="danger-full-access",
         container_image="/img/agent.sif",
         apptainer_binary=binary,
     )
@@ -632,7 +632,7 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     assert f"--bind {ws}:{ws}" in exec_ and f"--pwd {ws}" in exec_ and home in exec_
     assert codex_bind in exec_
     assert "/img/agent.sif /opt/agent/codex exec" in exec_
-    assert "--sandbox workspace-write" in exec_
+    assert "--sandbox danger-full-access" in exec_
     # the key is never in ANY argv, and rides APPTAINERENV for both calls
     assert "sk-o" not in logged
     assert envs.read_text().count("APPTAINERENV_OPENAI_API_KEY=sk-o") == 2
