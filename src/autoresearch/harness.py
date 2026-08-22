@@ -77,7 +77,13 @@ class Harness(Protocol):
     agent with `resume_session_id` — restoring its full working context — and
     a wake prompt carrying the results. Session state lives in the per-run
     HOME next to the workspace, so wakes survive orchestrator restarts and can
-    land on a different cluster node (shared filesystem)."""
+    land on a different cluster node (shared filesystem).
+
+    A backend MAY declare a class attribute `supports_resume = False` when its
+    headless resume is not trustworthy (codex/hermes). The revise loop checks it
+    (via getattr, default True) and DRAFTS instead of calling run() with a resume
+    id — an untrusted resume that starts fresh or fails would revise blind or
+    lose a verified improvement. Optional, so test doubles need not declare it."""
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -308,6 +314,7 @@ class ClaudeCodeHarness:
     apptainer_binary: str = "apptainer"
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
+    supports_resume = True  # native --resume, bench-validated
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -662,6 +669,10 @@ class CodexHarness:
     # bare class attribute (no annotation) so the dataclass does not treat it
     # as a field, matching ClaudeCodeHarness.CONTAINER_CLAUDE.
     CONTAINER_CODEX = "codex"
+    # codex --json session-id parsing is best-effort until a live authed run
+    # verifies the event fields, so headless resume is NOT trusted yet: the
+    # revise loop drafts instead of resuming (flip to True once validated).
+    supports_resume = False
 
     def _apptainer_argv(
         self, inner: list[str], session_home: Path, workspace: Path | None
@@ -958,6 +969,10 @@ class HermesHarness:
     `run` never raises: every failure comes back as an error SessionResult.
     """
 
+    # no headless resume seam (run() refuses a resume id), so the revise loop
+    # drafts rather than resuming.
+    supports_resume = False
+
     api_key: str  # exported via key_env (never argv)
     repo_dir: Path  # pinned hermes-agent checkout
     # hermes resolves credentials from provider-specific env vars (a registry:
@@ -1104,6 +1119,7 @@ class FakeHarness:
     result: SessionResult
     script: Any = None  # optional callable(brief_text, workspace) for side effects
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
+    supports_resume: bool = True  # a field so tests can exercise the no-resume path
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None

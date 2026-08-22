@@ -867,9 +867,10 @@ def test_shared_match_is_case_folded_like_the_other_path_checks(tmp_path: Path) 
 class _SeqHarness:
     """Queued session results; records resume ids like the real backends."""
 
-    def __init__(self, texts: list[str]) -> None:
+    def __init__(self, texts: list[str], supports_resume: bool = True) -> None:
         self._texts = list(texts)
         self.resumes: list[str | None] = []
+        self.supports_resume = supports_resume
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         self.resumes.append(resume_session_id)
@@ -921,8 +922,8 @@ def _verdict(blocking: bool, round_no: int):
     )
 
 
-def _run_panel_climb(tmp_path, values, verdicts, texts=None, revisions=1):
-    harness = _SeqHarness(texts or ["report r1", "report r2"])
+def _run_panel_climb(tmp_path, values, verdicts, texts=None, revisions=1, supports_resume=True):
+    harness = _SeqHarness(texts or ["report r1", "report r2"], supports_resume=supports_resume)
     evaluator = FakeEvaluator(values=list(values))
     panel = _QueuedPanel(verdicts)
     measurer, snapshot = _wire(evaluator, tmp_path)
@@ -966,6 +967,19 @@ def test_blocking_then_clean_revises_and_remeasures(tmp_path: Path) -> None:
     assert len(evaluator.calls) == 3  # baseline + candidate + revised candidate
     assert result.candidate == 13.0
     assert "round 1" in result.panel_transcript and "round 2" in result.panel_transcript
+
+
+def test_a_backend_that_cannot_resume_drafts_a_blocking_finding(tmp_path: Path) -> None:
+    """codex/hermes declare supports_resume=False: a blocking finding must DRAFT
+    the verified improvement, never attempt an unvalidated resume that would lose
+    it as a session-error (review #119 r2, terra)."""
+    result, harness, evaluator, _panel = _run_panel_climb(
+        tmp_path, [13.9, 13.1], [_verdict(True, 1)], supports_resume=False
+    )
+    assert result.outcome == "improved"  # improvement preserved, not session-error
+    assert result.panel_blocking_open and result.panel_rounds == 1
+    assert harness.resumes == [None]  # NO resume attempted
+    assert len(evaluator.calls) == 2  # baseline + candidate only (no revise re-measure)
 
 
 def test_capped_out_blocking_stays_open_for_a_draft_pr(tmp_path: Path) -> None:

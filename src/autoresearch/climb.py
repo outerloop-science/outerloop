@@ -709,6 +709,8 @@ def resume_run(
                 can_revise = (
                     bool(verdict.blocking)
                     and harness is not None
+                    # codex/hermes declare supports_resume=False -> draft, don't resume
+                    and getattr(harness, "supports_resume", True)
                     and spec is not None
                     and bool(record.resume_session_id)
                     and reads <= panel_revisions
@@ -989,9 +991,11 @@ def build_editor_harness(
     - claude: native tool set, apptainer-contained; the trusted default.
     - codex: apptainer-contained + `--sandbox workspace-write`. An author MUST
       be contained (it writes+executes), so container_image is REQUIRED — the
-      read-only reviewer could skip it, an author cannot. Session RESUME is not
-      bench-validated for codex yet, so the revise loop degrades safely: no
-      session id (or a failed resume) drafts instead of revising."""
+      read-only reviewer could skip it, an author cannot. Codex declares
+      `supports_resume=False` (its headless resume is not bench-validated), so a
+      blocking panel finding DRAFTS instead of attempting a resume — both the
+      inline and wake revise paths gate on `supports_resume`, so there is no
+      blind revise and no improvement lost to a failed resume."""
     spec = spec or author_spec()
     if not spec.execution.can_execute:
         raise ValueError("build_editor_harness is for editing roles")
