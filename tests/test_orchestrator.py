@@ -84,10 +84,14 @@ def _wire(evaluator, workspace, base_ws=None):
     return measurer, snapshot
 
 
-def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, **kw):
-    harness = FakeHarness(result=session or ok_session())
+def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, harness=None, **kw):
+    harness = harness or FakeHarness(result=session or ok_session())
     evaluator = FakeEvaluator(values=list(values))
     measurer, snapshot = _wire(evaluator, tmp_path)
+    # `created` is a brief-only input, so a resume rejects it; a fresh run gets the
+    # usual stamp. (Callers can still override via kw.)
+    if "created" not in kw and not kw.get("resume_session_id"):
+        kw["created"] = "2026-08-06T00:00:00Z"
     result = climb_once(
         config,
         CONTRACT,
@@ -98,7 +102,6 @@ def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, **kw)
         snapshot,
         ruler="mean tour length over the frozen pool",
         changed_paths=lambda: changed if changed is not None else ["src/pilot/solvers/tsp.py"],
-        created="2026-08-06T00:00:00Z",
         **kw,
     )
     return result, harness, evaluator
@@ -122,6 +125,72 @@ def test_improvement_end_to_end(tmp_path: Path) -> None:
         evaluator.calls
         == [("uv run python -m pilot.eval --benchmark tsp --json", "mean_tour_length")] * 2
     )
+
+
+def test_improved_result_exposes_the_candidate_sha(tmp_path: Path) -> None:
+    # Phase 2a primitive: an improved result carries the sealed candidate sha the
+    # caller publishes (and a depth loop selects the best across passes by).
+    result, _, _ = run_climb(tmp_path, [13.876, 13.10])
+    assert result.outcome == "improved" and result.candidate_sha == "cand1"
+
+
+def test_climb_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
+    # Phase 2a primitive: a cumulative depth pass resumes the prior session with
+    # the improve prompt instead of a fresh brief (the depth loop, part 2, drives
+    # this; here we verify the entry point alone).
+    result, harness, _ = run_climb(
+        tmp_path, [13.876, 13.10], resume_session_id="prev-sess", improve_prompt="beat 13.876"
+    )
+    assert result.outcome == "improved"
+    brief_text, _ws, resumed = harness.calls[0]  # the FIRST call is the resume
+    # the exact-equality proves no fresh brief was rendered: a brief would carry
+    # the task/contract preamble, never equal the bare improve prompt.
+    assert brief_text == "beat 13.876" and resumed == "prev-sess"
+
+
+def test_resume_entry_couples_session_and_prompt(tmp_path: Path) -> None:
+    # resume-entry is a coupled pair (both or neither): a lone session id burns a
+    # promptless turn; a lone improve_prompt would be silently discarded by the
+    # fresh-brief branch (a depth pass becoming a fresh attempt). Reject both.
+    with pytest.raises(ValueError, match="together"):
+        run_climb(tmp_path, [13.876, 13.10], resume_session_id="prev-sess")
+    with pytest.raises(ValueError, match="together"):
+        run_climb(tmp_path, [13.876, 13.10], improve_prompt="beat it")
+
+
+def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
+    # resuming on a no-resume backend would end the climb as session-error; the
+    # primitive rejects it up front (the depth loop picks resume-capable backends).
+    # match the message unique to THIS check (not just "resume", which the coupling
+    # error also contains) so a mis-firing precondition can't false-pass.
+    with pytest.raises(ValueError, match="does not support resume"):
+        run_climb(
+            tmp_path,
+            [13.876, 13.10],
+            resume_session_id="prev-sess",
+            improve_prompt="beat it",
+            harness=FakeHarness(result=ok_session(), supports_resume=False),
+        )
+
+
+def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
+    # a resume skips build_brief, so brief-only inputs would be silently dropped;
+    # the primitive rejects them loudly (the same anti-silent-discard stance).
+    for brief_only in (
+        {"task_hypothesis": "try 3-opt"},
+        {"lessons": "prior climbs overfit the pool"},
+        {"recent_reports": ("last week's report",)},
+        {"created": "2026-08-06T00:00:00Z"},
+        {"brief_baseline": 13.876},
+    ):  # every one of the five guarded brief-only inputs, so dropping any regresses
+        with pytest.raises(ValueError, match="no effect on a resume"):
+            run_climb(
+                tmp_path,
+                [13.876, 13.10],
+                resume_session_id="prev-sess",
+                improve_prompt="beat it",
+                **brief_only,
+            )
 
 
 def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:

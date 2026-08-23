@@ -406,6 +406,11 @@ class ClimbResult:
     # the exact paths that were scope-checked and then measured — the caller
     # must refuse to commit anything beyond this set
     measured_paths: tuple[str, ...] = ()
+    # the sealed candidate snapshot this result was measured on (set on
+    # `improved`); a caller can publish THIS tree (the wake path already does,
+    # climb.py) and a depth loop can select the best across passes by it. "" on
+    # non-improved outcomes. (The in-job depth publish is wired in part 2.)
+    candidate_sha: str = ""
     session: SessionResult | None = None
     note: str = ""
     # the seed both measurements ran under (0 = benchmark has no seed_env):
@@ -918,6 +923,7 @@ def resume_climb(
         run_seed=seed,
         suite=outcome.suite,
         suite_seed=outcome.suite_seed,
+        candidate_sha=candidate_sha,
     )
 
 
@@ -988,6 +994,8 @@ def climb_once(
     panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
     panel_revisions: int = 1,
     brief_baseline: float | None = None,
+    resume_session_id: str = "",
+    improve_prompt: str = "",
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1024,6 +1032,38 @@ def climb_once(
     if not spec.scope:
         spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
 
+    # the resume-entry (cumulative depth) is a COUPLED pair: it needs both a
+    # session to resume and an instruction to resume with. Reject either alone
+    # loudly — a lone improve_prompt would be silently discarded by the fresh-brief
+    # branch (a depth pass turning into a fresh attempt behind the caller's back),
+    # a lone session id would burn a promptless turn. And reject a resume on a
+    # no-resume backend rather than let the climb end as `session-error`. The depth
+    # loop (caller) owns WHEN to resume; this validates that choice — it never
+    # silently falls back to a fresh brief.
+    if bool(resume_session_id) != bool(improve_prompt):
+        raise ValueError("resume_session_id and improve_prompt must be given together")
+    if resume_session_id and not getattr(harness, "supports_resume", True):
+        # same optional-attr idiom as the panel policy
+        raise ValueError("resume_session_id given but the harness does not support resume")
+    if resume_session_id and (
+        task_hypothesis or lessons or recent_reports or created or brief_baseline is not None
+    ):
+        # a resume skips build_brief entirely (the session already carries this
+        # context from its first pass), so these brief-only inputs would be
+        # silently dropped — the same silent-discard hazard the coupling check
+        # above prevents. Reject them loudly; a resume pass is lean by design.
+        # This is the EXHAUSTIVE set of OPTIONAL brief-only params: a new one added
+        # to build_brief must be added here too. Required params that also feed only
+        # the brief are NOT guarded because a caller cannot omit them — `ruler`, and
+        # the brief-only fields of the required `config` (e.g. `config.budget`) — so
+        # they are unavoidably passed and simply ignored on a resume. `contract_text`
+        # is NOT brief-only — scope/gate use it either way.
+        raise ValueError(
+            "resume_session_id resumes an existing session (no fresh brief); the brief-only "
+            "inputs (task_hypothesis/lessons/recent_reports/created/brief_baseline) have no "
+            "effect on a resume — omit them"
+        )
+
     # deferred like measure_and_decide's import (measure -> dispatch ->
     # orchestrator for the eval primitives).
     from autoresearch.measure import MeasurementPending
@@ -1047,19 +1087,27 @@ def climb_once(
     # for orienting the brief only ("improve from ~13.8"); it is None on a
     # benchmark's first run, and the gate re-measures either way.
     baseline: float | None = brief_baseline
-    task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
-    brief = build_brief(
-        BriefInputs(
-            task=task,
-            contract_text=contract_text,
-            ruler=ruler,
-            lessons=lessons,
-            recent_reports=recent_reports,
-            budget=config.budget,
-        ),
-        created=created,
-    )
-    role_result = run_role(spec, harness, render(brief), workspace)
+    if resume_session_id:
+        # a cumulative depth pass (research-loop-buildout.md, Phase 2a): resume the
+        # prior session with the improve prompt instead of a fresh brief, so the
+        # author builds on — and sees the measured result of — its own last pass.
+        role_result = run_role(
+            spec, harness, improve_prompt, workspace, resume_session_id=resume_session_id
+        )
+    else:
+        task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
+        brief = build_brief(
+            BriefInputs(
+                task=task,
+                contract_text=contract_text,
+                ruler=ruler,
+                lessons=lessons,
+                recent_reports=recent_reports,
+                budget=config.budget,
+            ),
+            created=created,
+        )
+        role_result = run_role(spec, harness, render(brief), workspace)
     session = role_result.session
     if not role_result.ok:
         # the role-runner's verdict, not just the raw session flag (for a
@@ -1227,6 +1275,7 @@ def climb_once(
         session=session,
         branch=f"{config.branch_prefix}/{config.benchmark}",
         measured_paths=measured,
+        candidate_sha=candidate_sha,
         run_seed=run_seed,
         suite=suite,
         suite_seed=suite_seed_ran,
