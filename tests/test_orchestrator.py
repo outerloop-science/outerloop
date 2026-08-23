@@ -178,9 +178,11 @@ def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
     # the primitive rejects them loudly (the same anti-silent-discard stance).
     for brief_only in (
         {"task_hypothesis": "try 3-opt"},
-        {"brief_baseline": 13.876},
+        {"lessons": "prior climbs overfit the pool"},
+        {"recent_reports": ("last week's report",)},
         {"created": "2026-08-06T00:00:00Z"},
-    ):
+        {"brief_baseline": 13.876},
+    ):  # every one of the five guarded brief-only inputs, so dropping any regresses
         with pytest.raises(ValueError, match="no effect on a resume"):
             run_climb(
                 tmp_path,
