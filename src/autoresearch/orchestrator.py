@@ -407,8 +407,9 @@ class ClimbResult:
     # must refuse to commit anything beyond this set
     measured_paths: tuple[str, ...] = ()
     # the sealed candidate snapshot this result was measured on (set on
-    # `improved`); the caller publishes THIS tree, and a depth loop selects the
-    # best across passes by it. "" on non-improved outcomes.
+    # `improved`); a caller can publish THIS tree (the wake path already does,
+    # climb.py) and a depth loop can select the best across passes by it. "" on
+    # non-improved outcomes. (The in-job depth publish is wired in part 2.)
     candidate_sha: str = ""
     session: SessionResult | None = None
     note: str = ""
@@ -1052,10 +1053,11 @@ def climb_once(
         # silently dropped — the same silent-discard hazard the coupling check
         # above prevents. Reject them loudly; a resume pass is lean by design.
         # This is the EXHAUSTIVE set of OPTIONAL brief-only params: a new one added
-        # to build_brief must be added here too. (`ruler` is also brief-only but is
-        # required, so a caller cannot omit it — it is unavoidably passed and
-        # ignored on a resume. `contract_text` is NOT brief-only — scope/gate use
-        # it either way.)
+        # to build_brief must be added here too. Required params that also feed only
+        # the brief are NOT guarded because a caller cannot omit them — `ruler`, and
+        # the brief-only fields of the required `config` (e.g. `config.budget`) — so
+        # they are unavoidably passed and simply ignored on a resume. `contract_text`
+        # is NOT brief-only — scope/gate use it either way.
         raise ValueError(
             "resume_session_id resumes an existing session (no fresh brief); the brief-only "
             "inputs (task_hypothesis/lessons/recent_reports/created/brief_baseline) have no "
