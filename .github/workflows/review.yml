@@ -9,20 +9,11 @@ permissions:
   contents: read
   pull-requests: write
 jobs:
-  advisory:
+  # Single advisory reviewer: terra (hermes, openai-direct). The claude-opus-5
+  # reviewer was removed (2026-08-23) — it did not converge (unbounded nitpick
+  # rounds, re-raising resolved items); terra catches the real issues and settles.
+  review:
     # a labeled event only runs for the autoresearch:review label (manual re-review)
-    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
-
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
-    with:
-      bot_login: agentic-learning-bot
-    secrets:
-      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
-
-  # Independent second opinion (terra via hermes, openai-direct) — same reusable,
-  # different backend and opinion label. Independence is the point: no coordination with
-  # the primary round.
-  second-opinion:
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
 
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
@@ -33,6 +24,6 @@ jobs:
       # OpenAI account is tax-exempt); model id is provider-native
       hermes_provider: openai
       model: gpt-5.6-terra
-      opinion_label: second opinion — terra
+      opinion_label: terra
     secrets:
       openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
