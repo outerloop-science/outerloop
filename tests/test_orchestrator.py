@@ -969,6 +969,32 @@ def test_blocking_then_clean_revises_and_remeasures(tmp_path: Path) -> None:
     assert "round 1" in result.panel_transcript and "round 2" in result.panel_transcript
 
 
+def test_panel_revise_policy_decisions() -> None:
+    """The composition seam's decision policy (Phase 1): a pure function of the
+    read + the session's resumability. Clean -> halt; blocking+resumable+under-cap
+    -> revise; blocking but unresumable or capped -> halt-and-draft."""
+    from dataclasses import replace as dc_replace
+
+    from autoresearch.orchestrator import _Halt, _panel_revise_policy, _Revise
+
+    resumable = _SeqHarness([], supports_resume=True)
+    noresume = _SeqHarness([], supports_resume=False)
+    sess = ok_session()  # has session_id="s1"
+    no_id = dc_replace(sess, session_id="")
+
+    # clean read -> publish
+    assert _panel_revise_policy(_verdict(False, 1), sess, resumable, 1, 1) == _Halt()
+    # blocking, resumable, under the cap -> revise with the wake text
+    d = _panel_revise_policy(_verdict(True, 1), sess, resumable, 1, 1)
+    assert isinstance(d, _Revise) and d.prompt == _verdict(True, 1).wake_text
+    # blocking but no session id -> draft (can't resume)
+    assert _panel_revise_policy(_verdict(True, 1), no_id, resumable, 1, 1) == _Halt(True)
+    # blocking but a no-resume backend -> draft
+    assert _panel_revise_policy(_verdict(True, 1), sess, noresume, 1, 1) == _Halt(True)
+    # blocking but past the revision cap -> draft
+    assert _panel_revise_policy(_verdict(True, 2), sess, resumable, 2, 1) == _Halt(True)
+
+
 def test_a_backend_that_cannot_resume_drafts_a_blocking_finding(tmp_path: Path) -> None:
     """a no-resume backend (hermes) declares supports_resume=False: a blocking
     finding must DRAFT the verified improvement, never attempt a resume the

@@ -921,6 +921,55 @@ def resume_climb(
     )
 
 
+# --- the composition seam (docs/design/research-loop-buildout.md, Phase 1) ---
+# climb_once's inner loop is run -> measure -> decide. `run` (run_role) and
+# `measure` (measure_and_decide) are already factored; this is the "decide the
+# next invocation" half, pulled out of the loop as a pluggable policy so the loop
+# is agnostic to WHY it iterates. Today one policy exists (panel-driven revision);
+# the depth axis (Phase 2a) will add a results-driven one, and parallel (Phase 3)
+# will fan out the `run` step — each an app on this seam, not a new driver.
+
+
+@dataclass(frozen=True)
+class _Revise:
+    """Iterate: re-run the editing role with this prompt, then re-measure."""
+
+    prompt: str
+
+
+@dataclass(frozen=True)
+class _Halt:
+    """Stop the loop and publish. `blocking_open` -> the caller drafts the PR
+    with the open findings rather than arming it."""
+
+    blocking_open: bool = False
+
+
+def _panel_revise_policy(
+    verdict: PanelVerdict,
+    session: SessionResult,
+    harness: Harness,
+    reads: int,
+    revisions: int,
+) -> _Revise | _Halt:
+    """The one decision policy today: a blocking panel finding wakes the author to
+    revise, bounded by `revisions`, unless the backend cannot resume (then draft).
+    A pure function of the read + the session's resumability — the loop owns the
+    stateful bits (running the panel, executing the wake). A future results-driven
+    (depth) policy will also take the gate result; this one needs only the verdict."""
+    if not verdict.blocking:
+        # clean (or degraded-but-clean) read: nothing to fix -> publish
+        return _Halt()
+    if not session.session_id or not getattr(harness, "supports_resume", True):
+        # cannot resume: a fresh session would revise blind, and a resume the
+        # backend can't do would lose the verified improvement -> draft instead
+        return _Halt(blocking_open=True)
+    if reads > revisions:
+        # capped with findings still open: the human must see the unconverged loop
+        return _Halt(blocking_open=True)
+    return _Revise(verdict.wake_text)
+
+
 def climb_once(
     config: ClimbConfig,
     contract_text: str,
@@ -1136,28 +1185,17 @@ def climb_once(
         # only the FINAL read's degradation matters: an earlier outage that a
         # later clean read supersedes is history, not state
         panel_degraded = verdict.degraded
-        if not verdict.blocking:
-            # a degraded clean read is NOT a certified pass: no wake (nothing
-            # for the author to fix), but the caller drafts the PR
-            break
-        if not session.session_id or not getattr(harness, "supports_resume", True):
-            # cannot resume: no session id, OR a no-resume backend (hermes;
-            # claude and codex both resume). A FRESH session seeing only the
-            # findings would revise blind, and a resume the backend can't do
-            # would lose this verified improvement as a session-error — so fail
-            # closed to the draft path (review question, #95 round 1).
-            panel_blocking_open = True
-            break
-        if panel_reads > panel_revisions:
-            # capped out with blocking findings still open: an unconverged
-            # loop is information the human must see, never suppressed —
-            # the caller posts a DRAFT PR with these findings on top
-            panel_blocking_open = True
+        # decide the next invocation (the composition seam): today the panel-revise
+        # policy. A _Halt ends the loop (drafting if findings stay open); a _Revise
+        # wakes the author with the policy's prompt and re-enters run -> measure.
+        decision = _panel_revise_policy(verdict, session, harness, panel_reads, panel_revisions)
+        if isinstance(decision, _Halt):
+            panel_blocking_open = decision.blocking_open
             break
         wake_result = run_role(
             spec,
             harness,
-            verdict.wake_text,
+            decision.prompt,
             workspace,
             resume_session_id=session.session_id or None,
         )
