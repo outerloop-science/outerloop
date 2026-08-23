@@ -5,7 +5,9 @@ research workflow to *feel* so the concrete builds don't quietly harden into a
 restrictive one-shot pipeline. It gates nothing; it exists to keep us honest.
 Pairs with `dispatcher.md` (the fire-and-wake substrate), `agent-substrate.md`
 (experiment submission as an `act` syscall), and `scaling.md` (the outer loop,
-seats, coordinated runs).
+seats, coordinated runs). `research-loop-buildout.md` is the concrete, phased
+build-out of this picture (substrate → depth → parallel, with the integrity gate
+threaded through).
 
 ## The picture in one paragraph
 
