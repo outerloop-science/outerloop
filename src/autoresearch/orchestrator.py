@@ -955,8 +955,8 @@ def _panel_revise_policy(
     """The one decision policy today: a blocking panel finding wakes the author to
     revise, bounded by `revisions`, unless the backend cannot resume (then draft).
     A pure function of the read + the session's resumability — the loop owns the
-    stateful bits (running the panel, executing the wake). `credited` (the gate
-    result) is available to future results-driven policies; this one ignores it."""
+    stateful bits (running the panel, executing the wake). A future results-driven
+    (depth) policy will also take the gate result; this one needs only the verdict."""
     if not verdict.blocking:
         # clean (or degraded-but-clean) read: nothing to fix -> publish
         return _Halt()
