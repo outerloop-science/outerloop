@@ -173,14 +173,15 @@ def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
 def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
     # a resume skips build_brief, so brief-only inputs would be silently dropped;
     # the primitive rejects them loudly (the same anti-silent-discard stance).
-    with pytest.raises(ValueError, match="no effect on a resume"):
-        run_climb(
-            tmp_path,
-            [13.876, 13.10],
-            resume_session_id="prev-sess",
-            improve_prompt="beat it",
-            task_hypothesis="try 3-opt",
-        )
+    for brief_only in ({"task_hypothesis": "try 3-opt"}, {"brief_baseline": 13.876}):
+        with pytest.raises(ValueError, match="no effect on a resume"):
+            run_climb(
+                tmp_path,
+                [13.876, 13.10],
+                resume_session_id="prev-sess",
+                improve_prompt="beat it",
+                **brief_only,
+            )
 
 
 def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:
