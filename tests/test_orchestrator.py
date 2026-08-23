@@ -88,6 +88,10 @@ def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, harne
     harness = harness or FakeHarness(result=session or ok_session())
     evaluator = FakeEvaluator(values=list(values))
     measurer, snapshot = _wire(evaluator, tmp_path)
+    # `created` is a brief-only input, so a resume rejects it; a fresh run gets the
+    # usual stamp. (Callers can still override via kw.)
+    if "created" not in kw and not kw.get("resume_session_id"):
+        kw["created"] = "2026-08-06T00:00:00Z"
     result = climb_once(
         config,
         CONTRACT,
@@ -98,7 +102,6 @@ def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, harne
         snapshot,
         ruler="mean tour length over the frozen pool",
         changed_paths=lambda: changed if changed is not None else ["src/pilot/solvers/tsp.py"],
-        created="2026-08-06T00:00:00Z",
         **kw,
     )
     return result, harness, evaluator
@@ -173,7 +176,11 @@ def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
 def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
     # a resume skips build_brief, so brief-only inputs would be silently dropped;
     # the primitive rejects them loudly (the same anti-silent-discard stance).
-    for brief_only in ({"task_hypothesis": "try 3-opt"}, {"brief_baseline": 13.876}):
+    for brief_only in (
+        {"task_hypothesis": "try 3-opt"},
+        {"brief_baseline": 13.876},
+        {"created": "2026-08-06T00:00:00Z"},
+    ):
         with pytest.raises(ValueError, match="no effect on a resume"):
             run_climb(
                 tmp_path,

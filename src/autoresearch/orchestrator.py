@@ -1045,17 +1045,21 @@ def climb_once(
         # same optional-attr idiom as the panel policy
         raise ValueError("resume_session_id given but the harness does not support resume")
     if resume_session_id and (
-        task_hypothesis or lessons or recent_reports or brief_baseline is not None
+        task_hypothesis or lessons or recent_reports or created or brief_baseline is not None
     ):
         # a resume skips build_brief entirely (the session already carries this
         # context from its first pass), so these brief-only inputs would be
         # silently dropped — the same silent-discard hazard the coupling check
         # above prevents. Reject them loudly; a resume pass is lean by design.
-        # (contract_text is NOT brief-only — the scope/gate use it either way.)
+        # This is the EXHAUSTIVE set of OPTIONAL brief-only params: a new one added
+        # to build_brief must be added here too. (`ruler` is also brief-only but is
+        # required, so a caller cannot omit it — it is unavoidably passed and
+        # ignored on a resume. `contract_text` is NOT brief-only — scope/gate use
+        # it either way.)
         raise ValueError(
             "resume_session_id resumes an existing session (no fresh brief); the brief-only "
-            "inputs (task_hypothesis/lessons/recent_reports/brief_baseline) have no effect "
-            "on a resume — omit them"
+            "inputs (task_hypothesis/lessons/recent_reports/created/brief_baseline) have no "
+            "effect on a resume — omit them"
         )
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
