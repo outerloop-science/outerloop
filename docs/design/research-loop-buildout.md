@@ -26,10 +26,14 @@ the two axes, with the gate as a cross-cutting governor.
 
 ## The shape: one substrate, two axes, one governor
 
-- **Substrate — the role-runner.** Every role (climb author, steward, follow-up,
-  the judges) invoked through one path: *run role X against workspace W, here are
-  results R, produce the next action.* The judges already moved
-  (`judge-placement.md`); the authoring roles have not.
+- **Substrate — the composition seam above the role-runner.** Running *one* role
+  session is already consolidated: climb/steward/follow-up/judges all go through
+  `run_role` + a RoleSpec (`consolidation.md` — the five-drivers collapse is
+  done). What is *not* uniform is composing MANY invocations: *run role X, await
+  its result (inline or dispatched), decide the next invocation.* Today the climb
+  loop does that ad-hoc for its own case; depth and parallel both need it as a
+  shared primitive. That seam — not re-consolidating `run_role` — is the substrate
+  this plan builds.
 - **Depth (the `k` axis) — serial.** After the agent sees its own measured
   result, it may iterate — revise, retry a different tack, refine — up to a
   contract-set `k`. `k = 1` is today; the panel-on-wake slices
@@ -55,27 +59,32 @@ the dispatcher run for real.** Lighting it up — a benchmark whose eval parks,
 observed through a full park → wake → PR cycle — is the entry gate to Phases 2b
 and 3. Inline (single-session) depth (Phase 2a) does not need it.
 
-## Phase 1 — consolidate the role-runner (thin, feature-driven)
+## Phase 1 — the invocation-composition seam (thin, feature-driven)
 
-**Goal.** climb / steward / follow-up all invoke `run_role` the way the judges
-do, so a role invocation is *one* uniform thing. Executes the staged plan in
-`consolidation.md` for the authoring roles.
+**Not a re-consolidation.** Running one role session is already unified through
+`run_role` + RoleSpec (`consolidation.md`); do NOT redo that. Phase 1 is the layer
+*above* it: a small, shared way to express **run role → await result (inline or
+dispatched) → decide the next invocation**, which the climb loop currently does
+ad-hoc and which both axes need.
 
-**Why first.** Depth and parallel both need "run this role, await, decide next."
-Built separately, each grows its own per-lane orchestration — the mistake the
-config-driven author work (#125, replacing the abandoned #123) already taught us
-at small scale. One runner is the seam that lets a new axis be an *app* on the
-kernel, not a new driver.
+**Goal.** Factor the climb's implicit run→measure→decide loop into a seam that
+takes (a) how to run the next role invocation and (b) how to decide from a result
+whether/what to invoke next — so depth (loop) and parallel (fan-out) are two
+callers of the same seam, not two new drivers.
 
-**Thin, not speculative.** Do not refactor all five drivers up front for its own
-sake. Consolidate exactly what the first depth slice needs, and let Phase 2 pull
-the rest. The test of "thin enough" is that Phase 1 lands with no user-visible
-behavior change — same climbs, same PRs, fewer drivers behind them.
+**Why first.** Built separately, depth and parallel each grow their own
+orchestration — the mistake the config-driven author work (#125, replacing the
+abandoned #123) taught us. One composition seam lets a new axis be an *app* on the
+kernel.
 
-**Acceptance.** climb / steward / follow-up construct and run their session
-through the shared runner; the wake path expresses "resume role X with results
-R" without lane-specific code; the existing suite stays green; no new endings or
-gate behavior.
+**Thin, not speculative.** Extract exactly what the first depth slice (2a) needs
+from the existing loop; let Phase 3 pull the fan-out shape. The test of "thin
+enough" is that Phase 1 lands with **no user-visible behavior change** — same
+climbs, same PRs, the loop just expressed through the seam.
+
+**Acceptance.** The inline climb runs through the composition seam; a `k = 1`
+result-driven decision is expressed as data (not lane-specific control flow); the
+existing suite stays green; no new endings or gate behavior.
 
 ## Phase 2 — the depth axis (`k` as a dial)
 
@@ -153,14 +162,14 @@ find a crack; parallel dispatch gives it more darts at one. So the gate scales
 
 ## Sequencing summary
 
-1. **Phase 1 — role-runner consolidation** (thin, feature-driven). No dispatcher
-   dependency. Enables everything after.
+1. **Phase 1 — the invocation-composition seam** (thin; `run_role` itself is
+   already consolidated). No dispatcher dependency. Enables everything after.
 2. **Light up the dispatcher** on a real long-eval benchmark — the entry gate to
    2b and 3.
 3. **Phase 2a — inline depth**, then **2b — cross-session depth** (after the
    dispatcher is live), with the **suite gate + metric taxonomy** landing
    alongside.
-4. **Phase 3 — parallel dispatch**, on the consolidated runner + live dispatcher,
+4. **Phase 3 — parallel dispatch**, on the composition seam + live dispatcher,
    with the gate as the winner-selector.
 
 Depth before parallel deliberately: depth extends something already built
