@@ -1031,19 +1031,19 @@ def climb_once(
     if not spec.scope:
         spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
 
-    if resume_session_id:
-        # the resume-entry (cumulative depth) has a hard contract: an instruction
-        # to resume WITH, and a backend that can resume. Fail loudly here rather
-        # than burn a promptless turn or end the climb as `session-error` on a
-        # no-resume backend. The depth loop (caller) owns WHEN to resume; this
-        # validates that choice — it does not silently fall back to a fresh brief,
-        # which would turn a depth pass into a fresh attempt behind the caller's back.
-        if not improve_prompt:
-            raise ValueError("resume_session_id requires a non-empty improve_prompt")
-        if not getattr(
-            harness, "supports_resume", True
-        ):  # same optional-attr idiom as the panel policy
-            raise ValueError("resume_session_id given but the harness does not support resume")
+    # the resume-entry (cumulative depth) is a COUPLED pair: it needs both a
+    # session to resume and an instruction to resume with. Reject either alone
+    # loudly — a lone improve_prompt would be silently discarded by the fresh-brief
+    # branch (a depth pass turning into a fresh attempt behind the caller's back),
+    # a lone session id would burn a promptless turn. And reject a resume on a
+    # no-resume backend rather than let the climb end as `session-error`. The depth
+    # loop (caller) owns WHEN to resume; this validates that choice — it never
+    # silently falls back to a fresh brief.
+    if bool(resume_session_id) != bool(improve_prompt):
+        raise ValueError("resume_session_id and improve_prompt must be given together")
+    if resume_session_id and not getattr(harness, "supports_resume", True):
+        # same optional-attr idiom as the panel policy
+        raise ValueError("resume_session_id given but the harness does not support resume")
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
     # orchestrator for the eval primitives).

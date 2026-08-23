@@ -145,11 +145,14 @@ def test_climb_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
     assert brief_text == "beat 13.876" and resumed == "prev-sess"
 
 
-def test_resume_entry_requires_an_improve_prompt(tmp_path: Path) -> None:
-    # the resume-entry contract: a session id with no instruction to resume with
-    # is a promptless turn -> reject loudly, never burn the turn.
-    with pytest.raises(ValueError, match="improve_prompt"):
+def test_resume_entry_couples_session_and_prompt(tmp_path: Path) -> None:
+    # resume-entry is a coupled pair (both or neither): a lone session id burns a
+    # promptless turn; a lone improve_prompt would be silently discarded by the
+    # fresh-brief branch (a depth pass becoming a fresh attempt). Reject both.
+    with pytest.raises(ValueError, match="together"):
         run_climb(tmp_path, [13.876, 13.10], resume_session_id="prev-sess")
+    with pytest.raises(ValueError, match="together"):
+        run_climb(tmp_path, [13.876, 13.10], improve_prompt="beat it")
 
 
 def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
