@@ -92,6 +92,14 @@ class Benchmark(_StrictModel):
     # the first eval once measured durations exist. None = in-job (today's
     # behavior).
     eval_minutes: int | None = Field(default=None, ge=1)
+    # Depth dial (docs/design/research-loop-buildout.md, Phase 2a): how many times
+    # the author may iterate on its OWN measured result within one climb, keeping
+    # the best gated candidate across iterations. 1 = today's single pass (no
+    # depth). A per-benchmark dial so "does depth pay here?" is answerable per
+    # benchmark; the fixed-k trigger (always run k) is what reads this, with
+    # stall/agent-judged triggers as future configs. The depth LOOP that consumes
+    # it lands in part 2; this is the declared knob (a contract can set it now).
+    depth_k: int = Field(default=1, ge=1, le=8)
 
     @field_validator("seed_env")
     @classmethod
