@@ -158,13 +158,28 @@ def test_resume_entry_couples_session_and_prompt(tmp_path: Path) -> None:
 def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
     # resuming on a no-resume backend would end the climb as session-error; the
     # primitive rejects it up front (the depth loop picks resume-capable backends).
-    with pytest.raises(ValueError, match="resume"):
+    # match the message unique to THIS check (not just "resume", which the coupling
+    # error also contains) so a mis-firing precondition can't false-pass.
+    with pytest.raises(ValueError, match="does not support resume"):
         run_climb(
             tmp_path,
             [13.876, 13.10],
             resume_session_id="prev-sess",
             improve_prompt="beat it",
             harness=FakeHarness(result=ok_session(), supports_resume=False),
+        )
+
+
+def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
+    # a resume skips build_brief, so brief-only inputs would be silently dropped;
+    # the primitive rejects them loudly (the same anti-silent-discard stance).
+    with pytest.raises(ValueError, match="no effect on a resume"):
+        run_climb(
+            tmp_path,
+            [13.876, 13.10],
+            resume_session_id="prev-sess",
+            improve_prompt="beat it",
+            task_hypothesis="try 3-opt",
         )
 
 
