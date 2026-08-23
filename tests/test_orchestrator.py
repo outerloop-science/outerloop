@@ -124,6 +124,27 @@ def test_improvement_end_to_end(tmp_path: Path) -> None:
     )
 
 
+def test_improved_result_exposes_the_candidate_sha(tmp_path: Path) -> None:
+    # Phase 2a primitive: an improved result carries the sealed candidate sha the
+    # caller publishes (and a depth loop selects the best across passes by).
+    result, _, _ = run_climb(tmp_path, [13.876, 13.10])
+    assert result.outcome == "improved" and result.candidate_sha == "cand1"
+
+
+def test_climb_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
+    # Phase 2a primitive: a cumulative depth pass resumes the prior session with
+    # the improve prompt instead of a fresh brief (the depth loop, part 2, drives
+    # this; here we verify the entry point alone).
+    result, harness, _ = run_climb(
+        tmp_path, [13.876, 13.10], resume_session_id="prev-sess", improve_prompt="beat 13.876"
+    )
+    assert result.outcome == "improved"
+    brief_text, _ws, resumed = harness.calls[0]  # the FIRST call is the resume
+    assert brief_text == "beat 13.876" and resumed == "prev-sess"
+    # no fresh brief was rendered (no task/contract preamble)
+    assert "mean_tour_length" not in brief_text
+
+
 def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:
     # a benchmark's first climb has no ledger entry -> the brief drops the
     # reference number (never the gate, which still measures both sides).

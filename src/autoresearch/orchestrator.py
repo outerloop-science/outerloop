@@ -406,6 +406,10 @@ class ClimbResult:
     # the exact paths that were scope-checked and then measured — the caller
     # must refuse to commit anything beyond this set
     measured_paths: tuple[str, ...] = ()
+    # the sealed candidate snapshot this result was measured on (set on
+    # `improved`); the caller publishes THIS tree, and a depth loop selects the
+    # best across passes by it. "" on non-improved outcomes.
+    candidate_sha: str = ""
     session: SessionResult | None = None
     note: str = ""
     # the seed both measurements ran under (0 = benchmark has no seed_env):
@@ -988,6 +992,8 @@ def climb_once(
     panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
     panel_revisions: int = 1,
     brief_baseline: float | None = None,
+    resume_session_id: str = "",
+    improve_prompt: str = "",
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1047,19 +1053,27 @@ def climb_once(
     # for orienting the brief only ("improve from ~13.8"); it is None on a
     # benchmark's first run, and the gate re-measures either way.
     baseline: float | None = brief_baseline
-    task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
-    brief = build_brief(
-        BriefInputs(
-            task=task,
-            contract_text=contract_text,
-            ruler=ruler,
-            lessons=lessons,
-            recent_reports=recent_reports,
-            budget=config.budget,
-        ),
-        created=created,
-    )
-    role_result = run_role(spec, harness, render(brief), workspace)
+    if resume_session_id:
+        # a cumulative depth pass (research-loop-buildout.md, Phase 2a): resume the
+        # prior session with the improve prompt instead of a fresh brief, so the
+        # author builds on — and sees the measured result of — its own last pass.
+        role_result = run_role(
+            spec, harness, improve_prompt, workspace, resume_session_id=resume_session_id
+        )
+    else:
+        task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
+        brief = build_brief(
+            BriefInputs(
+                task=task,
+                contract_text=contract_text,
+                ruler=ruler,
+                lessons=lessons,
+                recent_reports=recent_reports,
+                budget=config.budget,
+            ),
+            created=created,
+        )
+        role_result = run_role(spec, harness, render(brief), workspace)
     session = role_result.session
     if not role_result.ok:
         # the role-runner's verdict, not just the raw session flag (for a
@@ -1227,6 +1241,7 @@ def climb_once(
         session=session,
         branch=f"{config.branch_prefix}/{config.benchmark}",
         measured_paths=measured,
+        candidate_sha=candidate_sha,
         run_seed=run_seed,
         suite=suite,
         suite_seed=suite_seed_ran,
