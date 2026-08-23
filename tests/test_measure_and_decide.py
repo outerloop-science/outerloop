@@ -301,6 +301,9 @@ def test_resume_improved_carries_the_saved_report():
     assert out.session.session_id == "s-woke"
     assert out.session.num_turns == 0  # a wake ran no turns
     assert out.measured_paths == ("src/model.py",) and out.run_seed == 7
+    # the wake path carries the sealed candidate sha too (so best-of-k can select
+    # and publish it), matching the in-job improved return
+    assert out.candidate_sha == CAND
 
 
 def test_resume_no_improvement_is_terminal_with_the_report():
