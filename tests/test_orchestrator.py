@@ -84,8 +84,8 @@ def _wire(evaluator, workspace, base_ws=None):
     return measurer, snapshot
 
 
-def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, **kw):
-    harness = FakeHarness(result=session or ok_session())
+def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, harness=None, **kw):
+    harness = harness or FakeHarness(result=session or ok_session())
     evaluator = FakeEvaluator(values=list(values))
     measurer, snapshot = _wire(evaluator, tmp_path)
     result = climb_once(
@@ -140,9 +140,29 @@ def test_climb_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
     )
     assert result.outcome == "improved"
     brief_text, _ws, resumed = harness.calls[0]  # the FIRST call is the resume
+    # the exact-equality proves no fresh brief was rendered: a brief would carry
+    # the task/contract preamble, never equal the bare improve prompt.
     assert brief_text == "beat 13.876" and resumed == "prev-sess"
-    # no fresh brief was rendered (no task/contract preamble)
-    assert "mean_tour_length" not in brief_text
+
+
+def test_resume_entry_requires_an_improve_prompt(tmp_path: Path) -> None:
+    # the resume-entry contract: a session id with no instruction to resume with
+    # is a promptless turn -> reject loudly, never burn the turn.
+    with pytest.raises(ValueError, match="improve_prompt"):
+        run_climb(tmp_path, [13.876, 13.10], resume_session_id="prev-sess")
+
+
+def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
+    # resuming on a no-resume backend would end the climb as session-error; the
+    # primitive rejects it up front (the depth loop picks resume-capable backends).
+    with pytest.raises(ValueError, match="resume"):
+        run_climb(
+            tmp_path,
+            [13.876, 13.10],
+            resume_session_id="prev-sess",
+            improve_prompt="beat it",
+            harness=FakeHarness(result=ok_session(), supports_resume=False),
+        )
 
 
 def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:

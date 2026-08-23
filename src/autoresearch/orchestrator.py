@@ -922,6 +922,7 @@ def resume_climb(
         run_seed=seed,
         suite=outcome.suite,
         suite_seed=outcome.suite_seed,
+        candidate_sha=candidate_sha,
     )
 
 
@@ -1029,6 +1030,20 @@ def climb_once(
         raise ValueError("climb_once runs an editing role; the spec must allow execution")
     if not spec.scope:
         spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
+
+    if resume_session_id:
+        # the resume-entry (cumulative depth) has a hard contract: an instruction
+        # to resume WITH, and a backend that can resume. Fail loudly here rather
+        # than burn a promptless turn or end the climb as `session-error` on a
+        # no-resume backend. The depth loop (caller) owns WHEN to resume; this
+        # validates that choice — it does not silently fall back to a fresh brief,
+        # which would turn a depth pass into a fresh attempt behind the caller's back.
+        if not improve_prompt:
+            raise ValueError("resume_session_id requires a non-empty improve_prompt")
+        if not getattr(
+            harness, "supports_resume", True
+        ):  # same optional-attr idiom as the panel policy
+            raise ValueError("resume_session_id given but the harness does not support resume")
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
     # orchestrator for the eval primitives).
