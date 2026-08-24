@@ -19,7 +19,8 @@ import logging
 import os
 import signal
 import subprocess
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -263,6 +264,67 @@ def _collect_hermes_sample(session_home: Path) -> Any:
         with contextlib.suppress(OSError):
             stale.unlink()  # trajectories can embed the brief; don't accumulate
     return sample
+
+
+# --- hermes headless resume -------------------------------------------------
+# A headless CLI "resumes" by restarting with its prior context restored (that
+# is all claude --resume and codex exec resume do). Hermes has no --resume flag,
+# but it reads its brief from a file, so resume = the next brief carries the
+# prior conversation. The harness keeps its OWN linear transcript (the message
+# it sent + the assistant reply it parsed each turn), rehydrates it into the
+# resume brief, and persists it in the per-run home beside the other resume
+# state — so a resumed hermes session physically cannot start context-blind.
+
+_RESUME_STEM = "resume-"
+
+
+def _resume_transcript_path(session_home: Path, session_id: str) -> Path:
+    # session_id is harness-minted (uuid hex) — no path traversal — but keep it
+    # to the basename defensively.
+    return session_home / f"{_RESUME_STEM}{os.path.basename(session_id)}.json"
+
+
+def _load_resume_transcript(session_home: Path, session_id: str) -> list[dict[str, str]] | None:
+    """Load a saved transcript for `session_id`. None = not found (the caller
+    must NOT silently start fresh — a resume with no restored context is an
+    error, exactly the failure the old no-resume refusal guarded against). The
+    per-run home is session-writable, so read without following a symlink."""
+    text = _read_no_follow(_resume_transcript_path(session_home, session_id))
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    turns = data.get("turns") if isinstance(data, dict) else None
+    if not isinstance(turns, list):
+        return None
+    return [
+        {"role": str(t.get("role", "")), "text": str(t.get("text", ""))}
+        for t in turns
+        if isinstance(t, dict)
+    ]
+
+
+def _save_resume_transcript(
+    session_home: Path, session_id: str, turns: list[dict[str, str]]
+) -> None:
+    """Persist the transcript (0600, symlink-refusing) so the next resume can
+    rehydrate it. Best-effort: a failure just means the next resume errors
+    (resume-unavailable) rather than starting blind."""
+    _write_private_fixed(
+        _resume_transcript_path(session_home, session_id), json.dumps({"turns": turns})
+    )
+
+
+def _render_resume_transcript(turns: list[dict[str, str]]) -> str:
+    """Render prior turns as a readable prefix for the resume brief."""
+    blocks = ["=== Earlier in this session (your prior context) ==="]
+    for t in turns:
+        who = "You were told" if t["role"] == "user" else "You replied"
+        blocks.append(f"[{who}]\n{t['text']}")
+    blocks.append("=== End of prior context; continue with the new instructions below ===")
+    return "\n\n".join(blocks)
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -974,7 +1036,7 @@ def _parse_hermes_result(
         error_detail=stdout.strip()[-500:] if is_error else "",
         cost_usd=0.0,
         num_turns=num_turns,
-        session_id="",  # no headless resume seam yet: repair/wake unavailable
+        session_id="",  # HermesHarness.run injects the resume id (saved-transcript seam)
         final_text=final_text,
         transcript_path=transcript_path,
     )
@@ -1001,15 +1063,18 @@ class HermesHarness:
     read/write toolset split or an OS jail that also hides /proc gives it a real
     boundary. Claude stays the trusted default (native read-only tool set).
     Instruction-file surface: hermes auto-loads AGENTS.md from the workspace,
-    which sanitize_checkout already neutralizes in untrusted trees. No session
-    resume in the headless seam, so run_role's repair pass is unavailable.
+    which sanitize_checkout already neutralizes in untrusted trees.
+
+    RESUME: hermes has no `--resume` flag, but it reads its brief from a file, so
+    a resume rehydrates the prior conversation into the next brief (the harness
+    keeps its own transcript in the per-run home). A resumed session therefore
+    carries its full prior context — it cannot silently start blind — so the
+    revise/wake loops resume hermes like the other backends.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
 
-    # no headless resume seam (run() refuses a resume id), so the revise loop
-    # drafts rather than resuming.
-    supports_resume = False
+    supports_resume = True  # via saved-transcript rehydration (no native flag)
 
     api_key: str  # exported via key_env (never argv)
     repo_dir: Path  # pinned hermes-agent checkout
@@ -1051,12 +1116,6 @@ class HermesHarness:
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
-        if resume_session_id:
-            # No headless resume seam: refusing beats silently starting fresh
-            # with none of the prior session's context.
-            return _error_result(
-                "resume-unsupported", detail="hermes headless runs cannot resume a session"
-            )
         transcript_stem = f"{workspace.name}-hermes"
         session_home = workspace.parent / f"{workspace.name}-home"
         try:
@@ -1065,6 +1124,23 @@ class HermesHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
+        # Resume: rehydrate the prior conversation into this brief. A missing
+        # transcript is a hard error, NOT a blind fresh start (the deployment
+        # must preserve the per-run home for resume, same as claude's $HOME /
+        # codex's --home). A fresh run mints a session id to persist under.
+        session_id = resume_session_id or uuid.uuid4().hex[:16]
+        prior_turns: list[dict[str, str]] = []
+        brief_to_send = brief_text
+        if resume_session_id:
+            loaded = _load_resume_transcript(session_home, resume_session_id)
+            if loaded is None:
+                log.warning("hermes resume %s: no saved transcript in %s", session_id, session_home)
+                return _error_result(
+                    "resume-unavailable",
+                    detail="no saved transcript to restore this session's context",
+                )
+            prior_turns = loaded
+            brief_to_send = f"{_render_resume_transcript(prior_turns)}\n\n{brief_text}"
         if self.provider:
             # minimal headless config: provider + default model, nothing else
             hermes_dir = session_home / ".hermes"
@@ -1082,8 +1158,9 @@ class HermesHarness:
                 log.warning("could not seed hermes config: %s", exc)
                 return _error_result("workspace-error", detail="could not seed hermes config")
         # The brief travels via a 0600 file (argv is world-readable in /proc);
-        # the --query is only a fixed pointer to it.
-        brief_path = Path(_write_private(session_home, "brief", ".md", brief_text))
+        # the --query is only a fixed pointer to it. On resume this file carries
+        # the rehydrated prior context ahead of the new instructions.
+        brief_path = Path(_write_private(session_home, "brief", ".md", brief_to_send))
         if not brief_path.name:
             return _error_result("workspace-error", detail="could not store the brief")
         query = (
@@ -1147,7 +1224,15 @@ class HermesHarness:
         sample = _collect_hermes_sample(session_home)
         with contextlib.suppress(OSError):
             brief_path.unlink()  # the brief holds PR content; don't leave it at rest
-        return _parse_hermes_result(stdout, sample, process.returncode, transcript_path)
+        result = _parse_hermes_result(stdout, sample, process.returncode, transcript_path)
+        # Record this turn so a later resume can restore the context, and hand
+        # back the session id it lives under. Only on a real reply — a failed
+        # turn leaves the prior transcript intact (nothing useful to append).
+        if not result.is_error:
+            prior_turns.append({"role": "user", "text": brief_text})
+            prior_turns.append({"role": "assistant", "text": result.final_text})
+            _save_resume_transcript(session_home, session_id, prior_turns)
+        return replace(result, session_id=session_id)
 
 
 @dataclass

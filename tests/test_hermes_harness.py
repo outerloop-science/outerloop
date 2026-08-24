@@ -98,11 +98,71 @@ def test_nonzero_returncode_is_error_with_detail() -> None:
     assert "missing key" in result.error_detail
 
 
-def test_resume_is_refused_not_silently_fresh(tmp_path: Path) -> None:
-    harness = HermesHarness(api_key="k", repo_dir=tmp_path)
-    result = harness.run("brief", tmp_path / "ws", resume_session_id="old-session")
+def _make_hermes_popen(home: Path, reply: str, seen: dict[str, Any]) -> Any:
+    """A FakePopen that records the brief file it was handed (captured before
+    cleanup) and drops a one-turn trajectory with `reply` as the assistant."""
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **_: Any) -> None:
+            home.mkdir(parents=True, exist_ok=True)
+            briefs = list(home.glob("brief*.md"))
+            seen["brief_text"] = briefs[0].read_text() if briefs else ""
+            (home / "sample_x.json").write_text(
+                json.dumps({"conversations": [{"from": "gpt", "value": reply}]})
+            )
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return "", ""
+
+    return FakePopen
+
+
+def test_hermes_supports_resume() -> None:
+    assert HermesHarness(api_key="k", repo_dir=Path(".")).supports_resume is True
+
+
+def test_resume_rehydrates_prior_context(monkeypatch: Any, tmp_path: Path) -> None:
+    # resume with no --resume flag: hermes reads its brief from a file, so the
+    # prior conversation is rehydrated INTO the resume brief — the session can
+    # never start context-blind (the reason the old refusal existed).
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    home = workspace.parent / f"{workspace.name}-home"
+    seen: dict[str, Any] = {}
+    harness = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes")
+
+    monkeypatch.setattr(
+        harness_mod.subprocess, "Popen", _make_hermes_popen(home, "FIRST_REPLY_z", seen)
+    )
+    first = harness.run("FIRST_BRIEF_q investigate", workspace)
+    assert not first.is_error
+    assert first.session_id  # a session id is minted for a fresh run
+    assert list(home.glob("resume-*.json"))  # transcript persisted for the next resume
+
+    monkeypatch.setattr(
+        harness_mod.subprocess, "Popen", _make_hermes_popen(home, "SECOND_REPLY", seen)
+    )
+    second = harness.run("SECOND_BRIEF_w continue", workspace, resume_session_id=first.session_id)
+    assert second.session_id == first.session_id  # the chain keeps one id
+    # the brief hermes was handed on resume carries the prior turns AND the new one
+    assert "FIRST_BRIEF_q" in seen["brief_text"]  # prior user turn restored
+    assert "FIRST_REPLY_z" in seen["brief_text"]  # prior assistant turn restored
+    assert "SECOND_BRIEF_w" in seen["brief_text"]  # the new instructions
+
+
+def test_resume_without_saved_transcript_errors_not_silently_fresh(tmp_path: Path) -> None:
+    # a resume whose context cannot be restored is a hard error — never a blind
+    # fresh start (the deployment must preserve the per-run home, like claude's
+    # $HOME / codex's --home).
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run(
+        "brief", workspace, resume_session_id="never-saved"
+    )
     assert result.is_error is True
-    assert result.stop_reason == "resume-unsupported"
+    assert result.stop_reason == "resume-unavailable"
 
 
 def test_sample_files_are_cleaned_up(monkeypatch: Any, tmp_path: Path) -> None:
