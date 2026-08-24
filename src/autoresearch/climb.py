@@ -1304,10 +1304,15 @@ def live_climb(
         base_sha = ws.git("rev-parse", f"origin/{base_branch}").strip()
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
-        # the author-syscall channel (`.autoresearch/`) never enters diffs,
-        # scope, or drift fingerprints — repo-local exclude, harmless when the
-        # feature is off (it only hides UNtracked files under that dir)
-        syscall_excluded(workspace)
+        # With author syscalls armed, the channel (`.autoresearch/`) never
+        # enters diffs, scope, or drift fingerprints — repo-local exclude.
+        # Gated on the SAME flag as the launcher: with the feature off, an
+        # untracked `.autoresearch/` file must be staged and judged like any
+        # other agent edit, not silently hidden by a magic dir name (terra,
+        # #132 r2 — the off state stays byte-identical to today).
+        author_syscalls = bool(os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS"))
+        if author_syscalls:
+            syscall_excluded(workspace)
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -1417,11 +1422,7 @@ def live_climb(
         # dispatcher has cluster coordinates (the launches are Slurm jobs), and
         # the backend can resume (the wake resumes the SAME session).
         launcher = None
-        if (
-            os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS")
-            and dispatch is not None
-            and getattr(harness, "supports_resume", True)
-        ):
+        if author_syscalls and dispatch is not None and getattr(harness, "supports_resume", True):
 
             def launcher(sha: str, request: SyscallRequest) -> str:
                 from autoresearch.dispatch import eval_job_spec, write_eval_job

@@ -1786,6 +1786,40 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert "out/tails.json" in (ev / "job.sh").read_text()
 
 
+def test_flag_off_stages_stray_syscall_files_like_any_edit(tmp_path, target_repo) -> None:
+    # with the feature OFF, the `.autoresearch/` name is NOT magic: an
+    # untracked file there is staged and judged like any other agent edit
+    # (here: out of scope), byte-identical to today (terra #132 r2).
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/junk.txt": "leftover",
+        },
+        values=[],  # scope refuses before any measurement
+    )
+    assert outcome.outcome == "scope-violation"
+
+
+def test_flag_on_excludes_the_channel_from_the_candidate(
+    tmp_path, target_repo, monkeypatch
+) -> None:
+    # with the feature ON, the channel dir is invisible to diffs/scope/drift:
+    # a stray non-request file there neither blocks nor ships.
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/notes.txt": "scratch",
+        },
+        values=[13.876, 13.1],
+    )
+    assert outcome.outcome == "improved"
+
+
 def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
     tmp_path, target_repo_syscalls, monkeypatch
 ) -> None:
