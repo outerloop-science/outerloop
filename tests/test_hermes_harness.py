@@ -181,6 +181,9 @@ def test_resume_with_empty_transcript_errors_not_blind(tmp_path: Path) -> None:
         "{}",
         '{"turns": [{}]}',  # nonempty list, but no content -> still no context
         '{"turns": [{"role": "user", "text": "   "}]}',  # whitespace-only text
+        '{"turns": [{"role": "assistant", "text": "r"}]}',  # reply, no instructions
+        '{"turns": [{"role": "user", "text": "b"}]}',  # instructions, no reply
+        '{"turns": [{"role": "system", "text": "x"}, {"role": "user", "text": "b"}]}',  # bad role
     ):
         _resume_transcript_path(home, "sid").write_text(corrupt)
         result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run(

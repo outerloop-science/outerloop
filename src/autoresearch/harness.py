@@ -297,21 +297,30 @@ def _load_resume_transcript(session_home: Path, session_id: str) -> list[dict[st
     except json.JSONDecodeError:
         return None
     turns = data.get("turns") if isinstance(data, dict) else None
-    if not isinstance(turns, list):
+    if not isinstance(turns, list) or not turns:
         return None
-    # Keep only turns that carry REAL content (non-blank text). A corrupted or
-    # tampered transcript in the session-writable home — `{"turns": []}`,
-    # `{"turns": [{}]}`, whitespace-only text, non-dict entries — then cleans to
-    # nothing and surfaces as "unavailable" (the caller errors) instead of
-    # resuming with an empty prior-context block, the exact context-blind resume
-    # this path exists to reject. A real transcript always has the fresh run's
-    # [user, assistant] pair with content.
-    cleaned = [
-        {"role": str(t.get("role", "")), "text": str(t.get("text", ""))}
-        for t in turns
-        if isinstance(t, dict) and str(t.get("text", "")).strip()
-    ]
-    return cleaned or None
+    # Accept ONLY a COMPLETE, well-formed conversation, and reject the whole file
+    # on any deviation. The transcript is one we write ([user, assistant] pairs
+    # with non-blank text) into a session-writable home, so anything else —
+    # empty, whitespace-only, a non-dict entry, an unknown role, or a partial
+    # exchange missing the user instructions or the assistant reply — is
+    # corruption or tampering and must surface as "unavailable" (the caller
+    # errors) rather than resume with missing context, the exact context-blind
+    # resume this path exists to reject. We distrust the file as a whole rather
+    # than salvage a subset.
+    cleaned: list[dict[str, str]] = []
+    for t in turns:
+        if not isinstance(t, dict):
+            return None
+        role = str(t.get("role", ""))
+        content = str(t.get("text", ""))
+        if role not in ("user", "assistant") or not content.strip():
+            return None
+        cleaned.append({"role": role, "text": content})
+    roles = {t["role"] for t in cleaned}
+    if "user" not in roles or "assistant" not in roles:
+        return None  # a real prior conversation has instructions AND a reply
+    return cleaned
 
 
 def _save_resume_transcript(
