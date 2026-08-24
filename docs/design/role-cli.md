@@ -40,7 +40,9 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    in the same PR — never two ways to say the same thing.
 4. **Verbs are RoleSpec-gated.** The RoleSpec already caps each role's
    tools/scope/key; the CLI's live verbs are part of that cap. A reviewer's
-   tool has no `launch`; an author's has no `verdict`.
+   tool has no `launch`; an author's has no `verdict`. For roles WITHOUT
+   general execution (the judges), the capability is single-command
+   allowlisted invocation of their tool — never Bash (Phase 2).
 
 ## End-state
 
@@ -93,9 +95,24 @@ assembled kernel-side, well-formed by construction. Deletes the judge
 parse-and-repair path (`output_schema` handling in `role_runner`) for migrated
 roles — the recurring repair tax across *every* judge run disappears.
 Orchestrator-side, so it imports the kernel validators directly.
+
+**The read-only-judge tension, addressed head-on:** judges deliberately have no
+Bash/execute (the collusion/containment posture — execute is author/steward
+only), so "CLI-over-Bash" cannot naively apply here. Phase 2 therefore adds a
+**new RoleSpec capability distinct from `can_execute`**: single-command
+allowlisted invocation — the session may run exactly the installed `verdict`
+binary and nothing else (claude: an allowed-tools command pattern; codex: the
+equivalent exec policy; a backend that cannot restrict execution to one command
+keeps its judges message-based until it can — a per-backend capability, like
+`supports_resume`). Running `verdict` writes only the kernel-side verdict file;
+it grants no repo mutation and no general execution, so the read-only posture
+is preserved in substance while the surface improves.
+
 **Acceptance:** a judge session produces a verdict with zero repair rounds;
-a malformed call is corrected in-session; the repair-loop code for migrated
-roles is gone; verdict quality (findings parse rate) is measurably ≥ today's.
+a malformed call is corrected in-session; the judge can run `verdict` and
+provably nothing else (an attempted other command is refused); the repair-loop
+code for migrated roles is gone; verdict quality (findings parse rate) is
+measurably ≥ today's.
 
 ### Phase 3 — the finish: GitHub writes as verbs
 
