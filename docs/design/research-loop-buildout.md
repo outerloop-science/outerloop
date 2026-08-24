@@ -106,6 +106,8 @@ never launches is byte-identical to today.
 
 ## Phase B — submit as a payload
 
+Surfaced to the author as the `submit` verb on the role CLI (`role-cli.md`,
+Phase 1 — the tool from #133 grows the verb; the JSON stays internal ABI).
 `submit` is a launch whose job is the **gate** (paired baseline/candidate +
 suite on the sealed snapshot, kernel-private seed) and the **panel**; the wake
 returns verdict + comments, and the author decides — revise, run more
