@@ -81,6 +81,53 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
 
 
+def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_path) -> None:
+    # Phase A (research-loop-buildout.md): an author-sleep park carries the
+    # launch names/artifacts, note, session id, and budget counts the wake
+    # needs — and its deadline floors on the LONGEST LAUNCH's walltime, not the
+    # benchmark's eval hint (an in-job-cheap benchmark can still train for
+    # hours; the sweep must not cancel the author's jobs).
+    from autoresearch.syscall import Launch, SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    parked = ClimbParked(
+        phase="author-sleep",
+        afterany="afterany:501",
+        base_sha="b" * 40,
+        seed=7,
+        suite_seed=9,
+        candidate_sha="c" * 40,
+        session=_session("s9"),
+        syscall=SyscallRequest(
+            launches=(
+                Launch(
+                    name="train",
+                    command="uv run train.py",
+                    minutes=180,
+                    artifacts=("out/curve.json",),
+                ),
+            ),
+            note="compare to the lr sweep",
+        ),
+        launches_used=1,
+        sleeps_used=1,
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
+
+    r = load_record(tmp_path, "tsp-2")
+    assert r.state == "waiting"
+    # eval_minutes=None (in-job benchmark) but the launch asks 180 min: the
+    # floor rides the launch, so a healthy queued job never gets swept
+    assert r.deadline == 1000.0 + (180 + 12 * 60) * 60
+    assert r.stage["phase"] == "author-sleep"
+    assert r.stage["syscall_launches"] == [{"name": "train", "artifacts": ["out/curve.json"]}]
+    assert r.stage["syscall_note"] == "compare to the lr sweep"
+    assert r.resume_session_id == "s9"  # the record's own field; no stage duplicate
+    assert r.stage["launches_used"] == 1 and r.stage["sleeps_used"] == 1
+
+
 def test_park_run_redacts_the_saved_report(tmp_path) -> None:
     # a session that echoed a secret must not leave it readable in record.json
     record = RunRecord(

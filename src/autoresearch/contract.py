@@ -101,6 +101,12 @@ class Benchmark(_StrictModel):
     # per benchmark. The launch/sleep syscalls that consume it are the buildout's
     # Phase A; the [1, 8] bound can widen then.
     depth_k: int = Field(default=1, ge=1, le=8)
+    # Sleep budget, the sibling knob: how many dispatch->sleep->wake cycles the
+    # author may spend. Independent of depth_k — launches meter external compute,
+    # sleeps meter wake cycles (without this an author could checkpoint-refresh
+    # its session clock forever and never launch). Batching is rewarded: many
+    # launches under one sleep burn one sleep.
+    sleep_k: int = Field(default=4, ge=1, le=16)
 
     @field_validator("seed_env")
     @classmethod

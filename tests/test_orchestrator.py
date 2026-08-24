@@ -84,7 +84,9 @@ def _wire(evaluator, workspace, base_ws=None):
     return measurer, snapshot
 
 
-def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, harness=None, **kw):
+def run_climb(
+    tmp_path, values, session=None, config=CONFIG, changed=None, harness=None, contract=None, **kw
+):
     harness = harness or FakeHarness(result=session or ok_session())
     evaluator = FakeEvaluator(values=list(values))
     measurer, snapshot = _wire(evaluator, tmp_path)
@@ -94,7 +96,7 @@ def run_climb(tmp_path, values, session=None, config=CONFIG, changed=None, harne
         kw["created"] = "2026-08-06T00:00:00Z"
     result = climb_once(
         config,
-        CONTRACT,
+        contract or CONTRACT,
         tmp_path,
         harness,
         measurer,
@@ -206,6 +208,96 @@ def test_direction_min_regression_is_no_improvement(tmp_path: Path) -> None:
     result, _, _ = run_climb(tmp_path, [13.876, 14.5])
     assert result.outcome == "no-improvement"
     assert "negative result" in result.note
+
+
+# --- author syscalls (research-loop-buildout.md Phase A): the sleep side ---
+
+
+def _write_syscall(tmp_path: Path, payload: dict) -> None:
+    import json
+
+    d = tmp_path / ".autoresearch"
+    d.mkdir(exist_ok=True)
+    (d / "syscall.json").write_text(json.dumps(payload))
+
+
+def _fake_launcher(log: list):
+    def launcher(sha: str, request) -> str:
+        log.append((sha, request))
+        ids = [f"90{i}" for i in range(len(request.launches))]
+        return "afterany:" + ":".join(ids) if ids else ""  # same contract as the real one
+
+    return launcher
+
+
+DEEP_CONTRACT = CONTRACT.replace(
+    "metric: mean_tour_length", "metric: mean_tour_length\n    depth_k: 3"
+)
+
+
+def test_author_sleep_parks_on_a_sealed_snapshot(tmp_path: Path) -> None:
+    # the author launched work and slept: the tree is sealed, the launcher is
+    # handed the request, and the park carries request + budget counts.
+    from autoresearch.orchestrator import ClimbParked
+
+    _write_syscall(
+        tmp_path,
+        {"launches": [{"name": "probe", "command": "uv run probe.py"}], "note": "check tails"},
+    )
+    launched: list = []
+    with pytest.raises(ClimbParked) as exc:
+        run_climb(tmp_path, [], contract=DEEP_CONTRACT, launcher=_fake_launcher(launched))
+    p = exc.value
+    assert p.phase == "author-sleep"
+    assert p.afterany == "afterany:900"
+    assert p.candidate_sha == "cand1"  # sealed BEFORE the jobs were submitted
+    assert p.syscall is not None and p.syscall.note == "check tails"
+    assert p.launches_used == 1 and p.sleeps_used == 1
+    sha, request = launched[0]
+    assert sha == "cand1" and request.launches[0].name == "probe"
+
+
+def test_checkpoint_sleep_parks_with_no_dependency(tmp_path: Path) -> None:
+    from autoresearch.orchestrator import ClimbParked
+
+    _write_syscall(tmp_path, {"launches": []})
+    with pytest.raises(ClimbParked) as exc:
+        run_climb(tmp_path, [], contract=DEEP_CONTRACT, launcher=_fake_launcher([]))
+    assert exc.value.afterany == "" and exc.value.sleeps_used == 1
+    assert exc.value.launches_used == 0  # a checkpoint burns only the sleep
+
+
+def test_syscalls_are_ignored_without_a_launcher(tmp_path: Path) -> None:
+    # feature off (no launcher wired): a stray request file is inert and the
+    # climb behaves exactly as today.
+    _write_syscall(tmp_path, {"launches": [{"name": "probe", "command": "x"}]})
+    result, _, _ = run_climb(tmp_path, [13.876, 13.10])
+    assert result.outcome == "improved"
+    assert (tmp_path / ".autoresearch" / "syscall.json").exists()  # not even consumed
+
+
+def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> None:
+    # default depth_k=1: a two-launch ask exceeds the budget. The author is
+    # woken ONCE with the refusal (same session), then the climb measures the
+    # tree as it stands. Nothing was launched.
+    _write_syscall(
+        tmp_path,
+        {"launches": [{"name": "a", "command": "x"}, {"name": "b", "command": "y"}]},
+    )
+    launched: list = []
+    result, harness, _ = run_climb(tmp_path, [13.876, 13.10], launcher=_fake_launcher(launched))
+    assert result.outcome == "improved" and launched == []
+    refusal_text, _ws, resumed = harness.calls[1]  # second call = the refusal wake
+    assert "REFUSED" in refusal_text and "launch budget" in refusal_text
+    assert resumed == "s1"  # the SAME session was woken
+
+
+def test_malformed_syscall_request_is_a_loud_error(tmp_path: Path) -> None:
+    (tmp_path / ".autoresearch").mkdir()
+    (tmp_path / ".autoresearch" / "syscall.json").write_text("{broken")
+    result, _, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]))
+    assert result.outcome == "session-error"
+    assert "unhonorable syscall request" in result.note
 
 
 def test_noise_below_threshold_is_no_improvement(tmp_path: Path) -> None:

@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Author syscalls, part 1 — the SLEEP side (docs/design/research-loop-buildout.md,
+  Phase A; dark until `AUTORESEARCH_AUTHOR_SYSCALLS` is set): an enabled author
+  can end its session having written `.autoresearch/syscall.json` — launches to
+  run outside the sandbox (each a jailed Slurm job on a sealed snapshot of its
+  tree, stdout/stderr + declared artifact files captured for the wake) plus a
+  note to itself — and the climb parks as `author-sleep` instead of measuring.
+  Budgets are three independent generous counts: launches (`depth_k`), sleeps
+  (new per-benchmark `sleep_k`, default 4, bounded `[1, 16]`), submits later
+  (Phase B). An over-budget ask wakes the same session once with a refusal;
+  a malformed request errs loudly; the `.autoresearch/` channel is excluded
+  from diffs/scope/drift via `.git/info/exclude`. The wake side (deliver
+  results, resume the session through the climb's resume-entry) is part 2.
+
 - Per-benchmark depth budget `depth_k` on the contract's benchmark
   (docs/design/research-loop.md, "one syscall, author-directed"): how many
   external experiment jobs the author may launch within one attempt — a

@@ -42,6 +42,10 @@ from autoresearch.panel import PanelVerdict
 from autoresearch.role_runner import run_role
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
+from autoresearch.syscall import SyscallError, SyscallRequest
+from autoresearch.syscall import budget_error as syscall_budget_error
+from autoresearch.syscall import read_request as read_syscall_request
+from autoresearch.syscall import render_refusal as render_syscall_refusal
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +112,9 @@ class ClimbParked(Exception):
         suite_seed: int,
         candidate_sha: str = "",
         session: SessionResult | None = None,
+        syscall: SyscallRequest | None = None,
+        launches_used: int = 0,
+        sleeps_used: int = 0,
     ):
         self.phase = phase
         self.afterany = afterany
@@ -116,6 +123,11 @@ class ClimbParked(Exception):
         self.suite_seed = suite_seed
         self.candidate_sha = candidate_sha
         self.session = session
+        # author-sleep parks only (phase "author-sleep"): the request the wake
+        # gathers results for, and the budget counts AFTER this park.
+        self.syscall = syscall
+        self.launches_used = launches_used
+        self.sleeps_used = sleeps_used
         super().__init__(f"climb parked at {phase} on {afterany or '(no dep)'}")
 
 
@@ -997,6 +1009,9 @@ def climb_once(
     brief_baseline: float | None = None,
     resume_session_id: str = "",
     improve_prompt: str = "",
+    launcher: Callable[[str, SyscallRequest], str] | None = None,
+    launches_used: int = 0,
+    sleeps_used: int = 0,
 ) -> ClimbResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1024,6 +1039,14 @@ def climb_once(
     still open at the cap set `panel_blocking_open` (the caller posts a
     DRAFT PR carrying them). The caller supplies the runner because the
     panel's checkouts are git work (this function owns no git).
+
+    With `launcher` (author syscalls, research-loop-buildout.md Phase A), a
+    session that ends having asked to launch-and-sleep parks this climb as
+    `author-sleep` instead of measuring: the tree is sealed via `snapshot()`,
+    the launcher submits the jobs (caller-owned — it is compute work), and the
+    ClimbParked carries the request plus the budget counts. `launches_used` /
+    `sleeps_used` are the counts so far (a wake passes them from the stage);
+    the budgets come from the benchmark's `depth_k` / `sleep_k`.
     """
     contract = load_contract(contract_text, config.target)
     bench = _benchmark(contract, config.benchmark)
@@ -1128,6 +1151,83 @@ def climb_once(
             session=session,
             note=role_result.error or session.error_detail or session.stop_reason,
         )
+
+    # --- author syscalls (research-loop.md, "one syscall"; buildout Phase A) ---
+    # An enabled author (the caller wired a `launcher`) may end its session
+    # having asked to LAUNCH work outside the sandbox and SLEEP on it. Within
+    # budget: seal the tree, submit through the launcher, and park — the wake
+    # re-enters THIS function through the resume-entry with the results as the
+    # improve prompt, so the whole tail (scope, gate, panel, sleeping again)
+    # composes unchanged. Over budget: wake the author ONCE with a refusal so
+    # it can conclude honestly; a session that over-asks again proceeds to
+    # measurement with the tree as it stands (bounded, never an endless
+    # refuse/re-ask loop). With no launcher the feature is off and a stray
+    # request file is just an untracked file (excluded from the diff either way).
+    if launcher is not None:
+        refused_once = False
+        while True:
+            try:
+                request = read_syscall_request(workspace)
+            except SyscallError as exc:
+                # loud, never silent: the author meant something by the file
+                return ClimbResult(
+                    outcome="session-error",
+                    baseline=baseline,
+                    session=session,
+                    note=f"unhonorable syscall request: {exc}",
+                )
+            if request is None:
+                break
+            problem = syscall_budget_error(
+                request,
+                launches_used=launches_used,
+                launch_budget=bench.depth_k,
+                sleeps_used=sleeps_used,
+                sleep_budget=bench.sleep_k,
+            )
+            if not problem:
+                sha = snapshot()
+                raise ClimbParked(
+                    phase="author-sleep",
+                    afterany=launcher(sha, request),
+                    base_sha=base_sha,
+                    seed=run_seed,
+                    suite_seed=suite_seed,
+                    candidate_sha=sha,
+                    session=session,
+                    syscall=request,
+                    launches_used=launches_used + len(request.launches),
+                    sleeps_used=sleeps_used + 1,
+                )
+            if (
+                refused_once
+                or not session.session_id
+                or not getattr(harness, "supports_resume", True)
+            ):
+                log.warning("syscall request dropped after refusal (%s); measuring as-is", problem)
+                break
+            # the refusal burns no count (nothing was launched, nothing woke a
+            # job); the refused_once bound is what stops a refuse/re-ask loop.
+            refused_once = True
+            role_result = run_role(
+                spec,
+                harness,
+                render_syscall_refusal(
+                    problem,
+                    launches_remaining=max(0, bench.depth_k - launches_used),
+                    sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
+                ),
+                workspace,
+                resume_session_id=session.session_id,
+            )
+            session = role_result.session
+            if not role_result.ok:
+                return ClimbResult(
+                    outcome="session-outage" if outage(session) else "session-error",
+                    baseline=baseline,
+                    session=session,
+                    note=role_result.error or session.error_detail or session.stop_reason,
+                )
 
     panel_reads = 0
     panel_sections: list[str] = []

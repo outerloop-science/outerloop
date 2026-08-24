@@ -247,6 +247,8 @@ def write_eval_job(
     image: str,
     apptainer_binary: str = "apptainer",
     extra_env: dict[str, str] | None = None,
+    artifacts: tuple[str, ...] = (),
+    artifact_max_bytes: int = 0,
 ) -> Path:
     """Write the orchestrator-authored job script for one dispatched eval.
 
@@ -261,14 +263,23 @@ def write_eval_job(
         node-local scratch, plus the call site's extra_env (paired seeds)
         exported as APPTAINERENV_*.
     Returns the script path; the caller submits it via JobSpec(script=...).
+
+    With `artifacts` (author-syscall launches, research-loop-buildout.md
+    Phase A), each declared repo-relative FILE the jailed command produced is
+    copied out of the throwaway tree into `<job dir>/artifacts/` — outside the
+    jail, after the command, size-capped at `artifact_max_bytes` — with every
+    skip recorded in `artifacts.log`. Callers validate the paths (relative, no
+    traversal) before passing them; this writer additionally quotes them so
+    they cross the script boundary inert.
     """
     ev = run_dir / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
     # a resubmitted eval must never be read as its predecessor: every prior
     # artifact — including a leftover extracted tree — goes before submission
-    for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted"):
+    for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted", "artifacts.log"):
         (ev / stale).unlink(missing_ok=True)
     shutil.rmtree(ev / "tree", ignore_errors=True)
+    shutil.rmtree(ev / "artifacts", ignore_errors=True)
     (ev / "command.txt").write_text(command)
     # extra_env matches the in-job evaluator's contract: managed keys (HOME,
     # UV_*, PATH...) are DROPPED, never allowed to override the isolation, and
@@ -347,6 +358,25 @@ def write_eval_job(
         'sh -c "$(cat "$EV/command.txt")" '
         '> "$EV/stdout" 2> "$EV/stderr"',
         'echo $? > "$EV/exit-code"',
+    ]
+    if artifacts:
+        # copy-out runs OUTSIDE the jail, after the command: only declared,
+        # caller-validated repo-relative FILES, each size-capped; every skip
+        # is recorded so the wake can tell the author exactly what happened.
+        lines.append('mkdir -p "$EV/artifacts"')
+        for art in artifacts:
+            q = shlex.quote(art)
+            lines.append(
+                f'if [ -f "$TREE"/{q} ]; then '
+                f'if [ "$(wc -c < "$TREE"/{q})" -le {int(artifact_max_bytes)} ]; then '
+                f'mkdir -p "$EV/artifacts/$(dirname {q})" && '
+                f'cp "$TREE"/{q} "$EV/artifacts"/{q} '
+                f'|| echo "copy failed: {art}" >> "$EV/artifacts.log"; '
+                f'else echo "skipped (over {int(artifact_max_bytes)} bytes): '
+                f'{art}" >> "$EV/artifacts.log"; fi; '
+                f'else echo "skipped (not a file): {art}" >> "$EV/artifacts.log"; fi'
+            )
+    lines += [
         "exit 0",
     ]
     script = ev / "job.sh"

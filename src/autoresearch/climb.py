@@ -78,6 +78,8 @@ from autoresearch.runstate import (
     save_record,
     stamp_outage,
 )
+from autoresearch.syscall import MAX_ARTIFACT_BYTES, SyscallRequest
+from autoresearch.syscall import ensure_excluded as syscall_excluded
 from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
@@ -334,6 +336,22 @@ def _park_run(
         "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
         "session_turns": parked.session.num_turns if parked.session else 0,
     }
+    if parked.phase == "author-sleep":
+        # An author-directed sleep (research-loop-buildout.md Phase A): the wake
+        # gathers each launch's results by NAME from the run dir, delivers the
+        # declared artifacts, and resumes the SAME session — so the stage must
+        # carry the launch names/artifacts, the author's note, and the budget
+        # counts as of this park.
+        assert parked.syscall is not None
+        stage["syscall_launches"] = [
+            {"name": launch.name, "artifacts": list(launch.artifacts)}
+            for launch in parked.syscall.launches
+        ]
+        stage["syscall_note"] = redact(parked.syscall.note, secrets)
+        # (the session id the wake resumes is the record's own
+        # resume_session_id, set below for every park — no stage duplicate)
+        stage["launches_used"] = parked.launches_used
+        stage["sleeps_used"] = parked.sleeps_used
     # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
     # is right for a single-job park (baseline, or a candidate with no siblings):
     # poll it. But a MULTI-job park (candidate + siblings) must not wake when the
@@ -344,7 +362,15 @@ def _park_run(
     # The deadline is a FLOOR: park time (`now` here is the park moment, passed
     # by the caller) + the eval walltime + a generous queue/grace slack, so a
     # healthy queued-then-running eval never trips the sweep's cancel-on-pending.
-    deadline = now + (effective_eval_minutes(eval_minutes) + PARK_QUEUE_SLACK_MIN) * 60
+    floor_minutes = effective_eval_minutes(eval_minutes)
+    if parked.phase == "author-sleep" and parked.syscall is not None:
+        # an author launch's walltime is the LAUNCH's ask, not the benchmark's
+        # eval hint — the floor must sit past the LONGEST launch, or the sweep
+        # cancels still-queued author jobs (a benchmark can be in-job cheap,
+        # eval_minutes=None, while its author trains for hours). A checkpoint
+        # sleep has no jobs: floor 0 wakes it at the first deadline pass.
+        floor_minutes = max((la.minutes for la in parked.syscall.launches), default=0)
+    deadline = now + (floor_minutes + PARK_QUEUE_SLACK_MIN) * 60
     waiting = RunRecord(
         **{
             **record.__dict__,
@@ -416,6 +442,10 @@ def resume_run(
     # present. Guard rather than crash on `git diff base ""` if a stray
     # baseline-shaped record ever reached here.
     if stage.get("phase") != "candidate" or not stage.get("candidate_sha"):
+        # an "author-sleep" park lands here until the wake side (Phase A part 2:
+        # gather launch results, resume the session via the climb's resume-entry)
+        # exists — loud, so arming AUTORESEARCH_AUTHOR_SYSCALLS before part 2 is
+        # an operator error the record names rather than a silent hang.
         raise EvalError(f"resume_run: run {run_id} is not a candidate park (stage={stage!r})")
 
     base_sha = str(stage["base_sha"])
@@ -1274,6 +1304,10 @@ def live_climb(
         base_sha = ws.git("rev-parse", f"origin/{base_branch}").strip()
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
+        # the author-syscall channel (`.autoresearch/`) never enters diffs,
+        # scope, or drift fingerprints — repo-local exclude, harmless when the
+        # feature is off (it only hides UNtracked files under that dir)
+        syscall_excluded(workspace)
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -1378,6 +1412,49 @@ def live_climb(
             snapshots.append(snap)
             return snap.commit
 
+        # Author syscalls (research-loop-buildout.md Phase A), dark by default:
+        # offered only when the operator arms AUTORESEARCH_AUTHOR_SYSCALLS, the
+        # dispatcher has cluster coordinates (the launches are Slurm jobs), and
+        # the backend can resume (the wake resumes the SAME session).
+        launcher = None
+        if (
+            os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS")
+            and dispatch is not None
+            and getattr(harness, "supports_resume", True)
+        ):
+
+            def launcher(sha: str, request: SyscallRequest) -> str:
+                from autoresearch.dispatch import eval_job_spec, write_eval_job
+
+                assert dispatch is not None
+                ids = []
+                for launch in request.launches:
+                    script = write_eval_job(
+                        run_dir,
+                        f"launch-{launch.name}",
+                        repo_root=workspace,
+                        snapshot_sha=sha,
+                        command=launch.command,
+                        image=dispatch.image,
+                        artifacts=launch.artifacts,
+                        artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                    )
+                    ids.append(
+                        dispatch.compute.submit(
+                            eval_job_spec(
+                                script,
+                                job_name=f"{run_id}-launch-{launch.name}",
+                                account=dispatch.account,
+                                partition=dispatch.partition,
+                                eval_minutes=launch.minutes,
+                            )
+                        )
+                    )
+                # a checkpoint sleep (no launches) parks with no dependency and
+                # wakes on the sweep's deadline floor — slow but correct; a
+                # fast requeue wake is a Phase A follow-up.
+                return "afterany:" + ":".join(ids) if ids else ""
+
         parked: ClimbParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
@@ -1400,6 +1477,7 @@ def live_climb(
                 panel_runner=panel_runner,
                 panel_revisions=panel_revisions,
                 brief_baseline=prior_best.best if prior_best else None,
+                launcher=launcher,
             )
         except ClimbParked as p:
             # The climb dispatched its measures and hibernated. Persist the
@@ -1409,9 +1487,10 @@ def live_climb(
             # AFTER a successful write: if _park_run raises, it stays None so the
             # finally drops every snapshot (no leak) and the outer handler ends
             # the run as an error rather than a half-written hibernation.
-            if p.phase == "candidate":
+            if p.phase in ("candidate", "author-sleep"):
                 # keep exactly ONE snapshot for that sha (two can share a
-                # commit); record and keep that same ref, drop the rest.
+                # commit); record and keep that same ref, drop the rest. An
+                # author-sleep's snapshot is the tree the wake re-delivers.
                 kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
             import time
 
