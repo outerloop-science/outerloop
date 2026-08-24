@@ -187,6 +187,93 @@ def test_ensure_excluded_is_idempotent_and_hides_the_dir_from_git(tmp_path: Path
     assert SYSCALL_DIR not in staged
 
 
+def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
+    # the wake side: read each launch's exit/stdout/stderr + skips, and copy
+    # delivered artifacts into the excluded channel dir the author reads.
+    from autoresearch.syscall import Launch, gather_results
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    # a normal launch with a delivered artifact + a skip log
+    ev = run_dir / "eval-launch-train"
+    (ev / "artifacts" / "sub").mkdir(parents=True)
+    (ev / "exit-code").write_text("0\n")
+    (ev / "stdout").write_text("loss: 0.4\n")
+    (ev / "stderr").write_text("")
+    (ev / "artifacts" / "curve.json").write_text("{}")
+    (ev / "artifacts" / "sub" / "extra.txt").write_text("x")
+    (ev / "artifacts.log").write_text("skipped (over 5000000 bytes): big.ckpt\n")
+    # a launch whose job died before the wrapper ran -> no exit-code file
+    dead = run_dir / "eval-launch-crashed"
+    dead.mkdir(parents=True)
+    (dead / "stderr").write_text("OOM\n")
+
+    results = gather_results(
+        run_dir,
+        ws,
+        (Launch("train", "c", 30, ("curve.json",)), Launch("crashed", "c", 30)),
+    )
+    assert [r.name for r in results] == ["train", "crashed"]  # request order
+    train, crashed = results
+    assert train.exit_code == 0 and "loss: 0.4" in train.stdout_tail
+    assert set(train.delivered) == {
+        ".autoresearch/results/train/curve.json",
+        ".autoresearch/results/train/sub/extra.txt",
+    }
+    assert train.skipped == ("skipped (over 5000000 bytes): big.ckpt",)
+    # the files really landed in the excluded channel
+    assert (ws / ".autoresearch" / "results" / "train" / "curve.json").read_text() == "{}"
+    # a job with no exit-code file surfaces as None (infra failure), not a skip
+    assert crashed.exit_code is None and "OOM" in crashed.stderr_tail
+
+
+def test_gather_results_refuses_symlinked_destination_channel(tmp_path) -> None:
+    # the author controls .autoresearch in its sandbox: a symlinked results dir
+    # (or a planted output symlink) must not make delivery write through it to a
+    # host path (terra #135 r2).
+    from autoresearch.syscall import Launch, gather_results
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ev = run_dir / "eval-launch-probe"
+    (ev / "artifacts").mkdir(parents=True)
+    (ev / "exit-code").write_text("0")
+    (ev / "artifacts" / "out.json").write_text("safe")
+    # attacker target OUTSIDE the workspace
+    escape = tmp_path / "ESCAPE"
+    escape.mkdir()
+    (escape / "out.json").write_text("ORIGINAL")
+    # .autoresearch/results -> the escape dir
+    (ws / ".autoresearch").mkdir(parents=True)
+    (ws / ".autoresearch" / "results").symlink_to(escape, target_is_directory=True)
+
+    (r,) = gather_results(run_dir, ws, (Launch("probe", "c", 30, ("out.json",)),))
+    assert r.delivered == ()  # nothing delivered through the symlink
+    assert any("symlink" in s for s in r.skipped)
+    assert (escape / "out.json").read_text() == "ORIGINAL"  # host file untouched
+
+
+def test_gather_results_reads_only_the_tail_of_huge_output(tmp_path) -> None:
+    # launch output is agent-controlled and can be arbitrarily large: the wake
+    # must read only the trailing window, never load the whole file
+    # (terra #135 r1).
+    from autoresearch.syscall import MAX_OUTPUT_CHARS, Launch, gather_results
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ev = run_dir / "eval-launch-big"
+    ev.mkdir(parents=True)
+    (ev / "exit-code").write_text("0")
+    with (ev / "stdout").open("w") as fh:
+        fh.write("x" * (MAX_OUTPUT_CHARS * 50))  # far past the window
+        fh.write("\nFINAL: 0.42\n")
+    (results,) = gather_results(run_dir, ws, (Launch("big", "c", 30),))
+    assert len(results.stdout_tail) <= MAX_OUTPUT_CHARS
+    assert "FINAL: 0.42" in results.stdout_tail  # the tail, not the head
+
+
 def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     """The job writer's copy-out, EXECUTED: declared file delivered; oversized
     and missing ones recorded in artifacts.log; a shell-metacharacter name is

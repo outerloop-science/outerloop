@@ -69,6 +69,11 @@ class SessionBrief:
     recent_reports: tuple[str, ...]  # newest first, already bounded
     budget: BudgetState
     created: str  # ISO timestamp, supplied by the caller (builder stays pure)
+    # Author-syscall budgets (research-loop.md, "one syscall"): >0 advertises the
+    # launch/sleep tool to the author; 0 (the default) means the feature is off
+    # for this run and the brief never mentions it.
+    launch_budget: int = 0
+    sleep_budget: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
@@ -84,6 +89,8 @@ class SessionBrief:
             recent_reports=tuple(data["recent_reports"]),
             budget=BudgetState(**data["budget"]),
             created=data["created"],
+            launch_budget=data.get("launch_budget", 0),
+            sleep_budget=data.get("sleep_budget", 0),
         )
 
 
@@ -97,6 +104,8 @@ class BriefInputs:
     lessons: str = ""
     recent_reports: tuple[str, ...] = field(default_factory=tuple)
     budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 0))
+    launch_budget: int = 0  # author-syscall budgets; 0 = feature off (no mention)
+    sleep_budget: int = 0
 
 
 def _cap(text: str, limit: int) -> str:
@@ -128,6 +137,8 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
         recent_reports=reports,
         budget=inputs.budget,
         created=created,
+        launch_budget=inputs.launch_budget,
+        sleep_budget=inputs.sleep_budget,
     )
 
 
@@ -207,6 +218,34 @@ def render(brief: SessionBrief) -> str:
         "# Budget",
         f"GPU-hours remaining: {brief.budget.gpu_hours_remaining}",
         f"Runs remaining this week: {brief.budget.runs_remaining_this_week}",
+    ]
+    if brief.launch_budget > 0:
+        # The launch/sleep tool is offered this run (research-loop.md): the
+        # author can run experiments OUTSIDE the sandbox and sleep for results.
+        parts += [
+            "",
+            "# Running experiments (the launch/sleep tool)",
+            "You are in a sandbox; heavier work (training, longer evals, "
+            "anything that will not finish inside this session) runs OUTSIDE "
+            "it. To run something and get its result, use the tool, then END "
+            "YOUR TURN — you will be woken in this same session with the "
+            "output and any artifacts delivered under .autoresearch/results/:",
+            "",
+            "    python .autoresearch/syscall launch --name <handle> "
+            "--minutes <N> --artifact <repo-relative file> -- <command>",
+            "    python .autoresearch/syscall sleep",
+            "",
+            "`status` shows staged launches and remaining budget; `note ...` "
+            "leaves a reminder echoed back to you on wake. Bad arguments fail "
+            "immediately — fix and retry before sleeping. You may launch "
+            "several jobs before one sleep, and after a wake you can launch "
+            "more, revise, or finish. Budgets this run: "
+            f"{brief.launch_budget} experiment launches, {brief.sleep_budget} "
+            "sleeps (a `sleep` with nothing staged is a checkpoint that "
+            "refreshes your session clock and costs one sleep). Spend them as "
+            "your judgment says; they are generous, not a target to exhaust.",
+        ]
+    parts += [
         "",
         "# Ground rules",
         "Work only within the contract's allowed paths. One hypothesis, one "

@@ -1867,13 +1867,15 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
 
 
 def test_armed_flag_without_wake_ready_stays_fully_off(tmp_path, target_repo, monkeypatch) -> None:
-    # arming the env flag before part 2 (the wake) exists must not produce an
-    # unwakeable author-sleep park: the feature stays off for the run — the
-    # request file is inert AND staged like any edit (terra #132 r5).
+    # the interlock mechanism: with the wake declared not-ready, arming the env
+    # flag must not produce an unwakeable author-sleep park — the feature stays
+    # off for the run and the request file is inert AND staged like any edit
+    # (terra #132 r5). The shipped default is now READY (part 2 landed), so the
+    # not-ready state is set explicitly here to pin the guard itself.
     import json as json_mod
 
     monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    # AUTHOR_SLEEP_WAKE_READY stays False (the shipped default)
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", False)
     outcome, _ = run_live(
         tmp_path,
         target_repo,
@@ -2837,3 +2839,173 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
     # the snapshot is released (the candidate is already published)
     ws = state / "runs" / run_id / "ws"
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+# --- the author-sleep wake (research-loop-buildout.md Phase A, part 2) ---
+
+
+def _write_parked_author_sleep(tmp_path, monkeypatch, *, raise_exc=None, run_id="tsp-9"):
+    """An author-sleep-parked run on disk in the REAL park state: the session's
+    tree persisted as the author left it (uncommitted edits over base), the
+    sleep snapshot sealed under its ref, launch job outputs in the run dir, and
+    a WAITING record carrying the request + budget counts."""
+    import json as json_mod
+
+    from autoresearch.dispatch import snapshot_tree
+    from autoresearch.github import Workspace
+    from autoresearch.measure import DispatchSettings
+    from autoresearch.syscall import ensure_excluded
+
+    state = tmp_path / "state"
+    wsroot = state / "runs" / run_id / "ws"
+    (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
+    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_SYSCALLS)
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base_sha = _git(wsroot, "rev-parse", "HEAD").strip()
+    ensure_excluded(wsroot)  # armed runs excluded the channel at first pass
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'wip'\n")
+    ws = Workspace(root=wsroot)
+    snap = snapshot_tree(ws, base_sha)  # the sealed sleep tree
+    # the finished launch's job outputs, as the job script leaves them
+    ev = state / "runs" / run_id / "eval-launch-probe"
+    (ev / "artifacts").mkdir(parents=True)
+    (ev / "exit-code").write_text("0\n")
+    (ev / "stdout").write_text("tail improvement: 0.7\n")
+    (ev / "stderr").write_text("")
+    (ev / "artifacts" / "out.json").write_text('{"metric": 0.7}')
+
+    record = RunRecord(
+        run_id=run_id,
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        resume_session_id="s1",
+        stage={
+            "phase": "author-sleep",
+            "base_sha": base_sha,
+            "candidate_sha": snap.commit,
+            "candidate_ref": snap.ref,
+            "seed": 7,
+            "suite_seed": 9,
+            "afterany": "afterany:501",
+            "report": "mid-flight",
+            "base_branch": "main",
+            "syscall_launches": [{"name": "probe", "artifacts": ["out.json"]}],
+            "syscall_note": "compare against the sweep",
+            "launches_used": 1,
+            "sleeps_used": 1,
+        },
+    )
+    save_record(state, record, 1_000_000.0)
+    fake = _FakeMeasurer(values={}, raise_exc=raise_exc)
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
+    return state, run_id, wsroot, json_mod
+
+
+def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
+    tmp_path, monkeypatch
+) -> None:
+    # the woken session continues, finishes, and the gate (dispatched) parks the
+    # run as a CANDIDATE — the existing wake path decides it next time.
+    from autoresearch.measure import MeasurementPending
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("701", "702"))
+    )
+    from autoresearch.roles import author_spec
+
+    class RecordingHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            calls.append((brief_text, str(workspace), resume_session_id))
+            return super().run(brief_text, workspace, resume_session_id)
+
+    calls: list = []
+    harness = RecordingHarness(
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+    )
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        harness=harness,
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "parked"
+    record = load_record(state, run_id)
+    assert record.state == "waiting"
+    assert record.stage["phase"] == "candidate"  # flows into the existing wake
+    # the SAME session was resumed, with the launch results as its prompt
+    wake_text, _ws, resumed = calls[0]
+    assert resumed == "s1"
+    assert "tail improvement: 0.7" in wake_text  # the job's stdout, delivered
+    assert "compare against the sweep" in wake_text  # the author's note, echoed
+    assert "2 launches and 3 sleeps remaining" in wake_text  # budgets visible
+    assert ".autoresearch/results/probe/out.json" in wake_text
+    # the artifact really landed in the excluded channel
+    assert (wsroot / ".autoresearch" / "results" / "probe" / "out.json").read_text() == (
+        '{"metric": 0.7}'
+    )
+    # exactly ONE snapshot ref survives (the new candidate); the sleep ref is gone
+    refs = [r for r in _git(wsroot, "for-each-ref", "refs/dispatch/").splitlines() if r]
+    assert len(refs) == 1
+    assert str(record.stage["candidate_ref"]) in refs[0]
+
+
+def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
+    # the woken author launches more work and sleeps again: a fresh author-sleep
+    # park with the counts advanced.
+    from autoresearch.roles import author_spec
+
+    state, run_id, _wsroot, json_mod = _write_parked_author_sleep(tmp_path, monkeypatch)
+
+    class SleepyHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            (workspace / ".autoresearch").mkdir(exist_ok=True)
+            (workspace / ".autoresearch" / "syscall.json").write_text(
+                json_mod.dumps({"launches": [{"name": "second", "command": "run again"}]})
+            )
+            return super().run(brief_text, workspace, resume_session_id)
+
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        harness=SleepyHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "parked"
+    record = load_record(state, run_id)
+    assert record.stage["phase"] == "author-sleep"
+    assert record.stage["syscall_launches"] == [{"name": "second", "artifacts": []}]
+    assert record.stage["launches_used"] == 2 and record.stage["sleeps_used"] == 2
+    # the second launch's job script was written for the sealed NEW tree
+    assert (state / "runs" / run_id / "eval-launch-second" / "job.sh").exists()
+
+
+def test_author_sleep_wake_without_harness_ends_loudly(tmp_path, monkeypatch) -> None:
+    # the wake cannot resume without the author harness: a named ending, and the
+    # sleep snapshot is released (re-waking would never help).
+    state, run_id, wsroot, _ = _write_parked_author_sleep(tmp_path, monkeypatch)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "session-error"
+    record = load_record(state, run_id)
+    assert record.state == "ended"
+    assert "author harness" in record.ending_note
+    assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
