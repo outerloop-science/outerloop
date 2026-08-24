@@ -20,8 +20,12 @@ Versions follow [SemVer](https://semver.org).
   (new per-benchmark `sleep_k`, default 4, bounded `[1, 16]`), submits later
   (Phase B). An over-budget ask wakes the same session once with a refusal;
   a malformed request errs loudly; the `.autoresearch/` channel is excluded
-  from diffs/scope/drift via `.git/info/exclude`. The wake side (deliver
-  results, resume the session through the climb's resume-entry) is part 2.
+  from diffs/scope/drift via `.git/info/exclude`. The author's INTERFACE is a
+  tool (`python .autoresearch/syscall launch ... -- <cmd>`; `... sleep`),
+  installed into the sandbox — the JSON is an internal ABI it commits, with
+  in-session validation so bad args fail immediately, not as a burned sleep.
+  The wake side (deliver results, resume the session through the climb's
+  resume-entry) is part 2.
 
 - Per-benchmark depth budget `depth_k` on the contract's benchmark
   (docs/design/research-loop.md, "one syscall, author-directed"): how many

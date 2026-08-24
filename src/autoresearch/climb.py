@@ -78,8 +78,10 @@ from autoresearch.runstate import (
     save_record,
     stamp_outage,
 )
-from autoresearch.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SYSCALL_FILE, SyscallRequest
+from autoresearch.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SyscallRequest
 from autoresearch.syscall import ensure_excluded as syscall_excluded
+from autoresearch.syscall import install_tool as syscall_install_tool
+from autoresearch.syscall import write_budget as syscall_write_budget
 from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
@@ -1324,8 +1326,33 @@ def live_climb(
                 "built yet (Phase A part 2); author syscalls stay OFF this run"
             )
             author_syscalls = False
+        # The `.autoresearch/` channel must be KERNEL-OWNED. In a fresh clone,
+        # anything already at that path was committed by the TARGET — a symlink
+        # (install would write through it to a host path with our permissions —
+        # terra #133 r1), a tracked request (free cluster compute — #132 r3), or
+        # any other booby trap. If the path pre-exists in ANY form, disable the
+        # feature for the run, loudly; otherwise we create a dir we own.
+        channel = workspace / SYSCALL_DIR
+        if author_syscalls and (channel.is_symlink() or channel.exists()):
+            log.warning(
+                "target ships a %s path (symlink=%s); author syscalls disabled for this run",
+                SYSCALL_DIR,
+                channel.is_symlink(),
+            )
+            author_syscalls = False
         if author_syscalls:
             syscall_excluded(workspace)
+            # the author's interface is the TOOL (`python .autoresearch/syscall
+            # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
+            # install it plus the informational budget its `status` shows.
+            syscall_install_tool(workspace)
+            _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
+            if _bench is not None:
+                syscall_write_budget(
+                    workspace,
+                    launches_remaining=_bench.depth_k,
+                    sleeps_remaining=_bench.sleep_k,
+                )
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -1435,24 +1462,10 @@ def live_climb(
         # dispatcher has cluster coordinates (the launches are Slurm jobs), and
         # the backend can resume (the wake resumes the SAME session).
         launcher = None
-        # A request is only valid if the SESSION wrote it. The workspace is a
-        # fresh clone, so a request file that exists BEFORE the session is
-        # tracked in the target's base tree — a repo could otherwise consume
-        # cluster compute by committing one (terra, #132 r3). Booby-trapped
-        # channel -> the feature stays off for this run, loudly.
-        preexisting_request = (workspace / SYSCALL_DIR / SYSCALL_FILE).exists()
-        if author_syscalls and preexisting_request:
-            log.warning(
-                "target ships a tracked %s/%s; author syscalls disabled for this run",
-                SYSCALL_DIR,
-                SYSCALL_FILE,
-            )
-        if (
-            author_syscalls
-            and not preexisting_request
-            and dispatch is not None
-            and getattr(harness, "supports_resume", True)
-        ):
+        # `author_syscalls` already reflects the channel-ownership guard above
+        # (a target-shipped `.autoresearch` — symlink, tracked request, or any
+        # other pre-existing form — has disabled the feature for this run).
+        if author_syscalls and dispatch is not None and getattr(harness, "supports_resume", True):
 
             def launcher(sha: str, request: SyscallRequest) -> str:
                 from autoresearch.dispatch import eval_job_spec, write_eval_job

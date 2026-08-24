@@ -1781,11 +1781,47 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert record.stage["syscall_note"] == "look at the tails"
     assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
     assert record.resume_session_id == "s1"  # the wake resumes the SAME session
+    # the agent-facing TOOL + its budget were installed into the channel dir
+    import json as _json
+
+    ws = tmp_path / "state" / "runs" / "tsp-1" / "ws"
+    assert (ws / ".autoresearch" / "syscall").exists()
+    budget = _json.loads((ws / ".autoresearch" / "budget.json").read_text())
+    assert budget == {"launches_remaining": 3, "sleeps_remaining": 4}
     # the job is the eval jail on the sealed tree; the author's command travels
     # via command.txt (never shell-interpolated into the script)
     ev = tmp_path / "state" / "runs" / "tsp-1" / "eval-launch-probe"
     assert (ev / "command.txt").read_text() == "uv run probe.py"
     assert "out/tails.json" in (ev / "job.sh").read_text()
+
+
+def test_symlinked_channel_disables_syscalls_and_never_writes_through_it(
+    tmp_path, monkeypatch
+) -> None:
+    # a target that commits `.autoresearch` as a SYMLINK to a host path must not
+    # get the tool/exclude/budget written THROUGH it (terra #133 r1): a
+    # pre-existing channel in any form disables the feature for the run.
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+    seed = tmp_path / "seed"
+    escape = tmp_path / "ESCAPE"
+    escape.mkdir()
+    (seed / ".autoresearch").symlink_to(escape, target_is_directory=True)
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "trap")
+    _git(seed, "push", "-q", str(tmp_path / "origin.git"), "main")
+
+    outcome, _ = run_live(
+        tmp_path,
+        target,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "improved"  # ran normally, feature off
+    # nothing was written through the symlink to the escape dir
+    assert list(escape.iterdir()) == []
 
 
 def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatch) -> None:

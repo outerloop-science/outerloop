@@ -1,12 +1,17 @@
-"""Author-facing syscalls: launch / sleep (research-loop.md, "one syscall").
+"""Author syscalls: the kernel side of launch / sleep (research-loop.md, "one
+syscall").
 
-The author lives in the sandbox; real experiments run outside it. The channel
-is a file: the author writes `.autoresearch/syscall.json` in its workspace and
-ends its session — that IS the sleep. The kernel reads the request, submits
-each launch as a jailed job on a sealed snapshot of the author's tree, parks
-the run, and later wakes the SAME session with every job's results delivered
-as data (`render_wake`). A session that ends with no request follows today's
-path (implicit submit; the explicit submit payload is Phase B).
+The author lives in the sandbox; real experiments run outside it. The AUTHOR's
+interface is a TOOL (`syscall_cli.py`, installed at `.autoresearch/syscall`):
+`python .autoresearch/syscall launch ... -- <cmd>` then `... sleep`. This module
+is the KERNEL side — `.autoresearch/syscall.json` is the internal ABI the tool
+commits on `sleep`, and `read_request` here is its authoritative validator
+(never trusting the tool, which is agent-controlled once dropped). The author
+writes the ABI and ends its session — that IS the sleep. The kernel reads the
+request, submits each launch as a jailed job on a sealed snapshot of the
+author's tree, parks the run, and later wakes the SAME session with every job's
+results delivered as data (`render_wake`). A session that ends with no request
+follows today's path (implicit submit; the explicit submit payload is Phase B).
 
 The `.autoresearch/` directory is kernel-excluded from the diff via
 `.git/info/exclude` (repo-local, never a tracked edit), so requests and
@@ -192,6 +197,33 @@ def ensure_excluded(workspace: Path) -> None:
         exclude.write_text(
             existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n"
         )
+
+
+def install_tool(workspace: Path) -> None:
+    """Drop the agent-facing launch/sleep tool into the sandbox.
+
+    The AUTHOR's interface is the tool (`python .autoresearch/syscall launch
+    ... -- <cmd>`; `... sleep`), not the JSON — the file this module reads is
+    the internal ABI the tool commits on `sleep`. The tool is a verbatim copy
+    of `syscall_cli.py` (standalone by contract: stdlib-only, since the target
+    repo does not have autoresearch installed), living inside the excluded
+    channel dir so it never enters diffs, scope, or fingerprints."""
+    from autoresearch import syscall_cli
+
+    tool = workspace / SYSCALL_DIR / "syscall"
+    tool.parent.mkdir(exist_ok=True)
+    tool.write_text(Path(syscall_cli.__file__).read_text())
+    tool.chmod(0o755)
+
+
+def write_budget(workspace: Path, *, launches_remaining: int, sleeps_remaining: int) -> None:
+    """Kernel-written budget the tool's `status` shows. Informational for the
+    author's planning only — enforcement stays in `budget_error`."""
+    d = workspace / SYSCALL_DIR
+    d.mkdir(exist_ok=True)
+    (d / "budget.json").write_text(
+        json.dumps({"launches_remaining": launches_remaining, "sleeps_remaining": sleeps_remaining})
+    )
 
 
 def budget_error(
