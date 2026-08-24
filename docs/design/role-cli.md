@@ -39,19 +39,23 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    (the schema-repair path for that role, the inference it replaces) is deleted
    in the same PR — never two ways to say the same thing.
 4. **Verbs are RoleSpec-gated.** The RoleSpec already caps each role's
-   tools/scope/key; the CLI's live verbs are part of that cap. A reviewer's
-   tool has no `launch`; an author's has no `verdict`. For roles WITHOUT
-   general execution (the judges), the capability is single-command
-   allowlisted invocation of their tool — never Bash (Phase 2).
+   tools/scope/key; the CLI's live verbs are part of that cap. It is ONE tool
+   (`.autoresearch/syscall`) whose verbs the brief exposes per role — an author
+   uses `launch`/`sleep`, a judge uses `finding`/`conclude` — and a syscall is
+   TYPED, so the kernel dispatches by type (a sleep parks + wakes; a verdict is
+   read back). For roles WITHOUT general execution (the judges), the capability
+   is single-command allowlisted invocation of the one tool — never Bash.
 
 ## End-state
 
 One `research` CLI identity, instantiated per role with only that role's verbs:
 
+One `.autoresearch/syscall` tool, its live verbs gated per role by RoleSpec:
+
 | Role | Verbs | Win | Installed where |
 | --- | --- | --- | --- |
 | author | `launch` / `note` / `status` / `sleep` (#133) · `submit` (Phase B) · later `pr`, `retrieve` | A | sandbox (standalone) |
-| reviewer / verifier / panel | `verdict add-finding` / `verdict conclude` | B | orchestrator-side |
+| reviewer / verifier / panel | `finding` / `conclude` (verdict as a syscall type) | B | orchestrator-side |
 | planner | `plan propose` | B (+ policy-as-validation) | orchestrator-side |
 | steward | contract-edit + GitHub-write verbs | A + B | orchestrator-side |
 
@@ -87,31 +91,41 @@ resubmits / concludes. Retires the orchestrator-driven panel-revision loop
 **Acceptance:** submit → sleep → wake-with-findings → further experiment →
 resubmit → PR, on one session thread; a clean first submit still opens a PR.
 
-### Phase 2 — judge verdicts as a CLI (highest reliability leverage)
+### Phase 2 — judge verdicts as a syscall type (highest reliability leverage)
 
+A verdict is not a second tool — it is a syscall TYPE on the one surface.
 Reviewer/verifier/panel stop emitting one schema-constrained final message.
-Instead: `verdict add-finding --file --line --severity --summary ...` per
-finding, `verdict conclude --blocking|--clean ...` to finish — each call
-validated on the spot (real file? line in range? severity known?), the verdict
-assembled kernel-side, well-formed by construction. Deletes the judge
-parse-and-repair path (`output_schema` handling in `role_runner`) for migrated
-roles — the recurring repair tax across *every* judge run disappears.
+Instead: `python .autoresearch/syscall finding --file --line --confidence
+--summary --detail [--blocking] [--kind] [--category]` per finding, then
+`... conclude --notes ...` to commit — each call validated on the spot, the
+verdict assembled kernel-side (`type: "verdict"`), well-formed by construction.
+`read_verdict` deletes the judge parse-and-repair path (`output_schema` handling
+in `role_runner`) for migrated roles — the recurring repair tax disappears.
 Orchestrator-side, so it imports the kernel validators directly.
 
 **The read-only-judge tension, addressed head-on:** judges deliberately have no
 Bash/execute (the collusion/containment posture — execute is author/steward
-only), so "CLI-over-Bash" cannot naively apply here. Phase 2 therefore adds a
-**new RoleSpec capability distinct from `can_execute`**: single-command
-allowlisted invocation — the session may run exactly the installed `verdict`
-binary and nothing else (claude: an allowed-tools command pattern; codex: the
-equivalent exec policy; a backend that cannot restrict execution to one command
-keeps its judges message-based until it can — a per-backend capability, like
-`supports_resume`). Running `verdict` writes only the kernel-side verdict file;
-it grants no repo mutation and no general execution, so the read-only posture
-is preserved in substance while the surface improves.
+only), so "CLI-over-Bash" cannot naively apply here. The capability is
+single-command allowlisted invocation of the one tool — the session may run
+exactly `python .autoresearch/syscall` and nothing else (claude: an allowed-tools
+command pattern; codex: the equivalent exec policy; a backend that cannot
+restrict execution to one command keeps its judges message-based until it can — a
+per-backend capability, like `supports_resume`). It grants no repo mutation and
+no general execution, so the read-only posture is preserved in substance while
+the surface improves.
+
+**Landed (the unification):** the one surface — `finding`/`conclude` verbs, the
+typed ABI, `read_verdict`, the force-owning `install_tool`, and the claude scoped
+grant — replaces the standalone `verdict` tool. It is INERT until a spec sets
+`verdict_tool=True`. **Follow-up (backend emit-path parity):** wire the brief to
+advertise the verbs, and bring the remaining backends onto the surface as peers
+— hermes writes the ABI directly (no terminal, `file` toolset only; this also
+fixes its no-resume/no-repair gap), and the explicit codex call (a `read-only`
+sandbox blocks the tool's write, so keeping it tight means it stays message-based
+until a narrow write path exists).
 
 **Acceptance:** a judge session produces a verdict with zero repair rounds;
-a malformed call is corrected in-session; the judge can run `verdict` and
+a malformed call is corrected in-session; the judge can run the tool and
 provably nothing else (an attempted other command is refused); the repair-loop
 code for migrated roles is gone; verdict quality (findings parse rate) is
 measurably ≥ today's.

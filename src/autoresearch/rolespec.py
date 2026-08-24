@@ -61,12 +61,12 @@ class RoleSpec:
     # Editing roles only: repo-relative write allowlist. None for read-only
     # judges — declared here for legibility, enforced by the tool set too.
     scope: tuple[str, ...] | None = None
-    # Judges only: emit the verdict through the installed verdict tool (one
-    # allow-listed command) instead of a final JSON message (docs/design/
-    # role-cli.md Phase 2). Requires `output_schema` (a verdict IS that schema);
-    # distinct from `can_execute` — a single scoped command, never general Bash,
-    # so the read-only invariant still holds. A backend that cannot host the
-    # tool falls back to parsing the final message (harness
+    # Judges only: emit the verdict through the installed syscall tool (the
+    # `conclude` syscall, one allow-listed command) instead of a final JSON
+    # message (docs/design/role-cli.md). Requires `output_schema` (a verdict IS
+    # that schema); distinct from `can_execute` — a single scoped command, never
+    # general Bash, so the read-only invariant still holds. A backend that cannot
+    # host the tool falls back to parsing the final message (harness
     # `supports_verdict_tool`), so this is a preference, not a hard requirement.
     verdict_tool: bool = False
 

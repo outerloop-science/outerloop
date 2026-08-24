@@ -190,6 +190,30 @@ def test_build_reviewer_harness_is_read_only() -> None:
     assert harness.max_turns == 40 and harness.timeout_s == 1800
 
 
+def test_verdict_tool_reviewer_gets_the_scoped_command_only(tmp_path: Path) -> None:
+    # a verdict_tool judge gets ONE scoped Bash command and nothing else — the
+    # read-only boundary holds (no plain Bash), and the harness declares the
+    # capability so run_role reads the committed verdict (docs/design/role-cli.md
+    # Phase 2). Default specs stay verdict_tool=False, so this is opt-in only.
+    from dataclasses import replace
+
+    from autoresearch.harness import ClaudeCodeHarness
+    from autoresearch.review_agent import build_reviewer_harness
+    from autoresearch.roles import reviewer_spec
+    from autoresearch.syscall import CLAUDE_ALLOW_PATTERN
+
+    h = build_reviewer_harness("k", replace(reviewer_spec(), verdict_tool=True))
+    assert isinstance(h, ClaudeCodeHarness)  # default backend
+    assert h.supports_verdict_tool is True
+    assert CLAUDE_ALLOW_PATTERN in h.allowed_tools  # the one scoped command
+    assert "Bash" not in h.allowed_tools  # never plain (general) Bash
+    # inert by default: an unmodified reviewer spec grants nothing extra
+    h0 = build_reviewer_harness("k")
+    assert isinstance(h0, ClaudeCodeHarness)
+    assert h0.supports_verdict_tool is False
+    assert CLAUDE_ALLOW_PATTERN not in h0.allowed_tools
+
+
 def test_build_reviewer_harness_codex_backend() -> None:
     from autoresearch.harness import CodexHarness
     from autoresearch.review_agent import build_reviewer_harness

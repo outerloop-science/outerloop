@@ -316,6 +316,8 @@ class ClaudeCodeHarness:
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
     supports_resume = True  # native --resume, bench-validated
+    # True only when built with the scoped verdict-tool grant (build_reviewer_harness)
+    supports_verdict_tool: bool = False
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None

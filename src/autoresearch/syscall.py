@@ -1,25 +1,32 @@
-"""Author syscalls: the kernel side of launch / sleep (research-loop.md, "one
-syscall").
+"""Research syscalls: the kernel side of the one agent-facing syscall surface
+(research-loop.md, "one syscall"; role-cli.md, "one CLI per role").
 
-The author lives in the sandbox; real experiments run outside it. The AUTHOR's
-interface is a TOOL (`syscall_cli.py`, installed at `.autoresearch/syscall`):
-`python .autoresearch/syscall launch ... -- <cmd>` then `... sleep`. This module
-is the KERNEL side — `.autoresearch/syscall.json` is the internal ABI the tool
-commits on `sleep`, and `read_request` here is its authoritative validator
-(never trusting the tool, which is agent-controlled once dropped). The author
-writes the ABI and ends its session — that IS the sleep. The kernel reads the
-request, submits each launch as a jailed job on a sealed snapshot of the
-author's tree, parks the run, and later wakes the SAME session with every job's
-results delivered as data (`render_wake`). A session that ends with no request
-follows today's path (implicit submit; the explicit submit payload is Phase B).
+Every role talks to the kernel through ONE tool (`syscall_cli.py`, installed at
+`.autoresearch/syscall`); a syscall is TYPED and the kernel dispatches by type.
+This module is the KERNEL side — `.autoresearch/syscall.json` is the internal
+ABI the tool commits, and the readers here are its authoritative validators
+(never trusting the tool, which is agent-controlled once dropped):
+
+- The AUTHOR's `sleep` syscall (`type: "sleep"`): the author lives in the
+  sandbox, real experiments run outside it. It writes the ABI and ends its
+  session — that IS the sleep. `read_request` reads it; the kernel submits each
+  launch as a jailed job on a sealed snapshot, parks the run, and later wakes
+  the SAME session with every job's results delivered as data (`render_wake`).
+  A session that ends with no request follows today's path (implicit submit).
+- The JUDGE's `conclude` syscall (`type: "verdict"`): a judge's `exit()`,
+  carrying its findings. `read_verdict` reads it — the same `{findings, notes}`
+  shape `run_role` used to parse from a final message, minus the parse-and-repair
+  loop (each finding was one validated call, so the verdict is well-formed BY
+  CONSTRUCTION). A backend whose judge cannot run the tool falls back to the
+  parse path in `run_role`.
 
 The `.autoresearch/` directory is kernel-excluded from the diff via
 `.git/info/exclude` (repo-local, never a tracked edit), so requests and
 delivered results never pollute the candidate, the scope check, or the drift
 fingerprints.
 
-Budgets (three independent generous counts — research-loop-buildout.md, "the
-syscall surface"): launches are metered by the contract's `depth_k`, sleeps by
+Budgets (independent generous counts — research-loop-buildout.md, "the syscall
+surface"): launches are metered by the contract's `depth_k`, sleeps by
 `sleep_k`. The counts are enforced here arithmetically; the *prompt* carries
 the warnings (warning, never an enforced reserve).
 """
@@ -31,12 +38,19 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from autoresearch.brief import _fence
 
 SYSCALL_DIR = ".autoresearch"
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
+# How a judge invokes the installed tool (cwd = the judge's workspace) and the
+# claude allow-tools pattern that grants EXACTLY that command prefix — the single
+# allow-listed invocation (never general Bash) that lets a read-only judge run
+# the tool. One owner so the install path and the grant agree.
+TOOL_INVOCATION = f"python {SYSCALL_DIR}/syscall"
+CLAUDE_ALLOW_PATTERN = f"Bash({TOOL_INVOCATION}:*)"
 
 # Per-request bounds (the budget is separate: depth_k / sleep_k).
 # The whole file is read size-capped FIRST (agent-controlled input); the cap is
@@ -52,6 +66,10 @@ MAX_LAUNCH_MINUTES = 240
 MAX_OUTPUT_CHARS = 8_000
 # Per artifact file copied back into the sandbox.
 MAX_ARTIFACT_BYTES = 5_000_000
+# Verdict (judge) bounds. The whole ABI is size-capped FIRST (agent-controlled).
+MAX_VERDICT_BYTES = 1_000_000  # generous; agent-controlled, so size-capped first
+CONFIDENCES = frozenset({"low", "medium", "high"})
+KINDS = frozenset({"change", "suggestion", "question", "note"})
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
@@ -60,6 +78,12 @@ class SyscallError(ValueError):
     """The request file exists but cannot be honored as written. Loud by
     design: a malformed request is never silently discarded (the author meant
     something), and never partially honored."""
+
+
+class VerdictError(ValueError):
+    """The committed verdict is missing or malformed. Loud: a judge that ran
+    the tool meant a verdict, so a broken file is an error, never a silent
+    empty pass (silence is never endorsement)."""
 
 
 @dataclass(frozen=True)
@@ -130,7 +154,11 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         raise SyscallError(f"syscall.json is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise SyscallError("syscall.json must be a JSON object")
-    unknown = set(data) - {"launches", "note"}
+    # a sleep is one syscall TYPE; the kernel reads this file in author context,
+    # so anything else here (e.g. a verdict) is a wrong-type request, not a sleep.
+    if data.get("type") != "sleep":
+        raise SyscallError(f"expected a sleep syscall, got type {data.get('type')!r}")
+    unknown = set(data) - {"type", "launches", "note"}
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
     note = data.get("note", "")
@@ -182,6 +210,109 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     return SyscallRequest(launches=tuple(launches), note=note)
 
 
+def read_verdict(workspace: Path) -> dict[str, Any] | None:
+    """Read and validate the judge's committed verdict syscall (`type:
+    "verdict"`). None = the judge never concluded (no file) — the caller treats
+    that as no-verdict, exactly like an errored session. A present-but-malformed
+    verdict raises VerdictError.
+
+    Validates every field the schema requires (the tool's checks are advisory);
+    an unknown enum, a wrong type, or a missing key fails here — the verdict is
+    well-formed after this returns. Unlike `read_request` (a sleep is consumed so
+    a bad one can never re-park a later run), the verdict is read once at session
+    end and not consumed here; `install_tool` force-owns the channel, so no stale
+    ABI from the untrusted checkout survives into this read."""
+    path = workspace / SYSCALL_DIR / SYSCALL_FILE
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(MAX_VERDICT_BYTES + 1)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise VerdictError(f"verdict unreadable: {exc}") from exc
+    if len(head) > MAX_VERDICT_BYTES:
+        raise VerdictError(f"verdict exceeds {MAX_VERDICT_BYTES} bytes")
+    try:
+        data = json.loads(head.decode("utf-8", "replace"))
+    except json.JSONDecodeError as exc:
+        raise VerdictError(f"verdict is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise VerdictError("verdict must be a JSON object")
+    if data.get("type") != "verdict":
+        raise VerdictError(f"expected a verdict syscall, got type {data.get('type')!r}")
+    if "notes" not in data:
+        raise VerdictError("verdict is missing required key: notes")
+    notes = data["notes"]
+    if not isinstance(notes, str):
+        raise VerdictError("notes must be a string")
+    raw = data.get("findings")
+    if not isinstance(raw, list):
+        raise VerdictError("findings must be a list")
+    findings = [_validate_finding(i, item) for i, item in enumerate(raw)]
+    return {"findings": findings, "notes": notes}
+
+
+_REQUIRED_FINDING_KEYS = ("file", "line", "confidence", "summary", "detail", "blocking", "kind")
+
+
+def _validate_finding(i: int, item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise VerdictError(f"finding #{i} must be an object")
+    file = item.get("file")
+    if not isinstance(file, str) or not file:
+        raise VerdictError(f"finding #{i}: file must be a non-empty string")
+    # ENFORCE the schema's required keys — do not default them. Defaulting
+    # `blocking` to False in particular is a fail-open: a finding that omits it
+    # would silently not gate ("silence is never endorsement"). The tool always
+    # emits every key, so this only rejects a malformed hand-written verdict
+    # (the tool is not the trust boundary).
+    missing = [k for k in _REQUIRED_FINDING_KEYS if k not in item]
+    if missing:
+        raise VerdictError(f"finding {file}: missing required keys {missing}")
+    line = item["line"]
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+        raise VerdictError(f"finding {file}: line must be a positive (1-indexed) integer or null")
+    confidence = item["confidence"]
+    # check TYPE before membership: `in frozenset` raises TypeError on an
+    # unhashable agent value (e.g. confidence: []) — that must surface as a
+    # VerdictError, not a crash.
+    if not isinstance(confidence, str) or confidence not in CONFIDENCES:
+        raise VerdictError(f"finding {file}: confidence must be one of {sorted(CONFIDENCES)}")
+    kind = item["kind"]
+    if not isinstance(kind, str) or kind not in KINDS:
+        raise VerdictError(f"finding {file}: kind must be one of {sorted(KINDS)}")
+    for key in ("summary", "detail"):
+        if not isinstance(item[key], str) or not item[key]:
+            raise VerdictError(f"finding {file}: {key} must be a non-empty string")
+    blocking = item["blocking"]
+    if not isinstance(blocking, bool):
+        raise VerdictError(f"finding {file}: blocking must be a boolean")
+    out = {
+        "file": file,
+        "line": line,
+        "confidence": confidence,
+        "summary": item["summary"],
+        "detail": item["detail"],
+        "blocking": blocking,
+        "kind": kind,
+    }
+    category = item.get("category", "")
+    # TYPE first, then truthiness: a falsy non-string (category: 0 or []) must
+    # be a VerdictError, not silently dropped by the `if category:` guard.
+    # Absent or "" is legitimately "no category".
+    if not isinstance(category, str):
+        raise VerdictError(f"finding {file}: category must be a string")
+    if category:  # verifier-only; a non-empty string
+        # (str here, so `in CATEGORIES` cannot raise on unhashables) — CLAMP an
+        # unknown category to "other" rather than reject, the existing verifier
+        # stance (verifier.py: "a free-string category must not leak through"),
+        # so a taxonomy typo normalizes instead of nuking a verdict.
+        from autoresearch.verifier import CATEGORIES
+
+        out["category"] = category if category in CATEGORIES else "other"
+    return out
+
+
 def ensure_excluded(workspace: Path) -> None:
     """Exclude `.autoresearch/` from the diff via .git/info/exclude —
     repo-local (never a tracked edit), idempotent, and effective for
@@ -200,18 +331,32 @@ def ensure_excluded(workspace: Path) -> None:
 
 
 def install_tool(workspace: Path) -> None:
-    """Drop the agent-facing launch/sleep tool into the sandbox.
+    """Drop the agent-facing syscall tool into the workspace at
+    `.autoresearch/syscall`. A verbatim copy of `syscall_cli.py` (standalone by
+    contract: stdlib-only, since the target repo does not have autoresearch
+    installed), living inside the excluded channel dir so it never enters diffs,
+    scope, or fingerprints.
 
-    The AUTHOR's interface is the tool (`python .autoresearch/syscall launch
-    ... -- <cmd>`; `... sleep`), not the JSON — the file this module reads is
-    the internal ABI the tool commits on `sleep`. The tool is a verbatim copy
-    of `syscall_cli.py` (standalone by contract: stdlib-only, since the target
-    repo does not have autoresearch installed), living inside the excluded
-    channel dir so it never enters diffs, scope, or fingerprints."""
+    The `.autoresearch/` channel must be KERNEL-OWNED. A judge's workspace is an
+    untrusted (author-authored) checkout, which could ship `.autoresearch` as a
+    symlink to a host path so `write_text` writes through it, or a pre-planted
+    `syscall.json` a non-concluding judge's `read_verdict` would then read as a
+    forged verdict. Remove any pre-existing `.autoresearch` (symlink → unlink,
+    dir → rmtree, file → unlink) and recreate it as a dir we own, so nothing is
+    followed and no stale ABI survives. (The author path pre-checks the channel
+    and disables syscalls if it pre-exists, so this only ever fires for a judge.)
+    """
+    import shutil
+
     from autoresearch import syscall_cli
 
-    tool = workspace / SYSCALL_DIR / "syscall"
-    tool.parent.mkdir(exist_ok=True)
+    channel = workspace / SYSCALL_DIR
+    if channel.is_symlink() or (channel.exists() and not channel.is_dir()):
+        channel.unlink()
+    elif channel.is_dir():
+        shutil.rmtree(channel)
+    channel.mkdir(parents=True)
+    tool = channel / "syscall"
     tool.write_text(Path(syscall_cli.__file__).read_text())
     tool.chmod(0o755)
 

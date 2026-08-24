@@ -98,7 +98,7 @@ def run_role(
     # the parse-and-repair path below.
     use_verdict_tool = spec.verdict_tool and getattr(harness, "supports_verdict_tool", False)
     if use_verdict_tool:
-        from autoresearch.verdict import install_tool
+        from autoresearch.syscall import install_tool
 
         install_tool(workspace)
     session = harness.run(brief_text, workspace, resume_session_id)
@@ -113,7 +113,7 @@ def run_role(
         # read_verdict is authoritative. A missing verdict (the judge never
         # concluded) or a malformed one is a failure — the caller posts a skip
         # stub, never a clean read (silence is never endorsement).
-        from autoresearch.verdict import VerdictError, read_verdict
+        from autoresearch.syscall import VerdictError, read_verdict
 
         try:
             data = read_verdict(workspace)

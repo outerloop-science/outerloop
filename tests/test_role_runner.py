@@ -148,11 +148,12 @@ class _VerdictHarness:
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         # the tool was installed before run (we assert the dir exists); simulate
-        # the judge committing a verdict
-        self.installed = (Path(workspace) / ".verdict" / "verdict").exists()
+        # the judge committing a verdict syscall (type-tagged, as the tool does)
+        self.installed = (Path(workspace) / ".autoresearch" / "syscall").exists()
         if self.verdict is not None:
-            (Path(workspace) / ".verdict").mkdir(exist_ok=True)
-            (Path(workspace) / ".verdict" / "verdict.json").write_text(json.dumps(self.verdict))
+            d = Path(workspace) / ".autoresearch"
+            d.mkdir(exist_ok=True)
+            (d / "syscall.json").write_text(json.dumps({"type": "verdict", **self.verdict}))
         return _session("(verdict via tool)")
 
 
@@ -216,4 +217,4 @@ def test_verdict_spec_falls_back_to_parsing_when_backend_lacks_support(tmp_path:
     harness = _SeqHarness(results=[_session(_FINDINGS)])  # supports_verdict_tool absent -> False
     result = run_role(_verdict_spec(), harness, "x", tmp_path)
     assert result.ok and result.data == {"findings": [], "notes": "looks fine"}
-    assert not (tmp_path / ".verdict").exists()  # tool NOT installed
+    assert not (tmp_path / ".autoresearch").exists()  # tool NOT installed
