@@ -1781,6 +1781,13 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert record.stage["syscall_note"] == "look at the tails"
     assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
     assert record.resume_session_id == "s1"  # the wake resumes the SAME session
+    # the agent-facing TOOL + its budget were installed into the channel dir
+    import json as _json
+
+    ws = tmp_path / "state" / "runs" / "tsp-1" / "ws"
+    assert (ws / ".autoresearch" / "syscall").exists()
+    budget = _json.loads((ws / ".autoresearch" / "budget.json").read_text())
+    assert budget == {"launches_remaining": 3, "sleeps_remaining": 4}
     # the job is the eval jail on the sealed tree; the author's command travels
     # via command.txt (never shell-interpolated into the script)
     ev = tmp_path / "state" / "runs" / "tsp-1" / "eval-launch-probe"

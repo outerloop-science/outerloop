@@ -80,6 +80,8 @@ from autoresearch.runstate import (
 )
 from autoresearch.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SYSCALL_FILE, SyscallRequest
 from autoresearch.syscall import ensure_excluded as syscall_excluded
+from autoresearch.syscall import install_tool as syscall_install_tool
+from autoresearch.syscall import write_budget as syscall_write_budget
 from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
@@ -1326,6 +1328,17 @@ def live_climb(
             author_syscalls = False
         if author_syscalls:
             syscall_excluded(workspace)
+            # the author's interface is the TOOL (`python .autoresearch/syscall
+            # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
+            # install it plus the informational budget its `status` shows.
+            syscall_install_tool(workspace)
+            _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
+            if _bench is not None:
+                syscall_write_budget(
+                    workspace,
+                    launches_remaining=_bench.depth_k,
+                    sleeps_remaining=_bench.sleep_k,
+                )
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
