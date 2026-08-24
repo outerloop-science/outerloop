@@ -117,6 +117,21 @@ def test_validation_fails_fast_in_session(tmp_path: Path, capsys) -> None:
     assert "already staged" in capsys.readouterr().err
 
 
+def test_artifact_path_check_matches_the_kernel(tmp_path: Path, capsys) -> None:
+    # the tool's fast check must accept EXACTLY what the kernel accepts, or the
+    # author burns a sleep on a post-session error (terra #133 r2). Cross-check
+    # each tricky path against both validators.
+    from autoresearch.syscall import _rel_path_ok as kernel_ok
+
+    cases = ["out/x.json", "", ".", "out/./x", "out//x", "../x", "/abs", "~/x", "a\\b"]
+    for path in cases:
+        rc = run(tmp_path, "launch", "--name", "a", "--artifact", path, "--", "echo", "hi")
+        run(tmp_path, "cancel")
+        capsys.readouterr()
+        tool_ok = rc == 0
+        assert tool_ok == kernel_ok(path), (path, tool_ok, kernel_ok(path))
+
+
 def test_sleep_with_nothing_staged_is_a_checkpoint(tmp_path: Path, capsys) -> None:
     assert run(tmp_path, "sleep") == 0
     assert "checkpoint" in capsys.readouterr().out

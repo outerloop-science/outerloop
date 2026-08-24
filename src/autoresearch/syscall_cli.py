@@ -53,6 +53,17 @@ class ToolError(Exception):
     """A bad invocation: printed to stderr, exit 2, nothing staged."""
 
 
+def _rel_path_ok(path: str) -> bool:
+    """MUST match syscall._rel_path_ok exactly — the CLI's fast check has to
+    accept precisely what the kernel accepts, or the author burns a sleep on a
+    post-session validation error (the very thing the tool exists to prevent).
+    Rejects absolute/`~`, backslashes, over-long, and any empty/`.`/`..`
+    component (so ``, `.`, `out/./x`, `out//x` all fail here as they do there)."""
+    if not path or len(path) > 500 or path.startswith(("/", "~")) or "\\" in path:
+        return False
+    return all(p not in ("", ".", "..") for p in path.split("/"))
+
+
 def _dir(root: Path) -> Path:
     d = root / DIR
     d.mkdir(exist_ok=True)
@@ -103,8 +114,8 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     if len(args.artifact) > MAX_ARTIFACTS:
         raise ToolError(f"at most {MAX_ARTIFACTS} --artifact paths")
     for a in args.artifact:
-        if a.startswith(("/", "~")) or ".." in a.split("/") or "\\" in a:
-            raise ToolError(f"--artifact {a!r} must be a repo-relative path, no traversal")
+        if not _rel_path_ok(a):
+            raise ToolError(f"--artifact {a!r} must be a repo-relative file path, no traversal")
     staged = _load_staged(root)
     if any(la["name"] == args.name for la in staged["launches"]):
         raise ToolError(f"a launch named {args.name!r} is already staged")
