@@ -95,6 +95,17 @@ def test_invalid_requests_are_refused_loudly(tmp_path: Path, payload, match) -> 
         read_request(tmp_path)
 
 
+def test_oversized_request_file_is_refused_before_parsing(tmp_path: Path) -> None:
+    # the file is agent-controlled: a giant request must be refused by SIZE
+    # before any parse work (and still consumed).
+    from autoresearch.syscall import MAX_REQUEST_BYTES
+
+    f = write_req(tmp_path, "x" * (MAX_REQUEST_BYTES + 1))
+    with pytest.raises(SyscallError, match="exceeds"):
+        read_request(tmp_path)
+    assert not f.exists()
+
+
 def test_minutes_are_clamped_to_the_ceiling(tmp_path: Path) -> None:
     write_req(tmp_path, {"launches": [{"name": "big", "command": "x", "minutes": 100000}]})
     req = read_request(tmp_path)

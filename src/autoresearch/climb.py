@@ -287,6 +287,13 @@ def _post_issue_finished(
 # would cancel a still-queued job as "unschedulable".
 PARK_QUEUE_SLACK_MIN = 12 * 60
 
+# Author syscalls (research-loop-buildout.md Phase A) ship in two parts: the
+# sleep side exists, the WAKE (gather launch results, resume the session) is
+# part 2. Until part 2 flips this, arming AUTORESEARCH_AUTHOR_SYSCALLS alone
+# must not produce an unwakeable author-sleep park (terra, #132 r5) — the
+# feature stays off, loudly.
+AUTHOR_SLEEP_WAKE_READY = False
+
 
 def _park_run(
     run_root: Path,
@@ -1311,6 +1318,12 @@ def live_climb(
         # other agent edit, not silently hidden by a magic dir name (terra,
         # #132 r2 — the off state stays byte-identical to today).
         author_syscalls = bool(os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS"))
+        if author_syscalls and not AUTHOR_SLEEP_WAKE_READY:
+            log.warning(
+                "AUTORESEARCH_AUTHOR_SYSCALLS is set but the wake side is not "
+                "built yet (Phase A part 2); author syscalls stay OFF this run"
+            )
+            author_syscalls = False
         if author_syscalls:
             syscall_excluded(workspace)
 

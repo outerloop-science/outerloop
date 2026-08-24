@@ -34,6 +34,9 @@ SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
 
 # Per-request bounds (the budget is separate: depth_k / sleep_k).
+# The whole file is read size-capped FIRST (agent-controlled input); the cap is
+# roomy for the field bounds below (8 launches x 2000-char commands + note).
+MAX_REQUEST_BYTES = 65_536
 MAX_LAUNCHES_PER_SLEEP = 8
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS_PER_LAUNCH = 8
@@ -100,7 +103,14 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     never re-park a later run."""
     req_file = workspace / SYSCALL_DIR / SYSCALL_FILE
     try:
-        raw = req_file.read_text()
+        # size-cap the read: the file is agent-controlled, so a giant request
+        # must not exhaust orchestrator memory before the field checks run. Read
+        # one byte past the cap so an at-cap file is distinguishable from over.
+        with req_file.open("rb") as fh:
+            head = fh.read(MAX_REQUEST_BYTES + 1)
+        if len(head) > MAX_REQUEST_BYTES:
+            raise SyscallError(f"syscall.json exceeds {MAX_REQUEST_BYTES} bytes")
+        raw = head.decode("utf-8", "replace")
     except FileNotFoundError:
         return None
     except OSError as exc:

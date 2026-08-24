@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch import climb as climb_mod
 from autoresearch.climb import _park_run, live_climb, resume_run
 from autoresearch.dispatch import Snapshot
 from autoresearch.harness import SessionResult
@@ -1747,6 +1748,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     import json as json_mod
 
     monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     outcome, github = run_live(
         tmp_path,
         target_repo_syscalls,
@@ -1794,6 +1796,7 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
     import json as json_mod
 
     monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
     seed = tmp_path / "seed"
     (seed / ".autoresearch").mkdir()
@@ -1827,6 +1830,29 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
     assert sbatched == []
 
 
+def test_armed_flag_without_wake_ready_stays_fully_off(tmp_path, target_repo, monkeypatch) -> None:
+    # arming the env flag before part 2 (the wake) exists must not produce an
+    # unwakeable author-sleep park: the feature stays off for the run — the
+    # request file is inert AND staged like any edit (terra #132 r5).
+    import json as json_mod
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    # AUTHOR_SLEEP_WAKE_READY stays False (the shipped default)
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {"launches": [{"name": "x", "command": "y"}]}
+            ),
+        },
+        values=[],
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "scope-violation"  # staged + judged, exactly like flag-off
+
+
 def test_flag_off_stages_stray_syscall_files_like_any_edit(tmp_path, target_repo) -> None:
     # with the feature OFF, the `.autoresearch/` name is NOT magic: an
     # untracked file there is staged and judged like any other agent edit
@@ -1849,6 +1875,7 @@ def test_flag_on_excludes_the_channel_from_the_candidate(
     # with the feature ON, the channel dir is invisible to diffs/scope/drift:
     # a stray non-request file there neither blocks nor ships.
     monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     outcome, _ = run_live(
         tmp_path,
         target_repo,
@@ -1873,6 +1900,7 @@ def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
     from autoresearch.measure import DispatchSettings
 
     monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     cancelled: list[str] = []
     calls = {"sbatch": 0}
 
