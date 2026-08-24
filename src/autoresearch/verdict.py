@@ -86,10 +86,13 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
     if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
         raise VerdictError(f"finding {file}: line must be a positive (1-indexed) integer or null")
     confidence = item["confidence"]
-    if confidence not in CONFIDENCES:
+    # check TYPE before membership: `in frozenset` raises TypeError on an
+    # unhashable agent value (e.g. confidence: []) — that must surface as a
+    # VerdictError, not a crash (terra #136 r4).
+    if not isinstance(confidence, str) or confidence not in CONFIDENCES:
         raise VerdictError(f"finding {file}: confidence must be one of {sorted(CONFIDENCES)}")
     kind = item["kind"]
-    if kind not in KINDS:
+    if not isinstance(kind, str) or kind not in KINDS:
         raise VerdictError(f"finding {file}: kind must be one of {sorted(KINDS)}")
     for key in ("summary", "detail"):
         if not isinstance(item[key], str) or not item[key]:
@@ -110,6 +113,7 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
     if category:  # verifier-only; keep only when the judge set it
         if not isinstance(category, str):
             raise VerdictError(f"finding {file}: category must be a string")
+        # (category is str here, so `in CATEGORIES` cannot raise on unhashables)
         # CLAMP an unknown category to "other" rather than reject — same stance
         # as the existing verifier path (verifier.py: "a free-string category
         # must not leak through"), so a taxonomy typo normalizes instead of

@@ -257,6 +257,27 @@ def test_reader_rejects_a_finding_missing_blocking(tmp_path: Path) -> None:
         read_verdict(tmp_path)
 
 
+def test_reader_handles_unhashable_enum_values(tmp_path: Path) -> None:
+    # a hand-written finding with a list where a string enum belongs must raise
+    # VerdictError, not crash the reader with TypeError (terra #136 r4).
+    d = tmp_path / ".verdict"
+    d.mkdir(exist_ok=True)
+    for bad in ("confidence", "kind"):
+        f = {
+            "file": "x",
+            "line": 1,
+            "confidence": "high",
+            "summary": "s",
+            "detail": "d",
+            "blocking": True,
+            "kind": "note",
+        }
+        f[bad] = []  # unhashable
+        (d / "verdict.json").write_text(json.dumps({"findings": [f], "notes": ""}))
+        with pytest.raises(VerdictError, match=bad):
+            read_verdict(tmp_path)
+
+
 def test_reader_size_caps_a_giant_verdict(tmp_path: Path) -> None:
     from autoresearch.verdict import MAX_VERDICT_BYTES
 
