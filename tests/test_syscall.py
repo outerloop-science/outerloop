@@ -228,6 +228,26 @@ def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
     assert crashed.exit_code is None and "OOM" in crashed.stderr_tail
 
 
+def test_gather_results_reads_only_the_tail_of_huge_output(tmp_path) -> None:
+    # launch output is agent-controlled and can be arbitrarily large: the wake
+    # must read only the trailing window, never load the whole file
+    # (terra #135 r1).
+    from autoresearch.syscall import MAX_OUTPUT_CHARS, Launch, gather_results
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ev = run_dir / "eval-launch-big"
+    ev.mkdir(parents=True)
+    (ev / "exit-code").write_text("0")
+    with (ev / "stdout").open("w") as fh:
+        fh.write("x" * (MAX_OUTPUT_CHARS * 50))  # far past the window
+        fh.write("\nFINAL: 0.42\n")
+    (results,) = gather_results(run_dir, ws, (Launch("big", "c", 30),))
+    assert len(results.stdout_tail) <= MAX_OUTPUT_CHARS
+    assert "FINAL: 0.42" in results.stdout_tail  # the tail, not the head
+
+
 def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     """The job writer's copy-out, EXECUTED: declared file delivered; oversized
     and missing ones recorded in artifacts.log; a shell-metacharacter name is

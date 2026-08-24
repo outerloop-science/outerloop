@@ -2556,8 +2556,12 @@ def main() -> int:
         # with its launches' results). A panel-less candidate wake stays a pure
         # read-decide-publish job and must not require the author key.
         _wake_stage = getattr(_wake_record, "stage", None) or {}
-        if wake_lenses or _wake_stage.get("phase") == "author-sleep":
+        if wake_lenses:
+            # the panel's judges need the verifier key; an author-sleep wake
+            # alone does NOT — a panel-less deployment must not be forced to
+            # provision an unused credential (terra, #135 r1).
             wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+        if wake_lenses or _wake_stage.get("phase") == "author-sleep":
             wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_editor_harness(

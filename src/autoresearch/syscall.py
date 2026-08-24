@@ -275,8 +275,8 @@ def gather_results(
             exit_code: int | None = int((ev / "exit-code").read_text().strip())
         except (OSError, ValueError):
             exit_code = None
-        stdout = _read_text(ev / "stdout")
-        stderr = _read_text(ev / "stderr")
+        stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
+        stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
         skipped = tuple(ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip())
 
         dest = workspace / SYSCALL_DIR / RESULTS_SUBDIR / launch.name
@@ -294,8 +294,8 @@ def gather_results(
             LaunchResult(
                 name=launch.name,
                 exit_code=exit_code,
-                stdout_tail=_tail(stdout),
-                stderr_tail=_tail(stderr),
+                stdout_tail=stdout,
+                stderr_tail=stderr,
                 delivered=tuple(delivered),
                 skipped=skipped,
             )
@@ -303,11 +303,34 @@ def gather_results(
     return tuple(results)
 
 
-def _read_text(path: Path) -> str:
+def _read_text(path: Path, cap: int = 65_536) -> str:
+    """A bounded head-read for kernel-shaped files (artifacts.log lines are
+    written by our own job script, bounded by construction — the cap is a
+    backstop, never load-the-world)."""
     try:
-        return path.read_text(errors="replace")
+        with path.open("rb") as fh:
+            return fh.read(cap).decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+def _read_tail(path: Path, max_chars: int) -> str:
+    """Read only the trailing bytes needed for `max_chars` — NEVER the whole
+    file. Launch stdout/stderr is agent-controlled and can be arbitrarily large;
+    loading it before truncating could exhaust the wake process
+    (terra, #135 r1). 4 bytes/char covers the UTF-8 worst case; a codepoint cut
+    at the window edge decodes as a replacement character, which is fine for a
+    tail."""
+    budget = max_chars * 4
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - budget))
+            data = fh.read(budget)
+    except OSError:
+        return ""
+    return data.decode("utf-8", "replace")[-max_chars:]
 
 
 def _tail(text: str) -> str:
