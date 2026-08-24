@@ -299,16 +299,18 @@ def _load_resume_transcript(session_home: Path, session_id: str) -> list[dict[st
     turns = data.get("turns") if isinstance(data, dict) else None
     if not isinstance(turns, list):
         return None
+    # Keep only turns that carry REAL content (non-blank text). A corrupted or
+    # tampered transcript in the session-writable home — `{"turns": []}`,
+    # `{"turns": [{}]}`, whitespace-only text, non-dict entries — then cleans to
+    # nothing and surfaces as "unavailable" (the caller errors) instead of
+    # resuming with an empty prior-context block, the exact context-blind resume
+    # this path exists to reject. A real transcript always has the fresh run's
+    # [user, assistant] pair with content.
     cleaned = [
         {"role": str(t.get("role", "")), "text": str(t.get("text", ""))}
         for t in turns
-        if isinstance(t, dict)
+        if isinstance(t, dict) and str(t.get("text", "")).strip()
     ]
-    # An empty (or all-invalid) turn list is NO usable context — a corrupted or
-    # tampered transcript in the session-writable home must surface as
-    # "unavailable" so the caller errors, NOT resume context-blind (the exact
-    # failure this whole path exists to reject). A real transcript always has
-    # the fresh run's [user, assistant] pair.
     return cleaned or None
 
 

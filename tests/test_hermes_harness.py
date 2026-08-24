@@ -175,7 +175,13 @@ def test_resume_with_empty_transcript_errors_not_blind(tmp_path: Path) -> None:
     workspace.mkdir()
     home = workspace.parent / f"{workspace.name}-home"
     home.mkdir(parents=True)
-    for corrupt in ('{"turns": []}', '{"turns": [1, 2, 3]}', "{}"):
+    for corrupt in (
+        '{"turns": []}',
+        '{"turns": [1, 2, 3]}',
+        "{}",
+        '{"turns": [{}]}',  # nonempty list, but no content -> still no context
+        '{"turns": [{"role": "user", "text": "   "}]}',  # whitespace-only text
+    ):
         _resume_transcript_path(home, "sid").write_text(corrupt)
         result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run(
             "brief", workspace, resume_session_id="sid"
