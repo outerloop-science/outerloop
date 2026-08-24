@@ -1186,6 +1186,22 @@ def climb_once(
                 sleep_budget=bench.sleep_k,
             )
             if not problem:
+                # Scope BEFORE the snapshot, same invariant as the candidate
+                # path below: an out-of-scope tree is never snapshotted OR
+                # executed — the out-of-scope edit could be to the ruler
+                # itself, and a launch runs code from this tree in an external
+                # job (terra, #132 r4). Same ending as the candidate path.
+                violations = out_of_scope(list(changed_paths()), contract)
+                if violations:
+                    return ClimbResult(
+                        outcome="scope-violation",
+                        baseline=baseline,
+                        session=session,
+                        note=(
+                            f"out-of-scope paths at launch: {', '.join(sorted(violations)[:10])}"
+                        ),
+                        run_seed=run_seed,
+                    )
                 sha = snapshot()
                 raise ClimbParked(
                     phase="author-sleep",

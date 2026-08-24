@@ -292,6 +292,22 @@ def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> 
     assert resumed == "s1"  # the SAME session was woken
 
 
+def test_author_sleep_refuses_an_out_of_scope_tree_before_launching(tmp_path: Path) -> None:
+    # same invariant as the candidate path: an out-of-scope tree is never
+    # snapshotted OR executed — a launch would run code from it in an external
+    # job (the edit could be to the ruler itself). No snapshot, no jobs.
+    _write_syscall(tmp_path, {"launches": [{"name": "probe", "command": "x"}]})
+    launched: list = []
+    result, _, _ = run_climb(
+        tmp_path,
+        [],
+        contract=DEEP_CONTRACT,
+        launcher=_fake_launcher(launched),
+        changed=["docs/ruler-tamper.md"],
+    )
+    assert result.outcome == "scope-violation" and launched == []
+
+
 def test_malformed_syscall_request_is_a_loud_error(tmp_path: Path) -> None:
     (tmp_path / ".autoresearch").mkdir()
     (tmp_path / ".autoresearch" / "syscall.json").write_text("{broken")
