@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Judge verdict tool, part 1 — the mechanism (docs/design/role-cli.md, Phase 2;
+  not yet wired into role_runner, so inert until part 2). `verdict_cli.py` is a
+  standalone (stdlib-only) tool the kernel installs at `.verdict/verdict`: a
+  judge records each finding as one validated call (`verdict finding --file
+  --line --confidence --summary --detail [--blocking] [--kind] [--category]`)
+  and commits with `verdict conclude`, replacing the "emit one JSON message,
+  kernel parses-and-repairs" path — the verdict is well-formed by construction.
+  `verdict.py` is the kernel side: `read_verdict` authoritatively validates the
+  committed `.verdict/verdict.json` (size-capped, every field checked; the tool
+  is convenience, never the trust boundary) into the same `{findings, notes}`
+  shape role_runner used to parse. Part 2 adds the RoleSpec allow-listed
+  single-command capability and rewires the judges onto it.
+
 - Author syscalls, part 2 — the WAKE (research-loop-buildout.md Phase A is
   complete; `AUTHOR_SLEEP_WAKE_READY` is flipped, so setting
   `AUTORESEARCH_AUTHOR_SYSCALLS` now enables the whole loop end to end):
