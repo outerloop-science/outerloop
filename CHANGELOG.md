@@ -9,7 +9,9 @@ Versions follow [SemVer](https://semver.org).
 ### Added
 
 - Author syscalls, part 1 — the SLEEP side (docs/design/research-loop-buildout.md,
-  Phase A; dark until `AUTORESEARCH_AUTHOR_SYSCALLS` is set): an enabled author
+  Phase A; fully dark: enabling needs BOTH `AUTORESEARCH_AUTHOR_SYSCALLS` and the
+  part-2 wake, which flips `AUTHOR_SLEEP_WAKE_READY` — arming the flag alone
+  logs a warning and changes nothing): an enabled author
   can end its session having written `.autoresearch/syscall.json` — launches to
   run outside the sandbox (each a jailed Slurm job on a sealed snapshot of its
   tree, stdout/stderr + declared artifact files captured for the wake) plus a
