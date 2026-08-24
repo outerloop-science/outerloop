@@ -62,6 +62,8 @@ def cmd_finding(root: Path, args: argparse.Namespace) -> str:
         raise ToolError(f"--confidence must be one of {CONFIDENCES}")
     if args.kind not in KINDS:
         raise ToolError(f"--kind must be one of {KINDS}")
+    if args.line is not None and args.line < 1:
+        raise ToolError("--line is 1-indexed; omit it for a non-local finding")
     for label, text in (("--summary", args.summary), ("--detail", args.detail)):
         if not text.strip():
             raise ToolError(f"{label} must not be empty")

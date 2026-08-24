@@ -70,8 +70,8 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
     if not isinstance(file, str) or not file:
         raise VerdictError(f"finding #{i}: file must be a non-empty string")
     line = item.get("line", None)
-    if line is not None and (not isinstance(line, int) or isinstance(line, bool)):
-        raise VerdictError(f"finding {file}: line must be an integer or null")
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+        raise VerdictError(f"finding {file}: line must be a positive (1-indexed) integer or null")
     confidence = item.get("confidence")
     if confidence not in CONFIDENCES:
         raise VerdictError(f"finding {file}: confidence must be one of {sorted(CONFIDENCES)}")
@@ -97,7 +97,13 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
     if category:  # verifier-only; keep only when the judge set it
         if not isinstance(category, str):
             raise VerdictError(f"finding {file}: category must be a string")
-        out["category"] = category
+        # CLAMP an unknown category to "other" rather than reject — same stance
+        # as the existing verifier path (verifier.py: "a free-string category
+        # must not leak through"), so a taxonomy typo normalizes instead of
+        # nuking a whole verdict. (terra #136 r1)
+        from autoresearch.verifier import CATEGORIES
+
+        out["category"] = category if category in CATEGORIES else "other"
     return out
 
 

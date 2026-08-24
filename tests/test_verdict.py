@@ -101,12 +101,12 @@ def test_verifier_category_is_carried(tmp_path: Path) -> None:
         "d",
         "--blocking",
         "--category",
-        "benchmark-gaming",
+        "ruler-fishing",
     )
     run(tmp_path, "conclude")
     verdict = read_verdict(tmp_path)
     assert verdict is not None
-    assert verdict["findings"][0]["category"] == "benchmark-gaming"
+    assert verdict["findings"][0]["category"] == "ruler-fishing"  # a real taxonomy value
 
 
 def test_tool_validation_fails_fast(tmp_path: Path, capsys) -> None:
@@ -129,6 +129,79 @@ def test_tool_validation_fails_fast(tmp_path: Path, capsys) -> None:
         rc = run(tmp_path, *argv)
         assert rc == 2
         assert needle in (capsys.readouterr().err)
+
+
+def test_line_must_be_positive_tool_and_reader(tmp_path: Path, capsys) -> None:
+    # 1-indexed: 0/negative are meaningless -> rejected both in-session and by
+    # the authoritative reader (terra #136 r1).
+    assert (
+        run(
+            tmp_path,
+            "finding",
+            "--file",
+            "x",
+            "--line",
+            "0",
+            "--confidence",
+            "high",
+            "--summary",
+            "s",
+            "--detail",
+            "d",
+        )
+        == 2
+    )
+    assert "1-indexed" in capsys.readouterr().err
+    d = tmp_path / ".verdict"
+    d.mkdir(exist_ok=True)
+    (d / "verdict.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "file": "x",
+                        "line": -3,
+                        "confidence": "high",
+                        "summary": "s",
+                        "detail": "d",
+                        "blocking": False,
+                        "kind": "note",
+                    }
+                ],
+                "notes": "",
+            }
+        )
+    )
+    with pytest.raises(VerdictError, match="positive"):
+        read_verdict(tmp_path)
+
+
+def test_reader_clamps_unknown_category_to_other(tmp_path: Path) -> None:
+    # a taxonomy typo normalizes to "other" rather than nuking the verdict —
+    # same stance as verifier.py's clamp (terra #136 r1).
+    d = tmp_path / ".verdict"
+    d.mkdir(exist_ok=True)
+    (d / "verdict.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "file": "x",
+                        "line": 1,
+                        "confidence": "high",
+                        "summary": "s",
+                        "detail": "d",
+                        "blocking": True,
+                        "kind": "note",
+                        "category": "made-up-thing",
+                    }
+                ],
+                "notes": "",
+            }
+        )
+    )
+    verdict = read_verdict(tmp_path)
+    assert verdict is not None and verdict["findings"][0]["category"] == "other"
 
 
 def test_reader_rejects_malformed_verdict_loudly(tmp_path: Path) -> None:
