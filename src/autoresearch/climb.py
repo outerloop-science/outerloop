@@ -22,7 +22,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from autoresearch.contract import load_contract
+from autoresearch.contract import Benchmark, Contract, load_contract
 from autoresearch.dispatch import (
     Snapshot,
     afterany_ids,
@@ -41,6 +41,7 @@ from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
     ClimbParked,
+    ClimbResult,
     EvalError,
     Evaluator,
     Measurer,
@@ -294,7 +295,7 @@ PARK_QUEUE_SLACK_MIN = 12 * 60
 # part 2. Until part 2 flips this, arming AUTORESEARCH_AUTHOR_SYSCALLS alone
 # must not produce an unwakeable author-sleep park (terra, #132 r5) — the
 # feature stays off, loudly.
-AUTHOR_SLEEP_WAKE_READY = False
+AUTHOR_SLEEP_WAKE_READY = True  # Phase A part 2 shipped: the wake services author-sleep parks
 
 
 def _park_run(
@@ -403,6 +404,293 @@ def _park_run(
     save_record(run_root, waiting, now)
 
 
+def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str):
+    """The launch side of the author syscalls, shared by the first pass
+    (live_climb) and the author-sleep wake: each launch becomes a jailed job on
+    the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
+    partially-submitted batch is reaped rather than orphaned."""
+
+    def launcher(sha: str, request: SyscallRequest) -> str:
+        from autoresearch.dispatch import eval_job_spec, write_eval_job
+
+        ids: list[str] = []
+        try:
+            for launch in request.launches:
+                script = write_eval_job(
+                    run_dir,
+                    f"launch-{launch.name}",
+                    repo_root=workspace,
+                    snapshot_sha=sha,
+                    command=launch.command,
+                    image=dispatch.image,
+                    artifacts=launch.artifacts,
+                    artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                )
+                ids.append(
+                    dispatch.compute.submit(
+                        eval_job_spec(
+                            script,
+                            job_name=f"{run_id}-launch-{launch.name}",
+                            account=dispatch.account,
+                            partition=dispatch.partition,
+                            eval_minutes=launch.minutes,
+                        )
+                    )
+                )
+        except Exception:
+            # a partial batch must not orphan: no park record was written yet,
+            # so nothing would ever wake or cancel the jobs that DID submit —
+            # reap them here, then let the caller end the run as the error it
+            # is (same stance as the failed-_park_run cancel).
+            for job_id in ids:
+                with contextlib.suppress(Exception):
+                    dispatch.compute.cancel(job_id)
+            raise
+        # a checkpoint sleep (no launches) parks with no dependency and wakes
+        # on the sweep's deadline floor — slow but correct; a fast requeue wake
+        # is a follow-up.
+        return "afterany:" + ":".join(ids) if ids else ""
+
+    return launcher
+
+
+def _wake_author_sleep(
+    *,
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    ws: Workspace,
+    workspace: Path,
+    run_dir: Path,
+    dispatch: DispatchSettings,
+    github: GitHubClient,
+    now: float,
+    secrets: tuple[str, ...],
+    base_branch: str,
+    base_sha: str,
+    sleep_ref: str,
+    contract_text: str,
+    contract: Contract,
+    bench: Benchmark,
+    config: ClimbConfig,
+    measurer: Measurer,
+    harness: Harness | None,
+    spec: RoleSpec | None,
+    panel_lenses: tuple[PanelLens, ...],
+    panel_revisions: int,
+    issue_number: int,
+    eval_minutes: int | None,
+) -> LiveClimbOutcome:
+    """Wake an author-sleep park: deliver the launches' results into the
+    sandbox, resume the SAME session through the climb's resume-entry with them
+    (data-fenced), and let the climb run — it may sleep again (re-park), finish
+    into the gate (whose dispatched measures park it as a CANDIDATE the next
+    wake decides), or end on a terminal. The session's workspace persisted on
+    disk exactly as the author left it (the launches ran on node-local
+    checkouts of the sealed sha), so the resumed session continues its own tree
+    — cumulative depth.
+    """
+    from autoresearch.syscall import Launch as SyscallLaunch
+    from autoresearch.syscall import gather_results, render_wake, write_budget
+
+    def _end(result: ClimbResult, drop_refs: list[str]) -> LiveClimbOutcome:
+        # a terminal from the resumed climb: report, ending record, issue note —
+        # the same ending shape every other terminal takes.
+        for ref in drop_refs:
+            drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
+        report_path = run_dir / "report.md"
+        _best_effort(
+            "run report",
+            lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
+            secrets,
+        )
+        ending = _ENDINGS_BY_OUTCOME.get(result.outcome, ABORTED)
+        final = _clear_stage(
+            RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": ending,
+                    "ending_note": redact(result.note, secrets),
+                }
+            )
+        )
+        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+        _post_issue_finished(
+            github,
+            config.target,
+            issue_number,
+            run_id,
+            result.outcome,
+            "",
+            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+            secrets,
+        )
+        return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+
+    # The wake NEEDS the author harness (it resumes the session). Fail as a
+    # named ending, not a crash: the run cannot proceed and re-waking will not
+    # help without the harness, so leaving it WAITING would just hit the stuck
+    # cap slowly.
+    if (
+        harness is None
+        or spec is None
+        or not record.resume_session_id
+        or not getattr(harness, "supports_resume", True)
+    ):
+        return _end(
+            ClimbResult(
+                outcome="session-error",
+                note="author-sleep wake needs the author harness/spec and a resumable session",
+            ),
+            drop_refs=[sleep_ref],
+        )
+
+    # Deliver: read each launch's job output, copy declared artifacts into the
+    # excluded channel, and render the data-fenced wake text. The stage stores
+    # only what the wake needs (names + artifacts); command/minutes placeholders
+    # never reach the author.
+    launches = tuple(
+        SyscallLaunch(
+            name=str(item.get("name", "")),
+            command="(ran)",
+            minutes=1,
+            artifacts=tuple(str(a) for a in item.get("artifacts", [])),
+        )
+        for item in _stage_launches(record)
+    )
+    results = gather_results(run_dir, workspace, launches)
+    launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
+    sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
+    wake_text = render_wake(
+        results,
+        str(record.stage.get("syscall_note", "")),
+        launches_used=launches_used,
+        launch_budget=bench.depth_k,
+        sleeps_used=sleeps_used,
+        sleep_budget=bench.sleep_k,
+    )
+    _best_effort(
+        "budget refresh",
+        lambda: write_budget(
+            workspace,
+            launches_remaining=max(0, bench.depth_k - launches_used),
+            sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
+        ),
+    )
+
+    # The wake's climb IO: measures go through the DISPATCHED measurer (this is
+    # a wake job with bounded walltime — the gate's evals run as their own jobs
+    # and park the run as a CANDIDATE), snapshots parent on base (same as the
+    # first pass: the clone was at base), and changed_paths carries no
+    # fingerprints (only the live inline publish needs them; every publish from
+    # here is the sealed-sha wake publish).
+    snapshots: list[Snapshot] = []
+
+    def snapshot() -> str:
+        snap = snapshot_tree(ws, base_sha)
+        if isinstance(measurer, LocalMeasurer):  # pragma: no cover - wake is dispatched
+            measurer.live[snap.commit] = workspace
+        snapshots.append(snap)
+        return snap.commit
+
+    def changed_paths() -> list[str]:
+        ws.git("add", "-A")
+        paths = ws.staged_paths()
+        ws.git("reset")
+        return paths
+
+    panel_runner = (
+        build_panel_runner(
+            ws,
+            run_dir,
+            base_sha,
+            panel_lenses,
+            contract_text,
+            config.target,
+            config.benchmark,
+            config.bot_login,
+            _utc_date(now),
+        )
+        if panel_lenses
+        else None
+    )
+
+    parked: ClimbParked | None = None
+    kept_ref = ""
+    try:
+        result = climb_once(
+            config,
+            contract_text,
+            workspace,
+            harness,
+            measurer,
+            base_sha,
+            snapshot,
+            ruler=RULER,
+            changed_paths=changed_paths,
+            spec=spec,
+            panel_runner=panel_runner,
+            panel_revisions=panel_revisions,
+            resume_session_id=record.resume_session_id,
+            improve_prompt=wake_text,
+            launcher=_make_launcher(dispatch, run_dir, workspace, run_id),
+            launches_used=launches_used,
+            sleeps_used=sleeps_used,
+        )
+    except ClimbParked as p:
+        # slept again, or the gate dispatched its measures (a candidate park the
+        # existing wake path decides). Keep the NEW park's snapshot ref; the OLD
+        # sleep ref is superseded once the new park persists.
+        kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
+        import time
+
+        try:
+            _park_run(
+                run_root,
+                record,
+                p,
+                kept_ref,
+                eval_minutes,
+                time.time(),
+                secrets,
+                base_branch=base_branch,
+            )
+        except Exception:
+            for job_id in afterany_ids(p.afterany):
+                dispatch.compute.cancel(job_id)
+            raise
+        parked = p
+        drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
+        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+    finally:
+        for snap in snapshots:
+            if parked and kept_ref and snap.ref == kept_ref:
+                continue
+            drop_snapshot(ws, snap)
+
+    # a terminal from the resumed session (session-error/-outage/-budget,
+    # scope-violation, eval-error; a dispatched gate never returns improved
+    # inline): end the run and release the sleep snapshot.
+    return _end(result, drop_refs=[sleep_ref])
+
+
+def _stage_launches(record: RunRecord) -> list[dict]:
+    """The persisted launch descriptors of an author-sleep stage (name +
+    artifacts), tolerating a malformed entry by skipping it (the job dirs are
+    keyed by name; a nameless entry has nothing to gather)."""
+    raw = record.stage.get("syscall_launches", [])
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict) and item.get("name")]
+
+
+def _utc_date(now: float) -> str:
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
+
+
 def resume_run(
     run_root: Path,
     run_id: str,
@@ -446,16 +734,12 @@ def resume_run(
     # instead of reading `remote.origin.url`.
     ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
 
-    # Every dispatched park is a CANDIDATE park (the baseline is measured by the
-    # gate after the session, not before it), so a candidate sha must be
-    # present. Guard rather than crash on `git diff base ""` if a stray
-    # baseline-shaped record ever reached here.
-    if stage.get("phase") != "candidate" or not stage.get("candidate_sha"):
-        # an "author-sleep" park lands here until the wake side (Phase A part 2:
-        # gather launch results, resume the session via the climb's resume-entry)
-        # exists — loud, so arming AUTORESEARCH_AUTHOR_SYSCALLS before part 2 is
-        # an operator error the record names rather than a silent hang.
-        raise EvalError(f"resume_run: run {run_id} is not a candidate park (stage={stage!r})")
+    # Two park kinds reach the wake: a CANDIDATE park (the gate's measures were
+    # dispatched) and an AUTHOR-SLEEP park (the author launched work and slept —
+    # research-loop-buildout.md Phase A). Both carry a sealed sha. Anything else
+    # is a stray record: guard rather than crash on `git diff base ""`.
+    if stage.get("phase") not in ("candidate", "author-sleep") or not stage.get("candidate_sha"):
+        raise EvalError(f"resume_run: run {run_id} is not a wakeable park (stage={stage!r})")
 
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
@@ -490,6 +774,39 @@ def resume_run(
     seed = int(stage["seed"])  # type: ignore[call-overload]
     suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]
     panel_reads = int(stage.get("panel_reads", 0))  # type: ignore[call-overload]
+
+    if stage.get("phase") == "author-sleep":
+        # The author slept on launches: deliver their results and RESUME the
+        # same session through the climb's resume-entry. Every exit is a park
+        # (slept again, or the gate dispatched its measures -> a candidate park
+        # the NEXT wake decides through the path below) or a terminal ending —
+        # never a publish, so the publish tail stays candidate-only.
+        return _wake_author_sleep(
+            run_root=run_root,
+            run_id=run_id,
+            record=record,
+            ws=ws,
+            workspace=workspace,
+            run_dir=run_dir,
+            dispatch=dispatch,
+            github=github,
+            now=now,
+            secrets=secrets,
+            base_branch=base_branch,
+            base_sha=base_sha,
+            sleep_ref=candidate_ref,
+            contract_text=contract_text,
+            contract=contract,
+            bench=bench,
+            config=config,
+            measurer=measurer,
+            harness=harness,
+            spec=spec,
+            panel_lenses=panel_lenses,
+            panel_revisions=panel_revisions,
+            issue_number=issue_number,
+            eval_minutes=eval_minutes,
+        )
 
     # rebuild the session from what the park saved: the (redacted) write-up and
     # its real spend, so the report shows true cost/turns. It is never re-run.
@@ -1461,54 +1778,12 @@ def live_climb(
         # offered only when the operator arms AUTORESEARCH_AUTHOR_SYSCALLS, the
         # dispatcher has cluster coordinates (the launches are Slurm jobs), and
         # the backend can resume (the wake resumes the SAME session).
-        launcher = None
         # `author_syscalls` already reflects the channel-ownership guard above
         # (a target-shipped `.autoresearch` — symlink, tracked request, or any
         # other pre-existing form — has disabled the feature for this run).
+        launcher = None
         if author_syscalls and dispatch is not None and getattr(harness, "supports_resume", True):
-
-            def launcher(sha: str, request: SyscallRequest) -> str:
-                from autoresearch.dispatch import eval_job_spec, write_eval_job
-
-                assert dispatch is not None
-                ids: list[str] = []
-                try:
-                    for launch in request.launches:
-                        script = write_eval_job(
-                            run_dir,
-                            f"launch-{launch.name}",
-                            repo_root=workspace,
-                            snapshot_sha=sha,
-                            command=launch.command,
-                            image=dispatch.image,
-                            artifacts=launch.artifacts,
-                            artifact_max_bytes=MAX_ARTIFACT_BYTES,
-                        )
-                        ids.append(
-                            dispatch.compute.submit(
-                                eval_job_spec(
-                                    script,
-                                    job_name=f"{run_id}-launch-{launch.name}",
-                                    account=dispatch.account,
-                                    partition=dispatch.partition,
-                                    eval_minutes=launch.minutes,
-                                )
-                            )
-                        )
-                except Exception:
-                    # a partial batch must not orphan: no park record was
-                    # written yet, so nothing would ever wake or cancel the
-                    # jobs that DID submit — reap them here, then let the
-                    # outer handler end the run as the error it is (same
-                    # stance as the failed-_park_run cancel below).
-                    for job_id in ids:
-                        with contextlib.suppress(Exception):
-                            dispatch.compute.cancel(job_id)
-                    raise
-                # a checkpoint sleep (no launches) parks with no dependency and
-                # wakes on the sweep's deadline floor — slow but correct; a
-                # fast requeue wake is a Phase A follow-up.
-                return "afterany:" + ":".join(ids) if ids else ""
+            launcher = _make_launcher(dispatch, run_dir, workspace, run_id)
 
         parked: ClimbParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
@@ -2275,11 +2550,13 @@ def main() -> int:
         wake_api_key = ""
         wake_harness = None
         wake_spec = None
-        # The editor harness for the depth-axis REVISION is built ONLY when a
-        # panel is configured — no panel means no blocking finding, so no
-        # revision and no author key to read. A panel-less wake stays a pure
+        # The editor harness is built when the wake may RESUME the session: a
+        # panel is configured (a blocking finding wakes the author to revise),
+        # or the park is an AUTHOR-SLEEP (that wake always resumes the session
+        # with its launches' results). A panel-less candidate wake stays a pure
         # read-decide-publish job and must not require the author key.
-        if wake_lenses:
+        _wake_stage = getattr(_wake_record, "stage", None) or {}
+        if wake_lenses or _wake_stage.get("phase") == "author-sleep":
             wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
             wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)

@@ -187,6 +187,47 @@ def test_ensure_excluded_is_idempotent_and_hides_the_dir_from_git(tmp_path: Path
     assert SYSCALL_DIR not in staged
 
 
+def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
+    # the wake side: read each launch's exit/stdout/stderr + skips, and copy
+    # delivered artifacts into the excluded channel dir the author reads.
+    from autoresearch.syscall import Launch, gather_results
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    # a normal launch with a delivered artifact + a skip log
+    ev = run_dir / "eval-launch-train"
+    (ev / "artifacts" / "sub").mkdir(parents=True)
+    (ev / "exit-code").write_text("0\n")
+    (ev / "stdout").write_text("loss: 0.4\n")
+    (ev / "stderr").write_text("")
+    (ev / "artifacts" / "curve.json").write_text("{}")
+    (ev / "artifacts" / "sub" / "extra.txt").write_text("x")
+    (ev / "artifacts.log").write_text("skipped (over 5000000 bytes): big.ckpt\n")
+    # a launch whose job died before the wrapper ran -> no exit-code file
+    dead = run_dir / "eval-launch-crashed"
+    dead.mkdir(parents=True)
+    (dead / "stderr").write_text("OOM\n")
+
+    results = gather_results(
+        run_dir,
+        ws,
+        (Launch("train", "c", 30, ("curve.json",)), Launch("crashed", "c", 30)),
+    )
+    assert [r.name for r in results] == ["train", "crashed"]  # request order
+    train, crashed = results
+    assert train.exit_code == 0 and "loss: 0.4" in train.stdout_tail
+    assert set(train.delivered) == {
+        ".autoresearch/results/train/curve.json",
+        ".autoresearch/results/train/sub/extra.txt",
+    }
+    assert train.skipped == ("skipped (over 5000000 bytes): big.ckpt",)
+    # the files really landed in the excluded channel
+    assert (ws / ".autoresearch" / "results" / "train" / "curve.json").read_text() == "{}"
+    # a job with no exit-code file surfaces as None (infra failure), not a skip
+    assert crashed.exit_code is None and "OOM" in crashed.stderr_tail
+
+
 def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     """The job writer's copy-out, EXECUTED: declared file delivered; oversized
     and missing ones recorded in artifacts.log; a shell-metacharacter name is

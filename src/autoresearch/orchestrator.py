@@ -1128,6 +1128,10 @@ def climb_once(
                 lessons=lessons,
                 recent_reports=recent_reports,
                 budget=config.budget,
+                # the launch/sleep tool is advertised ONLY when it is wired
+                # (never a tool the author cannot actually call)
+                launch_budget=bench.depth_k if launcher is not None else 0,
+                sleep_budget=bench.sleep_k if launcher is not None else 0,
             ),
             created=created,
         )

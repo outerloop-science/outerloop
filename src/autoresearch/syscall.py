@@ -250,6 +250,66 @@ def budget_error(
     return ""
 
 
+def gather_results(
+    run_dir: Path, workspace: Path, launches: tuple[Launch, ...]
+) -> tuple[LaunchResult, ...]:
+    """The wake side: read each launch's job output and deliver its declared
+    artifacts into the sandbox, one `LaunchResult` per launch (in request order,
+    so the author sees a stable list).
+
+    Reads `<run_dir>/eval-launch-<name>/` — exit-code, stdout/stderr (tails),
+    and the copy-out the job script already validated (`artifacts/` for
+    delivered files, `artifacts.log` for skips). The kernel COPIES those files
+    into `<workspace>/.autoresearch/results/<name>/` — inside the excluded
+    channel, so they never enter the candidate, scope, or drift fingerprints;
+    the author reads them there. A missing exit-code file means the job died
+    before its wrapper ran (infra failure) — surfaced as `exit_code=None`, never
+    a silent skip. The job-side copy-out already enforced containment (realpath,
+    size cap), so delivery here is a plain in-channel copy."""
+    import shutil
+
+    results: list[LaunchResult] = []
+    for launch in launches:
+        ev = run_dir / f"eval-launch-{launch.name}"
+        try:
+            exit_code: int | None = int((ev / "exit-code").read_text().strip())
+        except (OSError, ValueError):
+            exit_code = None
+        stdout = _read_text(ev / "stdout")
+        stderr = _read_text(ev / "stderr")
+        skipped = tuple(ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip())
+
+        dest = workspace / SYSCALL_DIR / RESULTS_SUBDIR / launch.name
+        delivered: list[str] = []
+        src = ev / "artifacts"
+        if src.is_dir():
+            for f in sorted(p for p in src.rglob("*") if p.is_file()):
+                rel = f.relative_to(src)
+                out = dest / rel
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with contextlib.suppress(OSError):
+                    shutil.copy(f, out)
+                    delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / launch.name / rel))
+        results.append(
+            LaunchResult(
+                name=launch.name,
+                exit_code=exit_code,
+                stdout_tail=_tail(stdout),
+                stderr_tail=_tail(stderr),
+                delivered=tuple(delivered),
+                skipped=skipped,
+            )
+        )
+    return tuple(results)
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(errors="replace")
+    except OSError:
+        return ""
+
+
 def _tail(text: str) -> str:
     return text[-MAX_OUTPUT_CHARS:] if len(text) > MAX_OUTPUT_CHARS else text
 

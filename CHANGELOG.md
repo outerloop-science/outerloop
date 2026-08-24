@@ -8,6 +8,23 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Author syscalls, part 2 — the WAKE (research-loop-buildout.md Phase A is
+  complete; `AUTHOR_SLEEP_WAKE_READY` is flipped, so setting
+  `AUTORESEARCH_AUTHOR_SYSCALLS` now enables the whole loop end to end):
+  `resume_run` services `author-sleep` parks — each launch's job output (exit
+  code, stdout/stderr tails) and its declared artifacts are delivered into the
+  sandbox (`.autoresearch/results/<name>/`), and the SAME session is resumed
+  through the climb's resume-entry with the results data-fenced, the author's
+  own note echoed back, and the remaining budgets. The woken session may launch
+  again (a fresh author-sleep park, counts advanced) or finish — its gate
+  measures through the dispatched backend and parks the run as a CANDIDATE,
+  which the existing wake path (panel, sealed-sha publish) decides. A wake that
+  cannot resume (no author harness / no session id / a no-resume backend) ends
+  the run with a named `session-error`, never a stuck WAITING loop. The brief
+  now advertises the launch/sleep tool (with this run's budgets) exactly when
+  it is wired, and the wake CLI builds the author harness for author-sleep
+  parks even when no panel is configured.
+
 - Author syscalls, part 1 — the SLEEP side (docs/design/research-loop-buildout.md,
   Phase A; fully dark: enabling needs BOTH `AUTORESEARCH_AUTHOR_SYSCALLS` and the
   part-2 wake, which flips `AUTHOR_SLEEP_WAKE_READY` — arming the flag alone
