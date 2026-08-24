@@ -247,6 +247,8 @@ def write_eval_job(
     image: str,
     apptainer_binary: str = "apptainer",
     extra_env: dict[str, str] | None = None,
+    artifacts: tuple[str, ...] = (),
+    artifact_max_bytes: int = 0,
 ) -> Path:
     """Write the orchestrator-authored job script for one dispatched eval.
 
@@ -261,14 +263,23 @@ def write_eval_job(
         node-local scratch, plus the call site's extra_env (paired seeds)
         exported as APPTAINERENV_*.
     Returns the script path; the caller submits it via JobSpec(script=...).
+
+    With `artifacts` (author-syscall launches, research-loop-buildout.md
+    Phase A), each declared repo-relative FILE the jailed command produced is
+    copied out of the throwaway tree into `<job dir>/artifacts/` — outside the
+    jail, after the command, size-capped at `artifact_max_bytes` — with every
+    skip recorded in `artifacts.log`. Callers validate the paths (relative, no
+    traversal) before passing them; this writer additionally quotes them so
+    they cross the script boundary inert.
     """
     ev = run_dir / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
     # a resubmitted eval must never be read as its predecessor: every prior
     # artifact — including a leftover extracted tree — goes before submission
-    for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted"):
+    for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted", "artifacts.log"):
         (ev / stale).unlink(missing_ok=True)
     shutil.rmtree(ev / "tree", ignore_errors=True)
+    shutil.rmtree(ev / "artifacts", ignore_errors=True)
     (ev / "command.txt").write_text(command)
     # extra_env matches the in-job evaluator's contract: managed keys (HOME,
     # UV_*, PATH...) are DROPPED, never allowed to override the isolation, and
@@ -347,6 +358,42 @@ def write_eval_job(
         'sh -c "$(cat "$EV/command.txt")" '
         '> "$EV/stdout" 2> "$EV/stderr"',
         'echo $? > "$EV/exit-code"',
+    ]
+    if artifacts:
+        # copy-out runs OUTSIDE the jail, after the command: only declared,
+        # caller-validated repo-relative FILES, each size-capped; every skip is
+        # recorded so the wake can tell the author exactly what happened.
+        # Two hostile shapes to defeat, since the jailed (agent) command wrote
+        # this tree and picked these names:
+        #   * INJECTION — a name like `$(cmd)` must never reach the shell as
+        #     code. Every path goes in single-quoted (shlex.quote) argument
+        #     position, and every log line is a single-quoted LITERAL (a name
+        #     interpolated into a double-quoted `echo` would execute), so the
+        #     name is inert everywhere.
+        #   * ESCAPE via symlink — a declared file (or an intermediate dir) may
+        #     be a symlink to a host file; the host-side cp would dereference
+        #     it. `realpath` resolves the whole path and we copy ONLY when the
+        #     resolved target stays under $TREE (and copy the RESOLVED path, so
+        #     there is no resolve-then-copy gap). The command has already
+        #     finished, so the tree is quiescent — no TOCTOU.
+        lines.append('mkdir -p "$EV/artifacts"')
+        lines.append('TREE_REAL=$(realpath "$TREE" 2>/dev/null || echo "$TREE")')
+        for art in artifacts:
+            q = shlex.quote(art)  # safe in argument position (single-quoted)
+            skip_type = shlex.quote(f"skipped (not a regular file in the tree): {art}")
+            skip_big = shlex.quote(f"skipped (over {int(artifact_max_bytes)} bytes): {art}")
+            fail_cp = shlex.quote(f"copy failed: {art}")
+            lines.append(
+                f'AP=$(realpath "$TREE"/{q} 2>/dev/null || true); '
+                f'case "$AP" in "$TREE_REAL"/*) '
+                f'if [ -f "$AP" ] && [ "$(wc -c < "$AP")" -le {int(artifact_max_bytes)} ]; then '
+                f'mkdir -p "$EV/artifacts/$(dirname {q})" && cp "$AP" "$EV/artifacts"/{q} '
+                f'|| echo {fail_cp} >> "$EV/artifacts.log"; '
+                f'elif [ -f "$AP" ]; then echo {skip_big} >> "$EV/artifacts.log"; '
+                f'else echo {skip_type} >> "$EV/artifacts.log"; fi ;; '
+                f'*) echo {skip_type} >> "$EV/artifacts.log" ;; esac'
+            )
+    lines += [
         "exit 0",
     ]
     script = ev / "job.sh"

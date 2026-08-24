@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch import climb as climb_mod
 from autoresearch.climb import _park_run, live_climb, resume_run
 from autoresearch.dispatch import Snapshot
 from autoresearch.harness import SessionResult
@@ -79,6 +80,53 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     # build the PR body and report the real cost without re-running the session
     assert r.stage["report"] == "report"
     assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
+
+
+def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_path) -> None:
+    # Phase A (research-loop-buildout.md): an author-sleep park carries the
+    # launch names/artifacts, note, session id, and budget counts the wake
+    # needs — and its deadline floors on the LONGEST LAUNCH's walltime, not the
+    # benchmark's eval hint (an in-job-cheap benchmark can still train for
+    # hours; the sweep must not cancel the author's jobs).
+    from autoresearch.syscall import Launch, SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    parked = ClimbParked(
+        phase="author-sleep",
+        afterany="afterany:501",
+        base_sha="b" * 40,
+        seed=7,
+        suite_seed=9,
+        candidate_sha="c" * 40,
+        session=_session("s9"),
+        syscall=SyscallRequest(
+            launches=(
+                Launch(
+                    name="train",
+                    command="uv run train.py",
+                    minutes=180,
+                    artifacts=("out/curve.json",),
+                ),
+            ),
+            note="compare to the lr sweep",
+        ),
+        launches_used=1,
+        sleeps_used=1,
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
+
+    r = load_record(tmp_path, "tsp-2")
+    assert r.state == "waiting"
+    # eval_minutes=None (in-job benchmark) but the launch asks 180 min: the
+    # floor rides the launch, so a healthy queued job never gets swept
+    assert r.deadline == 1000.0 + (180 + 12 * 60) * 60
+    assert r.stage["phase"] == "author-sleep"
+    assert r.stage["syscall_launches"] == [{"name": "train", "artifacts": ["out/curve.json"]}]
+    assert r.stage["syscall_note"] == "compare to the lr sweep"
+    assert r.resume_session_id == "s9"  # the record's own field; no stage duplicate
+    assert r.stage["launches_used"] == 1 and r.stage["sleeps_used"] == 1
 
 
 def test_park_run_redacts_the_saved_report(tmp_path) -> None:
@@ -1679,6 +1727,217 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
     )
     assert outcome.outcome == "improved"
     assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"
+
+
+CONTRACT_SYSCALLS = CONTRACT.replace("    direction: min\n", "    direction: min\n    depth_k: 3\n")
+
+
+@pytest.fixture
+def target_repo_syscalls(tmp_path: Path, monkeypatch) -> Path:
+    return _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+
+
+def test_author_sleep_live_parks_and_submits_launch_jobs(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    # end-to-end sleep side (research-loop-buildout.md Phase A): the session
+    # writes a syscall request and ends; the climb seals the tree, submits the
+    # launch as a jailed job, and parks as author-sleep with the request +
+    # counts aboard. Feature armed via the env flag; cheap benchmark (no eval
+    # hint) — launches do not require a dispatched GATE, only dispatch coords.
+    import json as json_mod
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    outcome, github = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {
+                    "launches": [
+                        {
+                            "name": "probe",
+                            "command": "uv run probe.py",
+                            "minutes": 45,
+                            "artifacts": ["out/tails.json"],
+                        }
+                    ],
+                    "note": "look at the tails",
+                }
+            ),
+        },
+        values=[],  # parked before any measurement
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "parked"
+    assert github.prs == []
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.state == "waiting"
+    assert record.stage["phase"] == "author-sleep"
+    assert record.stage["afterany"] == "afterany:1000"
+    assert record.stage["syscall_launches"] == [{"name": "probe", "artifacts": ["out/tails.json"]}]
+    assert record.stage["syscall_note"] == "look at the tails"
+    assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
+    assert record.resume_session_id == "s1"  # the wake resumes the SAME session
+    # the job is the eval jail on the sealed tree; the author's command travels
+    # via command.txt (never shell-interpolated into the script)
+    ev = tmp_path / "state" / "runs" / "tsp-1" / "eval-launch-probe"
+    assert (ev / "command.txt").read_text() == "uv run probe.py"
+    assert "out/tails.json" in (ev / "job.sh").read_text()
+
+
+def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatch) -> None:
+    # a target repo that COMMITS a valid syscall.json must not consume cluster
+    # compute: a request is only honored if the session wrote it, so a
+    # pre-session (= tracked, in a fresh clone) file disables the feature for
+    # the run and the climb proceeds normally (terra #132 r3).
+    import json as json_mod
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+    seed = tmp_path / "seed"
+    (seed / ".autoresearch").mkdir()
+    (seed / ".autoresearch" / "syscall.json").write_text(
+        json_mod.dumps({"launches": [{"name": "steal", "command": "mine coins"}]})
+    )
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "trap")
+    _git(seed, "push", "-q", str(tmp_path / "origin.git"), "main")
+
+    sbatched: list = []
+    dispatch = _fake_dispatch()
+    real_submit = dispatch.compute.submit
+
+    def recording_submit(spec):
+        sbatched.append(spec)
+        return real_submit(spec)
+
+    dispatch.compute.submit = recording_submit
+
+    outcome, _ = run_live(
+        tmp_path,
+        target,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+        dispatch=dispatch,
+    )
+    # no park, no launch jobs: the tracked request was never honored, and the
+    # climb ran to a normal ending
+    assert outcome.outcome == "improved"
+    assert sbatched == []
+
+
+def test_armed_flag_without_wake_ready_stays_fully_off(tmp_path, target_repo, monkeypatch) -> None:
+    # arming the env flag before part 2 (the wake) exists must not produce an
+    # unwakeable author-sleep park: the feature stays off for the run — the
+    # request file is inert AND staged like any edit (terra #132 r5).
+    import json as json_mod
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    # AUTHOR_SLEEP_WAKE_READY stays False (the shipped default)
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {"launches": [{"name": "x", "command": "y"}]}
+            ),
+        },
+        values=[],
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "scope-violation"  # staged + judged, exactly like flag-off
+
+
+def test_flag_off_stages_stray_syscall_files_like_any_edit(tmp_path, target_repo) -> None:
+    # with the feature OFF, the `.autoresearch/` name is NOT magic: an
+    # untracked file there is staged and judged like any other agent edit
+    # (here: out of scope), byte-identical to today (terra #132 r2).
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/junk.txt": "leftover",
+        },
+        values=[],  # scope refuses before any measurement
+    )
+    assert outcome.outcome == "scope-violation"
+
+
+def test_flag_on_excludes_the_channel_from_the_candidate(
+    tmp_path, target_repo, monkeypatch
+) -> None:
+    # with the feature ON, the channel dir is invisible to diffs/scope/drift:
+    # a stray non-request file there neither blocks nor ships.
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/notes.txt": "scratch",
+        },
+        values=[13.876, 13.1],
+    )
+    assert outcome.outcome == "improved"
+
+
+def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    # one launch submits, the next sbatch fails: the already-submitted job must
+    # be reaped (no park record exists to ever wake or cancel it) and the run
+    # ends as a loud error (terra #132 r1).
+    import json as json_mod
+
+    from autoresearch.compute import CommandResult, SlurmCompute
+    from autoresearch.measure import DispatchSettings
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    cancelled: list[str] = []
+    calls = {"sbatch": 0}
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            calls["sbatch"] += 1
+            if calls["sbatch"] > 1:
+                return CommandResult(1, "", "QOSMaxSubmitJobPerUserLimit")
+            return CommandResult(0, "1000\n", "")
+        if argv[0] == "scancel":
+            cancelled.append(argv[1])
+            return CommandResult(0, "", "")
+        return CommandResult(0, "", "")
+
+    dispatch = DispatchSettings(
+        compute=SlurmCompute(runner=runner), image="/img.sif", account="acct", partition="cpu"
+    )
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {
+                    "launches": [
+                        {"name": "a", "command": "run a"},
+                        {"name": "b", "command": "run b"},
+                    ]
+                }
+            ),
+        },
+        values=[],
+        dispatch=dispatch,
+    )
+    assert outcome.outcome == "climb-error"
+    assert cancelled == ["1000"]  # the successful submit was reaped, not orphaned
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.state == "ended"
 
 
 def test_failed_park_write_cancels_orphaned_eval_jobs(
