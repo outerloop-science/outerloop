@@ -53,7 +53,9 @@ def read_verdict(workspace: Path) -> dict[str, Any] | None:
         raise VerdictError(f"verdict is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise VerdictError("verdict must be a JSON object")
-    notes = data.get("notes", "")
+    if "notes" not in data:
+        raise VerdictError("verdict is missing required key: notes")
+    notes = data["notes"]
     if not isinstance(notes, str):
         raise VerdictError("notes must be a string")
     raw = data.get("findings")
@@ -63,25 +65,36 @@ def read_verdict(workspace: Path) -> dict[str, Any] | None:
     return {"findings": findings, "notes": notes}
 
 
+_REQUIRED_FINDING_KEYS = ("file", "line", "confidence", "summary", "detail", "blocking", "kind")
+
+
 def _validate_finding(i: int, item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise VerdictError(f"finding #{i} must be an object")
     file = item.get("file")
     if not isinstance(file, str) or not file:
         raise VerdictError(f"finding #{i}: file must be a non-empty string")
-    line = item.get("line", None)
+    # ENFORCE the schema's required keys — do not default them. Defaulting
+    # `blocking` to False in particular is a fail-open: a finding that omits it
+    # would silently not gate ("silence is never endorsement"). The tool always
+    # emits every key, so this only rejects a malformed hand-written verdict
+    # (the tool is not the trust boundary — terra #136 r3).
+    missing = [k for k in _REQUIRED_FINDING_KEYS if k not in item]
+    if missing:
+        raise VerdictError(f"finding {file}: missing required keys {missing}")
+    line = item["line"]
     if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
         raise VerdictError(f"finding {file}: line must be a positive (1-indexed) integer or null")
-    confidence = item.get("confidence")
+    confidence = item["confidence"]
     if confidence not in CONFIDENCES:
         raise VerdictError(f"finding {file}: confidence must be one of {sorted(CONFIDENCES)}")
-    kind = item.get("kind", "note")
+    kind = item["kind"]
     if kind not in KINDS:
         raise VerdictError(f"finding {file}: kind must be one of {sorted(KINDS)}")
     for key in ("summary", "detail"):
-        if not isinstance(item.get(key), str) or not item[key]:
+        if not isinstance(item[key], str) or not item[key]:
             raise VerdictError(f"finding {file}: {key} must be a non-empty string")
-    blocking = item.get("blocking", False)
+    blocking = item["blocking"]
     if not isinstance(blocking, bool):
         raise VerdictError(f"finding {file}: blocking must be a boolean")
     out = {

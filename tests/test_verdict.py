@@ -231,6 +231,32 @@ def test_reader_rejects_malformed_verdict_loudly(tmp_path: Path) -> None:
         read_verdict(tmp_path)
 
 
+def test_reader_rejects_a_finding_missing_blocking(tmp_path: Path) -> None:
+    # fail-open guard: a finding that omits blocking must be REJECTED, never
+    # defaulted to non-gating ("silence is never endorsement" — terra #136 r3).
+    d = tmp_path / ".verdict"
+    d.mkdir(exist_ok=True)
+    (d / "verdict.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "file": "x",
+                        "line": 1,
+                        "confidence": "high",
+                        "summary": "s",
+                        "detail": "d",
+                        "kind": "note",
+                    }
+                ],
+                "notes": "",
+            }
+        )
+    )
+    with pytest.raises(VerdictError, match="missing required keys"):
+        read_verdict(tmp_path)
+
+
 def test_reader_size_caps_a_giant_verdict(tmp_path: Path) -> None:
     from autoresearch.verdict import MAX_VERDICT_BYTES
 
