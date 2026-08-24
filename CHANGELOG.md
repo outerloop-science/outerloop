@@ -18,15 +18,17 @@ Versions follow [SemVer](https://semver.org).
   checked, typed) beside `read_request`, and `install_tool` now force-owns the
   `.autoresearch/` channel (a judge's checkout is untrusted — a pre-planted
   symlink or a forged `syscall.json` must not survive). `RoleSpec.verdict_tool`
-  declares a judge emits via the tool (one allow-listed command, `Bash(python
-  .autoresearch/syscall:*)`, never general Bash — the read-only invariant holds;
-  requires an `output_schema`); `run_role` installs the tool before the session
-  and reads the committed verdict AFTER — no parse-and-repair loop. A backend
-  without the capability falls back to the existing parse path, unchanged. No
-  spec sets `verdict_tool` yet, so this changes no live behavior. Replaces the
+  declares a judge emits via the tool instead of a final JSON message (requires
+  an `output_schema`); `run_role` gates on that flag alone — like every other
+  capability, the deployment builds the harness to match the role (a judge that
+  emits via the tool runs a shell in the jail, same as an author) — installs the
+  tool before the session and reads the committed verdict AFTER, no
+  parse-and-repair loop. A spec without the flag uses the parse path, unchanged.
+  No spec sets `verdict_tool` yet, so this changes no live behavior. Replaces the
   standalone `verdict.py` / `verdict_cli.py` (`.verdict/verdict`), which are
-  removed. Follow-up wires the brief to advertise the verbs and brings hermes
-  and codex judges onto the surface as peers (backend emit-path parity).
+  removed. Follow-up unifies the judge and author harness setup so judges run a
+  shell in the jail (differing only by system prompt), flips `verdict_tool` on,
+  and deletes the judge parse-and-repair path.
 
 - Author syscalls, part 2 — the WAKE (research-loop-buildout.md Phase A is
   complete; `AUTHOR_SLEEP_WAKE_READY` is flipped, so setting

@@ -90,13 +90,15 @@ def run_role(
     way climb builds its harness from effective_limits. run_role does not
     reconcile a mismatched harness; it runs what it is given.
     """
-    # Verdict-tool mode (docs/design/role-cli.md Phase 2): a judge whose backend
-    # can host the tool commits its verdict via one allow-listed command instead
-    # of a final JSON message. Install the tool BEFORE the session so it can call
-    # it; read the committed verdict AFTER (authoritatively) instead of parsing.
-    # A backend that cannot host it (`supports_verdict_tool` False) falls back to
-    # the parse-and-repair path below.
-    use_verdict_tool = spec.verdict_tool and getattr(harness, "supports_verdict_tool", False)
+    # Verdict-tool mode (docs/design/role-cli.md): a judge commits its verdict
+    # via the syscall tool (`finding`/`conclude`) instead of a final JSON
+    # message. Install the tool BEFORE the session so it can call it; read the
+    # committed verdict AFTER (authoritatively) instead of parsing. Gated on the
+    # SPEC alone: like every other capability, the deployment builds the harness
+    # to match the role (a judge that emits via the tool runs a shell in the
+    # jail, same as an author) — run_role runs what it is given. A spec without
+    # verdict_tool uses the parse path below.
+    use_verdict_tool = spec.verdict_tool
     if use_verdict_tool:
         from autoresearch.syscall import install_tool
 

@@ -127,17 +127,6 @@ def build_reviewer_harness(
     if backend != "claude":
         raise ValueError(f"unknown reviewer backend: {backend!r}")
     allowed = tuple(tool for tool in spec.tools if tool in _NATIVE_READ_TOOLS)
-    # Verdict-tool grant (docs/design/role-cli.md): a judge that emits via the
-    # syscall tool gets ONE scoped Bash command — `Bash(python .autoresearch/
-    # syscall:*)` — and nothing else. It is NOT plain "Bash" (the mutating-tool
-    # check keeps permission-mode denying, and no general shell is granted), so
-    # the read-only boundary holds: the judge can run the tool and nothing more.
-    # The RoleSpec invariant already requires an output_schema for verdict_tool.
-    supports_verdict = bool(spec.verdict_tool)
-    if supports_verdict:
-        from autoresearch.syscall import CLAUDE_ALLOW_PATTERN
-
-        allowed = (*allowed, CLAUDE_ALLOW_PATTERN)
     return ClaudeCodeHarness(
         api_key=api_key,
         binary=binary or "claude",
@@ -146,7 +135,6 @@ def build_reviewer_harness(
         timeout_s=spec.budget.walltime_s,
         allowed_tools=allowed,
         container_image=container_image,
-        supports_verdict_tool=supports_verdict,
         # A judge's cwd contains an untrusted checkout: never load its
         # CLAUDE.md / hooks / project settings as instructions.
         bare=True,

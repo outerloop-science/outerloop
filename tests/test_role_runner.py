@@ -139,11 +139,11 @@ def test_steward_spec_is_an_executing_editor_in_its_own_territory() -> None:
 
 @dataclass
 class _VerdictHarness:
-    """A harness that hosts the verdict tool: on run it writes a committed
-    verdict (as the judge would via the tool), and declares the capability."""
+    """A harness whose session runs the verdict tool: on run it writes a
+    committed verdict (as the judge would via `conclude` on a shell in the
+    jail)."""
 
     verdict: dict | None
-    supports_verdict_tool: bool = True
     installed: bool = False
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
@@ -211,10 +211,14 @@ def test_verdict_tool_mode_malformed_verdict_is_a_failure(tmp_path: Path) -> Non
     assert not result.ok and "invalid verdict" in result.error
 
 
-def test_verdict_spec_falls_back_to_parsing_when_backend_lacks_support(tmp_path: Path) -> None:
-    # a verdict_tool spec on a backend WITHOUT the capability parses the final
-    # message (the message-based fallback) — no tool installed.
-    harness = _SeqHarness(results=[_session(_FINDINGS)])  # supports_verdict_tool absent -> False
-    result = run_role(_verdict_spec(), harness, "x", tmp_path)
+def test_judge_without_verdict_tool_parses_the_final_message(tmp_path: Path) -> None:
+    # a judge spec that does NOT set verdict_tool uses the parse path — no tool
+    # installed, findings validated from the final message. run_role gates the
+    # tool on the spec alone (the deployment builds the harness to match).
+    from dataclasses import replace
+
+    spec = replace(reviewer_spec(), verdict_tool=False)
+    harness = _SeqHarness(results=[_session(_FINDINGS)])
+    result = run_role(spec, harness, "x", tmp_path)
     assert result.ok and result.data == {"findings": [], "notes": "looks fine"}
     assert not (tmp_path / ".autoresearch").exists()  # tool NOT installed

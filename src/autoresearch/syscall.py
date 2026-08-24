@@ -45,12 +45,6 @@ from autoresearch.brief import _fence
 SYSCALL_DIR = ".autoresearch"
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
-# How a judge invokes the installed tool (cwd = the judge's workspace) and the
-# claude allow-tools pattern that grants EXACTLY that command prefix — the single
-# allow-listed invocation (never general Bash) that lets a read-only judge run
-# the tool. One owner so the install path and the grant agree.
-TOOL_INVOCATION = f"python {SYSCALL_DIR}/syscall"
-CLAUDE_ALLOW_PATTERN = f"Bash({TOOL_INVOCATION}:*)"
 
 # Per-request bounds (the budget is separate: depth_k / sleep_k).
 # The whole file is read size-capped FIRST (agent-controlled input); the cap is

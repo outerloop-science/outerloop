@@ -43,8 +43,9 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    (`.autoresearch/syscall`) whose verbs the brief exposes per role — an author
    uses `launch`/`sleep`, a judge uses `finding`/`conclude` — and a syscall is
    TYPED, so the kernel dispatches by type (a sleep parks + wakes; a verdict is
-   read back). For roles WITHOUT general execution (the judges), the capability
-   is single-command allowlisted invocation of the one tool — never Bash.
+   read back). Every role runs the tool the same way: a shell in the jail. Roles
+   differ by system prompt, verbs, and output handling — not by a bespoke
+   containment mechanism (the jail contains them all).
 
 ## End-state
 
@@ -103,26 +104,29 @@ verdict assembled kernel-side (`type: "verdict"`), well-formed by construction.
 in `role_runner`) for migrated roles — the recurring repair tax disappears.
 Orchestrator-side, so it imports the kernel validators directly.
 
-**The read-only-judge tension, addressed head-on:** judges deliberately have no
-Bash/execute (the collusion/containment posture — execute is author/steward
-only), so "CLI-over-Bash" cannot naively apply here. The capability is
-single-command allowlisted invocation of the one tool — the session may run
-exactly `python .autoresearch/syscall` and nothing else (claude: an allowed-tools
-command pattern; codex: the equivalent exec policy; a backend that cannot
-restrict execution to one command keeps its judges message-based until it can — a
-per-backend capability, like `supports_resume`). It grants no repo mutation and
-no general execution, so the read-only posture is preserved in substance while
-the surface improves.
+**The read-only-judge tension, resolved by unifying with the author:** running
+the CLI needs a shell, and the earlier read-only-tool-set posture (claude no
+Bash, codex `--sandbox read-only`, hermes `terminal` off) made "CLI-over-Bash"
+awkward per backend — a three-cornered asymmetry (scoped grants, sandbox modes,
+direct-ABI writes) that was defense-in-depth ON TOP of the jail every role
+already runs in. That asymmetry is entirely a security *choice*, not a technical
+limit — every harness can run a shell (the authors do). So judges run a shell in
+the jail, exactly like authors: the CLI is then uniform across all backends and
+there is no per-backend machinery. The security floor is the author's existing
+posture — a scrubbed env (no `/proc`-readable token), the tokenless split (no
+PAT in the session; findings are data, a separate step posts), an ephemeral
+jail, and the egress posture — which contains a shell-judge just as it contains
+an author.
 
-**Landed (the unification):** the one surface — `finding`/`conclude` verbs, the
-typed ABI, `read_verdict`, the force-owning `install_tool`, and the claude scoped
-grant — replaces the standalone `verdict` tool. It is INERT until a spec sets
-`verdict_tool=True`. **Follow-up (backend emit-path parity):** wire the brief to
-advertise the verbs, and bring the remaining backends onto the surface as peers
-— hermes writes the ABI directly (no terminal, `file` toolset only; this also
-fixes its no-resume/no-repair gap), and the explicit codex call (a `read-only`
-sandbox blocks the tool's write, so keeping it tight means it stays message-based
-until a narrow write path exists).
+**Landed (the surface unification):** the one surface — `finding`/`conclude`
+verbs, the typed ABI, `read_verdict`, the force-owning `install_tool` — replaces
+the standalone `verdict` tool. `run_role` gates the verdict path on
+`spec.verdict_tool` alone (the deployment builds the harness to match the role).
+INERT until a spec sets `verdict_tool=True`. **Follow-up (harness unification):**
+route judges through the same executing-harness-in-a-jail setup authors use
+(differing only by system prompt + verbs + output handling), flip `verdict_tool`
+on, and delete `build_reviewer_harness`'s read-only branches and the judge
+parse-and-repair path.
 
 **Acceptance:** a judge session produces a verdict with zero repair rounds;
 a malformed call is corrected in-session; the judge can run the tool and
