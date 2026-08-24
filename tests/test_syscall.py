@@ -228,6 +228,32 @@ def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
     assert crashed.exit_code is None and "OOM" in crashed.stderr_tail
 
 
+def test_gather_results_refuses_symlinked_destination_channel(tmp_path) -> None:
+    # the author controls .autoresearch in its sandbox: a symlinked results dir
+    # (or a planted output symlink) must not make delivery write through it to a
+    # host path (terra #135 r2).
+    from autoresearch.syscall import Launch, gather_results
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ev = run_dir / "eval-launch-probe"
+    (ev / "artifacts").mkdir(parents=True)
+    (ev / "exit-code").write_text("0")
+    (ev / "artifacts" / "out.json").write_text("safe")
+    # attacker target OUTSIDE the workspace
+    escape = tmp_path / "ESCAPE"
+    escape.mkdir()
+    (escape / "out.json").write_text("ORIGINAL")
+    # .autoresearch/results -> the escape dir
+    (ws / ".autoresearch").mkdir(parents=True)
+    (ws / ".autoresearch" / "results").symlink_to(escape, target_is_directory=True)
+
+    (r,) = gather_results(run_dir, ws, (Launch("probe", "c", 30, ("out.json",)),))
+    assert r.delivered == ()  # nothing delivered through the symlink
+    assert any("symlink" in s for s in r.skipped)
+    assert (escape / "out.json").read_text() == "ORIGINAL"  # host file untouched
+
+
 def test_gather_results_reads_only_the_tail_of_huge_output(tmp_path) -> None:
     # launch output is agent-controlled and can be arbitrarily large: the wake
     # must read only the trailing window, never load the whole file

@@ -265,9 +265,7 @@ def gather_results(
     the author reads them there. A missing exit-code file means the job died
     before its wrapper ran (infra failure) — surfaced as `exit_code=None`, never
     a silent skip. The job-side copy-out already enforced containment (realpath,
-    size cap), so delivery here is a plain in-channel copy."""
-    import shutil
-
+    size cap); `_deliver_artifacts` guards the destination side."""
     results: list[LaunchResult] = []
     for launch in launches:
         ev = run_dir / f"eval-launch-{launch.name}"
@@ -279,28 +277,65 @@ def gather_results(
         stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
         skipped = tuple(ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip())
 
-        dest = workspace / SYSCALL_DIR / RESULTS_SUBDIR / launch.name
-        delivered: list[str] = []
-        src = ev / "artifacts"
-        if src.is_dir():
-            for f in sorted(p for p in src.rglob("*") if p.is_file()):
-                rel = f.relative_to(src)
-                out = dest / rel
-                out.parent.mkdir(parents=True, exist_ok=True)
-                with contextlib.suppress(OSError):
-                    shutil.copy(f, out)
-                    delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / launch.name / rel))
+        delivered, skips = _deliver_artifacts(ev / "artifacts", workspace, launch.name)
         results.append(
             LaunchResult(
                 name=launch.name,
                 exit_code=exit_code,
                 stdout_tail=stdout,
                 stderr_tail=stderr,
-                delivered=tuple(delivered),
-                skipped=skipped,
+                delivered=delivered,
+                skipped=skipped + skips,
             )
         )
     return tuple(results)
+
+
+def _deliver_artifacts(
+    src: Path, workspace: Path, name: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`.
+
+    The author controls `.autoresearch/` in its sandbox, so the DESTINATION is
+    hostile too (terra #135 r2): a symlinked channel dir or output path would
+    make `shutil.copy` write through it to an arbitrary host path with the wake
+    process's permissions. Defenses: refuse if any channel ANCESTOR is a symlink;
+    remove any pre-existing `results/<name>` (symlink → unlink, dir → rmtree) so
+    the delivery tree is entirely kernel-created; and skip any individual output
+    that still resolves to a symlink. The source side already validated the files
+    (realpath-contained, size-capped) when the job wrote them."""
+    import shutil
+
+    if not src.is_dir():
+        return (), ()
+    # a symlinked channel ancestor compromises every write under it — deliver
+    # nothing rather than follow it (the author still sees exit code + output).
+    channel = workspace / SYSCALL_DIR
+    results_root = channel / RESULTS_SUBDIR
+    if channel.is_symlink() or results_root.is_symlink():
+        return (), (f"artifacts not delivered: {SYSCALL_DIR} channel is a symlink (refused)",)
+
+    dest = results_root / name
+    if dest.is_symlink():
+        dest.unlink()
+    elif dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+
+    delivered: list[str] = []
+    skips: list[str] = []
+    for f in sorted(p for p in src.rglob("*") if p.is_file()):
+        rel = f.relative_to(src)
+        out = dest / rel
+        out.parent.mkdir(parents=True, exist_ok=True)  # under the fresh, owned dest
+        if out.is_symlink():  # defence in depth: a parent we just made can't be one
+            skips.append(f"skipped (destination is a symlink): {rel}")
+            continue
+        try:
+            shutil.copy(f, out)
+            delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / name / rel))
+        except OSError as exc:
+            skips.append(f"deliver failed: {rel} ({exc})")
+    return tuple(delivered), tuple(skips)
 
 
 def _read_text(path: Path, cap: int = 65_536) -> str:
