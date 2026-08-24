@@ -77,6 +77,8 @@ whole loop is byte-identical when unarmed.
 
 ### Phase 1 — `submit`: review as a verb (buildout Phase B)
 
+**Prerequisite: #133 merged** (the author launch/sleep CLI — in review as this
+plan is written; the tool this phase grows a verb on).
 `syscall submit` on the author tool: the agent declares its candidate ready;
 the kernel seals, runs the gate (private seed) + panel as jobs, and wakes the
 author with verdict + comments; the author revises / experiments more /
