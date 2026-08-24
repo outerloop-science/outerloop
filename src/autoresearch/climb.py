@@ -1427,29 +1427,40 @@ def live_climb(
                 from autoresearch.dispatch import eval_job_spec, write_eval_job
 
                 assert dispatch is not None
-                ids = []
-                for launch in request.launches:
-                    script = write_eval_job(
-                        run_dir,
-                        f"launch-{launch.name}",
-                        repo_root=workspace,
-                        snapshot_sha=sha,
-                        command=launch.command,
-                        image=dispatch.image,
-                        artifacts=launch.artifacts,
-                        artifact_max_bytes=MAX_ARTIFACT_BYTES,
-                    )
-                    ids.append(
-                        dispatch.compute.submit(
-                            eval_job_spec(
-                                script,
-                                job_name=f"{run_id}-launch-{launch.name}",
-                                account=dispatch.account,
-                                partition=dispatch.partition,
-                                eval_minutes=launch.minutes,
+                ids: list[str] = []
+                try:
+                    for launch in request.launches:
+                        script = write_eval_job(
+                            run_dir,
+                            f"launch-{launch.name}",
+                            repo_root=workspace,
+                            snapshot_sha=sha,
+                            command=launch.command,
+                            image=dispatch.image,
+                            artifacts=launch.artifacts,
+                            artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                        )
+                        ids.append(
+                            dispatch.compute.submit(
+                                eval_job_spec(
+                                    script,
+                                    job_name=f"{run_id}-launch-{launch.name}",
+                                    account=dispatch.account,
+                                    partition=dispatch.partition,
+                                    eval_minutes=launch.minutes,
+                                )
                             )
                         )
-                    )
+                except Exception:
+                    # a partial batch must not orphan: no park record was
+                    # written yet, so nothing would ever wake or cancel the
+                    # jobs that DID submit — reap them here, then let the
+                    # outer handler end the run as the error it is (same
+                    # stance as the failed-_park_run cancel below).
+                    for job_id in ids:
+                        with contextlib.suppress(Exception):
+                            dispatch.compute.cancel(job_id)
+                    raise
                 # a checkpoint sleep (no launches) parks with no dependency and
                 # wakes on the sweep's deadline floor — slow but correct; a
                 # fast requeue wake is a Phase A follow-up.

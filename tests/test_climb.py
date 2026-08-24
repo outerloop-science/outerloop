@@ -1728,6 +1728,115 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
     assert github.prs[0]["head"] == "feat/auto/agent-01/tsp-1"
 
 
+CONTRACT_SYSCALLS = CONTRACT.replace("    direction: min\n", "    direction: min\n    depth_k: 3\n")
+
+
+@pytest.fixture
+def target_repo_syscalls(tmp_path: Path, monkeypatch) -> Path:
+    return _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+
+
+def test_author_sleep_live_parks_and_submits_launch_jobs(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    # end-to-end sleep side (research-loop-buildout.md Phase A): the session
+    # writes a syscall request and ends; the climb seals the tree, submits the
+    # launch as a jailed job, and parks as author-sleep with the request +
+    # counts aboard. Feature armed via the env flag; cheap benchmark (no eval
+    # hint) — launches do not require a dispatched GATE, only dispatch coords.
+    import json as json_mod
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    outcome, github = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {
+                    "launches": [
+                        {
+                            "name": "probe",
+                            "command": "uv run probe.py",
+                            "minutes": 45,
+                            "artifacts": ["out/tails.json"],
+                        }
+                    ],
+                    "note": "look at the tails",
+                }
+            ),
+        },
+        values=[],  # parked before any measurement
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "parked"
+    assert github.prs == []
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.state == "waiting"
+    assert record.stage["phase"] == "author-sleep"
+    assert record.stage["afterany"] == "afterany:1000"
+    assert record.stage["syscall_launches"] == [{"name": "probe", "artifacts": ["out/tails.json"]}]
+    assert record.stage["syscall_note"] == "look at the tails"
+    assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
+    assert record.resume_session_id == "s1"  # the wake resumes the SAME session
+    # the job is the eval jail on the sealed tree; the author's command travels
+    # via command.txt (never shell-interpolated into the script)
+    ev = tmp_path / "state" / "runs" / "tsp-1" / "eval-launch-probe"
+    assert (ev / "command.txt").read_text() == "uv run probe.py"
+    assert "out/tails.json" in (ev / "job.sh").read_text()
+
+
+def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    # one launch submits, the next sbatch fails: the already-submitted job must
+    # be reaped (no park record exists to ever wake or cancel it) and the run
+    # ends as a loud error (terra #132 r1).
+    import json as json_mod
+
+    from autoresearch.compute import CommandResult, SlurmCompute
+    from autoresearch.measure import DispatchSettings
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    cancelled: list[str] = []
+    calls = {"sbatch": 0}
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            calls["sbatch"] += 1
+            if calls["sbatch"] > 1:
+                return CommandResult(1, "", "QOSMaxSubmitJobPerUserLimit")
+            return CommandResult(0, "1000\n", "")
+        if argv[0] == "scancel":
+            cancelled.append(argv[1])
+            return CommandResult(0, "", "")
+        return CommandResult(0, "", "")
+
+    dispatch = DispatchSettings(
+        compute=SlurmCompute(runner=runner), image="/img.sif", account="acct", partition="cpu"
+    )
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {
+                    "launches": [
+                        {"name": "a", "command": "run a"},
+                        {"name": "b", "command": "run b"},
+                    ]
+                }
+            ),
+        },
+        values=[],
+        dispatch=dispatch,
+    )
+    assert outcome.outcome == "climb-error"
+    assert cancelled == ["1000"]  # the successful submit was reaped, not orphaned
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.state == "ended"
+
+
 def test_failed_park_write_cancels_orphaned_eval_jobs(
     tmp_path, target_repo_dispatch, monkeypatch
 ) -> None:

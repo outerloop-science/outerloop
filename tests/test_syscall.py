@@ -177,8 +177,10 @@ def test_ensure_excluded_is_idempotent_and_hides_the_dir_from_git(tmp_path: Path
 
 
 def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
-    """The job writer's copy-out: declared file delivered; oversized and
-    missing ones recorded in artifacts.log; a hostile name stays inert."""
+    """The job writer's copy-out, EXECUTED: declared file delivered; oversized
+    and missing ones recorded in artifacts.log; a shell-metacharacter name is
+    INERT (never runs as code — terra #132 r1); a symlink pointing outside the
+    tree is refused, not dereferenced (terra #132 r1)."""
     from autoresearch.dispatch import write_eval_job
 
     repo = tmp_path / "repo"
@@ -186,6 +188,10 @@ def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     (repo / "small.txt").write_text("ok")
     (repo / "big.bin").write_bytes(b"x" * 200)
+    # a symlink escaping the tree: committed like any file, reproduced by the
+    # job's checkout — the copy-out must refuse to dereference it
+    (tmp_path / "host-secret.txt").write_text("HOST-ONLY")
+    (repo / "leak.txt").symlink_to(tmp_path / "host-secret.txt")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
@@ -203,14 +209,17 @@ def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
         command="true",
         image="img.sif",
         apptainer_binary="apptainer",
-        artifacts=("small.txt", "big.bin", "missing.txt", "evil; rm -rf $HOME.txt"),
+        artifacts=(
+            "small.txt",
+            "big.bin",
+            "missing.txt",
+            "leak.txt",
+            "$(touch injected-marker).txt",
+        ),
         artifact_max_bytes=100,
     )
     text = script.read_text()
-    # copy-out is present, size-capped, and quoted (the hostile name is inert)
-    assert '"$EV/artifacts"' in text
-    assert "-le 100" in text
-    assert "'evil; rm -rf $HOME.txt'" in text
+    assert '"$EV/artifacts"' in text and "-le 100" in text
     # run it with the apptainer line stubbed out (no apptainer on CI): the
     # jail line writes stdout; we replace it with a no-op that keeps files.
     doctored = text.replace(
@@ -222,5 +231,12 @@ def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     ev = run_dir / "eval-launch-t"
     assert (ev / "artifacts" / "small.txt").read_text() == "ok"
     log = (ev / "artifacts.log").read_text()
-    assert "big.bin" in log and "missing.txt" in log and "evil" in log
+    assert "big.bin" in log and "missing.txt" in log
     assert not (ev / "artifacts" / "big.bin").exists()
+    # INJECTION inert: the metacharacter name never executed, anywhere
+    assert "injected-marker" in log
+    for root in (repo, run_dir, tmp_path):
+        assert not (root / "injected-marker").exists()
+    # SYMLINK refused: the out-of-tree target was never delivered
+    assert "leak.txt" in log
+    assert not (ev / "artifacts" / "leak.txt").exists()

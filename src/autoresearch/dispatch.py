@@ -361,20 +361,37 @@ def write_eval_job(
     ]
     if artifacts:
         # copy-out runs OUTSIDE the jail, after the command: only declared,
-        # caller-validated repo-relative FILES, each size-capped; every skip
-        # is recorded so the wake can tell the author exactly what happened.
+        # caller-validated repo-relative FILES, each size-capped; every skip is
+        # recorded so the wake can tell the author exactly what happened.
+        # Two hostile shapes to defeat, since the jailed (agent) command wrote
+        # this tree and picked these names:
+        #   * INJECTION — a name like `$(cmd)` must never reach the shell as
+        #     code. Every path goes in single-quoted (shlex.quote) argument
+        #     position, and every log line is a single-quoted LITERAL (a name
+        #     interpolated into a double-quoted `echo` would execute), so the
+        #     name is inert everywhere.
+        #   * ESCAPE via symlink — a declared file (or an intermediate dir) may
+        #     be a symlink to a host file; the host-side cp would dereference
+        #     it. `realpath` resolves the whole path and we copy ONLY when the
+        #     resolved target stays under $TREE (and copy the RESOLVED path, so
+        #     there is no resolve-then-copy gap). The command has already
+        #     finished, so the tree is quiescent — no TOCTOU.
         lines.append('mkdir -p "$EV/artifacts"')
+        lines.append('TREE_REAL=$(realpath "$TREE" 2>/dev/null || echo "$TREE")')
         for art in artifacts:
-            q = shlex.quote(art)
+            q = shlex.quote(art)  # safe in argument position (single-quoted)
+            skip_type = shlex.quote(f"skipped (not a regular file in the tree): {art}")
+            skip_big = shlex.quote(f"skipped (over {int(artifact_max_bytes)} bytes): {art}")
+            fail_cp = shlex.quote(f"copy failed: {art}")
             lines.append(
-                f'if [ -f "$TREE"/{q} ]; then '
-                f'if [ "$(wc -c < "$TREE"/{q})" -le {int(artifact_max_bytes)} ]; then '
-                f'mkdir -p "$EV/artifacts/$(dirname {q})" && '
-                f'cp "$TREE"/{q} "$EV/artifacts"/{q} '
-                f'|| echo "copy failed: {art}" >> "$EV/artifacts.log"; '
-                f'else echo "skipped (over {int(artifact_max_bytes)} bytes): '
-                f'{art}" >> "$EV/artifacts.log"; fi; '
-                f'else echo "skipped (not a file): {art}" >> "$EV/artifacts.log"; fi'
+                f'AP=$(realpath "$TREE"/{q} 2>/dev/null || true); '
+                f'case "$AP" in "$TREE_REAL"/*) '
+                f'if [ -f "$AP" ] && [ "$(wc -c < "$AP")" -le {int(artifact_max_bytes)} ]; then '
+                f'mkdir -p "$EV/artifacts/$(dirname {q})" && cp "$AP" "$EV/artifacts"/{q} '
+                f'|| echo {fail_cp} >> "$EV/artifacts.log"; '
+                f'elif [ -f "$AP" ]; then echo {skip_big} >> "$EV/artifacts.log"; '
+                f'else echo {skip_type} >> "$EV/artifacts.log"; fi ;; '
+                f'*) echo {skip_type} >> "$EV/artifacts.log" ;; esac'
             )
     lines += [
         "exit 0",
