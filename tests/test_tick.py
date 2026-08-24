@@ -2156,3 +2156,45 @@ def test_job_wake_dispatcher_walltime_includes_the_panel(tmp_path, monkeypatch):
     assert _wake_panel_minutes(with_panel) > 0 and _wake_panel_minutes(no_panel) == 0
     assert times[0] == 20 + _wake_panel_minutes(with_panel)  # panel allowance added
     assert times[1] == 20  # no panel -> just the base
+
+
+def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
+    # an author-sleep wake resumes a FULL author session, so its Slurm job must
+    # fit the session (+ overhead) and pass --session-minutes, not the short
+    # candidate-wake budget (terra #135 r3).
+    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+    from autoresearch.roles import author_spec
+    from autoresearch.runstate import RunRecord
+    from autoresearch.tick import FollowupSpec, JobWakeDispatcher
+
+    times: list[int] = []
+    joined_argv: list[str] = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            joined_argv.append(" ".join(argv))
+            for a in argv:
+                if a.startswith("--time="):
+                    times.append(int(a.split("=")[1]))
+            return CommandResult(0, "9001\n", "")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    spec = FollowupSpec(
+        account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path, panel=""
+    )
+    sleep_rec = RunRecord(
+        run_id="tsp-1",
+        target="o/r",
+        task_title="t",
+        benchmark="tsp",
+        state="waiting",
+        stage={"phase": "author-sleep", "afterany": "afterany:501"},
+    )
+    JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(sleep_rec, "x")
+    session_minutes = author_spec().budget.walltime_s // 60
+    assert times[0] == session_minutes + CLIMB_OVERHEAD_MINUTES  # fits the session
+    assert times[0] > 20  # far more than a candidate wake's base
+    assert f"--session-minutes {session_minutes}" in joined_argv[0]  # self-deadline set

@@ -1796,6 +1796,22 @@ class JobWakeDispatcher:
             "--max-turns",
             str(self.spec.max_turns),
         ]
+        # An AUTHOR-SLEEP wake resumes a FULL author session (not the short
+        # read-decide a candidate wake runs), so the Slurm job must fit that
+        # session or walltime kills the resumed session mid-run and the run just
+        # waits for another wake (terra #135 r3). Size the job to the session
+        # budget + overhead and pass --session-minutes so the in-job
+        # self-deadline fires BEFORE Slurm's walltime. A candidate wake keeps
+        # the short budget (read results + panel).
+        from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+        from autoresearch.roles import author_spec
+
+        if record.stage.get("phase") == "author-sleep":
+            session_minutes = author_spec().budget.walltime_s // 60
+            argv += ["--session-minutes", str(session_minutes)]
+            job_minutes = min(session_minutes + CLIMB_OVERHEAD_MINUTES, self.spec.max_job_minutes)
+        else:
+            job_minutes = self.wake_minutes + _wake_panel_minutes(self.spec)
         if self.spec.pat_file:
             argv += ["--pat-file", self.spec.pat_file]
         # config-driven author: `climb --resume` resolves the author key from the
@@ -1808,7 +1824,7 @@ class JobWakeDispatcher:
                 job_name=name,
                 account=self.spec.account,
                 partition=self.spec.job_partition or self.spec.partition,
-                time_minutes=self.wake_minutes + _wake_panel_minutes(self.spec),
+                time_minutes=job_minutes,
                 command=_flight_command(self.spec.home, name, self.now, argv),
                 dependency=afterany,
                 cpus=2,
