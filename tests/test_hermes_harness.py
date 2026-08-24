@@ -165,6 +165,43 @@ def test_resume_without_saved_transcript_errors_not_silently_fresh(tmp_path: Pat
     assert result.stop_reason == "resume-unavailable"
 
 
+def test_resume_with_empty_transcript_errors_not_blind(tmp_path: Path) -> None:
+    # an empty (or all-invalid) transcript is NO usable context: a corrupted
+    # session-writable file must surface as resume-unavailable, not a blind
+    # resume with only the new brief (terra #139).
+    from autoresearch.harness import _resume_transcript_path
+
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    home = workspace.parent / f"{workspace.name}-home"
+    home.mkdir(parents=True)
+    for corrupt in ('{"turns": []}', '{"turns": [1, 2, 3]}', "{}"):
+        _resume_transcript_path(home, "sid").write_text(corrupt)
+        result = HermesHarness(api_key="k", repo_dir=tmp_path / "hermes").run(
+            "brief", workspace, resume_session_id="sid"
+        )
+        assert result.is_error is True, corrupt
+        assert result.stop_reason == "resume-unavailable", corrupt
+
+
+def test_saved_transcript_redacts_the_session_key(monkeypatch: Any, tmp_path: Path) -> None:
+    # final_text comes from the sample (not the redacted stdout), so an agent
+    # reply echoing the key must not land in the persisted transcript (terra #139).
+    from autoresearch.harness import _resume_transcript_path
+
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    home = workspace.parent / f"{workspace.name}-home"
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        harness_mod.subprocess, "Popen", _make_hermes_popen(home, "my key is sk-SECRET-42", seen)
+    )
+    result = HermesHarness(api_key="sk-SECRET-42", repo_dir=tmp_path / "hermes").run("b", workspace)
+    saved = _resume_transcript_path(home, result.session_id).read_text()
+    assert "sk-SECRET-42" not in saved  # the key was redacted before persisting
+    assert "my key is" in saved  # the rest of the reply is kept
+
+
 def test_sample_files_are_cleaned_up(monkeypatch: Any, tmp_path: Path) -> None:
     workspace = tmp_path / "clone"
     workspace.mkdir()

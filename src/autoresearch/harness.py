@@ -299,11 +299,17 @@ def _load_resume_transcript(session_home: Path, session_id: str) -> list[dict[st
     turns = data.get("turns") if isinstance(data, dict) else None
     if not isinstance(turns, list):
         return None
-    return [
+    cleaned = [
         {"role": str(t.get("role", "")), "text": str(t.get("text", ""))}
         for t in turns
         if isinstance(t, dict)
     ]
+    # An empty (or all-invalid) turn list is NO usable context — a corrupted or
+    # tampered transcript in the session-writable home must surface as
+    # "unavailable" so the caller errors, NOT resume context-blind (the exact
+    # failure this whole path exists to reject). A real transcript always has
+    # the fresh run's [user, assistant] pair.
+    return cleaned or None
 
 
 def _save_resume_transcript(
@@ -1228,9 +1234,13 @@ class HermesHarness:
         # Record this turn so a later resume can restore the context, and hand
         # back the session id it lives under. Only on a real reply — a failed
         # turn leaves the prior transcript intact (nothing useful to append).
+        # REDACT before persisting: final_text comes from the sample, not the
+        # already-redacted stdout, so an agent reply that echoed its session key
+        # must not be written to the resume transcript at rest.
         if not result.is_error:
-            prior_turns.append({"role": "user", "text": brief_text})
-            prior_turns.append({"role": "assistant", "text": result.final_text})
+            secrets = (self.api_key,)
+            prior_turns.append({"role": "user", "text": redact(brief_text, secrets)})
+            prior_turns.append({"role": "assistant", "text": redact(result.final_text, secrets)})
             _save_resume_transcript(session_home, session_id, prior_turns)
         return replace(result, session_id=session_id)
 
