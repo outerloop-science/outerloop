@@ -8,11 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
-- Per-benchmark depth dial `depth_k` on the contract's benchmark
-  (docs/design/research-loop-buildout.md, Phase 2a): how many times the author
-  may iterate on its own measured result within one climb, keeping the best gated
-  candidate. Defaults to `1` (today's single pass), bounded `[1, 8]`. This is the
-  declared knob; the depth loop that reads it lands next.
+- Per-benchmark depth budget `depth_k` on the contract's benchmark
+  (docs/design/research-loop.md, "one syscall, author-directed"): how many
+  external experiment jobs the author may launch within one attempt — a
+  generous meter on the author's own experimentation, not a loop the kernel
+  drives. Defaults to `1` (today's one-shot), bounded `[1, 8]`. This is the
+  declared knob; the launch/sleep syscalls that consume it land next
+  (research-loop-buildout.md, Phase A).
 
 - Alternative AUTHOR backend: `climb --author-backend codex` runs the editing
   role on the OpenAI Codex CLI instead of Claude, to try a cheaper author (e.g.

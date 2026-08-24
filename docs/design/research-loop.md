@@ -1,13 +1,12 @@
 # The research loop: breadth, depth, and one substrate
 
-**Status: north-star (2026-08-20), not a spec.** Captures how we want the
-research workflow to *feel* so the concrete builds don't quietly harden into a
-restrictive one-shot pipeline. It gates nothing; it exists to keep us honest.
-Pairs with `dispatcher.md` (the fire-and-wake substrate), `agent-substrate.md`
-(experiment submission as an `act` syscall), and `scaling.md` (the outer loop,
-seats, coordinated runs). `research-loop-buildout.md` is the concrete, phased
-build-out of this picture (substrate → depth → parallel, with the integrity gate
-threaded through).
+**Status: north-star (2026-08-20; mechanism crystallized 2026-08-23), not a
+spec.** Captures how we want the research workflow to *feel* so the concrete
+builds don't quietly harden into a restrictive one-shot pipeline. It gates
+nothing; it exists to keep us honest. Pairs with `dispatcher.md` (the
+fire-and-wake substrate), `agent-substrate.md` (experiment submission as an
+`act` syscall), and `scaling.md` (the outer loop, seats, coordinated runs).
+`research-loop-buildout.md` is the concrete, phased build-out of this picture.
 
 ## The picture in one paragraph
 
@@ -17,8 +16,8 @@ independently over time. **Depth** is within an attempt: an agent tries
 something, sees the result, reasons on it, forms or kills a hypothesis, and
 tries again. Neither axis is the workflow; the workflow is *how much we spend on
 each*, and the substrate underneath — fire off a job, end the session, wake when
-it finishes — is the same whether the thing waking up is the grader or the
-researcher.
+it finishes — is one primitive the **author itself invokes**, whether what comes
+back is an experiment's output or a review's verdict.
 
 ## Two axes, one budget
 
@@ -50,42 +49,98 @@ the principled fix for the staleness that breadth-only pays. (Cross-attempt
 reports still earn their keep as cheap, lossy memory across the outer loop — they
 are just not a substitute for a live research thread.)
 
-## One substrate, two things it can wake
+## The mechanism: one syscall, author-directed (2026-08-23)
 
-The pause/resume machinery is identical on both axes: **fire a job, end the
-session, come back when it finishes.** What differs is *who wakes up*:
+The whole loop reduces to **one primitive, triggered by the author**. The author
+lives in a sandbox. Anything it cannot compute there — an eval, a training run,
+any real experiment — runs *outside*. To get a result, the author **dispatches
+the job and sleeps; the substrate wakes it with the result delivered back into
+the sandbox.** That is the entire kernel-author interface for doing research:
 
-- Wake the **grader** → the gate's paired baseline/candidate/suite measurement
-  runs as jobs without a session holding a GPU. (The near-term build.)
-- Wake the **agent**, handing it the result → it keeps researching: another
-  experiment, a new hypothesis, a revision. (The depth axis.)
+- **Run an experiment** → dispatch, sleep, wake with the output. Free-form
+  experimentation signal; early in an attempt this is most of what happens.
+- **Submit for review** → "I think this is ready," sleep, wake with the gate's
+  verdict and the panel's/reviewers' comments. Review signal; the same syscall
+  with a different payload.
 
-The pre-PR panel revision — waking the author with blocking findings — is just a
-**crippled, one-step instance** of "wake the agent with evidence." Generalize it
-and you have the depth loop; the number of experiment-iterations an agent gets
-before it must ship a candidate is the dial `k`, with `k = 1` recovering today's
-breadth-only behavior.
+The author interleaves these however its judgment says: experiment, experiment,
+submit, read the comments, run *another* experiment, revise, resubmit. Review is
+**not an orchestrator stage** the run passes through — it is something the
+author *asks for*, exactly like an experiment. (The gate's paired measurement
+still runs as jobs with no session holding a GPU; that machinery is now the
+*inside* of the submit payload, not a stage of its own.)
+
+**Launching and sleeping are separate acts.** `launch` is non-blocking — the
+author can start a job and keep working, start several, or submit and *then*
+decide when to sleep. `sleep(handles)` hibernates until the named jobs finish
+and wakes the author with their results. (A fused launch-and-sleep call may
+exist as syntactic sugar; the split is the primitive, so *not* sleeping is
+always an option.) Submits batch the same way: submit several candidates, sleep
+until all the reviews are back.
+
+**The session clock is visible, and sleep refreshes it.** The session itself
+runs under a job walltime; each harness round reminds the author how much time
+remains before it would be forced to sleep. And a sleep with nothing to wait on
+is legitimate: "checkpoint me and re-schedule me" — the author wakes in a fresh
+job with a fresh clock, spending a sleep count like any other. Running out of
+walltime becomes an author-managed handoff, not a kill.
+
+**Depth is this syscall's budget — independent generous counts per kind.**
+Launches, submits, and sleeps each get their own `k` count (or a wall-clock
+minute budget). Launches meter external compute; the **sleep count meters wake
+cycles** — it is what bounds a session's lifetime, since clock-refresh sleeps
+would otherwise make it immortal — and batching is still rewarded (ten launches
+under one sleep burn one sleep). The counts are visible in the prompt, the
+author knows a submit burns its count, and running low draws a **warning, never
+an enforced reserve** — the author's judgment, not the meter, decides when to
+stop. `k = 1` recovers today's one-shot behavior.
+
+## What the kernel dictates — and what it must not
+
+The contract between kernel and author is deliberately minimal: *here is the
+codebase and scope; here is the benchmark your result will be judged on; produce
+a better program; here is your budget.* Everything between — what to measure
+along the way, which ablations to run, what signal to trust, what to return —
+is the **author's judgment**. The kernel must not prescribe a dev/eval protocol,
+a fixed program to run between sleeps, or a structured decide-next policy; any
+of those is the same over-structuring mistake in a new costume.
+
+Two boundaries stay kernel-owned, and only these:
+
+- **The gate is the untouchable ruler.** The one authoritative measurement on
+  the fixed benchmark, run inside the submit payload. The author never gets the
+  frozen test/seed to iterate against (ruler-fishing is our recurring failure
+  mode; see `climb-lessons`), and the suite / no-regression gate keeps extra
+  spend honest.
+- **The meter.** Launches, submits, sleeps, and minutes are counted by the
+  kernel, generously; the counts are the author's to see and plan against.
 
 ## The non-restrictive principle
 
-Because the machinery is shared, we do **not** have to choose breadth vs. depth
-up front, and we must not hardwire the narrow case:
+Because the machinery is one primitive, we do **not** have to choose breadth
+vs. depth up front, and we must not hardwire the narrow case:
 
-- Build the wake to **resume the agent in general**, not only to re-enter the
-  grader's decision. The gate-wake is the *first use* of that machinery, not its
-  shape.
-- Keep `k` a **tunable policy**, not a constant. `k = 1` is a setting, not an
-  assumption.
+- Build the wake to **resume the author in general** — the syscall returns its
+  result into the *same* session — not only to re-enter a grader's decision.
+- Keep the budget a **tunable policy**, not a constant. `k = 1` is a setting,
+  not an assumption.
 - Treat "does depth pay here?" as an **empirical question** the outer loop can
   measure, per benchmark.
 
+A consequence worth naming: **parallel dispatch stops being a separate axis to
+build.** An author that can dispatch before sleeping can dispatch *several*
+things before sleeping — a portfolio within an attempt is the author's choice on
+the same syscall, not new orchestration.
+
 ## What we build first, and why it isn't a commitment
 
-The **gate-wake** (dispatcher phase 1: measure the final candidate as jobs, wake
-to decide) comes first — it is needed regardless of the depth dial, it de-risks
-the exact pause/resume plumbing the depth loop reuses, and it unpauses the outer
-loop. Building it agent-first (resume with evidence, the panel revision as the
-first instance) means turning up depth later is a **knob, not a rewrite**.
+The crux is the **suspend-on-syscall, wake-with-result** capability: the author
+invokes the dispatch tool, the session hibernates (no GPU, no held job), and the
+substrate later resumes *that same session* with the external result as the
+call's return. The park/wake plumbing (dispatcher, `afterany` wakes, session
+resume) already exists orchestrator-triggered; the build is handing the trigger
+to the author. Build it once for experiments; submit-for-review layers on as a
+payload, not a second mechanism.
 
 ## The finish is agent-driven too
 
