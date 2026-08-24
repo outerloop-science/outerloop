@@ -94,11 +94,12 @@ class Benchmark(_StrictModel):
     eval_minutes: int | None = Field(default=None, ge=1)
     # Depth budget (docs/design/research-loop.md, "one syscall, author-directed"):
     # how many external experiment jobs the author may LAUNCH within one attempt.
-    # A generous meter on actions (sleeps are free), not a loop the kernel drives —
-    # the author decides what each launch is for. 1 = today's one-shot.
-    # Per-benchmark so "does depth pay here?" is answerable per benchmark. The
-    # launch/sleep syscalls that consume it are the buildout's Phase A; the
-    # [1, 8] bound can widen then.
+    # A generous meter on actions, not a loop the kernel drives — the author
+    # decides what each launch is for. One of three independent counts (launches
+    # here; submit and sleep counts are its sibling knobs, landing with Phase A).
+    # 1 = today's one-shot. Per-benchmark so "does depth pay here?" is answerable
+    # per benchmark. The launch/sleep syscalls that consume it are the buildout's
+    # Phase A; the [1, 8] bound can widen then.
     depth_k: int = Field(default=1, ge=1, le=8)
 
     @field_validator("seed_env")
