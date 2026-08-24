@@ -176,6 +176,36 @@ def test_line_must_be_positive_tool_and_reader(tmp_path: Path, capsys) -> None:
         read_verdict(tmp_path)
 
 
+def test_reader_rejects_a_falsy_non_string_category(tmp_path: Path) -> None:
+    # a falsy non-string category (0, []) must raise, not be silently dropped
+    # by a truthiness guard (terra #136 r5).
+    d = tmp_path / ".verdict"
+    d.mkdir(exist_ok=True)
+    bad_values: list[object] = [0, []]
+    for bad in bad_values:
+        (d / "verdict.json").write_text(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "file": "x",
+                            "line": 1,
+                            "confidence": "high",
+                            "summary": "s",
+                            "detail": "d",
+                            "blocking": True,
+                            "kind": "note",
+                            "category": bad,
+                        }
+                    ],
+                    "notes": "",
+                }
+            )
+        )
+        with pytest.raises(VerdictError, match="category must be a string"):
+            read_verdict(tmp_path)
+
+
 def test_reader_clamps_unknown_category_to_other(tmp_path: Path) -> None:
     # a taxonomy typo normalizes to "other" rather than nuking the verdict —
     # same stance as verifier.py's clamp (terra #136 r1).

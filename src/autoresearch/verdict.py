@@ -110,14 +110,16 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
         "kind": kind,
     }
     category = item.get("category", "")
-    if category:  # verifier-only; keep only when the judge set it
-        if not isinstance(category, str):
-            raise VerdictError(f"finding {file}: category must be a string")
-        # (category is str here, so `in CATEGORIES` cannot raise on unhashables)
-        # CLAMP an unknown category to "other" rather than reject — same stance
-        # as the existing verifier path (verifier.py: "a free-string category
-        # must not leak through"), so a taxonomy typo normalizes instead of
-        # nuking a whole verdict. (terra #136 r1)
+    # TYPE first, then truthiness: a falsy non-string (category: 0 or []) must
+    # be a VerdictError, not silently dropped by the `if category:` guard
+    # (terra #136 r5). Absent or "" is legitimately "no category".
+    if not isinstance(category, str):
+        raise VerdictError(f"finding {file}: category must be a string")
+    if category:  # verifier-only; a non-empty string
+        # (str here, so `in CATEGORIES` cannot raise on unhashables) — CLAMP an
+        # unknown category to "other" rather than reject, the existing verifier
+        # stance (verifier.py: "a free-string category must not leak through"),
+        # so a taxonomy typo normalizes instead of nuking a verdict (terra r1).
         from autoresearch.verifier import CATEGORIES
 
         out["category"] = category if category in CATEGORIES else "other"
