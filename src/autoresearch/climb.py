@@ -78,7 +78,7 @@ from autoresearch.runstate import (
     save_record,
     stamp_outage,
 )
-from autoresearch.syscall import MAX_ARTIFACT_BYTES, SyscallRequest
+from autoresearch.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SYSCALL_FILE, SyscallRequest
 from autoresearch.syscall import ensure_excluded as syscall_excluded
 from autoresearch.verifier import MAX_CLAIM_CHARS
 
@@ -1422,7 +1422,24 @@ def live_climb(
         # dispatcher has cluster coordinates (the launches are Slurm jobs), and
         # the backend can resume (the wake resumes the SAME session).
         launcher = None
-        if author_syscalls and dispatch is not None and getattr(harness, "supports_resume", True):
+        # A request is only valid if the SESSION wrote it. The workspace is a
+        # fresh clone, so a request file that exists BEFORE the session is
+        # tracked in the target's base tree — a repo could otherwise consume
+        # cluster compute by committing one (terra, #132 r3). Booby-trapped
+        # channel -> the feature stays off for this run, loudly.
+        preexisting_request = (workspace / SYSCALL_DIR / SYSCALL_FILE).exists()
+        if author_syscalls and preexisting_request:
+            log.warning(
+                "target ships a tracked %s/%s; author syscalls disabled for this run",
+                SYSCALL_DIR,
+                SYSCALL_FILE,
+            )
+        if (
+            author_syscalls
+            and not preexisting_request
+            and dispatch is not None
+            and getattr(harness, "supports_resume", True)
+        ):
 
             def launcher(sha: str, request: SyscallRequest) -> str:
                 from autoresearch.dispatch import eval_job_spec, write_eval_job

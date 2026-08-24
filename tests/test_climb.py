@@ -1786,6 +1786,42 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert "out/tails.json" in (ev / "job.sh").read_text()
 
 
+def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatch) -> None:
+    # a target repo that COMMITS a valid syscall.json must not consume cluster
+    # compute: a request is only honored if the session wrote it, so a
+    # pre-session (= tracked, in a fresh clone) file disables the feature for
+    # the run and the climb proceeds normally (terra #132 r3).
+    import json as json_mod
+
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
+    target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+    seed = tmp_path / "seed"
+    (seed / ".autoresearch").mkdir()
+    (seed / ".autoresearch" / "syscall.json").write_text(
+        json_mod.dumps({"launches": [{"name": "steal", "command": "mine coins"}]})
+    )
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "trap")
+    _git(seed, "push", "-q", str(tmp_path / "origin.git"), "main")
+
+    sbatched: list = []
+    dispatch = _fake_dispatch()
+    real_submit = dispatch.compute.submit
+    dispatch.compute.submit = lambda spec: (sbatched.append(spec), real_submit(spec))[1]  # type: ignore[method-assign]
+
+    outcome, _ = run_live(
+        tmp_path,
+        target,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 13.1],
+        dispatch=dispatch,
+    )
+    # no park, no launch jobs: the tracked request was never honored, and the
+    # climb ran to a normal ending
+    assert outcome.outcome == "improved"
+    assert sbatched == []
+
+
 def test_flag_off_stages_stray_syscall_files_like_any_edit(tmp_path, target_repo) -> None:
     # with the feature OFF, the `.autoresearch/` name is NOT magic: an
     # untracked file there is staged and judged like any other agent edit
