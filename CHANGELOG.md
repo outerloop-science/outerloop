@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Judge verdict tool, part 2 — the wiring (docs/design/role-cli.md, Phase 2;
+  inert until a backend hosts the tool). `RoleSpec.verdict_tool` declares a judge
+  emits its verdict through the installed tool (one allow-listed command, not
+  general Bash — the read-only invariant still holds; requires an
+  `output_schema`). `run_role` now branches: when the role sets `verdict_tool`
+  and the harness reports `supports_verdict_tool`, it installs the tool before
+  the session and reads the committed verdict authoritatively AFTER — no
+  parse-and-repair loop; a missing or malformed verdict is a failure (silence is
+  never endorsement). A backend without the capability falls back to the
+  existing parse-and-repair path, unchanged. No backend sets the capability yet
+  (part 3 grants claude the scoped command after the restriction is validated),
+  so this changes no live behavior.
+
 - Judge verdict tool, part 1 — the mechanism (docs/design/role-cli.md, Phase 2;
   not yet wired into role_runner, so inert until part 2). `verdict_cli.py` is a
   standalone (stdlib-only) tool the kernel installs at `.verdict/verdict`: a

@@ -132,3 +132,88 @@ def test_steward_spec_is_an_executing_editor_in_its_own_territory() -> None:
     assert {"Write", "Edit", "Bash"} <= set(spec.tools)
     assert spec.output_schema is None  # the artifact is the env-work diff + report
     assert spec.scope == ()  # filled from contract.steward.allowed by the kernel
+
+
+# --- verdict-tool mode (docs/design/role-cli.md Phase 2) ---
+
+
+@dataclass
+class _VerdictHarness:
+    """A harness that hosts the verdict tool: on run it writes a committed
+    verdict (as the judge would via the tool), and declares the capability."""
+
+    verdict: dict | None
+    supports_verdict_tool: bool = True
+    installed: bool = False
+
+    def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+        # the tool was installed before run (we assert the dir exists); simulate
+        # the judge committing a verdict
+        self.installed = (Path(workspace) / ".verdict" / "verdict").exists()
+        if self.verdict is not None:
+            (Path(workspace) / ".verdict").mkdir(exist_ok=True)
+            (Path(workspace) / ".verdict" / "verdict.json").write_text(json.dumps(self.verdict))
+        return _session("(verdict via tool)")
+
+
+def _verdict_spec():
+    from dataclasses import replace
+
+    return replace(reviewer_spec(), verdict_tool=True)
+
+
+def test_verdict_tool_mode_reads_the_committed_verdict(tmp_path: Path) -> None:
+    v = {
+        "findings": [
+            {
+                "file": "x.py",
+                "line": 3,
+                "confidence": "high",
+                "summary": "s",
+                "detail": "d",
+                "blocking": True,
+                "kind": "change",
+            }
+        ],
+        "notes": "one defect",
+    }
+    harness = _VerdictHarness(verdict=v)
+    result = run_role(_verdict_spec(), harness, "review it", tmp_path)
+    assert harness.installed  # tool installed BEFORE the session
+    assert result.ok and result.data is not None
+    assert result.data["findings"][0]["blocking"] is True
+    assert result.data["notes"] == "one defect"
+
+
+def test_verdict_tool_mode_no_verdict_is_a_failure(tmp_path: Path) -> None:
+    # the judge never concluded -> no clean read (silence is never endorsement)
+    result = run_role(_verdict_spec(), _VerdictHarness(verdict=None), "x", tmp_path)
+    assert not result.ok and "no verdict" in result.error
+
+
+def test_verdict_tool_mode_malformed_verdict_is_a_failure(tmp_path: Path) -> None:
+    bad = {
+        "findings": [
+            {
+                "file": "x",
+                "line": 1,
+                "confidence": "SURE",
+                "summary": "s",
+                "detail": "d",
+                "blocking": True,
+                "kind": "note",
+            }
+        ],
+        "notes": "",
+    }
+    result = run_role(_verdict_spec(), _VerdictHarness(verdict=bad), "x", tmp_path)
+    assert not result.ok and "invalid verdict" in result.error
+
+
+def test_verdict_spec_falls_back_to_parsing_when_backend_lacks_support(tmp_path: Path) -> None:
+    # a verdict_tool spec on a backend WITHOUT the capability parses the final
+    # message (the message-based fallback) — no tool installed.
+    harness = _SeqHarness(results=[_session(_FINDINGS)])  # supports_verdict_tool absent -> False
+    result = run_role(_verdict_spec(), harness, "x", tmp_path)
+    assert result.ok and result.data == {"findings": [], "notes": "looks fine"}
+    assert not (tmp_path / ".verdict").exists()  # tool NOT installed

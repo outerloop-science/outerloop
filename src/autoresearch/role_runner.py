@@ -90,6 +90,17 @@ def run_role(
     way climb builds its harness from effective_limits. run_role does not
     reconcile a mismatched harness; it runs what it is given.
     """
+    # Verdict-tool mode (docs/design/role-cli.md Phase 2): a judge whose backend
+    # can host the tool commits its verdict via one allow-listed command instead
+    # of a final JSON message. Install the tool BEFORE the session so it can call
+    # it; read the committed verdict AFTER (authoritatively) instead of parsing.
+    # A backend that cannot host it (`supports_verdict_tool` False) falls back to
+    # the parse-and-repair path below.
+    use_verdict_tool = spec.verdict_tool and getattr(harness, "supports_verdict_tool", False)
+    if use_verdict_tool:
+        from autoresearch.verdict import install_tool
+
+        install_tool(workspace)
     session = harness.run(brief_text, workspace, resume_session_id)
     if session.is_error:
         return RoleResult(
@@ -97,6 +108,20 @@ def run_role(
         )
     if spec.output_schema is None:
         return RoleResult(ok=True, session=session)  # editing role: artifact is the diff
+    if use_verdict_tool:
+        # No repair loop: the tool validated each finding in-session, and
+        # read_verdict is authoritative. A missing verdict (the judge never
+        # concluded) or a malformed one is a failure — the caller posts a skip
+        # stub, never a clean read (silence is never endorsement).
+        from autoresearch.verdict import VerdictError, read_verdict
+
+        try:
+            data = read_verdict(workspace)
+        except VerdictError as exc:
+            return RoleResult(ok=False, session=session, error=f"invalid verdict: {exc}")
+        if data is None:
+            return RoleResult(ok=False, session=session, error="judge produced no verdict")
+        return RoleResult(ok=True, session=session, data=data)
     data, error = _validate_output(session.final_text, spec.output_schema)
     repairs = 0
     while data is None and repairs < max_repairs:

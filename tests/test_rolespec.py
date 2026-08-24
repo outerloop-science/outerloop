@@ -75,3 +75,20 @@ def test_empty_tools_rejected() -> None:
             execution=Execution(environment="apptainer", can_execute=True),
             budget=SessionBudget(max_turns=10, walltime_s=60),
         )
+
+
+def test_verdict_tool_requires_an_output_schema() -> None:
+    import pytest
+
+    from autoresearch.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
+
+    with pytest.raises(RoleSpecError, match="output_schema"):
+        RoleSpec(
+            name="reviewer",
+            instructions="x",
+            key="reviewer",
+            tools=("Read",),
+            execution=Execution(environment="gh-runner", can_execute=False),
+            budget=SessionBudget(max_turns=1, walltime_s=1),
+            verdict_tool=True,  # no output_schema -> invariant violation
+        )
