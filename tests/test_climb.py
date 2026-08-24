@@ -1807,7 +1807,12 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
     sbatched: list = []
     dispatch = _fake_dispatch()
     real_submit = dispatch.compute.submit
-    dispatch.compute.submit = lambda spec: (sbatched.append(spec), real_submit(spec))[1]  # type: ignore[method-assign]
+
+    def recording_submit(spec):
+        sbatched.append(spec)
+        return real_submit(spec)
+
+    dispatch.compute.submit = recording_submit  # type: ignore[method-assign]
 
     outcome, _ = run_live(
         tmp_path,
