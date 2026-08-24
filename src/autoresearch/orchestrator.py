@@ -927,13 +927,14 @@ def resume_climb(
     )
 
 
-# --- the composition seam (docs/design/research-loop-buildout.md, Phase 1) ---
+# --- the composition seam (docs/design/research-loop-buildout.md) ---
 # climb_once's inner loop is run -> measure -> decide. `run` (run_role) and
 # `measure` (measure_and_decide) are already factored; this is the "decide the
 # next invocation" half, pulled out of the loop as a pluggable policy so the loop
-# is agnostic to WHY it iterates. Today one policy exists (panel-driven revision);
-# the depth axis (Phase 2a) will add a results-driven one, and parallel (Phase 3)
-# will fan out the `run` step — each an app on this seam, not a new driver.
+# is agnostic to WHY it iterates. One policy exists (panel-driven revision) and
+# no more are planned: the author-directed model (research-loop.md, "one
+# syscall") moves next-move decisions into the author; this seam is retained as
+# structure and retires with the orchestrator-driven revision loop (Phase B).
 
 
 @dataclass(frozen=True)

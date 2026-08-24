@@ -1,177 +1,162 @@
-# Building out the research loop: substrate, depth, parallel
+# Building out the research loop: the author-directed syscall
 
-**Status: plan (2026-08-22), reviewable before code.** The concrete build-out of
-the north-star in `research-loop.md` (breadth × depth over one fire-and-wake
-substrate). It sequences three efforts — consolidate the role-runner, then the
-**depth** axis, then **parallel dispatch** — and threads the integrity gate
-through all three. Pairs with `consolidation.md` (kernel-as-OS, the staged plan),
-`agent-substrate.md` ("the role-runner: one loop replaces five drivers"),
-`dispatcher.md` (fire-and-wake, the phases), `scaling.md` (the outer loop), and
-`orchestrator-verify.md` (the gate).
+**Status: plan (2026-08-22; re-based 2026-08-23), reviewable before code.** The
+concrete build-out of the north-star in `research-loop.md`. The 2026-08-23
+crystallization re-based this plan: the earlier phases built **orchestrator-
+driven** depth (a kernel loop running k measured passes, selecting the best,
+reworking the publish path) — the wrong model. Depth is the **author's**
+experimentation budget on one author-triggered primitive: **dispatch → sleep →
+wake-with-result.** This doc sequences building that primitive. Pairs with
+`consolidation.md` (kernel-as-OS), `agent-substrate.md` (experiment submission
+as an `act` syscall — this plan builds exactly that), `dispatcher.md`
+(fire-and-wake), and `orchestrator-verify.md` (the gate).
 
 ## The thesis in one paragraph
 
-`research-loop.md` frames the work as a grid, **M attempts × k iterations**, over
-one pause-and-resume substrate. Today the system lives at `k = 1` (breadth-only).
-The two things that make it a *research* loop rather than a batch of darts are
-**depth** (the agent iterating on its own results — the `k` axis) and **parallel
-dispatch** (a portfolio explored at once — breadth *within* a climb, the `M` axis
-pulled inside a single objective). Both are the same operation underneath —
-*dispatch work, end the session, wake on results, decide the next move* — so they
-must be built on **one** substrate, not two. That substrate is the consolidated
-role-runner. And because both axes scale how much the loop *does*, the
-benchmark-integrity gate (our recurring failure mode; see `climb-lessons` in the
-notebook) has to grow with them, or we scale gaming. Hence: substrate first, then
-the two axes, with the gate as a cross-cutting governor.
+The author lives in a sandbox; real experiments run outside it. The one
+primitive the kernel owes the author is: *dispatch a job, sleep, wake with the
+result back in the sandbox.* Everything the earlier plan phased out separately
+— depth iteration, panel revision, parallel candidates — is the author using
+that primitive under its own judgment: run experiments and sleep on them,
+submit for review and sleep on it, read comments, run more experiments, revise,
+resubmit. The kernel keeps exactly four things: the **sandbox**, the
+**syscalls**, a **generous meter** (per-action `k` counts or minutes — a soft
+ceiling, not a tight cap), and the **gate** (the untouchable ruler, run inside
+the submit payload, plus the suite/no-regression defense). What to measure
+between sleeps, what signal to trust, what to return — all author judgment; the
+kernel prescribes none of it.
 
-## The shape: one substrate, two axes, one governor
+## What already exists (and is kept)
 
-- **Substrate — the composition seam above the role-runner.** Running *one* role
-  session is already consolidated: climb/steward/follow-up/judges all go through
-  `run_role` + a RoleSpec (`consolidation.md` — the five-drivers collapse is
-  done). What is *not* uniform is composing MANY invocations: *run role X, await
-  its result (inline or dispatched), decide the next invocation.* Today the climb
-  loop does that ad-hoc for its own case; depth and parallel both need it as a
-  shared primitive. That seam — not re-consolidating `run_role` — is the substrate
-  this plan builds.
-- **Depth (the `k` axis) — serial.** After the agent sees its own measured
-  result, it may iterate — revise, retry a different tack, refine — up to a
-  contract-set `k`. `k = 1` is today; the panel-on-wake slices
-  (`orchestrator-verify.md`) already built the special case "a blocking finding
-  wakes the author to revise."
-- **Parallel dispatch (the `M`-within-a-climb axis) — breadth.** Fan out a
-  portfolio on one objective — candidate variants, seeds, or lenses — await them
-  through the dispatcher, and deadline-salvage the best that returns in time.
-- **Governor — the integrity gate.** More depth and more parallel candidates mean
-  more surface to game the benchmark. The suite / no-regression gate (see
-  `Metric taxonomy` below) is not a competing feature; it is what keeps the extra
-  spend honest.
+- **Park/wake substrate, orchestrator-triggered** — `ClimbParked`, the
+  dispatcher, `afterany` wake jobs, `resume_run`. Proven live. The build hands
+  the *trigger* to the author; the plumbing underneath is this.
+- **Session resume** — `climb_once`'s resume-entry (`resume_session_id` +
+  `improve_prompt`, the #129 primitives) is the wake-the-same-session
+  mechanism; `supports_resume` gates backends that cannot (hermes).
+- **The composition seam** (#128) — the decide-next policy extraction. Retained
+  as internal structure; no further orchestrator decision policies get built on
+  it (the author decides next moves now).
+- **`Benchmark.depth_k`** (#129) — re-purposed verbatim: it is the
+  experiment-launch budget (`1` = today's one-shot; the `[1, 8]` bound can
+  widen when Phase A lands, and the submit + sleep counts are its sibling
+  knobs).
+- **The gate + panel** — unchanged as measurement machinery; re-seated as the
+  inside of the submit payload rather than stages the run passes through.
 
-## Dependency called out first: the dispatcher must go live
+## The syscall surface (reviewed with Mengye, 2026-08-23)
 
-Parallel dispatch, and the cross-job form of depth (park → wake → iterate),
-both stand on the **experiment dispatcher** (`dispatcher.md`). Today the
-dispatcher is *proven but dark*: activation was watched end-to-end, but no pilot
-benchmark runs long enough to park, so the park → wake → publish and
-panel/revise sub-paths are unexercised on real Slurm. **Nothing on the `M` axis,
-and no cross-session depth, is real until a genuinely long-eval benchmark makes
-the dispatcher run for real.** Lighting it up — a benchmark whose eval parks,
-observed through a full park → wake → PR cycle — is the entry gate to Phases 2b
-and 3. Inline (single-session) depth (Phase 2a) does not need it.
+Three author-facing syscalls; the kernel binds them to Slurm. The agent
+controls the actions; the kernel performs them.
 
-## Phase 1 — the invocation-composition seam (thin, feature-driven)
+| Syscall | Blocking? | Metered? | Semantics |
+| --- | --- | --- | --- |
+| `launch(cmd, resources) → handle` | no | 1 experiment count | run agent-named work outside the sandbox, eval-grade containment; author keeps working |
+| `submit() → handle` | no | 1 submit count | the review payload: kernel seals the snapshot, runs the gate (its own private seed) + panel as jobs |
+| `sleep(handles) → results` | hibernates | 1 sleep count | park the session; wake the *same session* when the named jobs finish, results delivered as the call's return |
 
-**Not a re-consolidation.** Running one role session is already unified through
-`run_role` + RoleSpec (`consolidation.md`); do NOT redo that. Phase 1 is the layer
-*above* it: a small, shared way to express **run role → await result (inline or
-dispatched) → decide the next invocation**, which the climb loop currently does
-ad-hoc and which both axes need.
+Design rulings:
 
-**Goal.** Factor the climb's implicit run→measure→decide loop into a seam that
-takes (a) how to run the next role invocation and (b) how to decide from a result
-whether/what to invoke next — so depth (loop) and parallel (fan-out) are two
-callers of the same seam, not two new drivers.
+- **Split is the primitive; fusion is sugar.** A blocking `run(cmd)` may exist
+  as `sleep([launch(cmd)])`, but launch/sleep stay separate so *not* sleeping
+  is always an option — launch several, keep coding, sleep once.
+- **Submits batch too.** Multiple candidates can be in review at once; sleep
+  until all verdicts are back.
+- **Independent generous counts per kind: launches, submits, sleeps** (or a
+  minute budget). Launches meter external compute; the sleep count meters wake
+  cycles — without it an author could clock-refresh forever and never launch —
+  and batching is still rewarded (ten launches under one sleep burn one sleep).
+  Counts are visible in the prompt; the author knows a submit burns its count;
+  running low is a **warning in the prompt, never an enforced reserve**.
+  Exhaustion refuses further calls of that kind; the session always gets to
+  conclude honestly.
+- **Results are data.** Exit code + bounded stdout/stderr + author-declared
+  artifact paths copied back into the sandbox; all data-fenced (job output is
+  untrusted text, never instructions).
+- **The session clock is visible; sleep refreshes it.** The hosting job has a
+  walltime; each harness round reminds the author of the time remaining before
+  a forced sleep. `sleep([])` — nothing to wait on — is a legitimate
+  checkpoint-and-reschedule: wake in a fresh job with a fresh clock (it burns a
+  sleep count like any other — the bound on living forever). This replaces the
+  self-deadline kill (climb.py's walltime alarm) with an author-managed
+  handoff.
 
-**Why first.** Built separately, depth and parallel each grow their own
-orchestration — the mistake the config-driven author work (#125, replacing the
-abandoned #123) taught us. One composition seam lets a new axis be an *app* on the
-kernel.
+## Phase A — launch/sleep: suspend-on-syscall, wake-with-result
 
-**Thin, not speculative.** Extract exactly what the first depth slice (2a) needs
-from the existing loop; let Phase 3 pull the fan-out shape. The test of "thin
-enough" is that Phase 1 lands with **no user-visible behavior change** — same
-climbs, same PRs, the loop just expressed through the seam.
+**The crux, and the only genuinely new capability**: the session hibernates on
+`sleep` (no GPU, no held job — the same park the orchestrator does today) and
+the substrate later resumes the *same session* with the jobs' results.
 
-**Acceptance.** The inline climb runs through the composition seam; a `k = 1`
-result-driven decision is expressed as data (not lane-specific control flow); the
-existing suite stays green; no new endings or gate behavior.
+Build notes, not spec (spec lands with the PR):
 
-## Phase 2 — the depth axis (`k` as a dial)
+- **Trigger inversion only.** Reuse `ClimbParked`-style park records, the
+  dispatcher, and `afterany` wakes; what changes is *who* raises the park (a
+  syscall inside the session, surfaced by the harness) and *what* the wake
+  delivers (job output into the resumed session, not a gate decision).
+- **The harness seam.** The wake resumes via `resume_session_id` with the
+  results (data-fenced) as the continuation. Per-backend: claude and codex
+  both resume; hermes (`supports_resume=False`) cannot host this.
+- **Containment unchanged.** Launched jobs run agent-directed code with
+  eval-grade containment (the `SubprocessEvaluator` posture).
 
-**Goal.** Generalize "a blocking finding wakes the author" into *results-driven
-depth*: on seeing its own measured result, the agent decides whether to iterate,
-bounded by a contract dial `k` (and a spend budget), never a constant baked into
-the code.
+**Acceptance.** An author session launches a command, hibernates through a
+real Slurm job, resumes with the output, and continues — observed end-to-end;
+exhaustion surfaces as a refused launch, not a killed session; an author that
+never launches is byte-identical to today.
 
-- **2a — inline depth (no dispatcher).** Within one session/job, the agent
-  measures, reflects, and iterates up to `k`. This extends `panel_reads` /
-  `panel_revisions` (already `k = 1` for the panel case) into general
-  result-driven iteration. Ships without the dispatcher.
-- **2b — cross-session depth (needs the dispatcher live).** The agent dispatches
-  a real eval, the session ends, a wake resumes it *with the result*, and it
-  iterates. This is `research-loop.md`'s "wake the agent with evidence" at
-  arbitrary `k`, and it is the honest form for long evals.
+## Phase B — submit as a payload
 
-**Design guards.** `k` and the depth budget live in the contract, measurable per
-benchmark ("does depth pay here?" is itself a question the system answers). Each
-iteration is a fresh gated candidate — depth never smuggles an unmeasured change
-past the gate. A no-resume backend still drafts rather than blind-revising (the
-`supports_resume` gate we already have).
+`submit` is a launch whose job is the **gate** (paired baseline/candidate +
+suite on the sealed snapshot, kernel-private seed) and the **panel**; the wake
+returns verdict + comments, and the author decides — revise, run more
+experiments, resubmit, or conclude. The orchestrator-driven panel-revision
+loop (`panel_revisions`, policy-driven re-entry) is retired in favor of this;
+the finish stays agent-driven (`research-loop.md`, "the finish is agent-driven
+too").
 
-**Acceptance.** A benchmark can be run at `k > 1`; the report shows the iteration
-chain and what each step changed; a run that stops improving halts at `< k`
-rather than burning the whole budget; depth is off (`k = 1`) by default until a
-contract opts in.
+**Acceptance.** An author submits, sleeps, wakes with a blocking finding, runs
+a *further experiment*, revises, resubmits, and lands a PR — the interleaving
+the old stage model could not express. A clean first submit still opens a PR
+with no extra machinery.
 
-## Phase 3 — parallel dispatch (`M` within a climb)
+## What falls out for free
 
-**Goal.** One objective explored as a **portfolio** — candidate variants, seeds,
-or lenses — dispatched concurrently, coordinated by the agent, with
-deadline-salvage picking the best that returns in time. This is the
-`parallel-climb` note (portfolio + parallel lenses + deadline-salvage) made real.
+- **Parallel dispatch** is no longer a phase: launch several (or submit
+  several) before one sleep — a portfolio within an attempt is the author's
+  choice on the same syscalls. If coordination patterns recur, lift helpers
+  later — earned, not designed up front.
+- **Cross-session depth** (the old Phase 2b) *is* Phase A — every sleep is
+  cross-session by construction.
+- **A flow DSL** stays rejected: pushing the flow into the author dissolved the
+  static role-graph a language would describe. The syscall is the abstraction;
+  extension = new payloads, new benchmarks, new backends — zero kernel change.
+  (A thin declarative layer might someday earn its keep at the *outer* loop —
+  fan out M attempts / reduce to portfolio — only after those ops exist
+  imperatively.)
 
-**Leans hardest on Phases 1 and the live dispatcher.** Each portfolio member is a
-role invocation (Phase 1) whose eval is a dispatched job (`dispatcher.md`
-Phase 2/3, live). Fan-out, await-any, and salvage are dispatcher concerns, not
-new per-lane machinery.
+## The governor, unchanged in principle
 
-**Open questions to settle in-doc before building** (some already queued in
-`parallel-climb`): how a portfolio shares vs. isolates workspaces; whether
-members interact (a leader reading laggards) or stay blind; how the budget splits
-across `M`; how deadline-salvage ranks partial returns; how parallel members
-compose with depth (does a surviving member get `k` iterations?).
+More launches and submits = more chances to game the benchmark. The defenses
+do not move:
+the author never gets the frozen test/seed to iterate against (ruler-fishing);
+the gate re-measures on sealed snapshots inside submit; the suite /
+no-regression gate must be in force before budgets get generous (the metric
+taxonomy remains the companion doc). Every unit of spend passes the same bar.
 
-**Acceptance.** A climb can dispatch `M > 1` candidates on one benchmark;
-partial returns are salvaged at the deadline; the winner is chosen by the gate,
-not by which finished first; `M = 1` stays the default.
+## Dependency: the dispatcher must go live
 
-## The governor, threaded through: the integrity gate
-
-Our climb-lessons keep showing the same failure — the agent games the
-benchmark's structure rather than generalizing. Depth gives it more turns to
-find a crack; parallel dispatch gives it more darts at one. So the gate scales
-*with* the engine or the engine scales gaming:
-
-- The **suite / no-regression gate** — a win on the climbed benchmark must not
-  regress the others — has to be in force before Phase 2/3 turn up the volume.
-- The **metric taxonomy** (climbed / diagnostic / gate / composite / group /
-  suite) that the gate needs is its own companion doc; this plan depends on it
-  but does not specify it. Land the taxonomy + suite gate alongside Phase 2, not
-  after Phase 3.
-- Depth's per-iteration gating and parallel's winner-by-gate rule (above) are the
-  same principle applied locally: every extra unit of spend passes the same bar.
-
-## Non-goals
-
-- Not the outer breadth loop (many independent attempts over time, seats,
-  coordinated runs) — that is `scaling.md`. This doc is depth, and breadth
-  *within a single climb*.
-- Not a new backend or harness — the role-runner is the existing seam
-  (`consolidation.md`); backends stay swappable underneath.
-- Not the metric taxonomy spec — referenced, companion doc.
+Unchanged from the original plan: Phase A's real form stands on the dispatcher
+running for real (a benchmark whose jobs genuinely park). The dispatcher is
+proven but dark; lighting it up on a long-eval benchmark is the entry gate to
+observing Phase A end-to-end on Slurm. (Phase A can be *built* and tested
+against fakes before that.)
 
 ## Sequencing summary
 
-1. **Phase 1 — the invocation-composition seam** (thin; `run_role` itself is
-   already consolidated). No dispatcher dependency. Enables everything after.
-2. **Light up the dispatcher** on a real long-eval benchmark — the entry gate to
-   2b and 3.
-3. **Phase 2a — inline depth**, then **2b — cross-session depth** (after the
-   dispatcher is live), with the **suite gate + metric taxonomy** landing
-   alongside.
-4. **Phase 3 — parallel dispatch**, on the composition seam + live dispatcher,
-   with the gate as the winner-selector.
-
-Depth before parallel deliberately: depth extends something already built
-(panel-on-wake) and is cheaper to make honest; parallel is the larger new
-capability and depends on more being in place.
+1. **Phase A — the syscall** (suspend-on-tool-call, wake-with-result), built on
+   the existing park/wake plumbing + #129 resume primitives; tested on fakes.
+2. **Light up the dispatcher** on a real long-eval benchmark; observe Phase A
+   end-to-end.
+3. **Phase B — submit-for-review as a payload**, retiring the orchestrator
+   panel-revision loop; suite gate + metric taxonomy land alongside.
+4. Parallel/coordination helpers only if recurring author patterns earn them.
