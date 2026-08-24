@@ -241,6 +241,22 @@ def test_reader_size_caps_a_giant_verdict(tmp_path: Path) -> None:
         read_verdict(tmp_path)
 
 
+def test_install_tool_refuses_a_symlinked_channel(tmp_path: Path) -> None:
+    # the judge's checkout is author-authored: a .verdict symlink to a host dir
+    # must not let install write through it (terra #136 r2).
+    escape = tmp_path / "ESCAPE"
+    escape.mkdir()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / ".verdict").symlink_to(escape, target_is_directory=True)
+    install_tool(ws)
+    # .verdict is now a real kernel-owned dir, not the symlink; nothing written
+    # through to the escape target
+    assert not (ws / ".verdict").is_symlink()
+    assert (ws / ".verdict" / "verdict").exists()
+    assert list(escape.iterdir()) == []
+
+
 def test_installed_tool_is_standalone(tmp_path: Path) -> None:
     # the kernel installs the tool into a prepared checkout without autoresearch;
     # prove the copy runs under a bare interpreter (isolated mode)

@@ -110,10 +110,24 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
 def install_tool(workspace: Path) -> None:
     """Drop the standalone verdict tool into the judge's workspace at
     `.verdict/verdict`. Verbatim copy of `verdict_cli.py` (stdlib-only, since a
-    judge runs in a prepared checkout without autoresearch installed)."""
+    judge runs in a prepared checkout without autoresearch installed).
+
+    The `.verdict` channel must be KERNEL-OWNED: the judge's checkout is the
+    author's tree, which could ship `.verdict` as a symlink to a host path so
+    `write_text` writes through it (terra #136 r2, same class as the syscall
+    channel). Remove any pre-existing `.verdict` (symlink → unlink, dir →
+    rmtree, file → unlink) and recreate it as a dir we own, so nothing is
+    followed."""
+    import shutil
+
     from autoresearch import verdict_cli
 
-    tool = workspace / VERDICT_DIR / "verdict"
-    tool.parent.mkdir(exist_ok=True)
+    channel = workspace / VERDICT_DIR
+    if channel.is_symlink() or (channel.exists() and not channel.is_dir()):
+        channel.unlink()
+    elif channel.is_dir():
+        shutil.rmtree(channel)
+    channel.mkdir(parents=True)
+    tool = channel / "verdict"
     tool.write_text(Path(verdict_cli.__file__).read_text())
     tool.chmod(0o755)
