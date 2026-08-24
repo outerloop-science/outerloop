@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -85,7 +86,11 @@ def _budget_line(root: Path) -> str:
 
 
 def cmd_launch(root: Path, args: argparse.Namespace) -> str:
-    command = " ".join(args.command).strip()
+    # shlex.join, NOT " ".join: the shell that invoked this CLI already split
+    # `-- python train.py --label "a b"` into tokens, so re-quote them so the
+    # eventual `sh -c "$(cat command.txt)"` re-parses the SAME tokens (a plain
+    # join would collapse `a b` into two args — terra #133 r1).
+    command = shlex.join(args.command).strip()
     if not command:
         raise ToolError("launch needs a command after `--`")
     if len(command) > MAX_COMMAND_CHARS:

@@ -53,6 +53,37 @@ def test_launch_then_sleep_commits_the_abi(tmp_path: Path, capsys) -> None:
     assert not (tmp_path / ".autoresearch" / "request.json").exists()
 
 
+def test_quoted_command_args_survive_to_the_abi(tmp_path: Path, capsys) -> None:
+    # a shell that invoked the CLI split `--label "a b"` into tokens; the tool
+    # must re-quote so the eventual sh -c re-parses the SAME tokens, not two
+    # (terra #133 r1). Round-trips through the kernel's authoritative reader.
+    run(
+        tmp_path,
+        "launch",
+        "--name",
+        "q",
+        "--",
+        "python",
+        "t.py",
+        "--label",
+        "a b",
+        "--flag=x y",
+    )
+    run(tmp_path, "sleep")
+    req = read_request(tmp_path)
+    assert req is not None
+    # shlex round-trip: the command re-splits into exactly the original tokens
+    import shlex as _shlex
+
+    assert _shlex.split(req.launches[0].command) == [
+        "python",
+        "t.py",
+        "--label",
+        "a b",
+        "--flag=x y",
+    ]
+
+
 def test_note_and_status_and_cancel(tmp_path: Path, capsys) -> None:
     run(tmp_path, "launch", "--name", "probe", "--", "echo", "hi")
     run(tmp_path, "note", "check the tails first")
