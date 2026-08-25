@@ -171,3 +171,52 @@ def test_pending_carries_no_local_semantics() -> None:
     # intact for the callers that park on it
     assert MeasurementPending(("1", "2")).afterany() == "afterany:1:2"
     assert MeasurementPending(()).afterany() == ""
+
+
+def test_invalid_spec_is_refused_like_slurm() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        LocalCompute().submit(_spec(command="true", script="/x.sh"))
+    with pytest.raises(ValueError, match="exactly one"):
+        LocalCompute().submit(_spec())
+
+
+def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) -> None:
+    # a local timeout kills the script before it writes exit-code: the job is
+    # terminal with no result, and parking would wait on a job that will never
+    # deliver — the measurer must fail it like a vanished job
+    ws, base, cand = _seed_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    class _DeadCompute:
+        def submit(self, spec) -> str:
+            return "123"  # "ran", but wrote nothing (killed at the walltime)
+
+        def submit_after(self, spec, after_job_id: str) -> str:
+            return self.submit(spec)
+
+        def status(self, job_id: str) -> str:
+            return "TIMEOUT"
+
+        def active_job_names(self) -> list:
+            return []
+
+        def job_id_for_name(self, name: str) -> str:
+            return ""
+
+        def cancel(self, job_id: str) -> None:
+            pass
+
+    m = DispatchedMeasurer(
+        compute=_DeadCompute(),
+        run_dir=run_dir,
+        repo_root=ws.root,
+        image="",
+        account="",
+        partition="",
+        eval_minutes=1,
+        run_tag="t",
+    )
+    plan = plan_measures(command="true", metric="s", base_sha=base, candidate_sha=cand)
+    with pytest.raises(EvalError, match="without a result"):
+        m.results(plan)

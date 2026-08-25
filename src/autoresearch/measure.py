@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from autoresearch.compute import Compute, JobSpec
+from autoresearch.compute import Compute, JobSpec, is_terminal
 from autoresearch.dispatch import (
     eval_job_spec,
     read_eval_result,
@@ -260,10 +260,18 @@ class DispatchedMeasurer:
             # wasted eval in a triple-failure conjunction; fully closing it
             # needs sacct-by-name over job history, not worth that surface.
             job_id = self._dispatch(m)
-            if not self._done(m):
-                # a synchronous compute finishes the job inside submit — the
-                # result is already on disk and there is nothing to park on
-                pending.append(job_id)
+            if self._done(m):
+                continue  # a synchronous compute finished the job inside submit
+            try:
+                state = self.compute.status(job_id)
+            except Exception:
+                state = ""  # status unknown right after submit is normal; park
+            if state and is_terminal(state):
+                # the job already ENDED without writing a result (a local
+                # timeout, an instant cluster failure): parking would wait on
+                # a job that will never deliver — fail like a vanished job
+                raise EvalError(f"measure {m.name}: job {job_id} ended {state} without a result")
+            pending.append(job_id)
         if pending or blind:
             raise MeasurementPending(tuple(pending))
         return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}

@@ -34,7 +34,9 @@ def _measurer(
                 return CommandResult(1, "", "squeue down")
             name = argv[argv.index("--name") + 1]
             return CommandResult(0, (live.get(name, "") + "\n") if live.get(name) else "", "")
-        return CommandResult(0, "COMPLETED\n", "")
+        # sacct on a just-submitted job: PENDING, like a real queue (a fake
+        # that said COMPLETED would trip the terminal-without-result check)
+        return CommandResult(0, "PENDING\n", "")
 
     return DispatchedMeasurer(
         compute=SlurmCompute(runner=runner),

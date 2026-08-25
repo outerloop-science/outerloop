@@ -245,6 +245,9 @@ class LocalCompute:
     _seq: int = 0
 
     def submit(self, spec: JobSpec) -> str:
+        if bool(spec.command) == bool(spec.script):
+            # same contract SlurmCompute enforces via to_argv
+            raise ValueError("exactly one of command/script must be set")
         argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
         self._seq += 1
         job_id = str(_LOCAL_JOB_BASE + self._seq)
