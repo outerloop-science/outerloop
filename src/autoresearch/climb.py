@@ -1587,6 +1587,17 @@ def live_climb(
                 "built yet (Phase A part 2); author syscalls stay OFF this run"
             )
             author_syscalls = False
+        if author_syscalls and dispatch is None:
+            # launches are jailed Slurm jobs; with no dispatch coords there is
+            # no launcher, so an armed author would sleep on a launch that can
+            # never run and the park would strand. Refuse the feature loudly
+            # rather than produce a stuck run (terra #142).
+            log.warning(
+                "author syscalls armed but no dispatch coords (image/account/"
+                "partition); launches cannot run, so author syscalls stay OFF "
+                "this run"
+            )
+            author_syscalls = False
         # The `.autoresearch/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
         # (install would write through it to a host path with our permissions —
@@ -2413,8 +2424,10 @@ def main() -> int:
         action="store_true",
         help="arm the author launch/sleep syscalls for THIS climb (a one-off "
         "validation switch; equivalent to AUTORESEARCH_AUTHOR_SYSCALLS=1 but "
-        "scoped to this run, so it need not arm the whole tick). The benchmark "
-        "must also declare depth_k>1 in its contract.",
+        "scoped to this run, so it need not arm the whole tick). Requires "
+        "dispatch coords (--image + account/partition) — launches are jailed "
+        "Slurm jobs. The benchmark's depth_k caps how many launches the author "
+        "may make (default 1, enough to validate one launch).",
     )
     parser.add_argument(
         "--job-minutes",

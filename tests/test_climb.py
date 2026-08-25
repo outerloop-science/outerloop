@@ -1751,6 +1751,30 @@ def target_repo_syscalls(tmp_path: Path, monkeypatch) -> Path:
     return _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
 
 
+def test_author_syscalls_without_dispatch_stays_off(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    # arming the flag with no dispatch coords must NOT strand: launches can't
+    # run without a launcher, so the feature disables (terra #142).
+    import json as json_mod
+
+    monkeypatch.delenv("AUTORESEARCH_AUTHOR_SYSCALLS", raising=False)
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {"type": "sleep", "launches": [{"name": "probe", "command": "x"}]}
+            ),
+        },
+        values=[13.876, 13.1],  # feature off -> measures + climbs normally
+        dispatch=None,  # no launcher
+        author_syscalls=True,
+    )
+    assert outcome.outcome != "parked"  # did not strand on an unlaunchable sleep
+
+
 def test_author_syscalls_flag_arms_the_feature_without_the_env(
     tmp_path, target_repo_syscalls, monkeypatch
 ) -> None:
