@@ -112,7 +112,11 @@ def build_harness(
         if (hermes_provider or "openrouter") not in _HERMES_PROVIDERS:
             raise ValueError(f"unknown hermes provider: {hermes_provider!r}")
         seed, key_env = _HERMES_PROVIDERS[hermes_provider or "openrouter"]
-        enabled = ("file", "terminal") if spec.execution.can_execute else ("file",)
+        # `terminal` (the shell) is keyed on the SAME signal claude uses — the
+        # spec granting the Bash tool — not on can_execute, so every backend
+        # gives a role the same shell/no-shell whether or not those two ever
+        # diverge for a future spec.
+        enabled = ("file", "terminal") if "Bash" in spec.tools else ("file",)
         return HermesHarness(
             api_key=api_key,
             key_env=key_env,

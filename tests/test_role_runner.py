@@ -218,6 +218,22 @@ def test_build_harness_hermes_toolsets_follow_the_spec(tmp_path: Path) -> None:
     assert "terminal" not in h.disabled_toolsets and "web" in h.disabled_toolsets
 
 
+def test_build_harness_hermes_terminal_keys_on_the_bash_tool(tmp_path: Path) -> None:
+    # the shell is granted from the SAME signal claude uses (the Bash tool),
+    # not can_execute — so a role without Bash gets no terminal even if it
+    # executes (terra #140 r5).
+    from dataclasses import replace
+
+    from autoresearch.harness import HermesHarness
+    from autoresearch.role_runner import build_harness
+
+    spec = replace(reviewer_spec(), tools=("Read", "Grep", "Glob"))  # no Bash
+    h = build_harness("k", spec, backend="hermes", hermes_repo=tmp_path)
+    assert isinstance(h, HermesHarness)
+    assert h.enabled_toolsets == ("file",)  # no terminal without Bash
+    assert "terminal" in h.disabled_toolsets
+
+
 def test_build_harness_hermes_requires_repo_and_known_provider(tmp_path: Path) -> None:
     import pytest
 
