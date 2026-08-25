@@ -46,6 +46,17 @@ SYSCALL_DIR = ".autoresearch"
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
 
+
+def tool_command(workspace: Path) -> str:
+    """The command a role runs to invoke the installed tool, as an ABSOLUTE
+    path so it resolves from ANY working directory — not every backend's cwd is
+    the workspace (hermes runs from its per-run home, so a workspace-relative
+    `.autoresearch/syscall` would not be found). The tool itself roots its
+    channel at its own location, so an absolute invocation still writes into
+    this workspace's channel where `read_verdict` looks."""
+    return f"python {(workspace / SYSCALL_DIR / 'syscall').resolve()}"
+
+
 # Per-request bounds (the budget is separate: depth_k / sleep_k).
 # The whole file is read size-capped FIRST (agent-controlled input); the cap is
 # roomy for the field bounds below (8 launches x 2000-char commands + note).

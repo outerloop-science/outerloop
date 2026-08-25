@@ -28,6 +28,7 @@ from autoresearch.roles import (
     verifier_spec,
     verify_result_from_role,
 )
+from autoresearch.syscall import tool_command
 from autoresearch.verifier import build_verify_agent_brief
 
 log = logging.getLogger(__name__)
@@ -128,14 +129,16 @@ def run_panel(
     for lens in lenses:
         who = lens.name()
         if lens.kind == "verify":
-            brief = build_verify_agent_brief(pr, contract_text, today=today)
+            brief = build_verify_agent_brief(
+                pr, contract_text, today=today, syscall_cmd=tool_command(panel_workspace)
+            )
             spec = verifier_spec()
             workspace = panel_workspace
             policy = verify_result_from_role
         elif lens.kind == "review":
-            brief = build_agent_brief(pr, today)
-            spec = reviewer_spec()
             workspace = panel_workspace / "pr-head"
+            brief = build_agent_brief(pr, today, syscall_cmd=tool_command(workspace))
+            spec = reviewer_spec()
             policy = review_result_from_role
         else:
             lines.append(f"- `{who}`: unknown lens kind {lens.kind!r} — NOT a clean read")

@@ -129,9 +129,11 @@ def test_clean_review_posts_inline() -> None:
     assert len(client.reviews) == 1
     _body, inline = client.reviews[0]
     assert any(c.get("path") == "models/encoder.py" for c in inline)
-    # the brief carries the investigation + syscall emit instructions
+    # the brief carries the investigation + syscall emit instructions (the tool
+    # path is absolute here — run_agent_review passes the workspace so it
+    # resolves from any backend's cwd)
     assert "checked out in your working directory" in harness.briefs[0]
-    assert "python .autoresearch/syscall finding" in harness.briefs[0]
+    assert ".autoresearch/syscall finding" in harness.briefs[0]
 
 
 def test_null_labels_do_not_crash() -> None:

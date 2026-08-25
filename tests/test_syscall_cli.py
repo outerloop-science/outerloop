@@ -341,3 +341,13 @@ def test_installed_tool_roots_at_its_install_location_not_cwd(tmp_path: Path) ->
     assert r.returncode == 0, r.stderr
     assert not (elsewhere / ".autoresearch").exists()  # nothing lands at cwd
     assert read_verdict(ws) == {"findings": [], "notes": "clean"}  # kernel finds it
+
+
+def test_tool_command_is_absolute(tmp_path: Path) -> None:
+    # a judge whose cwd is not the workspace (hermes) must still find the tool:
+    # the brief command is absolute (adversarial/terra review of #140).
+    from autoresearch.syscall import tool_command
+
+    cmd = tool_command(tmp_path / "ws")
+    assert cmd.startswith("python /")  # absolute, resolves from any cwd
+    assert cmd.endswith("/ws/.autoresearch/syscall")

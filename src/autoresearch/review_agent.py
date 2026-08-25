@@ -163,7 +163,10 @@ def run_agent_review(
                 _emit(emit_path, repo, number, kind="skip-clean", detail=skip)
             return None
 
-        role_result = run_role(spec, harness, build_agent_brief(pr, today), workspace)
+        from autoresearch.syscall import tool_command
+
+        brief = build_agent_brief(pr, today, syscall_cmd=tool_command(workspace))
+        role_result = run_role(spec, harness, brief, workspace)
         review = review_result_from_role(role_result)
         if review is None:
             # No verdict: an errored or refused session, not a clean read. An

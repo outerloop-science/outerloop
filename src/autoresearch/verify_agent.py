@@ -101,7 +101,11 @@ def run_agent_verify(
         except EXPECTED_FAILURES as exc:
             log.warning("verifying without the discussion thread: %s", exc)
 
-        brief = build_verify_agent_brief(pr, contract_text, today=today, thread=thread)
+        from autoresearch.syscall import tool_command
+
+        brief = build_verify_agent_brief(
+            pr, contract_text, today=today, thread=thread, syscall_cmd=tool_command(workspace)
+        )
         role_result = run_role(spec, harness, brief, workspace)
         result = verify_result_from_role(role_result)
         if result is None:
