@@ -1384,7 +1384,13 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
                 backend=backend,
                 binary=args.claude_bin if backend == "claude" else None,
                 model=model or None,
-                container_image=args.image if backend == "claude" else "",
+                # ALWAYS contained: the panel runs on the climb host next to key
+                # files, and a judge now holds a shell (codex `danger-full-access`),
+                # so it must run inside the image. `parse_lenses` gates panel
+                # backends to those containable here (claude today); passing the
+                # image unconditionally means codex is safe the moment it is
+                # enabled, never accidentally uncontained.
+                container_image=args.image,
                 hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
                 hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
             )
