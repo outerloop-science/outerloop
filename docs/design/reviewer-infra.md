@@ -53,7 +53,8 @@ in the session). Be honest about what that shell leaves exposed on a bare
 GitHub runner: the session's own model key (spend-capped, role-isolated) is
 reachable, and egress is not jailed there, so a prompt-injected judge could
 exfiltrate that key or read data out — accepted as generally-OK for an advisory
-role whose one in-session secret is spend-capped, with the container/cluster
+role whose in-session credentials are a spend-capped model key and a read-only
+token (no write credential), with the container/cluster
 path (where the broker becomes the only outward route, and `run-candidate`
 isolates PR code) as the tighter option. Everything the judge reads is still
 data to judge, never instructions to follow (the prompt-injection boundary).
@@ -170,7 +171,7 @@ buys read access to a repo the session is already reading, expiring with the
 job; the read-only deploy key for the private reviewer repo is present for
 the same reason and in the same blast-radius class), and the posting job
 holds the write token with no session next to it.
-The residual read-scoped token drops to zero at the public flip.
+The residual read-scoped token is INTENDED to drop to zero at the public flip (planned work — today the session job still exports the read token); the flip's checkout needs no token.
 
 What is safe today, precisely. The agent workflows run only on same-repo PRs
 (the reviewer via `pull_request_target`'s same-repo gate; the verifier only on

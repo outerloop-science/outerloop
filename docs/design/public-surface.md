@@ -56,7 +56,8 @@ reviewer-infra.md). None of those can write to the repo. So the residual
 exposure of a shell judge on a bare runner is capped spend plus reading what a
 read-scoped token already reads, plus whatever it can egress from that
 ephemeral runner — accepted for an advisory role (the container/cluster path is
-the tighter option), and the read token drops to zero at the public flip. Fork-PR
+the tighter option). Making the session carry NO token — not even the read
+one it exports today — is planned for the public flip, not yet in place. Fork-PR
 review remains out of scope until it gets its own design.
 
 **Audit checklist before any public flip** (each item verified on the live
