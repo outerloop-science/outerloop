@@ -1418,10 +1418,11 @@ def build_editor_harness(
       the image. An author MUST be contained (it writes+executes), so
       container_image is REQUIRED — the read-only reviewer could skip it. Codex
       resumes like claude (`codex exec resume`, validated on 0.130.0), so a
-      blocking panel finding WAKES it to revise. A no-resume backend (hermes)
-      would DRAFT instead — the inline and wake revise paths gate on
-      `supports_resume`, so a backend that cannot resume never blind-revises and
-      never loses an improvement to a failed resume."""
+      blocking panel finding WAKES it to revise. All three backends resume
+      (hermes via saved-transcript rehydration); the inline and wake revise
+      paths still gate on `supports_resume`, so any future backend that cannot
+      resume never blind-revises and never loses an improvement to a failed
+      resume."""
     spec = spec or author_spec()
     if not spec.execution.can_execute:
         raise ValueError("build_editor_harness is for editing roles")

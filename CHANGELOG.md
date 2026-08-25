@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Hermes headless resume (`supports_resume = True`) — a headless CLI "resumes"
+  by restarting with its prior context restored (all `claude --resume` /
+  `codex exec resume` do), and hermes reads its brief from a file, so resume
+  rehydrates the prior conversation INTO the next brief. `HermesHarness` keeps
+  its own linear transcript (the message it sent + the assistant reply it
+  parsed) in the per-run home, mints a session id on a fresh run, and prepends
+  the rendered transcript on resume — so a resumed hermes session physically
+  cannot start context-blind (the reason the old refusal existed). A resume whose
+  transcript is missing is a hard error (`resume-unavailable`), never a blind
+  fresh start; the transcript is read/written with the existing symlink-refusing
+  helpers (the per-run home is session-writable). Hermes now revises/wakes like
+  the other backends — a step toward fully interchangeable harnesses.
+
 - One syscall surface — a verdict is a syscall TYPE, not a second tool
   (docs/design/role-cli.md). Every role talks to the kernel through ONE tool
   (`.autoresearch/syscall`); the kernel dispatches by type. The author's `sleep`
