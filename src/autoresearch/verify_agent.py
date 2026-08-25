@@ -1,4 +1,4 @@
-"""Agent-session verifier: runs the verifier as an agent over TWO read-only
+"""Agent-session verifier: runs the verifier as an agent over TWO
 checkouts — the PR head (the change under review) and the base branch (the
 trusted contract and ruler).
 
@@ -59,7 +59,7 @@ def run_agent_verify(
     today: str | None = None,
 ) -> str | None:
     """Verify bot PR #`number` as an agent session over `workspace`, a
-    directory holding the two read-only checkouts the workflow prepared:
+    directory holding the two checkouts the workflow prepared:
     `pr-head/` (the change) and `base/` (trusted contract + ruler). Posts the
     findings as one issue comment per round. Returns the round label, or None
     when it skipped or could not produce a verdict. Advisory: never raises the

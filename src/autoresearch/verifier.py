@@ -283,7 +283,7 @@ def build_verify_prompt(
 
 
 # Prepended to the shared rubric for the agent-session verifier: it has TWO
-# read-only checkouts: the PR head (the change under
+# checkouts: the PR head (the change under
 # review) and the BASE branch (the trusted contract and ruler — the solver
 # cannot have shaped it). Ruler reads must target base: the ruler comes from
 # the base branch, never the PR.

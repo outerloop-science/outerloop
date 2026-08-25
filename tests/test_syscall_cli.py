@@ -317,3 +317,27 @@ def test_status_shows_staged_findings(tmp_path: Path, capsys) -> None:
     run(tmp_path, "status")
     out = capsys.readouterr().out
     assert "1 finding(s) staged" in out and "BLOCKING" in out and "a.py:3" in out
+
+
+def test_installed_tool_roots_at_its_install_location_not_cwd(tmp_path: Path) -> None:
+    """An agent may invoke the tool from a subdirectory or another working dir
+    entirely (hermes starts in its per-run home): the syscall must land in the
+    tool's OWN workspace channel, never a cwd-relative one the kernel never
+    reads (adversarial review of the interchangeable-backend refactor)."""
+    from autoresearch.syscall import install_tool, read_verdict
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    install_tool(ws)
+    tool = ws / ".autoresearch" / "syscall"
+    r = subprocess.run(
+        [sys.executable, "-I", str(tool), "conclude", "--notes", "clean"],
+        cwd=elsewhere,  # NOT the workspace
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert not (elsewhere / ".autoresearch").exists()  # nothing lands at cwd
+    assert read_verdict(ws) == {"findings": [], "notes": "clean"}  # kernel finds it

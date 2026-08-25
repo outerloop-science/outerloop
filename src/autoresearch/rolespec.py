@@ -58,11 +58,12 @@ class RoleSpec:
     execution: Execution
     budget: SessionBudget
     skills: tuple[str, ...] = ()
-    # Judges only: the verdict must validate against this JSON schema. A role
-    # WITH a schema is a judge — it records findings through the installed
-    # syscall tool (`finding` / `conclude`, docs/design/role-cli.md) and the
-    # kernel reads the committed verdict authoritatively (`read_verdict`). None
-    # for editing roles, whose artifact is a workspace diff, not a verdict.
+    # A role WITH a schema is a judge: it records findings through the
+    # installed syscall tool (`finding` / `conclude`, docs/design/role-cli.md)
+    # and the kernel reads the committed verdict back authoritatively
+    # (`syscall.read_verdict`, which owns the one canonical verdict shape; the
+    # schema here marks the role and documents the downstream shape). None for
+    # editing roles, whose artifact is a workspace diff, not a verdict.
     output_schema: dict[str, Any] | None = None
     # Editing roles only: repo-relative write allowlist. None for judges —
     # they investigate and record a verdict; they do not edit the tree.
@@ -81,3 +82,7 @@ class RoleSpec:
                 raise RoleSpecError(
                     f"read-only role {self.name!r} edits nothing; scope must be None"
                 )
+        if self.output_schema is not None and self.scope is not None:
+            raise RoleSpecError(
+                f"judge {self.name!r} records a verdict, never edits; scope must be None"
+            )

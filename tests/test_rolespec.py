@@ -75,3 +75,21 @@ def test_empty_tools_rejected() -> None:
             execution=Execution(environment="apptainer", can_execute=True),
             budget=SessionBudget(max_turns=10, walltime_s=60),
         )
+
+
+def test_judge_may_not_hold_a_write_scope() -> None:
+    import pytest
+
+    from autoresearch.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
+
+    with pytest.raises(RoleSpecError, match="never edits"):
+        RoleSpec(
+            name="reviewer",
+            instructions="x",
+            key="reviewer",
+            tools=("Read", "Bash"),
+            execution=Execution(environment="gh-runner", can_execute=True),
+            budget=SessionBudget(max_turns=1, walltime_s=1),
+            output_schema={"required": []},
+            scope=("src/",),  # a judge records a verdict; it edits nothing
+        )

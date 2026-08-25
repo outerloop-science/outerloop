@@ -1,6 +1,6 @@
 """Entry point for the agent-session verifier.
 
-Runs the verifier as a read-only agent over the two checkouts the workflow
+Runs the verifier as an agent over the two checkouts the workflow
 prepared under VERIFY_CHECKOUT (`pr-head/` and `base/`), and posts the findings
 as an issue comment. Exits 0 even on skip or failure — the verifier is
 advisory and must never turn a target repo's CI red.
@@ -39,7 +39,7 @@ def main() -> int:
     if not api_key:
         log.warning("ANTHROPIC_VERIFIER_KEY is unset or empty; skipping verification")
         return 0
-    # The directory holding the workflow's two read-only checkouts: pr-head/
+    # The directory holding the workflow's two checkouts: pr-head/
     # (the change) and base/ (trusted contract + ruler). Fail closed: a cwd
     # default would let a misconfigured workflow verify the wrong trees.
     checkout = os.environ.get("VERIFY_CHECKOUT", "").strip()

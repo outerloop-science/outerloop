@@ -1,8 +1,9 @@
 # Reusable agent-session verifier: integrity reads of BOT-authored PRs (the
-# agent reviewer's mirror). It checks out TWO trees read-only — the PR head
-# (the change under review) and the base branch (the trusted contract and
-# ruler) — and runs the verifier as an agent that reads them (no Bash/Write:
-# nothing from the PR is ever executed). Its constitution: never fails the
+# agent reviewer's mirror). It checks out TWO trees — the PR head (the change
+# under review) and the base branch (the trusted contract and ruler) — and
+# runs the verifier as an agent that investigates them and records its verdict
+# through the installed syscall tool. The ephemeral runner plus the tokenless
+# split contain the session. Its constitution: never fails the
 # caller's CI, never runs with secrets on a fork PR, silence is not
 # endorsement. Claude only on GitHub-hosted runners (codex's
 # sandbox cannot init there; codex verification runs via the cluster harness).
@@ -75,17 +76,19 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      # Checks out the VERIFIER code; the PR's code is checked out below but
-      # never executed (the session has no execute or write tools).
+      # Checks out the VERIFIER code. NOT at `.autoresearch` — that name is
+      # the judge's syscall channel inside the workspace, which the kernel
+      # force-owns (recreates) before the session; a colliding checkout there
+      # would be destroyed.
       - name: Check out the verifier
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.verifier_repo }}
           ref: ${{ inputs.verifier_ref }}
           ssh-key: ${{ secrets.checkout_ssh_key }}
-          path: .autoresearch
+          path: kernel
           persist-credentials: false
-      - name: Check out the PR head (read-only; never executed)
+      - name: Check out the PR head (the change under review)
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ env.PR_NUMBER }}/head
@@ -102,7 +105,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          cache-dependency-glob: .autoresearch/uv.lock
+          cache-dependency-glob: kernel/uv.lock
       # Native binary, pinned to the validated version — bump deliberately.
       - name: Install the Claude CLI
         run: |
@@ -110,7 +113,7 @@ jobs:
           curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run the agent verification
-        working-directory: .autoresearch
+        working-directory: kernel
         env:
           ANTHROPIC_VERIFIER_KEY: ${{ secrets.anthropic_verifier_key }}
           # The caller's own workflow token — the bot PAT is never used here.

@@ -218,8 +218,8 @@ role-runner and kernel.
 | Capability | Native | Synthesized fallback |
 | --- | --- | --- |
 | resume | wake a session with its context | replay distilled context into a fresh session |
-| structured output | schema-constrained final artifact | role-runner parses → validates → repairs `final_text` |
-| tool restriction | honor `allowed_tools` | if it can't restrict, it's ineligible for read-only judge roles |
+| structured output | the syscall tool's per-call validation + kernel `read_verdict` | none — a judge that commits no verdict fails its round |
+| tool restriction | honor `allowed_tools` | the deployment boundary contains the session either way |
 | cost / turn accounting | from backend output | session/token proxy |
 
 Editing-role **scope** (the write allowlist) is not a backend capability: the

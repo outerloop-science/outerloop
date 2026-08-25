@@ -72,9 +72,11 @@ def reviewer_spec(
     """The advisory reviewer as an agent session.
 
     Investigates the PR head and records each finding through the installed
-    syscall tool (`finding` / `conclude`); the kernel validates the committed
-    verdict against `review.FINDINGS_SCHEMA` (`read_verdict`). It edits nothing
-    (scope None) — the deployment's boundary contains the session.
+    syscall tool (`finding` / `conclude`); the kernel reads the committed
+    verdict back authoritatively (`syscall.read_verdict`, which owns the one
+    canonical verdict shape — `output_schema` marks the role as a judge and
+    documents the downstream shape). It edits nothing (scope None) — the
+    deployment's boundary contains the session.
     """
     return RoleSpec(
         name="reviewer",
@@ -100,8 +102,9 @@ def verifier_spec(
 
     Investigates a bot PR's improvement claim — the ruler from the base
     checkout, the change from the head — and records each finding through the
-    installed syscall tool; the kernel validates the committed verdict against
-    `verifier.VERIFY_SCHEMA` (the gaming taxonomy, `read_verdict`). It edits
+    installed syscall tool (`--category` carries the gaming taxonomy; the
+    kernel reads the verdict back via `syscall.read_verdict`, which owns the
+    one canonical verdict shape and clamps unknown categories). It edits
     nothing (scope None), same as the reviewer."""
     return RoleSpec(
         name="verifier",

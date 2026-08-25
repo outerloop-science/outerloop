@@ -16,10 +16,10 @@ Two distinct wins, and each future application should name which one it buys:
   kernel holds the PAT/keys/cluster and performs the privileged act. A CLI verb
   is how the agent *directs* an act it must never *execute*. (The launch/sleep
   tool; GitHub writes; curated egress.)
-- **Win B — interactive validation replaces parse-and-repair.** Today a judge
-  emits a schema-constrained final message and the role-runner parses,
-  validates, and **repairs once** (`role_runner._repair_prompt`) — a lossy
-  retry that burns a turn and can still fail. A CLI validates each field **on
+- **Win B — interactive validation replaces parse-and-repair.** A judge used
+  to emit a schema-constrained final message that the role-runner parsed,
+  validated, and repaired once — a lossy retry that burned a turn and could
+  still fail (that path is deleted). A CLI validates each field **on
   the call**: bad input fails immediately, in-session, with a message the agent
   acts on. The artifact is well-formed **by construction**. (Judge verdicts;
   planner work-orders; the author tool's fast checks.)
@@ -48,8 +48,6 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    containment mechanism (the jail contains them all).
 
 ## End-state
-
-One `research` CLI identity, instantiated per role with only that role's verbs:
 
 One `.autoresearch/syscall` tool, its live verbs gated per role by RoleSpec:
 

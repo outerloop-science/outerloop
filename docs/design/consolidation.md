@@ -120,7 +120,7 @@ scope, key), and their spend counts against its budget.
 
 | Now | Fate |
 | --- | --- |
-| `climb`, `steward`, `followup` | Session dispatch collapsed: all five roles run through **one role-runner + a RoleSpec** (judges via their agent modules, `review_cli`/`verifier_cli` deleted; author via `climb_once`; follow-up via `respond_once` under the resuming role's key and scope; steward via `live_steward`) with the harness built from the spec (`build_editor_harness` for editing roles). What remains of these modules is each role's kernel half — measure/gate/PR/wake plumbing. The brief/skills halves becoming app config is the remaining consolidation. |
+| `climb`, `steward`, `followup` | Session dispatch collapsed: all five roles run through **one role-runner + a RoleSpec** (judges via their agent modules, `review_cli`/`verifier_cli` deleted; author via `climb_once`; follow-up via `respond_once` under the resuming role's key and scope; steward via `live_steward`) with the harness built from the spec (one `build_harness` for every role). What remains of these modules is each role's kernel half — measure/gate/PR/wake plumbing. The brief/skills halves becoming app config is the remaining consolidation. |
 | `review`, `verifier` (rendering, verdict/blocking machinery) | On the agent-session path; hold the shared vocabulary and rendering both judges use. |
 | `harness`, `brief` | The seam. Keep. Adapters live: claude, codex, hermes. |
 | `orchestrator`, `contract`, `github`, `compute`, `runstate`, `disk`, `limits`, `intake` | Kernel. Barely moves — the point. |
@@ -137,7 +137,7 @@ gap:
 
 - **resume** (wake a session with its working context)
 - **structured output** (schema-constrained verdict for judge roles)
-- **tool restriction** (read-only toolset for the reviewer boundary)
+- **tool restriction** (honor the spec's tool set)
 - **cost / turn accounting**
 
 Lineup: **Claude Code** (primary), **Codex** (second, confirmed), **Hermes
@@ -149,8 +149,9 @@ runs stay comparable.
 
 ## Reviewer and verifier are this consolidation
 
-They run on the agent-session path with a read-only checkout of the PR head
-(Read, Grep, Glob; no Bash, no Write; egress limited to the model API plus the
+They run on the agent-session path over a checkout of the PR head
+(investigating with the read tools, recording the verdict via the installed
+syscall tool; egress limited to the model API plus the
 curated
 retriever). The two seams collapse to one substrate; roles differ only by
 RoleSpec.
@@ -179,8 +180,9 @@ a bolt-on. Two levers:
 ## Staged plan
 
 1. **Reviewer/verifier onto the agent-session path, Codex as the proving
-   backend.** Lowest-stakes place to validate a second backend (a read-only judge
-   is far safer to run on an alternate stack than a file-editing author), and it
+   backend.** Lowest-stakes place to validate a second backend (a judge's
+   verdict is advisory, far safer on an alternate stack than a file-editing
+   author), and it
    ships the agentic-review upgrade at the same time.
 2. **Introduce `RoleSpec` + the role-runner**; move author, steward, follow-up
    onto it; fold prompt content into skills; wire the lesson-capture step.

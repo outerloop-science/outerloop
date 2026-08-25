@@ -1,5 +1,5 @@
-"""Agent-session reviewer: runs the reviewer as an agent over a read-only
-PR-head checkout.
+"""Agent-session reviewer: runs the reviewer as an agent over a PR-head
+checkout, recording its verdict through the installed syscall tool.
 
 `run_agent_review` is the orchestration core, testable with a fake harness and
 client. It builds on the shared vocabulary in `review`: the same skip rules,
@@ -134,7 +134,7 @@ def run_agent_review(
     today: str | None = None,
     emit_path: Path | None = None,
 ) -> str | None:
-    """Review PR #`number` as an agent session over `workspace` (a read-only
+    """Review PR #`number` as an agent session over `workspace` (a
     PR-head checkout the caller prepared). Post the findings inline via the
     Reviews API. Returns the round label, or None when it skipped or could not
     produce a verdict. Advisory: never raises the expected failures, so it can
