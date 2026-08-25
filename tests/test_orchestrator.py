@@ -218,7 +218,8 @@ def _write_syscall(tmp_path: Path, payload: dict) -> None:
 
     d = tmp_path / ".autoresearch"
     d.mkdir(exist_ok=True)
-    (d / "syscall.json").write_text(json.dumps(payload))
+    # the tool tags every sleep with its syscall type; mirror that here
+    (d / "syscall.json").write_text(json.dumps({"type": "sleep", **payload}))
 
 
 def _fake_launcher(log: list):

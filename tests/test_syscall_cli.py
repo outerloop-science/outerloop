@@ -1,6 +1,7 @@
-"""The author's launch/sleep TOOL — the agent-facing surface. The JSON file is
-the internal ABI; the author drives everything through this CLI, so these tests
-call `main(argv, root)` exactly as a Bash invocation would."""
+"""The research syscall TOOL — the one agent-facing surface. The JSON file is
+the internal ABI; every role drives everything through this CLI, so these tests
+call `main(argv, root)` exactly as a Bash invocation would. Author verbs
+(launch/note/sleep) and judge verbs (finding/conclude) share it."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from autoresearch.syscall import read_request
+from autoresearch.syscall import read_request, read_verdict
 from autoresearch.syscall_cli import main
 
 
@@ -94,7 +95,7 @@ def test_note_and_status_and_cancel(tmp_path: Path, capsys) -> None:
     assert run(tmp_path, "cancel") == 0
     capsys.readouterr()
     run(tmp_path, "status")
-    assert "0 launch(es) staged" in capsys.readouterr().out
+    assert "nothing staged" in capsys.readouterr().out
 
 
 def test_validation_fails_fast_in_session(tmp_path: Path, capsys) -> None:
@@ -169,4 +170,150 @@ def test_installed_tool_is_standalone(tmp_path: Path) -> None:
     )
     assert r.returncode == 0 and "END YOUR TURN" in r.stdout
     abi = json.loads((tmp_path / ".autoresearch" / "syscall.json").read_text())
+    assert abi["type"] == "sleep"
     assert abi["launches"][0]["name"] == "solo"
+
+
+# --- judge verbs: finding / conclude ---------------------------------------
+
+
+def test_findings_then_conclude_round_trip_through_the_reader(tmp_path: Path, capsys) -> None:
+    assert (
+        run(
+            tmp_path,
+            "finding",
+            "--file",
+            "src/solver.py",
+            "--line",
+            "42",
+            "--confidence",
+            "high",
+            "--summary",
+            "off-by-one",
+            "--detail",
+            "the loop skips the last index",
+            "--blocking",
+            "--kind",
+            "change",
+        )
+        == 0
+    )
+    assert "BLOCKING" in capsys.readouterr().out
+    # a second, non-local, non-blocking finding
+    run(
+        tmp_path,
+        "finding",
+        "--file",
+        "README.md",
+        "--confidence",
+        "low",
+        "--summary",
+        "typo",
+        "--detail",
+        "spelling",
+        "--kind",
+        "note",
+    )
+    assert run(tmp_path, "conclude", "--notes", "one real defect") == 0
+    assert "final answer" in capsys.readouterr().out
+
+    verdict = read_verdict(tmp_path)  # the KERNEL's authoritative parse
+    assert verdict is not None
+    assert verdict["notes"] == "one real defect"
+    assert len(verdict["findings"]) == 2
+    assert verdict["findings"][0] == {
+        "file": "src/solver.py",
+        "line": 42,
+        "confidence": "high",
+        "summary": "off-by-one",
+        "detail": "the loop skips the last index",
+        "blocking": True,
+        "kind": "change",
+    }
+    assert verdict["findings"][1]["line"] is None  # --line omitted -> null
+    assert not (tmp_path / ".autoresearch" / "request.json").exists()  # staging cleared
+
+
+def test_conclude_with_no_findings_is_a_clean_verdict(tmp_path: Path) -> None:
+    run(tmp_path, "conclude", "--notes", "materially sound")
+    assert read_verdict(tmp_path) == {"findings": [], "notes": "materially sound"}
+
+
+def test_verifier_category_is_carried(tmp_path: Path) -> None:
+    run(
+        tmp_path,
+        "finding",
+        "--file",
+        "x.py",
+        "--confidence",
+        "high",
+        "--summary",
+        "s",
+        "--detail",
+        "d",
+        "--blocking",
+        "--category",
+        "ruler-fishing",
+    )
+    run(tmp_path, "conclude")
+    verdict = read_verdict(tmp_path)
+    assert verdict is not None and verdict["findings"][0]["category"] == "ruler-fishing"
+
+
+def test_finding_validation_fails_fast(tmp_path: Path, capsys) -> None:
+    cases = [
+        (
+            ["finding", "--file", "", "--confidence", "high", "--summary", "s", "--detail", "d"],
+            "file",
+        ),
+        (
+            ["finding", "--file", "x", "--confidence", "wat", "--summary", "s", "--detail", "d"],
+            "confidence",
+        ),
+        (
+            ["finding", "--file", "x", "--confidence", "high", "--summary", "", "--detail", "d"],
+            "summary",
+        ),
+        (
+            [
+                "finding",
+                "--file",
+                "x",
+                "--line",
+                "0",
+                "--confidence",
+                "high",
+                "--summary",
+                "s",
+                "--detail",
+                "d",
+            ],
+            "1-indexed",
+        ),
+        (["conclude", "--notes", "x" * 6001], "exceeds"),
+    ]
+    for argv, needle in cases:
+        assert run(tmp_path, *argv) == 2
+        assert needle in capsys.readouterr().err
+
+
+def test_status_shows_staged_findings(tmp_path: Path, capsys) -> None:
+    run(
+        tmp_path,
+        "finding",
+        "--file",
+        "a.py",
+        "--line",
+        "3",
+        "--confidence",
+        "high",
+        "--summary",
+        "leak",
+        "--detail",
+        "d",
+        "--blocking",
+    )
+    capsys.readouterr()
+    run(tmp_path, "status")
+    out = capsys.readouterr().out
+    assert "1 finding(s) staged" in out and "BLOCKING" in out and "a.py:3" in out

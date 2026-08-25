@@ -1,33 +1,41 @@
 #!/usr/bin/env python3
-"""The author's launch/sleep tool — the agent-facing surface for author
-syscalls (research-loop.md, "one syscall, author-directed").
+"""The research syscall tool — the one agent-facing surface every role uses to
+talk to the kernel (research-loop.md, "one syscall"; role-cli.md, "one CLI per
+role, gated by RoleSpec").
 
-This file is STANDALONE by contract: the kernel copies its source into the
-sandbox at `.autoresearch/syscall` (the target repo does not have autoresearch
-installed), so it imports only the stdlib. The author calls it like a CLI and
-never hand-writes JSON:
+A syscall is TYPED, and the kernel dispatches by type. The AUTHOR's syscalls run
+experiments and hibernate:
 
     python .autoresearch/syscall launch --name train --minutes 90 \\
         --artifact results/curve.json -- uv run python train.py --lr 3e-4
     python .autoresearch/syscall note "compare with the lr sweep"
-    python .autoresearch/syscall status
     python .autoresearch/syscall sleep       # then END YOUR TURN to hibernate
 
-`launch`/`note` stage into `.autoresearch/request.json`; `sleep` commits the
-staged request to `.autoresearch/syscall.json` (the kernel ABI it reads after
-the session ends) — so building a request and committing to hibernate are
-separate acts, and an in-progress request never triggers a sleep. `sleep` with
-nothing staged is a checkpoint sleep (re-schedule me, fresh clock).
+The JUDGE's syscalls record a verdict and exit — `conclude` is the judge's
+`exit()`, carrying its findings:
 
-The validation here is for FAST, IN-SESSION feedback only. The kernel
-re-validates every field authoritatively when it reads the ABI (syscall.py) —
-this tool is a convenience layer, never a trust boundary, so an author that
-writes the ABI directly is still fully checked.
+    python .autoresearch/syscall finding --file solver.py --line 42 \\
+        --confidence high --summary "off-by-one" --detail "skips last index" --blocking
+    python .autoresearch/syscall conclude --notes "one blocking defect; rest clean"
+
+Which verbs a role may use is set by its RoleSpec (the brief tells the role
+which). Every verb STAGES into `.autoresearch/request.json`; the committing
+verbs (`sleep`, `conclude`) write the typed ABI to `.autoresearch/syscall.json`
+(what the kernel reads after the session ends) — so building a request and
+committing it are separate acts.
+
+This file is STANDALONE by contract: the kernel copies its source into the
+sandbox at `.autoresearch/syscall` (the target repo does not have autoresearch
+installed), so it imports only the stdlib. The validation here is for FAST,
+IN-SESSION feedback only; the kernel re-validates every field authoritatively
+when it reads the ABI (`syscall.py`) — this tool is a convenience layer, never a
+trust boundary, so a role that writes the ABI directly is still fully checked.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import shlex
@@ -39,13 +47,19 @@ from pathlib import Path
 # the kernel still enforces the real limits).
 DIR = ".autoresearch"
 REQUEST = "request.json"  # staging (tool-owned)
-ABI = "syscall.json"  # committed request the kernel reads
+ABI = "syscall.json"  # committed syscall the kernel reads
 BUDGET = "budget.json"  # kernel-written: remaining counts, for `status`
+# author (launch/sleep) bounds
 MAX_LAUNCHES = 8
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
 MAX_NOTE_CHARS = 2_000
 MAX_LAUNCH_MINUTES = 240
+# judge (finding/conclude) bounds
+CONFIDENCES = ("low", "medium", "high")
+KINDS = ("change", "suggestion", "question", "note")
+MAX_TEXT = 6_000  # per summary/detail/notes/category
+MAX_FINDINGS = 200
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
@@ -75,9 +89,12 @@ def _load_staged(root: Path) -> dict:
     try:
         data = json.loads(f.read_text())
     except FileNotFoundError:
-        return {"launches": [], "note": ""}
+        return {"launches": [], "note": "", "findings": [], "notes": ""}
     except (OSError, json.JSONDecodeError) as exc:
         raise ToolError(f"staged request is unreadable ({exc}); run `cancel` to reset") from exc
+    # tolerate a partial file: default any missing family so either role's verbs work
+    for key, empty in (("launches", []), ("note", ""), ("findings", []), ("notes", "")):
+        data.setdefault(key, empty)
     return data
 
 
@@ -96,11 +113,14 @@ def _budget_line(root: Path) -> str:
         return "budget: (unknown)"
 
 
+# --- author syscalls: launch / note / sleep --------------------------------
+
+
 def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     # shlex.join, NOT " ".join: the shell that invoked this CLI already split
     # `-- python train.py --label "a b"` into tokens, so re-quote them so the
     # eventual `sh -c "$(cat command.txt)"` re-parses the SAME tokens (a plain
-    # join would collapse `a b` into two args — terra #133 r1).
+    # join would collapse `a b` into two args).
     command = shlex.join(args.command).strip()
     if not command:
         raise ToolError("launch needs a command after `--`")
@@ -141,26 +161,11 @@ def cmd_note(root: Path, args: argparse.Namespace) -> str:
     return "note saved (delivered back to you on wake)."
 
 
-def cmd_status(root: Path, _args: argparse.Namespace) -> str:
-    staged = _load_staged(root)
-    lines = [f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}."]
-    for la in staged["launches"]:
-        arts = (" -> " + ", ".join(la["artifacts"])) if la.get("artifacts") else ""
-        lines.append(f"  - {la['name']} ({la['minutes']} min): {la['command']}{arts}")
-    if staged.get("note"):
-        lines.append(f"  note: {staged['note']}")
-    return "\n".join(lines)
-
-
-def cmd_cancel(root: Path, _args: argparse.Namespace) -> str:
-    (root / DIR / REQUEST).unlink(missing_ok=True)
-    return "staged request discarded."
-
-
 def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     staged = _load_staged(root)
-    # commit staging -> the ABI file the kernel reads; then END THE TURN.
-    (_dir(root) / ABI).write_text(json.dumps(staged))
+    # commit the SLEEP syscall -> the ABI the kernel reads; then END THE TURN.
+    payload = {"type": "sleep", "launches": staged["launches"], "note": staged["note"]}
+    (_dir(root) / ABI).write_text(json.dumps(payload))
     (root / DIR / REQUEST).unlink(missing_ok=True)
     n = len(staged["launches"])
     what = f"{n} launch(es)" if n else "a checkpoint (no launches)"
@@ -171,9 +176,92 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     )
 
 
+# --- judge syscalls: finding / conclude ------------------------------------
+
+
+def cmd_finding(root: Path, args: argparse.Namespace) -> str:
+    if not args.file.strip():
+        raise ToolError("--file must not be empty")
+    if args.confidence not in CONFIDENCES:
+        raise ToolError(f"--confidence must be one of {CONFIDENCES}")
+    if args.kind not in KINDS:
+        raise ToolError(f"--kind must be one of {KINDS}")
+    if args.line is not None and args.line < 1:
+        raise ToolError("--line is 1-indexed; omit it for a non-local finding")
+    for label, text in (("--summary", args.summary), ("--detail", args.detail)):
+        if not text.strip():
+            raise ToolError(f"{label} must not be empty")
+        if len(text) > MAX_TEXT:
+            raise ToolError(f"{label} exceeds {MAX_TEXT} chars")
+    if args.category and len(args.category) > MAX_TEXT:
+        raise ToolError(f"--category exceeds {MAX_TEXT} chars")
+    staged = _load_staged(root)
+    if len(staged["findings"]) >= MAX_FINDINGS:
+        raise ToolError(f"at most {MAX_FINDINGS} findings")
+    finding = {
+        "file": args.file,
+        "line": args.line,  # None when --line omitted: a non-local finding
+        "confidence": args.confidence,
+        "summary": args.summary,
+        "detail": args.detail,
+        "blocking": bool(args.blocking),
+        "kind": args.kind,
+    }
+    if args.category:
+        finding["category"] = args.category  # verifier gaming-taxonomy; omitted otherwise
+    staged["findings"].append(finding)
+    _save_staged(root, staged)
+    tag = "BLOCKING" if args.blocking else args.kind
+    where = f"{args.file}:{args.line or '?'}"
+    return f"recorded {tag} finding on {where} ({len(staged['findings'])} so far)."
+
+
+def cmd_conclude(root: Path, args: argparse.Namespace) -> str:
+    if len(args.notes) > MAX_TEXT:
+        raise ToolError(f"--notes exceeds {MAX_TEXT} chars")
+    staged = _load_staged(root)
+    # commit the VERDICT syscall -> the ABI the kernel reads; then END THE TURN.
+    payload = {"type": "verdict", "findings": staged["findings"], "notes": args.notes}
+    (_dir(root) / ABI).write_text(json.dumps(payload))
+    (root / DIR / REQUEST).unlink(missing_ok=True)
+    n = len(staged["findings"])
+    blocking = sum(1 for f in staged["findings"] if f.get("blocking"))
+    return (
+        f"verdict recorded: {n} finding(s), {blocking} blocking. This is your "
+        "final answer — end your turn."
+    )
+
+
+# --- shared: status / cancel -----------------------------------------------
+
+
+def cmd_status(root: Path, _args: argparse.Namespace) -> str:
+    staged = _load_staged(root)
+    lines: list[str] = []
+    if staged["launches"] or (root / DIR / BUDGET).exists():
+        lines.append(f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}.")
+        for la in staged["launches"]:
+            arts = (" -> " + ", ".join(la["artifacts"])) if la.get("artifacts") else ""
+            lines.append(f"  - {la['name']} ({la['minutes']} min): {la['command']}{arts}")
+        if staged.get("note"):
+            lines.append(f"  note: {staged['note']}")
+    if staged["findings"]:
+        lines.append(f"{len(staged['findings'])} finding(s) staged:")
+        for f in staged["findings"]:
+            tag = "BLOCKING" if f.get("blocking") else f.get("kind", "note")
+            lines.append(f"  - [{tag}] {f['file']}:{f.get('line') or '?'} — {f['summary']}")
+    return "\n".join(lines) if lines else "nothing staged."
+
+
+def cmd_cancel(root: Path, _args: argparse.Namespace) -> str:
+    (root / DIR / REQUEST).unlink(missing_ok=True)
+    return "staged request discarded."
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="syscall", description="author launch/sleep tool")
+    p = argparse.ArgumentParser(prog="syscall", description="research syscall tool")
     sub = p.add_subparsers(dest="cmd", required=True)
+    # author verbs
     la = sub.add_parser("launch", help="stage a job to run outside the sandbox")
     la.add_argument("--name", required=True, help="your handle for this job (a-z0-9-)")
     la.add_argument("--minutes", type=int, default=30, help="walltime ask (clamped to 240)")
@@ -186,18 +274,35 @@ def build_parser() -> argparse.ArgumentParser:
     la.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
     no = sub.add_parser("note", help="save a note to yourself, echoed back on wake")
     no.add_argument("text")
-    sub.add_parser("status", help="show staged launches and remaining budget")
+    sub.add_parser("sleep", help="commit staged launches; then end your turn")
+    # judge verbs
+    fi = sub.add_parser("finding", help="record one finding")
+    fi.add_argument("--file", required=True)
+    fi.add_argument(
+        "--line", type=int, default=None, help="1-indexed; omit for a non-local finding"
+    )
+    fi.add_argument("--confidence", required=True, help=f"one of {CONFIDENCES}")
+    fi.add_argument("--summary", required=True, help="one-line claim")
+    fi.add_argument("--detail", required=True, help="the evidence")
+    fi.add_argument("--blocking", action="store_true", help="a confirmed defect that gates merge")
+    fi.add_argument("--kind", default="note", help=f"one of {KINDS}")
+    fi.add_argument("--category", default="", help="verifier gaming taxonomy; omit for review")
+    co = sub.add_parser("conclude", help="commit the verdict; then end your turn")
+    co.add_argument("--notes", default="", help="summary the reader sees")
+    # shared verbs
+    sub.add_parser("status", help="show staged syscalls and remaining budget")
     sub.add_parser("cancel", help="discard the staged request")
-    sub.add_parser("sleep", help="commit the staged request; then end your turn")
     return p
 
 
 _HANDLERS = {
     "launch": cmd_launch,
     "note": cmd_note,
+    "sleep": cmd_sleep,
+    "finding": cmd_finding,
+    "conclude": cmd_conclude,
     "status": cmd_status,
     "cancel": cmd_cancel,
-    "sleep": cmd_sleep,
 }
 
 
@@ -216,4 +321,5 @@ def main(argv: list[str], root: Path | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via main(argv) in tests
-    sys.exit(main(sys.argv[1:]))
+    with contextlib.suppress(BrokenPipeError):
+        sys.exit(main(sys.argv[1:]))

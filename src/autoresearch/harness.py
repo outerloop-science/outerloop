@@ -1158,7 +1158,6 @@ class FakeHarness:
     script: Any = None  # optional callable(brief_text, workspace) for side effects
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
     supports_resume: bool = True  # a field so tests can exercise the no-resume path
-    supports_verdict_tool: bool = False  # a field so tests can exercise verdict-tool mode
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
