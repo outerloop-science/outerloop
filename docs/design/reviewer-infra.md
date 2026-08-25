@@ -45,10 +45,11 @@ model or harness.
 
 For the local work, give the agent read-only access to the tree under
 review. As deployed, that tree is the PR HEAD — untrusted, same-repo code —
-so the safety argument is not "the tree is trusted"; it is that reading is
-not running: the agent has no execute or write tools, and everything it
-reads is data to judge, never instructions to follow (the prompt-injection
-boundary). The two dangerous acts are handled outside the read surface: the
+so the safety argument is not "the tree is trusted": the judge runs with a
+shell (it records its verdict through the syscall tool), so containment is the
+deployment's — an ephemeral runner or a container, plus the tokenless split
+(no write credential in the session). Everything the judge reads is data to
+judge, never instructions to follow (the prompt-injection boundary). The two dangerous acts are handled outside the read surface: the
 broker is the only outward path, and the PR's code is never run — that
 stays on the split-workflow path.
 
@@ -179,9 +180,9 @@ model.
 
 ## What's next
 
-The harness runs read-only agent sessions over the PR-head checkout — that part
-is done, and the least-token split now carries non-Claude second opinions on
-the auto path. Still to build: the `retrieve` tool contract and the broker,
+The harness runs agent sessions over the PR-head checkout — that part is done,
+and the tokenless split (read-only session job, separate write-token post job)
+now carries every backend on the auto path. Still to build: the `retrieve` tool contract and the broker,
 added without changing the harness. The meta-benchmark scores whether a change catches
 more seeded gaming per dollar before it ships.
 

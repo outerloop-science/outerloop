@@ -99,8 +99,9 @@ the ephemeral hosted runner gives for free:
 > strips any `CLAUDE.md`/hooks the untrusted tree ships (the
 > instruction-smuggling class), a read-only tree, and a **per-session token
 > scoped to just the post** — never the daemon's standing keys. The reviewer
-> already has no execute or write tools; the added exposure is only the
-> standing keys the daemon holds, which the scoped token is what removes.
+> already runs with no write credential in its session (the tokenless split);
+> the added exposure is only the standing keys the daemon holds, which the
+> scoped token is what removes.
 
 This is the same jail the dispatcher already needs for eval jobs on untrusted
 trees, so B reuses containment we build anyway rather than inventing its own.

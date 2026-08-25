@@ -1,8 +1,8 @@
 # Where the judges live, and how their output flows
 
 **Status: living reference (v1, 2026-08-14).** Captures a design direction, not
-a today-change. It records why the reviewer and the verifier — which share a
-"read-only agent judge" implementation — belong in opposite homes, and what that
+a today-change. It records why the reviewer and the verifier — which share one
+agent-judge implementation — belong in opposite homes, and what that
 implies for their output, their identities, and how many of them we run. Pairs
 with `reviewer-infra.md` (the seams and the threat model), `roles.md` (RoleSpec
 and result-policy), and `consolidation.md` (the kernel as a multi-agent OS and
@@ -10,8 +10,8 @@ its syscalls).
 
 ## The thesis
 
-The reviewer and the verifier look like the same thing — a read-only agent that
-reads a diff and its surrounding code and returns findings. They are not the
+The reviewer and the verifier look like the same thing — an agent that
+reads a diff and its surrounding code and records findings. They are not the
 same thing. They are pointed at different authors, triggered by different
 events, and carry different stakes, and once you see that, their correct homes
 are opposite:
