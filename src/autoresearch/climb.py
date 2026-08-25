@@ -370,12 +370,11 @@ def _park_run(
         # resume_session_id, set below for every park — no stage duplicate)
         stage["launches_used"] = parked.launches_used
         stage["sleeps_used"] = parked.sleeps_used
-    # The sweep polls ONE experiment_job_id and wakes on its terminal+grace. That
-    # is right for a single-job park (baseline, or a candidate with no siblings):
-    # poll it. But a MULTI-job park (candidate + siblings) must not wake when the
-    # FIRST job finishes while the rest run — so it records no single job and
-    # rides the DEADLINE floor instead (which sits past every eval's walltime).
-    # The precise "all jobs done" fast wake is the afterany wake job (a later PR).
+    # A single-job park records its one pollable id; a MULTI-job park records
+    # none — the sweep falls back to polling every id in the stage's `afterany`
+    # string and wakes only when ALL are done (tick._poll_targets). The park-time
+    # afterany wake job (zero-latency primary; the sweep stays backup) is still
+    # a later PR.
     experiment_job_id = job_ids[0] if len(job_ids) == 1 else ""
     # The deadline is a FLOOR: park time (`now` here is the park moment, passed
     # by the caller) + the eval walltime + a generous queue/grace slack, so a

@@ -809,12 +809,12 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
             fresh = load_record(root, record.run_id)
             if fresh.state != IMPLEMENTING:
                 continue  # the climb landed its own ending meanwhile
-            if fresh.experiment_job_id:
+            for jid in _poll_targets(fresh):
                 # defensive: no current path records an experiment while
                 # still implementing, but an orphan GPU job burning budget
                 # after its run is declared dead must never survive one
                 with contextlib.suppress(Exception):
-                    compute.cancel(fresh.experiment_job_id)
+                    compute.cancel(jid)
             save_record(
                 root,
                 replace(
@@ -845,6 +845,20 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
         except Exception as exc:  # per-record isolation, like the waiting sweep
             log.warning("implementing-sweep failed on %s: %s", record.run_id, exc)
     return ended
+
+
+def _poll_targets(record: RunRecord) -> list[str]:
+    """Every Slurm job this run waits on. The single `experiment_job_id` is
+    the common case; a MULTI-job park (candidate + siblings, or several author
+    launches) records no single id — its jobs live in the stage's `afterany`
+    dependency string, the one source that always names them all. Without
+    this fallback a multi-job park was a BLIND park riding the deadline floor
+    (~hours of dead time after evals that finished in minutes — observed live
+    2026-08-25)."""
+    if record.experiment_job_id:
+        return [record.experiment_job_id]
+    afterany = str((record.stage or {}).get("afterany", ""))
+    return [t for t in afterany.split(":")[1:] if t]
 
 
 def _sweep_one(
@@ -892,8 +906,9 @@ def _sweep_one(
             stuck.append(record.run_id)
             return
 
-        if not record.experiment_job_id:
-            # No job id to poll. A BLIND PARK (the measurer could not read Slurm,
+        job_ids = _poll_targets(record)
+        if not job_ids:
+            # No job ids to poll. A BLIND PARK (the measurer could not read Slurm,
             # so `MeasurementPending` carried no ids) still hibernated with a
             # deadline — the deadline floor is its ONLY wake, so fire on it. A
             # genuinely mid-write record has no deadline and is left alone.
@@ -902,7 +917,7 @@ def _sweep_one(
             return
 
         try:
-            state = compute.status(record.experiment_job_id)
+            states = [compute.status(jid) for jid in job_ids]
         except SlurmQueryError:
             # Layer 4's rule: query failure is "Slurm unknown", never "gone".
             deferred.append(record.run_id)
@@ -914,9 +929,10 @@ def _sweep_one(
         # PENDING, where the consequence would be cancelling a healthy job.
         past_deadline = record.deadline <= 0 or now > record.deadline
 
-        if is_terminal(state):
+        if all(is_terminal(s) for s in states):
+            state = ",".join(sorted(set(states)))
             # Layer 3, with real grace: time runs from when the sweep FIRST
-            # saw the experiment terminal, not from submission — the afterany
+            # saw every job terminal, not from submission — the afterany
             # job gets the full window to deliver before the backup steps in.
             if record.terminal_seen <= 0:
                 if dry_run:
@@ -937,20 +953,25 @@ def _sweep_one(
                 return
             if now - record.terminal_seen >= grace_s:
                 wake(record, f"experiment {state}", state)
-        elif state == GONE:
+        elif any(is_pending(s) for s in states) and record.deadline > 0 and now > record.deadline:
+            # Unschedulable in practice: cancel every non-terminal job
+            # (best-effort — scancel trouble must not abort the sweep), then
+            # wake with that fact.
+            if not dry_run:
+                for jid, s in zip(job_ids, states, strict=True):
+                    if is_terminal(s) or s == GONE:
+                        continue
+                    try:
+                        compute.cancel(jid)
+                    except Exception as exc:  # scancel trouble is never fatal here
+                        log.warning("cancel %s failed: %s", jid, exc)
+            wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
+        elif all(is_terminal(s) or s == GONE for s in states):
+            # done-or-vanished, at least one GONE (all-terminal handled above)
             if past_deadline:
                 wake(record, "experiment vanished from Slurm", "vanished")
             # else: sacct lag right after submission is normal; wait.
-        elif is_pending(state) and record.deadline > 0 and now > record.deadline:
-            # Unschedulable in practice: cancel (best-effort — scancel
-            # trouble must not abort the sweep), then wake with that fact.
-            if not dry_run:
-                try:
-                    compute.cancel(record.experiment_job_id)
-                except Exception as exc:  # scancel trouble is never fatal here
-                    log.warning("cancel %s failed: %s", record.experiment_job_id, exc)
-            wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
-        # RUNNING (or recently pending): nothing to do; the afterany job has it.
+        # something RUNNING (or recently pending): nothing to do yet.
 
 
 def tick(
