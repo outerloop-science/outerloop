@@ -227,7 +227,6 @@ def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
     bare = tmp_path / "origin.git"
     _git(tmp_path, "clone", "-q", "--bare", str(seed), str(bare))
 
-    from autoresearch import climb as climb_mod
     from autoresearch.github import Workspace
 
     real_clone = Workspace.clone
@@ -333,7 +332,6 @@ def run_live(
     author_backend="claude",
     author_model="claude-opus-5",
     author_key_file="",
-    author_syscalls=False,
 ) -> tuple:
     github = FakeGitHub()
     outcome = live_climb(
@@ -351,7 +349,6 @@ def run_live(
         author_backend=author_backend,
         author_model=author_model,
         author_key_file=author_key_file,
-        author_syscalls=author_syscalls,
     )
     return outcome, github
 
@@ -1000,7 +997,6 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
 def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> None:
     """A crash BEFORE the contained call (clone/contract/claim) must end the
     record and surface on the issue — not strand `implementing`."""
-    from autoresearch import climb as climb_mod
 
     def exploding_clone(url, dest, auth=None, dry_run=False):
         raise OSError(122, "Disk quota exceeded")
@@ -1032,7 +1028,6 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
 def _save_failing_after_first(monkeypatch):
     """save_record succeeds once (the implementing record) then raises — the
     quota-crisis failure mode where the ENDING write is what dies."""
-    from autoresearch import climb as climb_mod
 
     real_save = climb_mod.save_record
     calls = {"n": 0}
@@ -1103,7 +1098,6 @@ def test_final_record_failure_does_not_lose_pr_or_issue_report(
 def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypatch) -> None:
     """If not even the initial record can be written, the run must not
     proceed invisibly OR crash the caller: climb-error plus an issue post."""
-    from autoresearch import climb as climb_mod
 
     def always_failing(root, record, now):
         raise OSError(122, "Disk quota exceeded")
@@ -1746,6 +1740,7 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
 
 
 CONTRACT_SYSCALLS = CONTRACT.replace("    direction: min\n", "    direction: min\n    depth_k: 3\n")
+CONTRACT_OPTOUT = CONTRACT.replace("    direction: min\n", "    direction: min\n    depth_k: 0\n")
 
 
 @pytest.fixture
@@ -1753,16 +1748,16 @@ def target_repo_syscalls(tmp_path: Path, monkeypatch) -> Path:
     return _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
 
 
-def test_author_syscalls_flag_arms_the_feature_without_the_env(
-    tmp_path, target_repo_syscalls, monkeypatch
-) -> None:
-    # the one-off validation switch: `--author-syscalls` (run_live's
-    # author_syscalls=True) arms the launch/sleep feature with the env flag
-    # UNSET, so a validation climb need not arm the whole tick.
+@pytest.fixture
+def target_repo_optout(tmp_path: Path, monkeypatch) -> Path:
+    return _seed_target(tmp_path, monkeypatch, CONTRACT_OPTOUT)
+
+
+def test_syscalls_arm_by_default_with_dispatch_and_resume(tmp_path, target_repo_syscalls) -> None:
+    # CONTRACT-DRIVEN enablement: no flag, no env — dispatch coords + a
+    # resumable backend + a benchmark that has not opted out arm the feature.
     import json as json_mod
 
-    monkeypatch.delenv("AUTORESEARCH_AUTHOR_SYSCALLS", raising=False)
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     outcome, _ = run_live(
         tmp_path,
         target_repo_syscalls,
@@ -1774,11 +1769,29 @@ def test_author_syscalls_flag_arms_the_feature_without_the_env(
         },
         values=[],  # parked before any measurement
         dispatch=_fake_dispatch(),
-        author_syscalls=True,  # armed by the flag, not the env
     )
     assert outcome.outcome == "parked"
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "waiting" and record.stage["phase"] == "author-sleep"
+
+
+def test_depth_k_zero_opts_the_benchmark_out(tmp_path, target_repo_optout) -> None:
+    # `depth_k: 0` is the per-benchmark off switch: even with dispatch coords
+    # and a resumable backend, the tool is not installed and a stray request
+    # file is staged and judged like any other edit.
+    import json as json_mod
+
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo_optout,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
+            ".autoresearch/syscall.json": json_mod.dumps({"type": "sleep", "launches": []}),
+        },
+        values=[],  # scope refuses before any measurement
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "scope-violation"  # staged + judged, not honored
 
 
 def test_author_sleep_live_parks_and_submits_launch_jobs(
@@ -1787,12 +1800,10 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     # end-to-end sleep side (research-loop-buildout.md Phase A): the session
     # writes a syscall request and ends; the climb seals the tree, submits the
     # launch as a jailed job, and parks as author-sleep with the request +
-    # counts aboard. Feature armed via the env flag; cheap benchmark (no eval
-    # hint) — launches do not require a dispatched GATE, only dispatch coords.
+    # counts aboard. Cheap benchmark (no eval hint) — launches do not require
+    # a dispatched GATE, only dispatch coords.
     import json as json_mod
 
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     outcome, github = run_live(
         tmp_path,
         target_repo_syscalls,
@@ -1834,7 +1845,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     ws = tmp_path / "state" / "runs" / "tsp-1" / "ws"
     assert (ws / ".autoresearch" / "syscall").exists()
     budget = _json.loads((ws / ".autoresearch" / "budget.json").read_text())
-    assert budget == {"launches_remaining": 3, "sleeps_remaining": 4}
+    assert budget == {"launches_remaining": 3, "sleeps_remaining": 20}
     # the job is the eval jail on the sealed tree; the author's command travels
     # via command.txt (never shell-interpolated into the script)
     ev = tmp_path / "state" / "runs" / "tsp-1" / "eval-launch-probe"
@@ -1848,8 +1859,6 @@ def test_symlinked_channel_disables_syscalls_and_never_writes_through_it(
     # a target that commits `.autoresearch` as a SYMLINK to a host path must not
     # get the tool/exclude/budget written THROUGH it (terra #133 r1): a
     # pre-existing channel in any form disables the feature for the run.
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
     seed = tmp_path / "seed"
     escape = tmp_path / "ESCAPE"
@@ -1878,8 +1887,6 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
     # the run and the climb proceeds normally (terra #132 r3).
     import json as json_mod
 
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
     seed = tmp_path / "seed"
     (seed / ".autoresearch").mkdir()
@@ -1913,35 +1920,10 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
     assert sbatched == []
 
 
-def test_armed_flag_without_wake_ready_stays_fully_off(tmp_path, target_repo, monkeypatch) -> None:
-    # the interlock mechanism: with the wake declared not-ready, arming the env
-    # flag must not produce an unwakeable author-sleep park — the feature stays
-    # off for the run and the request file is inert AND staged like any edit
-    # (terra #132 r5). The shipped default is now READY (part 2 landed), so the
-    # not-ready state is set explicitly here to pin the guard itself.
-    import json as json_mod
-
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", False)
-    outcome, _ = run_live(
-        tmp_path,
-        target_repo,
-        edits={
-            "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
-            ".autoresearch/syscall.json": json_mod.dumps(
-                {"launches": [{"name": "x", "command": "y"}]}
-            ),
-        },
-        values=[],
-        dispatch=_fake_dispatch(),
-    )
-    assert outcome.outcome == "scope-violation"  # staged + judged, exactly like flag-off
-
-
-def test_flag_off_stages_stray_syscall_files_like_any_edit(tmp_path, target_repo) -> None:
-    # with the feature OFF, the `.autoresearch/` name is NOT magic: an
-    # untracked file there is staged and judged like any other agent edit
-    # (here: out of scope), byte-identical to today (terra #132 r2).
+def test_syscalls_off_without_dispatch_treats_stray_files_as_edits(tmp_path, target_repo) -> None:
+    # with the feature OFF (no dispatch coords -> no launcher), the
+    # `.autoresearch/` name is NOT magic: an untracked file there is staged
+    # and judged like any other agent edit (here: out of scope) (terra #132 r2).
     outcome, _ = run_live(
         tmp_path,
         target_repo,
@@ -1954,13 +1936,10 @@ def test_flag_off_stages_stray_syscall_files_like_any_edit(tmp_path, target_repo
     assert outcome.outcome == "scope-violation"
 
 
-def test_flag_on_excludes_the_channel_from_the_candidate(
-    tmp_path, target_repo, monkeypatch
-) -> None:
-    # with the feature ON, the channel dir is invisible to diffs/scope/drift:
-    # a stray non-request file there neither blocks nor ships.
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+def test_armed_syscalls_exclude_the_channel_from_the_candidate(tmp_path, target_repo) -> None:
+    # with the feature ON (dispatch coords present), the channel dir is
+    # invisible to diffs/scope/drift: a stray non-request file there neither
+    # blocks nor ships.
     outcome, _ = run_live(
         tmp_path,
         target_repo,
@@ -1969,6 +1948,7 @@ def test_flag_on_excludes_the_channel_from_the_candidate(
             ".autoresearch/notes.txt": "scratch",
         },
         values=[13.876, 13.1],
+        dispatch=_fake_dispatch(),
     )
     assert outcome.outcome == "improved"
 
@@ -1984,8 +1964,6 @@ def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
     from autoresearch.compute import CommandResult, SlurmCompute
     from autoresearch.measure import DispatchSettings
 
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_SYSCALLS", "1")
-    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
     cancelled: list[str] = []
     calls = {"sbatch": 0}
 
@@ -2032,7 +2010,6 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
     # the candidate park dispatched baseline+candidate (two jobs); if the
     # WAITING record then fails to write, nothing will ever wake those jobs, so
     # BOTH must be cancelled rather than left orphaned in the queue.
-    from autoresearch import climb as climb_mod
 
     cancelled: list[str] = []
     dispatch = _fake_dispatch(cancelled=cancelled)
@@ -2353,7 +2330,6 @@ def test_resume_negative_keeps_snapshot_if_the_record_save_fails(tmp_path, monke
     # a negative wake must save the ENDED record BEFORE dropping the snapshot:
     # if the save fails, the run stays recoverable (snapshot intact), never
     # WAITING with the candidate gone.
-    from autoresearch import climb as climb_mod
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
@@ -2402,7 +2378,6 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     # the wake job holds the run's lease (transferred by the sweep on dispatch);
     # the --resume CLI must release it on every exit so a re-parked run is
     # immediately eligible for the next sweep, not stuck until the TTL reap.
-    from autoresearch import climb as climb_mod
     from autoresearch.climb import LiveClimbOutcome, main
     from autoresearch.runstate import acquire_lease, run_dir
 
@@ -2611,7 +2586,6 @@ def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypat
 def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) -> None:
     # a panel ERROR (not a finding) must not abort the publish and drop the
     # candidate snapshot — the improvement is real. Fail closed to a DRAFT.
-    from autoresearch import climb as climb_mod
     from autoresearch.panel import PanelLens
 
     def boom(*a, **k):
@@ -2905,7 +2879,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     assert resumed == "s1"
     assert "tail improvement: 0.7" in wake_text  # the job's stdout, delivered
     assert "compare against the sweep" in wake_text  # the author's note, echoed
-    assert "2 launches and 3 sleeps remaining" in wake_text  # budgets visible
+    assert "2 launches and 19 sleeps remaining" in wake_text  # budgets visible
     assert ".autoresearch/results/probe/out.json" in wake_text
     # the artifact really landed in the excluded channel
     assert (wsroot / ".autoresearch" / "results" / "probe" / "out.json").read_text() == (

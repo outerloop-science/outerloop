@@ -6,6 +6,23 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- Author syscalls are CONTRACT-DRIVEN and on by default: the launch/sleep/
+  submit tool arms whenever the deployment can deliver it (dispatch coords +
+  a resumable backend) and the benchmark has not opted out. `depth_k: 0` is
+  the per-benchmark opt-out; defaults are now generous (`depth_k` 10, bounds
+  [0, 16]; `sleep_k` 20, bounds [1, 32]) — aggregate spend stays bounded by
+  the contract's `runs_per_week` plus the per-session walltime/turn caps.
+
+### Removed (enablement scaffolding)
+
+- The transitional dark-launch scaffolding around author syscalls, now that
+  the substrate is live-validated: the `AUTORESEARCH_AUTHOR_SYSCALLS` env
+  flag, the `climb --author-syscalls` one-off switch, and the dead
+  `AUTHOR_SLEEP_WAKE_READY` constant. Enablement lives in the contract, where
+  a per-benchmark knob belongs.
+
 ### Fixed
 
 - Multi-job parks are no longer blind: the tick's backup sweep now polls every

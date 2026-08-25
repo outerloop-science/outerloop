@@ -170,7 +170,7 @@ roadmap: docs/roadmap.md
         load_contract(base % "-0.1", "org/pilot")
 
 
-def test_depth_k_defaults_to_one_and_validates_range() -> None:
+def test_depth_k_defaults_generous_and_validates_range() -> None:
     # the per-benchmark depth dial: default 1 (single pass), bounded [1, 8].
     from autoresearch.contract import load_contract
 
@@ -181,9 +181,11 @@ budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
 scope: {allowed: [src/]}
 roadmap: docs/roadmap.md
 """
-    assert load_contract(base % "", "org/pilot").benchmarks[0].depth_k == 1
+    assert load_contract(base % "", "org/pilot").benchmarks[0].depth_k == 10
     assert load_contract(base % ", depth_k: 4", "org/pilot").benchmarks[0].depth_k == 4
-    for bad in (", depth_k: 0", ", depth_k: 9"):
+    # 0 is the per-benchmark opt-out (syscalls off); negatives/over-cap refuse
+    assert load_contract(base % ", depth_k: 0", "org/pilot").benchmarks[0].depth_k == 0
+    for bad in (", depth_k: -1", ", depth_k: 17"):
         with pytest.raises(ValidationError):
             load_contract(base % bad, "org/pilot")
 

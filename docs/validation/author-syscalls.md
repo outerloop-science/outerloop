@@ -1,21 +1,22 @@
 # Validating the author sleep/wake substrate (live)
 
-The author launch/sleep syscalls (`.autoresearch/syscall`, park→wake, artifact
-copy-out) are **fake-tested only** — never run on a real cluster. Before the
-substrate goes live (and before the `submit` verb, the env-flag decommission, or
-the `climb → attempt` rename build on it), run this once on Torch and watch the
-whole loop.
+> **VALIDATED 2026-08-25** on Torch (run `tsp-20260825-141345`): all six
+> milestones green — the codex author launched + slept unprompted, the same
+> session resumed with its launch's post-hibernation results, and the run
+> reached an honest negative terminal. The `--author-syscalls` /
+> `AUTORESEARCH_AUTHOR_SYSCALLS` arming described by the original runbook has
+> since RETIRED: enablement is contract-driven (dispatch coords + a resumable
+> backend + `depth_k > 0`; `depth_k: 0` is a benchmark's opt-out). The steps
+> below are kept for re-validation after substrate changes.
 
 ## Arm it (one climb only)
 
-`--author-syscalls` arms the feature for a SINGLE climb (ORed with the
-`AUTORESEARCH_AUTHOR_SYSCALLS` env flag), so you do **not** arm the whole tick.
-Two conditions must both hold:
+Enablement is contract-driven; a one-off validation climb just needs:
 
 - **Dispatch coords** (`--image` + account/partition): launches are jailed
-  Slurm jobs, so without them nothing launches.
-- **A launch budget**: `depth_k` (default 1 = one launch) caps launches; raise
-  it in the target's `.autoresearch.yaml` to test more.
+  Slurm jobs, so without them nothing launches (and the tool is not offered).
+- **A launch budget**: `depth_k` (default 10) caps launches; `depth_k: 0` in
+  the target's `.autoresearch.yaml` opts that benchmark out.
 
 Then run one climb by hand (not via the tick):
 
@@ -24,7 +25,6 @@ source env.sh
 uv run python -m autoresearch.climb \
   --target <org/repo> --benchmark <a-cheap-benchmark> \
   --run-root <run-root> --image <image.sif> \
-  --author-syscalls \
   <the account/partition/limit args the tick normally passes>
 ```
 
@@ -71,12 +71,13 @@ The lifecycle to confirm, in order:
 
 ## Kill switch
 
-The flag is per-run: to disable, just don't pass `--author-syscalls` (and keep
-`AUTORESEARCH_AUTHOR_SYSCALLS` unset so the tick stays off). A parked run with no
-wake ends with a named `session-error`, never a silent stuck loop.
+Per-benchmark: `depth_k: 0` in the target's `.autoresearch.yaml`; per-deployment:
+remove the dispatch coords. A parked run with no wake ends with a named
+`session-error`, never a silent stuck loop.
 
-## After green
+## After green (done 2026-08-25)
 
-Report back and the follow-ups unblock: build `submit` on the proven substrate
-(retiring the panel-revision loop), remove the dead `AUTHOR_SLEEP_WAKE_READY`
-constant, and migrate the env flag into contract-driven enablement.
+The follow-ups this validation unblocked have landed: `submit` on the proven
+substrate (the panel-revision loop retired with it), the dead
+`AUTHOR_SLEEP_WAKE_READY` constant removed, and the env flag migrated into
+contract-driven enablement.
