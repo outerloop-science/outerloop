@@ -133,6 +133,17 @@ def test_artifact_path_check_matches_the_kernel(tmp_path: Path, capsys) -> None:
         assert tool_ok == kernel_ok(path), (path, tool_ok, kernel_ok(path))
 
 
+def test_submit_stages_and_rides_the_sleep(tmp_path: Path, capsys) -> None:
+    assert run(tmp_path, "submit") == 0
+    assert "sealed" in capsys.readouterr().out.lower()
+    assert run(tmp_path, "status") == 0
+    assert "submit staged" in capsys.readouterr().out
+    assert run(tmp_path, "sleep") == 0
+    assert "submit" in capsys.readouterr().out
+    req = read_request(tmp_path)
+    assert req is not None and req.submit and req.launches == ()
+
+
 def test_sleep_with_nothing_staged_is_a_checkpoint(tmp_path: Path, capsys) -> None:
     assert run(tmp_path, "sleep") == 0
     assert "checkpoint" in capsys.readouterr().out

@@ -112,6 +112,15 @@ def test_invalid_requests_are_refused_loudly(tmp_path: Path, payload, match) -> 
         read_request(tmp_path)
 
 
+def test_read_request_carries_submit_and_rejects_a_non_bool(tmp_path: Path) -> None:
+    write_req(tmp_path, {"launches": [], "submit": True})
+    req = read_request(tmp_path)
+    assert req is not None and req.submit
+    write_req(tmp_path, {"launches": [], "submit": "yes"})
+    with pytest.raises(SyscallError, match="submit must be a boolean"):
+        read_request(tmp_path)
+
+
 def test_read_request_rejects_a_wrong_or_missing_type(tmp_path: Path) -> None:
     # a sleep is one syscall TYPE; a file with no type (a target-committed
     # booby-trap) or another type (a verdict) is not a sleep and is refused.

@@ -2593,10 +2593,10 @@ def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) ->
     assert github.prs[0]["draft"] is True and github.armed == []  # degraded -> draft, no arm
 
 
-def test_resume_blocking_panel_wakes_the_agent_to_revise_and_reparks(tmp_path, monkeypatch) -> None:
-    # THE DEPTH-AXIS CORE: a blocking panel finding wakes the agent to revise —
-    # re-run the session with the findings, re-snapshot, re-measure -> re-park
-    # (panel_reads incremented), instead of drafting.
+def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, monkeypatch) -> None:
+    # THE DEPTH-AXIS CORE (buildout Phase B): on a SUBMITTED park, a blocking
+    # panel finding goes back to the AUTHOR — the same session is resumed with
+    # the findings, revises, and its re-measure re-parks — instead of drafting.
     import json as _json
     from dataclasses import dataclass
 
@@ -2638,8 +2638,18 @@ def test_resume_blocking_panel_wakes_the_agent_to_revise_and_reparks(tmp_path, m
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
     )
-    # the INITIAL measure returns improved (-> panel -> revise); the re-measure
-    # of the revised candidate PARKS, exactly as the dispatched backend does.
+    # mark the park SUBMITTED: the author sealed this candidate via `submit`
+    rec = load_record(state, run_id)
+    rec.stage["submitted"] = True
+    save_record(state, rec, 1_000_050.0)
+    # the real flow excluded the channel at climb start (.git/info/exclude
+    # persists in the run's ws); the hand-built test ws needs it too, or the
+    # wake's budget refresh pollutes changed_paths
+    from autoresearch.syscall import ensure_excluded
+
+    ensure_excluded(state / "runs" / run_id / "ws")
+    # the INITIAL measure returns improved (-> panel -> author wake); the
+    # re-measure of the revised candidate PARKS, as the dispatched backend does.
     from autoresearch.measure import DispatchSettings, MeasurementPending
 
     class _TwoPhase:
@@ -2665,13 +2675,13 @@ def test_resume_blocking_panel_wakes_the_agent_to_revise_and_reparks(tmp_path, m
         panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
         harness=RevisingHarness(),
         spec=author_spec(),
-        panel_revisions=1,
     )
     assert outcome.outcome == "parked"  # re-parked to measure the REVISED candidate
     assert github.prs == []  # no PR — the revision must be verified first
     rec = load_record(state, run_id)
     assert rec.state == "waiting"
-    assert rec.stage["panel_reads"] == 1  # one revision taken; the cap advances
+    # the new park is a plain finish (the author did not resubmit)
+    assert not rec.stage.get("submitted")
     assert rec.stage["candidate_sha"] != old  # a NEW candidate (the revision)
     # the revised edit landed in the new candidate; the old snapshot was dropped
     ws = state / "runs" / run_id / "ws"
@@ -2679,9 +2689,10 @@ def test_resume_blocking_panel_wakes_the_agent_to_revise_and_reparks(tmp_path, m
     assert str(rec.stage["candidate_sha"]) in kept and str(old) not in kept
 
 
-def test_resume_blocking_panel_at_the_cap_drafts_without_revising(tmp_path, monkeypatch) -> None:
-    # once panel_reads has hit panel_revisions, a further blocking finding stops
-    # revising and DRAFTs (the human sees the unconverged findings).
+def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -> None:
+    # a candidate park WITHOUT a submit gets no author loop: blocking findings
+    # DRAFT the PR for a human (the policy-driven revision loop is retired —
+    # the author drives depth via `submit`).
     import json as _json
 
     from autoresearch.orchestrator import author_spec
@@ -2705,10 +2716,6 @@ def test_resume_blocking_panel_at_the_cap_drafts_without_revising(tmp_path, monk
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
     )
-    # simulate a run that already used its one revision
-    rec = load_record(state, run_id)
-    rec.stage["panel_reads"] = 1
-    save_record(state, rec, 1_000_050.0)
     github = FakeGitHub()
     outcome = resume_run(
         state,
@@ -2720,143 +2727,9 @@ def test_resume_blocking_panel_at_the_cap_drafts_without_revising(tmp_path, monk
         panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
         harness=object(),  # type: ignore[arg-type]
         spec=author_spec(),
-        panel_revisions=1,
     )
     assert outcome.outcome == "improved"  # publishes...
     assert github.prs[0]["draft"] is True and github.armed == []  # ...as a DRAFT, no revise
-
-
-def test_resume_revision_snapshot_failure_drafts_the_original(tmp_path, monkeypatch) -> None:
-    # if the revised tree cannot be snapshotted (git/disk), the wake must NOT
-    # leave the run parked to retry (re-spending a session) — it DRAFTs the
-    # original, whose improvement is real and measured.
-    import json as _json
-    from dataclasses import dataclass
-
-    from autoresearch import climb as climb_mod
-    from autoresearch.orchestrator import EvalError, author_spec
-    from autoresearch.panel import PanelLens
-
-    @dataclass
-    class RevisingHarness:
-        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
-            return SessionResult(
-                stop_reason="end_turn",
-                is_error=False,
-                cost_usd=0.5,
-                num_turns=3,
-                session_id="s1",
-                final_text="revised",
-                transcript_path="",
-            )
-
-    def boom(ws, base_sha):
-        raise EvalError("git write-tree failed")
-
-    monkeypatch.setattr(climb_mod, "snapshot_tree", boom)
-    blocking = _json.dumps(
-        {
-            "findings": [
-                {
-                    "file": "src/pilot/solvers/tsp.py",
-                    "line": 1,
-                    "confidence": "high",
-                    "summary": "s",
-                    "detail": "d",
-                    "blocking": True,
-                }
-            ],
-            "notes": "",
-        }
-    )
-    state, run_id = _write_parked_candidate(
-        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
-    )
-    github = FakeGitHub()
-    outcome = resume_run(
-        state,
-        run_id,
-        dispatch=_fake_dispatch(),
-        github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
-        now=1_000_100.0,
-        panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
-        harness=RevisingHarness(),
-        spec=author_spec(),
-        panel_revisions=1,
-    )
-    assert outcome.outcome == "improved"  # drafted, not parked/aborted
-    assert github.prs[0]["draft"] is True and github.armed == []
-    assert load_record(state, run_id).state == "in-review"  # ended, not left waiting
-
-
-def test_resume_revision_remeasure_failure_drafts_the_original(tmp_path, monkeypatch) -> None:
-    # if the revision's re-measure cannot even dispatch (e.g. Slurm submit), the
-    # ORIGINAL's real improvement must NOT be discarded — draft it.
-    import json as _json
-    from dataclasses import dataclass
-
-    from autoresearch.measure import DispatchSettings
-    from autoresearch.orchestrator import author_spec
-    from autoresearch.panel import PanelLens
-
-    @dataclass
-    class RevisingHarness:
-        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
-            return SessionResult(
-                stop_reason="end_turn",
-                is_error=False,
-                cost_usd=0.5,
-                num_turns=3,
-                session_id="s1",
-                final_text="revised",
-                transcript_path="",
-            )
-
-    class _RaiseOnRemeasure:
-        def __init__(self):
-            self.calls = 0
-
-        def results(self, measures):
-            self.calls += 1
-            if self.calls == 1:
-                return {"baseline": 13.0, "candidate": 12.0}
-            raise RuntimeError("sbatch failed")  # not EvalError/MeasurementPending
-
-    blocking = _json.dumps(
-        {
-            "findings": [
-                {
-                    "file": "src/pilot/solvers/tsp.py",
-                    "line": 1,
-                    "confidence": "high",
-                    "summary": "s",
-                    "detail": "d",
-                    "blocking": True,
-                }
-            ],
-            "notes": "",
-        }
-    )
-    state, run_id = _write_parked_candidate(
-        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
-    )
-    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: _RaiseOnRemeasure())
-    github = FakeGitHub()
-    outcome = resume_run(
-        state,
-        run_id,
-        dispatch=_fake_dispatch(),
-        github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
-        now=1_000_100.0,
-        panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
-        harness=RevisingHarness(),
-        spec=author_spec(),
-        panel_revisions=1,
-    )
-    assert outcome.outcome == "improved"  # the original is drafted, not aborted
-    assert github.prs[0]["draft"] is True and load_record(state, run_id).state == "in-review"
 
 
 def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> None:

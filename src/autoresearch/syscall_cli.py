@@ -9,6 +9,7 @@ experiments and hibernate:
     python .autoresearch/syscall launch --name train --minutes 90 \\
         --artifact results/curve.json -- uv run python train.py --lr 3e-4
     python .autoresearch/syscall note "compare with the lr sweep"
+    python .autoresearch/syscall submit      # seal + gate + panel on this tree
     python .autoresearch/syscall sleep       # then END YOUR TURN to hibernate
 
 The JUDGE's syscalls record a verdict and exit — `conclude` is the judge's
@@ -89,11 +90,17 @@ def _load_staged(root: Path) -> dict:
     try:
         data = json.loads(f.read_text())
     except FileNotFoundError:
-        return {"launches": [], "note": "", "findings": [], "notes": ""}
+        return {"launches": [], "note": "", "submit": False, "findings": [], "notes": ""}
     except (OSError, json.JSONDecodeError) as exc:
         raise ToolError(f"staged request is unreadable ({exc}); run `cancel` to reset") from exc
     # tolerate a partial file: default any missing family so either role's verbs work
-    for key, empty in (("launches", []), ("note", ""), ("findings", []), ("notes", "")):
+    for key, empty in (
+        ("launches", []),
+        ("note", ""),
+        ("submit", False),
+        ("findings", []),
+        ("notes", ""),
+    ):
         data.setdefault(key, empty)
     return data
 
@@ -161,14 +168,33 @@ def cmd_note(root: Path, args: argparse.Namespace) -> str:
     return "note saved (delivered back to you on wake)."
 
 
+def cmd_submit(root: Path, _args: argparse.Namespace) -> str:
+    staged = _load_staged(root)
+    staged["submit"] = True
+    _save_staged(root, staged)
+    return (
+        "staged submit: on `sleep` your current tree is SEALED and measured "
+        "against the baseline, and the review panel reads the claim; you will "
+        "be woken with the result (published if it clears cleanly). "
+        f"{_budget_line(root)}."
+    )
+
+
 def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     staged = _load_staged(root)
     # commit the SLEEP syscall -> the ABI the kernel reads; then END THE TURN.
-    payload = {"type": "sleep", "launches": staged["launches"], "note": staged["note"]}
+    payload = {
+        "type": "sleep",
+        "launches": staged["launches"],
+        "note": staged["note"],
+        "submit": bool(staged["submit"]),
+    }
     (_dir(root) / ABI).write_text(json.dumps(payload))
     (root / DIR / REQUEST).unlink(missing_ok=True)
     n = len(staged["launches"])
     what = f"{n} launch(es)" if n else "a checkpoint (no launches)"
+    if staged["submit"]:
+        what += " + a submit (seal, gate, panel)"
     return (
         f"committed {what}. END YOUR TURN NOW to hibernate — you will be woken "
         "with the results. (If you keep working, the sleep still triggers when "
@@ -238,11 +264,13 @@ def cmd_conclude(root: Path, args: argparse.Namespace) -> str:
 def cmd_status(root: Path, _args: argparse.Namespace) -> str:
     staged = _load_staged(root)
     lines: list[str] = []
-    if staged["launches"] or (root / DIR / BUDGET).exists():
+    if staged["launches"] or staged["submit"] or (root / DIR / BUDGET).exists():
         lines.append(f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}.")
         for la in staged["launches"]:
             arts = (" -> " + ", ".join(la["artifacts"])) if la.get("artifacts") else ""
             lines.append(f"  - {la['name']} ({la['minutes']} min): {la['command']}{arts}")
+        if staged["submit"]:
+            lines.append("  submit staged: `sleep` seals this tree for the gate + panel")
         if staged.get("note"):
             lines.append(f"  note: {staged['note']}")
     if staged["findings"]:
@@ -274,7 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     la.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
     no = sub.add_parser("note", help="save a note to yourself, echoed back on wake")
     no.add_argument("text")
-    sub.add_parser("sleep", help="commit staged launches; then end your turn")
+    sub.add_parser(
+        "submit",
+        help="stage a submit: on sleep, seal this tree for the gate + review panel",
+    )
+    sub.add_parser("sleep", help="commit staged launches/submit; then end your turn")
     # judge verbs
     fi = sub.add_parser("finding", help="record one finding")
     fi.add_argument("--file", required=True)
@@ -298,6 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
 _HANDLERS = {
     "launch": cmd_launch,
     "note": cmd_note,
+    "submit": cmd_submit,
     "sleep": cmd_sleep,
     "finding": cmd_finding,
     "conclude": cmd_conclude,

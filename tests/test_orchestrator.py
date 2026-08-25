@@ -268,6 +268,67 @@ def test_checkpoint_sleep_parks_with_no_dependency(tmp_path: Path) -> None:
     assert exc.value.launches_used == 0  # a checkpoint burns only the sleep
 
 
+def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Path) -> None:
+    # `submit` is a launch whose job is the GATE (buildout Phase B): the tree
+    # is sealed, the dispatched gate parks the run as a candidate carrying the
+    # submitted marker + budget counts, and a sibling launch rides the same
+    # afterany, submitted on the sealed sha.
+    from autoresearch.orchestrator import ClimbParked
+
+    _write_syscall(
+        tmp_path,
+        {"launches": [{"name": "probe", "command": "uv run probe.py"}], "submit": True},
+    )
+    launched: list = []
+    harness = FakeHarness(result=ok_session())
+    m = ParkingMeasurer(park_on_call=1)
+    with pytest.raises(ClimbParked) as exc:
+        climb_once(
+            CONFIG,
+            DEEP_CONTRACT,
+            tmp_path,
+            harness,
+            m,
+            "base",
+            _bare_snapshot(),
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            created="t",
+            launcher=_fake_launcher(launched),
+        )
+    p = exc.value
+    assert p.phase == "candidate" and p.submitted
+    assert p.syscall is not None and p.syscall.submit
+    assert p.launches_used == 1 and p.sleeps_used == 1  # the submit rode one sleep
+    assert p.afterany.endswith(":900")  # gate evals + the sibling launch, one afterany
+    sha, request = launched[0]
+    assert sha == "cand1" and request.launches[0].name == "probe"
+
+
+def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
+    # an inline gate that rejects a submitted candidate resumes the AUTHOR with
+    # the result (it decides what happens next) — never a silent terminal; the
+    # author's plain finish then ends the run honestly.
+    harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
+    evaluator = FakeEvaluator(values=[13.9, 13.9, 13.9])
+    measurer, snapshot = _wire(evaluator, tmp_path)
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        launcher=lambda sha, req: "",
+    )
+    assert result.outcome == "no-improvement"
+    assert harness.resumes == [None, "s1"]  # the author heard the gate result
+
+
 def test_syscalls_are_ignored_without_a_launcher(tmp_path: Path) -> None:
     # feature off (no launcher wired): a stray request file is inert and the
     # climb behaves exactly as today.
@@ -1052,15 +1113,28 @@ def test_shared_match_is_case_folded_like_the_other_path_checks(tmp_path: Path) 
 
 
 class _SeqHarness:
-    """Queued session results; records resume ids like the real backends."""
+    """Queued session results; records resume ids like the real backends.
+    A leg number in `submit_on` ends that leg with a staged `submit` syscall
+    (the author sealing its candidate for the gate + panel, buildout Phase B)."""
 
-    def __init__(self, texts: list[str], supports_resume: bool = True) -> None:
+    def __init__(
+        self, texts: list[str], supports_resume: bool = True, submit_on: tuple[int, ...] = ()
+    ) -> None:
         self._texts = list(texts)
         self.resumes: list[str | None] = []
         self.supports_resume = supports_resume
+        self.submit_on = set(submit_on)
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         self.resumes.append(resume_session_id)
+        if len(self.resumes) in self.submit_on:
+            import json as _json
+
+            d = workspace / ".autoresearch"
+            d.mkdir(exist_ok=True)
+            (d / "syscall.json").write_text(
+                _json.dumps({"type": "sleep", "launches": [], "note": "", "submit": True})
+            )
         return SessionResult(
             stop_reason="end_turn",
             is_error=False,
@@ -1109,8 +1183,10 @@ def _verdict(blocking: bool, round_no: int):
     )
 
 
-def _run_panel_climb(tmp_path, values, verdicts, texts=None, revisions=1, supports_resume=True):
-    harness = _SeqHarness(texts or ["report r1", "report r2"], supports_resume=supports_resume)
+def _run_panel_climb(tmp_path, values, verdicts, texts=None, supports_resume=True, submit_on=()):
+    harness = _SeqHarness(
+        texts or ["report r1", "report r2"], supports_resume=supports_resume, submit_on=submit_on
+    )
     evaluator = FakeEvaluator(values=list(values))
     panel = _QueuedPanel(verdicts)
     measurer, snapshot = _wire(evaluator, tmp_path)
@@ -1126,7 +1202,11 @@ def _run_panel_climb(tmp_path, values, verdicts, texts=None, revisions=1, suppor
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
         panel_runner=panel,
-        panel_revisions=revisions,
+        # a stub launcher arms the syscall surface (submit rides it); no
+        # launch is ever staged by these tests so it must never be called
+        launcher=(lambda sha, req: (_ for _ in ()).throw(AssertionError("launcher called")))
+        if submit_on
+        else None,
     )
     return result, harness, evaluator, panel
 
@@ -1143,52 +1223,31 @@ def test_clean_panel_read_passes_through(tmp_path: Path) -> None:
     assert len(harness.resumes) == 1  # no wake
 
 
-def test_blocking_then_clean_revises_and_remeasures(tmp_path: Path) -> None:
+def test_blocking_verdict_on_a_submit_goes_back_to_the_author(tmp_path: Path) -> None:
+    # THE DEPTH-AXIS CORE (buildout Phase B): the author SUBMITS; the gate
+    # credits; the panel blocks -> the AUTHOR is resumed with the findings,
+    # revises, finishes -> re-measured, panel clean -> published.
     result, harness, evaluator, _panel = _run_panel_climb(
-        tmp_path, [13.9, 13.1, 13.0], [_verdict(True, 1), _verdict(False, 2)]
+        tmp_path,
+        [13.9, 13.1, 13.0],
+        [_verdict(True, 1), _verdict(False, 2)],
+        submit_on=(1,),
     )
     assert result.outcome == "improved"
     assert result.panel_rounds == 2 and not result.panel_blocking_open
-    # the wake resumed the SAME session and the revision was re-measured
+    # the verdict resumed the SAME session and the revision was re-measured
     assert harness.resumes == [None, "s1"]
     assert len(evaluator.calls) == 3  # baseline + candidate + revised candidate
     assert result.candidate == 13.0
     assert "round 1" in result.panel_transcript and "round 2" in result.panel_transcript
 
 
-def test_panel_revise_policy_decisions() -> None:
-    """The composition seam's decision policy (Phase 1): a pure function of the
-    read + the session's resumability. Clean -> halt; blocking+resumable+under-cap
-    -> revise; blocking but unresumable or capped -> halt-and-draft."""
-    from dataclasses import replace as dc_replace
-
-    from autoresearch.orchestrator import _Halt, _panel_revise_policy, _Revise
-
-    resumable = _SeqHarness([], supports_resume=True)
-    noresume = _SeqHarness([], supports_resume=False)
-    sess = ok_session()  # has session_id="s1"
-    no_id = dc_replace(sess, session_id="")
-
-    # clean read -> publish
-    assert _panel_revise_policy(_verdict(False, 1), sess, resumable, 1, 1) == _Halt()
-    # blocking, resumable, under the cap -> revise with the wake text
-    d = _panel_revise_policy(_verdict(True, 1), sess, resumable, 1, 1)
-    assert isinstance(d, _Revise) and d.prompt == _verdict(True, 1).wake_text
-    # blocking but no session id -> draft (can't resume)
-    assert _panel_revise_policy(_verdict(True, 1), no_id, resumable, 1, 1) == _Halt(True)
-    # blocking but a no-resume backend -> draft
-    assert _panel_revise_policy(_verdict(True, 1), sess, noresume, 1, 1) == _Halt(True)
-    # blocking but past the revision cap -> draft
-    assert _panel_revise_policy(_verdict(True, 2), sess, resumable, 2, 1) == _Halt(True)
-
-
 def test_a_backend_that_cannot_resume_drafts_a_blocking_finding(tmp_path: Path) -> None:
-    """a no-resume backend (hermes) declares supports_resume=False: a blocking
-    finding must DRAFT the verified improvement, never attempt a resume the
-    backend can't do that would lose it as a session-error (review #119 r2,
-    terra). Claude and codex both resume; hermes exercises this path."""
+    """a no-resume backend declares supports_resume=False: a blocking finding
+    on a SUBMITTED claim must DRAFT the verified improvement, never attempt a
+    resume the backend can't do that would lose it as a session-error."""
     result, harness, evaluator, _panel = _run_panel_climb(
-        tmp_path, [13.9, 13.1], [_verdict(True, 1)], supports_resume=False
+        tmp_path, [13.9, 13.1], [_verdict(True, 1)], supports_resume=False, submit_on=(1,)
     )
     assert result.outcome == "improved"  # improvement preserved, not session-error
     assert result.panel_blocking_open and result.panel_rounds == 1
@@ -1196,30 +1255,37 @@ def test_a_backend_that_cannot_resume_drafts_a_blocking_finding(tmp_path: Path) 
     assert len(evaluator.calls) == 2  # baseline + candidate only (no revise re-measure)
 
 
-def test_capped_out_blocking_stays_open_for_a_draft_pr(tmp_path: Path) -> None:
+def test_blocking_on_a_plain_finish_stays_open_for_a_draft_pr(tmp_path: Path) -> None:
+    # a finish WITHOUT a submit gets no author loop: blocking findings stay
+    # open and the caller drafts the PR for a human (the orchestrator-driven
+    # revision policy is retired — the author drives depth via submit)
     result, harness, _evaluator, _panel = _run_panel_climb(
-        tmp_path, [13.9, 13.1, 13.0], [_verdict(True, 1), _verdict(True, 2)]
+        tmp_path, [13.9, 13.1], [_verdict(True, 1)]
     )
     assert result.outcome == "improved"  # still credited; the PR will be a DRAFT
-    assert result.panel_blocking_open and result.panel_rounds == 2
-    assert len(harness.resumes) == 2  # exactly one revision at the cap
+    assert result.panel_blocking_open and result.panel_rounds == 1
+    assert harness.resumes == [None]  # NO resume without a submit
 
 
 def test_revision_that_loses_the_improvement_is_a_named_negative(tmp_path: Path) -> None:
-    result, _h, _e, _p = _run_panel_climb(tmp_path, [13.9, 13.1, 14.5], [_verdict(True, 1)])
+    # submit -> credited -> blocking -> the author revises... and the revision
+    # regresses. The gate ends it with the panel-context note. (The author is
+    # NOT resumed again: its submit was consumed; the regressed re-measure is
+    # a plain finish.)
+    result, _h, _e, _p = _run_panel_climb(
+        tmp_path, [13.9, 13.1, 14.5], [_verdict(True, 1)], submit_on=(1,)
+    )
     assert result.outcome == "no-improvement"
     assert "lost the improvement" in result.note
     assert result.panel_rounds == 1
 
 
 def test_panel_pr_body_carries_banner_and_transcript(tmp_path: Path) -> None:
-    result, _h, _e, _p = _run_panel_climb(
-        tmp_path, [13.9, 13.1, 13.0], [_verdict(True, 1), _verdict(True, 2)]
-    )
+    result, _h, _e, _p = _run_panel_climb(tmp_path, [13.9, 13.1], [_verdict(True, 1)])
     body = pr_body(result, CONFIG, redact_secrets=())
     assert body.startswith("> **Draft")
     assert "## Pre-PR verification" in body
-    assert "Verification round 2" in body
+    assert "Verification round 1" in body
 
 
 def test_degraded_final_read_marks_the_result_and_skips_the_wake(tmp_path: Path) -> None:

@@ -115,6 +115,7 @@ class ClimbParked(Exception):
         syscall: SyscallRequest | None = None,
         launches_used: int = 0,
         sleeps_used: int = 0,
+        submitted: bool = False,
     ):
         self.phase = phase
         self.afterany = afterany
@@ -123,11 +124,15 @@ class ClimbParked(Exception):
         self.suite_seed = suite_seed
         self.candidate_sha = candidate_sha
         self.session = session
-        # author-sleep parks only (phase "author-sleep"): the request the wake
-        # gathers results for, and the budget counts AFTER this park.
+        # Syscall parks (an author-sleep, or a SUBMITTED candidate — Phase B):
+        # the request the wake gathers results for, and the budget counts AFTER
+        # this park. `submitted` marks a candidate park raised by `submit`: the
+        # wake delivers gate + panel results back to the AUTHOR instead of
+        # deciding by policy.
         self.syscall = syscall
         self.launches_used = launches_used
         self.sleeps_used = sleeps_used
+        self.submitted = submitted
         super().__init__(f"climb parked at {phase} on {afterany or '(no dep)'}")
 
 
@@ -939,54 +944,12 @@ def resume_climb(
     )
 
 
-# --- the composition seam (docs/design/research-loop-buildout.md) ---
-# climb_once's inner loop is run -> measure -> decide. `run` (run_role) and
-# `measure` (measure_and_decide) are already factored; this is the "decide the
-# next invocation" half, pulled out of the loop as a pluggable policy so the loop
-# is agnostic to WHY it iterates. One policy exists (panel-driven revision) and
-# no more are planned: the author-directed model (research-loop.md, "one
-# syscall") moves next-move decisions into the author; this seam is retained as
-# structure and retires with the orchestrator-driven revision loop (Phase B).
-
-
-@dataclass(frozen=True)
-class _Revise:
-    """Iterate: re-run the editing role with this prompt, then re-measure."""
-
-    prompt: str
-
-
-@dataclass(frozen=True)
-class _Halt:
-    """Stop the loop and publish. `blocking_open` -> the caller drafts the PR
-    with the open findings rather than arming it."""
-
-    blocking_open: bool = False
-
-
-def _panel_revise_policy(
-    verdict: PanelVerdict,
-    session: SessionResult,
-    harness: Harness,
-    reads: int,
-    revisions: int,
-) -> _Revise | _Halt:
-    """The one decision policy today: a blocking panel finding wakes the author to
-    revise, bounded by `revisions`, unless the backend cannot resume (then draft).
-    A pure function of the read + the session's resumability — the loop owns the
-    stateful bits (running the panel, executing the wake). A future results-driven
-    (depth) policy will also take the gate result; this one needs only the verdict."""
-    if not verdict.blocking:
-        # clean (or degraded-but-clean) read: nothing to fix -> publish
-        return _Halt()
-    if not session.session_id or not getattr(harness, "supports_resume", True):
-        # cannot resume: a fresh session would revise blind, and a resume the
-        # backend can't do would lose the verified improvement -> draft instead
-        return _Halt(blocking_open=True)
-    if reads > revisions:
-        # capped with findings still open: the human must see the unconverged loop
-        return _Halt(blocking_open=True)
-    return _Revise(verdict.wake_text)
+def _merge_afterany(*parts: str) -> str:
+    """Join afterany dependency strings ("afterany:1:2") into one; "" parts
+    drop out. A submit's park waits on the gate's evals AND its sibling
+    launches together."""
+    ids = [t for part in parts for t in part.split(":")[1:] if t]
+    return "afterany:" + ":".join(ids) if ids else ""
 
 
 def climb_once(
@@ -1005,7 +968,6 @@ def climb_once(
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
-    panel_revisions: int = 1,
     brief_baseline: float | None = None,
     resume_session_id: str = "",
     improve_prompt: str = "",
@@ -1032,19 +994,22 @@ def climb_once(
     contract.
 
     With `panel_runner` (docs/design/orchestrator-verify.md), a credited
-    claim is read by the verification panel BEFORE it can become a PR:
-    blocking findings wake the same session (data-fenced), the revision is
-    re-snapshotted, fully re-measured and re-gated, and the panel re-reads —
-    up to `panel_revisions` revisions after the initial read. Blocking findings
-    still open at the cap set `panel_blocking_open` (the caller posts a
-    DRAFT PR carrying them). The caller supplies the runner because the
-    panel's checkouts are git work (this function owns no git).
+    claim is read by the verification panel BEFORE it can become a PR. On a
+    SUBMITTED claim (the author's `submit` syscall), blocking findings and the
+    gate result go back to the AUTHOR — it revises and resubmits, or concludes
+    (research-loop-buildout.md Phase B); on a plain finish, blocking findings
+    set `panel_blocking_open` (the caller posts a DRAFT PR carrying them).
+    The caller supplies the runner because the panel's checkouts are git work
+    (this function owns no git).
 
     With `launcher` (author syscalls, research-loop-buildout.md Phase A), a
     session that ends having asked to launch-and-sleep parks this climb as
     `author-sleep` instead of measuring: the tree is sealed via `snapshot()`,
     the launcher submits the jobs (caller-owned — it is compute work), and the
-    ClimbParked carries the request plus the budget counts. `launches_used` /
+    ClimbParked carries the request plus the budget counts. A `submit` rides
+    the same request: the gate (and any sibling launches) run on the sealed
+    tree — a dispatched gate parks as a `candidate` with the `submitted`
+    marker, an inline gate feeds back in-session. `launches_used` /
     `sleeps_used` are the counts so far (a wake passes them from the stage);
     the budgets come from the benchmark's `depth_k` / `sleep_k`.
     """
@@ -1156,20 +1121,72 @@ def climb_once(
             note=role_result.error or session.error_detail or session.stop_reason,
         )
 
-    # --- author syscalls (research-loop.md, "one syscall"; buildout Phase A) ---
-    # An enabled author (the caller wired a `launcher`) may end its session
-    # having asked to LAUNCH work outside the sandbox and SLEEP on it. Within
-    # budget: seal the tree, submit through the launcher, and park — the wake
-    # re-enters THIS function through the resume-entry with the results as the
-    # improve prompt, so the whole tail (scope, gate, panel, sleeping again)
-    # composes unchanged. Over budget: wake the author ONCE with a refusal so
-    # it can conclude honestly; a session that over-asks again proceeds to
-    # measurement with the tree as it stands (bounded, never an endless
-    # refuse/re-ask loop). With no launcher the feature is off and a stray
-    # request file is just an untracked file (excluded from the diff either way).
-    if launcher is not None:
-        refused_once = False
-        while True:
+    # --- the decision loop (research-loop.md, "one syscall"; buildout A+B) ---
+    # Each pass: honor the session's syscall request, then measure the tree.
+    # An enabled author (the caller wired a `launcher`) may end its session —
+    # or a resumed leg of it — having asked to LAUNCH work outside the sandbox
+    # and SLEEP on it (seal the tree, submit through the launcher, park; the
+    # wake re-enters THIS function through the resume-entry so the whole tail
+    # composes unchanged), and/or to SUBMIT its candidate: the gate and any
+    # sibling launches run on the sealed tree — a dispatched gate parks as a
+    # `candidate` with the `submitted` marker (the wake delivers gate + panel
+    # back to the author), an inline gate feeds back in-session and the loop
+    # re-reads the author's next move. Over budget: wake the author ONCE with
+    # a refusal so it can conclude honestly; a session that over-asks again
+    # proceeds to measurement with the tree as it stands (bounded, never an
+    # endless refuse/re-ask loop). With no launcher the feature is off and a
+    # stray request file is just an untracked file (excluded from the diff
+    # either way).
+    panel_reads = 0
+    panel_sections: list[str] = []
+    panel_blocking_open = False
+    panel_degraded = False
+    candidate: float | None = baseline
+    suite: tuple[SuiteMeasurement, ...] = ()
+    suite_seed_ran = 0
+    measured: tuple[str, ...] = ()
+    refused_once = False
+
+    def _resume(prompt: str) -> ClimbResult | None:
+        """Resume the author session with `prompt`: None on success (session
+        advanced), else the terminal ClimbResult for the failed resume."""
+        nonlocal session
+        wake_result = run_role(
+            spec, harness, prompt, workspace, resume_session_id=session.session_id
+        )
+        session = wake_result.session
+        if wake_result.ok:
+            return None
+        if outage(session):
+            kind = "session-outage"
+        elif budget_exhausted(session):
+            kind = "session-budget"
+        else:
+            kind = "session-error"
+        return ClimbResult(
+            outcome=kind,
+            baseline=baseline,
+            candidate=candidate,
+            session=session,
+            note=wake_result.error or session.error_detail or session.stop_reason,
+            run_seed=run_seed,
+            panel_transcript="\n\n".join(panel_sections),
+            panel_rounds=panel_reads,
+        )
+
+    def _can_resume() -> bool:
+        return bool(session.session_id) and getattr(harness, "supports_resume", True)
+
+    def _budgets_line() -> str:
+        return (
+            f"Budgets: {max(0, bench.depth_k - launches_used)} launches and "
+            f"{max(0, bench.sleep_k - sleeps_used)} sleeps remaining."
+        )
+
+    while True:
+        # the syscall request the session's last leg left, if any
+        submitted: SyscallRequest | None = None
+        while launcher is not None:
             try:
                 request = read_syscall_request(workspace)
             except SyscallError as exc:
@@ -1190,6 +1207,15 @@ def climb_once(
                 sleep_budget=bench.sleep_k,
             )
             if not problem:
+                if request.submit:
+                    # a submit rides the measurement below on the SEALED tree —
+                    # "a launch whose job is the gate" (buildout Phase B). Its
+                    # sibling launches are submitted after the scope check +
+                    # snapshot; the sleep it rides on is counted now.
+                    submitted = request
+                    launches_used += len(request.launches)
+                    sleeps_used += 1
+                    break
                 # Scope BEFORE the snapshot, same invariant as the candidate
                 # path below: an out-of-scope tree is never snapshotted OR
                 # executed — the out-of-scope edit could be to the ruler
@@ -1219,45 +1245,21 @@ def climb_once(
                     launches_used=launches_used + len(request.launches),
                     sleeps_used=sleeps_used + 1,
                 )
-            if (
-                refused_once
-                or not session.session_id
-                or not getattr(harness, "supports_resume", True)
-            ):
+            if refused_once or not _can_resume():
                 log.warning("syscall request dropped after refusal (%s); measuring as-is", problem)
                 break
             # the refusal burns no count (nothing was launched, nothing woke a
             # job); the refused_once bound is what stops a refuse/re-ask loop.
             refused_once = True
-            role_result = run_role(
-                spec,
-                harness,
+            failed = _resume(
                 render_syscall_refusal(
                     problem,
                     launches_remaining=max(0, bench.depth_k - launches_used),
                     sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
-                ),
-                workspace,
-                resume_session_id=session.session_id,
-            )
-            session = role_result.session
-            if not role_result.ok:
-                return ClimbResult(
-                    outcome="session-outage" if outage(session) else "session-error",
-                    baseline=baseline,
-                    session=session,
-                    note=role_result.error or session.error_detail or session.stop_reason,
                 )
-
-    panel_reads = 0
-    panel_sections: list[str] = []
-    panel_blocking_open = False
-    panel_degraded = False
-    candidate: float | None = baseline
-    suite: tuple[SuiteMeasurement, ...] = ()
-    suite_seed_ran = 0
-    measured: tuple[str, ...] = ()
-    while True:
+            )
+            if failed is not None:
+                return failed
         measured = tuple(changed_paths())
         # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
         # OR measured — the out-of-scope edit could be to the ruler itself. This
@@ -1293,6 +1295,13 @@ def climb_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
+        # a submit's sibling launches ride the same park, submitted on the
+        # sealed sha AFTER the scope check so a launch never runs
+        # out-of-scope code (same invariant as the launch-only path above)
+        launch_afterany = ""
+        if submitted is not None and submitted.launches:
+            assert launcher is not None  # a submit only arrives through it
+            launch_afterany = launcher(candidate_sha, submitted)
         try:
             outcome = measure_and_decide(
                 contract,
@@ -1307,19 +1316,42 @@ def climb_once(
             )
         except MeasurementPending as pending:
             # PARK 2 (dispatched candidate/suite, after the session): the wake
-            # reads the cached results and decides. Carries the candidate sha
+            # reads the cached results and decides — or, on a SUBMITTED park,
+            # delivers them back to the author. Carries the candidate sha
             # and the session so the caller persists the snapshot ref (drop at
             # the terminal state) and the resume session id.
             raise ClimbParked(
                 phase="candidate",
-                afterany=pending.afterany(),
+                afterany=_merge_afterany(pending.afterany(), launch_afterany),
                 base_sha=base_sha,
                 seed=run_seed,
                 suite_seed=suite_seed,
                 candidate_sha=candidate_sha,
                 session=session,
+                syscall=submitted,
+                launches_used=launches_used,
+                sleeps_used=sleeps_used,
+                submitted=submitted is not None,
             ) from None
         if isinstance(outcome, ClimbResult):
+            if (
+                submitted is not None
+                and outcome.outcome in ("no-improvement", "suite-regression")
+                and _can_resume()
+            ):
+                # a submitted candidate that failed the gate is FEEDBACK to the
+                # author — it revises and resubmits, or concludes honestly
+                # (buildout Phase B) — never a silent terminal.
+                failed = _resume(
+                    "Your `submit` did NOT clear the gate: "
+                    f"{outcome.note or outcome.outcome} "
+                    f"(baseline {outcome.baseline}, candidate {outcome.candidate}). "
+                    f"{_budgets_line()} Revise and submit again, run more "
+                    "experiments, or finish with an honest negative report."
+                )
+                if failed is not None:
+                    return failed
+                continue
             # a terminal measurement outcome (scope-violation / eval-error /
             # no-improvement / suite-regression): add the session + panel
             # context this function owns. The baseline stays whatever the GATE
@@ -1354,40 +1386,20 @@ def climb_once(
         # only the FINAL read's degradation matters: an earlier outage that a
         # later clean read supersedes is history, not state
         panel_degraded = verdict.degraded
-        # decide the next invocation (the composition seam): today the panel-revise
-        # policy. A _Halt ends the loop (drafting if findings stay open); a _Revise
-        # wakes the author with the policy's prompt and re-enters run -> measure.
-        decision = _panel_revise_policy(verdict, session, harness, panel_reads, panel_revisions)
-        if isinstance(decision, _Halt):
-            panel_blocking_open = decision.blocking_open
-            break
-        wake_result = run_role(
-            spec,
-            harness,
-            decision.prompt,
-            workspace,
-            resume_session_id=session.session_id or None,
-        )
-        session = wake_result.session
-        if not wake_result.ok:
-            if outage(session):
-                kind = "session-outage"
-            elif budget_exhausted(session):
-                kind = "session-budget"
-            else:
-                kind = "session-error"
-            return ClimbResult(
-                outcome=kind,
-                baseline=baseline,
-                candidate=candidate,
-                session=session,
-                note=wake_result.error or session.error_detail or session.stop_reason,
-                run_seed=run_seed,
-                panel_transcript="\n\n".join(panel_sections),
-                panel_rounds=panel_reads,
-            )
-        # loop: the revision is a NEW candidate — re-snapshot, then scope,
-        # paired eval, improvement threshold, and the suite gate all re-apply
+        if verdict.blocking and submitted is not None and _can_resume():
+            # blocking findings on a SUBMITTED claim go back to the AUTHOR —
+            # it revises and resubmits, runs more experiments, or concludes
+            # (buildout Phase B: the author drives the depth axis; the
+            # orchestrator-driven revision policy is retired). The loop then
+            # re-reads its next syscall; the revision re-measures from scratch.
+            failed = _resume(f"{verdict.wake_text}\n\n{_budgets_line()}")
+            if failed is not None:
+                return failed
+            continue
+        # a plain finish (or an unresumable session): blocking findings stay
+        # open — the caller drafts the PR for a human to triage.
+        panel_blocking_open = bool(verdict.blocking)
+        break
 
     return ClimbResult(
         outcome="improved",

@@ -63,7 +63,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import PullRequest
-from autoresearch.role_runner import build_harness, run_role
+from autoresearch.role_runner import build_harness
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -346,13 +346,17 @@ def _park_run(
         "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
         "session_turns": parked.session.num_turns if parked.session else 0,
     }
-    if parked.phase == "author-sleep":
-        # An author-directed sleep (research-loop-buildout.md Phase A): the wake
+    if parked.submitted:
+        # a SUBMITTED candidate park (buildout Phase B): the wake delivers the
+        # gate + panel results back to the author instead of deciding by policy
+        stage["submitted"] = True
+    if parked.syscall is not None:
+        # A syscall park — an author-directed sleep (research-loop-buildout.md
+        # Phase A) or a submitted candidate carrying sibling launches: the wake
         # gathers each launch's results by NAME from the run dir, delivers the
         # declared artifacts, and resumes the SAME session — so the stage must
         # carry the launch names/artifacts, the author's note, and the budget
         # counts as of this park.
-        assert parked.syscall is not None
         stage["syscall_launches"] = [
             {"name": launch.name, "artifacts": list(launch.artifacts)}
             for launch in parked.syscall.launches
@@ -380,6 +384,10 @@ def _park_run(
         # eval_minutes=None, while its author trains for hours). A checkpoint
         # sleep has no jobs: floor 0 wakes it at the first deadline pass.
         floor_minutes = max((la.minutes for la in parked.syscall.launches), default=0)
+    elif parked.syscall is not None:
+        # a submitted candidate with sibling launches waits on gate evals AND
+        # launches — the floor must sit past the longest of either
+        floor_minutes = max(floor_minutes, *(la.minutes for la in parked.syscall.launches), 0)
     deadline = now + (floor_minutes + PARK_QUEUE_SLACK_MIN) * 60
     waiting = RunRecord(
         **{
@@ -477,19 +485,21 @@ def _wake_author_sleep(
     harness: Harness | None,
     spec: RoleSpec | None,
     panel_lenses: tuple[PanelLens, ...],
-    panel_revisions: int,
     issue_number: int,
     eval_minutes: int | None,
+    extra_update: str = "",
 ) -> LiveClimbOutcome:
-    """Wake an author-sleep park: deliver the launches' results into the
-    sandbox, resume the SAME session through the climb's resume-entry with them
-    (data-fenced), and let the climb run — it may sleep again (re-park), finish
-    into the gate (whose dispatched measures park it as a CANDIDATE the next
-    wake decides), or end on a terminal. The session's workspace persisted on
+    """Wake a syscall park and resume the AUTHOR: deliver the launches' results
+    into the sandbox, resume the SAME session through the climb's resume-entry
+    with them (data-fenced), and let the climb run — it may sleep again
+    (re-park), submit, finish into the gate (whose dispatched measures park it
+    as a CANDIDATE), or end on a terminal. The session's workspace persisted on
     disk exactly as the author left it (the launches ran on node-local
     checkouts of the sealed sha), so the resumed session continues its own tree
-    — cumulative depth.
-    """
+    — cumulative depth. `extra_update` leads the wake text — a SUBMITTED park's
+    gate result or panel verdict (buildout Phase B), delivered back to the
+    author to act on; `sleep_ref` is whichever snapshot ref this park holds
+    (the sleep seal, or the submitted candidate)."""
     from autoresearch.syscall import Launch as SyscallLaunch
     from autoresearch.syscall import gather_results, render_wake, write_budget
 
@@ -570,6 +580,9 @@ def _wake_author_sleep(
         sleeps_used=sleeps_used,
         sleep_budget=bench.sleep_k,
     )
+    if extra_update:
+        # a submitted park's gate/panel feedback leads; launch results follow
+        wake_text = f"{extra_update}\n\n{wake_text}"
     _best_effort(
         "budget refresh",
         lambda: write_budget(
@@ -631,7 +644,6 @@ def _wake_author_sleep(
             changed_paths=changed_paths,
             spec=spec,
             panel_runner=panel_runner,
-            panel_revisions=panel_revisions,
             resume_session_id=record.resume_session_id,
             improve_prompt=wake_text,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id),
@@ -704,7 +716,6 @@ def resume_run(
     panel_lenses: tuple[PanelLens, ...] = (),
     harness: Harness | None = None,
     spec: RoleSpec | None = None,
-    panel_revisions: int = 1,
 ) -> LiveClimbOutcome:
     """Wake a parked dispatched climb and re-enter its decision WITHOUT the
     session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
@@ -803,7 +814,6 @@ def resume_run(
             harness=harness,
             spec=spec,
             panel_lenses=panel_lenses,
-            panel_revisions=panel_revisions,
             issue_number=issue_number,
             eval_minutes=eval_minutes,
         )
@@ -855,124 +865,62 @@ def resume_run(
         )
         return LiveClimbOutcome(run_id=run_id, outcome="parked")
 
-    def _do_revise(verdict: PanelVerdict, reads: int) -> LiveClimbOutcome | None:
-        """A blocking panel finding -> wake the agent to revise (the depth
-        axis). Re-run the session with the findings, re-snapshot the revised
-        tree, and re-measure — which re-parks (dispatched) so the NEXT wake
-        runs the panel again. Returns the parked/terminal outcome, or None when
-        the revision session could not run (the caller then DRAFTs the original
-        candidate — the improvement is real, it just could not be revised)."""
-        assert harness is not None and spec is not None
-        wake_result = run_role(
-            spec, harness, verdict.wake_text, workspace, resume_session_id=record.resume_session_id
+    # A SUBMITTED park (the author's `submit` syscall, buildout Phase B): gate
+    # and panel results go back to the AUTHOR — it revises and resubmits, runs
+    # more experiments, or concludes — instead of being decided by policy here.
+    # Falls back to the plain-finish behavior (negative terminal / draft PR)
+    # when the session cannot be resumed.
+    submitted_park = bool(stage.get("submitted"))
+    author_resumable = (
+        harness is not None
+        and spec is not None
+        and bool(record.resume_session_id)
+        and getattr(harness, "supports_resume", True)
+    )
+
+    def _wake_author(extra_update: str) -> LiveClimbOutcome:
+        # resume the submitted park's author with the gate/panel feedback
+        # leading its wake text; the candidate ref is this park's held snapshot
+        return _wake_author_sleep(
+            run_root=run_root,
+            run_id=run_id,
+            record=record,
+            ws=ws,
+            workspace=workspace,
+            run_dir=run_dir,
+            dispatch=dispatch,
+            github=github,
+            now=now,
+            secrets=secrets,
+            base_branch=base_branch,
+            base_sha=base_sha,
+            sleep_ref=candidate_ref,
+            contract_text=contract_text,
+            contract=contract,
+            bench=bench,
+            config=config,
+            measurer=measurer,
+            harness=harness,
+            spec=spec,
+            panel_lenses=panel_lenses,
+            issue_number=issue_number,
+            eval_minutes=eval_minutes,
+            extra_update=extra_update,
         )
-        if not wake_result.ok:
-            log.warning("wake revision session failed for %s; drafting the original", run_id)
-            return None
-        # the revised tree is a NEW candidate; snapshot it (parented on base).
-        # A snapshot failure (git write-tree, disk) must NOT escape and leave the
-        # run WAITING to retry — that would re-spend a revision session on the
-        # same finding. Fall back to DRAFTING the original (its improvement is
-        # real and measured); the caller commits candidate_sha, not the revision.
-        try:
-            new_snap = snapshot_tree(ws, base_sha)
-        except Exception as exc:
-            log.warning(
-                "wake revision snapshot failed for %s (%s); drafting the original",
-                run_id,
-                redact(f"{type(exc).__name__}: {exc}", secrets),
-            )
-            return None
-        new_measured = tuple(
-            p
-            for p in ws.git("diff", "--name-only", "-z", base_sha, new_snap.commit).split("\0")
-            if p
-        )
-        old_snap = Snapshot(commit=candidate_sha, tree="", ref=candidate_ref)
-        try:
-            revised = resume_climb(
-                contract,
-                bench,
-                base_sha=base_sha,
-                candidate_sha=new_snap.commit,
-                seed=seed,
-                suite_seed=suite_seed,
-                measured_paths=new_measured,
-                session=wake_result.session,
-                measurer=measurer,
-                min_relative_improvement=config.min_relative_improvement,
-            )
-        except ClimbParked as p:
-            # re-park on the NEW candidate; carry the revision count so the next
-            # wake honors the cap. Keep the new snapshot, drop the superseded old.
-            _park_run(
-                run_root,
-                record,
-                p,
-                new_snap.ref,
-                eval_minutes,
-                now,
-                secrets,
-                base_branch=base_branch,
-                panel_reads=reads,
-            )
-            drop_snapshot(ws, old_snap)
-            return LiveClimbOutcome(run_id=run_id, outcome="parked")
-        except Exception as exc:
-            # the re-measure could not even dispatch (e.g. Slurm submit) — do NOT
-            # discard the ORIGINAL's real, measured improvement; drop the new
-            # snapshot and DRAFT the original (the caller keeps candidate_sha).
-            log.warning(
-                "wake revision re-measure failed for %s (%s); drafting the original",
-                run_id,
-                redact(f"{type(exc).__name__}: {exc}", secrets),
-            )
-            drop_snapshot(ws, new_snap)
-            return None
-        if revised.outcome == "improved":
-            # the dispatched re-measure should have PARKED; an inline 'improved'
-            # here (a cached result) is unexpected and unverified — draft the
-            # original rather than ABORT with no PR.
-            log.warning(
-                "wake revision re-measure returned improved without parking for %s; drafting",
-                run_id,
-            )
-            drop_snapshot(ws, new_snap)
-            return None
-        # the re-measure returned a NEGATIVE terminal (the revision went out of
-        # scope, regressed, or eval-errored): end the run, drop BOTH snapshots.
-        drop_snapshot(ws, old_snap)
-        drop_snapshot(ws, new_snap)
-        report_path = run_dir / "report.md"
-        _best_effort(
-            "run report",
-            lambda: report_path.write_text(revised.report(config, redact_secrets=secrets)),
-            secrets,
-        )
-        ending = _ENDINGS_BY_OUTCOME.get(revised.outcome, ABORTED)
-        final = _clear_stage(
-            RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": ending,
-                    "ending_note": redact(revised.note, secrets),
-                }
-            )
-        )
-        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
-        _post_issue_finished(
-            github,
-            config.target,
-            issue_number,
-            run_id,
-            revised.outcome,
-            "",
-            redact(revised.report(config, redact_secrets=secrets), secrets)[:8000],
-            secrets,
-        )
-        return LiveClimbOutcome(
-            run_id=run_id, outcome=revised.outcome, report_path=str(report_path)
+
+    if (
+        submitted_park
+        and author_resumable
+        and result.outcome in ("no-improvement", "suite-regression")
+    ):
+        # the submitted candidate failed the gate: feedback, never a silent
+        # terminal — the author decides what happens next
+        return _wake_author(
+            "Your `submit` did NOT clear the gate: "
+            f"{result.note or result.outcome} "
+            f"(baseline {result.baseline}, candidate {result.candidate}). "
+            "Revise and submit again, run more experiments, or finish with an "
+            "honest negative report."
         )
 
     if result.outcome == "improved":
@@ -1122,40 +1070,20 @@ def resume_run(
                         degraded=True,
                     )
                 reads = panel_reads + 1
-                # DEPTH AXIS (docs/design/research-loop.md): a blocking finding
-                # WAKES THE AGENT to revise — re-run the session with the
-                # findings, re-snapshot, re-measure (-> re-park) — instead of
-                # drafting, bounded by panel_revisions. Fall through to a DRAFT
-                # when we cannot resume (no harness/session) or the cap is hit.
-                can_revise = (
-                    bool(verdict.blocking)
-                    and harness is not None
-                    # a no-resume backend (hermes) declares supports_resume=False
-                    # -> draft, don't resume (claude and codex both resume)
-                    and getattr(harness, "supports_resume", True)
-                    and spec is not None
-                    and bool(record.resume_session_id)
-                    and reads <= panel_revisions
+                # DEPTH AXIS (docs/design/research-loop.md): blocking findings
+                # on a SUBMITTED claim go back to the AUTHOR (buildout Phase B)
+                # — it revises and resubmits (a fresh seal + gate + panel), or
+                # concludes. A plain finish (or an unresumable session) DRAFTs
+                # the PR with the findings open for a human to triage.
+                if bool(verdict.blocking) and submitted_park and author_resumable:
+                    return _wake_author(verdict.wake_text)
+                result = dc_replace(
+                    result,
+                    panel_transcript=verdict.transcript,
+                    panel_rounds=reads,
+                    panel_blocking_open=bool(verdict.blocking),
+                    panel_degraded=verdict.degraded,
                 )
-                if can_revise:
-                    revised = _do_revise(verdict, reads)
-                    if revised is not None:
-                        return revised
-                    # the revision session could not run — DRAFT the original
-                    result = dc_replace(
-                        result,
-                        panel_transcript=verdict.transcript,
-                        panel_rounds=reads,
-                        panel_blocking_open=True,
-                    )
-                else:
-                    result = dc_replace(
-                        result,
-                        panel_transcript=verdict.transcript,
-                        panel_rounds=reads,
-                        panel_blocking_open=bool(verdict.blocking),
-                        panel_degraded=verdict.degraded,
-                    )
 
             entries = update_leader(
                 load_leader(workspace),
@@ -1507,7 +1435,6 @@ def live_climb(
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
-    panel_revisions: int = 1,
     dispatch: DispatchSettings | None = None,
     author_syscalls: bool = False,
 ) -> LiveClimbOutcome:
@@ -1749,7 +1676,6 @@ def live_climb(
                 task_hypothesis=task_hypothesis,
                 spec=spec,
                 panel_runner=panel_runner,
-                panel_revisions=panel_revisions,
                 brief_baseline=prior_best.best if prior_best else None,
                 launcher=launcher,
             )
@@ -2407,7 +2333,6 @@ def main() -> int:
         default=PANEL_KEY_DEFAULT,
         help="key file for panel judge sessions (the verifier's own key, never the author's)",
     )
-    parser.add_argument("--panel-revisions", type=int, default=1)
     parser.add_argument(
         "--author-syscalls",
         action="store_true",
@@ -2515,7 +2440,11 @@ def main() -> int:
             # alone does NOT — a panel-less deployment must not be forced to
             # provision an unused credential (terra, #135 r1).
             wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-        if wake_lenses or _wake_stage.get("phase") == "author-sleep":
+        if (
+            wake_lenses
+            or _wake_stage.get("phase") == "author-sleep"
+            or _wake_stage.get("submitted")
+        ):
             wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_harness(
@@ -2545,7 +2474,6 @@ def main() -> int:
                 panel_lenses=wake_lenses,
                 harness=wake_harness,
                 spec=wake_spec,
-                panel_revisions=args.panel_revisions,
             )
         finally:
             # This wake job HOLDS the run's lease (the sweep transferred it on
@@ -2651,7 +2579,6 @@ def main() -> int:
                 ),
                 spec=spec,
                 panel_lenses=panel_lenses,
-                panel_revisions=args.panel_revisions,
                 dispatch=dispatch,
                 author_syscalls=args.author_syscalls,
                 evaluator=SubprocessEvaluator(container_image=args.image),
