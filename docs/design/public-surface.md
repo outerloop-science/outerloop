@@ -45,10 +45,11 @@ Current mitigations already in the reusable workflow
 (`head.repo.full_name == github.repository`) sits before any step, and
 nothing from the PR is ever executed. Since the agent-reviewer swap the
 workflow DOES check out the PR head — read-only, `persist-credentials:
-false` — and the session runs with a scrubbed environment and no write token
-(the tokenless split holds the write token in a separate post job), so PR
-content can only inform the model as data; even a shell judge has no standing
-credential to exfiltrate. Fork-PR review remains out of scope
+false` — and the session runs with a scrubbed environment and no WRITE token
+(the tokenless split holds the write token in a separate post job). PR content
+can only inform the model as data; the one secret a shell judge could exfiltrate
+is its own model API key, which is spend-capped and role-isolated (no workflow
+write token, no standing keys). Fork-PR review remains out of scope
 until it gets its own design.
 
 **Audit checklist before any public flip** (each item verified on the live

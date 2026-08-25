@@ -45,13 +45,18 @@ model or harness.
 
 For the local work, give the agent read-only access to the tree under
 review. As deployed, that tree is the PR HEAD — untrusted, same-repo code —
-so the safety argument is not "the tree is trusted": the judge runs with a
-shell (it records its verdict through the syscall tool), so containment is the
-deployment's — an ephemeral runner or a container, plus the tokenless split
-(no write credential in the session). Everything the judge reads is data to
-judge, never instructions to follow (the prompt-injection boundary). The two dangerous acts are handled outside the read surface: the
-broker is the only outward path, and the PR's code is never run — that
-stays on the split-workflow path.
+so the safety argument is not "the tree is trusted", and — since the judge now
+runs with a shell (it records its verdict through the syscall tool) — it is no
+longer "reading is not running" either. Containment is the deployment's: an
+ephemeral runner or a container, plus the tokenless split (no WRITE credential
+in the session). Be honest about what that shell leaves exposed on a bare
+GitHub runner: the session's own model key (spend-capped, role-isolated) is
+reachable, and egress is not jailed there, so a prompt-injected judge could
+exfiltrate that key or read data out — accepted as generally-OK for an advisory
+role whose one in-session secret is spend-capped, with the container/cluster
+path (where the broker becomes the only outward route, and `run-candidate`
+isolates PR code) as the tighter option. Everything the judge reads is still
+data to judge, never instructions to follow (the prompt-injection boundary).
 
 ## Retrieval is a tool, not context
 
