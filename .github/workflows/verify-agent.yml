@@ -45,9 +45,12 @@ on:
           private; omit once public.
         required: false
 
+# Lowest by default; the post job (and only it) elevates to write. The session
+# job runs the model and holds only a read token — nothing worth lifting from a
+# shell judge via /proc (the tokenless split, mirroring the reviewer).
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
 
 # One verification at a time per PR. Do NOT cancel in progress: a running
 # session is a paid model call, so queue a second dispatch behind it.
@@ -55,6 +58,10 @@ concurrency:
   group: verification-review-agent-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
+# The gate below is duplicated verbatim on BOTH jobs (GitHub Actions has no
+# top-level place to share it): fork PRs must not reach the secret; the BOT's
+# PRs only (human PRs belong to the advisory reviewer); and a label event
+# counts only for the re-request label applied by someone other than the author.
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -62,17 +69,17 @@ jobs:
     continue-on-error: true
     # Backstop a hung session; the harness kills at its own walltime first.
     timeout-minutes: 70
-    # Fork PRs must not reach the secret; this role covers the BOT's PRs only
-    # (human PRs belong to the advisory reviewer); and label events count only
-    # for the SPECIFIC re-request label applied by someone other than the PR's
-    # author, so an unrelated triage label (or the bot relabeling its own PR)
-    # cannot bill another round.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == inputs.bot_login &&
       (github.event.action != 'labeled' ||
        (github.event.label.name == 'autoresearch:review' &&
         github.event.sender.login != github.event.pull_request.user.login))
+    # Read-only: the session (and its shell judge) runs here, so its token must
+    # not be worth stealing — the write token lives in the post job.
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
@@ -112,15 +119,91 @@ jobs:
           set -euo pipefail
           curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Run the agent verification
+      - name: Run the session (emit only — nothing posted from this job)
         working-directory: kernel
         env:
           ANTHROPIC_VERIFIER_KEY: ${{ secrets.anthropic_verifier_key }}
-          # The caller's own workflow token — the bot PAT is never used here.
+          # read-only job token: PR metadata/diff/thread fetch only.
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           VERIFY_MODEL: ${{ inputs.model }}
           # The parent of the two checkouts (pr-head/ and base/).
           VERIFY_CHECKOUT: ${{ github.workspace }}
+          VERIFY_EMIT_FILE: ${{ runner.temp }}/verdict.json
         run: uv run python -m autoresearch.verify_agent_cli
+      - name: Backstop envelope
+        # Runs only when the CLI exited 0: a verifier_ref pinned before the
+        # tokenless split writes nothing on a clean skip, which would hard-fail
+        # the post job's required download. A crashed session exits nonzero,
+        # skips this step, and still fails loudly downstream. A skip-STUB, so
+        # the poster's own bot re-check silences it on a non-bot PR while a
+        # session that went silent surfaces a could-not-run round.
+        working-directory: kernel
+        env:
+          PR_REPO: ${{ github.repository }}
+          EMIT_FILE: ${{ runner.temp }}/verdict.json
+        run: |
+          if [ ! -f "$EMIT_FILE" ]; then
+            uv run python -c "import json, os, pathlib; pathlib.Path(os.environ['EMIT_FILE']).write_text(json.dumps({'repo': os.environ['PR_REPO'], 'number': int(os.environ['PR_NUMBER']), 'kind': 'skip-stub', 'detail': 'session wrote no envelope (verifier_ref predates the tokenless split, or the session went silent)'}))"
+          fi
+      - name: Upload the verdict
+        # not success(): a session that died AFTER emitting must still deliver
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-verdict-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/verdict.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  post:
+    runs-on: ubuntu-latest
+    needs: verify
+    # Same gate as `verify` (duplicated: no shared top-level in Actions), so the
+    # two jobs run or skip together.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == inputs.bot_login &&
+      (github.event.action != 'labeled' ||
+       (github.event.label.name == 'autoresearch:review' &&
+        github.event.sender.login != github.event.pull_request.user.login))
+    continue-on-error: true
+    timeout-minutes: 15
+    # The write half: no model session runs in this job.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.verifier_repo }}
+          ref: ${{ inputs.verifier_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: kernel
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: kernel/uv.lock
+      - name: Download the verdict
+        id: verdict
+        # NO continue-on-error: every session outcome uploads an envelope, so a
+        # missing artifact means the session died before emitting — fail this
+        # job visibly (the caller's PR stays green; job is continue-on-error).
+        uses: actions/download-artifact@v4
+        with:
+          name: verify-verdict-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}
+      - name: Post the verdict
+        if: steps.verdict.outcome == 'success'
+        working-directory: kernel
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          VERIFY_EMIT_FILE: ${{ runner.temp }}/verdict.json
+        run: uv run python -m autoresearch.verify_post_cli

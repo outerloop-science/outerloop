@@ -7,11 +7,12 @@ constrained (key, scope, execution), and how its output is checked
 (`output_schema`).
 
 Every role runs the same way — a session inside the deployment's boundary (a
-container where one exists, the ephemeral runner where one doesn't, plus the
-tokenless split) — and roles differ by prompt, verbs, and output handling,
-never by a bespoke containment posture. The invariant kept here is
-consistency: a spec that declares itself non-executing may not hold a
-mutating tool or a write scope.
+container where one exists, the ephemeral runner where one doesn't) with no
+write credential in reach (a judge's session job holds at most a read-scoped
+token; writes happen in a separate post job) — and roles differ by prompt,
+verbs, and output handling, never by a bespoke containment posture. The
+invariant kept here is consistency: a spec that declares itself non-executing
+may not hold a mutating tool or a write scope.
 """
 
 from __future__ import annotations

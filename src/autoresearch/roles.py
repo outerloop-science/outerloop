@@ -17,9 +17,11 @@ from autoresearch.verifier import VERIFY_SCHEMA, verify_result_from_data
 
 # Investigation plus a shell: repo-read, Bash (a judge records its verdict by
 # running the syscall tool, and may run code to check a claim), and the
-# harness-provided pr-context and retriever. Judges run like every other role —
-# the deployment's boundary (container or ephemeral runner, plus the tokenless
-# split) contains them; roles differ by prompt, never by a bespoke tool posture.
+# harness-provided pr-context and retriever. Judges run like every other role;
+# the boundary is the deployment's (container or ephemeral runner) plus the
+# write-token split — the judge's session job holds at most a read-scoped token
+# (not worth lifting via /proc), and the write token lives in a separate post
+# job with no session next to it. Roles differ by prompt, not by tool posture.
 _JUDGE_TOOLS = ("Read", "Grep", "Glob", "Bash", "pr-context-read", "retriever")
 
 # The full editing set: the author implements, runs tests, and self-validates

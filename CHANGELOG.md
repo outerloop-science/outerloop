@@ -26,6 +26,12 @@ Versions follow [SemVer](https://semver.org).
   parse-a-final-message-and-repair path is deleted — `read_verdict` on the
   committed syscall channel is the one way a verdict reaches the kernel.
 
+  Because judges now hold a shell, the verifier adopts the reviewer's existing
+  tokenless split: its session job runs read-only and emits the verdict to an
+  artifact (`VERIFY_EMIT_FILE`), and a separate write-token job
+  (`verify_post_cli`) posts it — so a prompt-injected judge has no write
+  credential to lift via /proc. The reviewer already worked this way.
+
 - Hermes headless resume (`supports_resume = True`) — a headless CLI "resumes"
   by restarting with its prior context restored (all `claude --resume` /
   `codex exec resume` do), and hermes reads its brief from a file, so resume

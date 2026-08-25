@@ -70,6 +70,10 @@ def main() -> int:
         binary=os.environ.get("REVIEW_BINARY") or None,
         model=os.environ.get("VERIFY_MODEL") or None,
     )
+    # Tokenless split: with VERIFY_EMIT_FILE set, the verdict is written there
+    # instead of posted — this job then needs only a read token, and a separate
+    # write-token job (verify_post_cli) posts with no session next to it.
+    emit_file = os.environ.get("VERIFY_EMIT_FILE", "").strip()
     run_agent_verify(
         client,
         repo,
@@ -78,6 +82,7 @@ def main() -> int:
         workspace,
         bot_login=bot_login,
         spec=spec,
+        emit_path=Path(emit_file).resolve() if emit_file else None,
     )
     return 0
 
