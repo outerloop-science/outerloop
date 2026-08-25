@@ -15,6 +15,7 @@ terminate healthy runs.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shlex
@@ -254,6 +255,15 @@ class LocalCompute:
         argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
         self._seq += 1
         job_id = str(_LOCAL_JOB_BASE + self._seq)
+        # An explicit env allowlist, like the evaluator this backend replaced:
+        # the submitting process holds live keys (and any inherited
+        # APPTAINERENV_* would cross --cleanenv into the container), so the
+        # job script starts from a minimal environment and sets its own.
+        job_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
+        }
         try:
             # the job runs in its OWN session (= process group), so the
             # walltime kill takes the whole tree — a job script waiting on
@@ -265,6 +275,7 @@ class LocalCompute:
                 stderr=subprocess.STDOUT,
                 text=True,
                 start_new_session=True,
+                env=job_env,
             )
         except OSError as exc:
             raise SlurmError(f"local job {spec.job_name} failed to start: {exc}") from exc
@@ -272,11 +283,22 @@ class LocalCompute:
             output, _ = proc.communicate(timeout=spec.time_minutes * self.minute_s)
             state = "COMPLETED" if proc.returncode == 0 else "FAILED"
         except subprocess.TimeoutExpired:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid (new session)
-            except ProcessLookupError:
-                pass  # the group exited between the timeout and the kill
-            output, _ = proc.communicate()
+            try:
+                # bounded drain: a child that re-setsid'd ESCAPED the group
+                # kill and still holds the pipe — it must not hang the
+                # submitter past the walltime. (A cgroup-less backend cannot
+                # reach a double-setsid escapee; Slurm's cgroup containment
+                # is the real jail — accepted local residual, logged.)
+                output, _ = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                output = ""
+                log.warning(
+                    "local job %s: an escaped child survived the walltime kill", spec.job_name
+                )
             state = "TIMEOUT"
         if spec.output and spec.output != "/dev/null":
             try:

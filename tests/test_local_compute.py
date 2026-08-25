@@ -236,3 +236,17 @@ def test_walltime_kill_takes_the_whole_process_group(tmp_path: Path) -> None:
     time.sleep(0.1)  # let the SIGKILL land
     with pytest.raises(ProcessLookupError):
         os.kill(child, 0)  # the child died with the group
+
+
+def test_job_env_is_an_allowlist_not_the_submitter_env(tmp_path: Path) -> None:
+    # the submitter holds live keys, and an inherited APPTAINERENV_* would
+    # cross --cleanenv into the container — the job starts from a minimal env
+    import os
+
+    out = tmp_path / "env.txt"
+    os.environ["APPTAINERENV_SECRET"] = "leak"
+    try:
+        LocalCompute().submit(_spec(command=f'echo "x${{APPTAINERENV_SECRET}}x" > {out}'))
+    finally:
+        del os.environ["APPTAINERENV_SECRET"]
+    assert out.read_text().strip() == "xx"
