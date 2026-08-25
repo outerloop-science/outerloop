@@ -911,10 +911,11 @@ def resume_run(
     if (
         submitted_park
         and author_resumable
-        and result.outcome in ("no-improvement", "suite-regression")
+        and result.outcome in ("no-improvement", "suite-regression", "eval-error")
     ):
-        # the submitted candidate failed the gate: feedback, never a silent
-        # terminal — the author decides what happens next
+        # the submitted candidate failed the gate — including an eval that
+        # errored (terra #144 r1): feedback, never a silent terminal — the
+        # author decides what happens next (rounds stay bounded by sleep_k)
         return _wake_author(
             "Your `submit` did NOT clear the gate: "
             f"{result.note or result.outcome} "

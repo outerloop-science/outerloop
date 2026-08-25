@@ -1336,12 +1336,13 @@ def climb_once(
         if isinstance(outcome, ClimbResult):
             if (
                 submitted is not None
-                and outcome.outcome in ("no-improvement", "suite-regression")
+                and outcome.outcome in ("no-improvement", "suite-regression", "eval-error")
                 and _can_resume()
             ):
-                # a submitted candidate that failed the gate is FEEDBACK to the
-                # author — it revises and resubmits, or concludes honestly
-                # (buildout Phase B) — never a silent terminal.
+                # a submitted candidate that failed the gate — including an
+                # eval that errored — is FEEDBACK to the author: it revises and
+                # resubmits, or concludes honestly (buildout Phase B) — never a
+                # silent terminal. Rounds stay bounded by sleep_k.
                 failed = _resume(
                     "Your `submit` did NOT clear the gate: "
                     f"{outcome.note or outcome.outcome} "
