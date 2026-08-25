@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
-from autoresearch.review_agent import build_reviewer_harness, sanitize_checkout
+from autoresearch.review_agent import sanitize_checkout
+from autoresearch.role_runner import build_harness
 from autoresearch.roles import verifier_spec
 from autoresearch.verify_agent import run_agent_verify
 
@@ -63,7 +64,7 @@ def main() -> int:
 
     spec = verifier_spec()
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
-    harness = build_reviewer_harness(
+    harness = build_harness(
         api_key,
         spec,
         binary=os.environ.get("REVIEW_BINARY") or None,

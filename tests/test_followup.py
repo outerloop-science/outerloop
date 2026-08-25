@@ -786,10 +786,19 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
 
 
 def test_read_only_spec_is_refused(review_run) -> None:
-    # the responder edits and replies; a judge spec here is a deployment bug —
-    # contained per-lane like any responder failure (cursor un-advanced), so
-    # one bad deployment cannot crash the tick's other lanes
-    from autoresearch.roles import reviewer_spec
+    # the responder edits and replies; a non-executing spec here is a
+    # deployment bug — contained per-lane like any responder failure (cursor
+    # un-advanced), so one bad deployment cannot crash the tick's other lanes
+    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+
+    read_only = RoleSpec(
+        name="reviewer",
+        instructions="x",
+        key="reviewer",
+        tools=("Read",),
+        execution=Execution(environment="gh-runner", can_execute=False),
+        budget=SessionBudget(max_turns=1, walltime_s=1),
+    )
 
     root, _ = review_run
     harness = ResumingHarness()
@@ -803,7 +812,7 @@ def test_read_only_spec_is_refused(review_run) -> None:
         bot_login=BOT,
         now=NOW,
         secrets=(),
-        spec=reviewer_spec(),
+        spec=read_only,
     )
     assert outcome.action == "error"
     assert "must allow execution" in outcome.note

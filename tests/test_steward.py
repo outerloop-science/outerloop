@@ -728,10 +728,19 @@ def test_rebase_row_records_the_measurement_seed(tmp_path) -> None:
 
 
 def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> None:
-    # the steward edits env code; a judge spec here is a deployment bug — loud
-    # and immediate, before the record or any network work
-    from autoresearch.roles import reviewer_spec
+    # the steward edits env code; a non-executing spec here is a deployment
+    # bug — loud and immediate, before the record or any network work
+    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
     from autoresearch.steward import StewardConfig, live_steward
+
+    read_only = RoleSpec(
+        name="reviewer",
+        instructions="x",
+        key="reviewer",
+        tools=("Read",),
+        execution=Execution(environment="gh-runner", can_execute=False),
+        budget=SessionBudget(max_turns=1, walltime_s=1),
+    )
 
     with pytest.raises(ValueError, match="must allow execution"):
         live_steward(
@@ -744,7 +753,7 @@ def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> No
             bot_auth=None,  # type: ignore[arg-type]
             now=1_000_000.0,
             created="t",
-            spec=reviewer_spec(),
+            spec=read_only,
         )
     # "before any work" made checkable: no run dir, no record, nothing on disk
     assert not (tmp_path / "state").exists()

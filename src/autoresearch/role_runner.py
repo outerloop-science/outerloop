@@ -1,33 +1,151 @@
-"""The role-runner: run one role session and validate its output.
+"""The role-runner: build a harness for a role, run one session, read its result.
 
-One loop replaces the per-role driver modules (docs/design/consolidation.md). It
-runs a RoleSpec on a Harness, and for a role that declares an `output_schema`
-(the judges) it parses and validates the session's final message into structured
-data, repairing once if the model returned malformed output. It does NOT judge,
-gate, measure, or post — the result-policy (kernel) acts on the RoleResult.
+One loop replaces the per-role driver modules (docs/design/consolidation.md),
+and ONE construction replaces the per-role harness builders: `build_harness`
+maps a RoleSpec to any backend uniformly — backends are interchangeable, and
+containment is the deployment's business (`container_image` where a jail
+exists, the ephemeral runner where one doesn't), never a per-role tool posture.
+Roles differ by prompt, verbs, and output handling.
+
+`run_role` runs a RoleSpec on a Harness. A role WITH an `output_schema` (a
+judge) records its verdict through the installed syscall tool (`finding` /
+`conclude`) and the kernel reads it back authoritatively (`read_verdict`) —
+each call was validated in-session, so the old parse-a-final-message-and-repair
+path is gone. It does NOT judge, gate, measure, or post — the result-policy
+(kernel) acts on the RoleResult.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from autoresearch.harness import Harness, SessionResult
+from autoresearch.harness import (
+    ClaudeCodeHarness,
+    CodexHarness,
+    Harness,
+    HermesHarness,
+    SessionResult,
+)
 from autoresearch.rolespec import RoleSpec
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MAX_REPAIRS = 1
+# Native Claude Code tool names a spec may grant. A spec's other tools
+# (pr-context-read, retriever) are harness-provided MCP tools, wired
+# separately — never passed as native CLI tools.
+_NATIVE_TOOLS = frozenset({"Read", "Grep", "Glob", "Write", "Edit", "Bash"})
+
+# hermes names capabilities as toolsets: `file` is the read/edit surface,
+# `terminal` the shell. Everything else stays disabled for parity with the
+# other backends — no spec grants web/browser/... tools there either.
+_HERMES_TOOLSETS = (
+    "file",
+    "terminal",
+    "web",
+    "search",
+    "browser",
+    "computer_use",
+    "code_execution",
+    "delegation",
+    "cronjob",
+    "skills",
+    "memory",
+)
+
+# hermes resolves credentials per provider (a registry); "openai" maps to its
+# canonical `openai-api` provider id (api-key auth against api.openai.com —
+# plain "openai" is a provider GROUP there, not an id).
+_HERMES_PROVIDERS = {
+    "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
+    "openai": ("openai-api", "OPENAI_API_KEY"),
+}
+
+
+def build_harness(
+    api_key: str,
+    spec: RoleSpec,
+    *,
+    backend: str = "claude",
+    binary: str | None = None,
+    model: str | None = None,
+    container_image: str = "",
+    codex_extra_args: tuple[str, ...] = (),
+    hermes_repo: Path | None = None,
+    hermes_provider: str = "",
+) -> Harness:
+    """Construct the harness for any role on any backend — the ONE deployment
+    wiring (`spec.tools` → native flags, `spec.budget` → turns/walltime,
+    `spec.execution` → the backend's execution surface). Each branch below is
+    the backend's irreducible calling convention, nothing more:
+
+    - claude: `spec.tools` filtered to the native CLI tools; a judge's cwd is an
+      untrusted checkout, so judges (specs with an `output_schema`) run `--bare`
+      — never loading the tree's CLAUDE.md / hooks as instructions. Editors keep
+      instruction discovery (the target repo's guidance is legitimate for them).
+    - codex: `danger-full-access` uniformly — codex's own sandbox needs
+      bubblewrap (absent in the image, unreliable nested in apptainer), so the
+      boundary is the deployment's container or ephemeral runner, exactly as it
+      is for every other backend.
+    - hermes: toolsets from the spec's execution (`terminal` for a role that
+      executes); provider/key seeded per the registry above.
+
+    Containment is NOT decided here: pass `container_image` where the
+    deployment has a jail (the cluster), pass none where the runner itself is
+    the ephemeral boundary (CI). The tokenless split keeps credentials out of
+    the session either way."""
+    if backend == "codex":
+        return CodexHarness(
+            api_key=api_key,
+            binary=binary or "codex",
+            model=model or "",  # "" -> codex's configured default; pin a verified id
+            sandbox="danger-full-access",
+            timeout_s=spec.budget.walltime_s,
+            container_image=container_image,
+            extra_args=codex_extra_args,
+        )
+    if backend == "hermes":
+        if hermes_repo is None:
+            raise ValueError("hermes backend needs hermes_repo (the pinned clone)")
+        if (hermes_provider or "openrouter") not in _HERMES_PROVIDERS:
+            raise ValueError(f"unknown hermes provider: {hermes_provider!r}")
+        seed, key_env = _HERMES_PROVIDERS[hermes_provider or "openrouter"]
+        enabled = ("file", "terminal") if spec.execution.can_execute else ("file",)
+        return HermesHarness(
+            api_key=api_key,
+            key_env=key_env,
+            repo_dir=hermes_repo,
+            provider=seed,
+            model=model or "",
+            max_turns=spec.budget.max_turns,
+            timeout_s=spec.budget.walltime_s,
+            enabled_toolsets=enabled,
+            disabled_toolsets=tuple(t for t in _HERMES_TOOLSETS if t not in enabled),
+        )
+    if backend != "claude":
+        raise ValueError(f"unknown backend: {backend!r}")
+    return ClaudeCodeHarness(
+        api_key=api_key,
+        binary=binary or "claude",
+        model=model or "claude-opus-5",
+        max_turns=spec.budget.max_turns,
+        timeout_s=spec.budget.walltime_s,
+        allowed_tools=tuple(tool for tool in spec.tools if tool in _NATIVE_TOOLS),
+        container_image=container_image,
+        # a judge's cwd contains an untrusted checkout: never load its CLAUDE.md
+        # / hooks / project settings as instructions (defence in depth beside
+        # the caller's sanitize_checkout)
+        bare=spec.output_schema is not None,
+    )
 
 
 @dataclass(frozen=True)
 class RoleResult:
     """The outcome of one role run: the session plus, for judge roles, the
-    validated structured payload. `ok` is False when the session errored or the
-    output never validated; `data` is the validated object (None for an editing
+    validated verdict. `ok` is False when the session errored or no valid
+    verdict was committed; `data` is the validated object (None for an editing
     role, whose artifact is the workspace diff, or on failure)."""
 
     ok: bool
@@ -36,70 +154,28 @@ class RoleResult:
     error: str = ""
 
 
-def _extract_json(text: str) -> str:
-    """The JSON object inside a final message, tolerating code fences and prose
-    around it: the substring from the first `{` to the last `}`."""
-    stripped = text.strip()
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start != -1 and end > start:
-        return stripped[start : end + 1]
-    return stripped
-
-
-def _validate_output(text: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
-    """Parse `text` as the schema's top-level object. Dep-free: a JSON object
-    with the schema's `required` keys present. Deeper validation is the
-    backend's native structured output or a later jsonschema pass."""
-    try:
-        data = json.loads(_extract_json(text))
-    except json.JSONDecodeError as exc:
-        return None, f"final message is not valid JSON: {exc}"
-    if not isinstance(data, dict):
-        return None, "final message is not a JSON object"
-    missing = [key for key in schema.get("required", []) if key not in data]
-    if missing:
-        return None, f"missing required keys: {missing}"
-    return data, ""
-
-
-def _repair_prompt(error: str) -> str:
-    return (
-        f"Your last message was not the structured output this task requires: {error}. "
-        "Reply with ONLY the JSON object — no prose, no code fences."
-    )
-
-
 def run_role(
     spec: RoleSpec,
     harness: Harness,
     brief_text: str,
     workspace: Path,
     resume_session_id: str | None = None,
-    max_repairs: int = DEFAULT_MAX_REPAIRS,
 ) -> RoleResult:
-    """Run one role session; validate structured output for judge roles.
+    """Run one role session; for a judge (a spec with an `output_schema`), read
+    the verdict it committed through the syscall tool.
 
-    A judge whose first message is malformed is asked once (per `max_repairs`)
-    to resend just the JSON, resuming the same session so it keeps its context.
-
-    The `harness` is assumed already constructed for this role — its tools,
-    execution sandbox, and budget set to match `spec`. That construction (map
-    spec.tools to the backend's native tool flags vs harness-provided MCP
-    tools, spec.execution to the sandbox, spec.budget to turns/walltime) is the
-    deployment wiring, done where the harness is built for the role — the same
-    way climb builds its harness from effective_limits. run_role does not
-    reconcile a mismatched harness; it runs what it is given.
+    The `harness` is assumed already constructed for this role
+    (`build_harness`). A judge records each finding as one validated tool call
+    and commits with `conclude`; `read_verdict` is the authoritative kernel-side
+    check, so there is no repair loop — a missing verdict (the judge never
+    concluded) or a malformed one is a failure the caller surfaces (a skip
+    stub), never a clean read (silence is never endorsement). Installing the
+    tool BEFORE the session force-owns the `.autoresearch/` channel, so a
+    pre-planted or stale ABI never survives into the read — a resumed (revise)
+    session likewise starts from a clean channel and commits a fresh verdict.
     """
-    # Verdict-tool mode (docs/design/role-cli.md): a judge commits its verdict
-    # via the syscall tool (`finding`/`conclude`) instead of a final JSON
-    # message. Install the tool BEFORE the session so it can call it; read the
-    # committed verdict AFTER (authoritatively) instead of parsing. Gated on the
-    # SPEC alone: like every other capability, the deployment builds the harness
-    # to match the role (a judge that emits via the tool runs a shell in the
-    # jail, same as an author) — run_role runs what it is given. A spec without
-    # verdict_tool uses the parse path below.
-    use_verdict_tool = spec.verdict_tool
-    if use_verdict_tool:
+    is_judge = spec.output_schema is not None
+    if is_judge:
         from autoresearch.syscall import install_tool
 
         install_tool(workspace)
@@ -108,41 +184,14 @@ def run_role(
         return RoleResult(
             ok=False, session=session, error=session.error_detail or session.stop_reason
         )
-    if spec.output_schema is None:
+    if not is_judge:
         return RoleResult(ok=True, session=session)  # editing role: artifact is the diff
-    if use_verdict_tool:
-        # No repair loop: the tool validated each finding in-session, and
-        # read_verdict is authoritative. A missing verdict (the judge never
-        # concluded) or a malformed one is a failure — the caller posts a skip
-        # stub, never a clean read (silence is never endorsement).
-        from autoresearch.syscall import VerdictError, read_verdict
+    from autoresearch.syscall import VerdictError, read_verdict
 
-        try:
-            data = read_verdict(workspace)
-        except VerdictError as exc:
-            return RoleResult(ok=False, session=session, error=f"invalid verdict: {exc}")
-        if data is None:
-            return RoleResult(ok=False, session=session, error="judge produced no verdict")
-        return RoleResult(ok=True, session=session, data=data)
-    data, error = _validate_output(session.final_text, spec.output_schema)
-    repairs = 0
-    while data is None and repairs < max_repairs:
-        # A repair prompt only works if it resumes the session that holds the
-        # investigation context. With no session to resume, a fresh session
-        # would see only "resend the JSON" and produce nothing useful — fail
-        # instead of burning a context-less turn.
-        resume_target = session.session_id or resume_session_id
-        if not resume_target:
-            log.info("role %s: cannot repair structured output without a session", spec.name)
-            break
-        repairs += 1
-        log.info("role %s: repairing structured output (%s)", spec.name, error)
-        session = harness.run(_repair_prompt(error), workspace, resume_session_id=resume_target)
-        if session.is_error:
-            return RoleResult(
-                ok=False, session=session, error=session.error_detail or session.stop_reason
-            )
-        data, error = _validate_output(session.final_text, spec.output_schema)
+    try:
+        data = read_verdict(workspace)
+    except VerdictError as exc:
+        return RoleResult(ok=False, session=session, error=f"invalid verdict: {exc}")
     if data is None:
-        return RoleResult(ok=False, session=session, error=f"invalid structured output: {error}")
+        return RoleResult(ok=False, session=session, error="judge produced no verdict")
     return RoleResult(ok=True, session=session, data=data)

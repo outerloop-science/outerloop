@@ -8,6 +8,24 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Interchangeable backends — one harness construction for every role
+  (docs/design/role-cli.md, "the harness unification"). `build_harness`
+  (role_runner.py) replaces `build_editor_harness` and
+  `build_reviewer_harness`: claude maps `spec.tools` to native flags (judges
+  run `--bare` — an untrusted checkout must never load as instructions); codex
+  runs `--sandbox danger-full-access` uniformly (its own sandbox needs
+  bubblewrap — the boundary is the deployment's container or ephemeral runner,
+  plus the tokenless split); hermes derives its toolsets from the spec and is
+  a first-class backend (the manual-bench-only caveat is gone). Judges are
+  executing roles now: they hold `Bash` and record their verdict by RUNNING
+  the syscall tool (`finding` / `conclude`) — the reviewer/verifier briefs
+  instruct exactly that, and roles differ by prompt, verbs, and output
+  handling, never by a bespoke tool posture. A judge IS a role with an
+  `output_schema`, so the redundant `RoleSpec.verdict_tool` flag is removed
+  (`run_role` gates the verdict path on the schema), and the
+  parse-a-final-message-and-repair path is deleted — `read_verdict` on the
+  committed syscall channel is the one way a verdict reaches the kernel.
+
 - Hermes headless resume (`supports_resume = True`) — a headless CLI "resumes"
   by restarting with its prior context restored (all `claude --resume` /
   `codex exec resume` do), and hermes reads its brief from a file, so resume

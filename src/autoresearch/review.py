@@ -192,17 +192,25 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
-# Prepended to the shared rubric for the agent-session reviewer: it has a
-# read-only checkout and the read tools, so it can investigate beyond the diff.
+# Prepended to the shared rubric for the agent-session reviewer: it has the
+# checkout and the read tools to investigate beyond the diff, and it records its
+# verdict through the installed syscall tool (each call validated on the spot;
+# the kernel reads the committed verdict back — docs/design/role-cli.md).
 AGENT_INVESTIGATION = (
-    "The repository is checked out read-only in your working directory. Use Read, "
-    "Grep, and Glob to investigate beyond the diff: the surrounding code, callers, "
-    "and tests. The checked-out code is part of your evidence, so you may cite file "
-    "contents you read. You have no execute or write tools; do not run code.\n\n"
-    "When done, reply with ONLY a JSON object and nothing else: `findings` (a "
-    "list) and `notes` (a string). Each finding has `file`, `line` (or null), "
-    "`confidence` (low, medium, or high), `summary`, `detail`, `blocking` (true "
-    "or false), and `kind` (change, suggestion, question, or note)."
+    "The repository is checked out in your working directory. Use Read, Grep, "
+    "and Glob to investigate beyond the diff: the surrounding code, callers, "
+    "and tests. The checked-out code is part of your evidence, so you may cite "
+    "file contents you read. Do not modify the tree — your only product is the "
+    "verdict.\n\n"
+    "Record each finding as you confirm it, one command per finding:\n"
+    "  python .autoresearch/syscall finding --file <path> [--line N] "
+    "--confidence <low|medium|high> --summary <one line> --detail <the "
+    "evidence> [--blocking] --kind <change|suggestion|question|note>\n"
+    "When you are done, commit your verdict and end your turn:\n"
+    "  python .autoresearch/syscall conclude --notes <a short summary for the "
+    "reader>\n"
+    "A review with no defects is a bare `conclude`. The verdict you commit is "
+    "your final answer — do not also restate it in a message."
 )
 
 

@@ -15,10 +15,11 @@ from pathlib import Path
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.review_agent import (
     _emit,
-    build_reviewer_harness,
     run_agent_review,
     sanitize_checkout,
 )
+from autoresearch.role_runner import build_harness
+from autoresearch.roles import reviewer_spec
 
 log = logging.getLogger(__name__)
 
@@ -204,14 +205,15 @@ def main() -> int:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
 
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
-    harness = build_reviewer_harness(
+    harness = build_harness(
         api_key,
+        reviewer_spec(),
         backend=backend,
         binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
         model=review_model or None,
         hermes_repo=hermes_repo,
-        provider=provider,
-        sandbox_extra=sandbox_extra,
+        hermes_provider=provider,
+        codex_extra_args=sandbox_extra,
     )
     # Least-token split: with REVIEW_EMIT_FILE set, findings are written there
     # instead of posted — this job then needs only READ permissions, and a

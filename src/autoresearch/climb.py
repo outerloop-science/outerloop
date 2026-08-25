@@ -36,7 +36,7 @@ from autoresearch.github import (
     GitHubClient,
     Workspace,
 )
-from autoresearch.harness import ClaudeCodeHarness, CodexHarness, Harness, SessionResult, redact
+from autoresearch.harness import Harness, SessionResult, redact
 from autoresearch.measure import DispatchSettings, LocalMeasurer
 from autoresearch.orchestrator import (
     ClimbConfig,
@@ -63,7 +63,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import PullRequest
-from autoresearch.role_runner import run_role
+from autoresearch.role_runner import build_harness, run_role
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -120,7 +120,7 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     if backend not in ("claude", "codex"):
         # a typo'd AUTORESEARCH_AUTHOR_BACKEND passes the env DEFAULT silently
         # (argparse validates the flag, not its default) and the climb rejects it
-        # at build_editor_harness — catch it on the tick host so a claimed intake
+        # at build_harness — catch it on the tick host so a claimed intake
         # issue never strands on it
         return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
     if backend == "claude":
@@ -1371,93 +1371,27 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
     if not args.panel.strip():
         return ()
     from autoresearch.panel import parse_lenses
-    from autoresearch.review_agent import build_reviewer_harness
+    from autoresearch.roles import reviewer_spec
 
     panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
     lenses = []
     for kind, backend, model in parse_lenses(args.panel):
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
         try:
-            judge = build_reviewer_harness(
+            judge = build_harness(
                 panel_key,
+                reviewer_spec(),
                 backend=backend,
                 binary=args.claude_bin if backend == "claude" else None,
                 model=model or None,
                 container_image=args.image if backend == "claude" else "",
                 hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
-                provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
+                hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
             )
         except ValueError as exc:
             raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
         lenses.append(PanelLens(kind=kind, harness=judge))
     return tuple(lenses)
-
-
-def build_editor_harness(
-    api_key: str,
-    spec: RoleSpec | None = None,
-    *,
-    backend: str = "claude",
-    binary: str | None = None,
-    model: str | None = None,
-    container_image: str = "",
-    codex_extra_args: tuple[str, ...] = (),
-) -> Harness:
-    """Construct an editing role's harness from its RoleSpec, for the chosen
-    backend — the same deployment wiring the judges use (`spec.budget` drives
-    turns and walltime). The session runs contained (apptainer) and KEEPS
-    instruction-file discovery — the target repo's CLAUDE.md is legitimate
-    guidance for an editing role, unlike a judge's untrusted checkout.
-
-    The seam (`run_role`, `climb_once`) takes any Harness, so a backend is one
-    branch here, zero kernel change (the reviewer's rollout):
-    - claude: native tool set, apptainer-contained; the trusted default.
-    - codex: apptainer-contained; codex runs `--sandbox danger-full-access`
-      (no inner OS sandbox) and relies on apptainer as the boundary, exactly as
-      the claude author does — codex's own sandbox needs bubblewrap, absent in
-      the image. An author MUST be contained (it writes+executes), so
-      container_image is REQUIRED — the read-only reviewer could skip it. Codex
-      resumes like claude (`codex exec resume`, validated on 0.130.0), so a
-      blocking panel finding WAKES it to revise. All three backends resume
-      (hermes via saved-transcript rehydration); the inline and wake revise
-      paths still gate on `supports_resume`, so any future backend that cannot
-      resume never blind-revises and never loses an improvement to a failed
-      resume."""
-    spec = spec or author_spec()
-    if not spec.execution.can_execute:
-        raise ValueError("build_editor_harness is for editing roles")
-    if backend == "codex":
-        if not container_image:
-            # an author writes+executes; it must not run uncontained
-            raise ValueError("codex editor backend requires a container_image (apptainer)")
-        return CodexHarness(
-            api_key=api_key,
-            binary=binary or "codex",
-            model=model or "",  # "" -> codex's configured default; pin a verified id
-            # apptainer IS the sandbox here (like the claude author, which has no
-            # inner OS sandbox). codex's own `workspace-write` needs bubblewrap,
-            # which isn't in the image and is unreliable nested inside apptainer;
-            # `danger-full-access` skips codex's sandbox and relies on apptainer's
-            # boundary (no host FS beyond the ws+home binds, scrubbed env), which
-            # already confines writes to the workspace.
-            sandbox="danger-full-access",
-            timeout_s=spec.budget.walltime_s,
-            container_image=container_image,
-            extra_args=codex_extra_args,
-        )
-    if backend != "claude":
-        raise ValueError(f"unknown editor backend: {backend!r}")
-    return ClaudeCodeHarness(
-        api_key=api_key,
-        binary=binary or "claude",
-        model=model or "claude-opus-5",
-        max_turns=spec.budget.max_turns,
-        timeout_s=spec.budget.walltime_s,
-        # the manifest drives the tool set, same as the budget (all author
-        # tools are native Claude tools; no MCP tools to filter out)
-        allowed_tools=spec.tools,
-        container_image=container_image,
-    )
 
 
 def build_panel_runner(
@@ -2565,7 +2499,7 @@ def main() -> int:
         if wake_lenses or _wake_stage.get("phase") == "author-sleep":
             wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
-            wake_harness = build_editor_harness(
+            wake_harness = build_harness(
                 wake_api_key,
                 wake_spec,
                 backend=wake_backend,
@@ -2687,7 +2621,7 @@ def main() -> int:
                 base_branch=args.base_branch,
                 run_root=args.run_root,
                 run_id=run_id,
-                harness=build_editor_harness(
+                harness=build_harness(
                     api_key,
                     spec,
                     backend=args.author_backend,

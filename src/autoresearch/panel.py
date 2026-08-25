@@ -1,7 +1,7 @@
 """The pre-PR verification panel: judges read the candidate before a PR exists.
 
 Implements the loop's judge half from docs/design/orchestrator-verify.md: a
-set of read-only lenses (integrity `verify`, code `review`) each runs as an
+set of judge lenses (integrity `verify`, code `review`) each runs as an
 agent session over the prepared checkouts, their verdicts are merged
 MECHANICALLY (any blocking finding wakes the author; the kernel never
 adjudicates judgment), and every lens's outcome — including "could not run" —

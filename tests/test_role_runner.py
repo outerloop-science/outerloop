@@ -1,5 +1,5 @@
-"""Role-runner: structured-output validation, the repair loop, and the role
-specs. The harness is faked; no session is actually run."""
+"""Role-runner: the unified harness builder, the verdict-tool read, and the
+role specs. The harness is faked; no session is actually run."""
 
 from __future__ import annotations
 
@@ -45,9 +45,12 @@ class _SeqHarness:
         return self.results.pop(0)
 
 
-def test_reviewer_spec_is_read_only_and_uses_findings_schema() -> None:
+def test_reviewer_spec_is_an_executing_judge_with_findings_schema() -> None:
+    # a judge runs like every other role (shell for the syscall tool; the
+    # deployment's boundary contains it) and edits nothing
     spec = reviewer_spec()
-    assert spec.execution.can_execute is False
+    assert spec.execution.can_execute is True
+    assert "Bash" in spec.tools
     assert spec.scope is None
     assert spec.output_schema is FINDINGS_SCHEMA
 
@@ -61,47 +64,9 @@ def test_author_spec_is_an_executing_editor_with_no_schema() -> None:
     assert author_spec(scope=("src/x/",)).scope == ("src/x/",)
 
 
-def test_happy_path_returns_validated_data() -> None:
-    harness = _SeqHarness([_session(_FINDINGS)])
-    result = run_role(reviewer_spec(), harness, "brief", _WORKSPACE)
-    assert result.ok is True
-    assert result.data == {"findings": [], "notes": "looks fine"}
-
-
-def test_tolerates_code_fenced_json() -> None:
-    fenced = f"Here are my findings:\n```json\n{_FINDINGS}\n```\n"
-    result = run_role(reviewer_spec(), _SeqHarness([_session(fenced)]), "brief", _WORKSPACE)
-    assert result.ok is True
-    assert result.data is not None
-
-
-def test_repairs_once_then_succeeds() -> None:
-    harness = _SeqHarness([_session("not json at all"), _session(_FINDINGS)])
-    result = run_role(reviewer_spec(), harness, "brief", _WORKSPACE)
-    assert result.ok is True
-    # the repair call resumed the first session
-    assert harness.calls == [None, "sess-1"]
-
-
-def test_exhausts_repairs_and_fails() -> None:
-    harness = _SeqHarness([_session("nope"), _session("still nope")])
-    result = run_role(reviewer_spec(), harness, "brief", _WORKSPACE, max_repairs=1)
-    assert result.ok is False
-    assert "invalid structured output" in result.error
-
-
-def test_missing_required_key_is_invalid() -> None:
-    partial = json.dumps({"findings": []})  # no "notes"
-    result = run_role(
-        reviewer_spec(), _SeqHarness([_session(partial)]), "brief", _WORKSPACE, max_repairs=0
-    )
-    assert result.ok is False
-    assert "notes" in result.error
-
-
-def test_session_error_propagates() -> None:
+def test_session_error_propagates(tmp_path: Path) -> None:
     harness = _SeqHarness([_session(is_error=True, error_detail="boom")])
-    result = run_role(reviewer_spec(), harness, "brief", _WORKSPACE)
+    result = run_role(reviewer_spec(), harness, "brief", tmp_path)
     assert result.ok is False
     assert result.error == "boom"
 
@@ -158,9 +123,7 @@ class _VerdictHarness:
 
 
 def _verdict_spec():
-    from dataclasses import replace
-
-    return replace(reviewer_spec(), verdict_tool=True)
+    return reviewer_spec()
 
 
 def test_verdict_tool_mode_reads_the_committed_verdict(tmp_path: Path) -> None:
@@ -211,14 +174,67 @@ def test_verdict_tool_mode_malformed_verdict_is_a_failure(tmp_path: Path) -> Non
     assert not result.ok and "invalid verdict" in result.error
 
 
-def test_judge_without_verdict_tool_parses_the_final_message(tmp_path: Path) -> None:
-    # a judge spec that does NOT set verdict_tool uses the parse path — no tool
-    # installed, findings validated from the final message. run_role gates the
-    # tool on the spec alone (the deployment builds the harness to match).
-    from dataclasses import replace
+# --- build_harness: the ONE construction for every role and backend ---
 
-    spec = replace(reviewer_spec(), verdict_tool=False)
-    harness = _SeqHarness(results=[_session(_FINDINGS)])
-    result = run_role(spec, harness, "x", tmp_path)
-    assert result.ok and result.data == {"findings": [], "notes": "looks fine"}
-    assert not (tmp_path / ".autoresearch").exists()  # tool NOT installed
+
+def test_build_harness_claude_judge_gets_tools_and_bare() -> None:
+    from autoresearch.harness import ClaudeCodeHarness
+    from autoresearch.role_runner import build_harness
+
+    h = build_harness("k", reviewer_spec())
+    assert isinstance(h, ClaudeCodeHarness)
+    # native tools from the spec: the read set plus the shell that runs the
+    # syscall tool (MCP names like pr-context-read are wired separately)
+    assert set(h.allowed_tools) == {"Read", "Grep", "Glob", "Bash"}
+    assert h.bare is True  # untrusted checkout: never load its instructions
+    assert h.max_turns == 40 and h.timeout_s == 1800  # budget from the spec
+
+
+def test_build_harness_codex_is_uniform_for_all_roles() -> None:
+    # one execution surface: codex's own sandbox stays off; the deployment's
+    # container or ephemeral runner is the boundary, for judges and editors alike
+    from autoresearch.harness import CodexHarness
+    from autoresearch.role_runner import build_harness
+
+    judge = build_harness("k", reviewer_spec(), backend="codex")
+    editor = build_harness("k", author_spec(), backend="codex", container_image="img.sif")
+    assert isinstance(judge, CodexHarness) and isinstance(editor, CodexHarness)
+    assert judge.sandbox == editor.sandbox == "danger-full-access"
+    assert judge.container_image == "" and editor.container_image == "img.sif"
+
+
+def test_build_harness_hermes_toolsets_follow_the_spec(tmp_path: Path) -> None:
+    from autoresearch.harness import HermesHarness
+    from autoresearch.role_runner import build_harness
+
+    h = build_harness(
+        "k", reviewer_spec(), backend="hermes", hermes_repo=tmp_path, hermes_provider="openai"
+    )
+    assert isinstance(h, HermesHarness)
+    assert h.repo_dir == tmp_path
+    assert h.provider == "openai-api" and h.key_env == "OPENAI_API_KEY"
+    # an executing role has the shell; everything else stays off for parity
+    assert set(h.enabled_toolsets) == {"file", "terminal"}
+    assert "terminal" not in h.disabled_toolsets and "web" in h.disabled_toolsets
+
+
+def test_build_harness_hermes_requires_repo_and_known_provider(tmp_path: Path) -> None:
+    import pytest
+
+    from autoresearch.role_runner import build_harness
+
+    with pytest.raises(ValueError, match="hermes_repo"):
+        build_harness("k", reviewer_spec(), backend="hermes")
+    with pytest.raises(ValueError, match="unknown hermes provider"):
+        build_harness(
+            "k", reviewer_spec(), backend="hermes", hermes_repo=tmp_path, hermes_provider="wat"
+        )
+
+
+def test_build_harness_rejects_unknown_backend() -> None:
+    import pytest
+
+    from autoresearch.role_runner import build_harness
+
+    with pytest.raises(ValueError, match="unknown backend"):
+        build_harness("k", reviewer_spec(), backend="gemini-cli")

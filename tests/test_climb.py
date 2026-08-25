@@ -1496,31 +1496,30 @@ def test_moved_base_regates_the_suite_on_the_merged_tree(tmp_path, target_repo) 
 
 def test_author_harness_is_built_from_the_spec() -> None:
     """The spec is the single source for the session budget: manifest and
-    harness cannot disagree (the judges' build_reviewer_harness pattern)."""
-    from autoresearch.climb import build_editor_harness
+    harness cannot disagree (one build_harness for every role)."""
     from autoresearch.harness import ClaudeCodeHarness
-    from autoresearch.roles import author_spec, reviewer_spec
+    from autoresearch.role_runner import build_harness
+    from autoresearch.roles import author_spec
 
     spec = author_spec(max_turns=7, walltime_s=120)
-    harness = build_editor_harness("sk-key", spec, container_image="img.sif")
+    harness = build_harness("sk-key", spec, container_image="img.sif")
     assert isinstance(harness, ClaudeCodeHarness)  # default backend; narrows the type
     assert harness.max_turns == 7
     assert harness.timeout_s == 120
     assert harness.container_image == "img.sif"
-    with pytest.raises(ValueError, match="editing roles"):
-        build_editor_harness("sk-key", reviewer_spec())
+    assert harness.bare is False  # an editor keeps the target repo's guidance
 
 
 def test_editor_harness_codex_backend_is_contained() -> None:
-    """The codex author backend is one branch, zero kernel change: contained
-    (apptainer) with --sandbox danger-full-access (apptainer is the boundary; no
-    bwrap), and container_image is REQUIRED (an author writes+executes)."""
-    from autoresearch.climb import build_editor_harness
+    """The codex author backend is one branch of the ONE builder: apptainer is
+    the boundary (--sandbox danger-full-access; no bwrap), containment passed
+    through from the deployment."""
     from autoresearch.harness import CodexHarness
+    from autoresearch.role_runner import build_harness
     from autoresearch.roles import author_spec
 
     spec = author_spec(max_turns=9, walltime_s=300)
-    harness = build_editor_harness(
+    harness = build_harness(
         "sk-o",
         spec,
         backend="codex",
@@ -1535,15 +1534,14 @@ def test_editor_harness_codex_backend_is_contained() -> None:
     assert harness.timeout_s == 300
     assert harness.extra_args == ("-c", "use_legacy_landlock=true")  # host codex config
     assert harness.supports_resume is True  # codex exec resume, validated on 0.130.0
-    # an author MUST be contained
-    with pytest.raises(ValueError, match="container_image"):
-        build_editor_harness("sk-o", spec, backend="codex", container_image="")
-    with pytest.raises(ValueError, match="unknown editor backend"):
-        build_editor_harness("sk-o", spec, backend="bogus", container_image="img.sif")
+    with pytest.raises(ValueError, match="unknown backend"):
+        build_harness("sk-o", spec, backend="bogus", container_image="img.sif")
 
 
 def _panel_judge(texts):
-    """A scripted read-only judge for the real run_panel path."""
+    """A scripted judge for the real run_panel path: commits its verdict
+    through the syscall channel, exactly as the tool does."""
+    import json as json_mod
     from dataclasses import dataclass, field
 
     @dataclass
@@ -1553,13 +1551,27 @@ def _panel_judge(texts):
 
         def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
             self.seen_ws.append(Path(workspace))
+            text = self.queue.pop(0)
+            # commit the verdict through the syscall channel, as the tool would
+            payload = None
+            try:
+                payload = json_mod.loads(text)
+            except (json_mod.JSONDecodeError, TypeError):
+                payload = None  # a judge that never concluded: no verdict written
+            if isinstance(payload, dict):
+                for f in payload.get("findings", []):
+                    if isinstance(f, dict):
+                        f.setdefault("kind", "note")  # the tool's own default
+                d = Path(workspace) / ".autoresearch"
+                d.mkdir(exist_ok=True)
+                (d / "syscall.json").write_text(json_mod.dumps({"type": "verdict", **payload}))
             return SessionResult(
                 stop_reason="end_turn",
                 is_error=False,
                 cost_usd=0.0,
                 num_turns=1,
                 session_id="judge",
-                final_text=self.queue.pop(0),
+                final_text=text,
                 transcript_path="",
             )
 

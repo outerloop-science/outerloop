@@ -1023,11 +1023,20 @@ def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
 
 
 def test_climb_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
-    # the author is an editing role; a judge spec here is a deployment bug
-    from autoresearch.roles import reviewer_spec
+    # the author is an editing role; a non-executing spec here is a deployment bug
+    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+
+    read_only = RoleSpec(
+        name="reviewer",
+        instructions="x",
+        key="reviewer",
+        tools=("Read",),
+        execution=Execution(environment="gh-runner", can_execute=False),
+        budget=SessionBudget(max_turns=1, walltime_s=1),
+    )
 
     with pytest.raises(ValueError, match="must allow execution"):
-        run_climb(tmp_path, [13.876], spec=reviewer_spec())
+        run_climb(tmp_path, [13.876], spec=read_only)
 
 
 def test_shared_match_is_case_folded_like_the_other_path_checks(tmp_path: Path) -> None:

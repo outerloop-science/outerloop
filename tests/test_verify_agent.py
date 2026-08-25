@@ -40,6 +40,19 @@ class _Harness:
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
         self.briefs.append(brief_text)
+        if not self._err:
+            # commit the verdict through the syscall channel, as the tool would
+            try:
+                payload = json.loads(self._text)
+            except (json.JSONDecodeError, TypeError):
+                payload = None  # never concluded: no verdict written
+            if isinstance(payload, dict):
+                for f in payload.get("findings", []):
+                    if isinstance(f, dict):
+                        f.setdefault("kind", "note")  # the tool's own default
+                d = Path(workspace) / ".autoresearch"
+                d.mkdir(exist_ok=True)
+                (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(
             stop_reason="error" if self._err else "completed",
             is_error=self._err,
@@ -158,7 +171,8 @@ def test_brief_directs_ruler_reads_at_base() -> None:
     assert "Read the ruler source" in brief
     assert "`base/`" in brief and "`pr-head/`" in brief
     assert "contract: yes" in brief  # fenced from base, orchestrator-vouched
-    assert "do not run code" in brief.lower()
+    assert "python .autoresearch/syscall finding" in brief  # the emit path
+    assert "do not modify" in brief.lower()
 
 
 def test_bogus_category_clamps_to_other() -> None:
