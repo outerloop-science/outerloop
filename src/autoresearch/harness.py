@@ -81,11 +81,12 @@ class Harness(Protocol):
     land on a different cluster node (shared filesystem).
 
     A backend MAY declare a class attribute `supports_resume = False` when it
-    has no trustworthy headless resume (hermes). The revise loop checks it (via
-    getattr, default True) and DRAFTS instead of calling run() with a resume id —
-    a resume that silently starts fresh or fails would revise blind or lose a
-    verified improvement. Claude and codex both resume (`supports_resume=True`).
-    Optional, so test doubles need not declare it."""
+    has no trustworthy headless resume. The revise loop checks it (via getattr,
+    default True) and DRAFTS instead of calling run() with a resume id — a resume
+    that silently starts fresh or fails would revise blind or lose a verified
+    improvement. All three current backends resume (`supports_resume=True`;
+    hermes via saved-transcript rehydration). Optional, so test doubles need not
+    declare it."""
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -1264,7 +1265,6 @@ class FakeHarness:
     script: Any = None  # optional callable(brief_text, workspace) for side effects
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
     supports_resume: bool = True  # a field so tests can exercise the no-resume path
-    supports_verdict_tool: bool = False  # a field so tests can exercise verdict-tool mode
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None

@@ -21,31 +21,27 @@ Versions follow [SemVer](https://semver.org).
   helpers (the per-run home is session-writable). Hermes now revises/wakes like
   the other backends — a step toward fully interchangeable harnesses.
 
-- Judge verdict tool, part 2 — the wiring (docs/design/role-cli.md, Phase 2;
-  inert until a backend hosts the tool). `RoleSpec.verdict_tool` declares a judge
-  emits its verdict through the installed tool (one allow-listed command, not
-  general Bash — the read-only invariant still holds; requires an
-  `output_schema`). `run_role` now branches: when the role sets `verdict_tool`
-  and the harness reports `supports_verdict_tool`, it installs the tool before
-  the session and reads the committed verdict authoritatively AFTER — no
-  parse-and-repair loop; a missing or malformed verdict is a failure (silence is
-  never endorsement). A backend without the capability falls back to the
-  existing parse-and-repair path, unchanged. No backend sets the capability yet
-  (part 3 grants claude the scoped command after the restriction is validated),
-  so this changes no live behavior.
-
-- Judge verdict tool, part 1 — the mechanism (docs/design/role-cli.md, Phase 2;
-  not yet wired into role_runner, so inert until part 2). `verdict_cli.py` is a
-  standalone (stdlib-only) tool the kernel installs at `.verdict/verdict`: a
-  judge records each finding as one validated call (`verdict finding --file
-  --line --confidence --summary --detail [--blocking] [--kind] [--category]`)
-  and commits with `verdict conclude`, replacing the "emit one JSON message,
-  kernel parses-and-repairs" path — the verdict is well-formed by construction.
-  `verdict.py` is the kernel side: `read_verdict` authoritatively validates the
-  committed `.verdict/verdict.json` (size-capped, every field checked; the tool
-  is convenience, never the trust boundary) into the same `{findings, notes}`
-  shape role_runner used to parse. Part 2 adds the RoleSpec allow-listed
-  single-command capability and rewires the judges onto it.
+- One syscall surface — a verdict is a syscall TYPE, not a second tool
+  (docs/design/role-cli.md). Every role talks to the kernel through ONE tool
+  (`.autoresearch/syscall`); the kernel dispatches by type. The author's `sleep`
+  (`type: "sleep"`) parks and wakes; the judge's `conclude` (`type: "verdict"`)
+  is its `exit()`, carrying findings. `syscall_cli.py` gains the judge verbs
+  (`finding` / `conclude`) alongside the author's (`launch` / `note` / `sleep`);
+  `syscall.py` gains `read_verdict` (authoritative: size-capped, every field
+  checked, typed) beside `read_request`, and `install_tool` now force-owns the
+  `.autoresearch/` channel (a judge's checkout is untrusted — a pre-planted
+  symlink or a forged `syscall.json` must not survive). `RoleSpec.verdict_tool`
+  declares a judge emits via the tool instead of a final JSON message (requires
+  an `output_schema`); `run_role` gates on that flag alone — like every other
+  capability, the deployment builds the harness to match the role (a judge that
+  emits via the tool runs a shell in the jail, same as an author) — installs the
+  tool before the session and reads the committed verdict AFTER, no
+  parse-and-repair loop. A spec without the flag uses the parse path, unchanged.
+  No spec sets `verdict_tool` yet, so this changes no live behavior. Replaces the
+  standalone `verdict.py` / `verdict_cli.py` (`.verdict/verdict`), which are
+  removed. Follow-up unifies the judge and author harness setup so judges run a
+  shell in the jail (differing only by system prompt), flips `verdict_tool` on,
+  and deletes the judge parse-and-repair path.
 
 - Author syscalls, part 2 — the WAKE (research-loop-buildout.md Phase A is
   complete; `AUTHOR_SLEEP_WAKE_READY` is flipped, so setting

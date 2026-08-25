@@ -1756,6 +1756,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
             "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
             ".autoresearch/syscall.json": json_mod.dumps(
                 {
+                    "type": "sleep",
                     "launches": [
                         {
                             "name": "probe",
@@ -1962,10 +1963,11 @@ def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
         edits={
             ".autoresearch/syscall.json": json_mod.dumps(
                 {
+                    "type": "sleep",
                     "launches": [
                         {"name": "a", "command": "run a"},
                         {"name": "b", "command": "run b"},
-                    ]
+                    ],
                 }
             ),
         },
@@ -2969,7 +2971,9 @@ def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
         def run(self, brief_text, workspace, resume_session_id=None):
             (workspace / ".autoresearch").mkdir(exist_ok=True)
             (workspace / ".autoresearch" / "syscall.json").write_text(
-                json_mod.dumps({"launches": [{"name": "second", "command": "run again"}]})
+                json_mod.dumps(
+                    {"type": "sleep", "launches": [{"name": "second", "command": "run again"}]}
+                )
             )
             return super().run(brief_text, workspace, resume_session_id)
 
