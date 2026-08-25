@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `climb --author-syscalls` — a one-off switch to arm the author launch/sleep
+  syscalls for a SINGLE climb (equivalent to `AUTORESEARCH_AUTHOR_SYSCALLS=1`,
+  ORed with it, but scoped to the run so a live validation need not arm the
+  whole tick). The benchmark must also declare `depth_k>1`. This is the
+  enablement seam for validating the (still-dark) author sleep/wake substrate
+  end-to-end on a real cluster before it goes live.
+
 - Interchangeable backends — one harness construction for every role
   (docs/design/role-cli.md, "the harness unification"). `build_harness`
   (role_runner.py) replaces `build_editor_harness` and
