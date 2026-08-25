@@ -47,12 +47,16 @@ fork PR ever reaches the session. The workflow checks out the PR head
 (`persist-credentials: false`) and the judge runs with a shell over it — so a
 prompt-injected PR could get the judge to EXECUTE its checked-out code. That is
 not the boundary; the boundary is that the session is disposable and holds
-nothing worth taking: a scrubbed environment, no WRITE token (the tokenless
-split keeps that in a separate post job), and one in-session secret — the
-judge's own model API key, which is spend-capped and role-isolated. So the
-residual exposure of a shell judge on a bare runner is capped spend and
-whatever it can read/egress from that ephemeral runner, accepted for an
-advisory role (the container/cluster path is the tighter option). Fork-PR
+nothing worth taking for a WRITE: a scrubbed environment and no write token
+(the tokenless split keeps that in a separate post job). The credentials that
+ARE in the session — and a shell judge can `/proc`-read them — are its own
+spend-capped, role-isolated model API key and a READ-scoped `GITHUB_TOKEN`
+(and, while the reviewer repo is private, a read-only deploy key; see
+reviewer-infra.md). None of those can write to the repo. So the residual
+exposure of a shell judge on a bare runner is capped spend plus reading what a
+read-scoped token already reads, plus whatever it can egress from that
+ephemeral runner — accepted for an advisory role (the container/cluster path is
+the tighter option), and the read token drops to zero at the public flip. Fork-PR
 review remains out of scope until it gets its own design.
 
 **Audit checklist before any public flip** (each item verified on the live
