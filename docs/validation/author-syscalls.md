@@ -12,14 +12,10 @@ whole loop.
 `AUTORESEARCH_AUTHOR_SYSCALLS` env flag), so you do **not** arm the whole tick.
 Two conditions must both hold:
 
-1. **Dispatch coords exist:** the run needs `--image` and the cluster
-   account/partition — launch jobs are jailed Slurm jobs on a sealed snapshot.
-   Without them the flag warns and stays OFF (there is no launcher, so an armed
-   author would strand).
-2. **A launch budget:** the benchmark's `depth_k` caps how many launches the
-   author may make. The default (1) is enough to validate one launch → sleep →
-   wake; raise `depth_k` in the target's `.autoresearch.yaml` to try multiple.
-   `sleep_k` defaults to 4.
+- **Dispatch coords** (`--image` + account/partition): launches are jailed
+  Slurm jobs, so without them nothing launches.
+- **A launch budget**: `depth_k` (default 1 = one launch) caps launches; raise
+  it in the target's `.autoresearch.yaml` to test more.
 
 Then run one climb by hand (not via the tick):
 
