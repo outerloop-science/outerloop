@@ -60,11 +60,18 @@ workflow files of the repo being flipped, not on memory of them):
 
 1. The fork gate is present, at the JOB level, on every caller workflow —
    and its polarity is "same repo only", not an allowlist that can drift.
-2. No step checks out, builds, installs, or executes anything from the PR
-   head (including transitively: no `uv sync` against the PR's lockfile, no
-   pre-commit on its config).
-3. `permissions:` blocks are minimal (`contents: read`,
-   `pull-requests: write`) on caller and reusable workflows alike.
+2. The judge session runs a shell over the PR-head checkout, so it CAN be
+   induced to execute PR-head code — that is acceptable ONLY because item 1
+   restricts the head to the SAME repo (fork code never reaches it) and the
+   session job is disposable and holds no write token (item 3). Verify those
+   hold; do NOT rely on "PR code is never executed" — it is, and the boundary
+   is the runner + the token split, not the tool set. (The post job, which
+   does hold the write token, runs NO session and touches nothing from the head.)
+3. The token split holds: the JOB that runs the session has at most
+   `pull-requests: read` (its shell judge can `/proc`-read whatever is in its
+   env, so no write token may be there); the separate post JOB holds
+   `pull-requests: write` and runs no session. Verify per-job `permissions:`,
+   not just top-level.
 4. Labels that trigger privileged runs (`autoresearch:review`): GitHub
    allows label application at TRIAGE, not write — so GitHub's own
    permission model is NOT sufficient gating on a public repo with triage
