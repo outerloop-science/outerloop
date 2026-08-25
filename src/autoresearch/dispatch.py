@@ -347,18 +347,42 @@ def write_eval_job(
     ]
     for key, value in injected.items():
         lines.append(f"export {key}={shlex.quote(value)} APPTAINERENV_{key}={shlex.quote(value)}")
-    lines += [
-        # the jail: identical flags to SubprocessEvaluator._run; stdout is
-        # redirected OUTSIDE apptainer, so the result lands in the run dir
-        # without the jailed process ever seeing it
-        f"{shlex.quote(apptainer_binary)} exec --containall --cleanenv "
-        '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
-        '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
-        f"{shlex.quote(image)} "
-        'sh -c "$(cat "$EV/command.txt")" '
-        '> "$EV/stdout" 2> "$EV/stderr"',
-        'echo $? > "$EV/exit-code"',
-    ]
+    if image:
+        lines += [
+            # the jail: identical flags to SubprocessEvaluator._run; stdout is
+            # redirected OUTSIDE apptainer, so the result lands in the run dir
+            # without the jailed process ever seeing it
+            f"{shlex.quote(apptainer_binary)} exec --containall --cleanenv "
+            '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
+            '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
+            f"{shlex.quote(image)} "
+            'sh -c "$(cat "$EV/command.txt")" '
+            '> "$EV/stdout" 2> "$EV/stderr"',
+            'echo $? > "$EV/exit-code"',
+        ]
+    else:
+        # UNCONTAINED (dev/tests, no image): run directly in the throwaway
+        # tree under `env -i` with the same allowlist shape the uncontained
+        # evaluator used — the submitting process's env (which can hold live
+        # keys) must never reach the agent-authored command
+        bare_env = " ".join(
+            [
+                'HOME="$SCRATCH/home"',
+                'PATH="$PATH"',
+                'LANG="${LANG:-C.UTF-8}"',
+                'TMPDIR="$SCRATCH"',
+                'UV_CACHE_DIR="$UV_CACHE_DIR"',
+                "UV_LINK_MODE=copy",
+                'UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT"',
+            ]
+            + [f"{key}={shlex.quote(value)}" for key, value in injected.items()]
+        )
+        lines += [
+            f'cd "$TREE" && env -i {bare_env} '
+            'sh -c "$(cat "$EV/command.txt")" '
+            '> "$EV/stdout" 2> "$EV/stderr"',
+            'echo $? > "$EV/exit-code"',
+        ]
     if artifacts:
         # copy-out runs OUTSIDE the jail, after the command: only declared,
         # caller-validated repo-relative FILES, each size-capped; every skip is

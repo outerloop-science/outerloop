@@ -22,6 +22,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from autoresearch.compute import LocalCompute
 from autoresearch.contract import Benchmark, Contract, load_contract
 from autoresearch.dispatch import (
     Snapshot,
@@ -37,7 +38,7 @@ from autoresearch.github import (
     Workspace,
 )
 from autoresearch.harness import Harness, SessionResult, redact
-from autoresearch.measure import DispatchSettings, LocalMeasurer
+from autoresearch.measure import DispatchedMeasurer, DispatchSettings
 from autoresearch.orchestrator import (
     ClimbConfig,
     ClimbParked,
@@ -598,8 +599,6 @@ def _wake_author_sleep(
 
     def snapshot() -> str:
         snap = snapshot_tree(ws, base_sha)
-        if isinstance(measurer, LocalMeasurer):  # pragma: no cover - wake is dispatched
-            measurer.live[snap.commit] = workspace
         snapshots.append(snap)
         return snap.commit
 
@@ -1612,15 +1611,6 @@ def live_climb(
                 eval_minutes,
             )
 
-        # The baseline is measured in a throwaway worktree of the pre-session
-        # commit — the session never sees the directory the baseline eval ran
-        # in, so eval artifacts (even gitignored ones) cannot leak the run
-        # seed or the sampled pool into the solver's view. The dispatched
-        # backend checks out each sha in its own eval job, so it needs no such
-        # worktree.
-        baseline_wt = run_dir / "measure-baseline"
-        if not dispatched:
-            ws.git("worktree", "add", "--detach", str(baseline_wt), "HEAD")
         # the panel's base is the PRE-SESSION commit — the exact tree the
         # baseline was measured on — never origin/<base_branch>, which can
         # name a different branch than the clone's checkout (terra, #95 r3)
@@ -1640,17 +1630,15 @@ def live_climb(
             if panel_lenses
             else None
         )
-        # DISPATCHED: each measure runs as its own eval job, checking out its
-        # tree sha fresh from this workspace's `refs/dispatch/*` — so the
-        # measurer needs only the repo, and a not-yet-done measure PARKS the
-        # climb. INLINE: the eval runs in the caller's worktrees — the pristine
-        # pre-session tree (baseline_wt, a CLEAN checkout, cache-safe) for
-        # base_sha and the session's LIVE workspace for every candidate
-        # snapshot (measured fresh — its content is not pinned by the sha) —
-        # and never parks. Either way `snapshot` commits the workspace's
-        # current content to a candidate sha and we own the ref lifecycle,
-        # keeping the one candidate ref a park needs and dropping the rest when
-        # the climb ends.
+        # ONE measurer either way: every measure is a job that checks its
+        # tree sha out fresh from this workspace's `refs/dispatch/*` and
+        # writes its result to the run dir. DISPATCHED: the jobs go to the
+        # cluster and a not-yet-done measure PARKS the climb. LOCAL: the SAME
+        # jobs run synchronously in this allocation (LocalCompute), so every
+        # measure is done when checked and nothing parks. `snapshot` commits
+        # the workspace's current content to a candidate sha and we own the
+        # ref lifecycle, keeping the one candidate ref a park needs and
+        # dropping the rest when the climb ends.
         measurer: Measurer
         if dispatched:
             assert dispatch is not None and eval_minutes is not None  # should_dispatch(None) False
@@ -1658,15 +1646,20 @@ def live_climb(
                 run_dir, repo_root=workspace, eval_minutes=eval_minutes, run_tag=run_id
             )
         else:
-            measurer = LocalMeasurer(evaluator, clean={pre_session_sha: baseline_wt})
+            measurer = DispatchedMeasurer(
+                compute=LocalCompute(),
+                run_dir=run_dir,
+                repo_root=workspace,
+                image=dispatch.image if dispatch is not None else "",
+                account="",
+                partition="",
+                eval_minutes=int(eval_minutes or 0),
+                run_tag=run_id,
+            )
         snapshots: list[Snapshot] = []
 
         def snapshot() -> str:
             snap = snapshot_tree(ws, pre_session_sha)
-            # inline only: register the live workspace for this candidate sha.
-            # dispatched jobs check the sha out fresh, so they need no map.
-            if isinstance(measurer, LocalMeasurer):
-                measurer.live[snap.commit] = workspace
             snapshots.append(snap)
             return snap.commit
 
@@ -1752,16 +1745,6 @@ def live_climb(
                 if parked and kept_ref and snap.ref == kept_ref:
                     continue
                 drop_snapshot(ws, snap)  # best-effort + self-logging; never raises
-            # the baseline worktree exists only on the inline path (the
-            # dispatched backend never created one).
-            if not dispatched and not _best_effort(
-                "baseline worktree cleanup",
-                lambda: ws.git("worktree", "remove", "--force", str(baseline_wt)),
-            ):
-                import shutil
-
-                shutil.rmtree(baseline_wt, ignore_errors=True)
-                _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
     except Exception as exc:
         exc_name = type(exc).__name__
         note = redact(f"{exc_name}: {exc}", secrets)[:500]

@@ -1,0 +1,173 @@
+"""LocalCompute: the same job specs the cluster runs, as synchronous
+subprocesses in the current allocation — and the one measurer on top of it."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from autoresearch.compute import GONE, JobSpec, LocalCompute
+from autoresearch.dispatch import snapshot_tree
+from autoresearch.github import Workspace
+from autoresearch.measure import DispatchedMeasurer, MeasurementPending, plan_measures
+from autoresearch.orchestrator import EvalError
+
+
+def _spec(command: str = "", script: str = "", minutes: int = 1) -> JobSpec:
+    return JobSpec(
+        job_name="t",
+        account="",
+        partition="",
+        time_minutes=minutes,
+        command=command,
+        script=script,
+    )
+
+
+def test_submit_runs_synchronously_and_status_is_terminal(tmp_path: Path) -> None:
+    lc = LocalCompute()
+    marker = tmp_path / "ran"
+    job = lc.submit(_spec(command=f"touch {marker}"))
+    assert marker.exists()  # done by the time submit returned
+    assert job.isdigit()  # callers validate ids with isdigit
+    assert lc.status(job) == "COMPLETED"
+    lc.cancel(job)  # idempotent no-op on a finished job
+
+
+def test_failed_command_reports_failed(tmp_path: Path) -> None:
+    lc = LocalCompute()
+    assert lc.status(lc.submit(_spec(command="exit 3"))) == "FAILED"
+    assert lc.status("999") == GONE  # unknown id: no record
+    assert lc.job_id_for_name("anything") == ""  # nothing is ever live
+    assert lc.active_job_names() == []
+
+
+def _seed_repo(tmp_path: Path) -> tuple[Workspace, str, str]:
+    ws_root = tmp_path / "repo"
+    ws_root.mkdir()
+
+    def g(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(ws_root), *args], capture_output=True, text=True, check=True
+        ).stdout
+
+    g("init", "-q", "-b", "main")
+    (ws_root / "solve.py").write_text("print('base')\n")
+    g("add", "-A")
+    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = g("rev-parse", "HEAD").strip()
+    ws = Workspace(root=ws_root)
+    (ws_root / "solve.py").write_text("print('cand')\n")
+    snap = snapshot_tree(ws, base)
+    return ws, base, snap.commit
+
+
+def test_measurer_on_local_compute_never_parks(tmp_path: Path) -> None:
+    # the ONE measurer, local backend: the identical eval-job script runs as a
+    # subprocess (fresh checkout of each sealed sha, bare mode), every job is
+    # done when checked, and results flow straight through — no park.
+    ws, base, cand = _seed_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    m = DispatchedMeasurer(
+        compute=LocalCompute(),
+        run_dir=run_dir,
+        repo_root=ws.root,
+        image="",  # bare mode: no apptainer in tests
+        account="",
+        partition="",
+        eval_minutes=1,
+        run_tag="t",
+    )
+    # the command reads the TREE it runs in: each measure must see a fresh
+    # checkout of ITS OWN sha (base prints 'base', candidate prints 'cand'),
+    # never the live workspace — the isolation the old inline path needed a
+    # separate baseline worktree and drift fingerprints to approximate
+    plan = plan_measures(
+        command='grep -q cand solve.py && echo {\\"score\\": 2.0} || echo {\\"score\\": 1.0}',
+        metric="score",
+        base_sha=base,
+        candidate_sha=cand,
+    )
+    results = m.results(plan)  # would raise MeasurementPending on a cluster
+    assert results == {"baseline": 1.0, "candidate": 2.0}
+    # slot-cached: a fresh measurer over the same run dir reads, never re-runs
+    again = DispatchedMeasurer(
+        compute=LocalCompute(),
+        run_dir=run_dir,
+        repo_root=ws.root,
+        image="",
+        account="",
+        partition="",
+        eval_minutes=1,
+        run_tag="t",
+    )
+    assert again.results(plan) == results  # read from the eval dirs, not re-run
+
+
+def test_local_eval_failure_is_an_eval_error_not_a_park(tmp_path: Path) -> None:
+    ws, base, cand = _seed_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    m = DispatchedMeasurer(
+        compute=LocalCompute(),
+        run_dir=run_dir,
+        repo_root=ws.root,
+        image="",
+        account="",
+        partition="",
+        eval_minutes=1,
+        run_tag="t",
+    )
+    plan = plan_measures(command="exit 7", metric="score", base_sha=base, candidate_sha=cand)
+    with pytest.raises(EvalError, match="failed"):
+        m.results(plan)
+
+
+def test_seed_env_reaches_the_bare_eval(tmp_path: Path) -> None:
+    # the paired seed is injected into the scrubbed bare-mode env — and the
+    # submitting process's own env must NOT leak through env -i
+    ws, base, cand = _seed_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    m = DispatchedMeasurer(
+        compute=LocalCompute(),
+        run_dir=run_dir,
+        repo_root=ws.root,
+        image="",
+        account="",
+        partition="",
+        eval_minutes=1,
+        run_tag="t",
+    )
+    plan = plan_measures(
+        command='echo {\\"s\\": ${PILOT_SEED}${LEAKED_SECRET:+9}}',
+        metric="s",
+        base_sha=base,
+        candidate_sha=cand,
+        seed_env="PILOT_SEED",
+        seed=4,
+    )
+    import os
+
+    os.environ["LEAKED_SECRET"] = "x"
+    try:
+        assert m.results(plan)["candidate"] == 4.0  # seed in, submitter env out
+    finally:
+        del os.environ["LEAKED_SECRET"]
+
+
+def test_afterany_is_satisfied_trivially() -> None:
+    lc = LocalCompute()
+    first = lc.submit(_spec(command="true"))
+    second = lc.submit_after(_spec(command="true"), first)
+    assert lc.status(second) == "COMPLETED"
+
+
+def test_pending_carries_no_local_semantics() -> None:
+    # MeasurementPending is a cluster concept; assert its afterany shape stays
+    # intact for the callers that park on it
+    assert MeasurementPending(("1", "2")).afterany() == "afterany:1:2"
+    assert MeasurementPending(()).afterany() == ""

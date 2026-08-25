@@ -1,9 +1,10 @@
-"""Slurm behind one small interface: submit, status, cancel.
+"""Compute behind one small interface: submit, status, cancel.
 
-Everything the loop knows about the cluster goes through here, so a CI
-runner or cloud backend is a new implementation of the same three verbs.
-Commands run through an injectable runner (tests use a fake; nothing here
-requires a cluster).
+Everything the loop knows about compute goes through these verbs, so a
+backend is one implementation: `SlurmCompute` submits real cluster jobs;
+`LocalCompute` runs the same job specs as subprocesses in the current
+allocation. A CI runner or a cloud/GPU-rental backend would be another
+implementation of the same verbs — the callers never change.
 
 The status query preserves a distinction the fail-safe design depends on
 (docs/design/architecture.md, "Wake delivery and fail-safety"): a FAILED
@@ -19,6 +20,7 @@ import shlex
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Protocol
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +123,18 @@ class JobSpec:
         return argv
 
 
+class Compute(Protocol):
+    """The verbs every compute backend implements. Callers (the measurer, the
+    launcher, the wake dispatcher) depend on this, never on a backend."""
+
+    def submit(self, spec: JobSpec) -> str: ...
+    def submit_after(self, spec: JobSpec, after_job_id: str) -> str: ...
+    def status(self, job_id: str) -> str: ...
+    def active_job_names(self) -> list[str]: ...
+    def job_id_for_name(self, name: str) -> str: ...
+    def cancel(self, job_id: str) -> None: ...
+
+
 @dataclass
 class SlurmCompute:
     """The three verbs, plus afterany for wake jobs."""
@@ -210,6 +224,69 @@ class SlurmCompute:
         result = self.runner(["scancel", job_id], self.command_timeout_s)
         if result.returncode != 0:
             log.warning("scancel %s: %s", job_id, result.stderr.strip())
+
+
+# Local job ids start far above any real Slurm id so the two can never be
+# confused in a record; they stay numeric because callers validate isdigit.
+_LOCAL_JOB_BASE = 9_000_000_000
+
+
+@dataclass
+class LocalCompute:
+    """The same verbs, run as subprocesses in THIS allocation — synchronously:
+    `submit` returns with the job already terminal, so a caller that checks
+    for the result after submitting finds it on disk and nothing ever parks.
+    This is the degenerate backend for evals cheap enough to ride the current
+    allocation, for deployments with no cluster at all, and for tests. It runs
+    the identical job scripts the cluster runs (fresh checkout of the sealed
+    sha, results to the job dir); only WHERE they run differs."""
+
+    _states: dict[str, str] = field(default_factory=dict)
+    _seq: int = 0
+
+    def submit(self, spec: JobSpec) -> str:
+        argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
+        self._seq += 1
+        job_id = str(_LOCAL_JOB_BASE + self._seq)
+        try:
+            completed = subprocess.run(
+                argv, capture_output=True, text=True, timeout=spec.time_minutes * 60
+            )
+            state = "COMPLETED" if completed.returncode == 0 else "FAILED"
+            output = completed.stdout + completed.stderr
+        except subprocess.TimeoutExpired:
+            state, output = "TIMEOUT", ""
+        except OSError as exc:
+            raise SlurmError(f"local job {spec.job_name} failed to start: {exc}") from exc
+        if spec.output and spec.output != "/dev/null":
+            try:
+                with open(spec.output, "w") as fh:
+                    fh.write(output)
+            except OSError as exc:
+                log.warning("local job %s: output write failed: %s", spec.job_name, exc)
+        self._states[job_id] = state
+        log.info("ran %s locally as job %s: %s", spec.job_name, job_id, state)
+        return job_id
+
+    def submit_after(self, spec: JobSpec, after_job_id: str) -> str:
+        # every prior local job is already terminal, so afterany is satisfied
+        return self.submit(spec)
+
+    def status(self, job_id: str) -> str:
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        return self._states.get(job_id, GONE)
+
+    def active_job_names(self) -> list[str]:
+        return []  # synchronous: nothing is ever pending or running
+
+    def job_id_for_name(self, name: str) -> str:
+        return ""
+
+    def cancel(self, job_id: str) -> None:
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        # already terminal; cancelling a finished job is not an error
 
 
 def is_terminal(state: str) -> bool:
