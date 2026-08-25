@@ -1,5 +1,5 @@
-"""Agent-session reviewer: runs the reviewer as an agent over a read-only
-PR-head checkout.
+"""Agent-session reviewer: runs the reviewer as an agent over a PR-head
+checkout, recording its verdict through the installed syscall tool.
 
 `run_agent_review` is the orchestration core, testable with a fake harness and
 client. It builds on the shared vocabulary in `review`: the same skip rules,
@@ -19,10 +19,7 @@ from typing import Any
 
 from autoresearch.github import GitHubClient
 from autoresearch.harness import (
-    ClaudeCodeHarness,
-    CodexHarness,
     Harness,
-    HermesHarness,
     backend_id,
     budget_exhausted,
     outage,
@@ -45,101 +42,6 @@ from autoresearch.roles import review_result_from_role, reviewer_spec
 from autoresearch.rolespec import RoleSpec
 
 log = logging.getLogger(__name__)
-
-# Native Claude Code tools a judge session uses. The RoleSpec's other tools
-# (pr-context-read, retriever) are harness-provided MCP tools, wired separately;
-# they are not passed as native CLI tools here.
-_NATIVE_READ_TOOLS = ("Read", "Grep", "Glob")
-
-
-def build_reviewer_harness(
-    api_key: str,
-    spec: RoleSpec | None = None,
-    *,
-    backend: str = "claude",
-    binary: str | None = None,
-    model: str | None = None,
-    container_image: str = "",
-    hermes_repo: Path | None = None,
-    provider: str = "",
-    sandbox_extra: tuple[str, ...] = (),
-) -> Harness:
-    """Construct a read-only harness for the reviewer from its RoleSpec, for the
-    chosen backend — the deployment wiring the role-runner assumes (docs: "the
-    harness is assumed already constructed for the role").
-
-    How the read-only boundary is enforced differs by backend, and that
-    difference is a trust difference, not a detail:
-    - Claude: a native read-only tool set (no Write/Edit/Bash). A tool-set
-      boundary — the strongest, and the trusted default.
-    - Codex: reads by executing shell, so it needs an OS jail (`--sandbox
-      read-only`, plus `sandbox_extra` for host-specific config such as
-      `-c use_legacy_landlock=true` on GitHub-hosted runners). Even jailed it
-      can read a parent's env via /proc, so it is not run next to a token.
-    - Hermes: no read-only tool set at all — `file` bundles write, and
-      `approvals.deny` gates only shell. Its safety as a judge is ENVIRONMENTAL,
-      not tool-set: `terminal` is disabled (no shell, no /proc reach) and its
-      writes are inert on an ephemeral runner (nothing to push, scrubbed env).
-      Experimental only, and valid ONLY where writes cannot persist.
-
-    Budget: Claude gets max_turns and walltime; Codex is bounded by walltime
-    only (no per-turn cap yet) and does not use container_image."""
-    spec = spec or reviewer_spec()
-    if spec.execution.can_execute:
-        raise ValueError("build_reviewer_harness is for read-only judge roles")
-    if backend == "codex":
-        return CodexHarness(
-            api_key=api_key,
-            binary=binary or "codex",
-            model=model or "",  # codex's configured default
-            sandbox="read-only",
-            timeout_s=spec.budget.walltime_s,
-            extra_args=sandbox_extra,
-        )
-    if backend == "hermes":
-        if hermes_repo is None:
-            raise ValueError("hermes reviewer backend needs hermes_repo (the pinned clone)")
-        # "openai" maps to hermes's canonical openai-api provider (api-key
-        # auth against api.openai.com, key read from OPENAI_API_KEY; plain
-        # "openai" is a provider GROUP in hermes, not an id). openai-direct
-        # skips the OpenRouter platform fee at the same token rate, and the
-        # org's tax exemption applies. Model ids are provider-native:
-        # openai/gpt-5.6-terra on openrouter, gpt-5.6-terra on openai-api.
-        hermes_providers = {
-            "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
-            "openai": ("openai-api", "OPENAI_API_KEY"),
-        }
-        if (provider or "openrouter") not in hermes_providers:
-            raise ValueError(f"unknown hermes provider: {provider!r}")
-        seed, key_env = hermes_providers[provider or "openrouter"]
-        # Defaults already encode the judge shape: file toolset only, terminal
-        # and every other executing/egress toolset disabled. Read-only rests on
-        # that config plus the ephemeral runner (see the docstring above).
-        return HermesHarness(
-            api_key=api_key,
-            key_env=key_env,
-            repo_dir=hermes_repo,
-            provider=seed,
-            model=model or "",
-            max_turns=spec.budget.max_turns,
-            timeout_s=spec.budget.walltime_s,
-        )
-    if backend != "claude":
-        raise ValueError(f"unknown reviewer backend: {backend!r}")
-    allowed = tuple(tool for tool in spec.tools if tool in _NATIVE_READ_TOOLS)
-    return ClaudeCodeHarness(
-        api_key=api_key,
-        binary=binary or "claude",
-        model=model or "claude-opus-5",
-        max_turns=spec.budget.max_turns,
-        timeout_s=spec.budget.walltime_s,
-        allowed_tools=allowed,
-        container_image=container_image,
-        # A judge's cwd contains an untrusted checkout: never load its
-        # CLAUDE.md / hooks / project settings as instructions.
-        bare=True,
-    )
-
 
 # Files an agent harness may auto-load as INSTRUCTIONS from a checkout. In an
 # untrusted tree they are attack surface (a PR-authored CLAUDE.md, or
@@ -232,7 +134,7 @@ def run_agent_review(
     today: str | None = None,
     emit_path: Path | None = None,
 ) -> str | None:
-    """Review PR #`number` as an agent session over `workspace` (a read-only
+    """Review PR #`number` as an agent session over `workspace` (a
     PR-head checkout the caller prepared). Post the findings inline via the
     Reviews API. Returns the round label, or None when it skipped or could not
     produce a verdict. Advisory: never raises the expected failures, so it can
@@ -261,7 +163,10 @@ def run_agent_review(
                 _emit(emit_path, repo, number, kind="skip-clean", detail=skip)
             return None
 
-        role_result = run_role(spec, harness, build_agent_brief(pr, today), workspace)
+        from autoresearch.syscall import tool_command
+
+        brief = build_agent_brief(pr, today, syscall_cmd=tool_command(workspace))
+        role_result = run_role(spec, harness, brief, workspace)
         review = review_result_from_role(role_result)
         if review is None:
             # No verdict: an errored or refused session, not a clean read. An

@@ -77,18 +77,19 @@ def test_empty_tools_rejected() -> None:
         )
 
 
-def test_verdict_tool_requires_an_output_schema() -> None:
+def test_judge_may_not_hold_a_write_scope() -> None:
     import pytest
 
     from autoresearch.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
 
-    with pytest.raises(RoleSpecError, match="output_schema"):
+    with pytest.raises(RoleSpecError, match="never edits"):
         RoleSpec(
             name="reviewer",
             instructions="x",
             key="reviewer",
-            tools=("Read",),
-            execution=Execution(environment="gh-runner", can_execute=False),
+            tools=("Read", "Bash"),
+            execution=Execution(environment="gh-runner", can_execute=True),
             budget=SessionBudget(max_turns=1, walltime_s=1),
-            verdict_tool=True,  # no output_schema -> invariant violation
+            output_schema={"required": []},
+            scope=("src/",),  # a judge records a verdict; it edits nothing
         )

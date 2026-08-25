@@ -16,10 +16,10 @@ Two distinct wins, and each future application should name which one it buys:
   kernel holds the PAT/keys/cluster and performs the privileged act. A CLI verb
   is how the agent *directs* an act it must never *execute*. (The launch/sleep
   tool; GitHub writes; curated egress.)
-- **Win B — interactive validation replaces parse-and-repair.** Today a judge
-  emits a schema-constrained final message and the role-runner parses,
-  validates, and **repairs once** (`role_runner._repair_prompt`) — a lossy
-  retry that burns a turn and can still fail. A CLI validates each field **on
+- **Win B — interactive validation replaces parse-and-repair.** A judge used
+  to emit a schema-constrained final message that the role-runner parsed,
+  validated, and repaired once — a lossy retry that burned a turn and could
+  still fail (that path is deleted). A CLI validates each field **on
   the call**: bad input fails immediately, in-session, with a message the agent
   acts on. The artifact is well-formed **by construction**. (Judge verdicts;
   planner work-orders; the author tool's fast checks.)
@@ -48,8 +48,6 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    containment mechanism (the jail contains them all).
 
 ## End-state
-
-One `research` CLI identity, instantiated per role with only that role's verbs:
 
 One `.autoresearch/syscall` tool, its live verbs gated per role by RoleSpec:
 
@@ -118,15 +116,22 @@ PAT in the session; findings are data, a separate step posts), an ephemeral
 jail, and the egress posture — which contains a shell-judge just as it contains
 an author.
 
-**Landed (the surface unification):** the one surface — `finding`/`conclude`
-verbs, the typed ABI, `read_verdict`, the force-owning `install_tool` — replaces
-the standalone `verdict` tool. `run_role` gates the verdict path on
-`spec.verdict_tool` alone (the deployment builds the harness to match the role).
-INERT until a spec sets `verdict_tool=True`. **Follow-up (harness unification):**
-route judges through the same executing-harness-in-a-jail setup authors use
-(differing only by system prompt + verbs + output handling), flip `verdict_tool`
-on, and delete `build_reviewer_harness`'s read-only branches and the judge
-parse-and-repair path.
+**Landed (the surface unification, PR #138):** the one surface —
+`finding`/`conclude` verbs, the typed ABI, `read_verdict`, the force-owning
+`install_tool` — replaced the standalone `verdict` tool.
+**Landed (the harness unification):** ONE `build_harness` constructs every
+role on every backend (`role_runner.py`), replacing `build_editor_harness` and
+`build_reviewer_harness`. Judges run like every other role — a shell for the
+syscall tool, contained by the deployment's boundary (a container where one
+exists, the ephemeral runner where one doesn't, plus the tokenless split) —
+and differ only by prompt, verbs, and output handling. A judge IS a role with
+an `output_schema`: `run_role` installs the tool and reads the verdict for
+exactly those specs (the separate `verdict_tool` flag was redundant and is
+gone), and the parse-a-final-message-and-repair path is deleted. Backends are
+interchangeable: claude (`spec.tools` → native flags, `--bare` for judges),
+codex (`danger-full-access` uniformly — the boundary is the deployment's, not
+codex's own sandbox), hermes (toolsets from the spec; first-class, no
+manual-bench caveat).
 
 **Acceptance:** a judge session produces a verdict with zero repair rounds;
 a malformed call is corrected in-session; the judge can run the tool and

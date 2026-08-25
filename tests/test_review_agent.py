@@ -4,6 +4,10 @@ GitHub client — no real session, no network."""
 from __future__ import annotations
 
 import json
+
+# judge runs write the syscall channel into the workspace now, so give the
+# module its own throwaway dir rather than a fixed global path
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +15,7 @@ from autoresearch.harness import SessionResult
 from autoresearch.review import build_agent_brief
 from autoresearch.review_agent import run_agent_review
 
-_WORKSPACE = Path("/tmp/checkout")
+_WORKSPACE = Path(tempfile.mkdtemp(prefix="review-agent-tests-"))
 
 _FINDINGS = json.dumps(
     {
@@ -49,6 +53,19 @@ class _Harness:
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
         self.briefs.append(brief_text)
+        if not self._err:
+            # commit the verdict through the syscall channel, as the tool would
+            try:
+                payload = json.loads(self._text)
+            except (json.JSONDecodeError, TypeError):
+                payload = None  # never concluded: no verdict written
+            if isinstance(payload, dict):
+                for f in payload.get("findings", []):
+                    if isinstance(f, dict):
+                        f.setdefault("kind", "note")  # the tool's own default
+                d = Path(workspace) / ".autoresearch"
+                d.mkdir(exist_ok=True)
+                (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(
             stop_reason="error" if self._err else "completed",
             is_error=self._err,
@@ -112,8 +129,11 @@ def test_clean_review_posts_inline() -> None:
     assert len(client.reviews) == 1
     _body, inline = client.reviews[0]
     assert any(c.get("path") == "models/encoder.py" for c in inline)
-    # the brief carried the read-only investigation instruction
-    assert "checked out read-only" in harness.briefs[0]
+    # the brief carries the investigation + syscall emit instructions (the tool
+    # path is absolute here — run_agent_review passes the workspace so it
+    # resolves from any backend's cwd)
+    assert "checked out in your working directory" in harness.briefs[0]
+    assert ".autoresearch/syscall finding" in harness.briefs[0]
 
 
 def test_null_labels_do_not_crash() -> None:
@@ -176,90 +196,6 @@ def test_malformed_output_posts_nothing() -> None:
     assert client.reviews == [] and client.comments == []
 
 
-def test_build_reviewer_harness_is_read_only() -> None:
-    from autoresearch.harness import ClaudeCodeHarness
-    from autoresearch.review_agent import build_reviewer_harness
-
-    harness = build_reviewer_harness("k")
-    assert isinstance(harness, ClaudeCodeHarness)  # default backend
-    # the read-only boundary binds the session: no execute/write tools
-    assert "Bash" not in harness.allowed_tools
-    assert "Write" not in harness.allowed_tools and "Edit" not in harness.allowed_tools
-    assert set(harness.allowed_tools) == {"Read", "Grep", "Glob"}
-    # budget comes from the RoleSpec
-    assert harness.max_turns == 40 and harness.timeout_s == 1800
-
-
-def test_build_reviewer_harness_codex_backend() -> None:
-    from autoresearch.harness import CodexHarness
-    from autoresearch.review_agent import build_reviewer_harness
-
-    h = build_reviewer_harness("k", backend="codex")
-    assert isinstance(h, CodexHarness)
-    assert h.sandbox == "read-only"  # read-only judge boundary via the sandbox
-    assert h.extra_args == ()  # no host-specific sandbox config by default
-
-
-def test_build_reviewer_harness_codex_sandbox_extra_passthrough() -> None:
-    from autoresearch.harness import CodexHarness
-    from autoresearch.review_agent import build_reviewer_harness
-
-    # The deployment (workflow) opts into the Landlock sandbox on GitHub-hosted;
-    # the builder threads it verbatim to codex's argv.
-    extra = ("-c", "use_legacy_landlock=true")
-    h = build_reviewer_harness("k", backend="codex", sandbox_extra=extra)
-    assert isinstance(h, CodexHarness)
-    assert h.extra_args == extra
-
-
-def test_build_reviewer_harness_hermes_backend(tmp_path: Path) -> None:
-    from autoresearch.harness import HermesHarness
-    from autoresearch.review_agent import build_reviewer_harness
-
-    h = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="openrouter")
-    assert isinstance(h, HermesHarness)
-    assert h.repo_dir == tmp_path and h.provider == "openrouter"
-    # Read-only-ish judge shape: file toolset only, terminal (shell) disabled.
-    assert h.enabled_toolsets == ("file",)
-    assert "terminal" in h.disabled_toolsets
-
-
-def test_build_reviewer_harness_hermes_requires_repo() -> None:
-    import pytest
-
-    from autoresearch.review_agent import build_reviewer_harness
-
-    with pytest.raises(ValueError, match="hermes_repo"):
-        build_reviewer_harness("k", backend="hermes")
-
-
-def test_build_reviewer_harness_rejects_unknown_backend() -> None:
-    import pytest
-
-    from autoresearch.review_agent import build_reviewer_harness
-
-    with pytest.raises(ValueError, match="unknown reviewer backend"):
-        build_reviewer_harness("k", backend="gemini-cli")
-
-
-def test_build_reviewer_harness_rejects_execute_role() -> None:
-    import pytest
-
-    from autoresearch.review_agent import build_reviewer_harness
-    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
-
-    author = RoleSpec(
-        name="author",
-        instructions="x",
-        key="author",
-        tools=("Read", "Edit", "Bash"),
-        execution=Execution(environment="apptainer", can_execute=True),
-        budget=SessionBudget(max_turns=10, walltime_s=60),
-    )
-    with pytest.raises(ValueError, match="read-only"):
-        build_reviewer_harness("k", author)
-
-
 def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     from autoresearch.review import PullRequest
 
@@ -268,13 +204,18 @@ def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     assert "reviewing a pull request" in brief.lower()
     assert "input_gain" in brief  # the diff is embedded
     assert "2026-08-13" in brief
+    # the emit path is the syscall tool, not a JSON reply
+    assert "python .autoresearch/syscall finding" in brief
+    assert "conclude" in brief
 
 
-def test_reviewer_harness_uses_read_only_permission_mode(monkeypatch: Any, tmp_path: Path) -> None:
-    # defense in depth: a read-only harness passes --permission-mode default
-    # (edits denied), not acceptEdits. Inspect the actual spawned argv.
+def test_judge_harness_grants_the_shell_and_runs_bare(monkeypatch: Any, tmp_path: Path) -> None:
+    # the judge runs like any other role: Bash granted (it records its verdict
+    # by running the syscall tool) and --bare (an untrusted checkout must never
+    # load as instructions). Inspect the actual spawned argv.
     import autoresearch.harness as harness_mod
-    from autoresearch.review_agent import build_reviewer_harness
+    from autoresearch.role_runner import build_harness
+    from autoresearch.roles import reviewer_spec
 
     seen: dict[str, Any] = {}
 
@@ -290,34 +231,10 @@ def test_reviewer_harness_uses_read_only_permission_mode(monkeypatch: Any, tmp_p
             return json.dumps({"result": "{}", "session_id": "s"}), ""
 
     monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
-    build_reviewer_harness("k").run("brief", tmp_path)
+    build_harness("k", reviewer_spec()).run("brief", tmp_path)
     argv = seen["argv"]
-    assert argv[argv.index("--permission-mode") + 1] == "default"
-    assert "Bash" not in argv[argv.index("--allowedTools") + 1]
-
-
-def test_reviewer_harness_runs_bare(monkeypatch: Any, tmp_path: Path) -> None:
-    # --bare: no hooks, no CLAUDE.md auto-discovery — a PR-authored
-    # instruction file must never load as instructions
-    import autoresearch.harness as harness_mod
-    from autoresearch.review_agent import build_reviewer_harness
-
-    seen: dict[str, Any] = {}
-
-    class FakePopen:
-        returncode = 0
-
-        def __init__(self, command: list[str], **_: Any) -> None:
-            seen["argv"] = command
-
-        def communicate(
-            self, input: str | None = None, timeout: float | None = None
-        ) -> tuple[str, str]:
-            return json.dumps({"result": "{}", "session_id": "s"}), ""
-
-    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
-    build_reviewer_harness("k").run("brief", tmp_path)
-    assert "--bare" in seen["argv"]
+    assert "Bash" in argv[argv.index("--allowedTools") + 1]
+    assert "--bare" in argv
 
 
 def test_sanitize_checkout_renames_nested_instruction_files(tmp_path: Path) -> None:
@@ -579,23 +496,3 @@ def test_skip_stub_names_its_opinion(tmp_path: Path) -> None:
     )
     (comment,) = client.comments
     assert "advisory review (second opinion — terra)" in comment
-
-
-def test_hermes_openai_direct_exports_the_openai_key_env(tmp_path: Path) -> None:
-    # openai-direct: same token rate, no OpenRouter platform fee; hermes reads
-    # the key from the env var its provider registry names
-    from autoresearch.harness import HermesHarness
-    from autoresearch.review_agent import build_reviewer_harness
-
-    h = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="openai")
-    assert isinstance(h, HermesHarness)
-    assert h.provider == "openai-api"  # hermes's canonical id; "openai" is a group
-    assert h.key_env == "OPENAI_API_KEY"
-    default = build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="")
-    assert isinstance(default, HermesHarness)
-    assert default.provider == "openrouter"
-    assert default.key_env == "OPENROUTER_API_KEY"
-    import pytest
-
-    with pytest.raises(ValueError, match="unknown hermes provider"):
-        build_reviewer_harness("k", backend="hermes", hermes_repo=tmp_path, provider="mystery")

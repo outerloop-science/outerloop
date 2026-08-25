@@ -1,6 +1,6 @@
 """Entry point for the agent-session verifier.
 
-Runs the verifier as a read-only agent over the two checkouts the workflow
+Runs the verifier as an agent over the two checkouts the workflow
 prepared under VERIFY_CHECKOUT (`pr-head/` and `base/`), and posts the findings
 as an issue comment. Exits 0 even on skip or failure — the verifier is
 advisory and must never turn a target repo's CI red.
@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
-from autoresearch.review_agent import build_reviewer_harness, sanitize_checkout
+from autoresearch.review_agent import sanitize_checkout
+from autoresearch.role_runner import build_harness
 from autoresearch.roles import verifier_spec
 from autoresearch.verify_agent import run_agent_verify
 
@@ -38,7 +39,7 @@ def main() -> int:
     if not api_key:
         log.warning("ANTHROPIC_VERIFIER_KEY is unset or empty; skipping verification")
         return 0
-    # The directory holding the workflow's two read-only checkouts: pr-head/
+    # The directory holding the workflow's two checkouts: pr-head/
     # (the change) and base/ (trusted contract + ruler). Fail closed: a cwd
     # default would let a misconfigured workflow verify the wrong trees.
     checkout = os.environ.get("VERIFY_CHECKOUT", "").strip()
@@ -63,12 +64,16 @@ def main() -> int:
 
     spec = verifier_spec()
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
-    harness = build_reviewer_harness(
+    harness = build_harness(
         api_key,
         spec,
         binary=os.environ.get("REVIEW_BINARY") or None,
         model=os.environ.get("VERIFY_MODEL") or None,
     )
+    # Tokenless split: with VERIFY_EMIT_FILE set, the verdict is written there
+    # instead of posted — this job then needs only a read token, and a separate
+    # write-token job (verify_post_cli) posts with no session next to it.
+    emit_file = os.environ.get("VERIFY_EMIT_FILE", "").strip()
     run_agent_verify(
         client,
         repo,
@@ -77,6 +82,7 @@ def main() -> int:
         workspace,
         bot_login=bot_login,
         spec=spec,
+        emit_path=Path(emit_file).resolve() if emit_file else None,
     )
     return 0
 

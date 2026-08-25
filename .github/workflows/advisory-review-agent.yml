@@ -9,9 +9,9 @@
 #     marker) as an artifact. The only secrets present are the session's own
 #     model key and read-scoped tokens (job token + the reviewer repo's
 #     read-only deploy key while private) — nothing worth stealing, so even
-#     backends that can read /proc (codex: shell; hermes: file tool) are safe
-#     here. Claude's native read-only tool set and /proc-safe Read remain
-#     defense in depth rather than load-bearing.
+#     backends that can read /proc are safe here: the ephemeral runner plus
+#     this tokenless split is the boundary (the judge holds a shell to run the
+#     verdict syscall tool; roles differ by prompt, not tool posture).
 #   post job — holds pull-requests:write, runs NO model session. Re-validates
 #     the envelope (right PR, bot/opt-out skip re-checked, sanitizing render)
 #     and posts through the normal advisory path with the reviewer named in
@@ -125,7 +125,6 @@ jobs:
     timeout-minutes: 70
     # Fork PRs must not reach any secret. `pull_request_target` runs in the
     # base repo's context, so this gate is what closes the pwn-request hole.
-    # The reviewer also never executes PR code, a second layer of defense.
     if: github.event.pull_request.head.repo.full_name == github.repository
     # READ-ONLY: the session runs here, so the job token must not be worth
     # stealing. pull-requests:read lets the CLI fetch the PR metadata/diff.
@@ -196,9 +195,6 @@ jobs:
           ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.anthropic_reviewer_key || '' }}
           OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.openrouter_api_key || '' }}
           OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.openai_reviewer_key || '' }}
-          # codex's default bwrap can't init on GitHub-hosted; opt into
-          # Landlock (read-only, no egress). Harmless for other backends.
-          REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
           # hermes reads its pinned clone from here; provider seeds ~/.hermes.
           REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
           REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}

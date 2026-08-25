@@ -1,13 +1,9 @@
 name: advisory-review-agent-manual
-# Manual dispatch of the agent reviewer — the experimental bench for backends
-# that are not the PR-triggered default. Claude is the trusted default (native
-# read-only tool set). Codex and hermes are validated here first:
-#   codex reads by executing shell, so it runs in the Landlock read-only sandbox
-#     (its default bwrap can't init on GitHub-hosted). Even jailed it can read a
-#     parent's env via /proc, so this bench is an INFORMED one-off, never the
-#     auto default — see docs/design/reviewer-infra.md.
-#   hermes has no read-only tool set; its judge safety is environmental (inert
-#     writes on this throwaway runner, terminal disabled). Experimental only.
+# Manual dispatch of the agent reviewer — the bench for exercising any backend
+# on a chosen PR. Backends are interchangeable: every judge runs with a shell
+# (it records its verdict via the installed syscall tool), contained by the
+# ephemeral runner plus the tokenless split — roles differ by prompt, never by
+# a per-backend tool posture (docs/design/role-cli.md).
 # The PR-triggered production path is review.yml -> advisory-review-agent.yml.
 on:
   workflow_dispatch:
@@ -99,9 +95,6 @@ jobs:
           ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.ANTHROPIC_REVIEWER_KEY || '' }}
           OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.OPENROUTER_API_KEY || '' }}
           OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.OPENAI_REVIEWER_KEY || '' }}
-          # codex's default bwrap can't init on GitHub-hosted; opt into Landlock
-          # (read-only, no egress). Harmless for the other backends.
-          REVIEW_CODEX_LEGACY_LANDLOCK: ${{ inputs.backend == 'codex' && '1' || '' }}
           # hermes reads its pinned clone from here; provider seeds ~/.hermes.
           REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
           REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}

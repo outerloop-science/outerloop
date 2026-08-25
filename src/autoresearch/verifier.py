@@ -283,25 +283,34 @@ def build_verify_prompt(
 
 
 # Prepended to the shared rubric for the agent-session verifier: it has TWO
-# read-only checkouts: the PR head (the change under
+# checkouts: the PR head (the change under
 # review) and the BASE branch (the trusted contract and ruler — the solver
 # cannot have shaped it). Ruler reads must target base: the ruler comes from
 # the base branch, never the PR.
-AGENT_VERIFY_INVESTIGATION = (
-    "Two trees are checked out read-only in your working directory: `pr-head/` "
-    "is the pull request's code (the change under review, written by the agent "
-    "you are verifying), and `base/` is the PR's base branch (trusted: the "
-    "contract and the frozen ruler as they stood before this change). Read the "
-    "ruler source — how the metric is "
-    "ACTUALLY computed — from `base/`, never from `pr-head/`. Use Read, Grep, "
-    "and Glob to follow the change through the tree: how the eval calls the "
-    "changed code, what it can see, what it could exploit. You have no execute "
-    "or write tools; do not run code.\n\n"
-    "When done, reply with ONLY a JSON object and nothing else: `findings` (a "
-    "list) and `notes` (a string). Each finding has `file`, `line` (or null), "
-    "`category` (one of: " + ", ".join(CATEGORIES) + "), `confidence` (low, "
-    "medium, or high), `summary`, `detail`, and `blocking` (true or false)."
-)
+DEFAULT_SYSCALL_CMD = "python .autoresearch/syscall"
+
+
+def _agent_verify_investigation(syscall_cmd: str) -> str:
+    return (
+        "Two trees are checked out in your working directory: `pr-head/` is the "
+        "pull request's code (the change under review, written by the agent you "
+        "are verifying), and `base/` is the PR's base branch (trusted: the "
+        "contract and the frozen ruler as they stood before this change). Read the "
+        "ruler source — how the metric is "
+        "ACTUALLY computed — from `base/`, never from `pr-head/`. Use Read, Grep, "
+        "and Glob to follow the change through the tree: how the eval calls the "
+        "changed code, what it can see, what it could exploit. Do not modify "
+        "either tree — your only product is the verdict.\n\n"
+        "Record each finding as you confirm it, one command per finding:\n"
+        f"  {syscall_cmd} finding --file <path> [--line N] "
+        "--category <one of: " + ", ".join(CATEGORIES) + "> "
+        "--confidence <low|medium|high> --summary <one line> --detail <the "
+        "evidence> [--blocking]\n"
+        "When you are done, commit your verdict and end your turn:\n"
+        f"  {syscall_cmd} conclude --notes <a short summary for the reader>\n"
+        "A clean verification is a bare `conclude`. The verdict you commit is your "
+        "final answer — do not also restate it in a message."
+    )
 
 
 def build_verify_agent_brief(
@@ -309,14 +318,18 @@ def build_verify_agent_brief(
     contract_text: str,
     today: str | None = None,
     thread: tuple[tuple[str, str], ...] = (),
+    *,
+    syscall_cmd: str = DEFAULT_SYSCALL_CMD,
 ) -> str:
     """The verifier brief for an agent session: the shared rubric, the
     two-tree investigation instruction, and the claim/diff/thread. The ruler
     and file contents are NOT fenced in — the agent reads them from the
     checkouts (ruler from base/); the contract is still fenced from the base
-    branch so the rules arrive orchestrator-vouched."""
+    branch so the rules arrive orchestrator-vouched. `syscall_cmd` is the
+    command the judge runs to record its verdict (absolute when the caller knows
+    the workspace, so it resolves from any backend's cwd)."""
     return (
-        f"{VERIFY_SYSTEM_PROMPT}\n\n{AGENT_VERIFY_INVESTIGATION}\n\n"
+        f"{VERIFY_SYSTEM_PROMPT}\n\n{_agent_verify_investigation(syscall_cmd)}\n\n"
         f"{build_verify_prompt(pr, contract_text, today=today, thread=thread)}"
     )
 

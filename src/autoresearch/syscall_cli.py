@@ -311,7 +311,12 @@ def main(argv: list[str], root: Path | None = None) -> int:
     # argparse REMAINDER keeps a leading "--"; drop it for a clean command
     if getattr(args, "command", None) and args.command and args.command[0] == "--":
         args.command = args.command[1:]
-    root = root or Path.cwd()
+    # Root at the tool's own install location (<workspace>/.autoresearch/
+    # syscall -> the workspace), NEVER the caller's cwd: an agent may invoke
+    # the tool from a subdirectory or from another working directory entirely
+    # (hermes starts in its per-run home), and a cwd-rooted channel would
+    # silently commit the syscall where the kernel never looks.
+    root = root or Path(__file__).resolve().parent.parent
     try:
         print(_HANDLERS[args.cmd](root, args))
         return 0

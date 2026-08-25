@@ -40,6 +40,19 @@ class _Harness:
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
         self.briefs.append(brief_text)
+        if not self._err:
+            # commit the verdict through the syscall channel, as the tool would
+            try:
+                payload = json.loads(self._text)
+            except (json.JSONDecodeError, TypeError):
+                payload = None  # never concluded: no verdict written
+            if isinstance(payload, dict):
+                for f in payload.get("findings", []):
+                    if isinstance(f, dict):
+                        f.setdefault("kind", "note")  # the tool's own default
+                d = Path(workspace) / ".autoresearch"
+                d.mkdir(exist_ok=True)
+                (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(
             stop_reason="error" if self._err else "completed",
             is_error=self._err,
@@ -158,7 +171,8 @@ def test_brief_directs_ruler_reads_at_base() -> None:
     assert "Read the ruler source" in brief
     assert "`base/`" in brief and "`pr-head/`" in brief
     assert "contract: yes" in brief  # fenced from base, orchestrator-vouched
-    assert "do not run code" in brief.lower()
+    assert "python .autoresearch/syscall finding" in brief  # the emit path
+    assert "do not modify" in brief.lower()
 
 
 def test_bogus_category_clamps_to_other() -> None:
@@ -179,3 +193,50 @@ def test_bogus_category_clamps_to_other() -> None:
         "notes": "",
     }
     assert verify_result_from_data(data).findings[0].category == "other"
+
+
+def test_tokenless_split_emits_then_posts(tmp_path: Path) -> None:
+    # The write-token split: run_agent_verify(emit_path=...) writes the verdict
+    # to a file and posts NOTHING (the session job holds no write token); a
+    # separate post step (verify_post_cli) reads it and posts.
+    import json as _json
+
+    from autoresearch.verify_post_cli import post_from_file
+
+    ws = tmp_path / "two-trees"
+    ws.mkdir()
+    emit = tmp_path / "verdict.json"
+    session_client = _Client()
+    label = run_agent_verify(
+        session_client,  # type: ignore[arg-type]
+        "org/repo",
+        9,
+        _Harness(_FINDINGS),
+        ws,
+        bot_login=BOT,
+        emit_path=emit,
+    )
+    assert label == "emitted"
+    assert session_client.comments == []  # the session job posts nothing
+    envelope = _json.loads(emit.read_text())
+    assert envelope["repo"] == "org/repo" and envelope["number"] == 9
+    assert envelope["kind"] == "findings"
+
+    post_client = _Client()  # the write-token job, no session
+    round_label = post_from_file(post_client, "org/repo", 9, BOT, emit)  # type: ignore[arg-type]
+    assert round_label is not None
+    assert len(post_client.comments) == 1
+    assert "autoresearch:verification-review" in post_client.comments[0]
+
+
+def test_post_from_file_refuses_a_mismatched_pr(tmp_path: Path) -> None:
+    import json as _json
+
+    from autoresearch.verify_post_cli import post_from_file
+
+    emit = tmp_path / "verdict.json"
+    emit.write_text(_json.dumps({"repo": "org/repo", "number": 9, "kind": "findings", "data": {}}))
+    client = _Client()
+    # the artifact crosses a job boundary: an envelope naming another PR is refused
+    assert post_from_file(client, "org/repo", 10, BOT, emit) is None  # type: ignore[arg-type]
+    assert client.comments == []

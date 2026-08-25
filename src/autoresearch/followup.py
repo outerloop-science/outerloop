@@ -761,7 +761,8 @@ def main() -> int:
     # ending honest (cursors un-advanced on failure -> the next tick retries).
     import signal as _signal
 
-    from autoresearch.climb import arm_self_deadline, build_editor_harness
+    from autoresearch.climb import arm_self_deadline
+    from autoresearch.role_runner import build_harness
 
     armed = arm_self_deadline(args.job_minutes)
     if armed:
@@ -779,7 +780,7 @@ def main() -> int:
         outcome = respond_once(
             args.run_root,
             args.run_id,
-            harness=build_editor_harness(
+            harness=build_harness(
                 api_key,
                 spec,
                 backend=author_backend,

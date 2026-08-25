@@ -15,9 +15,14 @@ from autoresearch.role_runner import RoleResult
 from autoresearch.rolespec import Environment, Execution, RoleSpec, SessionBudget
 from autoresearch.verifier import VERIFY_SCHEMA, verify_result_from_data
 
-# Read-only investigation: repo-read plus the harness-provided pr-context and
-# retriever. No Write/Edit/Bash — a judge never executes untrusted PR code.
-_JUDGE_TOOLS = ("Read", "Grep", "Glob", "pr-context-read", "retriever")
+# Investigation plus a shell: repo-read, Bash (a judge records its verdict by
+# running the syscall tool, and may run code to check a claim), and the
+# harness-provided pr-context and retriever. Judges run like every other role;
+# the boundary is the deployment's (container or ephemeral runner) plus the
+# write-token split — the judge's session job holds at most a read-scoped token
+# (not worth lifting via /proc), and the write token lives in a separate post
+# job with no session next to it. Roles differ by prompt, not by tool posture.
+_JUDGE_TOOLS = ("Read", "Grep", "Glob", "Bash", "pr-context-read", "retriever")
 
 # The full editing set: the author implements, runs tests, and self-validates
 # inside its container. Execution is the role's job, not a leak.
@@ -66,24 +71,28 @@ def author_spec(
 def reviewer_spec(
     *, environment: Environment = "gh-runner", max_turns: int = 40, walltime_s: int = 1800
 ) -> RoleSpec:
-    """The advisory reviewer as a read-only agent session.
+    """The advisory reviewer as an agent session.
 
-    Investigates the PR head with the read tools and returns findings validated
-    against `review.FINDINGS_SCHEMA`. Read-only by construction — the RoleSpec
-    invariant rejects any mutating tool or write scope.
+    Investigates the PR head and records each finding through the installed
+    syscall tool (`finding` / `conclude`); the kernel reads the committed
+    verdict back authoritatively (`syscall.read_verdict`, which owns the one
+    canonical verdict shape — `output_schema` marks the role as a judge and
+    documents the downstream shape). It edits nothing (scope None) — the
+    deployment's boundary contains the session.
     """
     return RoleSpec(
         name="reviewer",
         instructions=(
             "Review the pull request for correctness and clarity. Investigate "
-            "beyond the diff with the read tools; do not execute code. Return the "
-            "findings as the required JSON object."
+            "beyond the diff with the read tools. Record each finding with the "
+            "installed syscall tool, then commit your verdict with its "
+            "`conclude` command and end your turn."
         ),
         key="reviewer",
         tools=_JUDGE_TOOLS,
-        execution=Execution(environment=environment, can_execute=False),
+        execution=Execution(environment=environment, can_execute=True),
         budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
-        skills=("kernel-primer", "plain-style", "review-rubric", "read-only-investigation"),
+        skills=("kernel-primer", "plain-style", "review-rubric", "investigation"),
         output_schema=FINDINGS_SCHEMA,
     )
 
@@ -91,25 +100,28 @@ def reviewer_spec(
 def verifier_spec(
     *, environment: Environment = "gh-runner", max_turns: int = 40, walltime_s: int = 1800
 ) -> RoleSpec:
-    """The verifier as a read-only agent session.
+    """The verifier as an agent session.
 
-    Investigates a bot PR's improvement claim with the read tools — the ruler
-    from the base checkout, the change from the head — and returns findings
-    validated against `verifier.VERIFY_SCHEMA` (the gaming taxonomy). Read-only
-    by construction, same as the reviewer."""
+    Investigates a bot PR's improvement claim — the ruler from the base
+    checkout, the change from the head — and records each finding through the
+    installed syscall tool (`--category` carries the gaming taxonomy; the
+    kernel reads the verdict back via `syscall.read_verdict`, which owns the
+    one canonical verdict shape and clamps unknown categories). It edits
+    nothing (scope None), same as the reviewer."""
     return RoleSpec(
         name="verifier",
         instructions=(
             "Verify the integrity of the benchmark improvement this bot PR "
             "claims. Read the ruler from the base checkout and follow the "
-            "change through the tree; do not execute code. Return the findings "
-            "as the required JSON object."
+            "change through the tree. Record each finding with the installed "
+            "syscall tool, then commit your verdict with its `conclude` "
+            "command and end your turn."
         ),
         key="verifier",
         tools=_JUDGE_TOOLS,
-        execution=Execution(environment=environment, can_execute=False),
+        execution=Execution(environment=environment, can_execute=True),
         budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
-        skills=("kernel-primer", "plain-style", "integrity-lens", "read-only-investigation"),
+        skills=("kernel-primer", "plain-style", "integrity-lens", "investigation"),
         output_schema=VERIFY_SCHEMA,
     )
 

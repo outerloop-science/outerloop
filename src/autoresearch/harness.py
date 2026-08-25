@@ -630,13 +630,12 @@ def _codex_command(
     Fresh and resume take DIFFERENT flags. `codex exec` has `--sandbox` and
     `--cd`; `codex exec resume <id>` has NEITHER (passing them is an argparse
     error) — it restores the recorded session, INCLUDING that session's sandbox
-    and cwd. Verified on codex-cli 0.130.0: resuming a `--sandbox read-only`
-    session with no sandbox flag still refuses writes, so a resumed read-only
-    reviewer stays jailed by inheritance, not by luck. The author adds
-    `--dangerously-bypass-approvals-and-sandbox` on resume anyway — its
-    danger-full-access is inherited, but the flag also skips approvals so a
-    headless write-heavy revise turn cannot stall. (Both authors and readers can
-    resume — readers via the structured-output repair turn.)
+    and cwd (verified on codex-cli 0.130.0). A `danger-full-access` session
+    (every role: the deployment's container or ephemeral runner is the
+    boundary, not codex's own sandbox) adds
+    `--dangerously-bypass-approvals-and-sandbox` on resume — the sandbox is
+    inherited anyway, but the flag also skips approvals so a headless
+    write-heavy turn cannot stall.
     """
     # --model is omitted when empty so codex uses its configured default; a
     # wrong model id is a 404 ("Model not found"), so only pin a verified one.
@@ -649,8 +648,8 @@ def _codex_command(
     ]
     if resume_session_id:
         # no --sandbox/--cd on resume: the recorded session's sandbox is
-        # inherited (read-only stays read-only). The author adds the bypass flag
-        # to also skip approvals headlessly; a reader inherits its read-only jail.
+        # inherited; the bypass flag also skips approvals so a headless turn
+        # cannot stall waiting for one.
         bypass = (
             ["--dangerously-bypass-approvals-and-sandbox"]
             if sandbox == "danger-full-access"
@@ -663,7 +662,7 @@ def _codex_command(
         "--json",  # JSONL events on stdout (session id, usage)
         *model_flag,
         "--sandbox",
-        sandbox,  # "read-only" for judge roles; "danger-full-access" for authors
+        sandbox,  # "danger-full-access": the deployment's boundary, not codex's
         "--cd",
         str(workspace),
         *tail,
@@ -737,27 +736,25 @@ def _parse_codex_result(
 class CodexHarness:
     """Headless OpenAI Codex CLI (`codex exec`) — a second Harness backend.
 
-    Stage 1's swappability proof, first used for the read-only reviewer
-    (docs/design/consolidation.md): Codex's own `--sandbox read-only` plus a
-    judge RoleSpec's tool set. CLI flags AND headless resume are verified against
-    codex-cli 0.130.0 (`session_id` = the `thread.started` `thread_id`; resume
-    recalls it); cost parsing stays best-effort (these backends are metered by a
-    session/token proxy in the budget layer).
+    Stage 1's swappability proof (docs/design/consolidation.md). CLI flags AND
+    headless resume are verified against codex-cli 0.130.0 (`session_id` = the
+    `thread.started` `thread_id`; resume recalls it); cost parsing stays
+    best-effort (these backends are metered by a session/token proxy in the
+    budget layer).
 
-    AUTHOR mode (`container_image` set): both `codex login` and `codex exec` run
-    inside `apptainer exec --containall --cleanenv`, sharing a bound `--home` so
-    the login's auth.json is visible to the exec. apptainer is the boundary — no
-    host FS beyond the two binds; `--cleanenv` scrubs the env down to the
-    author's own key, so the process tree carries no foreign token for a /proc
-    read to lift (the boundary is the scrubbed env, not PID isolation) — exactly
-    the posture of the Claude author. The AUTHOR passes `--sandbox
-    danger-full-access`: codex's own sandbox (`workspace-write`) needs bubblewrap,
-    absent in the image and unreliable nested in apptainer, and it is redundant
-    when apptainer already confines writes to the bound workspace+home. The host
-    codex binary is bind-mounted read-only into the container (like claude), so
-    the image stays codex-free and codex updates by swapping one host binary. The
-    reviewer path (no `container_image`) is unchanged: uncontained,
-    `--sandbox read-only`.
+    CONTAINED mode (`container_image` set): both `codex login` and `codex exec`
+    run inside `apptainer exec --containall --cleanenv`, sharing a bound
+    `--home` so the login's auth.json is visible to the exec. apptainer is the
+    boundary — no host FS beyond the two binds; `--cleanenv` scrubs the env
+    down to the role's own key, so the process tree carries no foreign token
+    for a /proc read to lift (the boundary is the scrubbed env, not PID
+    isolation) — the same posture as the Claude backend. `--sandbox
+    danger-full-access` uniformly: codex's own sandbox (`workspace-write`)
+    needs bubblewrap, absent in the image and unreliable nested in apptainer,
+    and the deployment's boundary (this container, or the ephemeral runner in
+    the uncontained case) already confines the session. The host codex binary
+    is bind-mounted read-only into the container (like claude), so the image
+    stays codex-free and codex updates by swapping one host binary.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
@@ -766,11 +763,13 @@ class CodexHarness:
     binary: str = "codex"
     # empty -> codex's configured default (a wrong id 404s); pin only a verified one
     model: str = ""
-    sandbox: str = "read-only"  # judge default; authors pass "workspace-write"
+    # the deployment's container or ephemeral runner is the boundary; codex's own
+    # sandbox stays off (it needs bubblewrap — absent/unreliable in apptainer)
+    sandbox: str = "danger-full-access"
     timeout_s: int = DEFAULT_TIMEOUT_S
     extra_args: tuple[str, ...] = field(default_factory=tuple)
-    # AUTHOR mode: when set, login+exec run inside this apptainer image. Empty =
-    # uncontained (the read-only reviewer path).
+    # when set, login+exec run inside this apptainer image; empty = uncontained
+    # (the deployment's runner is the boundary)
     container_image: str = ""
     apptainer_binary: str = "apptainer"
     # in-container path the host codex binary is bound to (bind-from-host, like
@@ -1065,21 +1064,13 @@ class HermesHarness:
     """Headless hermes-agent (Nous Research, MIT) — the OSS backend behind the
     Harness seam, driven via `uv run <repo>/run_agent.py` from a pinned clone.
 
-    ELIGIBILITY: author-side, or an EXPERIMENTAL judge — never a trusted judge,
-    and never on the auto path while a token is reachable. Hermes has no native
-    read-only toolset (its `file` toolset bundles write_file and patch, and
-    `approvals.deny` gates only shell), so it cannot enforce read-only at the tool
-    set the way Claude does. Critically, `file` READS ARBITRARY PATHS: even with
-    `terminal` disabled it can open /proc/<parent-pid>/environ and lift a
-    GITHUB_TOKEN held by the process that spawned it — the same /proc reach codex
-    has via shell, just via a file read. So "no shell" does NOT make it token-safe;
-    it must not judge next to a live token without the tokenless split (findings ->
-    artifact, a separate step posts). What IS bounded on an ephemeral runner is its
-    WRITES — inert (nothing to push, scrubbed env, container discarded), and only
-    where writes cannot persist. So: manual bench only (informed /proc caveat),
-    never the auto path, never the cluster/reused workspace, until an upstream
-    read/write toolset split or an OS jail that also hides /proc gives it a real
-    boundary. Claude stays the trusted default (native read-only tool set).
+    A first-class, interchangeable backend: like claude and codex, its boundary
+    is the deployment's (a container where one exists, the ephemeral runner
+    where one doesn't) plus the tokenless split — the session is spawned with a
+    scrubbed environment and no credential beyond its own key, so its `file`
+    toolset's arbitrary-path reads (including /proc) find nothing to lift, and
+    its writes are confined to the disposable workspace. Roles differ by
+    prompt, never by a hermes-specific posture.
     Instruction-file surface: hermes auto-loads AGENTS.md from the workspace,
     which sanitize_checkout already neutralizes in untrusted trees.
 
@@ -1107,10 +1098,7 @@ class HermesHarness:
     # approvals.deny: fnmatch globs hermes refuses before any yolo/mode-off
     # bypass (headless: a clean deny, never a hang). NOTE it matches SHELL
     # COMMANDS (the terminal tool), NOT the write_file/patch tool calls (source
-    # verified) — so it does NOT make a read-only judge. It is useful for the
-    # AUTHOR to hardline-forbid dangerous commands. A read-only hermes judge
-    # needs an OS-level jail (the checkout bind-mounted read-only) or an
-    # upstream split of the `file` toolset into read/write.
+    # verified). Useful to hardline-forbid specific dangerous commands.
     approvals_deny: tuple[str, ...] = ()
     model: str = ""  # OpenRouter format (provider/model); empty -> hermes default
     base_url: str = ""  # empty -> the seeded provider's own endpoint

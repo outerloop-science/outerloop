@@ -141,15 +141,17 @@ Two facts make this manageable.
 
 First, reading is not running. The deployed reviewer reads the PR head —
 untrusted code — and that is safe because reading it can only inform the
-model, not execute anything: the session has no execute or write tools, and
-file contents are treated as data, never as instructions. Running code is
-the dangerous act, and the read-only reviewer never runs anything.
+model. File contents are treated as data, never as instructions. The judge
+holds a shell (it records its verdict by running the installed syscall tool);
+what contains the session is the deployment's boundary — the ephemeral runner
+plus the tokenless split — not a per-role tool posture (see
+docs/design/role-cli.md, "the harness unification").
 
 Second, containment. Today the agent runs in a single GitHub-hosted step that
 holds the caller's workflow token (repo-scoped, short-lived) and a spend-capped
 model key. What keeps that manageable is the same-repo gate (no fork PR reaches
-it) plus the read-only tool set — and, on the auto path, only Claude, whose
-`Read` refuses `/proc` so a prompt-injected session cannot lift the step token
+it) plus the tokenless split: the session job holds nothing worth stealing, so
+even a prompt-injected session with a shell cannot lift a posting credential
 (see "Which backend can judge"). Two residual risks have bounded worst cases: a
 leaked spend-capped key is capped spend until rotation, not open-ended
 credential loss; a prompt-injected agent's text reaches a repo comment through
@@ -196,9 +198,9 @@ more seeded gaming per dollar before it ships.
 ## Status (2026-08-13)
 
 The agent-session reviewer is live. It runs as a reusable workflow
-(`.github/workflows/advisory-review-agent.yml`): on a PR it checks out the head
-read-only, runs the reviewer as an agent that reads the code (no Bash/Write, so
-untrusted PR code is only read, never executed), and posts findings. Claude on
+(`.github/workflows/advisory-review-agent.yml`): on a PR it checks out the
+head, runs the reviewer as an agent that investigates the code and records its
+verdict through the installed syscall tool, and posts findings. Claude on
 GitHub-hosted runners is the default — its reads are native, so it needs no
 second sandbox; codex's default bwrap sandbox cannot init on GitHub-hosted
 runners (its Landlock fallback can, but on a deprecated flag with a `/proc` read
@@ -236,8 +238,9 @@ path-opening tool.
   the same reach as codex, via a file read (finding, 2026-08-14). Its *writes*
   are inert on an ephemeral runner, but that bounds the wrong thing; the token
   read is what matters. Not token-safe.
-- **Claude Code (2.1.229):** the strongest boundary — a native read-only tool
-  set (Read/Grep/Glob, no Write/Edit/Bash), so no writes and no shell. The new
+- **Claude Code (2.1.229):** historical note — judges then ran a native
+  read-only tool set (Read/Grep/Glob); since the harness unification they hold
+  a shell like every role, and the tokenless split is the boundary. The /proc
   axis raised the question: can `Read` open `/proc/<pid>/environ`? PROBED
   2026-08-14 (claude-proc-probe, opus-5, faithful harness mimic): `Read` REFUSES
   both `/proc/<parent-pid>/environ` and `/proc/self/environ` — a tool-level

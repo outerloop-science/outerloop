@@ -1,4 +1,4 @@
-"""Agent-session verifier: runs the verifier as an agent over TWO read-only
+"""Agent-session verifier: runs the verifier as an agent over TWO
 checkouts — the PR head (the change under review) and the base branch (the
 trusted contract and ruler).
 
@@ -19,7 +19,7 @@ from pathlib import Path
 from autoresearch.github import GitHubClient
 from autoresearch.harness import Harness, backend_id, budget_exhausted, outage
 from autoresearch.posting import EXPECTED_FAILURES, post_round, post_skip_stub
-from autoresearch.review_agent import _pull_request
+from autoresearch.review_agent import _emit, _pull_request
 from autoresearch.role_runner import run_role
 from autoresearch.roles import verifier_spec, verify_result_from_role
 from autoresearch.rolespec import RoleSpec
@@ -57,21 +57,41 @@ def run_agent_verify(
     bot_login: str,
     spec: RoleSpec | None = None,
     today: str | None = None,
+    emit_path: Path | None = None,
 ) -> str | None:
     """Verify bot PR #`number` as an agent session over `workspace`, a
-    directory holding the two read-only checkouts the workflow prepared:
+    directory holding the two checkouts the workflow prepared:
     `pr-head/` (the change) and `base/` (trusted contract + ruler). Posts the
     findings as one issue comment per round. Returns the round label, or None
     when it skipped or could not produce a verdict. Advisory: never raises the
     expected failures.
+
+    With `emit_path` (the tokenless split, mirroring the reviewer): nothing is
+    posted — the raw verdict, or a skip-stub, is written there for a separate
+    write-token job (`verify_post_cli`). The session job then needs only a
+    read-scoped token, so a shell judge has no write credential to lift.
     """
     spec = spec or verifier_spec()
     today = today or datetime.now(UTC).date().isoformat()
+    reviewed_by = backend_id(harness)
+
+    def _skip_stub(detail: str) -> None:
+        # `detail` is already api-key-redacted by the harness (it owns its own
+        # secret), so no secret is passed here.
+        if emit_path is not None:
+            _emit(emit_path, repo, number, kind="skip-stub", detail=detail, reviewed_by=reviewed_by)
+        else:
+            post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
+
     try:
         pr, pr_data = _pull_request(client, repo, number)
         skip = verify_skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping verification of %s#%s: %s", repo, number, skip)
+            # a clean skip still leaves an envelope so the post job can REQUIRE
+            # an artifact — a missing one then always means a broken session
+            if emit_path is not None:
+                _emit(emit_path, repo, number, kind="skip-clean", detail=skip)
             return None
 
         contract_text = _base_contract(client, repo, pr_data)
@@ -81,7 +101,11 @@ def run_agent_verify(
         except EXPECTED_FAILURES as exc:
             log.warning("verifying without the discussion thread: %s", exc)
 
-        brief = build_verify_agent_brief(pr, contract_text, today=today, thread=thread)
+        from autoresearch.syscall import tool_command
+
+        brief = build_verify_agent_brief(
+            pr, contract_text, today=today, thread=thread, syscall_cmd=tool_command(workspace)
+        )
         role_result = run_role(spec, harness, brief, workspace)
         result = verify_result_from_role(role_result)
         if result is None:
@@ -92,17 +116,29 @@ def run_agent_verify(
             detail = role_result.error or role_result.session.stop_reason
             log.warning("verification produced no verdict on %s#%s: %s", repo, number, detail)
             if outage(role_result.session) or budget_exhausted(role_result.session):
-                # `detail` is already api-key-redacted by the harness (it owns
-                # its own secret), so no secrets are passed here.
-                post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
+                _skip_stub(detail)
+            elif emit_path is not None:
+                # nothing worth posting, but the post job still needs an
+                # artifact so a MISSING one always means a broken session
+                _emit(emit_path, repo, number, kind="skip-clean", detail=detail)
             return None
 
+        if emit_path is not None:
+            _emit(
+                emit_path,
+                repo,
+                number,
+                kind="findings",
+                data=role_result.data,
+                reviewed_by=reviewed_by,
+            )
+            return "emitted"
         body = format_verify_comment(result)
         if body is None:
             log.info("nothing to post")
             return None
         round_label = post_round(
-            client, repo, number, VERIFY_MARKER, body, pr_data, reviewed_by=backend_id(harness)
+            client, repo, number, VERIFY_MARKER, body, pr_data, reviewed_by=reviewed_by
         )
         log.info("posted verification (%s) on %s#%s", round_label, repo, number)
         return round_label

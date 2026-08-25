@@ -192,25 +192,43 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
-# Prepended to the shared rubric for the agent-session reviewer: it has a
-# read-only checkout and the read tools, so it can investigate beyond the diff.
-AGENT_INVESTIGATION = (
-    "The repository is checked out read-only in your working directory. Use Read, "
-    "Grep, and Glob to investigate beyond the diff: the surrounding code, callers, "
-    "and tests. The checked-out code is part of your evidence, so you may cite file "
-    "contents you read. You have no execute or write tools; do not run code.\n\n"
-    "When done, reply with ONLY a JSON object and nothing else: `findings` (a "
-    "list) and `notes` (a string). Each finding has `file`, `line` (or null), "
-    "`confidence` (low, medium, or high), `summary`, `detail`, `blocking` (true "
-    "or false), and `kind` (change, suggestion, question, or note)."
-)
+# The tool invocation the caller passes when it knows the workspace; the default
+# (workspace-relative) is for callers/tests that don't. `syscall.tool_command`
+# renders the absolute form — needed because not every backend's cwd is the
+# workspace (hermes runs from its per-run home).
+DEFAULT_SYSCALL_CMD = "python .autoresearch/syscall"
 
 
-def build_agent_brief(pr: PullRequest, today: str | None = None) -> str:
+def _agent_investigation(syscall_cmd: str) -> str:
+    """The investigation instruction: read the tree for evidence, and record
+    the verdict through the installed syscall tool (each call validated on the
+    spot; the kernel reads the committed verdict back — docs/design/role-cli.md)."""
+    return (
+        "The repository is checked out in your working directory. Use Read, Grep, "
+        "and Glob to investigate beyond the diff: the surrounding code, callers, "
+        "and tests. The checked-out code is part of your evidence, so you may cite "
+        "file contents you read. Do not modify the tree — your only product is the "
+        "verdict.\n\n"
+        "Record each finding as you confirm it, one command per finding:\n"
+        f"  {syscall_cmd} finding --file <path> [--line N] "
+        "--confidence <low|medium|high> --summary <one line> --detail <the "
+        "evidence> [--blocking] --kind <change|suggestion|question|note>\n"
+        "When you are done, commit your verdict and end your turn:\n"
+        f"  {syscall_cmd} conclude --notes <a short summary for the reader>\n"
+        "A review with no defects is a bare `conclude`. The verdict you commit is "
+        "your final answer — do not also restate it in a message."
+    )
+
+
+def build_agent_brief(
+    pr: PullRequest, today: str | None = None, *, syscall_cmd: str = DEFAULT_SYSCALL_CMD
+) -> str:
     """The reviewer brief for an agent session: the shared rubric, the
     investigation instruction, and the PR itself, built on the shared
-    `build_prompt` so brief and rubric stay in one place."""
-    return f"{SYSTEM_PROMPT}\n\n{AGENT_INVESTIGATION}\n\n{build_prompt(pr, today)}"
+    `build_prompt` so brief and rubric stay in one place. `syscall_cmd` is the
+    command the judge runs to record its verdict (absolute when the caller knows
+    the workspace, so it resolves from any backend's cwd)."""
+    return f"{SYSTEM_PROMPT}\n\n{_agent_investigation(syscall_cmd)}\n\n{build_prompt(pr, today)}"
 
 
 def build_prompt(pr: PullRequest, today: str | None = None) -> str:

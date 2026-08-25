@@ -1,7 +1,7 @@
 """Entry point for the agent-session advisory reviewer.
 
-Runs the reviewer as a read-only agent over a PR-head checkout the workflow
-prepared (REVIEW_CHECKOUT), and posts the findings inline. Exits 0 even on skip
+Runs the reviewer as an agent over a PR-head checkout the workflow prepared
+(REVIEW_CHECKOUT), and posts the findings inline. Exits 0 even on skip
 or failure — an advisory reviewer must never turn a target repo's CI red.
 """
 
@@ -15,10 +15,11 @@ from pathlib import Path
 from autoresearch.github import EnvTokenProvider, GitHubClient
 from autoresearch.review_agent import (
     _emit,
-    build_reviewer_harness,
     run_agent_review,
     sanitize_checkout,
 )
+from autoresearch.role_runner import build_harness
+from autoresearch.roles import reviewer_spec
 
 log = logging.getLogger(__name__)
 
@@ -118,14 +119,7 @@ def main() -> int:
         return 0
     # Backend-specific deployment config, resolved from env so the workflow
     # (which knows the host) supplies it, never the pure builder:
-    #   codex on GitHub-hosted needs the Landlock sandbox — the default bwrap
-    #     cannot init there (verified 2026-08-13), so the workflow opts in.
     #   hermes needs its pinned clone and a provider to seed ~/.hermes/config.
-    sandbox_extra: tuple[str, ...] = ()
-    if backend == "codex" and os.environ.get(
-        "REVIEW_CODEX_LEGACY_LANDLOCK", ""
-    ).strip().lower() in ("1", "true", "yes"):
-        sandbox_extra = ("-c", "use_legacy_landlock=true")
     hermes_repo: Path | None = None
     provider = ""
     if backend == "hermes":
@@ -172,8 +166,8 @@ def main() -> int:
                     reviewed_by=backend,
                 )
             return 0
-    # The workflow checks out the PR head read-only into REVIEW_CHECKOUT; the
-    # agent reads it but never executes it (read-only tool set). Fail closed:
+    # The workflow checks out the PR head into REVIEW_CHECKOUT for the agent
+    # to investigate (it records its verdict via the syscall tool). Fail closed:
     # defaulting to cwd would silently review the wrong tree (the reviewer's
     # own repo) if the checkout step were misconfigured.
     checkout = os.environ.get("REVIEW_CHECKOUT", "").strip()
@@ -204,14 +198,14 @@ def main() -> int:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
 
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
-    harness = build_reviewer_harness(
+    harness = build_harness(
         api_key,
+        reviewer_spec(),
         backend=backend,
         binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
         model=review_model or None,
         hermes_repo=hermes_repo,
-        provider=provider,
-        sandbox_extra=sandbox_extra,
+        hermes_provider=provider,
     )
     # Least-token split: with REVIEW_EMIT_FILE set, findings are written there
     # instead of posted — this job then needs only READ permissions, and a

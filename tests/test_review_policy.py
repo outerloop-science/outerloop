@@ -13,8 +13,6 @@ from autoresearch.review import format_review
 from autoresearch.role_runner import RoleResult, run_role
 from autoresearch.roles import review_result_from_role, reviewer_spec
 
-_WORKSPACE = Path("/tmp/does-not-matter")
-
 # a diff whose new side has an anchorable line in models/encoder.py
 _DIFF = (
     "diff --git a/models/encoder.py b/models/encoder.py\n"
@@ -26,43 +24,49 @@ _DIFF = (
     "     pass\n"
 )
 
-_AGENT_FINDINGS = json.dumps(
-    {
-        "findings": [
-            {
-                "file": "models/encoder.py",
-                "line": 2,
-                "confidence": "high",
-                "summary": "input_gain is a per-layer LR in disguise",
-                "detail": "This belongs in the initializer/LR seam, not forward().",
-                "blocking": True,
-            }
-        ],
-        "notes": "one blocking finding",
-    }
-)
+_AGENT_FINDINGS = {
+    "findings": [
+        {
+            "file": "models/encoder.py",
+            "line": 2,
+            "confidence": "high",
+            "summary": "input_gain is a per-layer LR in disguise",
+            "detail": "This belongs in the initializer/LR seam, not forward().",
+            "blocking": True,
+            "kind": "change",
+        }
+    ],
+    "notes": "one blocking finding",
+}
 
 
 class _Harness:
-    def __init__(self, final_text: str) -> None:
-        self._final_text = final_text
+    """A judge session: commits a verdict through the syscall channel (as the
+    tool would), or commits nothing when given None."""
+
+    def __init__(self, verdict: dict | None) -> None:
+        self._verdict = verdict
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
+        if self._verdict is not None:
+            d = Path(workspace) / ".autoresearch"
+            d.mkdir(exist_ok=True)
+            (d / "syscall.json").write_text(json.dumps({"type": "verdict", **self._verdict}))
         return SessionResult(
             stop_reason="completed",
             is_error=False,
             cost_usd=0.0,
             num_turns=1,
             session_id="s",
-            final_text=self._final_text,
+            final_text="(verdict via tool)",
             transcript_path="",
         )
 
 
-def test_agent_findings_flow_to_inline_review_payload() -> None:
-    role_result = run_role(reviewer_spec(), _Harness(_AGENT_FINDINGS), "brief", _WORKSPACE)
+def test_agent_findings_flow_to_inline_review_payload(tmp_path: Path) -> None:
+    role_result = run_role(reviewer_spec(), _Harness(_AGENT_FINDINGS), "brief", tmp_path)
     review = review_result_from_role(role_result)
     assert review is not None
     assert len(review.findings) == 1
@@ -85,9 +89,8 @@ def test_failed_role_yields_no_review() -> None:
     assert review_result_from_role(failed) is None
 
 
-def test_malformed_agent_output_yields_no_review() -> None:
-    # never validates -> run_role fails -> policy returns None (post a skip stub)
-    role_result = run_role(
-        reviewer_spec(), _Harness("not json"), "brief", _WORKSPACE, max_repairs=0
-    )
+def test_no_verdict_yields_no_review(tmp_path: Path) -> None:
+    # the judge never concluded -> run_role fails -> policy returns None
+    # (post a skip stub)
+    role_result = run_role(reviewer_spec(), _Harness(None), "brief", tmp_path)
     assert review_result_from_role(role_result) is None

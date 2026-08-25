@@ -45,6 +45,19 @@ class _Judge:
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         self.workspaces.append(Path(workspace))
+        if not self.is_error:
+            # commit the verdict through the syscall channel, as the tool would
+            try:
+                payload = json.loads(self.text)
+            except (json.JSONDecodeError, TypeError):
+                payload = None  # never concluded: no verdict written
+            if isinstance(payload, dict):
+                for f in payload.get("findings", []):
+                    if isinstance(f, dict):
+                        f.setdefault("kind", "note")  # the tool's own default
+                d = Path(workspace) / ".autoresearch"
+                d.mkdir(exist_ok=True)
+                (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(
             stop_reason="error" if self.is_error else "completed",
             is_error=self.is_error,

@@ -33,7 +33,6 @@ from autoresearch.climb import (
     _best_effort,
     arm_self_deadline,
     arm_sigterm_containment,
-    build_editor_harness,
 )
 from autoresearch.contract import Contract, load_contract
 from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
@@ -54,7 +53,7 @@ from autoresearch.progress import (
     load_leader,
     write_progress,
 )
-from autoresearch.role_runner import run_role
+from autoresearch.role_runner import build_harness, run_role
 from autoresearch.roles import steward_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -805,7 +804,7 @@ def main() -> int:
             config=StewardConfig(target=args.target, benchmark=args.benchmark),
             run_root=args.run_root,
             run_id=run_id,
-            harness=build_editor_harness(
+            harness=build_harness(
                 api_key,
                 spec,
                 binary=args.claude_bin,

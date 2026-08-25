@@ -6,9 +6,13 @@ reads a RoleSpec to decide what a session sees (skills, tools), how it is
 constrained (key, scope, execution), and how its output is checked
 (`output_schema`).
 
-The one hard invariant here is the read-only judge boundary: a reviewer or
-verifier investigates a PR but never executes untrusted code, so it may not
-hold a mutating tool or a write scope (docs/design/reviewer-infra.md).
+Every role runs the same way — a session inside the deployment's boundary (a
+container where one exists, the ephemeral runner where one doesn't) with no
+write credential in reach (a judge's session job holds at most a read-scoped
+token; writes happen in a separate post job) — and roles differ by prompt,
+verbs, and output handling, never by a bespoke containment posture. The
+invariant kept here is consistency: a spec that declares itself non-executing
+may not hold a mutating tool or a write scope.
 """
 
 from __future__ import annotations
@@ -20,8 +24,8 @@ RoleName = Literal["author", "reviewer", "verifier", "steward", "followup"]
 KeyFamily = Literal["author", "reviewer", "verifier", "steward"]
 Environment = Literal["apptainer", "gh-runner", "local"]
 
-# Tools that change files or run code. A read-only judge is granted none of
-# these: the security boundary is the tool set, not a prompt asking nicely.
+# Tools that change files or run code. A spec that declares can_execute=False
+# must not hold any of these — the declaration and the tool set must agree.
 MUTATING_TOOLS: frozenset[str] = frozenset({"Write", "Edit", "Bash"})
 
 
@@ -55,19 +59,16 @@ class RoleSpec:
     execution: Execution
     budget: SessionBudget
     skills: tuple[str, ...] = ()
-    # Judges only: the final artifact must validate against this JSON schema.
-    # None for editing roles, whose artifact is a workspace diff, not a verdict.
+    # A role WITH a schema is a judge: it records findings through the
+    # installed syscall tool (`finding` / `conclude`, docs/design/role-cli.md)
+    # and the kernel reads the committed verdict back authoritatively
+    # (`syscall.read_verdict`, which owns the one canonical verdict shape; the
+    # schema here marks the role and documents the downstream shape). None for
+    # editing roles, whose artifact is a workspace diff, not a verdict.
     output_schema: dict[str, Any] | None = None
-    # Editing roles only: repo-relative write allowlist. None for read-only
-    # judges — declared here for legibility, enforced by the tool set too.
+    # Editing roles only: repo-relative write allowlist. None for judges —
+    # they investigate and record a verdict; they do not edit the tree.
     scope: tuple[str, ...] | None = None
-    # Judges only: emit the verdict through the installed syscall tool (the
-    # `finding` / `conclude` syscalls) instead of a final JSON message
-    # (docs/design/role-cli.md). Requires `output_schema` (a verdict IS that
-    # schema). The role runs the tool with a shell in the jail, same as an
-    # author — the deployment builds the harness to match (`run_role` gates on
-    # this flag alone). A spec without it uses the parse-and-repair path.
-    verdict_tool: bool = False
 
     def __post_init__(self) -> None:
         if not self.tools:
@@ -82,5 +83,7 @@ class RoleSpec:
                 raise RoleSpecError(
                     f"read-only role {self.name!r} edits nothing; scope must be None"
                 )
-        if self.verdict_tool and self.output_schema is None:
-            raise RoleSpecError(f"role {self.name!r}: verdict_tool needs an output_schema")
+        if self.output_schema is not None and self.scope is not None:
+            raise RoleSpecError(
+                f"judge {self.name!r} records a verdict, never edits; scope must be None"
+            )

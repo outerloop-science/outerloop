@@ -33,7 +33,7 @@ more things fall out of the same move:
 
 ```
 candidate measured improved (and suite-gated, when shared paths were touched)
-  → PANEL: parallel read-only sessions, one per lens
+  → PANEL: judge sessions, one per lens (run sequentially)
       verifier      — integrity lens (gaming, leakage, claim consistency);
                       strongest model
       code-reviewer — correctness/cleanliness lens; may run on a cheaper

@@ -26,7 +26,7 @@ def _patch(monkeypatch: Any, env: dict[str, str]) -> dict[str, Any]:
     calls: dict[str, Any] = {}
     monkeypatch.setattr(
         cli,
-        "build_reviewer_harness",
+        "build_harness",
         lambda api_key, spec, **k: calls.update(key=api_key, spec=spec) or "harness",
     )
     monkeypatch.setattr(

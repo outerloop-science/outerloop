@@ -26,8 +26,8 @@ def _patch(monkeypatch: Any, env: dict[str, str]) -> dict[str, Any]:
     # test can assert the backend is actually forwarded
     monkeypatch.setattr(
         cli,
-        "build_reviewer_harness",
-        lambda api_key, **k: calls.update(build_key=api_key, build_kwargs=k) or "harness",
+        "build_harness",
+        lambda api_key, spec, **k: calls.update(build_key=api_key, build_kwargs=k) or "harness",
     )
     monkeypatch.setattr(
         cli,
@@ -86,7 +86,7 @@ def test_hermes_backend_reads_openrouter_key(monkeypatch: Any, tmp_path: Path) -
     assert calls["build_kwargs"]["backend"] == "hermes"
     assert calls["build_key"] == "sk-or-test"
     assert calls["build_kwargs"]["hermes_repo"] == tmp_path.resolve()
-    assert calls["build_kwargs"]["provider"] == "openrouter"
+    assert calls["build_kwargs"]["hermes_provider"] == "openrouter"
 
 
 def test_hermes_backend_without_repo_skips(monkeypatch: Any) -> None:
@@ -160,7 +160,7 @@ def test_hermes_openai_provider_reads_the_openai_key(monkeypatch: Any, tmp_path:
     calls = _patch(monkeypatch, env)
     assert cli.main() == 0
     assert calls["build_key"] == "sk-openai-test"
-    assert calls["build_kwargs"]["provider"] == "openai"
+    assert calls["build_kwargs"]["hermes_provider"] == "openai"
 
 
 def test_unknown_hermes_provider_in_emit_mode_writes_a_stub(
@@ -301,4 +301,4 @@ def test_explicitly_empty_hermes_provider_means_the_default(
     calls = _patch(monkeypatch, env)
     assert cli.main() == 0
     assert calls["build_key"] == "sk-or-test"
-    assert calls["build_kwargs"]["provider"] == "openrouter"
+    assert calls["build_kwargs"]["hermes_provider"] == "openrouter"
