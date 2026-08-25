@@ -331,6 +331,7 @@ def run_live(
     author_backend="claude",
     author_model="claude-opus-5",
     author_key_file="",
+    author_syscalls=False,
 ) -> tuple:
     github = FakeGitHub()
     outcome = live_climb(
@@ -348,6 +349,7 @@ def run_live(
         author_backend=author_backend,
         author_model=author_model,
         author_key_file=author_key_file,
+        author_syscalls=author_syscalls,
     )
     return outcome, github
 
@@ -1747,6 +1749,34 @@ CONTRACT_SYSCALLS = CONTRACT.replace("    direction: min\n", "    direction: min
 @pytest.fixture
 def target_repo_syscalls(tmp_path: Path, monkeypatch) -> Path:
     return _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+
+
+def test_author_syscalls_flag_arms_the_feature_without_the_env(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    # the one-off validation switch: `--author-syscalls` (run_live's
+    # author_syscalls=True) arms the launch/sleep feature with the env flag
+    # UNSET, so a validation climb need not arm the whole tick.
+    import json as json_mod
+
+    monkeypatch.delenv("AUTORESEARCH_AUTHOR_SYSCALLS", raising=False)
+    monkeypatch.setattr(climb_mod, "AUTHOR_SLEEP_WAKE_READY", True)
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {"type": "sleep", "launches": [{"name": "probe", "command": "uv run probe.py"}]}
+            ),
+        },
+        values=[],  # parked before any measurement
+        dispatch=_fake_dispatch(),
+        author_syscalls=True,  # armed by the flag, not the env
+    )
+    assert outcome.outcome == "parked"
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.state == "waiting" and record.stage["phase"] == "author-sleep"
 
 
 def test_author_sleep_live_parks_and_submits_launch_jobs(

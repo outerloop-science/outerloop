@@ -1509,6 +1509,7 @@ def live_climb(
     panel_lenses: tuple[PanelLens, ...] = (),
     panel_revisions: int = 1,
     dispatch: DispatchSettings | None = None,
+    author_syscalls: bool = False,
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo. With `panel_lenses`, the
     pre-PR verification panel gates the claim before any PR exists
@@ -1573,11 +1574,13 @@ def live_climb(
         contract = load_contract(contract_text, config.target)
         # With author syscalls armed, the channel (`.autoresearch/`) never
         # enters diffs, scope, or drift fingerprints — repo-local exclude.
-        # Gated on the SAME flag as the launcher: with the feature off, an
-        # untracked `.autoresearch/` file must be staged and judged like any
-        # other agent edit, not silently hidden by a magic dir name (terra,
-        # #132 r2 — the off state stays byte-identical to today).
-        author_syscalls = bool(os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS"))
+        # Enabled by the `author_syscalls` arg OR the env flag (the tick inherits
+        # env; a one-off validation climb passes `--author-syscalls` so it need
+        # not arm the whole tick). With the feature off, an untracked
+        # `.autoresearch/` file must be staged and judged like any other agent
+        # edit, not silently hidden by a magic dir name (terra, #132 r2 — the off
+        # state stays byte-identical to today).
+        author_syscalls = author_syscalls or bool(os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS"))
         if author_syscalls and not AUTHOR_SLEEP_WAKE_READY:
             log.warning(
                 "AUTORESEARCH_AUTHOR_SYSCALLS is set but the wake side is not "
@@ -2406,6 +2409,16 @@ def main() -> int:
     )
     parser.add_argument("--panel-revisions", type=int, default=1)
     parser.add_argument(
+        "--author-syscalls",
+        action="store_true",
+        help="arm the author launch/sleep syscalls for THIS climb (a one-off "
+        "validation switch; equivalent to AUTORESEARCH_AUTHOR_SYSCALLS=1 but "
+        "scoped to this run, so it need not arm the whole tick). Launches need "
+        "dispatch coords (--image + account/partition) — without a launcher the "
+        "tool is simply not offered. The benchmark's depth_k caps how many "
+        "launches the author may make (default 1, enough to validate one).",
+    )
+    parser.add_argument(
         "--job-minutes",
         type=int,
         default=0,
@@ -2640,6 +2653,7 @@ def main() -> int:
                 panel_lenses=panel_lenses,
                 panel_revisions=args.panel_revisions,
                 dispatch=dispatch,
+                author_syscalls=args.author_syscalls,
                 evaluator=SubprocessEvaluator(container_image=args.image),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
