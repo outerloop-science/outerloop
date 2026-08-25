@@ -396,6 +396,7 @@ def run_live(
     author_backend="claude",
     author_model="claude-opus-5",
     author_key_file="",
+    eval_image="",
 ) -> tuple:
     github = FakeGitHub()
     # ONE value queue, shared: the gate's local eval jobs (QueueCompute) and
@@ -418,6 +419,7 @@ def run_live(
             author_backend=author_backend,
             author_model=author_model,
             author_key_file=author_key_file,
+            eval_image=eval_image,
         )
     return outcome, github
 
@@ -1811,6 +1813,24 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
     # climb ran to a normal ending
     assert outcome.outcome == "improved"
     assert sbatched == []
+
+
+def test_configured_image_contains_local_evals_without_cluster_coords(
+    tmp_path, target_repo
+) -> None:
+    # --image with no account/partition: dispatch is None, but the local eval
+    # jobs must still run jailed — an incomplete cluster triple must not
+    # silently drop the container
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 9\n"},
+        values=[13.876, 13.1],
+        eval_image="/img.sif",
+    )
+    assert outcome.outcome == "improved"
+    jobs = list((tmp_path / "state" / "runs" / "tsp-1").glob("eval-*/job.sh"))
+    assert jobs and all("/img.sif" in j.read_text() for j in jobs)
 
 
 def test_syscalls_off_without_dispatch_treats_stray_files_as_edits(tmp_path, target_repo) -> None:

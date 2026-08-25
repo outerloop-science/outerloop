@@ -1461,6 +1461,7 @@ def live_climb(
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
     dispatch: DispatchSettings | None = None,
+    eval_image: str = "",
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo. With `panel_lenses`, the
     pre-PR verification panel gates the claim before any PR exists
@@ -1650,7 +1651,9 @@ def live_climb(
                 compute=LocalCompute(),
                 run_dir=run_dir,
                 repo_root=workspace,
-                image=dispatch.image if dispatch is not None else "",
+                # a configured image contains LOCAL evals too — the cluster
+                # triple being incomplete must not silently drop the jail
+                image=dispatch.image if dispatch is not None else eval_image,
                 account="",
                 partition="",
                 eval_minutes=int(eval_minutes or 0),
@@ -2578,6 +2581,7 @@ def main() -> int:
                 panel_lenses=panel_lenses,
                 dispatch=dispatch,
                 evaluator=SubprocessEvaluator(container_image=args.image),
+                eval_image=args.image,
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
