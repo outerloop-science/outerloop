@@ -16,7 +16,9 @@ terminate healthy runs.
 from __future__ import annotations
 
 import logging
+import os
 import shlex
+import signal
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -243,6 +245,7 @@ class LocalCompute:
 
     _states: dict[str, str] = field(default_factory=dict)
     _seq: int = 0
+    minute_s: int = 60  # a walltime minute; tests shrink it to exercise the kill
 
     def submit(self, spec: JobSpec) -> str:
         if bool(spec.command) == bool(spec.script):
@@ -252,15 +255,29 @@ class LocalCompute:
         self._seq += 1
         job_id = str(_LOCAL_JOB_BASE + self._seq)
         try:
-            completed = subprocess.run(
-                argv, capture_output=True, text=True, timeout=spec.time_minutes * 60
+            # the job runs in its OWN session (= process group), so the
+            # walltime kill takes the whole tree — a job script waiting on
+            # children must not leave them running past the walltime, exactly
+            # as Slurm kills the job's group
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
             )
-            state = "COMPLETED" if completed.returncode == 0 else "FAILED"
-            output = completed.stdout + completed.stderr
-        except subprocess.TimeoutExpired:
-            state, output = "TIMEOUT", ""
         except OSError as exc:
             raise SlurmError(f"local job {spec.job_name} failed to start: {exc}") from exc
+        try:
+            output, _ = proc.communicate(timeout=spec.time_minutes * self.minute_s)
+            state = "COMPLETED" if proc.returncode == 0 else "FAILED"
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid (new session)
+            except ProcessLookupError:
+                pass  # the group exited between the timeout and the kill
+            output, _ = proc.communicate()
+            state = "TIMEOUT"
         if spec.output and spec.output != "/dev/null":
             try:
                 with open(spec.output, "w") as fh:

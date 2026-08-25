@@ -220,3 +220,19 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
     plan = plan_measures(command="true", metric="s", base_sha=base, candidate_sha=cand)
     with pytest.raises(EvalError, match="without a result"):
         m.results(plan)
+
+
+def test_walltime_kill_takes_the_whole_process_group(tmp_path: Path) -> None:
+    # Slurm kills the job's process group at walltime; a local job script
+    # waiting on a child must not leave that child running past it
+    import os
+    import time
+
+    pidfile = tmp_path / "child.pid"
+    lc = LocalCompute(minute_s=1)  # 1-minute walltime == 1 second, for the test
+    job = lc.submit(_spec(command=f"sleep 300 & echo $! > {pidfile}; wait", minutes=1))
+    assert lc.status(job) == "TIMEOUT"
+    child = int(pidfile.read_text().strip())
+    time.sleep(0.1)  # let the SIGKILL land
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)  # the child died with the group
