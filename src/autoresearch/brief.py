@@ -236,7 +236,9 @@ def render(brief: SessionBrief) -> str:
             "    python .autoresearch/syscall sleep",
             "",
             "`status` shows staged launches and remaining budget; `note ...` "
-            "leaves a reminder echoed back to you on wake. Bad arguments fail "
+            "leaves a reminder echoed back to you on wake. `--artifact` must "
+            "name a file your command actually writes (stdout/stderr are "
+            "captured regardless). Bad arguments fail "
             "immediately — fix and retry before sleeping. You may launch "
             "several jobs before one sleep, and after a wake you can launch "
             "more, revise, or finish. Budgets this run: "

@@ -245,6 +245,33 @@ def test_blind_park_before_its_deadline_is_left_alone(tmp_path: Path) -> None:
     assert dispatcher.dispatched == []
 
 
+def test_multi_job_park_wakes_when_all_afterany_jobs_finish(tmp_path: Path) -> None:
+    """A multi-job park (candidate + siblings, several author launches)
+    records no single experiment_job_id — the sweep polls every id in the
+    stage's afterany string instead of riding the deadline floor for hours
+    (observed live 2026-08-25)."""
+    waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        stage={"afterany": "afterany:200:201", "phase": "candidate"},
+    )
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"200": "COMPLETED", "201": "COMPLETED"}))
+    assert report.woken == (("r1", "COMPLETED"),)
+
+
+def test_multi_job_park_waits_while_any_afterany_job_runs(tmp_path: Path) -> None:
+    waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        terminal_seen=0.0,
+        stage={"afterany": "afterany:200:201", "phase": "candidate"},
+    )
+    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={"200": "COMPLETED", "201": "RUNNING"}))
+    assert dispatcher.dispatched == []
+    # not all done: the grace clock must NOT start on a partial finish
+    assert load_record(tmp_path, "r1").terminal_seen == 0.0
+
+
 def test_terminal_within_grace_leaves_it_to_the_afterany_job(tmp_path: Path) -> None:
     waiting_run(tmp_path, terminal_seen=NOW - 10)  # first seen moments ago
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
