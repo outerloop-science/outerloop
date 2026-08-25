@@ -2204,6 +2204,39 @@ def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept
 
 
+def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, monkeypatch):
+    # terra #144 r3: a submitted candidate whose wake dispatches MORE measures
+    # (the suite fans out) re-parks BEFORE any author wake — the new stage must
+    # keep the submitted marker, the budget counts, and the sibling-launch
+    # descriptors, or the next wake drafts instead of waking the author and
+    # the launches' results are never gathered.
+    from autoresearch.measure import MeasurementPending
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602"))
+    )
+    rec = load_record(state, run_id)
+    rec.stage["submitted"] = True
+    rec.stage["syscall_launches"] = [{"name": "probe", "artifacts": ["out.txt"]}]
+    rec.stage["launches_used"] = 1
+    rec.stage["sleeps_used"] = 1
+    save_record(state, rec, 1_000_050.0)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "parked"
+    record = load_record(state, run_id)
+    assert record.state == "waiting"
+    assert record.stage.get("submitted") is True
+    assert record.stage["syscall_launches"] == [{"name": "probe", "artifacts": ["out.txt"]}]
+    assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
+
+
 def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     # candidate beats baseline -> branch the sealed sha, fold in the ledger,
     # push, open the PR against main; the record goes in-review.

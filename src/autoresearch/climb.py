@@ -849,6 +849,33 @@ def resume_run(
         # resolved and the suite pairs fanned out); a blind re-park (empty
         # afterany) or the same jobs still pending is NO progress, so the stuck
         # cap must keep counting.
+        if stage.get("submitted"):
+            # No author was woken yet, so a SUBMITTED park's re-park (the suite
+            # fanned out) still owes the author the gate+panel results and its
+            # sibling launches' results — carry the submit context forward, or
+            # the next wake drafts instead of waking the author and the launch
+            # descriptors are lost (terra #144 r3). Commands/minutes are spent
+            # history; the wake needs only names + artifacts (as persisted).
+            from autoresearch.syscall import Launch as _Launch
+            from autoresearch.syscall import SyscallRequest as _SyscallRequest
+
+            parked.submitted = True
+            parked.launches_used = int(stage.get("launches_used", 0))  # type: ignore[call-overload]
+            parked.sleeps_used = int(stage.get("sleeps_used", 0))  # type: ignore[call-overload]
+            if parked.syscall is None:
+                parked.syscall = _SyscallRequest(
+                    launches=tuple(
+                        _Launch(
+                            name=str(item.get("name", "")),
+                            command="(ran)",
+                            minutes=1,
+                            artifacts=tuple(str(a) for a in item.get("artifacts", [])),
+                        )
+                        for item in _stage_launches(record)
+                    ),
+                    note=str(stage.get("syscall_note", "")),
+                    submit=True,
+                )
         old_afterany = str(record.stage.get("afterany", ""))
         made_progress = bool(parked.afterany) and parked.afterany != old_afterany
         _park_run(
