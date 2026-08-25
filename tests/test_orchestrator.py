@@ -329,6 +329,36 @@ def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
     assert harness.resumes == [None, "s1"]  # the author heard the gate result
 
 
+def test_inline_gate_never_dispatches_a_submits_sibling_launches(tmp_path: Path) -> None:
+    # terra #144 r2: siblings dispatch only once the gate has PROVEN dispatched
+    # (inside the MeasurementPending handler) — an inline gate would orphan
+    # launch jobs no wake ever gathers. The author is told they did not run
+    # and their budget stays unspent.
+    _write_syscall(
+        tmp_path,
+        {"launches": [{"name": "probe", "command": "x"}], "submit": True},
+    )
+    launched: list = []
+    harness = _SeqHarness(["the claim", "conceded"])
+    evaluator = FakeEvaluator(values=[13.9, 13.9, 13.9])
+    measurer, snapshot = _wire(evaluator, tmp_path)
+    result = climb_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        launcher=_fake_launcher(launched),
+    )
+    assert result.outcome == "no-improvement"
+    assert launched == []  # nothing dispatched, nothing orphaned
+
+
 def test_syscalls_are_ignored_without_a_launcher(tmp_path: Path) -> None:
     # feature off (no launcher wired): a stray request file is inert and the
     # climb behaves exactly as today.

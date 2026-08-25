@@ -1183,6 +1183,16 @@ def climb_once(
             f"{max(0, bench.sleep_k - sleeps_used)} sleeps remaining."
         )
 
+    def _not_run_note(request: SyscallRequest | None) -> str:
+        # inline gates never dispatch a submit's sibling launches (nothing
+        # would gather them) — tell the author; their budget was not spent
+        if request is None or not request.launches:
+            return ""
+        return (
+            "Your sibling launches did NOT run (the gate completed inline); "
+            "stage them again if still needed. "
+        )
+
     while True:
         # the syscall request the session's last leg left, if any
         submitted: SyscallRequest | None = None
@@ -1209,11 +1219,12 @@ def climb_once(
             if not problem:
                 if request.submit:
                     # a submit rides the measurement below on the SEALED tree —
-                    # "a launch whose job is the gate" (buildout Phase B). Its
-                    # sibling launches are submitted after the scope check +
-                    # snapshot; the sleep it rides on is counted now.
+                    # "a launch whose job is the gate" (buildout Phase B). The
+                    # sleep it rides on is counted now; sibling launches are
+                    # dispatched (and counted) only if the gate parks — an
+                    # inline gate must never orphan launch jobs no wake would
+                    # gather (terra #144 r2).
                     submitted = request
-                    launches_used += len(request.launches)
                     sleeps_used += 1
                     break
                 # Scope BEFORE the snapshot, same invariant as the candidate
@@ -1295,13 +1306,6 @@ def climb_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-        # a submit's sibling launches ride the same park, submitted on the
-        # sealed sha AFTER the scope check so a launch never runs
-        # out-of-scope code (same invariant as the launch-only path above)
-        launch_afterany = ""
-        if submitted is not None and submitted.launches:
-            assert launcher is not None  # a submit only arrives through it
-            launch_afterany = launcher(candidate_sha, submitted)
         try:
             outcome = measure_and_decide(
                 contract,
@@ -1319,7 +1323,15 @@ def climb_once(
             # reads the cached results and decides — or, on a SUBMITTED park,
             # delivers them back to the author. Carries the candidate sha
             # and the session so the caller persists the snapshot ref (drop at
-            # the terminal state) and the resume session id.
+            # the terminal state) and the resume session id. A submit's sibling
+            # launches ride the SAME park, dispatched only HERE — once the gate
+            # has proven dispatched — on the sealed sha (scope was checked
+            # above, so a launch never runs out-of-scope code).
+            launch_afterany = ""
+            if submitted is not None and submitted.launches:
+                assert launcher is not None  # a submit only arrives through it
+                launch_afterany = launcher(candidate_sha, submitted)
+                launches_used += len(submitted.launches)
             raise ClimbParked(
                 phase="candidate",
                 afterany=_merge_afterany(pending.afterany(), launch_afterany),
@@ -1347,7 +1359,8 @@ def climb_once(
                     "Your `submit` did NOT clear the gate: "
                     f"{outcome.note or outcome.outcome} "
                     f"(baseline {outcome.baseline}, candidate {outcome.candidate}). "
-                    f"{_budgets_line()} Revise and submit again, run more "
+                    f"{_not_run_note(submitted)}{_budgets_line()} "
+                    "Revise and submit again, run more "
                     "experiments, or finish with an honest negative report."
                 )
                 if failed is not None:
@@ -1393,7 +1406,7 @@ def climb_once(
             # (buildout Phase B: the author drives the depth axis; the
             # orchestrator-driven revision policy is retired). The loop then
             # re-reads its next syscall; the revision re-measures from scratch.
-            failed = _resume(f"{verdict.wake_text}\n\n{_budgets_line()}")
+            failed = _resume(f"{verdict.wake_text}\n\n{_not_run_note(submitted)}{_budgets_line()}")
             if failed is not None:
                 return failed
             continue
