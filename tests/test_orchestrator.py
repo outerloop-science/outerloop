@@ -369,7 +369,7 @@ def test_syscalls_are_ignored_without_a_launcher(tmp_path: Path) -> None:
 
 
 def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> None:
-    # default depth_k=1: a two-launch ask exceeds the budget. The author is
+    # depth_k=1 here: a two-launch ask exceeds the budget. The author is
     # woken ONCE with the refusal (same session), then the climb measures the
     # tree as it stands. Nothing was launched.
     _write_syscall(
@@ -377,7 +377,10 @@ def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> 
         {"launches": [{"name": "a", "command": "x"}, {"name": "b", "command": "y"}]},
     )
     launched: list = []
-    result, harness, _ = run_climb(tmp_path, [13.876, 13.10], launcher=_fake_launcher(launched))
+    tight = CONTRACT.replace("    direction: min\n", "    direction: min\n    depth_k: 1\n", 1)
+    result, harness, _ = run_climb(
+        tmp_path, [13.876, 13.10], contract=tight, launcher=_fake_launcher(launched)
+    )
     assert result.outcome == "improved" and launched == []
     refusal_text, _ws, resumed = harness.calls[1]  # second call = the refusal wake
     assert "REFUSED" in refusal_text and "launch budget" in refusal_text

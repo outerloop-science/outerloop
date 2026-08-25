@@ -290,13 +290,6 @@ def _post_issue_finished(
 # would cancel a still-queued job as "unschedulable".
 PARK_QUEUE_SLACK_MIN = 12 * 60
 
-# Author syscalls (research-loop-buildout.md Phase A) ship in two parts: the
-# sleep side exists, the WAKE (gather launch results, resume the session) is
-# part 2. Until part 2 flips this, arming AUTORESEARCH_AUTHOR_SYSCALLS alone
-# must not produce an unwakeable author-sleep park (terra, #132 r5) — the
-# feature stays off, loudly.
-AUTHOR_SLEEP_WAKE_READY = True  # Phase A part 2 shipped: the wake services author-sleep parks
-
 
 def _park_run(
     run_root: Path,
@@ -1469,7 +1462,6 @@ def live_climb(
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
     dispatch: DispatchSettings | None = None,
-    author_syscalls: bool = False,
 ) -> LiveClimbOutcome:
     """Run one climb against the real target repo. With `panel_lenses`, the
     pre-PR verification panel gates the claim before any PR exists
@@ -1532,21 +1524,22 @@ def live_climb(
         base_sha = ws.git("rev-parse", f"origin/{base_branch}").strip()
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
-        # With author syscalls armed, the channel (`.autoresearch/`) never
-        # enters diffs, scope, or drift fingerprints — repo-local exclude.
-        # Enabled by the `author_syscalls` arg OR the env flag (the tick inherits
-        # env; a one-off validation climb passes `--author-syscalls` so it need
-        # not arm the whole tick). With the feature off, an untracked
-        # `.autoresearch/` file must be staged and judged like any other agent
-        # edit, not silently hidden by a magic dir name (terra, #132 r2 — the off
-        # state stays byte-identical to today).
-        author_syscalls = author_syscalls or bool(os.environ.get("AUTORESEARCH_AUTHOR_SYSCALLS"))
-        if author_syscalls and not AUTHOR_SLEEP_WAKE_READY:
-            log.warning(
-                "AUTORESEARCH_AUTHOR_SYSCALLS is set but the wake side is not "
-                "built yet (Phase A part 2); author syscalls stay OFF this run"
-            )
-            author_syscalls = False
+        # Author syscalls (research-loop.md, "one syscall") are CONTRACT-DRIVEN:
+        # armed whenever the deployment can deliver them — dispatch coords (the
+        # launches and the gate run as Slurm jobs) and a resumable backend (the
+        # wake resumes the SAME session) — and the benchmark has not opted out
+        # (`depth_k: 0`). With the channel (`.autoresearch/`) armed it never
+        # enters diffs, scope, or drift fingerprints — repo-local exclude. With
+        # the feature off, an untracked `.autoresearch/` file must be staged
+        # and judged like any other agent edit, not silently hidden by a magic
+        # dir name (terra, #132 r2 — the off state stays byte-identical).
+        _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
+        author_syscalls = (
+            dispatch is not None
+            and getattr(harness, "supports_resume", True)
+            and _bench is not None
+            and _bench.depth_k > 0
+        )
         # The `.autoresearch/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
         # (install would write through it to a host path with our permissions —
@@ -1562,18 +1555,17 @@ def live_climb(
             )
             author_syscalls = False
         if author_syscalls:
+            assert _bench is not None
             syscall_excluded(workspace)
             # the author's interface is the TOOL (`python .autoresearch/syscall
             # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
             # install it plus the informational budget its `status` shows.
             syscall_install_tool(workspace)
-            _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
-            if _bench is not None:
-                syscall_write_budget(
-                    workspace,
-                    launches_remaining=_bench.depth_k,
-                    sleeps_remaining=_bench.sleep_k,
-                )
+            syscall_write_budget(
+                workspace,
+                launches_remaining=_bench.depth_k,
+                sleeps_remaining=_bench.sleep_k,
+            )
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -1678,15 +1670,14 @@ def live_climb(
             snapshots.append(snap)
             return snap.commit
 
-        # Author syscalls (research-loop-buildout.md Phase A), dark by default:
-        # offered only when the operator arms AUTORESEARCH_AUTHOR_SYSCALLS, the
-        # dispatcher has cluster coordinates (the launches are Slurm jobs), and
-        # the backend can resume (the wake resumes the SAME session).
-        # `author_syscalls` already reflects the channel-ownership guard above
-        # (a target-shipped `.autoresearch` — symlink, tracked request, or any
-        # other pre-existing form — has disabled the feature for this run).
+        # `author_syscalls` already folds every enablement condition — dispatch
+        # coords, a resumable backend, the benchmark's opt-out, and the
+        # channel-ownership guard above (a target-shipped `.autoresearch` —
+        # symlink, tracked request, or any other pre-existing form — has
+        # disabled the feature for this run).
         launcher = None
-        if author_syscalls and dispatch is not None and getattr(harness, "supports_resume", True):
+        if author_syscalls:
+            assert dispatch is not None  # folded into author_syscalls above
             launcher = _make_launcher(dispatch, run_dir, workspace, run_id)
 
         parked: ClimbParked | None = None
@@ -2367,16 +2358,6 @@ def main() -> int:
         help="key file for panel judge sessions (the verifier's own key, never the author's)",
     )
     parser.add_argument(
-        "--author-syscalls",
-        action="store_true",
-        help="arm the author launch/sleep syscalls for THIS climb (a one-off "
-        "validation switch; equivalent to AUTORESEARCH_AUTHOR_SYSCALLS=1 but "
-        "scoped to this run, so it need not arm the whole tick). Launches need "
-        "dispatch coords (--image + account/partition) — without a launcher the "
-        "tool is simply not offered. The benchmark's depth_k caps how many "
-        "launches the author may make (default 1, enough to validate one).",
-    )
-    parser.add_argument(
         "--job-minutes",
         type=int,
         default=0,
@@ -2613,7 +2594,6 @@ def main() -> int:
                 spec=spec,
                 panel_lenses=panel_lenses,
                 dispatch=dispatch,
-                author_syscalls=args.author_syscalls,
                 evaluator=SubprocessEvaluator(container_image=args.image),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,

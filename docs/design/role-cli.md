@@ -72,7 +72,8 @@ lands with tests, and deletes what it replaces.
 The wake for `author-sleep` parks: gather each launch's results from the run
 dir, deliver declared artifacts into `.autoresearch/results/<name>/`, resume
 the **same session** through the climb's resume-entry (#129) with the results
-data-fenced, update the budget file, and flip `AUTHOR_SLEEP_WAKE_READY`. Plus
+data-fenced, update the budget file. (The transitional `AUTHOR_SLEEP_WAKE_READY`
+constant and env-flag arming have since retired: enablement is contract-driven.) Plus
 the brief/skill section that advertises the tool (never advertised before it
 can wake). **Acceptance:** an armed author launches, hibernates through a real
 (faked-Slurm in tests) job, wakes with output + artifacts, continues, and the
