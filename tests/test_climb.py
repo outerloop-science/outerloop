@@ -123,7 +123,9 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
     # floor rides the launch, so a healthy queued job never gets swept
     assert r.deadline == 1000.0 + (180 + 12 * 60) * 60
     assert r.stage["phase"] == "author-sleep"
-    assert r.stage["syscall_launches"] == [{"name": "train", "artifacts": ["out/curve.json"]}]
+    assert r.stage["syscall_launches"] == [
+        {"name": "train", "minutes": 180, "artifacts": ["out/curve.json"]}
+    ]
     assert r.stage["syscall_note"] == "compare to the lr sweep"
     assert r.resume_session_id == "s9"  # the record's own field; no stage duplicate
     assert r.stage["launches_used"] == 1 and r.stage["sleeps_used"] == 1
@@ -1820,7 +1822,9 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert record.state == "waiting"
     assert record.stage["phase"] == "author-sleep"
     assert record.stage["afterany"] == "afterany:1000"
-    assert record.stage["syscall_launches"] == [{"name": "probe", "artifacts": ["out/tails.json"]}]
+    assert record.stage["syscall_launches"] == [
+        {"name": "probe", "minutes": 45, "artifacts": ["out/tails.json"]}
+    ]
     assert record.stage["syscall_note"] == "look at the tails"
     assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
     assert record.resume_session_id == "s1"  # the wake resumes the SAME session
@@ -2217,7 +2221,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     )
     rec = load_record(state, run_id)
     rec.stage["submitted"] = True
-    rec.stage["syscall_launches"] = [{"name": "probe", "artifacts": ["out.txt"]}]
+    rec.stage["syscall_launches"] = [{"name": "probe", "minutes": 240, "artifacts": ["out.txt"]}]
     rec.stage["launches_used"] = 1
     rec.stage["sleeps_used"] = 1
     save_record(state, rec, 1_000_050.0)
@@ -2233,8 +2237,13 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     record = load_record(state, run_id)
     assert record.state == "waiting"
     assert record.stage.get("submitted") is True
-    assert record.stage["syscall_launches"] == [{"name": "probe", "artifacts": ["out.txt"]}]
+    assert record.stage["syscall_launches"] == [
+        {"name": "probe", "minutes": 240, "artifacts": ["out.txt"]}
+    ]
     assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
+    # the deadline floor still covers the longest sibling launch (240 min) —
+    # an undershot floor would let the sweep cancel a healthy queued launch
+    assert record.deadline >= 1_000_100.0 + 240 * 60
 
 
 def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
@@ -2938,7 +2947,7 @@ def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
     assert outcome.outcome == "parked"
     record = load_record(state, run_id)
     assert record.stage["phase"] == "author-sleep"
-    assert record.stage["syscall_launches"] == [{"name": "second", "artifacts": []}]
+    assert record.stage["syscall_launches"] == [{"name": "second", "minutes": 30, "artifacts": []}]
     assert record.stage["launches_used"] == 2 and record.stage["sleeps_used"] == 2
     # the second launch's job script was written for the sealed NEW tree
     assert (state / "runs" / run_id / "eval-launch-second" / "job.sh").exists()

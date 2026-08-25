@@ -358,7 +358,11 @@ def _park_run(
         # carry the launch names/artifacts, the author's note, and the budget
         # counts as of this park.
         stage["syscall_launches"] = [
-            {"name": launch.name, "artifacts": list(launch.artifacts)}
+            # minutes ride along so a RE-PARK's deadline floor still covers the
+            # longest launch (terra #144 r4) — without them a rebuilt descriptor
+            # would undershoot the floor and the sweep could cancel a healthy
+            # queued sibling as "pending past deadline"
+            {"name": launch.name, "minutes": launch.minutes, "artifacts": list(launch.artifacts)}
             for launch in parked.syscall.launches
         ]
         stage["syscall_note"] = redact(parked.syscall.note, secrets)
@@ -564,7 +568,7 @@ def _wake_author_sleep(
         SyscallLaunch(
             name=str(item.get("name", "")),
             command="(ran)",
-            minutes=1,
+            minutes=int(item.get("minutes") or 1),
             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
         )
         for item in _stage_launches(record)
@@ -868,7 +872,9 @@ def resume_run(
                         _Launch(
                             name=str(item.get("name", "")),
                             command="(ran)",
-                            minutes=1,
+                            # the persisted walltime, so the re-park's deadline
+                            # floor still covers the longest launch
+                            minutes=int(item.get("minutes") or 1),
                             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
                         )
                         for item in _stage_launches(record)
