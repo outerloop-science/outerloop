@@ -6,6 +6,16 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Multi-job parks are no longer blind: the tick's backup sweep now polls every
+  job id in the stage's `afterany` string when a park records no single
+  `experiment_job_id` (a candidate with sibling evals, or several author
+  launches) and wakes when ALL are done. Previously such a park's only wake
+  was the deadline floor — observed live as ~12 h of dead time after evals
+  that finished in minutes. The park-time afterany wake job (zero-latency
+  primary) remains planned; the sweep stays the backup.
+
 ### Added
 
 - `climb --author-syscalls` — a one-off switch to arm the author launch/sleep
