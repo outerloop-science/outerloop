@@ -145,13 +145,13 @@ the key.
 
 Two facts make this manageable.
 
-First, reading is not running. The deployed reviewer reads the PR head —
-untrusted code — and that is safe because reading it can only inform the
-model. File contents are treated as data, never as instructions. The judge
-holds a shell (it records its verdict by running the installed syscall tool);
-what contains the session is the deployment's boundary — the ephemeral runner
+First, the judge is NOT read-only. It holds a shell — it records its verdict
+by running the installed syscall tool — so a prompt-injected PR head could get
+it to execute PR-head code. "Reading is not running" is no longer the argument.
+What contains the session is the deployment's boundary — the ephemeral runner
 plus the tokenless split — not a per-role tool posture (see
-docs/design/role-cli.md, "the harness unification").
+docs/design/role-cli.md, "the harness unification"). File contents are still
+treated as data, never as instructions.
 
 Second, containment. Today the agent runs in a single GitHub-hosted step that
 holds the caller's workflow token (repo-scoped, short-lived) and a spend-capped
@@ -174,12 +174,14 @@ The residual read-scoped token drops to zero at the public flip.
 
 What is safe today, precisely. The agent workflows run only on same-repo PRs
 (the reviewer via `pull_request_target`'s same-repo gate; the verifier only on
-bot-authored branches), so no fork PR reaches them. That makes an agent that
-only reads safe to run now. It does not make running the PR's code safe.
-Bot-authored code is model-generated — the exact thing this note says not to run
-next to a secret — so even on internal PRs, executing the eval uses the guarded
-`run-candidate` path, never a direct run. Reading is what today's setup
-licenses; running is always guarded. The split workflow is what gates accepting
+bot-authored branches), so no fork PR reaches them. That is what makes the session safe to run now —
+the head is same-repo and the session is disposable and tokenless-for-write —
+NOT the tool set, since the judge can be induced to run PR-head code. Two kinds
+of execution, kept distinct: the DELIBERATE measurement of a candidate still
+goes through the guarded `run-candidate`/eval path, never a direct run next to
+a secret; INCIDENTAL execution by a prompt-injected judge is now possible, and
+its worst case is bounded by the disposable, tokenless session (capped-spend
+model key, no write credential). The split workflow is what gates accepting
 fork PRs after the repo goes public. See `public-surface.md` for that threat
 model.
 
@@ -266,8 +268,10 @@ but NONE closes the `/proc` read while the token sits in a parent process.
 Consequence for deployment: **every auto-path judge runs through the
 least-token split** (`advisory-review-agent.yml`), claude included — no
 session sits next to a write token, so backend choice is config, not a trust
-decision. Claude's write-safe/exec-safe/`/proc`-safe properties (probe above)
-remain as defense in depth, and the single-job manual bench
+decision. (Exec-safety is no longer assumed for ANY backend — every judge now
+holds a shell to run the syscall tool — which is exactly why the tokenless
+split, not the tool set, is the load-bearing defense; claude's `/proc`-safe
+Read is at most a mild backend-specific bonus.) The single-job manual bench
 (`review-agent.yml`) keeps the informed-caveat rule for one-off experiments.
 On private repos the split's session job still carries a read-scoped token
 (worst case: reading a repo the session already reads); at the public flip
