@@ -42,24 +42,41 @@ shape: privileged context + attacker-influenced event.
 
 Current mitigations already in the reusable workflow
 (`advisory-review-agent.yml`): the fork gate
-(`head.repo.full_name == github.repository`) sits before any step, and
-nothing from the PR is ever executed. Since the agent-reviewer swap the
-workflow DOES check out the PR head — read-only, `persist-credentials:
-false` — and the session that reads it has no execute or write tools and a
-scrubbed environment (no workflow token), so PR content can only inform the
-model as data, never run or exfiltrate. Fork-PR review remains out of scope
-until it gets its own design.
+(`head.repo.full_name == github.repository`) sits before any step, so no
+fork PR ever reaches the session. The workflow checks out the PR head
+(`persist-credentials: false`) and the judge runs with a shell over it — so a
+prompt-injected PR could get the judge to EXECUTE its checked-out code. That is
+not the boundary; the boundary is that the session is disposable and holds
+nothing worth taking for a WRITE: a scrubbed environment and no write token
+(the tokenless split keeps that in a separate post job). The credentials that
+ARE in the session — and a shell judge can `/proc`-read them — are its own
+spend-capped, role-isolated model API key and a READ-scoped `GITHUB_TOKEN`
+(and, while the reviewer repo is private, a read-only deploy key; see
+reviewer-infra.md). None of those can write to the repo. So the residual
+exposure of a shell judge on a bare runner is capped spend plus reading what a
+read-scoped token already reads, plus whatever it can egress from that
+ephemeral runner — accepted for an advisory role (the container/cluster path is
+the tighter option). Making the session carry NO token — not even the read
+one it exports today — is planned for the public flip, not yet in place. Fork-PR
+review remains out of scope until it gets its own design.
 
 **Audit checklist before any public flip** (each item verified on the live
 workflow files of the repo being flipped, not on memory of them):
 
 1. The fork gate is present, at the JOB level, on every caller workflow —
    and its polarity is "same repo only", not an allowlist that can drift.
-2. No step checks out, builds, installs, or executes anything from the PR
-   head (including transitively: no `uv sync` against the PR's lockfile, no
-   pre-commit on its config).
-3. `permissions:` blocks are minimal (`contents: read`,
-   `pull-requests: write`) on caller and reusable workflows alike.
+2. The judge session runs a shell over the PR-head checkout, so it CAN be
+   induced to execute PR-head code — that is acceptable ONLY because item 1
+   restricts the head to the SAME repo (fork code never reaches it) and the
+   session job is disposable and holds no write token (item 3). Verify those
+   hold; do NOT rely on "PR code is never executed" — it is, and the boundary
+   is the runner + the token split, not the tool set. (The post job, which
+   does hold the write token, runs NO session and touches nothing from the head.)
+3. The token split holds: the JOB that runs the session has at most
+   `pull-requests: read` (its shell judge can `/proc`-read whatever is in its
+   env, so no write token may be there); the separate post JOB holds
+   `pull-requests: write` and runs no session. Verify per-job `permissions:`,
+   not just top-level.
 4. Labels that trigger privileged runs (`autoresearch:review`): GitHub
    allows label application at TRIAGE, not write — so GitHub's own
    permission model is NOT sufficient gating on a public repo with triage
