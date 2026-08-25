@@ -104,7 +104,7 @@ real Slurm job, resumes with the output, and continues — observed end-to-end;
 exhaustion surfaces as a refused launch, not a killed session; an author that
 never launches is byte-identical to today.
 
-## Phase B — submit as a payload
+## Phase B — submit as a payload — LANDED
 
 Surfaced to the author as the `submit` verb on the role CLI (`role-cli.md`,
 Phase 1 — the tool from #133 grows the verb; the JSON stays internal ABI).
@@ -159,6 +159,6 @@ against fakes before that.)
    the existing park/wake plumbing + #129 resume primitives; tested on fakes.
 2. **Light up the dispatcher** on a real long-eval benchmark; observe Phase A
    end-to-end.
-3. **Phase B — submit-for-review as a payload**, retiring the orchestrator
-   panel-revision loop; suite gate + metric taxonomy land alongside.
+3. **Phase B — submit-for-review as a payload** — LANDED (the orchestrator
+   panel-revision loop is retired); suite gate + metric taxonomy still to come.
 4. Parallel/coordination helpers only if recurring author patterns earn them.

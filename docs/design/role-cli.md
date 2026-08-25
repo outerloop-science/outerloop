@@ -78,17 +78,17 @@ can wake). **Acceptance:** an armed author launches, hibernates through a real
 (faked-Slurm in tests) job, wakes with output + artifacts, continues, and the
 whole loop is byte-identical when unarmed.
 
-### Phase 1 — `submit`: review as a verb (buildout Phase B)
+### Phase 1 — `submit`: review as a verb (buildout Phase B) — LANDED
 
-**Prerequisite: #133 merged** (the author launch/sleep CLI — in review as this
-plan is written; the tool this phase grows a verb on).
 `syscall submit` on the author tool: the agent declares its candidate ready;
-the kernel seals, runs the gate (private seed) + panel as jobs, and wakes the
-author with verdict + comments; the author revises / experiments more /
-resubmits / concludes. Retires the orchestrator-driven panel-revision loop
-(`panel_revisions` policy re-entry) **in the same PR** (invariant 3).
-**Acceptance:** submit → sleep → wake-with-findings → further experiment →
-resubmit → PR, on one session thread; a clean first submit still opens a PR.
+the kernel seals the tree, runs the gate (paired evals, and any sibling
+launches, as jobs) and the panel on the credited claim. A clean pass
+publishes the sealed candidate as a PR directly; a failed gate or blocking
+findings wake the SAME session with the feedback and the author decides —
+revise/resubmit, more experiments, or an honest negative finish. The
+orchestrator-driven panel-revision loop (`panel_revisions` policy re-entry)
+was retired in the same PR (invariant 3); a plain finish with blocking
+findings drafts the PR for a human. A submit costs the sleep it rides on.
 
 ### Phase 2 — judge verdicts as a syscall type (highest reliability leverage)
 

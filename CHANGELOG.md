@@ -18,6 +18,26 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The `submit` verb (research-loop-buildout.md Phase B; role-cli.md Phase 1):
+  the author declares its candidate ready with `syscall submit` + `sleep` —
+  the tree is SEALED, the gate's paired evals (and any sibling launches) run
+  as jobs, and the review panel reads the credited claim. A clean pass
+  publishes the sealed candidate as a PR directly; a failed gate or blocking
+  findings wake the SAME session with the feedback and the author decides —
+  revise and resubmit, run more experiments, or finish with an honest
+  negative. A submit costs only the sleep it rides on (`sleep_k` bounds the
+  rounds; no new dial).
+
+### Removed
+
+- The orchestrator-driven panel-revision loop, retired in favor of
+  author-driven revision via `submit` (buildout Phase B invariant: the swap
+  lands in one PR). `panel_revisions` / `--panel-revisions`, the
+  `_panel_revise_policy` composition seam, and the candidate wake's
+  `_do_revise` re-entry are deleted. A plain finish (no submit) still runs
+  the same gate and panel, but blocking findings now always open a DRAFT PR
+  for a human — they no longer re-enter the author by kernel policy.
+
 - `climb --author-syscalls` — a one-off switch to arm the author launch/sleep
   syscalls for a SINGLE climb (equivalent to `AUTORESEARCH_AUTHOR_SYSCALLS=1`,
   ORed with it, but scoped to the run so a live validation need not arm the

@@ -107,6 +107,11 @@ class SyscallRequest:
 
     launches: tuple[Launch, ...]
     note: str = ""  # the author's reminder-to-self, echoed back on wake
+    # research-loop-buildout.md Phase B: a submit is a launch whose job is the
+    # GATE (paired baseline/candidate on the sealed tree) plus the panel; the
+    # wake returns verdict + gate result to the author (published directly when
+    # it clears cleanly). Costs the sleep it rides on, nothing else.
+    submit: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,12 +168,15 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # so anything else here (e.g. a verdict) is a wrong-type request, not a sleep.
     if data.get("type") != "sleep":
         raise SyscallError(f"expected a sleep syscall, got type {data.get('type')!r}")
-    unknown = set(data) - {"type", "launches", "note"}
+    unknown = set(data) - {"type", "launches", "note", "submit"}
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
     note = data.get("note", "")
     if not isinstance(note, str) or len(note) > MAX_NOTE_CHARS:
         raise SyscallError(f"note must be a string of at most {MAX_NOTE_CHARS} chars")
+    submit = data.get("submit", False)
+    if not isinstance(submit, bool):
+        raise SyscallError("submit must be a boolean")
     raw_launches = data.get("launches", [])
     if not isinstance(raw_launches, list):
         raise SyscallError("launches must be a list")
@@ -212,7 +220,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # a sleep with no launches is legitimate: checkpoint-and-reschedule
     # (research-loop.md, "the session clock is visible") — it still burns a
     # sleep count, which is what bounds living forever.
-    return SyscallRequest(launches=tuple(launches), note=note)
+    return SyscallRequest(launches=tuple(launches), note=note, submit=submit)
 
 
 def read_verdict(workspace: Path) -> dict[str, Any] | None:

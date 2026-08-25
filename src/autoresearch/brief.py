@@ -233,6 +233,7 @@ def render(brief: SessionBrief) -> str:
             "",
             "    python .autoresearch/syscall launch --name <handle> "
             "--minutes <N> --artifact <repo-relative file> -- <command>",
+            "    python .autoresearch/syscall submit",
             "    python .autoresearch/syscall sleep",
             "",
             "`status` shows staged launches and remaining budget; `note ...` "
@@ -246,6 +247,16 @@ def render(brief: SessionBrief) -> str:
             "sleeps (a `sleep` with nothing staged is a checkpoint that "
             "refreshes your session clock and costs one sleep). Spend them as "
             "your judgment says; they are generous, not a target to exhaust.",
+            "",
+            "When your candidate is READY, stage `submit` and then `sleep`: "
+            "your tree is sealed, measured against the baseline, and read by "
+            "the review panel. A clean pass is published as a PR directly; "
+            "otherwise you wake with the gate result or the panel's findings "
+            "and decide — revise and submit again, run more experiments, or "
+            "finish with an honest negative report. A submit costs only the "
+            "sleep it rides on. Finishing WITHOUT a submit still runs the "
+            "same gate and panel, but blocking findings then open a draft PR "
+            "for a human instead of coming back to you.",
         ]
     parts += [
         "",
