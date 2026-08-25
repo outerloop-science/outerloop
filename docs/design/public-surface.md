@@ -42,15 +42,18 @@ shape: privileged context + attacker-influenced event.
 
 Current mitigations already in the reusable workflow
 (`advisory-review-agent.yml`): the fork gate
-(`head.repo.full_name == github.repository`) sits before any step, and
-nothing from the PR is ever executed. Since the agent-reviewer swap the
-workflow DOES check out the PR head — read-only, `persist-credentials:
-false` — and the session runs with a scrubbed environment and no WRITE token
-(the tokenless split holds the write token in a separate post job). PR content
-can only inform the model as data; the one secret a shell judge could exfiltrate
-is its own model API key, which is spend-capped and role-isolated (no workflow
-write token, no standing keys). Fork-PR review remains out of scope
-until it gets its own design.
+(`head.repo.full_name == github.repository`) sits before any step, so no
+fork PR ever reaches the session. The workflow checks out the PR head
+(`persist-credentials: false`) and the judge runs with a shell over it — so a
+prompt-injected PR could get the judge to EXECUTE its checked-out code. That is
+not the boundary; the boundary is that the session is disposable and holds
+nothing worth taking: a scrubbed environment, no WRITE token (the tokenless
+split keeps that in a separate post job), and one in-session secret — the
+judge's own model API key, which is spend-capped and role-isolated. So the
+residual exposure of a shell judge on a bare runner is capped spend and
+whatever it can read/egress from that ephemeral runner, accepted for an
+advisory role (the container/cluster path is the tighter option). Fork-PR
+review remains out of scope until it gets its own design.
 
 **Audit checklist before any public flip** (each item verified on the live
 workflow files of the repo being flipped, not on memory of them):
