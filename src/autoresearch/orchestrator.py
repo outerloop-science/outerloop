@@ -666,7 +666,8 @@ def make_task(
         done_criteria=(
             "You decide when your result is worth publishing — and a negative "
             "result reported clearly is a success. The orchestrator re-measures "
-            f"`{bench.command}` and runs the repository tests to verify any claim"
+            f"`{bench.command}` on a private seed to verify any improvement "
+            "claim, and the PR's CI runs the repository tests"
             + (
                 "; changes touching shared paths are suite-gated, so no sibling "
                 "benchmark may regress beyond its floor"
