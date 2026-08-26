@@ -1927,7 +1927,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     err = _panel_preflight_error(both_wrong)
     assert "unknown kind" in err  # kind is checked before backend
     assert "claude backend" not in err
-    assert "only the claude backend" in _panel_preflight_error(
+    assert "no container mode" in _panel_preflight_error(
         make(panel="verify:hermes", panel_key_file=str(good))
     )
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))

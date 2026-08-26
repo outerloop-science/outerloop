@@ -1298,16 +1298,29 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
     from autoresearch.panel import parse_lenses
     from autoresearch.roles import reviewer_spec
 
-    panel_key = role_key(args.panel_key_file)  # panel judges run the claude backend
+    panel_key = role_key(args.panel_key_file)
     lenses = []
     for kind, backend, model in parse_lenses(args.panel):
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+        # per-backend judge keys coexist — a codex lens is never handed the
+        # anthropic panel key, and role separation forbids defaulting to the
+        # AUTHOR's codex key: the judge key is its own, named explicitly
+        if backend == "codex":
+            codex_panel_key = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
+            if not codex_panel_key:
+                raise ValueError(
+                    "a codex panel lens needs AUTORESEARCH_PANEL_CODEX_KEY_FILE "
+                    "(role separation: the judge's own key, never the author's)"
+                )
+            lens_key = role_key(codex_panel_key, "codex")
+        else:
+            lens_key = panel_key
         try:
             judge = build_harness(
-                panel_key,
+                lens_key,
                 reviewer_spec(),
                 backend=backend,
-                binary=args.claude_bin if backend == "claude" else None,
+                binary=args.claude_bin if backend == "claude" else args.codex_bin,
                 model=model or None,
                 # ALWAYS contained: the panel runs on the climb host next to key
                 # files, and a judge now holds a shell (codex `danger-full-access`),

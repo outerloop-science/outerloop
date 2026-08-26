@@ -113,3 +113,17 @@ def test_no_verdict_degrades_the_read(tmp_path: Path) -> None:
         (PanelLens("review", _Judge(_VERIFY_CLEAN)),), tmp_path, _PR, "c", "t", round_no=1
     )
     assert not clean.degraded
+
+
+def test_parse_lenses_admits_codex_and_refuses_uncontainable_backends() -> None:
+    import pytest
+
+    from autoresearch.panel import parse_lenses
+
+    # backends are peers; the one gate is containment on the climb host
+    assert parse_lenses("verify:claude:claude-fable-5,review:codex:gpt-5.6-terra") == (
+        ("verify", "claude", "claude-fable-5"),
+        ("review", "codex", "gpt-5.6-terra"),
+    )
+    with pytest.raises(ValueError, match="no container mode"):
+        parse_lenses("review:hermes:gpt-5.6-terra")

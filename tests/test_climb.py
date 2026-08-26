@@ -2722,3 +2722,25 @@ def test_author_sleep_wake_without_harness_ends_loudly(tmp_path, monkeypatch) ->
     assert record.state == "ended"
     assert "author harness" in record.ending_note
     assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
+    # role separation: a codex lens must name the JUDGE's key explicitly —
+    # never inherit the anthropic panel key or default to the author's
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    monkeypatch.delenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", raising=False)
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    monkeypatch.setattr("autoresearch.climb.role_key", lambda *a, **k: "k")
+    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_CODEX_KEY_FILE"):
+        _panel_lenses_from_args(args)

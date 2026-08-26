@@ -1291,12 +1291,32 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         return ""
     try:
         from autoresearch.climb import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from autoresearch.github import FileTokenProvider
         from autoresearch.panel import parse_lenses
 
         try:
-            parse_lenses(spec.panel)
+            lenses = parse_lenses(spec.panel)
         except ValueError as exc:
             return str(exc)
+        if any(backend == "codex" for _, backend, _ in lenses):
+            # mirror the climb's rule exactly: a codex lens needs the JUDGE's
+            # own key, named explicitly — role separation forbids the author's
+            codex_panel_raw = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
+            if not codex_panel_raw:
+                return (
+                    "a codex panel lens needs AUTORESEARCH_PANEL_CODEX_KEY_FILE "
+                    "(role separation: the judge's own key, never the author's)"
+                )
+            codex_panel = Path(codex_panel_raw).expanduser()
+            if not codex_panel.is_absolute():
+                return f"codex panel key path {codex_panel} is relative; only absolute paths fly"
+            codex_author = Path(resolve_author_key_file("codex")).expanduser()
+            if codex_panel.resolve() == codex_author.resolve():
+                return (
+                    f"codex panel key file {codex_panel} is the codex author key "
+                    "(role separation: the judge needs its own key)"
+                )
+            FileTokenProvider(codex_panel).token()
         path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
         if not path.is_absolute():
             # the climb runs from a flight directory, not the tick's cwd — a
