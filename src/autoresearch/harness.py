@@ -109,7 +109,12 @@ class VertexConfig:
 
     project: str
     region: str = "global"
-    adc_file: str = ""  # GOOGLE_APPLICATION_CREDENTIALS; "" = ambient ADC
+    # GOOGLE_APPLICATION_CREDENTIALS. Sessions run with a scrubbed per-run
+    # HOME, so ambient ADC discovery inside the session can never find the
+    # real ~/.config/gcloud — vertex_from_env resolves that default to an
+    # explicit path up front. "" only where a metadata server provides
+    # credentials (GCE / workload identity).
+    adc_file: str = ""
 
     def env(self) -> dict[str, str]:
         out = {
@@ -129,10 +134,18 @@ def vertex_from_env() -> VertexConfig | None:
     project = os.environ.get("AUTORESEARCH_VERTEX_PROJECT", "").strip()
     if not project:
         return None
+    adc = os.path.expanduser(os.environ.get("AUTORESEARCH_VERTEX_ADC", "").strip())
+    if not adc:
+        # resolve the gcloud default NOW, under the real HOME — the session's
+        # HOME is a scrubbed per-run directory where ambient discovery would
+        # find nothing. Absent file: leave "" for metadata-server credentials.
+        default = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+        if os.path.isfile(default):
+            adc = default
     return VertexConfig(
         project=project,
         region=os.environ.get("AUTORESEARCH_VERTEX_REGION", "global").strip() or "global",
-        adc_file=os.path.expanduser(os.environ.get("AUTORESEARCH_VERTEX_ADC", "").strip()),
+        adc_file=adc,
     )
 
 

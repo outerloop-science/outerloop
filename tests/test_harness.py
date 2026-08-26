@@ -814,3 +814,18 @@ def test_vertex_from_env_is_the_single_owner(monkeypatch) -> None:
     cfg = vertex_from_env()
     assert cfg is not None and cfg.project == "p-9" and cfg.region == "global"
     assert cfg.adc_file.endswith("/adc.json") and not cfg.adc_file.startswith("~")
+
+
+def test_vertex_from_env_resolves_ambient_adc_under_the_real_home(tmp_path, monkeypatch) -> None:
+    # sessions get a scrubbed per-run HOME, so the gcloud default must be
+    # resolved to an explicit path at config time, under the REAL home
+    from autoresearch.harness import vertex_from_env
+
+    default = tmp_path / ".config" / "gcloud" / "application_default_credentials.json"
+    default.parent.mkdir(parents=True)
+    default.write_text("{}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTORESEARCH_VERTEX_PROJECT", "p-9")
+    monkeypatch.delenv("AUTORESEARCH_VERTEX_ADC", raising=False)
+    cfg = vertex_from_env()
+    assert cfg is not None and cfg.adc_file == str(default)
