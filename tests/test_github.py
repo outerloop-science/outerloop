@@ -367,3 +367,30 @@ def test_session_planted_smudge_filter_never_executes(tmp_path: Path) -> None:
     ws.git("checkout", "-f", "HEAD", "--", ".")
     ws.git("status", "--porcelain")
     assert not marker.exists()
+
+
+def test_non_utf8_filter_config_neither_crashes_nor_executes(tmp_path: Path) -> None:
+    # a session can write raw bytes into .git/config: the discovery must not
+    # crash the git call (availability), and the weird-byte driver must still
+    # be neutralized (the surrogate-escaped override key matches exactly)
+    import subprocess as sp
+
+    root = tmp_path / "ws"
+    root.mkdir()
+
+    def g(*args: str) -> None:
+        sp.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+    g("init", "-q", "-b", "main")
+    (root / "data.txt").write_text("payload\n")
+    (root / ".gitattributes").write_bytes(b"*.txt filter=ev\xffil\n")
+    g("add", "-A")
+    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    marker = tmp_path / "PWNED"
+    with (root / ".git" / "config").open("ab") as fh:
+        fh.write(b'[filter "ev\xffil"]\n\tsmudge = touch ' + str(marker).encode() + b" && cat\n")
+
+    ws = Workspace(root=root)
+    ws.git("status", "--porcelain")  # must not raise on the non-UTF-8 config
+    ws.git("checkout", "-f", "HEAD", "--", ".")
+    assert not marker.exists()

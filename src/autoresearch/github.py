@@ -638,18 +638,33 @@ def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     if root is None:
         return pairs
     listing = subprocess.run(
-        ["git", "-C", str(root), "config", "-z", "--get-regexp",
-         r"^filter\..*\.(clean|smudge|process)$"],
-        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null",
-             "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_COUNT": "0",
-             "GIT_TERMINAL_PROMPT": "0"},
+        [
+            "git",
+            "-C",
+            str(root),
+            "config",
+            "-z",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+        ],
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        },
         capture_output=True,
-        text=True,
         timeout=30,
     )
+    # BYTES + surrogateescape, never text=True: the config is session-written,
+    # so a non-UTF-8 byte in a value must not crash the git call — and the
+    # surrogates roundtrip through the env (os.fsencode), so an override key
+    # still matches a weird-byte driver name EXACTLY (a lossy decode would
+    # silently fail to neutralize that driver).
     # -z: NUL-separated records, each "key\nvalue" — a value containing a
     # newline can never masquerade as a second record.
-    for record in listing.stdout.split("\0"):
+    for record in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
         key = record.split("\n", 1)[0]
         if not key.startswith("filter.") or "." not in key[len("filter.") :]:
             continue
