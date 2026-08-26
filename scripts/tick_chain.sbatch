@@ -127,10 +127,17 @@ if [ -r "$ENV_FILE" ]; then
                   AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
                   AUTORESEARCH_VERTEX_ADC \
                   AUTORESEARCH_PANEL AUTORESEARCH_PANEL_KEY_FILE; do
-            _v=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
-            _v=${_v%$'\r'}                         # CRLF-edited file
-            _v=${_v#[\"\']}; _v=${_v%[\"\']}       # optional surrounding quote
-            [ -n "$_v" ] && export "$_k=$_v"
+            _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
+            # PRESENCE-based, not value-based: a key set to "" in .env is a
+            # live OFF-SWITCH (AUTORESEARCH_PANEL="" disables the panel,
+            # VERTEX_PROJECT="" reverts to API-key billing) and must override
+            # an inherited chain value; an ABSENT key changes nothing.
+            if [ -n "$_line" ]; then
+                _v=${_line#*=}
+                _v=${_v%$'\r'}                     # CRLF-edited file
+                _v=${_v#[\"\']}; _v=${_v%[\"\']}   # optional surrounding quote
+                export "$_k=$_v"
+            fi
         done
     else
         echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
