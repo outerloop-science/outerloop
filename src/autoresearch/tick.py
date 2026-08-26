@@ -149,7 +149,7 @@ class TickReport:
 # longer than 10 h need that window made spec-aware first (named gap). The
 # self-deadline arms at the CLAMPED value, so a job that wanted more time
 # fails safe mid-panel instead of never starting.
-MAX_CLIMB_JOB_MINUTES = 6 * 60
+MAX_ATTEMPT_JOB_MINUTES = 6 * 60
 MAX_JOB_MINUTES_CEILING = 10 * 60
 
 
@@ -187,8 +187,8 @@ class FollowupSpec:
     # scheduling priority, so the two deserve independent placement.
     job_partition: str = ""
     # Partition MaxTime for work jobs — the panel-augmented walltime clamps
-    # here (see MAX_CLIMB_JOB_MINUTES). Raise together with job_partition.
-    max_job_minutes: int = MAX_CLIMB_JOB_MINUTES
+    # here (see MAX_ATTEMPT_JOB_MINUTES). Raise together with job_partition.
+    max_job_minutes: int = MAX_ATTEMPT_JOB_MINUTES
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -1407,15 +1407,15 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         return f"{type(exc).__name__}: {exc}"
 
 
-def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
+def _attempt_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
     """The submitted climb walltime: contract budget + panel allowance,
     clamped at the partition cap. Warns when the cap cuts below the session
     budget — the self-deadline would then fire before the author's own
     clock, and that must be a visible operator choice, never a silent
     surprise."""
-    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
 
-    wanted = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
+    wanted = limits.attempt_job_minutes + _panel_job_minutes(spec, limits)
     job = min(wanted, spec.max_job_minutes)
     if job < wanted:
         log.info(
@@ -1424,14 +1424,14 @@ def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
             job,
             wanted,
         )
-    if job < limits.session_minutes + CLIMB_OVERHEAD_MINUTES:
+    if job < limits.session_minutes + ATTEMPT_OVERHEAD_MINUTES:
         log.warning(
             "work-job cap %d min leaves no runway around the %d-min session "
             "(the orchestrator needs ~%d min); sessions or endings will be "
             "cut short by the self-deadline",
             job,
             limits.session_minutes,
-            CLIMB_OVERHEAD_MINUTES,
+            ATTEMPT_OVERHEAD_MINUTES,
         )
     return job
 
@@ -1463,9 +1463,9 @@ def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
     CAPPED job with the same rule limits.effective_limits applies to
     contract values — better a short session that ends cleanly than a full
     one the self-deadline kills mid-flight."""
-    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
+    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
 
-    session = min(limits.session_minutes, job_minutes - CLIMB_OVERHEAD_MINUTES)
+    session = min(limits.session_minutes, job_minutes - ATTEMPT_OVERHEAD_MINUTES)
     return [
         "--max-turns",
         str(limits.session_max_turns),
@@ -1545,7 +1545,7 @@ def service_self_initiated(
             return None
         if dry_run:
             return (benchmark, "dry-run")
-        job_minutes = _climb_job_minutes(spec, limits)
+        job_minutes = _attempt_job_minutes(spec, limits)
         argv = [
             "uv",
             "run",
@@ -1676,7 +1676,7 @@ def service_steward(
             spec.steward_key_file,
             # the SAME clamped walltime the JobSpec requests, so the
             # self-deadline arms against the real clock
-            *_climb_limit_argv(limits, min(limits.climb_job_minutes, spec.max_job_minutes)),
+            *_climb_limit_argv(limits, min(limits.attempt_job_minutes, spec.max_job_minutes)),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1686,7 +1686,7 @@ def service_steward(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
                     partition=spec.job_partition or spec.partition,
-                    time_minutes=min(limits.climb_job_minutes, spec.max_job_minutes),
+                    time_minutes=min(limits.attempt_job_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
@@ -1768,7 +1768,7 @@ def service_intake(
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
-        job_minutes = _climb_job_minutes(spec, limits)
+        job_minutes = _attempt_job_minutes(spec, limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from autoresearch.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
@@ -1897,13 +1897,13 @@ class JobWakeDispatcher:
         # budget + overhead and pass --session-minutes so the in-job
         # self-deadline fires BEFORE Slurm's walltime. A candidate wake keeps
         # the short budget (read results + panel).
-        from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+        from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
         from autoresearch.roles import author_spec
 
         if record.stage.get("phase") == "author-sleep":
             session_minutes = author_spec().budget.walltime_s // 60
             argv += ["--session-minutes", str(session_minutes)]
-            job_minutes = min(session_minutes + CLIMB_OVERHEAD_MINUTES, self.spec.max_job_minutes)
+            job_minutes = min(session_minutes + ATTEMPT_OVERHEAD_MINUTES, self.spec.max_job_minutes)
         else:
             job_minutes = self.wake_minutes + _wake_panel_minutes(self.spec)
         if self.spec.pat_file:
@@ -1979,17 +1979,17 @@ def _max_job_minutes_from_env() -> int:
     rejected), at most the ceiling the stranded window allows. A clamped
     value logs — a silently-changed cap would read as the partition
     rejecting jobs for no reason."""
-    from autoresearch.limits import CLIMB_JOB_MINUTES_FLOOR
+    from autoresearch.limits import ATTEMPT_JOB_MINUTES_FLOOR
 
     raw = os.environ.get("AUTORESEARCH_MAX_JOB_MINUTES", "").strip()
     if not raw:
-        return MAX_CLIMB_JOB_MINUTES
+        return MAX_ATTEMPT_JOB_MINUTES
     try:
         value = int(raw)
     except ValueError:
         log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
-        return MAX_CLIMB_JOB_MINUTES
-    clamped = max(CLIMB_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
+        return MAX_ATTEMPT_JOB_MINUTES
+    clamped = max(ATTEMPT_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
     if clamped != value:
         log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
     return clamped
