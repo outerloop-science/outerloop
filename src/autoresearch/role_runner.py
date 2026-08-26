@@ -27,6 +27,7 @@ from autoresearch.harness import (
     Harness,
     HermesHarness,
     SessionResult,
+    vertex_from_env,
 )
 from autoresearch.rolespec import RoleSpec
 
@@ -141,6 +142,10 @@ def build_harness(
         # / hooks / project settings as instructions (defence in depth beside
         # the caller's sanitize_checkout)
         bare=spec.output_schema is not None,
+        # Vertex (ADC) billing when the deployment configures it; the env
+        # contract has ONE owner (harness.vertex_from_env), so every claude
+        # role on every CLI flips together and the API key stays the fallback
+        vertex=vertex_from_env(),
     )
 
 

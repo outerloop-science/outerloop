@@ -101,6 +101,41 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     return env
 
 
+@dataclass(frozen=True)
+class VertexConfig:
+    """Claude-on-Vertex auth (ADC): set to bill Anthropic sessions to a GCP
+    project instead of an Anthropic API key. The single owner of the
+    AUTORESEARCH_VERTEX_* env contract is `vertex_from_env`."""
+
+    project: str
+    region: str = "global"
+    adc_file: str = ""  # GOOGLE_APPLICATION_CREDENTIALS; "" = ambient ADC
+
+    def env(self) -> dict[str, str]:
+        out = {
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": self.project,
+            "CLOUD_ML_REGION": self.region,
+        }
+        if self.adc_file:
+            out["GOOGLE_APPLICATION_CREDENTIALS"] = self.adc_file
+        return out
+
+
+def vertex_from_env() -> VertexConfig | None:
+    """The deployment's Vertex coordinates, or None (Anthropic-direct). A live
+    flip needs only the env: set AUTORESEARCH_VERTEX_PROJECT to route every
+    claude session through Vertex; unset it to fall back to the API key."""
+    project = os.environ.get("AUTORESEARCH_VERTEX_PROJECT", "").strip()
+    if not project:
+        return None
+    return VertexConfig(
+        project=project,
+        region=os.environ.get("AUTORESEARCH_VERTEX_REGION", "global").strip() or "global",
+        adc_file=os.path.expanduser(os.environ.get("AUTORESEARCH_VERTEX_ADC", "").strip()),
+    )
+
+
 def redact(text: str, secrets: tuple[str, ...]) -> str:
     """Strip known secrets from text before it is stored anywhere."""
     for secret in secrets:
@@ -393,8 +428,12 @@ class ClaudeCodeHarness:
     # generic (python + uv + git); the binary is bind-mounted in.
     container_image: str = ""
     apptainer_binary: str = "apptainer"
+    # Claude-on-Vertex (ADC) instead of the Anthropic API key; the api_key is
+    # ignored when set. Contained sessions get the ADC file bind-mounted.
+    vertex: VertexConfig | None = None
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
+    CONTAINER_ADC = "/opt/agent/adc.json"
     supports_resume = True  # native --resume
 
     def run(
@@ -466,6 +505,11 @@ class ClaudeCodeHarness:
                 f"{session_home}:{session_home}",
                 "--bind",
                 f"{self.binary}:{self.CONTAINER_CLAUDE}:ro",
+                *(
+                    ["--bind", f"{Path(self.vertex.adc_file).resolve()}:{self.CONTAINER_ADC}:ro"]
+                    if self.vertex is not None and self.vertex.adc_file
+                    else []
+                ),
                 "--pwd",
                 str(workspace),
                 self.container_image,
@@ -478,13 +522,26 @@ class ClaudeCodeHarness:
             # children included) in one process group we can kill as a unit —
             # a timed-out session must not leave orphans holding the API key
             # and writing into the clone.
-            env = session_env(self.api_key, "ANTHROPIC_API_KEY", session_home)
-            if self.container_image:
-                # --cleanenv drops the host environment inside the container
-                # EXCEPT APPTAINERENV_* variables, which apptainer injects
-                # with the prefix stripped — the key travels via the
-                # environment, never argv (argv is world-readable in /proc).
-                env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
+            if self.vertex is not None:
+                # vertex auth: ADC only — ANTHROPIC_API_KEY is deliberately
+                # absent so the CLI cannot fall back to direct billing
+                env = session_env("", "ANTHROPIC_API_KEY", session_home)
+                del env["ANTHROPIC_API_KEY"]
+                vertex_env = dict(self.vertex.env())
+                if self.container_image and self.vertex.adc_file:
+                    vertex_env["GOOGLE_APPLICATION_CREDENTIALS"] = self.CONTAINER_ADC
+                env |= vertex_env
+                if self.container_image:
+                    for k, v in vertex_env.items():
+                        env[f"APPTAINERENV_{k}"] = v
+            else:
+                env = session_env(self.api_key, "ANTHROPIC_API_KEY", session_home)
+                if self.container_image:
+                    # --cleanenv drops the host environment inside the container
+                    # EXCEPT APPTAINERENV_* variables, which apptainer injects
+                    # with the prefix stripped — the key travels via the
+                    # environment, never argv (argv is world-readable in /proc).
+                    env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
             process = subprocess.Popen(
                 command,
                 cwd=workspace,

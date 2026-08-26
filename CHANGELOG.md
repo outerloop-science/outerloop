@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- Claude-on-Vertex (ADC) billing, config-driven: set
+  `AUTORESEARCH_VERTEX_PROJECT` (+ optional `_REGION`, `_ADC` file) and every
+  claude-backend session — author, panel judge, reviewer — authenticates to
+  Vertex AI via Application Default Credentials instead of an Anthropic API
+  key (the session env then carries no key at all; contained sessions get the
+  ADC file bind-mounted read-only). One env owner (`harness.vertex_from_env`);
+  unset the project to fall back to API-key billing instantly. Codex/hermes
+  are unaffected — OpenAI models are not on GCP.
+
 ### Changed
 
 - One publish — the sealed candidate sha, everywhere. `live_climb`'s inline
