@@ -148,6 +148,10 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BACKEND: ${{ inputs.backend }}
+      HERMES_REF: v2026.8.13
+      # the COMMIT sha for HERMES_REF (the tag is annotated: ls-remote's first
+      # line is the tag object — pin the dereferenced ^{} commit instead)
+      HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
     steps:
       # Checks out the reviewer, never the pull request's code for execution.
       # An empty ssh-key is ignored by actions/checkout (token auth is enough
@@ -170,11 +174,27 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
+      # Cache scope: this workflow runs on pull_request_target, so every run —
+      # any PR — executes in the BASE branch context and shares ONE cache
+      # scope. One round populates it; every later round hits. Cold is only
+      # the first run on a fresh HERMES_REF (or 7-day eviction).
+      - name: Restore the hermes clone
+        id: hermes-cache
+        if: inputs.backend == 'hermes'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/hermes-agent
+          key: hermes-agent-${{ env.HERMES_REF }}
       # Pinned artifacts, same discipline across backends: claude installer
       # pin, codex npm pin, hermes release tag. Bump deliberately.
       - name: Install the ${{ inputs.backend }} backend
         env:
-          HERMES_REF: v2026.8.13
+          # authenticate the hermes clone: anonymous clones share a low
+          # per-IP limit that the wide round's fan-out trips; the job's
+          # read-only token lifts it to the authenticated tier. Passed via
+          # GIT_CONFIG_* (below), never git config --global — the token must
+          # not persist into ~/.gitconfig where the model session could read it.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "$BACKEND" in
@@ -182,9 +202,49 @@ jobs:
               npm install -g @openai/codex@0.130.0
               ;;
             hermes)
-              git clone --depth 1 --branch "$HERMES_REF" \
-                https://github.com/NousResearch/hermes-agent \
-                "$GITHUB_WORKSPACE/hermes-agent"
+              verify_hermes() {
+                [ -d "$GITHUB_WORKSPACE/hermes-agent/.git" ] &&
+                  [ "$(git -C "$GITHUB_WORKSPACE/hermes-agent" rev-parse HEAD 2>/dev/null)" = "$HERMES_SHA" ] &&
+                  [ -z "$(git -C "$GITHUB_WORKSPACE/hermes-agent" status --porcelain 2>/dev/null)" ]
+              }
+              if verify_hermes; then
+                echo "hermes-agent restored from cache (pinned sha verified)"
+              else
+                # cold cache, or a restore failing the sha/clean check — an
+                # unverified tree never runs with the reviewer key. Clone
+                # fresh, authenticated: the token rides GIT_CONFIG_* (not
+                # argv, not --global — it must not persist into ~/.gitconfig
+                # where the session could read it), and the authenticated
+                # tier means a concurrent cold fan-out no longer 429s.
+                rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                if [ -n "${GITHUB_TOKEN:-}" ]; then
+                  # additive-only: an EMPTY bearer header would 401 a public
+                  # clone (worse than anonymous), so auth only arms when the
+                  # token is present; without it the retry still covers us
+                  export GIT_CONFIG_COUNT=1
+                  export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+                  export GIT_CONFIG_VALUE_0="AUTHORIZATION: Bearer ${GITHUB_TOKEN}"
+                fi
+                for i in 1 2 3 4 5 6; do
+                  if git clone --depth 1 --branch "$HERMES_REF" \
+                      https://github.com/NousResearch/hermes-agent \
+                      "$GITHUB_WORKSPACE/hermes-agent"; then
+                    break
+                  fi
+                  if [ "$i" = 6 ]; then
+                    echo "hermes clone failed after 6 attempts" >&2
+                    exit 0  # advisory: the CLI's missing-repo stub surfaces it
+                  fi
+                  sleep $(( i * 10 + RANDOM % 10 ))
+                  rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                done
+                if ! verify_hermes; then
+                  # a moved tag or dirty clone must never run with the key
+                  echo "hermes-agent does not match pinned sha $HERMES_SHA — refusing" >&2
+                  rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                  exit 0  # advisory: the missing-repo stub surfaces it
+                fi
+              fi
               ;;
             claude)
               curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
@@ -195,6 +255,18 @@ jobs:
               exit 0  # advisory: never red the caller's CI
               ;;
           esac
+      # Save BEFORE the session step, never post-job: the cache is shared by
+      # every future run (base-branch scope), so it must only ever hold the
+      # pristine verified clone — a post-job save would persist whatever the
+      # session left in the workspace into a tree later runs EXECUTE with the
+      # reviewer key (cache poisoning). Immutability then works for us: the
+      # first save wins and nothing can overwrite it.
+      - name: Save the pristine hermes clone
+        if: inputs.backend == 'hermes' && steps.hermes-cache.outputs.cache-hit != 'true' && hashFiles('hermes-agent/**') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/hermes-agent
+          key: hermes-agent-${{ env.HERMES_REF }}
       - name: Run the session (emit only — nothing posted from this job)
         working-directory: .autoresearch
         env:

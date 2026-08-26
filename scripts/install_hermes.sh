@@ -10,12 +10,14 @@
 #               else ~/hermes-agent)
 set -euo pipefail
 
-# Pinned tag AND its commit sha: the tag names the version for humans, the
+# Pinned tag AND its COMMIT sha: the tag names the version for humans, the
 # sha is the integrity pin (tags are mutable; a moved tag must fail loudly,
 # never run with the panel key). Bump both together, in lockstep with the
-# GH review workflows' HERMES_REF.
+# GH review workflows' HERMES_REF. NOTE: v-tags here are ANNOTATED — plain
+# `git ls-remote` shows the TAG OBJECT's sha; pin the dereferenced `^{}`
+# line (the commit), which is what `rev-parse HEAD` yields after checkout.
 WANT="v2026.8.13"
-WANT_SHA="4e693dc685b5716e7da22656eccc6ece37c5db72"
+WANT_SHA="f80f453ae0679347e38abc917c7f94f717bf96c5"
 TARGET="${1:-${REVIEW_HERMES_REPO:-$HOME/hermes-agent}}"
 
 if [ ! -d "$TARGET/.git" ]; then

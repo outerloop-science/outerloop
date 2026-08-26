@@ -6,6 +6,32 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Wide-round lens sessions no longer die on GitHub's clone rate limit. The
+  wide first round fans out several hermes (terra) lens sessions at once, and
+  GitHub 429s the concurrent ANONYMOUS clones of the same public repo
+  (observed live: 3/5 lens sessions died at exit 128 before the model ran).
+  Fix, three layers: (1) the clone is AUTHENTICATED with the job's read-only
+  token (via `GIT_CONFIG_*`, never persisted) — the authenticated tier means
+  even concurrent cold-cache clones no longer 429; (2) the pinned clone is
+  CACHED — and because the review workflows run on `pull_request_target`,
+  every run on every PR shares the base-branch cache scope, so one round
+  populates it for all future PRs (cold = first run on a fresh tag only);
+  (3) a backoff+jitter retry remains as the last backstop. The cache is
+  written by an explicit `actions/cache/save` placed BEFORE the session step
+  and verified against the pinned commit sha on restore (wipe + re-clone on
+  mismatch) — a post-job save would have let a prompt-injected session
+  poison the shared tree every later run executes with the reviewer key. A
+  genuine clone failure still degrades to the advisory missing-repo stub.
+  Also fixes the sha pin itself (here and in `scripts/install_hermes.sh`):
+  hermes v-tags are ANNOTATED, so `ls-remote` had yielded the tag OBJECT's
+  sha — every verify comparing `rev-parse HEAD` (a commit) against it would
+  have always failed, stubbing out all hermes lenses and making the Torch
+  installer refuse. Pins are now the dereferenced `^{}` commit sha, and the
+  installer's three paths (fresh / idempotent / tamper re-pin) were executed
+  live against the real repo (a 222 MB clone — the cache earns its keep).
+
 ### Changed
 
 - The author brief is de-prescriptified (Mengye, "don't dictate the
