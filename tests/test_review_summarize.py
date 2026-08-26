@@ -69,6 +69,17 @@ def test_single_real_opinion_passes_through_without_a_session(tmp_path, monkeypa
     assert "did NOT run" in merged["data"]["notes"] and "coverage" in merged["data"]["notes"]
 
 
+def test_vanished_lens_is_reported_not_silently_omitted(tmp_path, monkeypatch) -> None:
+    # a lens that crashed before uploading ANY envelope: the caller-declared
+    # expected panel makes the delta visible in the merged notes
+    _envelope(tmp_path, "a", kind="findings", data={"findings": []}, lens="credentials")
+    monkeypatch.setenv("SUMMARIZE_EXPECTED", "general credentials deployment")
+    merged = _run_summarize(tmp_path, monkeypatch)
+    notes = merged["data"]["notes"]
+    assert "general" in notes and "deployment" in notes and "died before emitting" in notes
+    assert "credentials:" not in notes  # the present lens is not listed as lost
+
+
 def test_all_stubs_becomes_one_attributed_stub(tmp_path, monkeypatch) -> None:
     _envelope(tmp_path, "a", kind="skip-stub", detail="key missing", lens="credentials")
     _envelope(tmp_path, "b", kind="skip-stub", detail="model gone", lens="deployment")

@@ -87,6 +87,16 @@ def main() -> int:
         return 0
 
     envelopes = _load_envelopes(Path(src).resolve(), repo, number)
+    # A lens that CRASHED before uploading any envelope is invisible in the
+    # artifact set — the caller declares the expected panel so the delta is
+    # reported rather than silently omitted from the merged round.
+    expected = [t for t in os.environ.get("SUMMARIZE_EXPECTED", "").replace(",", " ").split() if t]
+    present = {str(e.get("lens") or "general") for e in envelopes}
+    vanished = [
+        {"lens": name, "detail": "session died before emitting (no envelope uploaded)"}
+        for name in expected
+        if name not in present
+    ]
     if not envelopes:
         return stub("no lens envelopes found (all lens sessions died before emitting)")
     reals = [
@@ -102,7 +112,7 @@ def main() -> int:
             _emit(emit_path, repo, number, kind="skip-clean", detail=details)
             return 0
         return stub(f"no lens produced findings ({details})")
-    failed = [e for e in envelopes if e.get("kind") == "skip-stub"]
+    failed = [e for e in envelopes if e.get("kind") == "skip-stub"] + vanished
     if len(reals) == 1:
         # nothing to merge: pass the one real opinion through — but FAILED
         # sibling lenses must still reach the posted round (a lone success

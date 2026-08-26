@@ -52,6 +52,8 @@ jobs:
       hermes_provider: openai
       model: gpt-5.6-terra
       opinion_label: terra
+      # keep in lockstep with the lens matrix above
+      expected_lenses: general credentials deployment lifecycle coverage
     secrets:
       openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
 

@@ -33,6 +33,14 @@ on:
         type: string
         required: false
         default: ''
+      expected_lenses:
+        description: >-
+          Space-separated lens names the caller fanned out (general included).
+          A lens missing from the artifact set is then reported in the merged
+          round instead of vanishing silently.
+        type: string
+        required: false
+        default: ''
       reviewer_repo:
         description: Repo holding the reviewer (change this if you forked).
         type: string
@@ -132,6 +140,7 @@ jobs:
           REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
           PR_REPO: ${{ github.repository }}
           SUMMARIZE_DIR: ${{ runner.temp }}/opinions
+          SUMMARIZE_EXPECTED: ${{ inputs.expected_lenses }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_summarize_cli
       - name: Backstop envelope
