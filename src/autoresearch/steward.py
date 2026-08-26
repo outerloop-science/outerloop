@@ -53,7 +53,7 @@ from autoresearch.progress import (
     load_leader,
     write_progress,
 )
-from autoresearch.role_runner import build_harness, run_role
+from autoresearch.role_runner import build_harness, role_key, run_role
 from autoresearch.roles import steward_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -781,7 +781,7 @@ def main() -> int:
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    api_key = role_key(args.key_file)  # steward runs the claude backend
     bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"steward-{args.benchmark}-{stamp}"

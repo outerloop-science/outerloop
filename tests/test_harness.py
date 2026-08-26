@@ -829,3 +829,16 @@ def test_vertex_from_env_resolves_ambient_adc_under_the_real_home(tmp_path, monk
     monkeypatch.delenv("AUTORESEARCH_VERTEX_ADC", raising=False)
     cfg = vertex_from_env()
     assert cfg is not None and cfg.adc_file == str(default)
+
+
+def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypatch) -> None:
+    from autoresearch.role_runner import role_key
+
+    missing = tmp_path / "no-such-key"
+    monkeypatch.delenv("AUTORESEARCH_VERTEX_PROJECT", raising=False)
+    with pytest.raises(Exception):
+        role_key(missing)  # no vertex: loud, as ever
+    monkeypatch.setenv("AUTORESEARCH_VERTEX_PROJECT", "p-9")
+    assert role_key(missing) == ""  # ADC-only claude deployment
+    with pytest.raises(Exception):
+        role_key(missing, "codex")  # vertex never excuses a non-claude backend

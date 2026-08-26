@@ -1291,7 +1291,6 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         return ""
     try:
         from autoresearch.climb import PANEL_KEY_DEFAULT, resolve_author_key_file
-        from autoresearch.github import FileTokenProvider
         from autoresearch.panel import parse_lenses
 
         try:
@@ -1319,7 +1318,12 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
                 f"panel key file {path} is the author key file "
                 "(role separation: the verifier needs its own key)"
             )
-        FileTokenProvider(path).token()
+        # ADC-only deployments (Vertex covering the claude panel) hold no
+        # Anthropic key at all — the same tolerance role_key applies at run
+        # time, so the preflight and the climb agree.
+        from autoresearch.role_runner import role_key
+
+        role_key(path)
         return ""
     except Exception as exc:
         # never raises: an unexpected failure (partial deploy, ELOOP, unset
