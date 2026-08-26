@@ -836,9 +836,9 @@ def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypat
 
     missing = tmp_path / "no-such-key"
     monkeypatch.delenv("AUTORESEARCH_VERTEX_PROJECT", raising=False)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         role_key(missing)  # no vertex: loud, as ever
     monkeypatch.setenv("AUTORESEARCH_VERTEX_PROJECT", "p-9")
     assert role_key(missing) == ""  # ADC-only claude deployment
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         role_key(missing, "codex")  # vertex never excuses a non-claude backend

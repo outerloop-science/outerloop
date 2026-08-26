@@ -2305,11 +2305,7 @@ def main() -> int:
         parser.error(str(exc))
     # the panel key joins the redaction set: judge error text can echo request
     # material like any other model error.
-    panel_key = (
-        role_key(args.panel_key_file)
-        if args.panel.strip()
-        else ""
-    )
+    panel_key = role_key(args.panel_key_file) if args.panel.strip() else ""
 
     # Dispatched measurement needs the full cluster triple AND a real image
     # file to bind against; missing any, the climb measures inline (the tick
