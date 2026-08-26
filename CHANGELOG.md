@@ -8,13 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- Wide-round lens sessions no longer die on GitHub's clone rate limit: the
-  reusable review/summarize workflows retry the hermes-agent clone with
-  backoff+jitter. The wide first round fans out several hermes (terra) lens
-  sessions at once, and GitHub 429s the concurrent anonymous clones of the
-  same public repo (observed live: 3/5 lens sessions died at exit 128 before
-  the model ran). Bounded retries stagger them past the transient limit; a
-  genuine clone failure still degrades to the advisory missing-repo stub.
+- Wide-round lens sessions no longer die on GitHub's clone rate limit. The
+  wide first round fans out several hermes (terra) lens sessions at once, and
+  GitHub 429s the concurrent ANONYMOUS clones of the same public repo
+  (observed live: 3/5 lens sessions died at exit 128 before the model ran).
+  Fix: the reusable review/summarize workflows now CACHE the pinned
+  hermes-agent clone (`actions/cache`, keyed on the tag) — steady state is
+  zero GitHub clones; only a fresh tag misses, and a backoff+jitter retry
+  covers that one cold fan-out. A genuine clone failure still degrades to the
+  advisory missing-repo stub.
 
 ### Changed
 
