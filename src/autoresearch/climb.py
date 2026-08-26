@@ -1285,29 +1285,76 @@ def resume_run(
     return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
-def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
+def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str, ...]]:
     """Build the verification-panel lenses from the CLI args (empty `--panel`
-    disables it). Shared by the fresh-climb and the `--resume` wake paths so a
-    dispatched improvement runs the SAME panel as an inline one. Raises
-    ValueError on a bad panel/backend config — a configured gate must never
-    silently vanish."""
+    disables it), returning `(lenses, panel_secrets)` — the ONE owner of
+    panel credentials: each backend's judge key is read only when a lens uses
+    it, role separation is enforced HERE (a manual climb gets the same rule
+    as the tick preflight), and every key a judge holds joins the caller's
+    redaction set via `panel_secrets`. Shared by the fresh-climb and the
+    `--resume` wake paths so a dispatched improvement runs the SAME panel as
+    an inline one. Raises ValueError on a bad panel/backend config — a
+    configured gate must never silently vanish."""
     import os
 
     if not args.panel.strip():
-        return ()
+        return (), ()
     from autoresearch.panel import parse_lenses
     from autoresearch.roles import reviewer_spec
 
-    panel_key = role_key(args.panel_key_file)  # panel judges run the claude backend
+    parsed = parse_lenses(args.panel)
+    # the anthropic panel key is read only when a claude lens will use it —
+    # a codex-only panel must not demand an unrelated credential
+    panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
     lenses = []
-    for kind, backend, model in parse_lenses(args.panel):
+    secrets: list[str] = [panel_key] if panel_key else []
+    for kind, backend, model in parsed:
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+        # per-backend judge keys coexist — a codex lens is never handed the
+        # anthropic panel key, and role separation forbids defaulting to the
+        # AUTHOR's codex key: the judge key is its own, named explicitly
+        if backend == "codex":
+            if not args.image:
+                # --uncontained is a dev concession for CLAUDE sessions; a
+                # codex judge is danger-full-access and NEVER runs outside
+                # the image — a judge never runs uncontained next to key files
+                raise ValueError(
+                    "a codex panel lens requires --image (codex judges run "
+                    "danger-full-access and only ever inside the container)"
+                )
+            codex_panel_key = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
+            if not codex_panel_key:
+                raise ValueError(
+                    "a codex panel lens needs AUTORESEARCH_PANEL_CODEX_KEY_FILE "
+                    "(role separation: the judge's own key, never the author's)"
+                )
+            codex_panel_path = Path(codex_panel_key).expanduser()
+            codex_author_path = Path(resolve_author_key_file("codex")).expanduser()
+            if codex_panel_path.resolve() == codex_author_path.resolve():
+                raise ValueError(
+                    f"codex panel key file {codex_panel_path} is the codex author "
+                    "key (role separation: the judge needs its own key)"
+                )
+            claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+            if codex_panel_path.resolve() == claude_panel_path.resolve():
+                # provider-key confusion: this would send the ANTHROPIC panel
+                # credential to codex (OpenAI) login
+                raise ValueError(
+                    f"codex panel key file {codex_panel_path} is the claude panel "
+                    "key file (a codex judge needs an OpenAI credential, and an "
+                    "anthropic key must never reach another provider's login)"
+                )
+            lens_key = role_key(codex_panel_key, "codex")
+            if lens_key:
+                secrets.append(lens_key)
+        else:
+            lens_key = panel_key
         try:
             judge = build_harness(
-                panel_key,
+                lens_key,
                 reviewer_spec(),
                 backend=backend,
-                binary=args.claude_bin if backend == "claude" else None,
+                binary=args.claude_bin if backend == "claude" else args.codex_bin,
                 model=model or None,
                 # ALWAYS contained: the panel runs on the climb host next to key
                 # files, and a judge now holds a shell (codex `danger-full-access`),
@@ -1322,7 +1369,7 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
         except ValueError as exc:
             raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
         lenses.append(PanelLens(kind=kind, harness=judge))
-    return tuple(lenses)
+    return tuple(lenses), tuple(dict.fromkeys(secrets))
 
 
 def build_panel_runner(
@@ -2184,10 +2231,9 @@ def main() -> int:
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
-            wake_lenses = _panel_lenses_from_args(args)
+            wake_lenses, wake_panel_secrets = _panel_lenses_from_args(args)
         except ValueError as exc:
             parser.error(str(exc))
-        wake_panel_key = ""
         wake_api_key = ""
         wake_harness = None
         wake_spec = None
@@ -2197,11 +2243,6 @@ def main() -> int:
         # with its launches' results). A panel-less candidate wake stays a pure
         # read-decide-publish job and must not require the author key.
         _wake_stage = getattr(_wake_record, "stage", None) or {}
-        if wake_lenses:
-            # the panel's judges need the verifier key; an author-sleep wake
-            # alone does NOT — a panel-less deployment must not be forced to
-            # provision an unused credential.
-            wake_panel_key = role_key(args.panel_key_file)
         if (
             wake_lenses
             or _wake_stage.get("phase") == "author-sleep"
@@ -2231,7 +2272,9 @@ def main() -> int:
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
-                secrets=tuple(k for k in (bot_auth.token(), wake_panel_key, wake_api_key) if k),
+                secrets=tuple(
+                    k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k
+                ),
                 base_branch=args.base_branch,
                 panel_lenses=wake_lenses,
                 harness=wake_harness,
@@ -2300,12 +2343,9 @@ def main() -> int:
     # Pre-PR panel lenses: judge sessions on the verifier's own key (separate
     # identity from the author). kind[:backend[:model]]; claude by default.
     try:
-        panel_lenses = _panel_lenses_from_args(args)
+        panel_lenses, panel_secrets = _panel_lenses_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    # the panel key joins the redaction set: judge error text can echo request
-    # material like any other model error.
-    panel_key = role_key(args.panel_key_file) if args.panel.strip() else ""
 
     # Dispatched measurement needs the full cluster triple AND a real image
     # file to bind against; missing any, the climb measures inline (the tick
@@ -2351,7 +2391,7 @@ def main() -> int:
                     for k in (
                         api_key,
                         bot_auth.token(),
-                        panel_key,
+                        *panel_secrets,
                     )
                     if k
                 ),

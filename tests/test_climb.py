@@ -2722,3 +2722,120 @@ def test_author_sleep_wake_without_harness_ends_loudly(tmp_path, monkeypatch) ->
     assert record.state == "ended"
     assert "author harness" in record.ending_note
     assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
+    # role separation: a codex lens must name the JUDGE's key explicitly —
+    # never inherit the anthropic panel key or default to the author's
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    monkeypatch.delenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", raising=False)
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    monkeypatch.setattr("autoresearch.climb.role_key", lambda *a, **k: "k")
+    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_CODEX_KEY_FILE"):
+        _panel_lenses_from_args(args)
+
+
+def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> None:
+    # a codex-only panel must not demand the (unused) anthropic panel key
+    import argparse
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    codex_key = tmp_path / "panel_codex_key"
+    codex_key.write_text("sk-judge")
+    codex_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(codex_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(tmp_path / "no-such-anthropic-key"),  # absent, must not matter
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    lenses, secrets = _panel_lenses_from_args(args)
+    assert len(lenses) == 1 and lenses[0].kind == "review"
+    assert secrets == ("sk-judge",)  # the codex judge key joins the redaction set
+
+
+def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> None:
+    # role separation enforced in the BUILDER, so a manual climb (not just the
+    # tick preflight) refuses a judge running on the author's token
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    author_key = tmp_path / "codex_key"
+    author_key.write_text("sk-author")
+    author_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(author_key))
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(author_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    with pytest.raises(ValueError, match="role separation"):
+        _panel_lenses_from_args(args)
+
+
+def test_codex_panel_key_must_not_be_the_claude_panel_key(monkeypatch, tmp_path) -> None:
+    # provider-key confusion: pointing the codex lens at the claude panel key
+    # would send the anthropic credential to OpenAI login
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    shared = tmp_path / "verifier_key"
+    shared.write_text("sk-ant")
+    shared.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(shared))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(shared),
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    with pytest.raises(ValueError, match="another provider"):
+        _panel_lenses_from_args(args)
+
+
+def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> None:
+    # --uncontained (image="") must never produce a danger-full-access codex
+    # judge on the host
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    judge_key = tmp_path / "panel_codex_key"
+    judge_key.write_text("sk-judge")
+    judge_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="",  # dev --uncontained
+    )
+    with pytest.raises(ValueError, match="requires --image"):
+        _panel_lenses_from_args(args)

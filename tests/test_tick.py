@@ -1927,9 +1927,25 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     err = _panel_preflight_error(both_wrong)
     assert "unknown kind" in err  # kind is checked before backend
     assert "claude backend" not in err
-    assert "only the claude backend" in _panel_preflight_error(
+    assert "no container mode" in _panel_preflight_error(
         make(panel="verify:hermes", panel_key_file=str(good))
     )
+    # a codex lens preflights the image requirement too (climb parity)
+    judge = tmp_path / "panel_codex_key"
+    judge.write_text("sk-judge")
+    judge.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge))
+    no_image = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="",
+        home=tmp_path,
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(good),
+    )
+    assert "requires a real container image" in _panel_preflight_error(no_image)
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
     # role separation: the panel key must not BE the (resolved) author key. The
     # author key is now config-driven — resolved per the fleet backend from env —
