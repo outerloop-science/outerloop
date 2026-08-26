@@ -8,6 +8,17 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The author brief is de-prescriptified (Mengye, "don't dictate the
+  contract"; research-loop.md, author-directed): the Task's `expected_effect`
+  and `done_criteria` shift from directives to ORIENTATION. The metric line is
+  now a fact ("mean_tour_length (lower is better), currently 10.84" — or "no
+  score recorded yet"), not a target; the finish is stated as the AUTHOR's
+  call ("You decide when your result is worth publishing — a negative result
+  reported clearly is a success"), with the gate/suite framed as how a claim
+  is verified rather than a bar to clear. The gate itself is unchanged — it,
+  never the brief, is the real bar; naming a target in the brief only invited
+  optimizing that number. Rendered labels: "Metric:" / "Finishing:".
+
 - Completed the climb->attempt vocabulary in the limits/contract surface:
   `climb_job_minutes`->`attempt_job_minutes` (contract budget field),
   `CLIMB_JOB_MINUTES_FLOOR`/`CLIMB_OVERHEAD_MINUTES`/`MAX_CLIMB_JOB_MINUTES`
