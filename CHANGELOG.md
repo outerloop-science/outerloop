@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Completed the climb->attempt vocabulary in the limits/contract surface:
+  `climb_job_minutes`->`attempt_job_minutes` (contract budget field),
+  `CLIMB_JOB_MINUTES_FLOOR`/`CLIMB_OVERHEAD_MINUTES`/`MAX_CLIMB_JOB_MINUTES`
+  ->`ATTEMPT_*`, and the `EffectiveLimits` field + `_BOUNDS` key. The old
+  contract field name is accepted as a TRANSITIONAL pydantic alias so the two
+  live contracts (pilot, yolo-jepa) migrate at leisure; the alias drops once
+  they have.
+
+### Changed
+
 - Vocabulary: the author-role activity is an **attempt** (a type of run), the
   substrate stays **run**. `climb.py`→`attempt.py`, `climb_once`→
   `attempt_once`, `live_climb`→`live_attempt`, `resume_climb`→`resume_attempt`,

@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 _SHELL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # In-job evals must fit the climb job's overhead runway (a few minutes each,
-# see limits.CLIMB_OVERHEAD_MINUTES); anything longer is dispatched.
+# see limits.ATTEMPT_OVERHEAD_MINUTES); anything longer is dispatched.
 IN_JOB_EVAL_MINUTES = 5
 # Ceiling for the contract's eval_minutes hint: OUR spend cap, not the
 # target's to raise (same grammar as every budget ceiling).

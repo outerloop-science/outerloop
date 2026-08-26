@@ -1032,7 +1032,7 @@ def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) ->
 
 def test_self_initiated_carries_contract_limits_into_the_job(tmp_path: Path) -> None:
     """The submitted climb job wears the contract's (clamped) limits: Slurm
-    walltime from climb_job_minutes, and the climb argv carries the session
+    walltime from attempt_job_minutes, and the climb argv carries the session
     knobs plus its own walltime for the self-deadline."""
     from autoresearch.contract import load_contract
     from autoresearch.tick import FollowupSpec, service_self_initiated
@@ -1046,7 +1046,7 @@ budgets:
   runs_per_week: 3
   session_max_turns: 30
   session_minutes: 25
-  climb_job_minutes: 100000
+  attempt_job_minutes: 100000
 scope: {allowed: [src/]}
 roadmap: docs/roadmap.md
 """,
@@ -2041,14 +2041,14 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     # panel-augmented total clamps at the 6h partition cap (sbatch would
     # REJECT a longer request outright, grounding every climb)
     from autoresearch.limits import effective_limits
-    from autoresearch.tick import MAX_CLIMB_JOB_MINUTES, _panel_job_minutes
+    from autoresearch.tick import MAX_ATTEMPT_JOB_MINUTES, _panel_job_minutes
 
     limits = effective_limits()  # defaults: 120-min job, 90-min session
     assert _panel_job_minutes(make(panel=""), limits) == 0
-    wanted = limits.climb_job_minutes + _panel_job_minutes(make(), limits)
+    wanted = limits.attempt_job_minutes + _panel_job_minutes(make(), limits)
     # the default path NEEDS the clamp (spec.max_job_minutes defaults to
-    # MAX_CLIMB_JOB_MINUTES = cpu_short's 6h MaxTime)
-    assert wanted > MAX_CLIMB_JOB_MINUTES
+    # MAX_ATTEMPT_JOB_MINUTES = cpu_short's 6h MaxTime)
+    assert wanted > MAX_ATTEMPT_JOB_MINUTES
     submitted2: list[str] = []
 
     def runner2(argv, timeout_s):
@@ -2095,8 +2095,8 @@ roadmap: docs/roadmap.md
         tmp_path, SlurmCompute(runner=runner2), ok2, default_contract, NOW + 9000
     )
     assert out2 is not None
-    assert f"--time={MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
-    assert f"--job-minutes {MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
+    assert f"--time={MAX_ATTEMPT_JOB_MINUTES}" in submitted2[0]
+    assert f"--job-minutes {MAX_ATTEMPT_JOB_MINUTES}" in submitted2[0]
 
 
 def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, monkeypatch):
@@ -2226,7 +2226,7 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     # an author-sleep wake resumes a FULL author session, so its Slurm job must
     # fit the session (+ overhead) and pass --session-minutes, not the short
     # candidate-wake budget (terra #135 r3).
-    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
     from autoresearch.roles import author_spec
     from autoresearch.runstate import RunRecord
     from autoresearch.tick import FollowupSpec, JobWakeDispatcher
@@ -2259,6 +2259,6 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     )
     JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(sleep_rec, "x")
     session_minutes = author_spec().budget.walltime_s // 60
-    assert times[0] == session_minutes + CLIMB_OVERHEAD_MINUTES  # fits the session
+    assert times[0] == session_minutes + ATTEMPT_OVERHEAD_MINUTES  # fits the session
     assert times[0] > 20  # far more than a candidate wake's base
     assert f"--session-minutes {session_minutes}" in joined_argv[0]  # self-deadline set

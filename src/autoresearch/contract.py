@@ -18,7 +18,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 SELF_REPO = "agentic-learning-ai-lab/autoresearch"
 ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", ".autoresearch.yaml")
@@ -153,7 +153,14 @@ class Budgets(_StrictModel):
     # spend less of us, never more. Absent = orchestrator defaults.
     session_max_turns: int | None = Field(default=None, gt=0)
     session_minutes: int | None = Field(default=None, gt=0)
-    climb_job_minutes: int | None = Field(default=None, gt=0)
+    # `attempt_job_minutes` is the current name; `attempt_job_minutes` is
+    # accepted as a TRANSITIONAL alias so the (two) live contracts migrate
+    # at leisure — drop the alias once they have.
+    attempt_job_minutes: int | None = Field(
+        default=None,
+        gt=0,
+        validation_alias=AliasChoices("attempt_job_minutes", "climb_job_minutes"),
+    )
     followup_job_minutes: int | None = Field(default=None, gt=0)
 
 

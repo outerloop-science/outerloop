@@ -274,3 +274,18 @@ def test_benchmark_name_must_be_a_slug() -> None:
     bad = PILOT_CONTRACT.replace("name: tsp", "name: ../tsp evil")
     with pytest.raises(ValidationError):
         load_contract(bad, "org/pilot")
+
+
+def test_climb_job_minutes_is_a_transitional_alias_for_attempt_job_minutes() -> None:
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3, %s: 180}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    # the new name and the legacy alias both populate the same field
+    assert load_contract(base % "attempt_job_minutes", "o/r").budgets.attempt_job_minutes == 180
+    assert load_contract(base % "climb_job_minutes", "o/r").budgets.attempt_job_minutes == 180
