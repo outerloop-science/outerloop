@@ -282,8 +282,8 @@ def build_summarizer_brief(opinions: list[dict], *, syscall_cmd: str = DEFAULT_S
         raw = json.dumps(op.get("data") or {}, indent=2)
         fence = _fence(raw)
         blocks.append(
-            f"## Opinion — lens: {op.get('lens') or op.get('reviewed_by') or 'unlabeled'}\n"
-            f"{fence}json\n{raw}\n{fence}"
+            # an unlensed opinion is the GENERAL full-rubric session — name it
+            f"## Opinion — lens: {op.get('lens') or 'general'}\n{fence}json\n{raw}\n{fence}"
         )
     joined = "\n\n".join(blocks)
     return (

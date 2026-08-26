@@ -93,6 +93,7 @@ def test_foreign_pr_envelopes_are_refused(tmp_path, monkeypatch) -> None:
 def test_two_real_opinions_run_the_summarizer_session(tmp_path, monkeypatch) -> None:
     _envelope(tmp_path, "a", kind="findings", data={"findings": []}, lens="credentials")
     _envelope(tmp_path, "b", kind="findings", data={"findings": []}, lens="deployment")
+    _envelope(tmp_path, "g", kind="findings", data={"findings": []})  # the GENERAL session
 
     merged_data = {"findings": [{"file": "x.py", "summary": "m", "detail": "d"}], "notes": "n"}
 
@@ -128,5 +129,7 @@ def test_two_real_opinions_run_the_summarizer_session(tmp_path, monkeypatch) -> 
     # the MERGE path also surfaces failed sibling lenses, deterministically
     assert "did NOT run" in merged["data"]["notes"] and "coverage" in merged["data"]["notes"]
     assert "credentials" in merged["reviewed_by"] and "deployment" in merged["reviewed_by"]
+    assert "general" in merged["reviewed_by"]  # the unlensed opinion keeps its identity
+    assert "lens: general" in captured["brief"]
     assert captured["spec"].name == "summarizer"
     assert "lens: credentials" in captured["brief"]

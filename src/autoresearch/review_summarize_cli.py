@@ -61,8 +61,7 @@ def _with_lost_lenses(data: dict, failed: list[dict]) -> dict:
         return data
     out = dict(data)
     lost = "; ".join(
-        f"{e.get('lens') or e.get('reviewed_by') or '?'}: {str(e.get('detail') or '')[:120]}"
-        for e in failed
+        f"{e.get('lens') or 'general'}: {str(e.get('detail') or '')[:120]}" for e in failed
     )
     notes = str(out.get("notes") or "")
     out["notes"] = (notes + "\n\n" if notes else "") + (
@@ -95,8 +94,7 @@ def main() -> int:
     ]
     if not reals:
         details = "; ".join(
-            f"{e.get('lens') or e.get('reviewed_by') or '?'}: {e.get('detail') or e.get('kind')}"
-            for e in envelopes
+            f"{e.get('lens') or 'general'}: {e.get('detail') or e.get('kind')}" for e in envelopes
         )
         # all skipped/failed: ONE stub summarizing why (clean skips stay
         # clean — the poster's own skip re-check silences bot/opt-out PRs)
@@ -120,7 +118,7 @@ def main() -> int:
             reviewed_by=str(only.get("reviewed_by", "")),
             lens=str(only.get("lens", "")),
         )
-        log.info("single real opinion (%s); passed through", only.get("lens") or "unlabeled")
+        log.info("single real opinion (%s); passed through", only.get("lens") or "general")
         return 0
 
     from autoresearch.review import build_summarizer_brief
@@ -138,7 +136,7 @@ def main() -> int:
     if not role_result.ok or role_result.data is None:
         detail = role_result.error or role_result.session.stop_reason
         return stub(f"summarizer session produced no verdict: {detail}")
-    lenses = "+".join(str(e.get("lens") or "?") for e in reals)
+    lenses = "+".join(str(e.get("lens") or "general") for e in reals)
     _emit(
         emit_path,
         repo,
