@@ -1,7 +1,6 @@
 """Orchestrator v1: one climb attempt on one benchmark of one target.
 
-Deliberately narrow (Mengye, 2026-08-06: "choose one benchmark on pilot
-instead of launching everything"): `climb_once` runs a single
+Deliberately narrow: `climb_once` runs a single
 implement→evaluate→verify→PR cycle for the configured benchmark. Task
 selection across benchmarks, the planner, experiment sbatch + wakes, and
 notebook reports grow from here — each behind a seam that already exists.
@@ -73,7 +72,7 @@ PROTECTED_EVAL_ENV = frozenset(
 # ...and whole families: any UV_* steers uv's env/cache resolution, and any
 # APPTAINERENV_* is translated into the CONTAINER's environment by apptainer
 # (APPTAINERENV_HOME becomes HOME inside), so exact-name checks cannot
-# enumerate them (review finding).
+# enumerate them.
 # APPTAINER_* configures the HOST-side apptainer CLI (bind paths, home,
 # containment) — same family logic, different side of the boundary.
 # LD_/DYLD_ steer the dynamic loader; GIT_ redirects repo resolution.
@@ -94,13 +93,12 @@ class ClimbParked(Exception):
     """A dispatched climb submitted its measures and must hibernate until they
     finish. `climb_once` raises it (a park is an exceptional exit); the caller,
     which owns the run record and git, persists the fields below as the WAITING
-    stage — `afterany` among them, the dependency the wake PR will submit its
-    afterany wake job against (this PR only records it; `wake_job_id` stays
-    empty until then) — and ends the run's turn, keeping the candidate snapshot
-    alive so the wake can read it. `phase` is
-    WHICH park: `baseline` (before the session — the wake reruns the session)
-    or `candidate` (after it — the wake decides). The caller fills in the
-    candidate snapshot ref (which it holds) when writing the stage."""
+    stage — `afterany` among them, the dependency set the wake waits on — and
+    ends the run's turn, keeping the candidate snapshot alive so the wake can
+    read it. `phase` is WHICH park: `candidate` (after the session — the wake
+    decides) or `author-sleep` (the author launched work and slept). The caller
+    fills in the candidate snapshot ref (which it holds) when writing the
+    stage."""
 
     def __init__(
         self,
@@ -169,8 +167,7 @@ class SubprocessEvaluator:
         # (it shelters the PAT), and never the workspace — eval cache/state
         # artifacts must not masquerade as agent edits in the diff. The
         # CONTAINED eval needs it too (--home): apptainer's tmpfs home is
-        # size-capped and uv blows it extracting wheels (seen live: first
-        # climb died at baseline on a full tmpfs).
+        # size-capped and uv blows it extracting wheels.
         # Fresh per-EVAL home (never reused): baseline and candidate cannot
         # see each other's writes, and nothing survives to any later run.
         import os
@@ -256,17 +253,14 @@ class SubprocessEvaluator:
             argv = ["sh", "-c", command]
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
         # uv's cache does heavy small-file IO; on shared filesystems (NFS)
-        # that flakes with stale-handle/copy errors (seen live twice). Keep
-        # the cache on node-local scratch and copy across filesystems.
+        # that flakes with stale-handle/copy errors. Keep the cache on
+        # node-local scratch and copy across filesystems.
         env["UV_CACHE_DIR"] = str(cache_dir)
         env["UV_LINK_MODE"] = "copy"
-        # PRIVATE project env per eval (maintainer decision 2026-08-09:
-        # "either not share, or have a lock" — we don't share): the session
-        # builds ws/.venv for its own use, and a second process consuming a
-        # venv another process just wrote races NFS close-to-open
-        # consistency (seen live: the first steward validation spawned a
-        # pytest whose binary was not yet visible). The eval builds its own
-        # environment from the LOCKFILE on NODE-LOCAL scratch (beside the
+        # PRIVATE project env per eval: the session builds ws/.venv for its
+        # own use, and a second process consuming a venv another process
+        # just wrote races NFS close-to-open consistency. The eval builds
+        # its own environment from the LOCKFILE on NODE-LOCAL scratch (beside the
         # uv cache: fast IO, zero NFS in the venv path, dies with the
         # eval) — no shared mutable state, and the orchestrator never
         # executes session-authored entrypoints.
@@ -424,9 +418,9 @@ class ClimbResult:
     # must refuse to commit anything beyond this set
     measured_paths: tuple[str, ...] = ()
     # the sealed candidate snapshot this result was measured on (set on
-    # `improved`); a caller can publish THIS tree (the wake path already does,
-    # climb.py) and a depth loop can select the best across passes by it. "" on
-    # non-improved outcomes. (The in-job depth publish is wired in part 2.)
+    # `improved`); a caller can publish THIS tree (the wake path does,
+    # climb.py) and a depth loop can select the best across passes by it.
+    # "" on non-improved outcomes.
     candidate_sha: str = ""
     session: SessionResult | None = None
     note: str = ""
@@ -682,11 +676,10 @@ class Measurer(Protocol):
     """Obtains a climb's measurements. `results` returns every measure's value
     keyed by its name, or — for a dispatched backend — raises
     `MeasurementPending` after submitting the not-yet-done jobs, for the caller
-    to park on. Two backends behind this one seam: `LocalMeasurer` (inline
-    eval in the caller's existing worktrees, for cheap benchmarks and local
-    runs) and `measure.DispatchedMeasurer` (cluster jobs on a fresh checkout of
-    each committed sha, for expensive evals); the seam is what lets
-    `measure_and_decide` be re-enterable without knowing which."""
+    to park on. `measure.DispatchedMeasurer` runs each measure as a job on a
+    fresh checkout of its committed sha — on the cluster, or synchronously via
+    `LocalCompute`; the seam is what lets `measure_and_decide` be re-enterable
+    without knowing which."""
 
     def results(self, measures: list[Measure]) -> dict[str, float]: ...
 
@@ -730,11 +723,9 @@ def measure_and_decide(
     caller to write the waiting record and park on.
 
     `suite_seed` is an INPUT, not drawn here: a wake must reproduce the seed the
-    first pass used, so the caller draws it once and persists it (the in-job
-    path drew it inline, which a resume could not reproduce). And because the
-    baseline is a committed sha rather than a live pre-session workspace, the
-    gate can always measure its siblings — the old "no pristine baseline
-    workspace" fail-closed branch is gone.
+    first pass used, so the caller draws it once and persists it. And because
+    the baseline is a committed sha rather than a live pre-session workspace,
+    the gate can always measure its siblings.
     """
     # deferred like contract.py's managed_eval_env import: measure -> dispatch
     # -> orchestrator for the eval primitives, so orchestrator imports measure
@@ -816,8 +807,7 @@ def measure_and_decide(
     try:
         vals = measurer.results(sib_plan)
     except EvalError as exc:
-        # phase 1 already credited the main pair — carry it into the report,
-        # exactly as the old in-job suite-error path did.
+        # phase 1 already credited the main pair — carry it into the report.
         return ClimbResult(
             outcome="eval-error",
             baseline=baseline,
@@ -889,10 +879,8 @@ def resume_climb(
     improving candidate, "another round of experiments" — and it re-parks by
     raising `ClimbParked`, exactly as the first pass did.
 
-    This is the seam the depth axis (docs/design/research-loop.md) grows from:
-    slice 1 wakes the GRADER with the panel off; waking the AGENT with the
-    result — a panel revision, or a deeper experiment round it drives itself —
-    reuses this same re-entry and lands next.
+    This is the re-entry seam the depth axis (docs/design/research-loop.md)
+    builds on.
     """
     from autoresearch.measure import MeasurementPending
 
@@ -1223,7 +1211,7 @@ def climb_once(
                     # sleep it rides on is counted now; sibling launches are
                     # dispatched (and counted) only if the gate parks — an
                     # inline gate must never orphan launch jobs no wake would
-                    # gather (terra #144 r2).
+                    # gather.
                     submitted = request
                     sleeps_used += 1
                     break
@@ -1231,7 +1219,7 @@ def climb_once(
                 # path below: an out-of-scope tree is never snapshotted OR
                 # executed — the out-of-scope edit could be to the ruler
                 # itself, and a launch runs code from this tree in an external
-                # job (terra, #132 r4). Same ending as the candidate path.
+                # job. Same ending as the candidate path.
                 violations = out_of_scope(list(changed_paths()), contract)
                 if violations:
                     return ClimbResult(
@@ -1403,9 +1391,9 @@ def climb_once(
         if verdict.blocking and submitted is not None and _can_resume():
             # blocking findings on a SUBMITTED claim go back to the AUTHOR —
             # it revises and resubmits, runs more experiments, or concludes
-            # (buildout Phase B: the author drives the depth axis; the
-            # orchestrator-driven revision policy is retired). The loop then
-            # re-reads its next syscall; the revision re-measures from scratch.
+            # (buildout Phase B: the author drives the depth axis). The loop
+            # then re-reads its next syscall; the revision re-measures from
+            # scratch.
             failed = _resume(f"{verdict.wake_text}\n\n{_not_run_note(submitted)}{_budgets_line()}")
             if failed is not None:
                 return failed
@@ -1441,9 +1429,9 @@ def pr_body(
 ) -> str:
     """The PR body for an improved run: results table + the agent's report.
 
-    Human surfaces render at the benchmark's conventional precision
-    (maintainer decision 2026-08-09); full precision lives only in
-    results/leader.json, and every comparison runs on full floats.
+    Human surfaces render at the benchmark's conventional precision;
+    full precision lives only in results/leader.json, and every
+    comparison runs on full floats.
     """
     from autoresearch.progress import fmt_metric
 

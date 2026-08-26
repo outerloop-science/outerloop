@@ -159,8 +159,8 @@ class SlurmCompute:
     def submit_after(self, spec: JobSpec, after_job_id: str) -> str:
         """Submit `spec` to run when `after_job_id` terminates — however it
         terminates (afterany: the wake-on-failure semantics the fail-safe
-        design requires; verified live on Torch 2026-08-06). Refuses a spec
-        that already carries a dependency rather than silently replacing it."""
+        design requires). Refuses a spec that already carries a dependency
+        rather than silently replacing it."""
         if not after_job_id.isdigit():
             raise ValueError(f"not a job id: {after_job_id!r}")
         if spec.dependency:
@@ -255,7 +255,7 @@ class LocalCompute:
         argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
         self._seq += 1
         job_id = str(_LOCAL_JOB_BASE + self._seq)
-        # An explicit env allowlist, like the evaluator this backend replaced:
+        # An explicit env allowlist:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
         # job script starts from a minimal environment and sets its own.

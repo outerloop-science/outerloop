@@ -243,9 +243,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
     The terminal sequence (record, report, issue post) must degrade
     independently: a full disk must not block the GitHub post, and a network
-    failure must not block the record. The 2026-08-07 quota crisis stranded a
-    run in `implementing` because the ending record itself hit EDQUOT inside
-    the except handler and took the report and issue post down with it.
+    failure must not block the record.
     """
     try:
         fn()
@@ -330,8 +328,7 @@ def _park_run(
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
     fresh process reconstructs the measure-and-decide phase from. The caller
     passes the EXACT `candidate_ref` it will keep alive (never re-derive it from
-    the commit — two snapshots can share a commit). The wake path (which reads
-    this and resumes) is a later PR."""
+    the commit — two snapshots can share a commit)."""
     from autoresearch.dispatch import effective_eval_minutes
 
     job_ids = afterany_ids(parked.afterany)
@@ -347,8 +344,8 @@ def _park_run(
         # branch a non-default `--base-branch` selected — the wake CLI otherwise
         # defaults to main and would mis-target.
         "base_branch": base_branch,
-        # verification-panel revisions taken so far — persisted so the next wake
-        # knows the cap position after a panel-driven revision re-park.
+        # verification-panel reads so far — persisted so the next wake
+        # continues the count.
         "panel_reads": panel_reads,
         # the session's write-up + spend, saved so a candidate wake can build
         # the PR body / panel claim and report the real cost WITHOUT re-running
@@ -375,8 +372,8 @@ def _park_run(
         # counts as of this park.
         stage["syscall_launches"] = [
             # minutes ride along so a RE-PARK's deadline floor still covers the
-            # longest launch (terra #144 r4) — without them a rebuilt descriptor
-            # would undershoot the floor and the sweep could cancel a healthy
+            # longest launch — without them a rebuilt descriptor would
+            # undershoot the floor and the sweep could cancel a healthy
             # queued sibling as "pending past deadline"
             {"name": launch.name, "minutes": launch.minutes, "artifacts": list(launch.artifacts)}
             for launch in parked.syscall.launches
@@ -388,9 +385,7 @@ def _park_run(
         stage["sleeps_used"] = parked.sleeps_used
     # A single-job park records its one pollable id; a MULTI-job park records
     # none — the sweep falls back to polling every id in the stage's `afterany`
-    # string and wakes only when ALL are done (tick._poll_targets). The park-time
-    # afterany wake job (zero-latency primary; the sweep stays backup) is still
-    # a later PR.
+    # string and wakes only when ALL are done (tick._poll_targets).
     experiment_job_id = job_ids[0] if len(job_ids) == 1 else ""
     # The deadline is a FLOOR: park time (`now` here is the park moment, passed
     # by the caller) + the eval walltime + a generous queue/grace slack, so a
@@ -613,10 +608,8 @@ def _wake_author_sleep(
 
     # The wake's climb IO: measures go through the DISPATCHED measurer (this is
     # a wake job with bounded walltime — the gate's evals run as their own jobs
-    # and park the run as a CANDIDATE), snapshots parent on base (same as the
-    # first pass: the clone was at base), and changed_paths carries no
-    # fingerprints (only the live inline publish needs them; every publish from
-    # here is the sealed-sha wake publish).
+    # and park the run as a CANDIDATE); snapshots parent on base (same as the
+    # first pass: the clone was at base).
     snapshots: list[Snapshot] = []
 
     def snapshot() -> str:
@@ -748,9 +741,9 @@ def resume_run(
     * **improved** — branch the SEALED `candidate_sha` (never the live tree,
       which may have drifted since the park; the diff was scope-checked so it
       carries only in-scope changes), layer the ledger update on top, push, and
-      open the PR. The mechanical moved-base merge the first pass does is
-      deliberately NOT here (docs/design/research-loop.md): a stale PR is a
-      re-wake, not an orchestrator auto-merge.
+      open the PR. A moved base is NOT merged and re-measured here
+      (docs/design/research-loop.md): a stale PR is a re-wake, not an
+      orchestrator auto-merge.
     """
     run_dir = run_root / "runs" / run_id
     workspace = run_dir / "ws"
@@ -871,7 +864,7 @@ def resume_run(
             # fanned out) still owes the author the gate+panel results and its
             # sibling launches' results — carry the submit context forward, or
             # the next wake drafts instead of waking the author and the launch
-            # descriptors are lost (terra #144 r3). Commands/minutes are spent
+            # descriptors are lost. Commands/minutes are spent
             # history; the wake needs only names + artifacts (as persisted).
             from autoresearch.syscall import Launch as _Launch
             from autoresearch.syscall import SyscallRequest as _SyscallRequest
@@ -960,8 +953,8 @@ def resume_run(
         and result.outcome in ("no-improvement", "suite-regression", "eval-error")
     ):
         # the submitted candidate failed the gate — including an eval that
-        # errored (terra #144 r1): feedback, never a silent terminal — the
-        # author decides what happens next (rounds stay bounded by sleep_k)
+        # errored: feedback, never a silent terminal — the author decides
+        # what happens next (rounds stay bounded by sleep_k)
         return _wake_author(
             "Your `submit` did NOT clear the gate: "
             f"{result.note or result.outcome} "
@@ -1077,11 +1070,9 @@ def resume_run(
             # dispatched improvement is not published unverified. It reads the
             # workspace tree, now checked out to the SEALED candidate_sha (the
             # dispatched evals ran on node-local scratch, so the tree is exactly
-            # what was measured), over base_sha. Slice 1: a blocking or degraded
+            # what was measured), over base_sha. A blocking or degraded
             # verdict opens a DRAFT PR carrying the findings and never arms
-            # auto-merge; a clean verdict (or no panel) arms. Waking the agent
-            # to REVISE on a blocking finding — the depth axis — is the next
-            # slice; for now a human triages the draft.
+            # auto-merge; a clean verdict (or no panel) arms.
             if panel_lenses:
                 # A panel ERROR (a git op in build_panel_runner, not a finding)
                 # must NOT abort the publish and drop the candidate snapshot —
@@ -1452,9 +1443,7 @@ def live_climb(
     workspace = run_dir / "ws"
 
     # The record exists before any network or clone work: every crash from
-    # here on has a record to end. (A run once stranded in `implementing`
-    # because the region between record creation and the contained call
-    # could still raise.)
+    # here on has a record to end.
     import os as _os
 
     record = RunRecord(
@@ -1499,8 +1488,8 @@ def live_climb(
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # Build ON the requested PR base: the clone checks out the remote
         # DEFAULT branch, which need not be `base_branch` — the session must
-        # edit, and the gate must measure, the tree the PR will land on
-        # (terra #147 r3). A missing base branch fails loudly as climb-error.
+        # edit, and the gate must measure, the tree the PR will land on.
+        # A missing base branch fails loudly as climb-error.
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
@@ -1509,10 +1498,10 @@ def live_climb(
         # launches and the gate run as Slurm jobs) and a resumable backend (the
         # wake resumes the SAME session) — and the benchmark has not opted out
         # (`depth_k: 0`). With the channel (`.autoresearch/`) armed it never
-        # enters diffs, scope, or drift fingerprints — repo-local exclude. With
-        # the feature off, an untracked `.autoresearch/` file must be staged
-        # and judged like any other agent edit, not silently hidden by a magic
-        # dir name (terra, #132 r2 — the off state stays byte-identical).
+        # enters diffs or scope — repo-local exclude. With the feature off, an
+        # untracked `.autoresearch/` file must be staged and judged like any
+        # other agent edit, not silently hidden by a magic dir name (the off
+        # state stays byte-identical).
         _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
         author_syscalls = (
             dispatch is not None
@@ -1522,8 +1511,8 @@ def live_climb(
         )
         # The `.autoresearch/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
-        # (install would write through it to a host path with our permissions —
-        # terra #133 r1), a tracked request (free cluster compute — #132 r3), or
+        # (install would write through it to a host path with our permissions),
+        # a tracked request (free cluster compute), or
         # any other booby trap. If the path pre-exists in ANY form, disable the
         # feature for the run, loudly; otherwise we create a dir we own.
         channel = workspace / SYSCALL_DIR
@@ -1590,7 +1579,7 @@ def live_climb(
 
         # the panel's base is the PRE-SESSION commit — the exact tree the
         # baseline was measured on — never origin/<base_branch>, which can
-        # name a different branch than the clone's checkout (terra, #95 r3)
+        # name a different branch than the clone's checkout
         pre_session_sha = ws.git("rev-parse", "HEAD").strip()
         panel_runner = (
             build_panel_runner(
@@ -1679,7 +1668,7 @@ def live_climb(
             # The climb dispatched its measures and hibernated. Persist the
             # re-entry stage as a WAITING record (not an error), keep the
             # candidate snapshot alive for the wake, and end. The wake re-enters
-            # from the record (the wake path is a later PR). `parked` is set only
+            # from the record. `parked` is set only
             # AFTER a successful write: if _park_run raises, it stays None so the
             # finally drops every snapshot (no leak) and the outer handler ends
             # the run as an error rather than a half-written hibernation.
@@ -1785,12 +1774,10 @@ def live_climb(
     if result.outcome == "improved":
         try:
             # Publish the SEALED candidate sha — never the live tree, which
-            # may have drifted since the snapshot (eval caches, stray writes).
-            # The sha is exactly the measured, scope-checked content, so the
-            # old drift-fingerprint apparatus retires with the workspace
-            # commit. A base branch that moved during the climb is NOT merged
-            # and re-measured here: a stale PR is review's to handle — the
-            # stance the wake publish has always had (research-loop.md).
+            # may have drifted since the snapshot (eval caches, stray writes);
+            # the sha is exactly the measured, scope-checked content. A base
+            # branch that moved during the climb is NOT merged and re-measured
+            # here: a stale PR is review's to handle (research-loop.md).
             branch = f"{config.branch_prefix}/{run_id}"
             if result.baseline is None or result.candidate is None or not result.candidate_sha:
                 raise EvalError("improved result missing measurements or the sealed sha")
@@ -1968,7 +1955,7 @@ def arm_self_deadline(job_minutes: int, margin_s: float = 120.0) -> int:
     """Arm our own end-of-walltime alarm; returns the armed seconds (0 = off).
 
     Slurm delivers NO signal to our process on Torch before SIGKILL
-    (measured 2026-08-08: scancel and walltime timeout both signal the
+    (scancel and walltime timeout both signal the
     batch shell only) — so the only way to end a run richly before the
     wall is our own clock. SIGALRM fires `margin_s` before the job's
     walltime and raises Terminated into the ordinary containment; the
@@ -2154,15 +2141,15 @@ def main() -> int:
     # NOTE: the codex author is validated on the EFFECTIVE author per path — the
     # fresh climb on args (below), a wake on the parked run's persisted pair — not
     # here, where args.author_backend is the FLEET default and would misjudge a
-    # resume after a fleet flip (review: terra blocking).
+    # resume after a fleet flip.
     # each --codex-config KEY=VALUE becomes a `-c KEY=VALUE` pair for codex
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
 
     bot_auth = FileTokenProvider(Path(args.pat_file))
 
-    # --resume WAKES a parked dispatched run: no session, no api key, no panel —
-    # just rebuild the dispatched measurer and re-enter the decision. The wake
-    # job the WakeDispatcher submits runs exactly this.
+    # --resume WAKES a parked dispatched run: rebuild the dispatched measurer
+    # and re-enter the decision. The wake job the WakeDispatcher submits runs
+    # exactly this.
     if args.resume:
         if not (args.account and args.partition and args.image and Path(args.image).is_file()):
             parser.error(
@@ -2213,7 +2200,7 @@ def main() -> int:
         if wake_lenses:
             # the panel's judges need the verifier key; an author-sleep wake
             # alone does NOT — a panel-less deployment must not be forced to
-            # provision an unused credential (terra, #135 r1).
+            # provision an unused credential.
             wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
         if (
             wake_lenses

@@ -29,8 +29,7 @@ MARKER = "<!-- autoresearch:advisory-review -->"
 OPT_OUT_LABEL = "autoresearch:no-review"
 
 # One calm line: the mechanical defense against forged endorsements is the
-# approval-language redaction in sanitize(), not header volume. (Softened
-# 2026-08-08 on maintainer feedback — the old header shouted.)
+# approval-language redaction in sanitize(), not header volume.
 ADVISORY_HEADER = (
     "*Advisory findings from `autoresearch` — the code owner decides. "
     f"Reply to disagree; the `{OPT_OUT_LABEL}` label opts this PR out.*"
@@ -305,7 +304,7 @@ def commentable_lines(diff: str) -> dict[str, set[int]]:
             # INSIDE a hunk every line is +/-/context/backslash, so headers
             # are parsed only between hunks — an added line whose content
             # begins with "++ b/" (arriving as "+++ b/...") cannot rebind
-            # the file mid-hunk (review finding: contributor-controlled)
+            # the file mid-hunk (the diff is contributor-controlled)
             if not raw.startswith(("-", "\\")):
                 lines[current].add(new_line)  # added and context lines alike
                 new_line += 1

@@ -14,11 +14,10 @@ ABI the tool commits, and the readers here are its authoritative validators
   the SAME session with every job's results delivered as data (`render_wake`).
   A session that ends with no request follows today's path (implicit submit).
 - The JUDGE's `conclude` syscall (`type: "verdict"`): a judge's `exit()`,
-  carrying its findings. `read_verdict` reads it — the same `{findings, notes}`
-  shape `run_role` used to parse from a final message, minus the parse-and-repair
-  loop (each finding was one validated call, so the verdict is well-formed BY
-  CONSTRUCTION). A judge that commits no verdict fails its round loudly (the
-  caller posts a skip stub) — there is no parse fallback.
+  carrying its findings. `read_verdict` reads a `{findings, notes}` verdict
+  that is well-formed BY CONSTRUCTION (each finding was one validated call).
+  A judge that commits no verdict fails its round loudly (the caller posts
+  a skip stub) — there is no parse fallback.
 
 The `.autoresearch/` directory is kernel-excluded from the diff via
 `.git/info/exclude` (repo-local, never a tracked edit), so requests and
@@ -459,7 +458,7 @@ def _deliver_artifacts(
     """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`.
 
     The author controls `.autoresearch/` in its sandbox, so the DESTINATION is
-    hostile too (terra #135 r2): a symlinked channel dir or output path would
+    hostile too: a symlinked channel dir or output path would
     make `shutil.copy` write through it to an arbitrary host path with the wake
     process's permissions. Defenses: refuse if any channel ANCESTOR is a symlink;
     remove any pre-existing `results/<name>` (symlink → unlink, dir → rmtree) so
@@ -514,8 +513,8 @@ def _read_text(path: Path, cap: int = 65_536) -> str:
 def _read_tail(path: Path, max_chars: int) -> str:
     """Read only the trailing bytes needed for `max_chars` — NEVER the whole
     file. Launch stdout/stderr is agent-controlled and can be arbitrarily large;
-    loading it before truncating could exhaust the wake process
-    (terra, #135 r1). 4 bytes/char covers the UTF-8 worst case; a codepoint cut
+    loading it before truncating could exhaust the wake process.
+    4 bytes/char covers the UTF-8 worst case; a codepoint cut
     at the window edge decodes as a replacement character, which is fine for a
     tail."""
     budget = max_chars * 4

@@ -179,9 +179,7 @@ def run_agent_review(
             if emit_path is not None:
                 # EVERY errored session surfaces on the PR in the split
                 # topology: this job's log is not the record — the stub the
-                # post job publishes is. Observed live 2026-08-15: terra's
-                # structured-output failures posted nothing and two rounds
-                # read as quiet clean days.
+                # post job publishes is.
                 _emit(
                     emit_path,
                     repo,

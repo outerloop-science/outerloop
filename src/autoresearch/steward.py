@@ -82,7 +82,7 @@ OUTAGE_MARKER = "<!-- autoresearch:outage-release -->"
 MAX_STEWARD_ATTEMPTS = 3
 # Outage releases don't count as attempts, but they cannot refund forever:
 # a PERMANENT refusal (revoked key, misconfigured key file) would otherwise
-# oscillate 0->1->0 below the cap and never reach a human (review finding).
+# oscillate 0->1->0 below the cap and never reach a human.
 # After this many outage releases the order waits for a human too — the
 # release comments on the thread say exactly why.
 MAX_OUTAGE_RELEASES = 5
@@ -256,7 +256,7 @@ def pick_steward_issue(
             # move the claim state. On a public repo, a stranger posting
             # a release (or an outage release) must be able to neither
             # free a claimed order, nor burn its attempts, nor erase them
-            # into an unbounded paid retry loop (review finding).
+            # into an unbounded paid retry loop.
             author = str((c.get("user") or {}).get("login", ""))
             if author.casefold() != bot_login.casefold():
                 continue
@@ -640,7 +640,7 @@ def live_steward(
         # malfunction: name it, and put the real cause in every surface a
         # human reads (record note, report, work-order comment) — "the
         # session used its full 120-turn budget" tells the maintainer what
-        # to decide; "ValueError: tool_use" told them nothing.
+        # to decide.
         budget = isinstance(exc, SessionFailure) and exc.budget
         api_outage = isinstance(exc, SessionFailure) and exc.outage
         exc_name = type(exc).__name__

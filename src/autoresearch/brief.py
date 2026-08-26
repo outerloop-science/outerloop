@@ -152,8 +152,8 @@ def render_wake(update: str, budget: BudgetState) -> str:
     understanding, what it launched); the wake carries only what is new:
     results and the current budget. It explicitly supersedes the brief's
     wait-for-results instruction — a resumed agent honors standing
-    instructions, so a wake that silently contradicts one gets refused
-    (observed live on Torch). Task-level instructions only: contract scope,
+    instructions, so a wake that silently contradicts one gets refused.
+    Task-level instructions only: contract scope,
     budgets, and safety rules are never the wake's to relax.
     """
     return "\n".join(

@@ -172,7 +172,7 @@ def outage(result: SessionResult) -> bool:
     # consulted ONLY when no detail exists AND it carries the legacy CLI
     # error shape ("API Error ..."), never agent prose — a failed session's
     # report that merely MENTIONS billing or limits must not trip a latch
-    # that pauses every lane (review findings, rounds 1 and 2).
+    # that pauses every lane.
     surface = result.error_detail.casefold()
     if not surface:
         text = result.final_text.strip().casefold()
@@ -288,8 +288,8 @@ def _resume_transcript_path(session_home: Path, session_id: str) -> Path:
 def _load_resume_transcript(session_home: Path, session_id: str) -> list[dict[str, str]] | None:
     """Load a saved transcript for `session_id`. None = not found (the caller
     must NOT silently start fresh — a resume with no restored context is an
-    error, exactly the failure the old no-resume refusal guarded against). The
-    per-run home is session-writable, so read without following a symlink."""
+    error). The per-run home is session-writable, so read without following a
+    symlink."""
     text = _read_no_follow(_resume_transcript_path(session_home, session_id))
     if text is None:
         return None
@@ -361,8 +361,8 @@ def _int(value: Any, default: int = 0) -> int:
 
 @dataclass
 class ClaudeCodeHarness:
-    """Headless Claude Code (`claude -p`), as validated in the Torch spike:
-    the JSON output carries cost, usage, session id, and stop reason.
+    """Headless Claude Code (`claude -p`): the JSON output carries cost,
+    usage, session id, and stop reason.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
@@ -385,7 +385,7 @@ class ClaudeCodeHarness:
     # as instructions. Off for author sessions, where the target repo's own
     # CLAUDE.md is useful contributor guidance.
     bare: bool = False
-    # Apptainer image for session containment (decided 2026-08-06). When set,
+    # Apptainer image for session containment. When set,
     # the session runs under `apptainer exec --containall --cleanenv`: no host
     # $HOME, no host env, no same-user absolute paths — the session sees only
     # the workspace, its per-run HOME, and the read-only claude binary. This
@@ -395,7 +395,7 @@ class ClaudeCodeHarness:
     apptainer_binary: str = "apptainer"
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
-    supports_resume = True  # native --resume, bench-validated
+    supports_resume = True  # native --resume
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -547,9 +547,9 @@ class ClaudeCodeHarness:
         detail = f"{subtype}: {messages}" if subtype and messages else (subtype or messages)
         final_text = str(data.get("result") or "")
         # The CLI can flag is_error while stamping a content-free subtype
-        # ("success") and leaving the real cause only in `result` — observed on
-        # Torch: is_error, subtype "success", result "API Error: 400 ... usage
-        # limits". That machine "API Error ..." text (never agent prose) is the
+        # ("success") and leaving the real cause only in `result` (is_error,
+        # subtype "success", result "API Error: 400 ... usage limits"). That
+        # machine "API Error ..." text (never agent prose) is the
         # authoritative cause, so surface it as the detail: downstream notes,
         # the operator log, and the outage latch (its classifier AND its
         # throttle-duration check, which reads rate_limit/overloaded off the
@@ -680,7 +680,7 @@ def _parse_codex_result(
     Cost is left at 0 (these backends are subscription or token metered; the
     budget layer meters them by a session/token proxy). Never raises.
     """
-    # Event schema verified against codex-cli 0.130.0 (cluster0):
+    # Event schema verified against codex-cli 0.130.0:
     #   thread.started -> thread_id (the session id)
     #   error          -> message
     #   turn.failed    -> error.message
@@ -870,7 +870,7 @@ class CodexHarness:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
-        # (verified: the responses endpoint 401s on env-only). Write auth.json
+        # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`
         # (key on stdin, never argv) before exec.
         login_error = self._login(session_home)
@@ -973,7 +973,7 @@ def _hermes_command(
     extra_args: tuple[str, ...],
 ) -> list[str]:
     """Argv for one headless hermes run (`run_agent.py`, fire-style flags,
-    verified against the hermes-agent source, v0.20.1).
+    hermes-agent v0.20.1).
 
     The BRIEF is never in argv — it is written to a file and `query` is only a
     short pointer instruction. The API key is never in argv either: hermes
@@ -998,8 +998,7 @@ def _hermes_command(
         argv.append(f"--base_url={base_url}")
     # Embedded quotes are load-bearing: fire literal-evals flag values, so a
     # bare `a,b` becomes a Python TUPLE and hermes's .split(",") crashes.
-    # `"a,b"` evals to the string hermes expects (verified by the live smoke
-    # test, which caught exactly this).
+    # `"a,b"` evals to the string hermes expects.
     if enabled_toolsets:
         argv.append(f'--enabled_toolsets="{",".join(enabled_toolsets)}"')
     if disabled_toolsets:
@@ -1024,9 +1023,9 @@ def _parse_hermes_result(
         messages = sample
     elif isinstance(sample, dict):
         # run_agent.py --save_sample wraps the ShareGPT turns under
-        # "conversations" (verified against hermes v0.20.1, run_agent.py:8404);
-        # accept "messages"/"trajectory" too for other/older paths. Missing this
-        # key makes num_turns==0 and drops a real verdict as a bogus error.
+        # "conversations" (hermes v0.20.1); accept "messages"/"trajectory"
+        # too for other paths. Missing this key makes num_turns==0 and
+        # drops a real verdict as a bogus error.
         wrapped = (
             sample.get("conversations") or sample.get("messages") or sample.get("trajectory") or []
         )
@@ -1044,8 +1043,8 @@ def _parse_hermes_result(
         final_text = content if isinstance(content, str) else str(content)
     if not final_text:
         final_text = stdout.strip()[-20_000:]
-    # hermes exits 0 even when every API call failed (observed: HTTP 401 with
-    # a clean exit); a run with no assistant output is a failure, not a report
+    # hermes exits 0 even when every API call failed; a run with no
+    # assistant output is a failure, not a report
     is_error = returncode != 0 or num_turns == 0
     return SessionResult(
         stop_reason="error" if is_error else "completed",
@@ -1097,8 +1096,8 @@ class HermesHarness:
     provider: str = ""
     # approvals.deny: fnmatch globs hermes refuses before any yolo/mode-off
     # bypass (headless: a clean deny, never a hang). NOTE it matches SHELL
-    # COMMANDS (the terminal tool), NOT the write_file/patch tool calls (source
-    # verified). Useful to hardline-forbid specific dangerous commands.
+    # COMMANDS (the terminal tool), NOT the write_file/patch tool calls.
+    # Useful to hardline-forbid specific dangerous commands.
     approvals_deny: tuple[str, ...] = ()
     model: str = ""  # OpenRouter format (provider/model); empty -> hermes default
     base_url: str = ""  # empty -> the seeded provider's own endpoint

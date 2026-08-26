@@ -284,7 +284,7 @@ class GitHubClient:
 
         The row is orchestrator-owned and mechanical — the ONE part of the
         body that must never go stale when a follow-up push re-measures
-        (maintainer decision 2026-08-09: rewrite the measured numbers,
+        (rewrite the measured numbers,
         never the narrative). Returns False when the row is not found
         (older body formats), in which case the Edit addendum still
         carries the number.
@@ -316,10 +316,9 @@ class GitHubClient:
     def append_pull_body(self, repo: str, number: int, addendum: str) -> None:
         """Upsert an EDIT addendum onto a PR body (read-modify-write PATCH).
 
-        Follow-up commits desync the report frozen into the body at publish
-        (found live on the first verifier exchange: round 2 reviewed a body
-        describing code the follow-up had already replaced). The addendum
-        marks the body EDITED rather than rewriting history in place — and
+        Follow-up commits desync the report frozen into the body at publish.
+        The addendum marks the body EDITED rather than rewriting history in
+        place — and
         REPLACES any previous addendum (marker-delimited) instead of
         stacking one per round, so the body stays bounded and always points
         at the latest state.
