@@ -1,8 +1,7 @@
 """The dispatched-eval primitive: an eval as its own Slurm job.
 
-Phase 1 of docs/design/dispatcher.md. This module owns the three pieces the
-design specifies, and nothing else (the resumable climb transaction and the
-wake wiring build on these in the next stage):
+This module owns the three pieces docs/design/dispatcher.md specifies,
+and nothing else:
 
   * snapshot_tree  — a retained snapshot of a dirty workspace, taken
     against a TEMPORARY unique index seeded from the base commit (working
@@ -440,7 +439,7 @@ def eval_job_spec(
     """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
     not create a longer Slurm job than the ceiling allows. GPU counts arrive
-    with the phase-3 contract fields; the parameter exists so the seam does
+    with later contract fields; the parameter exists so the seam does
     not change shape then."""
     return JobSpec(
         job_name=job_name[:60],

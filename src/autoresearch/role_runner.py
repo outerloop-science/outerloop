@@ -1,7 +1,7 @@
 """The role-runner: build a harness for a role, run one session, read its result.
 
-One loop replaces the per-role driver modules (docs/design/consolidation.md),
-and ONE construction replaces the per-role harness builders: `build_harness`
+One loop runs every role (docs/design/consolidation.md), and ONE
+construction builds every harness: `build_harness`
 maps a RoleSpec to any backend uniformly — backends are interchangeable, and
 containment is the deployment's business (`container_image` where a jail
 exists, the ephemeral runner where one doesn't), never a per-role tool posture.
@@ -9,10 +9,9 @@ Roles differ by prompt, verbs, and output handling.
 
 `run_role` runs a RoleSpec on a Harness. A role WITH an `output_schema` (a
 judge) records its verdict through the installed syscall tool (`finding` /
-`conclude`) and the kernel reads it back authoritatively (`read_verdict`) —
-each call was validated in-session, so the old parse-a-final-message-and-repair
-path is gone. It does NOT judge, gate, measure, or post — the result-policy
-(kernel) acts on the RoleResult.
+`conclude`) and the kernel reads it back authoritatively (`read_verdict`);
+each call is validated in-session. It does NOT judge, gate, measure, or
+post — the result-policy (kernel) acts on the RoleResult.
 """
 
 from __future__ import annotations

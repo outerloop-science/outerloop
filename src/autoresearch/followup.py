@@ -107,8 +107,8 @@ def context_comments(comments: list[dict], since_id: int) -> list[tuple[str, str
 
     Deliberately NOTHING else qualifies: on a public repo, arbitrary
     commenters would otherwise get their text injected into a session with
-    push access, guarded only by advisory fencing (review finding on this
-    change). A drive-by comment worth the agent's attention is a
+    push access, guarded only by advisory fencing. A drive-by comment
+    worth the agent's attention is a
     maintainer's to quote — quoting is the human act that grants standing.
     """
     picked: list[tuple[str, str]] = []
@@ -520,8 +520,7 @@ def _respond(
                         # cross-seed floor, same rule as the climb's publish
                         # path: this re-measure ran under a FRESH seed, so a
                         # sub-floor delta over the recorded best is pool
-                        # luck and must not ratchet the ledger (round-1
-                        # review finding)
+                        # luck and must not ratchet the ledger
                         # The floor explains only a delta that WOULD have
                         # improved: an outright regression must read as a
                         # regression (the `worse` flag), never as noise.
@@ -543,7 +542,7 @@ def _respond(
                         ):
                             # named on the thread, like the climb's ending
                             # note — a silently unchanged ledger row reads
-                            # as a bug (review finding)
+                            # as a bug
                             floor = benchmark_floor(
                                 prior.best, bench.min_delta, bench.min_delta_rel
                             )
@@ -617,7 +616,7 @@ def _respond(
         except Exception as exc:
             log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
         # Code changed after publish: the body's report now describes an
-        # older tree. Mark it edited (maintainer decision 2026-08-09) so no
+        # older tree. Mark it edited so no
         # reader — human or verifier — mistakes the original report for the
         # current state; the authoritative update lives in the reply.
         try:
@@ -702,8 +701,7 @@ def main() -> int:
         help="codex `-c KEY=VALUE` config for the codex author (repeatable)",
     )
     # the tick passes the effective limit explicitly; this fallback follows
-    # the harness ceiling so a bare CLI run is never silently starved (a
-    # 40-turn default cost a live steward follow-up its whole session)
+    # the harness ceiling so a bare CLI run is never silently starved
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--bot-login", default="agentic-learning-bot")
     parser.add_argument(

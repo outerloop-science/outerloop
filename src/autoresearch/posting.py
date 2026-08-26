@@ -40,9 +40,8 @@ def post_round(
     """Post one NEW comment per round — numbered, stamped with the reviewed
     head — so every round notifies and stays visible (edits do neither).
     Shared by the advisory reviewer and the verifier; each counts rounds by
-    ITS OWN marker. The old one-thread upsert guarded against
-    synchronize-triggered spam; runs are now only PR-open or an explicit
-    label request, so volume is human-bounded.
+    ITS OWN marker. Runs are only PR-open or an explicit label request, so
+    volume is human-bounded.
     """
     stamp, round_label = _round_stamp(client, repo, number, marker, pr_data, reviewed_by)
     client.comment(repo, number, body.replace(marker, f"{marker}\n{stamp}", 1))

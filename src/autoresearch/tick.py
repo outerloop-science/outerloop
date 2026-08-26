@@ -101,7 +101,7 @@ class WakeDispatcher(Protocol):
     lease), or the Slurm job id of an asynchronous wake job that now owns the
     lease (released by that job on completion; reaped by TTL if it dies).
 
-    Contract for real (phase-5) dispatchers: a wake that RESULTS IN PROGRESS
+    Contract for real dispatchers: a wake that RESULTS IN PROGRESS
     must either move the run out of `waiting` or reset `wake_attempts` —
     the counter means "wakes since the run last made progress", and layer 5
     ends the run as stuck when it reaches MAX_WAKE_ATTEMPTS."""
@@ -192,8 +192,8 @@ class FollowupSpec:
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
-# full trees + per-flight venvs cannot pile up for days (review finding);
-# same-day forensics is the norm, and the disk preflight is the backstop.
+# full trees + per-flight venvs cannot pile up for days; same-day
+# forensics is the norm, and the disk preflight is the backstop.
 FLIGHT_TTL_S = 24 * 3600
 
 
@@ -316,9 +316,8 @@ def contract_alarm(
 ) -> None:
     """Persistent contract failure must surface where humans look.
 
-    A rejected or unfetchable contract silently idles every launch lane
-    (this cost 36 hours once — the only signal was a log line on the
-    cluster). After CONTRACT_ALARM_AFTER consecutive failing ticks this
+    A rejected or unfetchable contract silently idles every launch lane.
+    After CONTRACT_ALARM_AFTER consecutive failing ticks this
     opens ONE issue on the target repo; the next successful load closes
     it and says so. Alarm plumbing is best-effort by construction: it
     must never break the tick it reports for."""
@@ -685,8 +684,7 @@ def sweep(
     """The backup wake layers, applied to every waiting run.
 
     dry_run reports what WOULD happen with zero writes — no leases, no
-    attempt counters, no dispatch — so the plumbing can run live before the
-    real dispatcher exists.
+    attempt counters, no dispatch.
     """
     woken: list[tuple[str, str]] = []
     deferred: list[str] = []
@@ -725,9 +723,9 @@ def sweep(
         deferred=tuple(deferred),
         reaped_leases=tuple(reaped),
         stuck=tuple(stuck),
-        # NOT the global dry_run: that flag exists because the WAKE
-        # dispatcher is still a placeholder; ending killed climbs' records
-        # dispatches nothing and must run live even while wakes stay dry.
+        # NOT the global dry_run: that flag only dries WAKE delivery;
+        # ending killed climbs' records dispatches nothing and must run
+        # live even while wakes stay dry.
         implementing_ended=tuple(_sweep_implementing(root, compute, now, grace_s)),
     )
 
@@ -741,9 +739,8 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
 
     A climb that CRASHES contains its own ending (climb.py); a climb that is
     KILLED — walltime, preemption, scancel after the SIGTERM grace, node
-    death — leaves no exception to contain, and before this pass its record
-    stranded in `implementing` forever (the picker's stranded guard freed
-    the lane but nothing ever recorded the ending). Slurm truth decides:
+    death — leaves no exception to contain, so this pass records the ending
+    (the picker's stranded guard only frees the lane). Slurm truth decides:
     job terminal or GONE, plus a grace so a just-finished healthy climb can
     write its own final state first. Outage never reads as dead. Legacy
     records without a job id age out on the stranded window instead.
@@ -852,9 +849,7 @@ def _poll_targets(record: RunRecord) -> list[str]:
     the common case; a MULTI-job park (candidate + siblings, or several author
     launches) records no single id — its jobs live in the stage's `afterany`
     dependency string, the one source that always names them all. Without
-    this fallback a multi-job park was a BLIND park riding the deadline floor
-    (~hours of dead time after evals that finished in minutes — observed live
-    2026-08-25)."""
+    this fallback a multi-job park is blind and rides the deadline floor."""
     if record.experiment_job_id:
         return [record.experiment_job_id]
     afterany = str((record.stage or {}).get("afterany", ""))
@@ -1074,8 +1069,8 @@ def tick(
                 contract_error = f"{type(exc).__name__}: {exc}"
             if contract_error is None:
                 # a bad panel config idles the same launch lanes a bad
-                # contract does — same silent-idle class ("this cost 36
-                # hours once"), so it rides the same alarm
+                # contract does — same silent-idle class, so it rides the
+                # same alarm
                 panel_error = _panel_preflight_error(followup_spec)
                 if panel_error:
                     contract_error = f"panel preflight: {panel_error}"
@@ -1385,7 +1380,7 @@ def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
     walltime rides along (contract budget + any panel allowance, clamped at
     the partition cap — exactly what the JobSpec gets) so the climb arms its
     self-deadline against the real clock (Slurm delivers no signals to our
-    processes on Torch — measured 2026-08-08). The session shrinks to fit a
+    processes on Torch). The session shrinks to fit a
     CAPPED job with the same rule limits.effective_limits applies to
     contract values — better a short session that ends cleanly than a full
     one the self-deadline kills mid-flight."""
@@ -1538,8 +1533,7 @@ def service_steward(
         from autoresearch.steward import release_orphaned_claims
 
         # ONE active run per target covers stewardships too: an env rewrite
-        # must not fly alongside a solver climb (the drift/freshness
-        # machinery does not coordinate them) or another stewardship.
+        # must not fly alongside a solver climb or another stewardship.
         records = list_runs(root)
         # reconcile first: killed jobs never post their own release — and
         # BEFORE the outage pause below, because a claim orphaned by the
@@ -1769,9 +1763,9 @@ def service_intake(
 
 @dataclass
 class LoggingDispatcher:
-    """Never dispatched in production today: main() runs the sweep in
-    dry_run mode until the real session dispatcher lands (phase 5), so no
-    lease is taken and no attempt is counted. This exists for the seam."""
+    """Never dispatched in production: main() runs the sweep dry unless
+    dispatched wake is armed, so no lease is taken and no attempt is
+    counted. This exists for the seam."""
 
     def dispatch(self, record: RunRecord, reason: str) -> str:
         log.info("WOULD WAKE %s (%s) — session dispatch lands in phase 5", record.run_id, reason)
@@ -1820,7 +1814,7 @@ class JobWakeDispatcher:
         # An AUTHOR-SLEEP wake resumes a FULL author session (not the short
         # read-decide a candidate wake runs), so the Slurm job must fit that
         # session or walltime kills the resumed session mid-run and the run just
-        # waits for another wake (terra #135 r3). Size the job to the session
+        # waits for another wake. Size the job to the session
         # budget + overhead and pass --session-minutes so the in-job
         # self-deadline fires BEFORE Slurm's walltime. A candidate wake keeps
         # the short budget (read results + panel).
@@ -1880,7 +1874,7 @@ def _wake_dispatcher_from_env(
     * armed (the `AUTORESEARCH_DISPATCH_WAKE` env var OR a `<root>/DISPATCH_WAKE`
       sentinel file) AND the chain env carries what a wake job needs -> the real
       `JobWakeDispatcher` and a LIVE sweep;
-    * otherwise -> the `LoggingDispatcher` and a DRY sweep (today's behavior).
+    * otherwise -> the `LoggingDispatcher` and a DRY sweep.
 
     The sentinel mirrors PAUSE: an operator arms/disarms with a touch/rm, no
     chain restart. So dispatched climbing is turned on deliberately, and a

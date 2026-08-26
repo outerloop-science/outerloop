@@ -11,10 +11,8 @@ instances, claims the evidence does not support).
 Same constitution as the reviewer, inverted population:
 - bot-authored PRs ONLY (a human PR is the advisory reviewer's job);
 - findings-only; never an approval; never blocks CI;
-- the header carries the not-a-certification semantics (formerly the
-  louder "silence is not endorsement" — softened 2026-08-08 on maintainer
-  feedback): a clean read must never be mistaken for a green light; the
-  human code owner still decides;
+- the header carries the not-a-certification semantics: a clean read must
+  never be mistaken for a green light; the human code owner still decides;
 - model output sanitized with the same approval-language redaction, so a
   prompt-injected diff cannot forge an endorsement through this channel.
 """
@@ -52,9 +50,8 @@ VERIFY_HEADER = (
 
 MAX_CONTRACT_CHARS = 10_000
 MAX_CLAIM_CHARS = 30_000
-# The discussion is context the verifier must not be blind to (found live:
-# round 2 raised "no reported numbers" while the author's rebuttal upthread
-# carried them) — most recent comments, bounded.
+# The discussion is context the verifier must not be blind to (a rebuttal
+# upthread can already answer a finding) — most recent comments, bounded.
 MAX_THREAD_COMMENTS = 12
 MAX_THREAD_COMMENT_CHARS = 4_000
 
@@ -90,9 +87,8 @@ def gather_thread(
     client: GitHubClient, repo: str, number: int, bot_login: str
 ) -> tuple[tuple[str, str], ...]:
     """The gated discussion, from ALL THREE places maintainers write —
-    issue comments, review bodies, inline review comments (the follow-up
-    lane learned this the hard way: independent collections, and feedback
-    lands in any of them)."""
+    issue comments, review bodies, inline review comments (independent
+    collections; feedback lands in any of them)."""
     sources = (
         client.list_comments(repo, number),
         client.list_pr_reviews(repo, number),
@@ -282,11 +278,9 @@ def build_verify_prompt(
     return "\n\n".join(parts)
 
 
-# Prepended to the shared rubric for the agent-session verifier: it has TWO
-# checkouts: the PR head (the change under
-# review) and the BASE branch (the trusted contract and ruler — the solver
-# cannot have shaped it). Ruler reads must target base: the ruler comes from
-# the base branch, never the PR.
+# Prepended to the shared rubric for the agent-session verifier: TWO
+# checkouts — the PR head (the change under review) and the BASE branch
+# (the trusted contract and ruler — the solver cannot have shaped it).
 DEFAULT_SYSCALL_CMD = "python .autoresearch/syscall"
 
 
