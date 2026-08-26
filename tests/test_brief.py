@@ -142,10 +142,9 @@ def test_wake_prompt_is_bounded_and_asks_for_conclusion() -> None:
     assert "[truncated" in huge
 
 
-
 def test_render_uses_orientation_labels_not_directives() -> None:
     # the de-prescriptified brief labels the metric/finish as context
-    from autoresearch.brief import BriefInputs, BudgetState, Task, build_brief, render
+    from autoresearch.brief import BriefInputs, Task, build_brief, render
 
     t = Task(
         hypothesis="h",
