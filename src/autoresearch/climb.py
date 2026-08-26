@@ -1497,6 +1497,11 @@ def live_climb(
 
     try:
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
+        # Build ON the requested PR base: the clone checks out the remote
+        # DEFAULT branch, which need not be `base_branch` — the session must
+        # edit, and the gate must measure, the tree the PR will land on
+        # (terra #147 r3). A missing base branch fails loudly as climb-error.
+        ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
         # Author syscalls (research-loop.md, "one syscall") are CONTRACT-DRIVEN:

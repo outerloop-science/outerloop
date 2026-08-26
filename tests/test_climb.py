@@ -1115,6 +1115,39 @@ def test_zero_change_improvement_is_a_negative_result_not_a_pr(tmp_path, target_
     assert record.ending == "negative-result"
 
 
+def test_non_default_base_branch_is_built_on_and_measured(tmp_path, target_repo) -> None:
+    # --base-branch=dev: the session edits, the gate measures, and the PR
+    # branch parents on DEV's tree — never the clone's default checkout
+    side = tmp_path / "side-dev"
+    _git(tmp_path, "clone", "-q", str(target_repo), str(side))
+    _git(side, "checkout", "-q", "-b", "dev")
+    (side / "ONLY_ON_DEV.md").write_text("dev base\n")
+    _git(side, "-c", "user.name=u", "-c", "user.email=u@u", "add", "-A")
+    _git(side, "-c", "user.name=u", "-c", "user.email=u@u", "commit", "-qm", "dev base")
+    _git(side, "push", "-q", "origin", "dev")
+    _q = [13.876, 13.1]
+    github = FakeGitHub()
+    with _queued_local(_q):
+        outcome = live_climb(
+            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-dev",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "d=1\n"}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="t",
+            base_branch="dev",
+        )
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["base"] == "dev"
+    branch = "feat/auto/agent-01/tsp-dev"
+    # the pushed branch carries dev's tree (the dev-only file), i.e. it was
+    # built on and sealed against the requested base — not the default branch
+    files = _git(target_repo, "ls-tree", "-r", "--name-only", branch)
+    assert "ONLY_ON_DEV.md" in files
+
+
 def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str) -> None:
     """Simulate a concurrent merge: land a commit on the origin's main."""
     side = tmp_path / f"side-{name}"
