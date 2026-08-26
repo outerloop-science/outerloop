@@ -1341,10 +1341,21 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
             FileTokenProvider(key_path).token()
             if lens_backend == "hermes":
                 repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
-                if not repo or not Path(repo).expanduser().is_dir():
+                # a REAL clone, not merely a directory: the harness executes
+                # run_agent.py from it with the panel key, so an arbitrary or
+                # empty path must fail here, never after a run is claimed
+                if not repo or not (Path(repo).expanduser() / "run_agent.py").is_file():
                     return (
                         f"a hermes panel lens needs REVIEW_HERMES_REPO pointing at "
-                        f"the pinned clone (got {repo!r})"
+                        f"the pinned clone (run_agent.py not found under {repo!r})"
+                    )
+                from autoresearch.role_runner import _HERMES_PROVIDERS
+
+                provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
+                if provider not in _HERMES_PROVIDERS:
+                    return (
+                        f"unknown REVIEW_HERMES_PROVIDER {provider!r} "
+                        f"(have: {sorted(_HERMES_PROVIDERS)})"
                     )
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply

@@ -161,7 +161,12 @@ case "${AUTORESEARCH_AUTHOR_BACKEND:-}:${AUTORESEARCH_PANEL:-}" in
 esac
 case "${AUTORESEARCH_PANEL:-}" in
     *hermes*)
-        bash "$AUTORESEARCH_HOME/scripts/install_hermes.sh" || echo "deploy: hermes install failed"
+        # the default install location IS the default config: exporting it
+        # here connects the provisioned clone to the preflight/climb without
+        # requiring the operator to name a path they didn't choose
+        export REVIEW_HERMES_REPO="${REVIEW_HERMES_REPO:-$HOME/hermes-agent}"
+        bash "$AUTORESEARCH_HOME/scripts/install_hermes.sh" "$REVIEW_HERMES_REPO" \
+            || echo "deploy: hermes install failed"
         ;;
 esac
 

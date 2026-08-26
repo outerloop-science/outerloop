@@ -10,22 +10,32 @@
 #               else ~/hermes-agent)
 set -euo pipefail
 
-# Pinned: the tag the GH review workflows run (bump deliberately, everywhere
-# at once — the workflows' HERMES_REF and this pin must move together).
+# Pinned tag AND its commit sha: the tag names the version for humans, the
+# sha is the integrity pin (tags are mutable; a moved tag must fail loudly,
+# never run with the panel key). Bump both together, in lockstep with the
+# GH review workflows' HERMES_REF.
 WANT="v2026.8.13"
+WANT_SHA="4e693dc685b5716e7da22656eccc6ece37c5db72"
 TARGET="${1:-${REVIEW_HERMES_REPO:-$HOME/hermes-agent}}"
 
-if [ -d "$TARGET/.git" ]; then
-    have=$(git -C "$TARGET" describe --tags --exact-match 2>/dev/null || echo none)
-    if [ "$have" = "$WANT" ]; then
-        echo "hermes-agent $WANT already at $TARGET"
-        exit 0
-    fi
-    echo "hermes-agent at $TARGET is $have; re-pinning to $WANT"
-    git -C "$TARGET" fetch --depth 1 origin "refs/tags/$WANT:refs/tags/$WANT"
-    git -C "$TARGET" checkout -q "tags/$WANT"
-else
+if [ ! -d "$TARGET/.git" ]; then
     git clone --depth 1 --branch "$WANT" \
         https://github.com/NousResearch/hermes-agent "$TARGET"
 fi
-echo "hermes-agent $WANT ready at $TARGET"
+head=$(git -C "$TARGET" rev-parse HEAD)
+dirty=$(git -C "$TARGET" status --porcelain)
+if [ "$head" != "$WANT_SHA" ] || [ -n "$dirty" ]; then
+    # a wrong or DIRTY checkout must never run with the panel key: re-pin
+    # hard (this clone is a provisioned artifact, not a dev tree)
+    echo "hermes-agent at $TARGET is $head (dirty=$([ -n "$dirty" ] && echo yes || echo no)); re-pinning to $WANT"
+    git -C "$TARGET" fetch --depth 1 origin "refs/tags/$WANT:refs/tags/$WANT"
+    git -C "$TARGET" checkout -q --detach "tags/$WANT"
+    git -C "$TARGET" reset --hard -q "tags/$WANT"
+    git -C "$TARGET" clean -fdxq
+fi
+head=$(git -C "$TARGET" rev-parse HEAD)
+if [ "$head" != "$WANT_SHA" ]; then
+    echo "hermes-agent: tag $WANT resolves to $head, expected $WANT_SHA — refusing" >&2
+    exit 1
+fi
+echo "hermes-agent $WANT ($WANT_SHA) ready at $TARGET"
