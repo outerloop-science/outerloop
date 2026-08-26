@@ -33,7 +33,6 @@ from autoresearch.dispatch import (
 )
 from autoresearch.github import (
     FileTokenProvider,
-    GitError,
     GitHubClient,
     Workspace,
 )
@@ -44,18 +43,12 @@ from autoresearch.orchestrator import (
     ClimbParked,
     ClimbResult,
     EvalError,
-    Evaluator,
     Measurer,
-    SubprocessEvaluator,
-    SuiteMeasurement,
     _benchmark,
     climb_once,
-    out_of_scope,
     pr_body,
     resume_climb,
-    suite_regressed,
 )
-from autoresearch.orchestrator import improved as orch_improved
 from autoresearch.panel import PanelLens, PanelVerdict, run_panel
 from autoresearch.progress import (
     PROGRESS_PATHS,
@@ -162,12 +155,6 @@ def resume_author(record: object, fleet_model: str) -> tuple[str, str, str]:
 
 class WorkspaceDrift(RuntimeError):
     """The tree changed between measurement and commit."""
-
-
-class SuiteRegressed(RuntimeError):
-    """A sibling benchmark regressed beyond its floor on the landing tree —
-    the improvement was bought by breaking siblings. An honest negative
-    result wherever it is caught, never an abort."""
 
 
 def _target_clone_url(target: str) -> str:
@@ -1280,39 +1267,6 @@ def resume_run(
     return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
-def _measure_committed(
-    ws: Workspace,
-    evaluator: Evaluator,
-    run_dir: Path,
-    name: str,
-    sha: str,
-    bench: Any,
-    extra_env: dict[str, str] | None = None,
-) -> float:
-    """Measure a COMMITTED tree in a throwaway worktree.
-
-    Both sides of the post-merge comparison run in equivalent pristine
-    environments — the long-lived workspace carries session-created caches
-    and virtualenvs a fresh tree lacks, so measuring one side there would
-    bias the accept/reject decision. Eval writes are discarded with the
-    worktree, and the measured content is exactly the commit: the sha IS
-    the drift fingerprint.
-    """
-    wt = run_dir / f"measure-{name}"
-    ws.git("worktree", "add", "--detach", str(wt), sha)
-    try:
-        return float(evaluator.evaluate(wt, bench.command, bench.metric, extra_env=extra_env))
-    finally:
-        removed = _best_effort(
-            "worktree cleanup", lambda: ws.git("worktree", "remove", "--force", str(wt))
-        )
-        if not removed:  # never silent: a leaked worktree is a disk leak —
-            # and prune alone only drops the ADMIN entry, so delete the
-            # directory itself first
-            _best_effort("worktree dir removal", lambda: shutil.rmtree(wt, ignore_errors=True))
-            _best_effort("worktree prune", lambda: ws.git("worktree", "prune"))
-
-
 def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
     """Build the verification-panel lenses from the CLI args (empty `--panel`
     disables it). Shared by the fresh-climb and the `--resume` wake paths so a
@@ -1446,7 +1400,6 @@ def live_climb(
     run_root: Path,
     run_id: str,
     harness: Harness,
-    evaluator: Evaluator,
     github: GitHubClient,
     bot_auth: FileTokenProvider,
     now: float,
@@ -1515,13 +1468,8 @@ def live_climb(
             )
         return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
 
-    tree_hashes: list[str] = []
     try:
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
-        # the BASE BRANCH tip, not HEAD: they differ if the PR base is ever
-        # not the clone's default branch, and the freshness comparison below
-        # must be against the branch the PR will actually land on
-        base_sha = ws.git("rev-parse", f"origin/{base_branch}").strip()
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
         # Author syscalls (research-loop.md, "one syscall") are CONTRACT-DRIVEN:
@@ -1570,10 +1518,6 @@ def live_climb(
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
             paths = ws.staged_paths()
-            # Content fingerprint of the whole tree: the drift check must
-            # catch a file REWRITTEN during eval (same path set, different
-            # bytes), not only files created or deleted.
-            tree_hashes.append(ws.git("write-tree").strip())
             ws.git("reset")
             return paths
 
@@ -1793,6 +1737,11 @@ def live_climb(
             report_path=str(report_path) if wrote else "",
         )
 
+    if result.outcome == "improved" and not result.measured_paths:
+        # a zero-change "improvement" is metric noise, not progress — never a
+        # PR (same rule as the wake publish)
+        result = dc_replace(result, outcome="no-improvement", note="no code change; metric noise")
+
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
     wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
@@ -1803,208 +1752,25 @@ def live_climb(
     pushed = False
     if result.outcome == "improved":
         try:
-            # The committed tree must be EXACTLY the measured tree: code the
-            # agent's solver wrote during the candidate eval was neither
-            # scope-checked nor measured, so its presence voids the claim.
-            if not result.measured_paths:
-                raise WorkspaceDrift("improved with zero code changes — metric noise, not progress")
-            post_eval = set(changed_paths())
-            if post_eval != set(result.measured_paths):
-                drift = sorted(post_eval.symmetric_difference(result.measured_paths))
-                raise WorkspaceDrift(f"workspace changed during eval: {drift[:10]}")
-            # Fail CLOSED: two fingerprints must exist (pre-eval from
-            # climb_once's scope check, post-eval from just above) — a
-            # missing one means the drift protection did not run.
-            if len(tree_hashes) < 2:
-                raise WorkspaceDrift("content fingerprints missing; drift check did not run")
-            if tree_hashes[-1] != tree_hashes[-2]:
-                raise WorkspaceDrift(
-                    "file contents changed during eval (same paths, different bytes)"
-                )
-            # unique branch per run: a fixed name collides on the second run
+            # Publish the SEALED candidate sha — never the live tree, which
+            # may have drifted since the snapshot (eval caches, stray writes).
+            # The sha is exactly the measured, scope-checked content, so the
+            # old drift-fingerprint apparatus retires with the workspace
+            # commit. A base branch that moved during the climb is NOT merged
+            # and re-measured here: a stale PR is review's to handle — the
+            # stance the wake publish has always had (research-loop.md).
             branch = f"{config.branch_prefix}/{run_id}"
-            ws.branch(branch)
-            if result.baseline is None or result.candidate is None:
-                raise WorkspaceDrift("improved result missing measurements")
+            if result.baseline is None or result.candidate is None or not result.candidate_sha:
+                raise EvalError("improved result missing measurements or the sealed sha")
             bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
             baseline, candidate = result.baseline, result.candidate
-
-            # Freshness: the base branch may have MOVED during the climb
-            # (sessions run for many minutes; another PR can merge meanwhile).
-            # Landing the change on the clone's snapshot would open a
-            # conflicted PR — or worse, a clean-merging one whose claim was
-            # never measured against what it actually lands on. So: merge the
-            # moved base INTO the run branch (merge commit — never rebase)
-            # and re-measure on the merged tree before anything is pushed.
-            ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
-            fresh_base = ws.git("rev-parse", "FETCH_HEAD").strip()
-            base_moved = fresh_base != base_sha
-            if base_moved:
-                # the agent's work goes in its own commit first, so the merge
-                # commit stays a pure merge
-                ws.commit_all(
-                    f"agent: improve {config.benchmark}\n\nAgent: {config.agent_id}",
-                    author=config.bot_login,
-                    forbidden=lambda p: bool(out_of_scope([p], contract)),
-                )
-                try:
-                    ws.git(
-                        "-c",
-                        f"user.name={config.bot_login}",
-                        "-c",
-                        f"user.email={config.bot_login}@users.noreply.github.com",
-                        "merge",
-                        "--no-edit",
-                        "FETCH_HEAD",
-                    )
-                except GitError as exc:
-                    # a content conflict and an infrastructure failure need
-                    # different triage — do not report one as the other
-                    conflicted = False
-                    with contextlib.suppress(GitError):
-                        conflicted = bool(ws.git("ls-files", "-u").strip())
-                    with contextlib.suppress(GitError):
-                        ws.git("merge", "--abort")
-                    if conflicted:
-                        raise WorkspaceDrift(
-                            f"base branch moved during the climb and the merge "
-                            f"conflicted: {str(exc)[:300]}"
-                        ) from exc
-                    raise WorkspaceDrift(
-                        f"base branch moved and the merge FAILED (not a content "
-                        f"conflict): {str(exc)[:300]}"
-                    ) from exc
-                # The claim must hold on the tree that actually lands —
-                # BOTH sides of it. Upstream may have changed the metric for
-                # everyone, so comparing a merged-tree candidate against the
-                # pre-merge baseline would describe a delta that never
-                # existed on any single tree (and could push a regression
-                # relative to the fresh base). Both sides are measured in
-                # throwaway worktrees of COMMITS — equivalent pristine
-                # environments, and no dirty-tree check needed: eval writes
-                # are discarded with the worktree and the shas pin content.
-                merged_sha = ws.git("rev-parse", "HEAD").strip()
-                seed_env = (
-                    {bench.seed_env: str(result.run_seed)}
-                    if bench.seed_env and result.run_seed
-                    else None
-                )
-                baseline = _measure_committed(
-                    ws, evaluator, run_dir, "fresh-base", fresh_base, bench, seed_env
-                )
-                candidate = _measure_committed(
-                    ws, evaluator, run_dir, "merged", merged_sha, bench, seed_env
-                )
-                if not orch_improved(
-                    baseline, candidate, bench.direction, config.min_relative_improvement
-                ):
-                    raise WorkspaceDrift(
-                        f"candidate {candidate} does not beat the fresh base's "
-                        f"{baseline} after merging the moved base (upstream "
-                        f"absorbed or invalidated the improvement)"
-                    )
-                suite = result.suite
-                if suite:
-                    # the suite gate must hold on the tree that actually lands,
-                    # same as the claim itself — re-measure every sibling on
-                    # the fresh pair under the recorded suite seed
-                    rows = []
-                    for i, row in enumerate(suite):
-                        sib = next(b for b in contract.benchmarks if b.name == row.name)
-                        env = (
-                            {sib.seed_env: str(result.suite_seed)}
-                            if sib.seed_env and result.suite_seed
-                            else None
-                        )
-                        # worktree labels use the sibling INDEX: the name is
-                        # contract text (untrusted) and must not shape a path
-                        sib_base = _measure_committed(
-                            ws, evaluator, run_dir, f"fresh-base-sib{i}", fresh_base, sib, env
-                        )
-                        sib_cand = _measure_committed(
-                            ws, evaluator, run_dir, f"merged-sib{i}", merged_sha, sib, env
-                        )
-                        regressed = suite_regressed(
-                            sib_base, sib_cand, sib.direction, sib.min_delta, sib.min_delta_rel
-                        )
-                        if regressed:
-                            raise SuiteRegressed(
-                                f"suite regression after merging the moved base: "
-                                f"{sib.name} {sib_base} -> {sib_cand}"
-                            )
-                        rows.append(
-                            SuiteMeasurement(
-                                name=sib.name,
-                                baseline=sib_base,
-                                candidate=sib_cand,
-                                regressed=False,
-                                display_digits=sib.display_digits,
-                            )
-                        )
-                    suite = tuple(rows)
-                if panel_lenses:
-                    # the merged tree may carry an UPDATED contract: the
-                    # fresh panel judges by the rules it will land under
-                    try:
-                        fresh_contract = ws.git("show", f"{fresh_base}:.autoresearch.yaml")
-                    except GitError:
-                        fresh_contract = contract_text
-                    # the panel's verdict must hold on the tree that actually
-                    # lands, same as the claim and the suite gate (terra, #95
-                    # round 5). No wake here — the session has concluded, so
-                    # blocking or degraded goes straight to the draft path.
-                    merged_runner = build_panel_runner(
-                        ws,
-                        run_dir,
-                        fresh_base,
-                        panel_lenses,
-                        fresh_contract,
-                        config.target,
-                        config.benchmark,
-                        config.bot_login,
-                        created[:10],
-                        start_round=result.panel_rounds,
-                    )
-                    verdict = merged_runner(
-                        baseline,
-                        candidate,
-                        result.session.final_text if result.session else "",
-                    )
-                    joined = (
-                        f"{result.panel_transcript}\n\n{verdict.transcript}"
-                        if result.panel_transcript
-                        else verdict.transcript
-                    )
-                    result = dc_replace(
-                        result,
-                        panel_transcript=joined,
-                        panel_rounds=result.panel_rounds + 1,
-                        panel_blocking_open=result.panel_blocking_open or bool(verdict.blocking),
-                        panel_degraded=verdict.degraded,
-                    )
-                result = dc_replace(result, baseline=baseline, candidate=candidate, suite=suite)
-
-            # the report was written from the PRE-freshness result: refresh
-            # it so the merged-tree measurements and panel verdict are the
-            # record (terra note, #95 round 7)
-            _best_effort(
-                "run report refresh",
-                lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
-                secrets,
-            )
-
-            # Progress record (BENCHMARKS.md + results/leader.json), written
-            # by the orchestrator from ITS measurements after the drift check
-            # — read from the (possibly merged) tree, so the leader check runs
-            # against the FRESH ledger, not the clone's snapshot.
-            # We credit BEATING YOUR OWN BASELINE, not only beating the recorded
-            # best (docs/design/research-loop.md, "two kinds of win"): a clean
-            # composable win — improving over base_sha by the gate's threshold —
-            # is a valid PR even when it is not the new SOTA. So there is no
-            # recorded-best hard-fail here; the gate (`measure_and_decide`) has
-            # already required candidate to beat base_sha on paired seeds. The
-            # ledger's `best` still only advances on a genuine improvement over
-            # it (update_leader), so SOTA stays tracked — just not required.
+            # FORCE-checkout: the workspace still holds the session's dirty
+            # tree. The snapshot commit is anchored by the new branch (the
+            # dropped dispatch ref left it unreferenced; nothing pruned it in
+            # this process). clean -fd drops post-snapshot cruft so the
+            # pushed tree is exactly candidate_sha plus the ledger commit.
+            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+            ws.git("clean", "-fd")
             entries = update_leader(
                 load_leader(workspace),
                 benchmark=bench.name,
@@ -2022,26 +1788,24 @@ def live_climb(
                 config.target,
                 digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
             )
-            # The commit veto re-checks FULL scope (allowed + forbidden) as
-            # defense in depth behind climb_once's pre-eval check. The two
-            # orchestrator-written progress files are the only exemption.
-            # (When the base moved, the agent's work is already committed and
-            # only the progress files remain to stage.)
-            ws.commit_all(
-                f"agent: improve {config.benchmark} "
-                f"({_title_pair(baseline, candidate)})"
-                f"\n\nAgent: {config.agent_id}",
-                author=config.bot_login,
-                forbidden=lambda p: p not in PROGRESS_PATHS and bool(out_of_scope([p], contract)),
-            )
-            # Last-moment re-check: the re-measurement above can take
-            # minutes, and the base can move AGAIN meanwhile. This narrows
-            # the unverified window to seconds; it cannot eliminate it.
-            ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
-            if ws.git("rev-parse", "FETCH_HEAD").strip() != fresh_base:
-                raise WorkspaceDrift(
-                    "base branch moved again during re-measurement; "
-                    "ending without pushing (a later run will retry)"
+            # Stage ONLY the ledger files on top of the sealed candidate —
+            # never `git add -A`, which would sweep in anything a session or
+            # eval left behind (same rule as the wake publish).
+            ws.git("add", "--", *PROGRESS_PATHS)
+            staged = ws.staged_paths()
+            extra = [p for p in staged if p not in PROGRESS_PATHS]
+            if extra:
+                raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
+            if staged:
+                ws.git(
+                    "-c",
+                    f"user.name={config.bot_login}",
+                    "-c",
+                    f"user.email={config.bot_login}@users.noreply.github.com",
+                    "commit",
+                    "-m",
+                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                    f"\n\nAgent: {config.agent_id}",
                 )
             ws.push(branch)
             pushed = True
@@ -2058,18 +1822,14 @@ def live_climb(
                 head=branch,
                 base=base_branch,
                 body=body,
-                # blocking findings open at the panel cap, or a degraded
-                # final read: visible, plainly not merge-ready
+                # blocking findings open at the panel, or a degraded final
+                # read: visible, plainly not merge-ready
                 draft=result.panel_blocking_open or result.panel_degraded,
             )
             # Arm auto-merge, best-effort, and ONLY when branch protection
             # requires a human review — the guard keeps bot-never-merges
-            # enforced in code, not in per-repo config. Repos without
-            # auto-merge enabled just log the refusal.
+            # enforced in code, not in per-repo config. Never arm a draft.
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            # never arm a draft: open blocking findings or an uncertified
-            # read mean a human must look; approving+arming would route
-            # around the panel
             if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
                 _best_effort(
                     "auto-merge arming",
@@ -2085,20 +1845,6 @@ def live_climb(
                     "pr_url": pr_url,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
-                }
-            )
-        except SuiteRegressed as exc:
-            # the gate's verdict is the same wherever it fires: an honest
-            # negative, not an abort — the merged tree just answered later
-            outcome_name = "suite-regression"
-            result = dc_replace(result, outcome="suite-regression", note=str(exc))
-            log.info("suite-regressed for %s: %s", run_id, exc)
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": NEGATIVE_RESULT,
-                    "ending_note": redact(str(exc), secrets)[:480],
                 }
             )
         except Exception as exc:
@@ -2580,7 +2326,6 @@ def main() -> int:
                 spec=spec,
                 panel_lenses=panel_lenses,
                 dispatch=dispatch,
-                evaluator=SubprocessEvaluator(container_image=args.image),
                 eval_image=args.image,
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,

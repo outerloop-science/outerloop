@@ -409,7 +409,6 @@ def run_live(
             run_root=tmp_path / "state",
             run_id=run_id,
             harness=ScriptedHarness(edits=edits),
-            evaluator=QueueEvaluator(values=queue),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -644,7 +643,6 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
             run_root=tmp_path / "state",
             run_id="tsp-err",
             harness=DeadHarness(),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -679,7 +677,6 @@ def test_exhausted_live_climb_ends_budget_exhausted(tmp_path, target_repo) -> No
             run_root=tmp_path / "state",
             run_id="tsp-dry",
             harness=DryHarness(),
-            evaluator=QueueEvaluator(values=_q),
             github=FakeGitHub(),  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -719,7 +716,6 @@ def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> 
             run_root=tmp_path / "state",
             run_id="tsp-orphan",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "q=4\n"}),
-            evaluator=QueueEvaluator(values=_q),
             github=FailingGitHub2(),  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -816,7 +812,6 @@ def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
             run_root=tmp_path / "state",
             run_id="chess-2",
             harness=ScriptedHarness(edits={}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -844,7 +839,6 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
             run_root=tmp_path / "state",
             run_id="tsp-iss",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "i=1\n"}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -878,7 +872,6 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
             run_root=tmp_path / "state",
             run_id="tsp-clonefail",
             harness=ScriptedHarness(edits={}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -924,7 +917,6 @@ def test_ending_steps_degrade_independently(tmp_path, target_repo, monkeypatch) 
             run_root=tmp_path / "state",
             run_id="chess-disk",
             harness=ScriptedHarness(edits={}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -952,7 +944,6 @@ def test_final_record_failure_does_not_lose_pr_or_issue_report(
             run_root=tmp_path / "state",
             run_id="tsp-finaldisk",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "z=1\n"}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -985,7 +976,6 @@ def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypa
             run_root=tmp_path / "state",
             run_id="tsp-recfail",
             harness=ScriptedHarness(edits={}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -1022,7 +1012,6 @@ def test_arming_failure_never_fails_the_publish(tmp_path, target_repo) -> None:
             run_root=tmp_path / "state",
             run_id="tsp-noarm",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "na=2\n"}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -1031,6 +1020,36 @@ def test_arming_failure_never_fails_the_publish(tmp_path, target_repo) -> None:
     assert outcome.outcome == "improved"
     assert outcome.pr_url.endswith("/pull/1")
     assert github.armed == []
+
+
+def test_moved_base_publishes_the_sealed_candidate_without_merging(tmp_path, target_repo) -> None:
+    # main moves during the climb: the SEALED candidate publishes as-is — no
+    # orchestrator merge, no re-measure (the wake path's long-standing stance,
+    # now the one publish). A stale PR is review's to handle.
+    class MovingHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            _push_upstream(target_repo, tmp_path, "docs/roadmap.md", "moved\n", "mid-climb")
+            return super().run(brief_text, workspace, resume_session_id)
+
+    _q = [13.876, 13.1]
+    github = FakeGitHub()
+    with _queued_local(_q):
+        outcome = live_climb(
+            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-moved",
+            harness=MovingHarness(edits={"src/pilot/solvers/tsp.py": "m=1\n"}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="t",
+        )
+    assert outcome.outcome == "improved"
+    branch = "feat/auto/agent-01/tsp-moved"
+    # no merge commit — the branch parents on the CLONED base, not the moved tip
+    assert _git(target_repo, "log", "--merges", "--oneline", branch).strip() == ""
+    # the upstream commit is NOT folded into the branch
+    assert _git(target_repo, "show", f"{branch}:docs/roadmap.md") != "moved\n"
 
 
 def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str) -> None:
@@ -1043,153 +1062,6 @@ def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str
     _git(side, "-c", "user.name=u", "-c", "user.email=u@u", "add", "-A")
     _git(side, "-c", "user.name=u", "-c", "user.email=u@u", "commit", "-qm", f"upstream {name}")
     _git(side, "push", "-q", "origin", "main")
-
-
-@dataclass
-class RacingHarness(ScriptedHarness):
-    """Applies its edits AND lands an upstream commit mid-session."""
-
-    target_repo: object = None
-    tmp_path: object = None
-    upstream_path: str = "docs/roadmap.md"
-    upstream_content: str = "# roadmap moved\n"
-
-    def run(self, brief_text, workspace, resume_session_id=None):
-        _push_upstream(
-            self.target_repo, self.tmp_path, self.upstream_path, self.upstream_content, "race"
-        )
-        return super().run(brief_text, workspace, resume_session_id)
-
-
-@dataclass
-class DirCheckingEvaluator(QueueEvaluator):
-    """Pops values like QueueEvaluator but also records, per call, whether
-    the tree it was handed contained the agent's edit — proving the two
-    post-merge measurements ran on the intended PRISTINE trees, not on the
-    session's long-lived workspace."""
-
-    saw_agent_edit: list = field(default_factory=list)
-
-    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
-        solver = Path(workspace) / "src" / "pilot" / "solvers" / "tsp.py"
-        self.saw_agent_edit.append(solver.exists() and "r=1" in solver.read_text())
-        return super().evaluate(workspace, command, metric)
-
-
-def test_moved_base_is_merged_and_remeasured_before_push(tmp_path, target_repo) -> None:
-    """Main moves during the climb (disjoint file): the branch merges the
-    fresh base (merge commit, never rebase), the claim is RE-MEASURED on the
-    merged tree, and the PR lands with both histories."""
-    github = FakeGitHub()
-    # values: session baseline, session candidate (the gate's local eval jobs),
-    # then the post-merge pair — fresh-base baseline (worktree of FETCH_HEAD)
-    # and merged-tree candidate — measured through the evaluator
-    _q = [13.876, 13.1, 13.9, 13.2]
-    evaluator = DirCheckingEvaluator(values=_q)
-    with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
-            run_root=tmp_path / "state",
-            run_id="tsp-race",
-            harness=RacingHarness(
-                edits={"src/pilot/solvers/tsp.py": "r=1\n"},
-                target_repo=target_repo,
-                tmp_path=tmp_path,
-            ),
-            evaluator=evaluator,
-            github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
-            now=1_000_000.0,
-            created="2026-08-07T00:00:00Z",
-        )
-    assert outcome.outcome == "improved"
-    assert _q == []  # both post-merge measurements actually ran
-    # the evaluator sees only the post-merge pair: fresh base WITHOUT the
-    # agent edit, then the merged tree WITH it
-    assert evaluator.saw_agent_edit == [False, True]
-    # the worktrees were cleaned up (no disk leak in the run dir)
-    leftovers = [p.name for p in (tmp_path / "state" / "runs" / "tsp-race").iterdir()]
-    assert "measure-fresh-base" not in leftovers and "measure-merged" not in leftovers
-    assert github.prs and github.prs[0]["head"] == "feat/auto/agent-01/tsp-race"
-    # the PR claims the post-merge pair, not the session-time numbers
-    assert "13.9 -> 13.2" in github.prs[0]["title"]
-    # a true merge commit landed (never a rebase)
-    assert _git(target_repo, "log", "--merges", "--oneline", "feat/auto/agent-01/tsp-race")
-    # the branch contains the upstream commit (merged, not ignored)
-    branch_files = _git(target_repo, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-race")
-    assert "docs/roadmap.md" in branch_files
-    upstream_on_branch = _git(target_repo, "show", "feat/auto/agent-01/tsp-race:docs/roadmap.md")
-    assert upstream_on_branch == "# roadmap moved\n"
-    # vs the MOVED main, the branch changes only solver + progress files
-    files = set(
-        _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-race").split()
-    )
-    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
-
-
-def test_conflicting_moved_base_is_publish_error_not_a_broken_pr(tmp_path, target_repo) -> None:
-    """Upstream rewrites the SAME file the agent edited: the merge conflicts,
-    nothing is pushed, and the run ends honestly instead of opening an
-    unmergeable PR."""
-    github = FakeGitHub()
-    _q = list([13.876, 13.1])
-    with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
-            run_root=tmp_path / "state",
-            run_id="tsp-clash",
-            harness=RacingHarness(
-                edits={"src/pilot/solvers/tsp.py": "mine=1\n"},
-                target_repo=target_repo,
-                tmp_path=tmp_path,
-                upstream_path="src/pilot/solvers/tsp.py",
-                upstream_content="theirs=2\n",
-            ),
-            evaluator=QueueEvaluator(values=_q),
-            github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
-            now=1_000_000.0,
-            created="t",
-        )
-    assert outcome.outcome == "publish-error"
-    assert github.prs == []
-    assert "feat/auto/agent-01/tsp-clash" not in _git(target_repo, "branch", "--list")
-    record = load_record(tmp_path / "state", "tsp-clash")
-    # pin the TRIAGE branch, not just the topic: this is a content conflict,
-    # and must not be reported through the infrastructure-failure message
-    assert "conflicted" in record.ending_note
-    assert "not a content conflict" not in record.ending_note
-
-
-def test_absorbed_improvement_after_merge_is_rejected(tmp_path, target_repo) -> None:
-    """The merged tree no longer beats the baseline (upstream absorbed the
-    win): re-measurement vetoes the push."""
-    github = FakeGitHub()
-    _q = list([13.876, 13.1, 13.0, 13.05])
-    with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
-            run_root=tmp_path / "state",
-            run_id="tsp-absorbed",
-            harness=RacingHarness(
-                edits={"src/pilot/solvers/tsp.py": "a=1\n"},
-                target_repo=target_repo,
-                tmp_path=tmp_path,
-            ),
-            # post-merge: fresh base measures 13.0, merged tree only 13.05 —
-            # upstream absorbed the win; the candidate REGRESSES the fresh base
-            evaluator=QueueEvaluator(values=_q),
-            github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
-            now=1_000_000.0,
-            created="t",
-        )
-    assert outcome.outcome == "publish-error"
-    assert github.prs == []
-    assert (
-        "does not beat the fresh base"
-        in load_record(tmp_path / "state", "tsp-absorbed").ending_note
-    )
 
 
 def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
@@ -1210,7 +1082,6 @@ def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
             run_root=tmp_path / "state",
             run_id="tsp-term",
             harness=KilledHarness(edits={}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -1333,54 +1204,6 @@ def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
         signal.signal(signal.SIGALRM, original)
 
 
-def test_moved_base_regates_the_suite_on_the_merged_tree(tmp_path, target_repo) -> None:
-    """The suite gate must hold on the tree that actually lands: the sibling
-    passed at session time, but the merged tree regresses it — re-measurement
-    vetoes the push, same as an absorbed improvement."""
-    _push_contract(
-        tmp_path,
-        target_repo,
-        CONTRACT.replace(
-            "budgets:",
-            "  - name: sokoban\n"
-            "    command: uv run python -m pilot.eval --benchmark sokoban --json\n"
-            "    metric: solve_rate\n"
-            "    direction: max\n"
-            "budgets:",
-        ).replace(
-            "scope: {allowed: [src/pilot/solvers/]}",
-            "scope: {allowed: [src/pilot/], shared: [src/pilot/model/]}",
-        ),
-        "suite",
-    )
-    github = FakeGitHub()
-    _q = list([13.876, 13.1, 0.8, 0.8, 13.9, 13.2, 0.8, 0.5])
-    with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
-            run_root=tmp_path / "state",
-            run_id="tsp-suite-race",
-            harness=RacingHarness(
-                edits={"src/pilot/model/encoder.py": "shared=1\n"},
-                target_repo=target_repo,
-                tmp_path=tmp_path,
-            ),
-            # session pair, sibling pair (passes: 0.8 flat), then post-merge:
-            # climbed pair still improves, but the merged tree's sibling drops
-            evaluator=QueueEvaluator(values=_q),
-            github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
-            now=1_000_000.0,
-            created="t",
-        )
-    assert outcome.outcome == "suite-regression"
-    assert github.prs == []
-    record = load_record(tmp_path / "state", "tsp-suite-race")
-    assert record.ending == "negative-result"  # the gate's promise: never an abort
-    assert "suite regression after merging" in record.ending_note
-    assert "sokoban" in record.ending_note
-
-
 def test_author_harness_is_built_from_the_spec() -> None:
     """The spec is the single source for the session budget: manifest and
     harness cannot disagree (one build_harness for every role)."""
@@ -1479,7 +1302,6 @@ def test_panel_clean_read_lands_a_normal_pr_with_transcript(tmp_path, target_rep
             run_root=tmp_path / "state",
             run_id="tsp-panel-ok",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -1528,7 +1350,6 @@ def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_rep
             run_root=tmp_path / "state",
             run_id="tsp-panel-draft",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=2\n"}),
-            evaluator=QueueEvaluator(values=_q),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),  # type: ignore[arg-type]
             now=1_000_000.0,
@@ -1541,58 +1362,6 @@ def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_rep
     assert pr["body"].startswith("> **Draft")
     assert "suspicious lever" in pr["body"]
     assert github.armed == []  # a draft with open blocking findings never arms
-
-
-def test_moved_base_gets_a_fresh_panel_read_and_blocking_drafts(tmp_path, target_repo) -> None:
-    """The panel's verdict must hold on the tree that actually lands: clean at
-    session time, blocking on the merged tree -> DRAFT PR, never armed."""
-    import json as _json
-
-    from autoresearch.panel import PanelLens
-
-    clean = _json.dumps({"findings": [], "notes": "clean"})
-    blocking = _json.dumps(
-        {
-            "findings": [
-                {
-                    "file": "src/pilot/solvers/tsp.py",
-                    "line": 1,
-                    "confidence": "high",
-                    "summary": "merged-tree interaction looks gamed",
-                    "detail": "d",
-                    "blocking": True,
-                }
-            ],
-            "notes": "",
-        }
-    )
-    judge = _panel_judge([clean, blocking])
-    github = FakeGitHub()
-    _q = list([13.876, 13.1, 13.9, 13.2])
-    with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
-            run_root=tmp_path / "state",
-            run_id="tsp-panel-race",
-            harness=RacingHarness(
-                edits={"src/pilot/solvers/tsp.py": "r=9\n"},
-                target_repo=target_repo,
-                tmp_path=tmp_path,
-            ),
-            # session pair, then the post-merge climbed pair
-            evaluator=QueueEvaluator(values=_q),
-            github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
-            now=1_000_000.0,
-            created="2026-08-15T00:00:00Z",
-            panel_lenses=(PanelLens("review", judge),),
-        )
-    assert outcome.outcome == "improved"
-    pr = github.prs[0]
-    assert pr["draft"] is True
-    assert "merged-tree interaction looks gamed" in pr["body"]
-    assert "Verification round 2" in pr["body"]  # numbering continued post-merge
-    assert github.armed == []
 
 
 def test_expensive_benchmark_runs_session_then_parks_candidate(tmp_path, target_repo_dispatch):
