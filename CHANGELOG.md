@@ -12,13 +12,18 @@ Versions follow [SemVer](https://semver.org).
   wide first round fans out several hermes (terra) lens sessions at once, and
   GitHub 429s the concurrent ANONYMOUS clones of the same public repo
   (observed live: 3/5 lens sessions died at exit 128 before the model ran).
-  Fix, three layers: (1) the clone is now AUTHENTICATED with the job's
-  read-only token (via `GIT_CONFIG_*`, never persisted) — the authenticated
-  rate-limit tier is ~5000/hr, so even concurrent cold-cache clones no longer
-  429; (2) the pinned clone is CACHED (`actions/cache`, keyed on the tag), so
-  steady state is zero GitHub clones and only a fresh tag ever clones;
-  (3) a backoff+jitter retry remains as the last backstop. A genuine clone
-  failure still degrades to the advisory missing-repo stub.
+  Fix, three layers: (1) the clone is AUTHENTICATED with the job's read-only
+  token (via `GIT_CONFIG_*`, never persisted) — the authenticated tier means
+  even concurrent cold-cache clones no longer 429; (2) the pinned clone is
+  CACHED — and because the review workflows run on `pull_request_target`,
+  every run on every PR shares the base-branch cache scope, so one round
+  populates it for all future PRs (cold = first run on a fresh tag only);
+  (3) a backoff+jitter retry remains as the last backstop. The cache is
+  written by an explicit `actions/cache/save` placed BEFORE the session step
+  and verified against the pinned commit sha on restore (wipe + re-clone on
+  mismatch) — a post-job save would have let a prompt-injected session
+  poison the shared tree every later run executes with the reviewer key. A
+  genuine clone failure still degrades to the advisory missing-repo stub.
 
 ### Changed
 
