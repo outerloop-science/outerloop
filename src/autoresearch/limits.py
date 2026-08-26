@@ -27,7 +27,7 @@ from typing import Any
 # floor = session floor + overhead + self-deadline margin: even at the
 # floors, a session must fit inside its job with the ending's runway.
 # Public: the tick's AUTORESEARCH_MAX_JOB_MINUTES knob floors here too.
-CLIMB_JOB_MINUTES_FLOOR = 40
+ATTEMPT_JOB_MINUTES_FLOOR = 40
 
 # Public: the tick shrinks a capped job's session with the same floor the
 # contract clamp uses.
@@ -36,21 +36,21 @@ SESSION_MINUTES_FLOOR = 10
 _BOUNDS: dict[str, tuple[int, int, int]] = {
     "session_max_turns": (120, 10, 120),
     "session_minutes": (90, SESSION_MINUTES_FLOOR, 90),
-    "climb_job_minutes": (120, CLIMB_JOB_MINUTES_FLOOR, 120),
+    "attempt_job_minutes": (120, ATTEMPT_JOB_MINUTES_FLOOR, 120),
     "followup_job_minutes": (90, 20, 90),
 }
 
 # A climb job must outlive its session long enough for the orchestrator's
 # own work around it (clone, two evals, publish, ending writes). Public:
 # the tick's cap warning uses it as the no-runway threshold too.
-CLIMB_OVERHEAD_MINUTES = 20
+ATTEMPT_OVERHEAD_MINUTES = 20
 
 
 @dataclass(frozen=True)
 class EffectiveLimits:
     session_max_turns: int
     session_minutes: int
-    climb_job_minutes: int
+    attempt_job_minutes: int
     followup_job_minutes: int
 
 
@@ -73,7 +73,7 @@ def effective_limits(budgets: Any = None) -> EffectiveLimits:
         name: _clamp(name, getattr(budgets, name, None) if budgets is not None else None)
         for name in _BOUNDS
     }
-    max_session = values["climb_job_minutes"] - CLIMB_OVERHEAD_MINUTES
+    max_session = values["attempt_job_minutes"] - ATTEMPT_OVERHEAD_MINUTES
     if values["session_minutes"] > max_session:
         floor = _BOUNDS["session_minutes"][1]
         values["session_minutes"] = max(floor, max_session)

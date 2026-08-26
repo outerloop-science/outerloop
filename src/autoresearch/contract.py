@@ -18,7 +18,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SELF_REPO = "agentic-learning-ai-lab/autoresearch"
 ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", ".autoresearch.yaml")
@@ -153,8 +153,21 @@ class Budgets(_StrictModel):
     # spend less of us, never more. Absent = orchestrator defaults.
     session_max_turns: int | None = Field(default=None, gt=0)
     session_minutes: int | None = Field(default=None, gt=0)
-    climb_job_minutes: int | None = Field(default=None, gt=0)
+    attempt_job_minutes: int | None = Field(default=None, gt=0)
     followup_job_minutes: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_climb_job_minutes(cls, data: Any) -> Any:
+        # TRANSITIONAL: the field was `climb_job_minutes`. Map the legacy key
+        # to the new name before validation (new name wins if BOTH appear, so
+        # a mid-migration contract never fails), and consume it so extra=forbid
+        # does not reject it. Drop this once the (two) live contracts migrate.
+        if isinstance(data, dict) and "climb_job_minutes" in data:
+            data = dict(data)
+            legacy = data.pop("climb_job_minutes")
+            data.setdefault("attempt_job_minutes", legacy)
+        return data
 
 
 class Scope(_StrictModel):

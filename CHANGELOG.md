@@ -19,6 +19,14 @@ Versions follow [SemVer](https://semver.org).
   never the brief, is the real bar; naming a target in the brief only invited
   optimizing that number. Rendered labels: "Metric:" / "Finishing:".
 
+- Completed the climb->attempt vocabulary in the limits/contract surface:
+  `climb_job_minutes`->`attempt_job_minutes` (contract budget field),
+  `CLIMB_JOB_MINUTES_FLOOR`/`CLIMB_OVERHEAD_MINUTES`/`MAX_CLIMB_JOB_MINUTES`
+  ->`ATTEMPT_*`, and the `EffectiveLimits` field + `_BOUNDS` key. The old
+  contract field name is accepted as a TRANSITIONAL pydantic alias so the two
+  live contracts (pilot, yolo-jepa) migrate at leisure; the alias drops once
+  they have.
+
 ### Changed
 
 - Vocabulary: the author-role activity is an **attempt** (a type of run), the
