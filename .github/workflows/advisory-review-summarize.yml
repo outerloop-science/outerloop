@@ -84,7 +84,9 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BACKEND: ${{ inputs.backend }}
       HERMES_REF: v2026.8.13
-      HERMES_SHA: 4e693dc685b5716e7da22656eccc6ece37c5db72
+      # the COMMIT sha for HERMES_REF (the tag is annotated: ls-remote's first
+      # line is the tag object — pin the dereferenced ^{} commit instead)
+      HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
     steps:
       - name: Check out the reviewer
         uses: actions/checkout@v4

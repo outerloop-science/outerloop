@@ -24,6 +24,13 @@ Versions follow [SemVer](https://semver.org).
   mismatch) — a post-job save would have let a prompt-injected session
   poison the shared tree every later run executes with the reviewer key. A
   genuine clone failure still degrades to the advisory missing-repo stub.
+  Also fixes the sha pin itself (here and in `scripts/install_hermes.sh`):
+  hermes v-tags are ANNOTATED, so `ls-remote` had yielded the tag OBJECT's
+  sha — every verify comparing `rev-parse HEAD` (a commit) against it would
+  have always failed, stubbing out all hermes lenses and making the Torch
+  installer refuse. Pins are now the dereferenced `^{}` commit sha, and the
+  installer's three paths (fresh / idempotent / tamper re-pin) were executed
+  live against the real repo (a 222 MB clone — the cache earns its keep).
 
 ### Changed
 
