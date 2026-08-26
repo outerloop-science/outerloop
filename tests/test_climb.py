@@ -2793,6 +2793,30 @@ def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> No
         _panel_lenses_from_args(args)
 
 
+def test_codex_panel_key_must_not_be_the_claude_panel_key(monkeypatch, tmp_path) -> None:
+    # provider-key confusion: pointing the codex lens at the claude panel key
+    # would send the anthropic credential to OpenAI login
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    shared = tmp_path / "verifier_key"
+    shared.write_text("sk-ant")
+    shared.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(shared))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(shared),
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    with pytest.raises(ValueError, match="another provider"):
+        _panel_lenses_from_args(args)
+
+
 def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> None:
     # --uncontained (image="") must never produce a danger-full-access codex
     # judge on the host

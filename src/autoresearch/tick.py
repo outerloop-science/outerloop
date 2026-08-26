@@ -1323,6 +1323,12 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
                     f"codex panel key file {codex_panel} is the codex author key "
                     "(role separation: the judge needs its own key)"
                 )
+            claude_panel = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+            if codex_panel.resolve() == claude_panel.resolve():
+                return (
+                    f"codex panel key file {codex_panel} is the claude panel key "
+                    "file (an anthropic key must never reach codex login)"
+                )
             FileTokenProvider(codex_panel).token()
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply

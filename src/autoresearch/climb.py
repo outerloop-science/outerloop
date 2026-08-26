@@ -1335,6 +1335,15 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
                     f"codex panel key file {codex_panel_path} is the codex author "
                     "key (role separation: the judge needs its own key)"
                 )
+            claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+            if codex_panel_path.resolve() == claude_panel_path.resolve():
+                # provider-key confusion: this would send the ANTHROPIC panel
+                # credential to codex (OpenAI) login
+                raise ValueError(
+                    f"codex panel key file {codex_panel_path} is the claude panel "
+                    "key file (a codex judge needs an OpenAI credential, and an "
+                    "anthropic key must never reach another provider's login)"
+                )
             lens_key = role_key(codex_panel_key, "codex")
             if lens_key:
                 secrets.append(lens_key)
