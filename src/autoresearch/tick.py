@@ -1299,7 +1299,14 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         except ValueError as exc:
             return str(exc)
         if any(backend == "codex" for _, backend, _ in lenses):
-            # mirror the climb's rule exactly: a codex lens needs the JUDGE's
+            # mirror the climb's rules exactly. (1) a codex judge only ever
+            # runs inside the image:
+            if not spec.image or not Path(spec.image).is_file():
+                return (
+                    f"a codex panel lens requires a real container image "
+                    f"(AUTORESEARCH_IMAGE={spec.image!r})"
+                )
+            # (2) a codex lens needs the JUDGE's
             # own key, named explicitly — role separation forbids the author's
             codex_panel_raw = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
             if not codex_panel_raw:
