@@ -1,9 +1,10 @@
-"""Slurm behind one small interface: submit, status, cancel.
+"""Compute behind one small interface: submit, status, cancel.
 
-Everything the loop knows about the cluster goes through here, so a CI
-runner or cloud backend is a new implementation of the same three verbs.
-Commands run through an injectable runner (tests use a fake; nothing here
-requires a cluster).
+Everything the loop knows about compute goes through these verbs, so a
+backend is one implementation: `SlurmCompute` submits real cluster jobs;
+`LocalCompute` runs the same job specs as subprocesses in the current
+allocation. A CI runner or a cloud/GPU-rental backend would be another
+implementation of the same verbs — the callers never change.
 
 The status query preserves a distinction the fail-safe design depends on
 (docs/design/architecture.md, "Wake delivery and fail-safety"): a FAILED
@@ -14,11 +15,15 @@ terminate healthy runs.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import shlex
+import signal
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Protocol
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +126,18 @@ class JobSpec:
         return argv
 
 
+class Compute(Protocol):
+    """The verbs every compute backend implements. Callers (the measurer, the
+    launcher, the wake dispatcher) depend on this, never on a backend."""
+
+    def submit(self, spec: JobSpec) -> str: ...
+    def submit_after(self, spec: JobSpec, after_job_id: str) -> str: ...
+    def status(self, job_id: str) -> str: ...
+    def active_job_names(self) -> list[str]: ...
+    def job_id_for_name(self, name: str) -> str: ...
+    def cancel(self, job_id: str) -> None: ...
+
+
 @dataclass
 class SlurmCompute:
     """The three verbs, plus afterany for wake jobs."""
@@ -210,6 +227,108 @@ class SlurmCompute:
         result = self.runner(["scancel", job_id], self.command_timeout_s)
         if result.returncode != 0:
             log.warning("scancel %s: %s", job_id, result.stderr.strip())
+
+
+# Local job ids start far above any real Slurm id so the two can never be
+# confused in a record; they stay numeric because callers validate isdigit.
+_LOCAL_JOB_BASE = 9_000_000_000
+
+
+@dataclass
+class LocalCompute:
+    """The same verbs, run as subprocesses in THIS allocation — synchronously:
+    `submit` returns with the job already terminal, so a caller that checks
+    for the result after submitting finds it on disk and nothing ever parks.
+    This is the degenerate backend for evals cheap enough to ride the current
+    allocation, for deployments with no cluster at all, and for tests. It runs
+    the identical job scripts the cluster runs (fresh checkout of the sealed
+    sha, results to the job dir); only WHERE they run differs."""
+
+    _states: dict[str, str] = field(default_factory=dict)
+    _seq: int = 0
+    minute_s: int = 60  # a walltime minute; tests shrink it to exercise the kill
+
+    def submit(self, spec: JobSpec) -> str:
+        if bool(spec.command) == bool(spec.script):
+            # same contract SlurmCompute enforces via to_argv
+            raise ValueError("exactly one of command/script must be set")
+        argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
+        self._seq += 1
+        job_id = str(_LOCAL_JOB_BASE + self._seq)
+        # An explicit env allowlist, like the evaluator this backend replaced:
+        # the submitting process holds live keys (and any inherited
+        # APPTAINERENV_* would cross --cleanenv into the container), so the
+        # job script starts from a minimal environment and sets its own.
+        job_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
+        }
+        try:
+            # the job runs in its OWN session (= process group), so the
+            # walltime kill takes the whole tree — a job script waiting on
+            # children must not leave them running past the walltime, exactly
+            # as Slurm kills the job's group
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+                env=job_env,
+            )
+        except OSError as exc:
+            raise SlurmError(f"local job {spec.job_name} failed to start: {exc}") from exc
+        try:
+            output, _ = proc.communicate(timeout=spec.time_minutes * self.minute_s)
+            state = "COMPLETED" if proc.returncode == 0 else "FAILED"
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid (new session)
+            try:
+                # bounded drain: a child that re-setsid'd ESCAPED the group
+                # kill and still holds the pipe — it must not hang the
+                # submitter past the walltime. (A cgroup-less backend cannot
+                # reach a double-setsid escapee; Slurm's cgroup containment
+                # is the real jail — accepted local residual, logged.)
+                output, _ = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                output = ""
+                log.warning(
+                    "local job %s: an escaped child survived the walltime kill", spec.job_name
+                )
+            state = "TIMEOUT"
+        if spec.output and spec.output != "/dev/null":
+            try:
+                with open(spec.output, "w") as fh:
+                    fh.write(output)
+            except OSError as exc:
+                log.warning("local job %s: output write failed: %s", spec.job_name, exc)
+        self._states[job_id] = state
+        log.info("ran %s locally as job %s: %s", spec.job_name, job_id, state)
+        return job_id
+
+    def submit_after(self, spec: JobSpec, after_job_id: str) -> str:
+        # every prior local job is already terminal, so afterany is satisfied
+        return self.submit(spec)
+
+    def status(self, job_id: str) -> str:
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        return self._states.get(job_id, GONE)
+
+    def active_job_names(self) -> list[str]:
+        return []  # synchronous: nothing is ever pending or running
+
+    def job_id_for_name(self, name: str) -> str:
+        return ""
+
+    def cancel(self, job_id: str) -> None:
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        # already terminal; cancelling a finished job is not an error
 
 
 def is_terminal(state: str) -> bool:

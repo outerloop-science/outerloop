@@ -67,21 +67,40 @@ class FakeEvaluator:
 
 
 def _wire(evaluator, workspace, base_ws=None):
-    """A LocalMeasurer over the fake evaluator + a fake snapshot: base_sha is a
-    clean pre-session tree, each candidate snapshot is measured on the live
-    workspace. Mirrors how climb.py wires the real thing, minus git."""
-    from autoresearch.measure import LocalMeasurer
+    """An inline measurer over the fake evaluator + a fake snapshot, mirroring
+    the real wiring's semantics minus git: each measure is evaluated once per
+    identity (sha + contract facts) and cached — like the one measurer's slot
+    cache — so call-count assertions see one eval per distinct measure."""
 
-    measurer = LocalMeasurer(evaluator, clean={"base": base_ws or workspace})
+    class _InlineMeasurer:
+        def __init__(self) -> None:
+            self._cache: dict = {}
+
+        def results(self, measures):
+            from autoresearch.orchestrator import EvalError as _EvalError
+
+            out = {}
+            for m in measures:
+                key = (m.name, m.tree_sha, m.command, m.metric, m.extra_env)
+                if key not in self._cache:
+                    ws = base_ws if (base_ws is not None and m.tree_sha == "base") else workspace
+                    try:
+                        self._cache[key] = evaluator.evaluate(
+                            ws, m.command, m.metric, extra_env=m.env() or None
+                        )
+                    except _EvalError as exc:
+                        # both real backends name the failing measure
+                        raise _EvalError(f"{m.name}: {exc}") from exc
+                out[m.name] = self._cache[key]
+            return out
+
     counter = {"n": 0}
 
     def snapshot() -> str:
         counter["n"] += 1
-        sha = f"cand{counter['n']}"
-        measurer.live[sha] = workspace  # register this candidate -> the live workspace
-        return sha
+        return f"cand{counter['n']}"
 
-    return measurer, snapshot
+    return _InlineMeasurer(), snapshot
 
 
 def run_climb(
@@ -592,11 +611,9 @@ def test_candidate_eval_failure_is_eval_error_with_session(tmp_path: Path) -> No
 def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
     """A snapshot failure (the session ran, the tree could not be captured) is
     an eval-error result with the session — never an escaping exception."""
-    from autoresearch.measure import LocalMeasurer
-
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.876])  # baseline only; no candidate reached
-    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path})
+    measurer, _ = _wire(evaluator, tmp_path)
 
     def snapshot() -> str:
         raise EvalError("git write-tree failed")
@@ -672,11 +689,9 @@ def test_forbidden_paths_are_scope_violations(tmp_path: Path) -> None:
 def test_out_of_scope_tree_is_rejected_before_the_snapshot(tmp_path: Path) -> None:
     # the out-of-scope edit could be to the ruler itself — it is never
     # snapshotted OR measured, not merely rejected after the fact.
-    from autoresearch.measure import LocalMeasurer
-
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.876])
-    measurer = LocalMeasurer(evaluator, clean={"base": tmp_path})
+    measurer, _ = _wire(evaluator, tmp_path)
     snapshotted: list[int] = []
 
     def snapshot() -> str:

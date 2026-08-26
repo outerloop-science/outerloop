@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- One compute interface, one measurer (`SlurmCompute` vs `LocalCompute` —
+  Mengye's framing): `LocalCompute` runs the identical eval-job scripts as
+  synchronous subprocesses in the current allocation, so `DispatchedMeasurer`
+  is now the ONLY measurer — on the cluster its jobs park the climb, locally
+  every job is done when checked and nothing parks. `LocalMeasurer` (the
+  inline special case that measured candidates in the LIVE workspace and
+  needed a separate baseline worktree) is deleted; every gate eval now runs
+  on a fresh checkout of its sealed sha, so eval-time workspace drift is
+  structurally impossible. The job script gains a bare mode (no image):
+  the command runs in the throwaway tree under an env-scrubbed `env -i`,
+  mirroring the uncontained evaluator it replaces. A future cloud/GPU-rental
+  backend is one more implementation of the same six verbs.
+
 - Author syscalls are CONTRACT-DRIVEN and on by default: the launch/sleep/
   submit tool arms whenever the deployment can deliver it (dispatch coords +
   a resumable backend) and the benchmark has not opted out. `depth_k: 0` is

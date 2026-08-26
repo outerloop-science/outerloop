@@ -19,16 +19,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from autoresearch.compute import JobSpec, SlurmCompute
+from autoresearch.compute import Compute, JobSpec, is_terminal
 from autoresearch.dispatch import (
     eval_job_spec,
     read_eval_result,
     write_eval_job,
 )
-from autoresearch.orchestrator import EvalError, Evaluator
+from autoresearch.orchestrator import EvalError
 
 log = logging.getLogger(__name__)
 
@@ -128,11 +128,14 @@ def plan_measures(
 
 @dataclass
 class DispatchedMeasurer:
-    """Submits and reads a climb's dispatched measures. Stateless beyond the
-    Slurm handle: all durable state is the eval job output in the run dir, so
-    a fresh process on wake reads exactly what the parked one submitted."""
+    """Submits and reads a climb's measures as jobs on any `Compute` backend.
+    Stateless beyond the compute handle: all durable state is the eval job
+    output in the run dir, so a fresh process on wake reads exactly what the
+    parked one submitted. On a synchronous backend (`LocalCompute`) every job
+    is done by the time it is checked, so nothing parks and `results()` flows
+    straight through — the one measurer covers dispatched and local evals."""
 
-    compute: SlurmCompute
+    compute: Compute
     run_dir: Path
     repo_root: Path
     image: str
@@ -256,7 +259,19 @@ class DispatchedMeasurer:
             # (never loops — the redispatch writes a marker). Cost is one
             # wasted eval in a triple-failure conjunction; fully closing it
             # needs sacct-by-name over job history, not worth that surface.
-            pending.append(self._dispatch(m))
+            job_id = self._dispatch(m)
+            if self._done(m):
+                continue  # a synchronous compute finished the job inside submit
+            try:
+                state = self.compute.status(job_id)
+            except Exception:
+                state = ""  # status unknown right after submit is normal; park
+            if state and is_terminal(state):
+                # the job already ENDED without writing a result (a local
+                # timeout, an instant cluster failure): parking would wait on
+                # a job that will never deliver — fail like a vanished job
+                raise EvalError(f"measure {m.name}: job {job_id} ended {state} without a result")
+            pending.append(job_id)
         if pending or blind:
             raise MeasurementPending(tuple(pending))
         return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}
@@ -271,7 +286,7 @@ class DispatchSettings:
     so this stays a static description of WHERE to dispatch, not a live handle
     to one run."""
 
-    compute: SlurmCompute
+    compute: Compute
     image: str
     account: str
     partition: str
@@ -293,72 +308,3 @@ class DispatchSettings:
             eval_minutes=eval_minutes,
             run_tag=run_tag,
         )
-
-
-@dataclass
-class LocalMeasurer:
-    """The inline `Measurer`: runs each measure in-process, for cheap
-    benchmarks and local runs where dispatching a job would cost more than the
-    eval. It measures the worktrees the CALLER already has — no checkout and no
-    new trust surface, the same evaluator on the same worktrees the synchronous
-    climb always used. It never parks (no `MeasurementPending`), so
-    `measure_and_decide` flows straight through.
-
-    Two kinds of worktree, and caching turns on the difference:
-
-    * `clean` — sha -> a checkout of exactly that sha, PRISTINE at registration
-      (e.g. the pre-session tree for `base_sha`). Its content is pinned by the
-      sha, so a measure here is CACHED by identity: the baseline measured once
-      for the brief is not re-measured in the gate. (The eval may write into the
-      worktree, so a DIFFERENT measure sharing it — a sibling's base side — runs
-      after that write; the cache still returns each measure's OWN first,
-      pristine-time result, and the dispatched backend checks out each sha fresh
-      when that sharing matters. Same as the synchronous climb before it.)
-    * `live` — sha -> the session's workspace, REGISTERED by the caller as it
-      snapshots each candidate (the candidate, and each sibling's candidate
-      side). Its content is NOT pinned by the sha — the sha captures only
-      tracked files, but the workspace can also carry UNTRACKED ones (eval
-      artifacts, caches) — so it is NEVER cached: measured FRESH every call.
-      Otherwise a revision that changes only untracked content would keep the
-      same sha and read a stale result.
-
-    A sha in NEITHER map fails closed (an EvalError), never a silent fallback.
-    That is a weaker guarantee than the dispatched backend's fresh checkout of
-    each sha; a benchmark that reads untracked artifacts is measured on the
-    live workspace here and should be dispatched if that matters. This backend
-    TRUSTS the maps — it does not verify a worktree against its sha."""
-
-    evaluator: Evaluator
-    # sha -> a CLEAN checkout of that sha (content == sha; cache-safe).
-    clean: dict[str, Path]
-    # sha -> a LIVE worktree (the session workspace), REGISTERED by the caller
-    # as it snapshots each candidate. Measured fresh (never cached), and — like
-    # `clean` — an explicit map, so a sha in NEITHER fails closed rather than
-    # silently measuring some default tree.
-    live: dict[str, Path] = field(default_factory=dict)
-    _cache: dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], float] = field(
-        default_factory=dict
-    )
-
-    def _eval(self, worktree: Path, m: Measure, env: dict[str, str] | None) -> float:
-        try:
-            return self.evaluator.evaluate(worktree, m.command, m.metric, extra_env=env)
-        except EvalError as exc:
-            # name the failing measure, as the dispatched backend does, so the
-            # caller's note says WHICH eval broke.
-            raise EvalError(f"{m.name}: {exc}") from exc
-
-    def results(self, measures: list[Measure]) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for m in measures:
-            env = dict(m.env()) or None
-            if m.tree_sha in self.clean:  # content == sha -> cache by identity
-                key = (m.name, m.tree_sha, m.command, m.metric, tuple(sorted(m.env().items())))
-                if key not in self._cache:
-                    self._cache[key] = self._eval(self.clean[m.tree_sha], m, env)
-                out[m.name] = self._cache[key]
-            elif m.tree_sha in self.live:  # live tree -> measure fresh, never cache
-                out[m.name] = self._eval(self.live[m.tree_sha], m, env)
-            else:
-                raise EvalError(f"local measurer has no worktree for {m.name} @ {m.tree_sha[:12]}")
-        return out
