@@ -336,3 +336,34 @@ def test_candidate_row_rewrite_reports_missing_row(provider: FileTokenProvider) 
     client = GitHubClient(auth=provider, transport=transport)
     assert client.update_candidate_row("org/repo", 9, 10.2) is False
     assert len(transport.requests) == 1  # GET only, no PATCH
+
+
+def test_session_planted_smudge_filter_never_executes(tmp_path: Path) -> None:
+    # A session can write .git/config and .gitattributes in its workspace: a
+    # filter driver planted there must not run with the orchestrator's
+    # permissions when Workspace.git checks files out (the same neutralization
+    # the dispatched job script applies).
+    import subprocess as sp
+
+    root = tmp_path / "ws"
+    root.mkdir()
+
+    def g(*args: str) -> None:
+        sp.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+    g("init", "-q", "-b", "main")
+    (root / "data.txt").write_text("payload\n")
+    (root / ".gitattributes").write_text("*.txt filter=evil\n")
+    g("add", "-A")
+    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    marker = tmp_path / "PWNED"
+    # the "session" plants the driver in repo-local config
+    g("config", "filter.evil.smudge", f"touch {marker} && cat")
+    g("config", "filter.evil.clean", f"touch {marker} && cat")
+
+    ws = Workspace(root=root)
+    # force a fresh checkout of every file — with the driver live this would
+    # run the smudge command
+    ws.git("checkout", "-f", "HEAD", "--", ".")
+    ws.git("status", "--porcelain")
+    assert not marker.exists()

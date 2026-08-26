@@ -131,7 +131,6 @@ class Compute(Protocol):
     launcher, the wake dispatcher) depend on this, never on a backend."""
 
     def submit(self, spec: JobSpec) -> str: ...
-    def submit_after(self, spec: JobSpec, after_job_id: str) -> str: ...
     def status(self, job_id: str) -> str: ...
     def active_job_names(self) -> list[str]: ...
     def job_id_for_name(self, name: str) -> str: ...
@@ -155,19 +154,6 @@ class SlurmCompute:
             raise SlurmError(f"sbatch returned no job id: {result.stdout.strip()!r}")
         log.info("submitted %s as job %s", spec.job_name, job_id)
         return job_id
-
-    def submit_after(self, spec: JobSpec, after_job_id: str) -> str:
-        """Submit `spec` to run when `after_job_id` terminates — however it
-        terminates (afterany: the wake-on-failure semantics the fail-safe
-        design requires). Refuses a spec that already carries a dependency
-        rather than silently replacing it."""
-        if not after_job_id.isdigit():
-            raise ValueError(f"not a job id: {after_job_id!r}")
-        if spec.dependency:
-            raise ValueError(f"spec already has dependency {spec.dependency!r}")
-        import dataclasses
-
-        return self.submit(dataclasses.replace(spec, dependency=f"afterany:{after_job_id}"))
 
     def status(self, job_id: str) -> str:
         """The job's Slurm state, or GONE when a *successful* query finds no
@@ -309,10 +295,6 @@ class LocalCompute:
         self._states[job_id] = state
         log.info("ran %s locally as job %s: %s", spec.job_name, job_id, state)
         return job_id
-
-    def submit_after(self, spec: JobSpec, after_job_id: str) -> str:
-        # every prior local job is already terminal, so afterany is satisfied
-        return self.submit(spec)
 
     def status(self, job_id: str) -> str:
         if not job_id.isdigit():

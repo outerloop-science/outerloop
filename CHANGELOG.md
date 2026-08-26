@@ -6,6 +6,23 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Session-planted git filter drivers are neutralized on every orchestrator
+  `Workspace.git` invocation: host global/system config never loads, and any
+  `filter.*` driver in the workspace's session-writable `.git/config` is
+  overridden to a passthrough — a checkout can no longer execute an
+  agent-configured smudge/clean command with the orchestrator's permissions
+  (the containment the dispatched job script already had, now on the shared
+  git surface too; mutation-tested).
+
+### Removed
+
+- Audit kill-list: `Compute.submit_after` (no production caller — wake jobs
+  build their `afterany` dependency directly), the never-populated
+  `RunRecord.wake_job_id` field (old records still load; unknown keys are
+  ignored), and orphaned test scaffolding (`QueueEvaluator` in test_climb).
+
 ### Changed
 
 - One publish — the sealed candidate sha, everywhere. `live_climb`'s inline

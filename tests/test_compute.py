@@ -63,17 +63,6 @@ def test_submit_garbage_output_raises() -> None:
         SlurmCompute(runner=runner).submit(SPEC)
 
 
-def test_submit_after_sets_afterany() -> None:
-    runner = FakeRunner([CommandResult(0, "777\n", "")])
-    SlurmCompute(runner=runner).submit_after(SPEC, "12345")
-    assert "--dependency=afterany:12345" in runner.seen[0]
-
-
-def test_submit_after_rejects_non_numeric_id() -> None:
-    with pytest.raises(ValueError):
-        SlurmCompute(runner=FakeRunner([])).submit_after(SPEC, "$(rm -rf /)")
-
-
 def test_status_distinguishes_gone_from_query_failure() -> None:
     """The fail-safe design's core distinction: empty-on-success vs error."""
     gone = SlurmCompute(runner=FakeRunner([CommandResult(0, "", "")]))

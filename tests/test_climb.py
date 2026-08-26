@@ -273,25 +273,11 @@ class ScriptedHarness:
 
 
 @dataclass
-class QueueEvaluator:
-    values: list[float] = field(default_factory=list)
-    seen_dirs: list = field(default_factory=list)
-
-    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
-        self.seen_dirs.append(Path(workspace))
-        value = self.values.pop(0)
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-
-@dataclass
 class QueueCompute:
     """A LocalCompute stand-in for the gate's eval jobs: `submit` writes the
     next queued value straight into the job's eval dir (every metric key the
     test contracts use, so any measure parses it) instead of running the
-    script. Shares its queue with QueueEvaluator so a test's values are
-    consumed in one submit/eval order, exactly as the old inline flow did."""
+    script, so a test's values are consumed in submit order."""
 
     values: list = field(default_factory=list)
     submitted: list = field(default_factory=list)
@@ -313,9 +299,6 @@ class QueueCompute:
             (ev / "stdout").write_text(_json.dumps({k: value for k in keys}))
             (ev / "exit-code").write_text("0")
         return str(9_000_000_000 + self._seq)
-
-    def submit_after(self, spec, after_job_id: str) -> str:
-        return self.submit(spec)
 
     def status(self, job_id: str) -> str:
         return "COMPLETED"
@@ -373,9 +356,7 @@ class NoAuth:
 
 @contextlib.contextmanager
 def _queued_local(queue):
-    """Route the gate's local eval jobs through QueueCompute(queue) — the
-    values feed the same list a QueueEvaluator may also pop from, so a test's
-    numbers are consumed in one submit/eval order."""
+    """Route the gate's local eval jobs through QueueCompute(queue)."""
     import autoresearch.climb as _climb_mod
 
     orig = _climb_mod.LocalCompute
@@ -399,9 +380,6 @@ def run_live(
     eval_image="",
 ) -> tuple:
     github = FakeGitHub()
-    # ONE value queue, shared: the gate's local eval jobs (QueueCompute) and
-    # any inline re-measures (QueueEvaluator, e.g. the moved-base path) consume
-    # values in call order, exactly as the old single-evaluator flow did
     queue = list(values)
     with _queued_local(queue):
         outcome = live_climb(
