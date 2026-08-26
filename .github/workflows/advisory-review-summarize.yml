@@ -135,6 +135,11 @@ jobs:
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_summarize_cli
       - name: Backstop envelope
+        # !cancelled(), unlike the reviewer workflow's exit-0-only backstop:
+        # that one guards legacy pinned refs; this workflow has no pre-envelope
+        # refs, so a CRASHED merge step must still produce a PR-visible stub
+        # rather than a silent failed download in the post job.
+        if: ${{ !cancelled() }}
         working-directory: .autoresearch
         env:
           PR_REPO: ${{ github.repository }}

@@ -86,15 +86,29 @@ def main() -> int:
             _emit(emit_path, repo, number, kind="skip-clean", detail=details)
             return 0
         return stub(f"no lens produced findings ({details})")
+    failed = [e for e in envelopes if e.get("kind") == "skip-stub"]
     if len(reals) == 1:
-        # nothing to merge: pass the one real opinion through verbatim
+        # nothing to merge: pass the one real opinion through — but FAILED
+        # sibling lenses must still reach the posted round (a lone success
+        # must not hide that most of the panel died)
         only = reals[0]
+        data = dict(only.get("data") or {})
+        if failed:
+            lost = "; ".join(
+                f"{e.get('lens') or e.get('reviewed_by') or '?'}: "
+                f"{str(e.get('detail') or '')[:120]}"
+                for e in failed
+            )
+            notes = str(data.get("notes") or "")
+            data["notes"] = (notes + "\n\n" if notes else "") + (
+                f"[panel] lens sessions that did NOT run this round: {lost}"
+            )
         _emit(
             emit_path,
             repo,
             number,
             kind="findings",
-            data=only.get("data"),
+            data=data,
             reviewed_by=str(only.get("reviewed_by", "")),
             lens=str(only.get("lens", "")),
         )

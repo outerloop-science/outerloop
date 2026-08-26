@@ -59,11 +59,14 @@ def _run_summarize(tmp_path: Path, monkeypatch) -> dict:
 
 
 def test_single_real_opinion_passes_through_without_a_session(tmp_path, monkeypatch) -> None:
-    # no model call: the one real opinion is the round
+    # no model call: the one real opinion is the round — and the FAILED
+    # sibling lenses still reach the posted notes (never hidden by a lone
+    # success)
     _envelope(tmp_path, "a", kind="findings", data={"findings": []}, lens="credentials")
     _envelope(tmp_path, "b", kind="skip-stub", detail="key missing", lens="coverage")
     merged = _run_summarize(tmp_path, monkeypatch)
     assert merged["kind"] == "findings" and merged["lens"] == "credentials"
+    assert "did NOT run" in merged["data"]["notes"] and "coverage" in merged["data"]["notes"]
 
 
 def test_all_stubs_becomes_one_attributed_stub(tmp_path, monkeypatch) -> None:
