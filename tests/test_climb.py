@@ -2791,3 +2791,27 @@ def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> No
     )
     with pytest.raises(ValueError, match="role separation"):
         _panel_lenses_from_args(args)
+
+
+def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> None:
+    # --uncontained (image="") must never produce a danger-full-access codex
+    # judge on the host
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    judge_key = tmp_path / "panel_codex_key"
+    judge_key.write_text("sk-judge")
+    judge_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="",  # dev --uncontained
+    )
+    with pytest.raises(ValueError, match="requires --image"):
+        _panel_lenses_from_args(args)

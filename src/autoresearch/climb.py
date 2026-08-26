@@ -1314,6 +1314,14 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
         # anthropic panel key, and role separation forbids defaulting to the
         # AUTHOR's codex key: the judge key is its own, named explicitly
         if backend == "codex":
+            if not args.image:
+                # --uncontained is a dev concession for CLAUDE sessions; a
+                # codex judge is danger-full-access and NEVER runs outside
+                # the image — a judge never runs uncontained next to key files
+                raise ValueError(
+                    "a codex panel lens requires --image (codex judges run "
+                    "danger-full-access and only ever inside the container)"
+                )
             codex_panel_key = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
             if not codex_panel_key:
                 raise ValueError(
