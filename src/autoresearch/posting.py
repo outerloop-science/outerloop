@@ -62,8 +62,12 @@ def _round_stamp(
     head = pr_data.get("head")
     head_sha = str(head.get("sha", ""))[:8] if isinstance(head, dict) else ""
     # attribution is render-side data (it can cross a job boundary in the
-    # least-token split): strip backticks/newlines, cap, never trust
-    by = " ".join(str(reviewed_by).split()).replace("`", "")[:60]
+    # least-token split): strip backticks/newlines, cap, never trust. The cap
+    # fits a panel line ("summarizer:<backend> over lens+lens+..."); a real
+    # overflow ends in an ellipsis so it never reads as a mid-word bug.
+    by = " ".join(str(reviewed_by).split()).replace("`", "")
+    if len(by) > 120:
+        by = by[:119].rstrip() + "…"
     # The round number is cosmetic: an EXPECTED failure counting prior
     # rounds must never cost the round itself. Programming errors still
     # propagate, per this module's policy.

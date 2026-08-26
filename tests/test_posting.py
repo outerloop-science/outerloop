@@ -192,3 +192,23 @@ def test_rounds_count_per_reviewer() -> None:
     # terra's next round increments ITS OWN count and sees its own same-head re-run
     stamp, label = _round_stamp(_C(), "o/r", 1, "<!-- m -->", pr_data, "hermes/terra")  # type: ignore[arg-type]
     assert "**Round 2**" in label and "(re-run on the same head)" in label
+
+
+def test_round_stamp_fits_a_panel_attribution_without_mid_word_cut() -> None:
+    # the summarizer's reviewed_by names every lens: it must render whole,
+    # not truncate mid-word (regression: a 60-char cap cut '...+de')
+    who = "summarizer:hermes/gpt-5.6-terra over general+credentials+deployment+lifecycle+coverage"
+    stamp, _ = posting._round_stamp(
+        _FakeClient(),  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        {"head": {"sha": "abc"}},
+        who,
+    )
+    assert "deployment" in stamp and "coverage" in stamp and "…" not in stamp
+
+
+def test_round_stamp_ellipsizes_a_hostile_overlong_attribution() -> None:
+    stamp, _ = posting._round_stamp(_FakeClient(), "org/repo", 1, _MARKER, {"head": {}}, "x" * 400)
+    assert "…" in stamp  # bounded, and legibly so
