@@ -27,6 +27,7 @@ from autoresearch.harness import (
     Harness,
     HermesHarness,
     SessionResult,
+    vertex_from_env,
 )
 from autoresearch.rolespec import RoleSpec
 
@@ -61,6 +62,22 @@ _HERMES_PROVIDERS = {
     "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
     "openai": ("openai-api", "OPENAI_API_KEY"),
 }
+
+
+def role_key(key_file: str | Path, backend: str = "claude") -> str:
+    """Read a role's API key file — tolerating its ABSENCE exactly when the
+    deployment's Vertex config covers the claude backend (an ADC-only
+    deployment holds no Anthropic key at all; the harness then authenticates
+    via ADC and ignores api_key). Every other backend, and claude without
+    Vertex, still fails loudly on a missing/lax key file."""
+    from autoresearch.harness import vertex_from_env
+
+    path = Path(key_file).expanduser()
+    if backend == "claude" and vertex_from_env() is not None and not path.is_file():
+        return ""
+    from autoresearch.github import FileTokenProvider
+
+    return FileTokenProvider(path).token()
 
 
 def build_harness(
@@ -141,6 +158,10 @@ def build_harness(
         # / hooks / project settings as instructions (defence in depth beside
         # the caller's sanitize_checkout)
         bare=spec.output_schema is not None,
+        # Vertex (ADC) billing when the deployment configures it; the env
+        # contract has ONE owner (harness.vertex_from_env), so every claude
+        # role on every CLI flips together and the API key stays the fallback
+        vertex=vertex_from_env(),
     )
 
 

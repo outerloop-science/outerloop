@@ -57,7 +57,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import PullRequest
-from autoresearch.role_runner import build_harness
+from autoresearch.role_runner import build_harness, role_key
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -1298,7 +1298,7 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
     from autoresearch.panel import parse_lenses
     from autoresearch.roles import reviewer_spec
 
-    panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+    panel_key = role_key(args.panel_key_file)  # panel judges run the claude backend
     lenses = []
     for kind, backend, model in parse_lenses(args.panel):
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
@@ -2201,13 +2201,13 @@ def main() -> int:
             # the panel's judges need the verifier key; an author-sleep wake
             # alone does NOT — a panel-less deployment must not be forced to
             # provision an unused credential.
-            wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+            wake_panel_key = role_key(args.panel_key_file)
         if (
             wake_lenses
             or _wake_stage.get("phase") == "author-sleep"
             or _wake_stage.get("submitted")
         ):
-            wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
+            wake_api_key = role_key(wake_key_file, wake_backend)
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_harness(
                 wake_api_key,
@@ -2257,8 +2257,9 @@ def main() -> int:
     # config-driven: the author key defaults per backend (claude vs codex) so the
     # tick never threads it — see resolve_author_key_file (result is ~-expanded).
     args.key_file = resolve_author_key_file(args.author_backend, args.key_file)
-    # same 0600 discipline as the PAT: this key spends real money
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    # same 0600 discipline as the PAT: this key spends real money. A missing
+    # file is tolerated only when Vertex (ADC) covers the claude backend.
+    api_key = role_key(args.key_file, args.author_backend)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
 
@@ -2304,11 +2305,7 @@ def main() -> int:
         parser.error(str(exc))
     # the panel key joins the redaction set: judge error text can echo request
     # material like any other model error.
-    panel_key = (
-        FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-        if args.panel.strip()
-        else ""
-    )
+    panel_key = role_key(args.panel_key_file) if args.panel.strip() else ""
 
     # Dispatched measurement needs the full cluster triple AND a real image
     # file to bind against; missing any, the climb measures inline (the tick

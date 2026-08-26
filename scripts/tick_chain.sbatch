@@ -123,7 +123,9 @@ if [ -r "$ENV_FILE" ]; then
     if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
         for _k in AUTORESEARCH_AUTHOR_BACKEND AUTORESEARCH_AUTHOR_MODEL \
                   AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
-                  AUTORESEARCH_HARNESS_KEY_FILE; do
+                  AUTORESEARCH_HARNESS_KEY_FILE \
+                  AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
+                  AUTORESEARCH_VERTEX_ADC; do
             _v=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
             _v=${_v%$'\r'}                         # CRLF-edited file
             _v=${_v#[\"\']}; _v=${_v%[\"\']}       # optional surrounding quote

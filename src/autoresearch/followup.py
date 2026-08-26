@@ -39,7 +39,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import APPROVAL_PATTERN, REDACTED
-from autoresearch.role_runner import run_role
+from autoresearch.role_runner import role_key, run_role
 from autoresearch.roles import followup_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -750,7 +750,7 @@ def main() -> int:
         resolve_author_key_file(author_backend, args.key_file) if args.key_file else author_key
     )
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    api_key = role_key(args.key_file, author_backend)
     bot_auth = FileTokenProvider(Path(args.pat_file))
 
     # Same self-deadline as the climb: Slurm never signals this process,

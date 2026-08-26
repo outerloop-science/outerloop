@@ -181,6 +181,26 @@ the same way.
 
 ---
 
+## Billing Claude sessions to GCP credits (Vertex AI)
+
+Anthropic-billed roles (authors, panel judges, reviewers on the claude
+backend) can run on Claude-in-Vertex instead of an Anthropic API key —
+useful when GCP credits are the budget. Config-driven, one env owner:
+
+```bash
+AUTORESEARCH_VERTEX_PROJECT=your-gcp-project   # presence flips vertex ON
+AUTORESEARCH_VERTEX_REGION=global              # optional (default: global)
+AUTORESEARCH_VERTEX_ADC=~/.config/autoresearch/vertex_adc.json  # ADC file
+```
+
+Enable the Claude models in the project's Model Garden, mint ADC
+(`gcloud auth application-default login` +
+`set-quota-project <project>`), and place the credential at the configured
+path. Contained sessions get the ADC file bind-mounted read-only; the
+session env then carries no Anthropic key at all. Unset the project var to
+fall back to API-key billing. OpenAI-backed roles (codex/hermes) are
+unaffected — those models are not on GCP.
+
 ## Safety defaults
 
 On by default. Think hard before changing any of them:

@@ -100,8 +100,14 @@ def main() -> int:
                 reviewed_by=backend,
             )
         return 0
+    from autoresearch.harness import vertex_from_env
+
     api_key = os.environ.get(key_var, "").strip()
-    if not api_key:
+    # an ADC-only deployment holds no Anthropic key: Vertex covering the
+    # claude backend stands in for it (same tolerance as role_key), so the
+    # skip-stub fires only when NEITHER credential source exists
+    vertex_covers = backend == "claude" and vertex_from_env() is not None
+    if not api_key and not vertex_covers:
         log.warning("%s is unset or empty; skipping review", key_var)
         if emit_env:
             # a standing second-opinion service must not die silently when
