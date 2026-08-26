@@ -1285,6 +1285,47 @@ def resume_run(
     return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
+def _judge_lens_key(
+    *,
+    backend: str,
+    key_file_env: str,
+    author_backend: str,
+    claude_panel_path: Path,
+    image: str,
+) -> str:
+    """Resolve a non-claude judge lens's OWN key file, enforcing the three
+    separations every shelled judge shares (codex, hermes, any future
+    backend): the image is required (a judge never runs uncontained next to
+    key files), the key must be named explicitly, and it must differ from BOTH
+    the author's key of the same provider AND the claude panel key (a
+    cross-provider send would leak an anthropic credential to another login).
+    Returns the redacted key (or "" under an ADC-covered deployment)."""
+    if not image:
+        raise ValueError(
+            f"a {backend} panel lens requires --image (a shelled judge only "
+            "ever runs inside the container)"
+        )
+    raw = os.environ.get(key_file_env, "").strip()
+    if not raw:
+        raise ValueError(
+            f"a {backend} panel lens needs {key_file_env} "
+            "(role separation: the judge's own key, never the author's)"
+        )
+    path = Path(raw).expanduser()
+    author_path = Path(resolve_author_key_file(author_backend)).expanduser()
+    if path.resolve() == author_path.resolve():
+        raise ValueError(
+            f"{backend} panel key file {path} is the {author_backend} author key "
+            "(role separation: the judge needs its own key)"
+        )
+    if path.resolve() == claude_panel_path.resolve():
+        raise ValueError(
+            f"{backend} panel key file {path} is the claude panel key file "
+            "(an anthropic key must never reach another provider's login)"
+        )
+    return role_key(raw, author_backend)
+
+
 def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str, ...]]:
     """Build the verification-panel lenses from the CLI args (empty `--panel`
     disables it), returning `(lenses, panel_secrets)` — the ONE owner of
@@ -1313,38 +1354,29 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
         # per-backend judge keys coexist — a codex lens is never handed the
         # anthropic panel key, and role separation forbids defaulting to the
         # AUTHOR's codex key: the judge key is its own, named explicitly
+        claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
         if backend == "codex":
-            if not args.image:
-                # --uncontained is a dev concession for CLAUDE sessions; a
-                # codex judge is danger-full-access and NEVER runs outside
-                # the image — a judge never runs uncontained next to key files
-                raise ValueError(
-                    "a codex panel lens requires --image (codex judges run "
-                    "danger-full-access and only ever inside the container)"
-                )
-            codex_panel_key = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
-            if not codex_panel_key:
-                raise ValueError(
-                    "a codex panel lens needs AUTORESEARCH_PANEL_CODEX_KEY_FILE "
-                    "(role separation: the judge's own key, never the author's)"
-                )
-            codex_panel_path = Path(codex_panel_key).expanduser()
-            codex_author_path = Path(resolve_author_key_file("codex")).expanduser()
-            if codex_panel_path.resolve() == codex_author_path.resolve():
-                raise ValueError(
-                    f"codex panel key file {codex_panel_path} is the codex author "
-                    "key (role separation: the judge needs its own key)"
-                )
-            claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
-            if codex_panel_path.resolve() == claude_panel_path.resolve():
-                # provider-key confusion: this would send the ANTHROPIC panel
-                # credential to codex (OpenAI) login
-                raise ValueError(
-                    f"codex panel key file {codex_panel_path} is the claude panel "
-                    "key file (a codex judge needs an OpenAI credential, and an "
-                    "anthropic key must never reach another provider's login)"
-                )
-            lens_key = role_key(codex_panel_key, "codex")
+            lens_key = _judge_lens_key(
+                backend="codex",
+                key_file_env="AUTORESEARCH_PANEL_CODEX_KEY_FILE",
+                author_backend="codex",
+                claude_panel_path=claude_panel_path,
+                image=args.image,
+            )
+            if lens_key:
+                secrets.append(lens_key)
+        elif backend == "hermes":
+            # hermes reads its key from its provider's env var, but the FILE
+            # is resolved and separated exactly like codex's (the key still
+            # lands next to the session). The author's OpenAI key coexists, so
+            # separate against the codex author key.
+            lens_key = _judge_lens_key(
+                backend="hermes",
+                key_file_env="AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+                author_backend="codex",
+                claude_panel_path=claude_panel_path,
+                image=args.image,
+            )
             if lens_key:
                 secrets.append(lens_key)
         else:

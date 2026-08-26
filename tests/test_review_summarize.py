@@ -24,6 +24,10 @@ def test_lens_narrows_attention_and_unknown_lens_fails_loudly() -> None:
     for lens, text in REVIEW_LENSES.items():
         brief = build_agent_brief(_pr(), lens=lens)
         assert text in brief and text not in plain
+    # 'general' is a REAL lens name (full rubric, no added focus) — accepted,
+    # identical to the unlensed brief (the empty-string-ternary footgun the
+    # workflow used to hit)
+    assert build_agent_brief(_pr(), lens="general") == plain
     with pytest.raises(ValueError, match="unknown review lens"):
         build_agent_brief(_pr(), lens="vibes")
 

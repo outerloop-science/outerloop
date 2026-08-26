@@ -2839,3 +2839,45 @@ def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> N
     )
     with pytest.raises(ValueError, match="requires --image"):
         _panel_lenses_from_args(args)
+
+
+def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> None:
+    # hermes joins the shelled-judge rules via the SAME helper as codex:
+    # image required, own key named, never the author's or the claude panel's
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    def args(image="/img.sif"):
+        return argparse.Namespace(
+            panel="review:hermes:gpt-5.6-terra",
+            panel_key_file="/dev/null",
+            claude_bin="claude",
+            codex_bin="codex",
+            image=image,
+        )
+
+    monkeypatch.delenv("AUTORESEARCH_PANEL_HERMES_KEY_FILE", raising=False)
+    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_HERMES_KEY_FILE"):
+        _panel_lenses_from_args(args())
+    judge = tmp_path / "panel_hermes_key"
+    judge.write_text("sk-judge")
+    judge.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_HERMES_KEY_FILE", str(judge))
+    with pytest.raises(ValueError, match="requires --image"):
+        _panel_lenses_from_args(args(image=""))
+    # author-key reuse refused (the codex author key is the OpenAI author key)
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(judge))
+    with pytest.raises(ValueError, match="role separation"):
+        _panel_lenses_from_args(args())
+    monkeypatch.delenv("AUTORESEARCH_CODEX_KEY_FILE", raising=False)
+    # a properly separated key builds the contained hermes judge
+    repo = tmp_path / "hermes-agent"
+    repo.mkdir()
+    monkeypatch.setenv("REVIEW_HERMES_REPO", str(repo))
+    lenses, secrets = _panel_lenses_from_args(args())
+    assert len(lenses) == 1 and lenses[0].kind == "review"
+    assert secrets == ("sk-judge",)
+    assert getattr(lenses[0].harness, "container_image", "") == "/img.sif"

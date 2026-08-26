@@ -1298,38 +1298,65 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
             lenses = parse_lenses(spec.panel)
         except ValueError as exc:
             return str(exc)
-        if any(backend == "codex" for _, backend, _ in lenses):
-            # mirror the climb's rules exactly. (1) a codex judge only ever
-            # runs inside the image:
+        # non-claude (shelled) lenses: mirror the climb's rules exactly, per
+        # backend — image required, the judge's OWN key (set + absolute +
+        # neither the author's nor the claude panel key + readable), and for
+        # hermes its pinned clone.
+        shelled = {
+            "codex": "AUTORESEARCH_PANEL_CODEX_KEY_FILE",
+            "hermes": "AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+        }
+        for lens_backend, key_env in shelled.items():
+            if not any(backend == lens_backend for _, backend, _ in lenses):
+                continue
             if not spec.image or not Path(spec.image).is_file():
                 return (
-                    f"a codex panel lens requires a real container image "
+                    f"a {lens_backend} panel lens requires a real container image "
                     f"(AUTORESEARCH_IMAGE={spec.image!r})"
                 )
-            # (2) a codex lens needs the JUDGE's
-            # own key, named explicitly — role separation forbids the author's
-            codex_panel_raw = os.environ.get("AUTORESEARCH_PANEL_CODEX_KEY_FILE", "").strip()
-            if not codex_panel_raw:
+            key_raw = os.environ.get(key_env, "").strip()
+            if not key_raw:
                 return (
-                    "a codex panel lens needs AUTORESEARCH_PANEL_CODEX_KEY_FILE "
+                    f"a {lens_backend} panel lens needs {key_env} "
                     "(role separation: the judge's own key, never the author's)"
                 )
-            codex_panel = Path(codex_panel_raw).expanduser()
-            if not codex_panel.is_absolute():
-                return f"codex panel key path {codex_panel} is relative; only absolute paths fly"
-            codex_author = Path(resolve_author_key_file("codex")).expanduser()
-            if codex_panel.resolve() == codex_author.resolve():
+            key_path = Path(key_raw).expanduser()
+            if not key_path.is_absolute():
                 return (
-                    f"codex panel key file {codex_panel} is the codex author key "
-                    "(role separation: the judge needs its own key)"
+                    f"{lens_backend} panel key path {key_path} is relative; only absolute paths fly"
+                )
+            author = Path(resolve_author_key_file("codex")).expanduser()
+            if key_path.resolve() == author.resolve():
+                return (
+                    f"{lens_backend} panel key file {key_path} is the codex author "
+                    "key (role separation: the judge needs its own key)"
                 )
             claude_panel = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
-            if codex_panel.resolve() == claude_panel.resolve():
+            if key_path.resolve() == claude_panel.resolve():
                 return (
-                    f"codex panel key file {codex_panel} is the claude panel key "
-                    "file (an anthropic key must never reach codex login)"
+                    f"{lens_backend} panel key file {key_path} is the claude panel "
+                    "key file (an anthropic key must never reach another "
+                    "provider's login)"
                 )
-            FileTokenProvider(codex_panel).token()
+            FileTokenProvider(key_path).token()
+            if lens_backend == "hermes":
+                repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+                # a REAL clone, not merely a directory: the harness executes
+                # run_agent.py from it with the panel key, so an arbitrary or
+                # empty path must fail here, never after a run is claimed
+                if not repo or not (Path(repo).expanduser() / "run_agent.py").is_file():
+                    return (
+                        f"a hermes panel lens needs REVIEW_HERMES_REPO pointing at "
+                        f"the pinned clone (run_agent.py not found under {repo!r})"
+                    )
+                from autoresearch.role_runner import _HERMES_PROVIDERS
+
+                provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
+                if provider not in _HERMES_PROVIDERS:
+                    return (
+                        f"unknown REVIEW_HERMES_PROVIDER {provider!r} "
+                        f"(have: {sorted(_HERMES_PROVIDERS)})"
+                    )
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply
         path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()

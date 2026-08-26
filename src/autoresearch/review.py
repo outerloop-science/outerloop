@@ -321,9 +321,12 @@ def build_agent_brief(
     the workspace, so it resolves from any backend's cwd). A `lens` narrows the
     session's ATTENTION (wide first round); an unknown lens fails loudly — a
     configured lens must never silently review as the default."""
-    if lens and lens not in REVIEW_LENSES:
+    # 'general' (and "") are the full rubric with no added focus — a real
+    # value so the caller matrix can pass it straight through (no empty-string
+    # ternary, whose GitHub Actions form silently falls through)
+    if lens and lens != "general" and lens not in REVIEW_LENSES:
         raise ValueError(f"unknown review lens {lens!r} (have: {sorted(REVIEW_LENSES)})")
-    focus = f"\n\n{REVIEW_LENSES[lens]}" if lens else ""
+    focus = f"\n\n{REVIEW_LENSES[lens]}" if lens and lens != "general" else ""
     return (
         f"{SYSTEM_PROMPT}{focus}\n\n{_agent_investigation(syscall_cmd)}\n\n"
         f"{build_prompt(pr, today)}"

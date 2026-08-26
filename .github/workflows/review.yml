@@ -35,8 +35,9 @@ jobs:
       # OpenAI account is tax-exempt); model id is provider-native
       hermes_provider: openai
       model: gpt-5.6-terra
-      # `general` runs unlensed (empty REVIEW_LENS = the full rubric)
-      lens: ${{ matrix.lens == 'general' && '' || matrix.lens }}
+      # `general` is a real lens name meaning the full rubric (no empty-string
+      # ternary — its GitHub Actions form silently falls through to the else)
+      lens: ${{ matrix.lens }}
       opinion_id: lens-${{ matrix.lens }}
       post: false
     secrets:

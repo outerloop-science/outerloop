@@ -143,6 +143,7 @@ def build_harness(
             timeout_s=spec.budget.walltime_s,
             enabled_toolsets=enabled,
             disabled_toolsets=tuple(t for t in _HERMES_TOOLSETS if t not in enabled),
+            container_image=container_image,
         )
     if backend != "claude":
         raise ValueError(f"unknown backend: {backend!r}")

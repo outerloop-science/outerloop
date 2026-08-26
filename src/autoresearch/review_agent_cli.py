@@ -169,7 +169,7 @@ def main() -> int:
     if lens:
         from autoresearch.review import REVIEW_LENSES
 
-        if lens not in REVIEW_LENSES:
+        if lens != "general" and lens not in REVIEW_LENSES:
             # a typo'd lens must be a PR-visible stub, never a silent
             # default-review (a configured lens must never quietly vanish)
             _skip_stub(

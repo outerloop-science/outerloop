@@ -127,7 +127,9 @@ if [ -r "$ENV_FILE" ]; then
                   AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
                   AUTORESEARCH_VERTEX_ADC \
                   AUTORESEARCH_PANEL AUTORESEARCH_PANEL_KEY_FILE \
-                  AUTORESEARCH_PANEL_CODEX_KEY_FILE; do
+                  AUTORESEARCH_PANEL_CODEX_KEY_FILE \
+                  AUTORESEARCH_PANEL_HERMES_KEY_FILE \
+                  REVIEW_HERMES_REPO REVIEW_HERMES_PROVIDER; do
             _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
             # PRESENCE-based, not value-based: a key set to "" in .env is a
             # live OFF-SWITCH (AUTORESEARCH_PANEL="" disables the panel,
@@ -155,6 +157,16 @@ fi
 case "${AUTORESEARCH_AUTHOR_BACKEND:-}:${AUTORESEARCH_PANEL:-}" in
     codex:*|*:*codex*)
         bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
+        ;;
+esac
+case "${AUTORESEARCH_PANEL:-}" in
+    *hermes*)
+        # the default install location IS the default config: exporting it
+        # here connects the provisioned clone to the preflight/climb without
+        # requiring the operator to name a path they didn't choose
+        export REVIEW_HERMES_REPO="${REVIEW_HERMES_REPO:-$HOME/hermes-agent}"
+        bash "$AUTORESEARCH_HOME/scripts/install_hermes.sh" "$REVIEW_HERMES_REPO" \
+            || echo "deploy: hermes install failed"
         ;;
 esac
 
