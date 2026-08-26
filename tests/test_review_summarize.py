@@ -121,8 +121,12 @@ def test_two_real_opinions_run_the_summarizer_session(tmp_path, monkeypatch) -> 
         lambda spec: (object(), "", "hermes"),
     )
     monkeypatch.setattr("autoresearch.review_agent.backend_id", lambda h: "hermes/terra")
+    _envelope(tmp_path, "c", kind="skip-stub", detail="model gone", lens="coverage")
     merged = _run_summarize(tmp_path, monkeypatch)
-    assert merged["kind"] == "findings" and merged["data"] == merged_data
+    assert merged["kind"] == "findings"
+    assert merged["data"]["findings"] == merged_data["findings"]
+    # the MERGE path also surfaces failed sibling lenses, deterministically
+    assert "did NOT run" in merged["data"]["notes"] and "coverage" in merged["data"]["notes"]
     assert "credentials" in merged["reviewed_by"] and "deployment" in merged["reviewed_by"]
     assert captured["spec"].name == "summarizer"
     assert "lens: credentials" in captured["brief"]

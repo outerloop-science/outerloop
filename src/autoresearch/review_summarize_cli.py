@@ -53,6 +53,24 @@ def _load_envelopes(root: Path, repo: str, number: int) -> list[dict]:
     return out
 
 
+def _with_lost_lenses(data: dict, failed: list[dict]) -> dict:
+    """Append the failed sibling lenses to the verdict's notes — DETERMINISTIC,
+    after any session, so panel losses reach the posted round on every path
+    (never dependent on a model remembering to mention them)."""
+    if not failed:
+        return data
+    out = dict(data)
+    lost = "; ".join(
+        f"{e.get('lens') or e.get('reviewed_by') or '?'}: {str(e.get('detail') or '')[:120]}"
+        for e in failed
+    )
+    notes = str(out.get("notes") or "")
+    out["notes"] = (notes + "\n\n" if notes else "") + (
+        f"[panel] lens sessions that did NOT run this round: {lost}"
+    )
+    return out
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     repo = os.environ.get("PR_REPO", "").strip()
@@ -92,17 +110,7 @@ def main() -> int:
         # sibling lenses must still reach the posted round (a lone success
         # must not hide that most of the panel died)
         only = reals[0]
-        data = dict(only.get("data") or {})
-        if failed:
-            lost = "; ".join(
-                f"{e.get('lens') or e.get('reviewed_by') or '?'}: "
-                f"{str(e.get('detail') or '')[:120]}"
-                for e in failed
-            )
-            notes = str(data.get("notes") or "")
-            data["notes"] = (notes + "\n\n" if notes else "") + (
-                f"[panel] lens sessions that did NOT run this round: {lost}"
-            )
+        data = _with_lost_lenses(dict(only.get("data") or {}), failed)
         _emit(
             emit_path,
             repo,
@@ -136,7 +144,7 @@ def main() -> int:
         repo,
         number,
         kind="findings",
-        data=role_result.data,
+        data=_with_lost_lenses(dict(role_result.data), failed),
         reviewed_by=f"summarizer:{backend_id(harness)} over {lenses}",
     )
     log.info("merged %d opinions (%s)", len(reals), lenses)
