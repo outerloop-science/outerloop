@@ -8,6 +8,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- One publish — the sealed candidate sha, everywhere. `live_climb`'s inline
+  publish (workspace commit + drift fingerprints + the moved-base
+  merge/re-measure machinery) is retired: every improved run now branches the
+  SEALED `candidate_sha` and layers only the ledger commit on top, exactly as
+  the wake publish always has. With every gate eval running on a fresh
+  checkout of its sealed sha (the compute unification), eval-time workspace
+  drift is structurally impossible, so the fingerprint forensics guarded
+  nothing. A base branch that moves during a climb is no longer merged and
+  re-measured by the orchestrator — the PR opens against the moved base as-is
+  and review handles staleness, the wake path's long-standing stance
+  (docs/design/research-loop.md: a stale PR is a re-wake, not an auto-merge).
+
 - One compute interface, one measurer (`SlurmCompute` vs `LocalCompute` —
   Mengye's framing): `LocalCompute` runs the identical eval-job scripts as
   synchronous subprocesses in the current allocation, so `DispatchedMeasurer`

@@ -54,7 +54,7 @@ flowchart TD
     subgraph climb [Climb job - bounded by contract limits]
         C["clone (bot auth) + record FIRST"] --> B["orchestrator measures baseline"]
         B --> A["author session<br/>(contained, scrubbed env,<br/>self-deadline armed)"]
-        A --> E["orchestrator measures candidate<br/>scope + drift fingerprints"]
+        A --> E["orchestrator measures candidate<br/>(sealed sha, fresh checkout) + scope"]
         E --> F{improved?}
     end
 
@@ -210,7 +210,7 @@ finding survives.
 
 | Boundary | Enforced by |
 |---|---|
-| Solver never touches ruler/contract/progress files | scope veto + commit veto + drift fingerprints (code) |
+| Solver never touches ruler/contract/progress files | scope veto + ledger-only publish commit on the sealed sha (code) |
 | Numbers come only from the orchestrator | climb_once re-measures; PR body states it; CI re-verifies |
 | Reviewer never reviews its own pipeline's PRs automatically | bot-author skip (code) |
 | Verifier ≠ author | different role, prompt, key; reads adversarially |
