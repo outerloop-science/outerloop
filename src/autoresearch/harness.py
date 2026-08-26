@@ -1187,6 +1187,14 @@ class HermesHarness:
         "memory",
     )
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    # Apptainer image for session containment, same stance as the other
+    # backends: when set, the session runs under `apptainer exec --containall
+    # --cleanenv` seeing only the workspace, the per-run home, and a read-only
+    # bind of the pinned hermes repo. The project venv and uv cache live in
+    # the per-run home (UV_PROJECT_ENVIRONMENT/UV_CACHE_DIR), so the repo
+    # bind stays read-only and nothing survives across runs.
+    container_image: str = ""
+    apptainer_binary: str = "apptainer"
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -1252,8 +1260,42 @@ class HermesHarness:
             self.disabled_toolsets,
             self.extra_args,
         )
+        if self.container_image:
+            workspace_abs = workspace.resolve()
+            home_abs = session_home.resolve()
+            repo_abs = Path(self.repo_dir).resolve()
+            command = [
+                self.apptainer_binary,
+                "exec",
+                "--containall",
+                "--cleanenv",
+                "--bind",
+                f"{workspace_abs}:{workspace_abs}",
+                # --home mounts the per-run home at the same path inside and
+                # sets $HOME to it — hermes config, brief, samples, and the
+                # resume transcript all persist on the shared FS
+                "--home",
+                f"{home_abs}:{home_abs}",
+                "--bind",
+                f"{repo_abs}:{repo_abs}:ro",
+                "--pwd",
+                str(home_abs),
+                self.container_image,
+                *command,
+            ]
         try:
             env = session_env(self.api_key, self.key_env, session_home)
+            # the repo bind is read-only: uv builds the project venv and its
+            # cache in the per-run home instead (fresh per run; nothing shared
+            # across sessions)
+            env["UV_PROJECT_ENVIRONMENT"] = str(session_home / "venv")
+            env["UV_CACHE_DIR"] = str(session_home / "uv-cache")
+            env["UV_LINK_MODE"] = "copy"
+            if self.container_image:
+                # --cleanenv drops the host env inside the container EXCEPT
+                # APPTAINERENV_* — the key travels via env, never argv
+                for k in (self.key_env, "UV_PROJECT_ENVIRONMENT", "UV_CACHE_DIR", "UV_LINK_MODE"):
+                    env[f"APPTAINERENV_{k}"] = env[k]
             # cwd is the per-run home, NOT the workspace: --save_sample writes
             # its trajectory JSON to cwd, and artifacts must never land in the
             # clone (they would enter the diff).

@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Hermes container mode: `HermesHarness` runs under apptainer like the other
+  backends when an image is set — workspace and per-run home bound, the
+  pinned hermes-agent clone read-only, the project venv and uv cache in the
+  per-run home, key and uv vars via `APPTAINERENV_*` (never argv). With
+  containment uniform, the panel gate admits `hermes` lenses: the shelled-
+  judge rules (image required; the judge's OWN key, neither the author's nor
+  the claude panel key) move into one shared helper covering codex and
+  hermes, mirrored in the tick preflight; `AUTORESEARCH_PANEL_HERMES_KEY_FILE`
+  + `REVIEW_HERMES_*` ride the .env allowlist, and the chain provisions the
+  pinned clone (`scripts/install_hermes.sh`) when the panel names hermes.
+
+### Added
+
 - Wide first round, narrow convergence (docs/design/reviewer-infra.md): on
   PR open, the advisory review fans out three distinct-lens terra opinions
   (credentials & containment; the deployment chain end-to-end; test honesty)

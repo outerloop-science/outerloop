@@ -1927,7 +1927,8 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     err = _panel_preflight_error(both_wrong)
     assert "unknown kind" in err  # kind is checked before backend
     assert "claude backend" not in err
-    assert "no container mode" in _panel_preflight_error(
+    # a hermes lens preflights the shelled-judge rules (image first)
+    assert "requires a real container image" in _panel_preflight_error(
         make(panel="verify:hermes", panel_key_file=str(good))
     )
     # a codex lens preflights the image requirement too (climb parity)

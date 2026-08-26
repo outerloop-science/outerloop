@@ -125,5 +125,7 @@ def test_parse_lenses_admits_codex_and_refuses_uncontainable_backends() -> None:
         ("verify", "claude", "claude-fable-5"),
         ("review", "codex", "gpt-5.6-terra"),
     )
-    with pytest.raises(ValueError, match="no container mode"):
-        parse_lenses("review:hermes:gpt-5.6-terra")
+    # hermes is admitted now (containable); only an unknown backend refuses
+    assert parse_lenses("review:hermes:gpt-5.6-terra") == (("review", "hermes", "gpt-5.6-terra"),)
+    with pytest.raises(ValueError, match="unknown backend"):
+        parse_lenses("review:gemini")

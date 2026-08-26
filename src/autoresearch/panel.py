@@ -46,9 +46,10 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
     claimed, and the climb dies at argument parsing with the claim stranded.
     Backends are peers on the panel as everywhere else; the one gate is
     CONTAINMENT on the orchestrator host (judges hold a shell and run next
-    to key files): claude and codex run inside the climb's image, hermes
-    has no container mode yet — its lens is refused until that wrapper
-    exists, never run uncontained."""
+    to key files): claude, codex, and hermes all run inside the climb's
+    image, so any backend may judge — the image is required for a
+    non-claude lens (claude's --uncontained dev concession never extends to
+    a shelled judge)."""
     entries: list[tuple[str, str, str]] = []
     for raw in panel.split(","):
         entry = raw.strip()
@@ -57,12 +58,9 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
         backend = backend or "claude"
         if kind not in LENS_KINDS:
             raise ValueError(f"panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
-        if backend not in ("claude", "codex"):
+        if backend not in ("claude", "codex", "hermes"):
             raise ValueError(
-                f"panel entry {entry!r}: backend {backend!r} has no container "
-                "mode on the orchestrator host yet (claude and codex run "
-                "inside the climb's image); a judge never runs uncontained "
-                "next to key files"
+                f"panel entry {entry!r}: unknown backend {backend!r} (claude, codex, hermes)"
             )
         entries.append((kind, backend, model))
     return tuple(entries)
