@@ -255,3 +255,13 @@ def test_load_record_maps_legacy_climb_job_id(tmp_path: Path) -> None:
         )
     )
     assert load_record(tmp_path, "r1").run_job_id == "new"
+
+
+def test_climb_module_is_a_compat_shim_for_attempt() -> None:
+    # a pre-rename `-m autoresearch.climb` / import must still resolve
+    from autoresearch import climb
+    from autoresearch.attempt import AttemptResult, live_attempt
+
+    assert climb.live_attempt is live_attempt
+    assert climb.AttemptResult is AttemptResult
+    assert climb.main is __import__("autoresearch.attempt", fromlist=["main"]).main
