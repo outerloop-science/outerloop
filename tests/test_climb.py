@@ -2744,3 +2744,24 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
     monkeypatch.setattr("autoresearch.climb.role_key", lambda *a, **k: "k")
     with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_CODEX_KEY_FILE"):
         _panel_lenses_from_args(args)
+
+
+def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> None:
+    # a codex-only panel must not demand the (unused) anthropic panel key
+    import argparse
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    codex_key = tmp_path / "panel_codex_key"
+    codex_key.write_text("sk-judge")
+    codex_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(codex_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(tmp_path / "no-such-anthropic-key"),  # absent, must not matter
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    lenses = _panel_lenses_from_args(args)
+    assert len(lenses) == 1 and lenses[0].kind == "review"

@@ -1298,9 +1298,12 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
     from autoresearch.panel import parse_lenses
     from autoresearch.roles import reviewer_spec
 
-    panel_key = role_key(args.panel_key_file)
+    parsed = parse_lenses(args.panel)
+    # the anthropic panel key is read only when a claude lens will use it —
+    # a codex-only panel must not demand an unrelated credential
+    panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
     lenses = []
-    for kind, backend, model in parse_lenses(args.panel):
+    for kind, backend, model in parsed:
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
         # per-backend judge keys coexist — a codex lens is never handed the
         # anthropic panel key, and role separation forbids defaulting to the

@@ -1317,6 +1317,8 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
                     "(role separation: the judge needs its own key)"
                 )
             FileTokenProvider(codex_panel).token()
+        if not any(backend == "claude" for _, backend, _ in lenses):
+            return ""  # codex-only panel: the claude key checks below don't apply
         path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
         if not path.is_absolute():
             # the climb runs from a flight directory, not the tick's cwd — a
