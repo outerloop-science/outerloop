@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from autoresearch.github import EnvTokenProvider, GitHubClient
+from autoresearch.harness import Harness
 from autoresearch.review_agent import (
     _emit,
     run_agent_review,
@@ -20,6 +21,7 @@ from autoresearch.review_agent import (
 )
 from autoresearch.role_runner import build_harness
 from autoresearch.roles import reviewer_spec
+from autoresearch.rolespec import RoleSpec
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,74 @@ def _skip_stub(emit_env: str, repo: str, number: int, detail: str, reviewed_by: 
         )
 
 
+def resolve_reviewer_harness(spec: RoleSpec) -> tuple[Harness | None, str, str]:
+    """Resolve the reviewer-env backend contract into a built harness:
+    `(harness, "", backend_label)` on success, `(None, why, backend_label)`
+    on a config that must skip. The ONE owner of the REVIEW_BACKEND /
+    REVIEW_MODEL / REVIEW_HERMES_* / key-var contract, shared by the
+    reviewer and the summarizer CLIs — free-form caller inputs are compared
+    with EXACTLY GitHub's expression semantics (case-insensitive, never
+    trimmed) so this code and the workflow's key-injection expressions can
+    never disagree about a value."""
+    backend = os.environ.get("REVIEW_BACKEND", "claude").lower()
+    review_model = os.environ.get("REVIEW_MODEL", "").strip()
+    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
+    key_var = {
+        "claude": "ANTHROPIC_REVIEWER_KEY",
+        "codex": "OPENAI_REVIEWER_KEY",
+        "hermes": {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_REVIEWER_KEY"}.get(
+            hermes_provider
+        ),
+    }.get(backend)
+    if key_var is None:
+        what = (
+            f"unknown REVIEW_HERMES_PROVIDER {hermes_provider!r}"
+            if backend == "hermes"
+            else f"unknown REVIEW_BACKEND {backend!r}"
+        )
+        return None, what, backend
+    from autoresearch.harness import vertex_from_env
+
+    api_key = os.environ.get(key_var, "").strip()
+    # an ADC-only deployment holds no Anthropic key: Vertex covering the
+    # claude backend stands in for it (same tolerance as role_key)
+    vertex_covers = backend == "claude" and vertex_from_env() is not None
+    if not api_key and not vertex_covers:
+        return None, f"{key_var} is unset or empty", backend
+    hermes_repo: Path | None = None
+    provider = ""
+    if backend == "hermes":
+        hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+        if not hermes_repo_env:
+            return None, "REVIEW_HERMES_REPO is unset (hermes needs its pinned clone)", backend
+        hermes_repo = Path(hermes_repo_env).resolve()
+        provider = hermes_provider
+        if provider == "openrouter" and review_model and "/" not in review_model:
+            return (
+                None,
+                "hermes+openrouter requires an OpenRouter-shaped REVIEW_MODEL "
+                "(openai/gpt-5.6-terra, with the provider prefix)",
+                backend,
+            )
+        if provider == "openai" and (not review_model or "/" in review_model):
+            return (
+                None,
+                "hermes+openai requires a provider-native REVIEW_MODEL "
+                "(gpt-5.6-terra, no openai/ prefix)",
+                backend,
+            )
+    harness = build_harness(
+        api_key,
+        spec,
+        backend=backend,
+        binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
+        model=review_model or None,
+        hermes_repo=hermes_repo,
+        hermes_provider=provider,
+    )
+    return harness, "", backend
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     # Fail closed on a missing/invalid PR reference too, so a misconfigured
@@ -57,121 +127,13 @@ def main() -> int:
     if not bot_login:
         _skip_stub(emit_env, repo, number, "REVIEW_BOT_LOGIN is unset", "")
         return 0
-    # Backend is a deployment choice, not baked in: pick the harness and its
-    # key by REVIEW_BACKEND (claude | codex | hermes), per the Harness seam.
-    # Free-form caller inputs are compared with EXACTLY GitHub's expression
-    # semantics — case-insensitive, never trimmed — so this CLI and the
-    # workflow's key-injection expressions can never disagree about a value:
-    # a padded input misses both layers and lands in the unknown-value stub.
-    # explicit-empty mirrors the workflow too: '' matches no key-injection
-    # expression there, so here it must land in the unknown-backend stub
-    # rather than silently meaning claude
+    # Backend is a deployment choice, not baked in: the shared resolver owns
+    # the REVIEW_BACKEND/REVIEW_MODEL/REVIEW_HERMES_*/key-var contract (also
+    # used by the summarizer CLI); any config that must skip becomes a
+    # PR-visible stub, never a silent log line or a traceback.
+    # the backend label for pre-harness stubs (attribution only; the resolver
+    # below re-derives it authoritatively)
     backend = os.environ.get("REVIEW_BACKEND", "claude").lower()
-    # a model id is never compared against workflow expressions, so trimming
-    # is safe here — and the same trimmed value must reach gate and harness
-    review_model = os.environ.get("REVIEW_MODEL", "").strip()
-    # hermes's key SOURCE follows its provider: openai-direct uses the same
-    # org-registered OpenAI key as codex (no OpenRouter platform fee).
-    # Explicitly-empty input means the default, same as an omitted one.
-    hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
-    key_var = {
-        "claude": "ANTHROPIC_REVIEWER_KEY",
-        "codex": "OPENAI_REVIEWER_KEY",
-        "hermes": {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_REVIEWER_KEY"}.get(
-            hermes_provider
-        ),
-    }.get(backend)
-    if key_var is None:
-        # a typo in a caller's free-form backend/provider input must be a
-        # PR-visible stub, not a silent log line or a traceback
-        what = (
-            f"unknown REVIEW_HERMES_PROVIDER {hermes_provider!r}"
-            if backend == "hermes"
-            else f"unknown REVIEW_BACKEND {backend!r}"
-        )
-        log.warning("%s; skipping review", what)
-        if emit_env:
-            _emit(
-                Path(emit_env).resolve(),
-                repo,
-                number,
-                kind="skip-stub",
-                detail=what,
-                reviewed_by=backend,
-            )
-        return 0
-    from autoresearch.harness import vertex_from_env
-
-    api_key = os.environ.get(key_var, "").strip()
-    # an ADC-only deployment holds no Anthropic key: Vertex covering the
-    # claude backend stands in for it (same tolerance as role_key), so the
-    # skip-stub fires only when NEITHER credential source exists
-    vertex_covers = backend == "claude" and vertex_from_env() is not None
-    if not api_key and not vertex_covers:
-        log.warning("%s is unset or empty; skipping review", key_var)
-        if emit_env:
-            # a standing second-opinion service must not die silently when
-            # its key is missing or rotates out (keys expire): the stub the
-            # post job publishes is the PR-visible warning
-            _emit(
-                Path(emit_env).resolve(),
-                repo,
-                number,
-                kind="skip-stub",
-                detail=f"{key_var} is unset or empty",
-                # no harness exists yet; the backend name still attributes the stub
-                reviewed_by=backend,
-            )
-        return 0
-    # Backend-specific deployment config, resolved from env so the workflow
-    # (which knows the host) supplies it, never the pure builder:
-    #   hermes needs its pinned clone and a provider to seed ~/.hermes/config.
-    hermes_repo: Path | None = None
-    provider = ""
-    if backend == "hermes":
-        hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
-        if not hermes_repo_env:
-            _skip_stub(
-                emit_env,
-                repo,
-                number,
-                "REVIEW_HERMES_REPO is unset (hermes needs its pinned clone)",
-                backend,
-            )
-            return 0
-        hermes_repo = Path(hermes_repo_env).resolve()
-        provider = hermes_provider
-        if provider == "openrouter" and review_model and "/" not in review_model:
-            # the mirror mistake: OpenRouter ids are provider/model-shaped, so
-            # a native id would burn a session on an unresolvable model
-            _skip_stub(
-                emit_env,
-                repo,
-                number,
-                "hermes+openrouter requires an OpenRouter-shaped REVIEW_MODEL "
-                "(openai/gpt-5.6-terra, with the provider prefix)",
-                backend,
-            )
-            return 0
-        if provider == "openai" and (not review_model or "/" in review_model):
-            # an empty model falls back to hermes's default id and a slash
-            # marks an OpenRouter-shaped one — api.openai.com serves neither,
-            # so the session would burn its budget on an unservable id
-            detail = (
-                "hermes+openai requires a provider-native REVIEW_MODEL "
-                "(gpt-5.6-terra, no openai/ prefix)"
-            )
-            log.warning("%s; skipping review", detail)
-            if emit_env:
-                _emit(
-                    Path(emit_env).resolve(),
-                    repo,
-                    number,
-                    kind="skip-stub",
-                    detail=detail,
-                    reviewed_by=backend,
-                )
-            return 0
     # The workflow checks out the PR head into REVIEW_CHECKOUT for the agent
     # to investigate (it records its verdict via the syscall tool). Fail closed:
     # defaulting to cwd would silently review the wrong tree (the reviewer's
@@ -203,16 +165,28 @@ def main() -> int:
     if renamed:
         log.info("sanitized %d instruction file(s) in the checkout", renamed)
 
+    lens = os.environ.get("REVIEW_LENS", "").strip()
+    if lens:
+        from autoresearch.review import REVIEW_LENSES
+
+        if lens not in REVIEW_LENSES:
+            # a typo'd lens must be a PR-visible stub, never a silent
+            # default-review (a configured lens must never quietly vanish)
+            _skip_stub(
+                emit_env,
+                repo,
+                number,
+                f"unknown REVIEW_LENS {lens!r} (have: {sorted(REVIEW_LENSES)})",
+                backend,
+            )
+            return 0
+
+    harness, why, backend = resolve_reviewer_harness(reviewer_spec())
+    if harness is None:
+        _skip_stub(emit_env, repo, number, why, backend)
+        return 0
+
     client = GitHubClient(auth=EnvTokenProvider("GITHUB_TOKEN"))
-    harness = build_harness(
-        api_key,
-        reviewer_spec(),
-        backend=backend,
-        binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
-        model=review_model or None,
-        hermes_repo=hermes_repo,
-        hermes_provider=provider,
-    )
     # Least-token split: with REVIEW_EMIT_FILE set, findings are written there
     # instead of posted — this job then needs only READ permissions, and a
     # separate posting job (review_post_cli) holds the write token with no
@@ -226,6 +200,7 @@ def main() -> int:
         workspace,
         bot_login=bot_login,
         emit_path=Path(emit_env).resolve() if emit_env else None,
+        lens=lens,
     )
     return 0
 

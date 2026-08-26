@@ -1,0 +1,209 @@
+# Reusable summarizer for the wide first round (docs/design/reviewer-infra.md):
+# downloads the lens opinions' emitted envelopes (artifacts named
+# review-findings-lens-*-<PR> by emit-only advisory-review-agent calls in the
+# SAME caller run), merges them — one model session only when two or more real
+# opinions exist — and posts the ONE merged round via the same least-token
+# split as the single reviewer (read-only session job; separate write job).
+name: advisory-review-summarize
+
+on:
+  workflow_call:
+    inputs:
+      bot_login:
+        description: Login of your bot account — its PRs are never reviewed. Required.
+        type: string
+        required: true
+      backend:
+        description: Backend for the summarizer session (claude | hermes | codex).
+        type: string
+        required: false
+        default: claude
+      model:
+        description: Model for the summarizer session (same rules as the reviewer).
+        type: string
+        required: false
+        default: ''
+      hermes_provider:
+        description: Credential provider for the hermes backend (openrouter | openai).
+        type: string
+        required: false
+        default: openrouter
+      opinion_label:
+        description: Label shown on the posted merged round.
+        type: string
+        required: false
+        default: ''
+      expected_lenses:
+        description: >-
+          Space-separated lens names the caller fanned out (general included).
+          A lens missing from the artifact set is then reported in the merged
+          round instead of vanishing silently.
+        type: string
+        required: false
+        default: ''
+      reviewer_repo:
+        description: Repo holding the reviewer (change this if you forked).
+        type: string
+        required: false
+        default: agentic-learning-ai-lab/autoresearch
+      reviewer_ref:
+        description: Ref of the reviewer to run. Pin to a tag or SHA in production.
+        type: string
+        required: false
+        default: main
+    secrets:
+      anthropic_reviewer_key:
+        required: false
+      openrouter_api_key:
+        required: false
+      openai_reviewer_key:
+        required: false
+      checkout_ssh_key:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: advisory-review-summarize-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # READ-ONLY, like the reviewer session job: the merge session must not
+    # run next to a write token.
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BACKEND: ${{ inputs.backend }}
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Install the ${{ inputs.backend }} backend
+        env:
+          HERMES_REF: v2026.8.13
+        run: |
+          set -euo pipefail
+          case "$BACKEND" in
+            codex)
+              npm install -g @openai/codex@0.130.0
+              ;;
+            hermes)
+              git clone --depth 1 --branch "$HERMES_REF" \
+                https://github.com/NousResearch/hermes-agent \
+                "$GITHUB_WORKSPACE/hermes-agent"
+              ;;
+            claude)
+              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "unsupported summarizer backend: $BACKEND" >&2
+              exit 0  # advisory: never red the caller's CI
+              ;;
+          esac
+      - name: Download lens opinions
+        # NO required-download here: the summarizer CLI itself turns "no
+        # envelopes" into a visible skip-stub, so a died-before-emitting lens
+        # set still surfaces on the PR rather than failing into silence.
+        uses: actions/download-artifact@v4
+        with:
+          pattern: review-findings-lens-*-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/opinions
+      - name: Merge the opinions (emit only — nothing posted from this job)
+        working-directory: .autoresearch
+        env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          # same one-key-per-session discipline as the reviewer session job
+          ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.anthropic_reviewer_key || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.openrouter_api_key || '' }}
+          OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.openai_reviewer_key || '' }}
+          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
+          REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
+          PR_REPO: ${{ github.repository }}
+          SUMMARIZE_DIR: ${{ runner.temp }}/opinions
+          SUMMARIZE_EXPECTED: ${{ inputs.expected_lenses }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: uv run python -m autoresearch.review_summarize_cli
+      - name: Backstop envelope
+        # !cancelled(), unlike the reviewer workflow's exit-0-only backstop:
+        # that one guards legacy pinned refs; this workflow has no pre-envelope
+        # refs, so a CRASHED merge step must still produce a PR-visible stub
+        # rather than a silent failed download in the post job.
+        if: ${{ !cancelled() }}
+        working-directory: .autoresearch
+        env:
+          PR_REPO: ${{ github.repository }}
+          EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: |
+          if [ ! -f "$EMIT_FILE" ]; then
+            uv run python -c "import json, os, pathlib; pathlib.Path(os.environ['EMIT_FILE']).write_text(json.dumps({'repo': os.environ['PR_REPO'], 'number': int(os.environ['PR_NUMBER']), 'kind': 'skip-stub', 'detail': 'summarizer wrote no envelope (crashed before emitting)'}))"
+          fi
+      - name: Upload merged findings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-findings-summary-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/findings.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  post:
+    runs-on: ubuntu-latest
+    needs: summarize
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: true
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Download merged findings
+        id: findings
+        uses: actions/download-artifact@v4
+        with:
+          name: review-findings-summary-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}
+      - name: Post the findings
+        if: steps.findings.outcome == 'success'
+        working-directory: .autoresearch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+          REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
+        run: uv run python -m autoresearch.review_post_cli

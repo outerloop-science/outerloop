@@ -218,11 +218,25 @@ Subsequent rounds revert to the single reviewer until one finds nothing —
 the convergence rule is unchanged. Ordinary PRs keep the single-reviewer
 flow throughout.
 
-The pieces mostly exist: `advisory-review-agent.yml` already supports
-parallel opinions (`opinion_id`), and the summarizer is one more cheap
-session whose input is the k verdicts, not the diff. Build when the review
-volume justifies it; until then this note is the record of why one-per-round
-is expected behavior and not a reviewer defect.
+The wide round always includes ONE general full-rubric session beside the
+lenses (Mengye: "what if also just general bugs?") — the unknown-unknowns
+catcher; lenses complement it, never replace it.
+
+Lens selection is ERA CONFIG, not a constant (Mengye): the measured top
+classes track what the current push builds — an infra month yields
+credentials/deployment/lifecycle findings, a science month would yield
+measurement-integrity ones. The lens LIBRARY lives in code
+(review.REVIEW_LENSES); WHICH lenses run is the caller workflow's matrix,
+retuned when the push changes. Adaptive per-PR lens picking (path-mapped or
+a triage session) is a possible later step, not built.
+
+BUILT (2026-08-26): `REVIEW_LENSES`/`build_summarizer_brief` (review.py),
+`summarizer_spec` (roles.py), `review_summarize_cli` (passthrough on a
+single real opinion; a model session only when merging), the reusable
+`advisory-review-summarize.yml`, and `lens`/`post` inputs on
+`advisory-review-agent.yml`. review.yml routes: opened/reopened → three
+emit-only lens opinions + the summarized round; label re-trigger → the
+single full-rubric convergence session.
 
 ## What's next
 
