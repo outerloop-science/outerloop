@@ -724,7 +724,7 @@ def main() -> int:
 
     from datetime import UTC, datetime
 
-    from autoresearch.climb import (
+    from autoresearch.attempt import (
         codex_author_config_error,
         resolve_author_key_file,
         resume_author,
@@ -759,7 +759,7 @@ def main() -> int:
     # ending honest (cursors un-advanced on failure -> the next tick retries).
     import signal as _signal
 
-    from autoresearch.climb import arm_self_deadline
+    from autoresearch.attempt import arm_self_deadline
     from autoresearch.role_runner import build_harness
 
     armed = arm_self_deadline(args.job_minutes)

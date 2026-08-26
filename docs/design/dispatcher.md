@@ -164,13 +164,13 @@ sha — where "the measured sha" is created if it does not exist yet: the
 candidate measure happens on a dirty workspace before anything is committed,
 so dispatch snapshots the tree first: a TEMPORARY index (`GIT_INDEX_FILE`)
 seeded with `read-tree` from the base commit — so tracked-but-ignored files
-behave exactly as they do in climb.py's populated-index fingerprint, which a
+behave exactly as they do in attempt.py's populated-index fingerprint, which a
 fresh empty index would silently drop — then add -A / write-tree /
 commit-tree parented on the base; the working index is never touched — a session that resumes later finds its
 staged state intact. (The panel's current snapshot uses the working index
 plus a reset; it should adopt the temporary index too.) The fingerprint for
 the existing drift check is the snapshot's TREE hash — `write-tree` is
-deterministic for identical trees, which is what climb.py already compares —
+deterministic for identical trees, which is what attempt.py already compares —
 while the commit wrapping it exists only so a worktree can materialize the
 tree. Suite-gate baseline jobs use real commits as today. The job runs under the SAME containment contract as
 today's in-job evaluator —

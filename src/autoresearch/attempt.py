@@ -1,6 +1,6 @@
-"""One live climb, end to end: clone → climb_once → commit/push/PR → report.
+"""One live climb, end to end: clone → attempt_once → commit/push/PR → report.
 
-This is the glue `orchestrator.climb_once` deliberately does not own: the git
+This is the glue `orchestrator.attempt_once` deliberately does not own: the git
 side (bot-auth clone, veto-checked commit, push, PR) and the run's durable
 record. One invocation = one run = at most one PR.
 
@@ -39,15 +39,15 @@ from autoresearch.github import (
 from autoresearch.harness import Harness, SessionResult, redact
 from autoresearch.measure import DispatchedMeasurer, DispatchSettings
 from autoresearch.orchestrator import (
-    ClimbConfig,
-    ClimbParked,
-    ClimbResult,
+    AttemptResult,
     EvalError,
     Measurer,
+    RunConfig,
+    RunParked,
     _benchmark,
-    climb_once,
+    attempt_once,
     pr_body,
-    resume_climb,
+    resume_attempt,
 )
 from autoresearch.panel import PanelLens, PanelVerdict, run_panel
 from autoresearch.progress import (
@@ -231,7 +231,7 @@ _ENDINGS_BY_OUTCOME = {
 
 
 @dataclass(frozen=True)
-class LiveClimbOutcome:
+class AttemptOutcome:
     run_id: str
     outcome: str
     pr_url: str = ""
@@ -315,7 +315,7 @@ PARK_QUEUE_SLACK_MIN = 12 * 60
 def _park_run(
     run_root: Path,
     record: RunRecord,
-    parked: ClimbParked,
+    parked: RunParked,
     candidate_ref: str,
     eval_minutes: int | None,
     now: float,
@@ -428,7 +428,7 @@ def _park_run(
 
 def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str):
     """The launch side of the author syscalls, shared by the first pass
-    (live_climb) and the author-sleep wake: each launch becomes a jailed job on
+    (live_attempt) and the author-sleep wake: each launch becomes a jailed job on
     the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
     partially-submitted batch is reaped rather than orphaned."""
 
@@ -494,7 +494,7 @@ def _wake_author_sleep(
     contract_text: str,
     contract: Contract,
     bench: Benchmark,
-    config: ClimbConfig,
+    config: RunConfig,
     measurer: Measurer,
     harness: Harness | None,
     spec: RoleSpec | None,
@@ -502,7 +502,7 @@ def _wake_author_sleep(
     issue_number: int,
     eval_minutes: int | None,
     extra_update: str = "",
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Wake a syscall park and resume the AUTHOR: deliver the launches' results
     into the sandbox, resume the SAME session through the climb's resume-entry
     with them (data-fenced), and let the climb run — it may sleep again
@@ -517,7 +517,7 @@ def _wake_author_sleep(
     from autoresearch.syscall import Launch as SyscallLaunch
     from autoresearch.syscall import gather_results, render_wake, write_budget
 
-    def _end(result: ClimbResult, drop_refs: list[str]) -> LiveClimbOutcome:
+    def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         # a terminal from the resumed climb: report, ending record, issue note —
         # the same ending shape every other terminal takes.
         for ref in drop_refs:
@@ -550,7 +550,7 @@ def _wake_author_sleep(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
-        return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+        return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
     # The wake NEEDS the author harness (it resumes the session). Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
@@ -563,7 +563,7 @@ def _wake_author_sleep(
         or not getattr(harness, "supports_resume", True)
     ):
         return _end(
-            ClimbResult(
+            AttemptResult(
                 outcome="session-error",
                 note="author-sleep wake needs the author harness/spec and a resumable session",
             ),
@@ -639,10 +639,10 @@ def _wake_author_sleep(
         else None
     )
 
-    parked: ClimbParked | None = None
+    parked: RunParked | None = None
     kept_ref = ""
     try:
-        result = climb_once(
+        result = attempt_once(
             config,
             contract_text,
             workspace,
@@ -660,7 +660,7 @@ def _wake_author_sleep(
             launches_used=launches_used,
             sleeps_used=sleeps_used,
         )
-    except ClimbParked as p:
+    except RunParked as p:
         # slept again, or the gate dispatched its measures (a candidate park the
         # existing wake path decides). Keep the NEW park's snapshot ref; the OLD
         # sleep ref is superseded once the new park persists.
@@ -684,7 +684,7 @@ def _wake_author_sleep(
             raise
         parked = p
         drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
-        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+        return AttemptOutcome(run_id=run_id, outcome="parked")
     finally:
         for snap in snapshots:
             if parked and kept_ref and snap.ref == kept_ref:
@@ -726,14 +726,14 @@ def resume_run(
     panel_lenses: tuple[PanelLens, ...] = (),
     harness: Harness | None = None,
     spec: RoleSpec | None = None,
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Wake a parked dispatched climb and re-enter its decision WITHOUT the
-    session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
+    session (`orchestrator.resume_attempt`), from the record `_park_run` wrote.
     The three exits:
 
     * **re-park** — the wake dispatched a measure that is not done yet (the
       suite pairs an improving candidate fans out, "another round of
-      experiments"): `resume_climb` raises `ClimbParked`, and this re-persists
+      experiments"): `resume_attempt` raises `RunParked`, and this re-persists
       the WAITING stage on the new afterany, keeping the same candidate
       snapshot;
     * **a negative terminal** (no-improvement / suite-regression / eval-error):
@@ -778,7 +778,7 @@ def resume_run(
     contract_text = ws.git("show", f"{base_sha}:.autoresearch.yaml")
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
-    config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
+    config = RunConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
     eval_minutes = next(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
@@ -840,7 +840,7 @@ def resume_run(
         transcript_path="",
     )
     try:
-        result = resume_climb(
+        result = resume_attempt(
             contract,
             bench,
             base_sha=base_sha,
@@ -852,7 +852,7 @@ def resume_run(
             measurer=measurer,
             min_relative_improvement=config.min_relative_improvement,
         )
-    except ClimbParked as parked:
+    except RunParked as parked:
         # another measure this wake dispatched is not done — re-park on the new
         # afterany, keeping the SAME candidate snapshot the next wake reads.
         # PROGRESS only if this wake dispatched a NEW job set (e.g. the candidate
@@ -902,7 +902,7 @@ def resume_run(
             base_branch=base_branch,
             panel_reads=panel_reads,
         )
-        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+        return AttemptOutcome(run_id=run_id, outcome="parked")
 
     # A SUBMITTED park (the author's `submit` syscall, buildout Phase B): gate
     # and panel results go back to the AUTHOR — it revises and resubmits, runs
@@ -917,7 +917,7 @@ def resume_run(
         and getattr(harness, "supports_resume", True)
     )
 
-    def _wake_author(extra_update: str) -> LiveClimbOutcome:
+    def _wake_author(extra_update: str) -> AttemptOutcome:
         # resume the submitted park's author with the gate/panel feedback
         # leading its wake text; the candidate ref is this park's held snapshot
         return _wake_author_sleep(
@@ -983,7 +983,7 @@ def resume_run(
                 RunRecord(**{**record.__dict__, "state": ENDED, "ending": NEGATIVE_RESULT})
             )
             _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
-            return LiveClimbOutcome(run_id=run_id, outcome="no-improvement")
+            return AttemptOutcome(run_id=run_id, outcome="no-improvement")
 
         from datetime import UTC as _UTC
         from datetime import datetime as _dt
@@ -1048,7 +1048,7 @@ def resume_run(
                 redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
                 secrets,
             )
-            return LiveClimbOutcome(
+            return AttemptOutcome(
                 run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
             )
 
@@ -1205,7 +1205,7 @@ def resume_run(
             )
             if _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets):
                 drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-            return LiveClimbOutcome(run_id=run_id, outcome="publish-error")
+            return AttemptOutcome(run_id=run_id, outcome="publish-error")
         # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
         # fails, the record stays `waiting` with the snapshot intact, so the run
         # is recoverable rather than an ABORTED record over a live PR.
@@ -1242,7 +1242,7 @@ def resume_run(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
-        return LiveClimbOutcome(
+        return AttemptOutcome(
             run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
         )
 
@@ -1282,7 +1282,7 @@ def resume_run(
         redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
         secrets,
     )
-    return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+    return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
 def _judge_lens_key(
@@ -1492,8 +1492,8 @@ def build_panel_runner(
     return runner
 
 
-def live_climb(
-    config: ClimbConfig,
+def live_attempt(
+    config: RunConfig,
     run_root: Path,
     run_id: str,
     harness: Harness,
@@ -1512,7 +1512,7 @@ def live_climb(
     panel_lenses: tuple[PanelLens, ...] = (),
     dispatch: DispatchSettings | None = None,
     eval_image: str = "",
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Run one climb against the real target repo. With `panel_lenses`, the
     pre-PR verification panel gates the claim before any PR exists
     (docs/design/orchestrator-verify.md); blocking findings still open at
@@ -1537,7 +1537,7 @@ def live_climb(
         author_backend=author_backend,
         author_model=author_model,
         author_key_file=author_key_file,
-        climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
+        run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
         save_record(run_root, record, now)
@@ -1561,14 +1561,14 @@ def live_climb(
                 ),
                 secrets,
             )
-        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
+        return AttemptOutcome(run_id=run_id, outcome="attempt-error")
 
     try:
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # Build ON the requested PR base: the clone checks out the remote
         # DEFAULT branch, which need not be `base_branch` — the session must
         # edit, and the gate must measure, the tree the PR will land on.
-        # A missing base branch fails loudly as climb-error.
+        # A missing base branch fails loudly as attempt-error.
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
@@ -1720,13 +1720,13 @@ def live_climb(
             assert dispatch is not None  # folded into author_syscalls above
             launcher = _make_launcher(dispatch, run_dir, workspace, run_id)
 
-        parked: ClimbParked | None = None
+        parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
             # the last-known score orients the brief only; the gate re-measures
             # both sides after the session, so None (a first run) is fine.
             prior_best = load_leader(workspace).get(config.benchmark)
-            result = climb_once(
+            result = attempt_once(
                 config,
                 contract_text,
                 workspace,
@@ -1743,7 +1743,7 @@ def live_climb(
                 brief_baseline=prior_best.best if prior_best else None,
                 launcher=launcher,
             )
-        except ClimbParked as p:
+        except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
             # re-entry stage as a WAITING record (not an error), keep the
             # candidate snapshot alive for the wake, and end. The wake re-enters
@@ -1784,7 +1784,7 @@ def live_climb(
                     dispatch.compute.cancel(job_id)
                 raise
             parked = p
-            return LiveClimbOutcome(run_id=run_id, outcome="parked")
+            return AttemptOutcome(run_id=run_id, outcome="parked")
         finally:
             for snap in snapshots:
                 # a candidate park must OUTLIVE the wake — keep the ONE recorded
@@ -1810,7 +1810,7 @@ def live_climb(
             "error report",
             lambda: report_path.write_text(
                 f"# Run report — {config.target} / {config.benchmark}\n"
-                f"Outcome: **climb-error**\n"
+                f"Outcome: **attempt-error**\n"
                 f"Note: {note}\n"
             ),
             secrets,
@@ -1825,14 +1825,14 @@ def live_climb(
                 lambda: github.comment(
                     config.target,
                     issue_number,
-                    f"Run `{run_id}` finished (climb-error): {exc_name}. "
+                    f"Run `{run_id}` finished (attempt-error): {exc_name}. "
                     f"Details are in the run's record and report on the orchestrator.",
                 ),
                 secrets,
             )
-        return LiveClimbOutcome(
+        return AttemptOutcome(
             run_id=run_id,
-            outcome="climb-error",
+            outcome="attempt-error",
             # an outcome must never point at a report that was not written
             report_path=str(report_path) if wrote else "",
         )
@@ -2011,7 +2011,7 @@ def live_climb(
             secrets,
         )
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
-    return LiveClimbOutcome(
+    return AttemptOutcome(
         run_id=run_id,
         outcome=outcome_name,
         pr_url=pr_url,
@@ -2107,7 +2107,7 @@ def main() -> int:
 
     arm_sigterm_containment()
 
-    parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
+    parser = argparse.ArgumentParser(description="One live attempt on one benchmark.")
     # --target/--benchmark drive a fresh climb; they are read from the record
     # on a --resume wake instead, so they are optional (validated below).
     parser.add_argument("--target", default="")
@@ -2394,8 +2394,8 @@ def main() -> int:
         )
     try:
         try:
-            outcome = live_climb(
-                config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+            outcome = live_attempt(
+                config=RunConfig(target=args.target, benchmark=args.benchmark),
                 base_branch=args.base_branch,
                 run_root=args.run_root,
                 run_id=run_id,
@@ -2438,7 +2438,7 @@ def main() -> int:
                 ),
             )
         except Terminated as exc:
-            # Fired in live_climb's microseconds-wide pre-containment window:
+            # Fired in live_attempt's microseconds-wide pre-containment window:
             # any record it saved strands and the sweep ends it from Slurm
             # truth; here we only avoid dying as an unexplained traceback.
             log.error("self-deadline fired before containment: %s", exc)

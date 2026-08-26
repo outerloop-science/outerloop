@@ -9,10 +9,10 @@ import pytest
 
 from autoresearch.harness import FakeHarness, SessionResult
 from autoresearch.orchestrator import (
-    ClimbConfig,
     EvalError,
+    RunConfig,
     _metric_from_output,
-    climb_once,
+    attempt_once,
     improved,
     pr_body,
 )
@@ -32,7 +32,7 @@ scope: {allowed: [src/pilot/solvers/]}
 roadmap: docs/roadmap.md
 """
 
-CONFIG = ClimbConfig(target="org/pilot", benchmark="tsp")
+CONFIG = RunConfig(target="org/pilot", benchmark="tsp")
 
 
 def ok_session(text: str = "Report: replaced NN with NN+2-opt.") -> SessionResult:
@@ -113,7 +113,7 @@ def run_climb(
     # usual stamp. (Callers can still override via kw.)
     if "created" not in kw and not kw.get("resume_session_id"):
         kw["created"] = "2026-08-06T00:00:00Z"
-    result = climb_once(
+    result = attempt_once(
         config,
         contract or CONTRACT,
         tmp_path,
@@ -155,7 +155,7 @@ def test_improved_result_exposes_the_candidate_sha(tmp_path: Path) -> None:
     assert result.outcome == "improved" and result.candidate_sha == "cand1"
 
 
-def test_climb_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
+def test_attempt_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
     # Phase 2a primitive: a cumulative depth pass resumes the prior session with
     # the improve prompt instead of a fresh brief (the depth loop, part 2, drives
     # this; here we verify the entry point alone).
@@ -258,14 +258,14 @@ DEEP_CONTRACT = CONTRACT.replace(
 def test_author_sleep_parks_on_a_sealed_snapshot(tmp_path: Path) -> None:
     # the author launched work and slept: the tree is sealed, the launcher is
     # handed the request, and the park carries request + budget counts.
-    from autoresearch.orchestrator import ClimbParked
+    from autoresearch.orchestrator import RunParked
 
     _write_syscall(
         tmp_path,
         {"launches": [{"name": "probe", "command": "uv run probe.py"}], "note": "check tails"},
     )
     launched: list = []
-    with pytest.raises(ClimbParked) as exc:
+    with pytest.raises(RunParked) as exc:
         run_climb(tmp_path, [], contract=DEEP_CONTRACT, launcher=_fake_launcher(launched))
     p = exc.value
     assert p.phase == "author-sleep"
@@ -278,10 +278,10 @@ def test_author_sleep_parks_on_a_sealed_snapshot(tmp_path: Path) -> None:
 
 
 def test_checkpoint_sleep_parks_with_no_dependency(tmp_path: Path) -> None:
-    from autoresearch.orchestrator import ClimbParked
+    from autoresearch.orchestrator import RunParked
 
     _write_syscall(tmp_path, {"launches": []})
-    with pytest.raises(ClimbParked) as exc:
+    with pytest.raises(RunParked) as exc:
         run_climb(tmp_path, [], contract=DEEP_CONTRACT, launcher=_fake_launcher([]))
     assert exc.value.afterany == "" and exc.value.sleeps_used == 1
     assert exc.value.launches_used == 0  # a checkpoint burns only the sleep
@@ -292,7 +292,7 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     # is sealed, the dispatched gate parks the run as a candidate carrying the
     # submitted marker + budget counts, and a sibling launch rides the same
     # afterany, submitted on the sealed sha.
-    from autoresearch.orchestrator import ClimbParked
+    from autoresearch.orchestrator import RunParked
 
     _write_syscall(
         tmp_path,
@@ -301,8 +301,8 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     launched: list = []
     harness = FakeHarness(result=ok_session())
     m = ParkingMeasurer(park_on_call=1)
-    with pytest.raises(ClimbParked) as exc:
-        climb_once(
+    with pytest.raises(RunParked) as exc:
+        attempt_once(
             CONFIG,
             DEEP_CONTRACT,
             tmp_path,
@@ -331,7 +331,7 @@ def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
     harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
     evaluator = FakeEvaluator(values=[13.9, 13.9, 13.9])
     measurer, snapshot = _wire(evaluator, tmp_path)
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         CONTRACT,
         tmp_path,
@@ -361,7 +361,7 @@ def test_inline_gate_never_dispatches_a_submits_sibling_launches(tmp_path: Path)
     harness = _SeqHarness(["the claim", "conceded"])
     evaluator = FakeEvaluator(values=[13.9, 13.9, 13.9])
     measurer, snapshot = _wire(evaluator, tmp_path)
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         CONTRACT,
         tmp_path,
@@ -449,7 +449,7 @@ def test_seeded_benchmark_measures_both_sides_under_one_fresh_seed(tmp_path: Pat
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.876, 13.10])
     measurer, snapshot = _wire(evaluator, tmp_path)
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         SEEDED_CONTRACT,
         tmp_path,
@@ -538,12 +538,12 @@ def test_candidate_measure_parks_after_the_session(tmp_path: Path) -> None:
     # The ONLY park: the session runs (no pre-session baseline), then the gate
     # dispatches baseline+candidate together and hibernates. A dispatched climb
     # never has a baseline park.
-    from autoresearch.orchestrator import ClimbParked
+    from autoresearch.orchestrator import RunParked
 
     harness = FakeHarness(result=ok_session())
     m = ParkingMeasurer(park_on_call=1)  # the gate's first (baseline+candidate) call parks
-    with pytest.raises(ClimbParked) as exc:
-        climb_once(
+    with pytest.raises(RunParked) as exc:
+        attempt_once(
             CONFIG,
             CONTRACT,
             tmp_path,
@@ -618,7 +618,7 @@ def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
     def snapshot() -> str:
         raise EvalError("git write-tree failed")
 
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         CONTRACT,
         tmp_path,
@@ -636,7 +636,7 @@ def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
 
 def test_unknown_benchmark_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not in contract"):
-        run_climb(tmp_path, [1.0], config=ClimbConfig(target="org/pilot", benchmark="chess"))
+        run_climb(tmp_path, [1.0], config=RunConfig(target="org/pilot", benchmark="chess"))
 
 
 def test_improved_direction_semantics() -> None:
@@ -698,7 +698,7 @@ def test_out_of_scope_tree_is_rejected_before_the_snapshot(tmp_path: Path) -> No
         snapshotted.append(1)
         return "cand1"
 
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         CONTRACT,
         tmp_path,
@@ -987,7 +987,7 @@ def run_shared_climb(tmp_path, values, changed, contract=SHARED_CONTRACT, **kw):
     baseline_ws = tmp_path / "pristine"
     baseline_ws.mkdir(exist_ok=True)
     measurer, snapshot = _wire(evaluator, tmp_path, base_ws=baseline_ws)
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         contract,
         tmp_path,
@@ -1131,7 +1131,7 @@ def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
     assert "suite-gated" not in ungated.done_criteria
 
 
-def test_climb_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
+def test_attempt_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
     # the author is an editing role; a non-executing spec here is a deployment bug
     from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
 
@@ -1238,7 +1238,7 @@ def _run_panel_climb(tmp_path, values, verdicts, texts=None, supports_resume=Tru
     evaluator = FakeEvaluator(values=list(values))
     panel = _QueuedPanel(verdicts)
     measurer, snapshot = _wire(evaluator, tmp_path)
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         CONTRACT,
         tmp_path,
@@ -1363,7 +1363,7 @@ def test_wake_without_a_session_id_fails_closed_to_draft(tmp_path: Path) -> None
     evaluator = FakeEvaluator(values=[13.9, 13.1])
     panel = _QueuedPanel([_verdict(True, 1)])
     measurer, snapshot = _wire(evaluator, tmp_path)
-    result = climb_once(
+    result = attempt_once(
         CONFIG,
         CONTRACT,
         tmp_path,

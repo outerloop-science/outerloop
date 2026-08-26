@@ -217,3 +217,41 @@ def test_future_stamp_within_skew_is_active(tmp_path) -> None:
     stamp_outage(tmp_path, "credit balance", now=1000.0)
     assert outage_active(tmp_path, now=1000.0 - 60) != ""  # reader behind writer
     assert outage_active(tmp_path, now=1000.0 - MAX_CLOCK_SKEW_S - 1) == ""
+
+
+def test_load_record_maps_legacy_climb_job_id(tmp_path: Path) -> None:
+    # an in-flight record written by pre-rename code carries climb_job_id;
+    # load must map it to run_job_id so the sweep still ends a killed job
+    import json
+
+    from autoresearch.runstate import RECORD_NAME, load_record, run_dir
+
+    d = run_dir(tmp_path, "r1")
+    d.mkdir(parents=True)
+    (d / RECORD_NAME).write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "target": "o/r",
+                "task_title": "t",
+                "state": "implementing",
+                "climb_job_id": "16299",  # the legacy key
+            }
+        )
+    )
+    rec = load_record(tmp_path, "r1")
+    assert rec.run_job_id == "16299"
+    # a new record's run_job_id always wins over a stray legacy key
+    (d / RECORD_NAME).write_text(
+        json.dumps(
+            {
+                "run_id": "r1",
+                "target": "o/r",
+                "task_title": "t",
+                "state": "implementing",
+                "climb_job_id": "old",
+                "run_job_id": "new",
+            }
+        )
+    )
+    assert load_record(tmp_path, "r1").run_job_id == "new"

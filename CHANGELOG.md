@@ -6,6 +6,21 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- Vocabulary: the author-role activity is an **attempt** (a type of run), the
+  substrate stays **run**. `climb.py`→`attempt.py`, `climb_once`→
+  `attempt_once`, `live_climb`→`live_attempt`, `resume_climb`→`resume_attempt`,
+  `ClimbResult`→`AttemptResult`, `LiveClimbOutcome`→`AttemptOutcome`; the
+  general-substrate names become `RunParked`/`RunConfig`, while `RunRecord`,
+  `run_id`, `resume_run`, and park/wake are unchanged. The `-m
+  autoresearch.attempt` CLI verb replaces `-m autoresearch.climb`. Deploy-safe:
+  the renamed module and the tick's argv land together (the tick pulls at
+  tick-start), a `load_record` shim maps a pre-rename record's `climb_job_id`
+  to `run_job_id`, and the kill-stamp reader honors a legacy
+  `climb-terminal-seen` — so an in-flight run started before the rename still
+  wakes and ends correctly.
+
 ### Added
 
 - Hermes container mode: `HermesHarness` runs under apptainer like the other

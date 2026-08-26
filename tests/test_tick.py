@@ -919,7 +919,7 @@ def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 
             task_title="t",
             benchmark="tsp",
             state=IMPLEMENTING,
-            climb_job_id=job_id,
+            run_job_id=job_id,
         ),
         now=NOW - age_s,
     )
@@ -967,7 +967,7 @@ def test_climb_that_lands_its_own_ending_wins_the_race(tmp_path: Path) -> None:
     assert load_record(tmp_path, "r-race").ending == "negative-result"
 
 
-def test_live_climb_job_is_left_alone(tmp_path: Path) -> None:
+def test_live_attempt_job_is_left_alone(tmp_path: Path) -> None:
     _implementing_run(tmp_path, "r-live", job_id="77", age_s=GRACE + 60)
     report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "RUNNING"}))
     assert report.implementing_ended == ()
@@ -2120,7 +2120,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert job_id == "9001"  # async: the wake job now owns the lease
     argv = submits[0]
     joined = " ".join(argv)
-    assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
+    assert "autoresearch.attempt" in joined and "--resume tsp-1" in joined
     assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
     assert "--panel verify,review" in joined  # the wake runs the verification panel
     assert "--account=acct" in argv and "--partition=cpu_short" in argv

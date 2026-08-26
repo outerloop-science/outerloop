@@ -731,13 +731,21 @@ def sweep(
 
 
 def _kill_stamp(root: Path, run_id: str) -> Path:
+    # the current name; a legacy `climb-terminal-seen` from a run stamped
+    # before the rename is honored by _kill_stamp_read (a stamp only lives
+    # during a KillWait grace, so this tolerance matters for at most one
+    # in-flight run across the deploy).
+    return run_dir(root, run_id) / "attempt-terminal-seen"
+
+
+def _legacy_kill_stamp(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / "climb-terminal-seen"
 
 
 def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: float) -> list[str]:
     """End `implementing` records whose climb job died without a verdict.
 
-    A climb that CRASHES contains its own ending (climb.py); a climb that is
+    A climb that CRASHES contains its own ending (attempt.py); a climb that is
     KILLED — walltime, preemption, scancel after the SIGTERM grace, node
     death — leaves no exception to contain, so this pass records the ending
     (the picker's stranded guard only frees the lane). Slurm truth decides:
@@ -750,9 +758,9 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
         if record.state != IMPLEMENTING:
             continue
         try:
-            if record.climb_job_id:
+            if record.run_job_id:
                 try:
-                    state = compute.status(record.climb_job_id)
+                    state = compute.status(record.run_job_id)
                 except SlurmQueryError:
                     continue  # Slurm outage must not read as a dead job
                 if not (is_terminal(state) or state == GONE):
@@ -767,6 +775,11 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
                 # concurrently written ending), and the waiting sweep's
                 # terminal_seen field stays reserved for the EXPERIMENT job.
                 stamp = _kill_stamp(root, record.run_id)
+                legacy = _legacy_kill_stamp(root, record.run_id)
+                if legacy.exists() and not stamp.exists():
+                    # a run stamped just before the rename: adopt its clock so
+                    # the KillWait grace is measured from the original sighting
+                    stamp = legacy
                 if not stamp.exists():
                     try:
                         fd = os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -792,7 +805,7 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
                         continue  # stamp vanished mid-read; next tick decides
                 if now - seen < grace_s:
                     continue
-                note = f"climb job {record.climb_job_id} ended {state} without a verdict"
+                note = f"climb job {record.run_job_id} ended {state} without a verdict"
             else:
                 # No Slurm evidence at all (legacy record, or a manual dev
                 # invocation without SLURM_JOB_ID): only the run DEADLINE —
@@ -1269,7 +1282,7 @@ def _author_config_error(spec: FollowupSpec) -> str:
     (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex with no non-claude model) never
     strands a claimed intake issue. Reads the fleet author config from env — the
     same source the climb defaults from — and the image the tick already knows."""
-    from autoresearch.climb import codex_author_config_error
+    from autoresearch.attempt import codex_author_config_error
 
     backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
     model = os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
@@ -1290,7 +1303,7 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from autoresearch.climb import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from autoresearch.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
         from autoresearch.github import FileTokenProvider
         from autoresearch.panel import parse_lenses
 
@@ -1538,7 +1551,7 @@ def service_self_initiated(
             "run",
             "python",
             "-m",
-            "autoresearch.climb",
+            "autoresearch.attempt",
             "--target",
             spec.target,
             "--benchmark",
@@ -1774,7 +1787,7 @@ def service_intake(
             "run",
             "python",
             "-m",
-            "autoresearch.climb",
+            "autoresearch.attempt",
             "--target",
             target,
             "--benchmark",
@@ -1858,7 +1871,7 @@ class JobWakeDispatcher:
             "run",
             "python",
             "-m",
-            "autoresearch.climb",
+            "autoresearch.attempt",
             "--resume",
             record.run_id,
             "--run-root",
