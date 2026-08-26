@@ -1052,6 +1052,69 @@ def test_moved_base_publishes_the_sealed_candidate_without_merging(tmp_path, tar
     assert _git(target_repo, "show", f"{branch}:docs/roadmap.md") != "moved\n"
 
 
+def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, target_repo) -> None:
+    # THE unification's core pin: after the seal, the workspace diverges (an
+    # untracked file appears AND a tracked file is rewritten — eval cruft, a
+    # stray write, anything). The pushed branch must be exactly the SEALED
+    # candidate plus the ledger commit — the divergence never ships.
+    class DivergingCompute(QueueCompute):
+        def __init__(self, values, ws_root):
+            super().__init__(values=values)
+            self.ws_root = ws_root
+
+        def submit(self, spec) -> str:
+            # runs AFTER snapshot(): the gate's eval jobs are submitted on the
+            # sealed sha, so this write postdates the seal
+            (self.ws_root / "post-seal-cruft.tmp").write_text("junk\n")
+            (self.ws_root / "src" / "pilot" / "solvers" / "tsp.py").write_text(
+                "def solve(): return 'REWRITTEN AFTER SEAL'\n"
+            )
+            return super().submit(spec)
+
+    ws_root = tmp_path / "state" / "runs" / "tsp-seal" / "ws"
+    _q = [13.876, 13.1]
+    github = FakeGitHub()
+    import autoresearch.climb as _climb_mod
+
+    orig = _climb_mod.LocalCompute
+    _climb_mod.LocalCompute = lambda: DivergingCompute(_q, ws_root)  # type: ignore[assignment,misc]
+    try:
+        outcome = live_climb(
+            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-seal",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 7\n"}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="t",
+        )
+    finally:
+        _climb_mod.LocalCompute = orig  # type: ignore[misc]
+    assert outcome.outcome == "improved"
+    branch = "feat/auto/agent-01/tsp-seal"
+    files = set(_git(target_repo, "diff", "--name-only", "main", branch).split())
+    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
+    # the tracked file ships at its SEALED content, not the post-seal rewrite
+    assert "return 7" in _git(target_repo, "show", f"{branch}:src/pilot/solvers/tsp.py")
+
+
+def test_zero_change_improvement_is_a_negative_result_not_a_pr(tmp_path, target_repo) -> None:
+    # the gate reporting improved with an EMPTY sealed diff is metric noise:
+    # the run ends no-improvement (negative-result), nothing is pushed
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={},  # the session changes nothing
+        values=[13.876, 13.1],
+    )
+    assert outcome.outcome == "no-improvement"
+    assert github.prs == []
+    assert "feat/auto" not in _git(target_repo, "branch", "--list")
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.ending == "negative-result"
+
+
 def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str) -> None:
     """Simulate a concurrent merge: land a commit on the origin's main."""
     side = tmp_path / f"side-{name}"

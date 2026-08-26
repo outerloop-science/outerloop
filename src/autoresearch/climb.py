@@ -164,6 +164,41 @@ def _target_clone_url(target: str) -> str:
     return f"https://github.com/{target}.git"
 
 
+def _arm_unless_base_moved(
+    github: GitHubClient,
+    ws: Workspace,
+    target: str,
+    pr_number: str,
+    base_branch: str,
+    measured_base_sha: str,
+    secrets: tuple[str, ...],
+) -> None:
+    """Arm auto-merge only while origin/<base_branch> still equals the base the
+    claim was measured against. A moved base still OPENS the PR — review owns
+    staleness — but never ARMS it: merging a tree whose gate/suite/panel read
+    is stale must be a human's deliberate act, not an armed automation. A
+    failed freshness fetch also declines to arm (fail-safe: un-armed is just a
+    normal PR). Best-effort throughout, like arming itself."""
+
+    def _check_and_arm() -> None:
+        ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
+        fresh = ws.git("rev-parse", "FETCH_HEAD").strip()
+        if fresh != measured_base_sha:
+            log.info(
+                "not arming auto-merge on %s#%s: %s moved since the claim was "
+                "measured (%s -> %s); a human merges this one",
+                target,
+                pr_number,
+                base_branch,
+                measured_base_sha[:12],
+                fresh[:12],
+            )
+            return
+        github.arm_auto_merge_when_review_required(target, int(pr_number))
+
+    _best_effort("auto-merge arming", _check_and_arm, secrets)
+
+
 def _title_pair(a: float, b: float) -> str:
     """Compact but never ambiguous: widen precision until the two numbers
     render differently (a title reading '10.00 -> 10.00' looks like no
@@ -988,12 +1023,8 @@ def resume_run(
             )
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
             if pr_number.isdigit() and not existing.get("draft"):
-                _best_effort(
-                    "auto-merge arming",
-                    lambda: github.arm_auto_merge_when_review_required(
-                        config.target, int(pr_number)
-                    ),
-                    secrets,
+                _arm_unless_base_moved(
+                    github, ws, config.target, pr_number, base_branch, base_sha, secrets
                 )
             report_path = run_dir / "report.md"
             _best_effort(
@@ -1162,12 +1193,8 @@ def resume_run(
             )
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
             if pr_number.isdigit() and not draft:
-                _best_effort(
-                    "auto-merge arming",
-                    lambda: github.arm_auto_merge_when_review_required(
-                        config.target, int(pr_number)
-                    ),
-                    secrets,
+                _arm_unless_base_moved(
+                    github, ws, config.target, pr_number, base_branch, base_sha, secrets
                 )
         except Exception as exc:
             # push / PR / commit failed — end as an error. Save the ENDED record
@@ -1828,15 +1855,12 @@ def live_climb(
             )
             # Arm auto-merge, best-effort, and ONLY when branch protection
             # requires a human review — the guard keeps bot-never-merges
-            # enforced in code, not in per-repo config. Never arm a draft.
+            # enforced in code, not in per-repo config. Never arm a draft,
+            # and never arm a claim whose base has moved (_arm_unless_base_moved).
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
             if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
-                _best_effort(
-                    "auto-merge arming",
-                    lambda: github.arm_auto_merge_when_review_required(
-                        config.target, int(pr_number)
-                    ),
-                    secrets,
+                _arm_unless_base_moved(
+                    github, ws, config.target, pr_number, base_branch, pre_session_sha, secrets
                 )
             final = RunRecord(
                 **{
