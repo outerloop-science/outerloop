@@ -643,13 +643,15 @@ def make_task(
     contract: Contract, benchmark_name: str, baseline: float | None, hypothesis: str = ""
 ) -> Task:
     bench = _benchmark(contract, benchmark_name)
-    better = "up" if bench.direction == "max" else "down"
+    better = "lower" if bench.direction == "min" else "higher"
     suite_gated = bool(contract.scope.shared) and len(contract.benchmarks) > 1
-    # `baseline` orients the brief only (the last-known score from the ledger);
-    # the GATE re-measures both sides after the session, so a missing baseline
-    # (a benchmark's first run) just drops the reference number, never the gate.
-    versus = f" from {baseline}" if baseline is not None else ""
-    against = f" versus {baseline}" if baseline is not None else ""
+    # ORIENTATION, not direction: the brief states the current score and how
+    # the metric reads as FACTS, and leaves the goal and the finish to the
+    # author (research-loop.md, author-directed). The GATE — never the brief —
+    # is the real bar: it re-measures both sides after the session, so a
+    # missing baseline (a benchmark's first run) just drops the reference
+    # number. Naming a target here would only invite optimizing that number.
+    current = f"currently {baseline}" if baseline is not None else "no score recorded yet"
     return Task(
         hypothesis=hypothesis
         or (
@@ -658,16 +660,20 @@ def make_task(
             f"for why it underperforms, and implement it."
         ),
         benchmark=bench.name,
-        expected_effect=f"{bench.metric} {better}{versus}",
+        # a fact about the metric, not a target to chase
+        expected_effect=f"{bench.metric} ({better} is better), {current}",
+        # the finish is the AUTHOR's call; the gate decides what publishes
         done_criteria=(
-            f"`{bench.command}` runs clean and {bench.metric} moves {better}"
-            f"{against}; repository tests pass"
+            "You decide when your result is worth publishing — and a negative "
+            "result reported clearly is a success. The orchestrator re-measures "
+            f"`{bench.command}` and runs the repository tests to verify any claim"
             + (
-                "; a change touching shared paths is suite-gated — no sibling "
+                "; changes touching shared paths are suite-gated, so no sibling "
                 "benchmark may regress beyond its floor"
                 if suite_gated
                 else ""
             )
+            + "."
         ),
     )
 

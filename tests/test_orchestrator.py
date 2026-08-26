@@ -139,7 +139,11 @@ def test_improvement_end_to_end(tmp_path: Path) -> None:
     # the brief carried the ledger baseline and the contract verbatim
     brief_text = harness.calls[0][0]
     assert "13.876" in brief_text
-    assert "mean_tour_length down from 13.876" in brief_text
+    # the score is stated as a FACT (currently X), never as a target to hit,
+    # and the finish is the author's call — the de-prescriptified brief
+    assert "currently 13.876" in brief_text
+    assert "lower is better" in brief_text  # metric direction as context
+    assert "You decide when your result is worth publishing" in brief_text
     assert "src/pilot/solvers/" in brief_text
     # eval ran twice (baseline + candidate) with the contract's command
     assert (
@@ -220,7 +224,9 @@ def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:
     result, harness, _ = run_climb(tmp_path, [13.876, 13.10])  # brief_baseline defaults None
     assert result.outcome == "improved" and result.baseline == 13.876
     brief_text = harness.calls[0][0]
-    assert "mean_tour_length down" in brief_text and "down from" not in brief_text
+    assert "no score recorded yet" in brief_text  # no reference number
+    assert "currently" not in brief_text  # and no fabricated baseline
+    assert "lower is better" in brief_text  # the metric context still orients
 
 
 def test_direction_min_regression_is_no_improvement(tmp_path: Path) -> None:
