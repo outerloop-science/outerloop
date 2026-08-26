@@ -210,5 +210,12 @@ def test_round_stamp_fits_a_panel_attribution_without_mid_word_cut() -> None:
 
 
 def test_round_stamp_ellipsizes_a_hostile_overlong_attribution() -> None:
-    stamp, _ = posting._round_stamp(_FakeClient(), "org/repo", 1, _MARKER, {"head": {}}, "x" * 400)
+    stamp, _ = posting._round_stamp(
+        _FakeClient(),  # type: ignore[arg-type]
+        "org/repo",
+        1,
+        _MARKER,
+        {"head": {}},
+        "x" * 400,
+    )
     assert "…" in stamp  # bounded, and legibly so
