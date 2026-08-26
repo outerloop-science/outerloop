@@ -147,12 +147,16 @@ if [ -r "$ENV_FILE" ]; then
 fi
 
 # The codex author binary is a host prerequisite; install it (idempotent, fast
-# path is a local version check) only when the fleet author is codex. Best-effort:
-# a failure here must never break the chain — the climb will report a missing
-# codex clearly if it comes to that.
-if [ "${AUTORESEARCH_AUTHOR_BACKEND:-}" = "codex" ]; then
-    bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
-fi
+# path is a local version check) when ANY codex role is deployed — the fleet
+# author, or a codex panel lens (a claude-author/codex-panel rollout still
+# bind-mounts the binary into every judge container). Best-effort: a failure
+# here must never break the chain — the climb will report a missing codex
+# clearly if it comes to that.
+case "${AUTORESEARCH_AUTHOR_BACKEND:-}:${AUTORESEARCH_PANEL:-}" in
+    codex:*|*:*codex*)
+        bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
+        ;;
+esac
 
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
 #        further down in the harness) ---
