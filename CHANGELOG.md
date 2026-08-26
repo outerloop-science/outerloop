@@ -6,6 +6,16 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Wide-round lens sessions no longer die on GitHub's clone rate limit: the
+  reusable review/summarize workflows retry the hermes-agent clone with
+  backoff+jitter. The wide first round fans out several hermes (terra) lens
+  sessions at once, and GitHub 429s the concurrent anonymous clones of the
+  same public repo (observed live: 3/5 lens sessions died at exit 128 before
+  the model ran). Bounded retries stagger them past the transient limit; a
+  genuine clone failure still degrades to the advisory missing-repo stub.
+
 ### Changed
 
 - The author brief is de-prescriptified (Mengye, "don't dictate the

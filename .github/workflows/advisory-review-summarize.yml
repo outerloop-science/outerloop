@@ -106,9 +106,24 @@ jobs:
               npm install -g @openai/codex@0.130.0
               ;;
             hermes)
-              git clone --depth 1 --branch "$HERMES_REF" \
-                https://github.com/NousResearch/hermes-agent \
-                "$GITHUB_WORKSPACE/hermes-agent"
+              # Retry with backoff+jitter: the wide first round fans out
+              # several hermes lens sessions at once, and GitHub 429s the
+              # concurrent anonymous clones of the same public repo. Bounded
+              # retries stagger them past the transient limit (observed live
+              # 2026-08-26: 3/5 lens sessions died here on exit 128).
+              for i in 1 2 3 4 5 6; do
+                if git clone --depth 1 --branch "$HERMES_REF" \
+                    https://github.com/NousResearch/hermes-agent \
+                    "$GITHUB_WORKSPACE/hermes-agent"; then
+                  break
+                fi
+                if [ "$i" = 6 ]; then
+                  echo "hermes clone failed after 6 attempts" >&2
+                  exit 0  # advisory: the CLI's missing-repo stub surfaces it
+                fi
+                sleep $(( i * 10 + RANDOM % 10 ))
+                rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+              done
               ;;
             claude)
               curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
