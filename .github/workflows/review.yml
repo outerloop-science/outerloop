@@ -1,7 +1,12 @@
 name: advisory-review
 # Advisory review runs on OPEN and on demand (label), not on every push — a
-# session per push is the minutes burner. This calls the agent reviewer, which
-# reads the PR head read-only.
+# session per push is the minutes burner.
+#
+# Wide first round, narrow convergence (docs/design/reviewer-infra.md): a
+# single reviewer satisfices, so the FIRST round (opened/reopened) fans out
+# three distinct-lens terra opinions and a summarizer posts the ONE merged
+# round. Label-triggered rounds (the convergence loop) stay a single full-
+# rubric session — the fix-review-fix tail is serial by nature.
 on:
   pull_request_target:
     types: [opened, reopened, labeled]
@@ -9,19 +14,54 @@ permissions:
   contents: read
   pull-requests: write
 jobs:
-  # Single advisory reviewer: terra (hermes, openai-direct). The claude-opus-5
-  # reviewer was removed (2026-08-23) — it did not converge (unbounded nitpick
-  # rounds, re-raising resolved items); terra catches the real issues and settles.
-  review:
-    # a labeled event only runs for the autoresearch:review label (manual re-review)
-    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
-
+  # --- wide first round: a general session + distinct lenses, emit-only ---
+  lens:
+    if: github.event.action != 'labeled'
+    strategy:
+      fail-fast: false
+      matrix:
+        # `general` (the full rubric, no lens) ALWAYS keeps its seat — the
+        # plain-bugs / unknown-unknowns catcher. The rest is THE era knob:
+        # pick lenses (from review.REVIEW_LENSES) to match what the current
+        # push is about — infra era: credentials/deployment/lifecycle; science
+        # era: swap toward measurement. coverage earns its seat by being the
+        # one class serial review never catches.
+        lens: [general, credentials, deployment, lifecycle, coverage]
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: agentic-learning-bot
       backend: hermes
       # openai-direct: same token rate, no OpenRouter platform fee (the org's
       # OpenAI account is tax-exempt); model id is provider-native
+      hermes_provider: openai
+      model: gpt-5.6-terra
+      # `general` runs unlensed (empty REVIEW_LENS = the full rubric)
+      lens: ${{ matrix.lens == 'general' && '' || matrix.lens }}
+      opinion_id: lens-${{ matrix.lens }}
+      post: false
+    secrets:
+      openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
+
+  summarize:
+    needs: lens
+    if: ${{ !cancelled() && github.event.action != 'labeled' }}
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-summarize.yml@main
+    with:
+      bot_login: agentic-learning-bot
+      backend: hermes
+      hermes_provider: openai
+      model: gpt-5.6-terra
+      opinion_label: terra
+    secrets:
+      openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
+
+  # --- convergence rounds: one full-rubric session, label-triggered ---
+  review:
+    if: github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review'
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
+    with:
+      bot_login: agentic-learning-bot
+      backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra
       opinion_label: terra

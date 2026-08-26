@@ -71,6 +71,20 @@ on:
         type: string
         required: false
         default: ''
+      lens:
+        description: >-
+          Named attention lens for the session (wide first round —
+          docs/design/reviewer-infra.md); empty reviews with the full rubric.
+        type: string
+        required: false
+        default: ''
+      post:
+        description: >-
+          Post the round from this call. false = emit-only (a lens opinion
+          whose artifact a summarizer merges and posts instead).
+        type: boolean
+        required: false
+        default: true
       reviewer_repo:
         description: Repo holding the reviewer (change this if you forked).
         type: string
@@ -203,6 +217,7 @@ jobs:
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
+          REVIEW_LENS: ${{ inputs.lens }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
         run: uv run python -m autoresearch.review_agent_cli
       - name: Backstop envelope
@@ -237,7 +252,9 @@ jobs:
   post:
     runs-on: ubuntu-latest
     needs: session
-    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    # inputs.post=false -> emit-only: a lens opinion whose artifact the
+    # summarizer merges; nothing is posted from this call.
+    if: ${{ inputs.post && !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
     continue-on-error: true
     timeout-minutes: 15
     # The write half: no model session runs in this job.

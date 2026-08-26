@@ -97,6 +97,33 @@ def reviewer_spec(
     )
 
 
+def summarizer_spec(
+    *, environment: Environment = "gh-runner", max_turns: int = 15, walltime_s: int = 900
+) -> RoleSpec:
+    """The review summarizer: merges k lens opinions into one verdict (the
+    wide first round, docs/design/reviewer-infra.md). Its brief embeds the
+    opinions as data, so it needs no read tools — only the shell that runs
+    the syscall tool. Small budget: the work is judgment over a page of
+    JSON, not investigation."""
+    return RoleSpec(
+        name="summarizer",
+        instructions=(
+            "Merge the review opinions in your brief into one verdict: "
+            "deduplicate, order blocking first, attribute lenses, and list "
+            "every rejected finding with its reason in your concluding "
+            "notes — never drop one silently. Record each merged finding "
+            "with the installed syscall tool, then commit your verdict with "
+            "its `conclude` command and end your turn."
+        ),
+        key="reviewer",
+        tools=("Bash",),
+        execution=Execution(environment=environment, can_execute=True),
+        budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
+        skills=("plain-style", "review-rubric"),
+        output_schema=FINDINGS_SCHEMA,
+    )
+
+
 def verifier_spec(
     *, environment: Environment = "gh-runner", max_turns: int = 40, walltime_s: int = 1800
 ) -> RoleSpec:

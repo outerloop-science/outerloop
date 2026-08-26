@@ -8,6 +8,21 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Wide first round, narrow convergence (docs/design/reviewer-infra.md): on
+  PR open, the advisory review fans out three distinct-lens terra opinions
+  (credentials & containment; the deployment chain end-to-end; test honesty)
+  as emit-only sessions, and a SUMMARIZER role merges them into the one
+  posted round — dedup, blocking first, lens attribution, and every rejected
+  finding listed with its reason (never dropped silently). Label-triggered
+  convergence rounds stay a single full-rubric session. Mechanically:
+  `REVIEW_LENSES` + a `lens` brief seam, `summarizer_spec`,
+  `review_summarize_cli` (passthrough when only one real opinion — a model
+  session only when there is merging to do), a reusable
+  `advisory-review-summarize.yml`, and `lens`/`post` inputs on the reusable
+  reviewer workflow (defaults keep existing callers unchanged).
+
+### Added
+
 - Claude-on-Vertex (ADC) billing, config-driven: set
   `AUTORESEARCH_VERTEX_PROJECT` (+ optional `_REGION`, `_ADC` file) and every
   claude-backend session — author, panel judge, reviewer — authenticates to

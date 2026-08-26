@@ -103,6 +103,7 @@ def _emit(
     data: dict[str, Any] | None = None,
     detail: str = "",
     reviewed_by: str = "",
+    lens: str = "",
 ) -> None:
     """Write the posting step's input. repo/number ride along so the poster
     can refuse an envelope that does not match its own PR reference;
@@ -117,6 +118,7 @@ def _emit(
                 "data": data,
                 "detail": detail,
                 "reviewed_by": reviewed_by,
+                "lens": lens,
             }
         )
     )
@@ -133,6 +135,7 @@ def run_agent_review(
     spec: RoleSpec | None = None,
     today: str | None = None,
     emit_path: Path | None = None,
+    lens: str = "",
 ) -> str | None:
     """Review PR #`number` as an agent session over `workspace` (a
     PR-head checkout the caller prepared). Post the findings inline via the
@@ -165,7 +168,7 @@ def run_agent_review(
 
         from autoresearch.syscall import tool_command
 
-        brief = build_agent_brief(pr, today, syscall_cmd=tool_command(workspace))
+        brief = build_agent_brief(pr, today, syscall_cmd=tool_command(workspace), lens=lens)
         role_result = run_role(spec, harness, brief, workspace)
         review = review_result_from_role(role_result)
         if review is None:
@@ -203,6 +206,7 @@ def run_agent_review(
                 kind="findings",
                 data=role_result.data,
                 reviewed_by=backend_id(harness),
+                lens=lens,
             )
             cost = role_result.session.cost_usd
             log.info(
