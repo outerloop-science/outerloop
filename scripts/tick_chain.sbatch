@@ -126,7 +126,8 @@ if [ -r "$ENV_FILE" ]; then
                   AUTORESEARCH_HARNESS_KEY_FILE \
                   AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
                   AUTORESEARCH_VERTEX_ADC \
-                  AUTORESEARCH_PANEL AUTORESEARCH_PANEL_KEY_FILE; do
+                  AUTORESEARCH_PANEL AUTORESEARCH_PANEL_KEY_FILE \
+                  AUTORESEARCH_PANEL_CODEX_KEY_FILE; do
             _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
             # PRESENCE-based, not value-based: a key set to "" in .env is a
             # live OFF-SWITCH (AUTORESEARCH_PANEL="" disables the panel,
