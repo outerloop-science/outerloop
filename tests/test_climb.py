@@ -2763,5 +2763,31 @@ def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> N
         codex_bin="codex",
         image="/img.sif",
     )
-    lenses = _panel_lenses_from_args(args)
+    lenses, secrets = _panel_lenses_from_args(args)
     assert len(lenses) == 1 and lenses[0].kind == "review"
+    assert secrets == ("sk-judge",)  # the codex judge key joins the redaction set
+
+
+def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> None:
+    # role separation enforced in the BUILDER, so a manual climb (not just the
+    # tick preflight) refuses a judge running on the author's token
+    import argparse
+
+    import pytest
+
+    from autoresearch.climb import _panel_lenses_from_args
+
+    author_key = tmp_path / "codex_key"
+    author_key.write_text("sk-author")
+    author_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(author_key))
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(author_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    with pytest.raises(ValueError, match="role separation"):
+        _panel_lenses_from_args(args)
