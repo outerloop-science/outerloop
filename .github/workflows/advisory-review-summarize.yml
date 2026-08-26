@@ -106,6 +106,13 @@ jobs:
           path: ${{ github.workspace }}/hermes-agent
           key: hermes-agent-${{ env.HERMES_REF }}
       - name: Install the ${{ inputs.backend }} backend
+        env:
+          # authenticate the hermes clone: anonymous clones share a low
+          # per-IP limit that the wide round's fan-out trips; the job's
+          # read-only token lifts it to the authenticated tier. Passed via
+          # GIT_CONFIG_* (below), never git config --global — the token must
+          # not persist into ~/.gitconfig where the model session could read it.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "$BACKEND" in
@@ -120,6 +127,12 @@ jobs:
                 # 429s the concurrent anonymous clones — retry with backoff so
                 # they stagger past the transient limit (observed live
                 # 2026-08-26: 3/5 lens sessions died here on exit 128).
+                # token via GIT_CONFIG_* (not argv, not --global): the
+                # authenticated tier is ~5000/hr, so concurrent clones on a
+                # cold cache no longer 429.
+                export GIT_CONFIG_COUNT=1
+                export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+                export GIT_CONFIG_VALUE_0="AUTHORIZATION: Bearer ${GITHUB_TOKEN}"
                 for i in 1 2 3 4 5 6; do
                   if git clone --depth 1 --branch "$HERMES_REF" \
                       https://github.com/NousResearch/hermes-agent \
