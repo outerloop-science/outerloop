@@ -139,9 +139,14 @@ jobs:
                 # where the session could read it), and the authenticated
                 # tier means a concurrent cold fan-out no longer 429s.
                 rm -rf "$GITHUB_WORKSPACE/hermes-agent"
-                export GIT_CONFIG_COUNT=1
-                export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
-                export GIT_CONFIG_VALUE_0="AUTHORIZATION: Bearer ${GITHUB_TOKEN}"
+                if [ -n "${GITHUB_TOKEN:-}" ]; then
+                  # additive-only: an EMPTY bearer header would 401 a public
+                  # clone (worse than anonymous), so auth only arms when the
+                  # token is present; without it the retry still covers us
+                  export GIT_CONFIG_COUNT=1
+                  export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+                  export GIT_CONFIG_VALUE_0="AUTHORIZATION: Bearer ${GITHUB_TOKEN}"
+                fi
                 for i in 1 2 3 4 5 6; do
                   if git clone --depth 1 --branch "$HERMES_REF" \
                       https://github.com/NousResearch/hermes-agent \
