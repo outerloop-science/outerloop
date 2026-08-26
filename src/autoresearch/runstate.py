@@ -119,7 +119,7 @@ class RunRecord:
     state: str
     agent_id: str = "agent-01"
     experiment_job_id: str = ""
-    climb_job_id: str = ""  # slurm job running the climb itself; lets the
+    run_job_id: str = ""  # slurm job running the attempt itself; lets the
     # sweep end records whose job was KILLED (walltime/preemption/node
     # death) rather than crashed — signals leave no exception to contain.
     # INVARIANT: any future path that re-enters `implementing` from a NEW
@@ -202,6 +202,13 @@ def load_record(root: Path, run_id: str) -> RunRecord:
     raw = json.loads((run_dir(root, run_id) / RECORD_NAME).read_text())
     if not isinstance(raw, dict):
         raise ValueError(f"record is not a JSON object: {type(raw).__name__}")
+    # Back-compat: a record written by pre-rename code carries `climb_job_id`
+    # for what is now `run_job_id`. Map it on load so an in-flight run started
+    # before the rename still wakes/ends correctly (the deploy is atomic, but
+    # its already-parked records are not). Only when the new key is absent, so
+    # a genuine new record always wins.
+    if "climb_job_id" in raw and "run_job_id" not in raw:
+        raw["run_job_id"] = raw["climb_job_id"]
     # Ignore unknown keys: after a bad-merge revert, older code must still be
     # able to read records written by newer code — a "corrupt" verdict here
     # would blind the sweep to the whole run.

@@ -22,7 +22,7 @@ Then run one climb by hand (not via the tick):
 
 ```bash
 source env.sh
-uv run python -m autoresearch.climb \
+uv run python -m autoresearch.attempt \
   --target <org/repo> --benchmark <a-cheap-benchmark> \
   --run-root <run-root> --image <image.sif> \
   <the account/partition/limit args the tick normally passes>

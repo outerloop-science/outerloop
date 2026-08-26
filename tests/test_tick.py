@@ -919,7 +919,7 @@ def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 
             task_title="t",
             benchmark="tsp",
             state=IMPLEMENTING,
-            climb_job_id=job_id,
+            run_job_id=job_id,
         ),
         now=NOW - age_s,
     )
@@ -950,6 +950,26 @@ def test_killed_climb_is_ended_after_first_seen_grace(tmp_path: Path) -> None:
     assert "aborted" in (_run_dir(tmp_path, "r-killed") / "report.md").read_text()
 
 
+def test_legacy_kill_stamp_grace_is_honored_across_the_rename(tmp_path: Path) -> None:
+    """A run stamped just before the climb->attempt rename carries a legacy
+    `climb-terminal-seen` file. The sweep must adopt its clock so the KillWait
+    grace is measured from the ORIGINAL sighting — not restarted (which would
+    re-grace a job already past its window) or ignored."""
+    from autoresearch.tick import _kill_stamp, _legacy_kill_stamp
+
+    _implementing_run(tmp_path, "r-legacy", job_id="77", age_s=3600)
+    # a legacy stamp written a full grace ago, and NO current-name stamp
+    legacy = _legacy_kill_stamp(tmp_path, "r-legacy")
+    legacy.write_text(str(NOW - GRACE - 1))
+    assert not _kill_stamp(tmp_path, "r-legacy").exists()
+
+    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}))
+    # the grace already elapsed by the legacy clock -> ended THIS tick, not
+    # re-stamped under the new name
+    assert report.implementing_ended == ("r-legacy",)
+    assert load_record(tmp_path, "r-legacy").state == ENDED
+
+
 def test_climb_that_lands_its_own_ending_wins_the_race(tmp_path: Path) -> None:
     """Between first-seen and grace expiry the climb's honest ending (or a
     move to waiting) must never be clobbered by the sweep."""
@@ -967,7 +987,7 @@ def test_climb_that_lands_its_own_ending_wins_the_race(tmp_path: Path) -> None:
     assert load_record(tmp_path, "r-race").ending == "negative-result"
 
 
-def test_live_climb_job_is_left_alone(tmp_path: Path) -> None:
+def test_live_attempt_job_is_left_alone(tmp_path: Path) -> None:
     _implementing_run(tmp_path, "r-live", job_id="77", age_s=GRACE + 60)
     report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "RUNNING"}))
     assert report.implementing_ended == ()
@@ -2120,7 +2140,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert job_id == "9001"  # async: the wake job now owns the lease
     argv = submits[0]
     joined = " ".join(argv)
-    assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
+    assert "autoresearch.attempt" in joined and "--resume tsp-1" in joined
     assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
     assert "--panel verify,review" in joined  # the wake runs the verification panel
     assert "--account=acct" in argv and "--partition=cpu_short" in argv

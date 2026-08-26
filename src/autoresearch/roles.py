@@ -41,7 +41,7 @@ def author_spec(
     No output_schema: the artifact is the workspace diff plus the free-text
     research report, judged by measurement (the kernel re-runs the eval), not
     by parsing. `scope` is the contract's allowed paths; an empty tuple means
-    "filled from the contract by the kernel" (climb_once), which owns scope
+    "filled from the contract by the kernel" (attempt_once), which owns scope
     enforcement either way. Budget defaults mirror the climb CLI's.
     """
     return RoleSpec(

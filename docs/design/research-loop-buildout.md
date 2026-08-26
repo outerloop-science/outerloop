@@ -78,7 +78,7 @@ Design rulings:
   a forced sleep. `sleep([])` — nothing to wait on — is a legitimate
   checkpoint-and-reschedule: wake in a fresh job with a fresh clock (it burns a
   sleep count like any other — the bound on living forever). This replaces the
-  self-deadline kill (climb.py's walltime alarm) with an author-managed
+  self-deadline kill (attempt.py's walltime alarm) with an author-managed
   handoff.
 
 ## Phase A — launch/sleep: suspend-on-syscall, wake-with-result
