@@ -289,3 +289,13 @@ roadmap: docs/roadmap.md
     # the new name and the legacy alias both populate the same field
     assert load_contract(base % "attempt_job_minutes", "o/r").budgets.attempt_job_minutes == 180
     assert load_contract(base % "climb_job_minutes", "o/r").budgets.attempt_job_minutes == 180
+    # a mid-migration contract with BOTH keys does not fail — the new name
+    # wins (terra #158 r1: the old alias must not read as an extra field)
+    both = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3, attempt_job_minutes: 120, climb_job_minutes: 180}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    assert load_contract(both, "o/r").budgets.attempt_job_minutes == 120
