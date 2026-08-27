@@ -212,10 +212,14 @@ class Contract(_StrictModel):
     #     required human review stands between arming and merging.
     #   auto: a gate+panel-clean PR merges itself. Repo prerequisites the
     #     owner sets alongside this knob: "Allow auto-merge" on; branch
-    #     protection whose required checks are the repo's own CI; NO required
-    #     review. The gate is the whole conscience in auto mode — the floor
-    #     (min_delta), the suite no-regression phase, and the panel's taste
-    #     rubric all bind BEFORE publish.
+    #     protection whose required checks are the repo's own CI with
+    #     STRICT up-to-date enforcement (the branch must match the base —
+    #     this is what closes the race where the base moves between our
+    #     freshness check and a direct merge: GitHub itself refuses a
+    #     stale-base merge); NO required review. The gate is the whole
+    #     conscience in auto mode — the floor (min_delta), the suite
+    #     no-regression phase, and the panel's taste rubric all bind
+    #     BEFORE publish.
     merge: Literal["manual", "auto"] = "manual"
 
     @field_validator("benchmarks")
