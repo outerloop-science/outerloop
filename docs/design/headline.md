@@ -26,7 +26,9 @@ their repo URL anyway).
 Autonomous research whose **accuracy and speed scale along explicit dials** —
 panel (verifier accuracy per accepted step), width (parallel authors), depth
 (iterations per attempt) — on **commodity Slurm**, with every accepted step
-**honest by construction** and **zero human interventions**, under a
+**honest by construction** and **zero human interventions inside the
+improvement loop** (in `manual` mode the owner's merge is consent, not a
+correction — interventions-per-accepted-step is measured per mode), under a
 **graded autonomy mode** the target owner sets.
 
 ## Tracks
@@ -67,8 +69,10 @@ depth iteration), tick ≈ 16–18 s per 15 min (~2 % duty), deploy lag T+0 for
 kernel code / T+2 cadences for the chain script. The overhead is **constant
 per state transition** and amortizes: attempts get heavier (GPU training
 hours per transition) and wider (N authors share one tick), so
-overhead/total → 0. Cadence is itself a dial, and the planned park-time
-`afterany` wake job removes wake latency outright.
+overhead/total → 0. Cadence is itself a dial; the kernel already submits
+`afterany`-dependent work at park time on the launch path, and extending
+that fast requeue wake to checkpoint sleeps (today they ride the sweep —
+"slow but correct", per the code) removes wake latency outright.
 
 **The ablation is free and honest:** the `Compute` seam means the "python
 loop" baseline is our own `LocalCompute` mode — same agents, same gates,
@@ -80,8 +84,11 @@ survival the other. No strawman reimplementation.
 Drop the "human keeps the merge button" framing as a principle — it is the
 DEFAULT, not a law. Merge policy becomes a contract knob (`merge:
 manual | auto`, target owner's declaration, like a harness permission mode):
-`auto` = gate + panel clean → the PR merges itself (the sealed-sha publish
-already arms GitHub auto-merge; enabling = the knob + repo settings). Graded
+`auto` = gate + panel clean → the PR merges itself. NOTE the current
+arming path is review-required-shaped (`arm_auto_merge_when_review_required`
+— GitHub only arms against a pending requirement), so `auto` mode needs a
+small publish change: merge directly when the gate CI is the sole
+requirement, arm otherwise. Graded
 autonomy is paper material: interventions per accepted step, measured at
 each grade.
 
