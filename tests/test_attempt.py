@@ -6,6 +6,7 @@ import contextlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -2896,7 +2897,8 @@ def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> 
 
 
 class LedgerGitHub:
-    """Purpose-built fake for the research-log publisher."""
+    """Purpose-built fake for the research-log publisher (duck-typed; cast
+    at the call sites keeps mypy honest about the seam)."""
 
     def __init__(self, issues=()):
         self.issues = list(issues)
@@ -2939,7 +2941,7 @@ def test_research_log_archives_and_routes_to_the_order_issue() -> None:
         ]
     )
     _publish_research_log(
-        gh,
+        cast(Any, gh),
         "org/yolo",
         "r1",
         "heldout_probe",
@@ -2966,11 +2968,11 @@ def test_research_log_falls_back_to_a_rolling_issue_and_reuses_it() -> None:
 
     gh = LedgerGitHub()
     _publish_research_log(
-        gh, "org/yolo", "r1", "tsp", "negative-result", 10.0, 9.99, "rep", "", 0, ()
+        cast(Any, gh), "org/yolo", "r1", "tsp", "negative-result", 10.0, 9.99, "rep", "", 0, ()
     )
     assert len(gh.created) == 1 and RESEARCH_LOG_MARKER in gh.created[0][2]
     _publish_research_log(
-        gh, "org/yolo", "r2", "tsp", "improved", 10.0, 9.0, "rep", "http://pr", 0, ()
+        cast(Any, gh), "org/yolo", "r2", "tsp", "improved", 10.0, 9.0, "rep", "http://pr", 0, ()
     )
     assert len(gh.created) == 1  # reused via the marker, not recreated
     assert len(gh.comments) == 2 and "http://pr" in gh.comments[1][1]
@@ -2983,6 +2985,6 @@ def test_research_log_skips_the_pointer_for_claimed_issues() -> None:
 
     gh = LedgerGitHub(issues=[{"number": 3, "title": "tsp: do it", "body": ""}])
     _publish_research_log(
-        gh, "org/yolo", "r1", "tsp", "improved", 10.0, 9.0, "rep", "http://pr", 3, ()
+        cast(Any, gh), "org/yolo", "r1", "tsp", "improved", 10.0, 9.0, "rep", "http://pr", 3, ()
     )
     assert len(gh.files) == 1 and gh.comments == []
