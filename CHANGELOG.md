@@ -8,14 +8,17 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A submit-park wakes immediately: a waiting run whose stage carries the
-  SEALED CANDIDATE (the author's `submit` staged base+candidate and
-  hibernated) has nothing to wait on, but the sweep classified every
-  no-poll-target park as blind and rode the 12h deadline floor. Observed
-  live on the first submit-path run (2026-08-27, yolo heldout_probe): two
-  ticks swept the staged run without waking it. The sweep now wakes a
-  sealed-candidate park on sight ("sealed candidate awaiting decide");
-  genuinely blind parks keep the deadline floor.
+- A jobless checkpoint sleep no longer inherits the 12h QUEUE slack: the
+  park deadline added `PARK_QUEUE_SLACK_MIN` (12h, sized to keep the sweep
+  from cancelling healthy-but-queued Slurm jobs) to every park — including
+  an author checkpoint sleep with nothing in any queue, turning "wake at
+  the first deadline pass" into a 12h coma (observed live on the yolo
+  heldout_probe run, 2026-08-27). A launch-less author-sleep park now gets
+  a near-term deadline (`CHECKPOINT_SLEEP_SLACK_MIN`, 45 min) and the
+  existing blind-park deadline branch delivers the wake; parks with queued
+  jobs keep the full queue slack, and the sweep gains no new predicate
+  (terra #166: a wake-on-sight predicate over-matched blind re-parks and
+  long sleeps).
 
 ### Removed
 

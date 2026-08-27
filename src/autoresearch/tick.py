@@ -903,19 +903,13 @@ def _sweep_one(
 
         job_ids = _poll_targets(record)
         if not job_ids:
-            # No job ids to poll. A SEALED-CANDIDATE park (the author's
-            # `submit` staged base+candidate and hibernated) is not waiting
-            # on anything — the decide can start now, so wake immediately
-            # rather than ride the 12h deadline floor (observed live on the
-            # first submit-path run, 2026-08-27: two ticks swept it without
-            # waking). A BLIND PARK (the measurer could not read Slurm, so
-            # `MeasurementPending` carried no ids) still hibernated with a
-            # deadline — the deadline floor is its ONLY wake, so fire on it.
-            # A genuinely mid-write record has no deadline and is left alone.
-            stage = record.stage or {}
-            if stage.get("candidate_sha") or stage.get("candidate_ref"):
-                wake(record, "sealed candidate awaiting decide", "staged")
-                return
+            # No job ids to poll. A BLIND PARK (the measurer could not read Slurm,
+            # so `MeasurementPending` carried no ids) still hibernated with a
+            # deadline — the deadline floor is its ONLY wake, so fire on it. A
+            # genuinely mid-write record has no deadline and is left alone.
+            # (A jobless CHECKPOINT SLEEP arrives here too — its deadline is
+            # near-term by construction, attempt.py sizes it to the next sweep
+            # pass, not the 12h queue slack that protects queued jobs.)
             if record.deadline > 0 and now > record.deadline:
                 wake(record, "blind park past deadline", "deadline")
             return
