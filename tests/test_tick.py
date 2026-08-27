@@ -781,7 +781,7 @@ def test_self_initiated_selection_rules() -> None:
     records = [_run(f"r{i}", "tsp", NOW - i * 3600) for i in range(3)]
     assert pick(records) is None
     # a pending attempt that died pre-record still counts toward cooldown
-    assert pick([], pending_attempt=("denoise", NOW - 60)) == "reach"
+    assert pick([], dead_attempts={"denoise": NOW - 60}) == "reach"
 
 
 def test_self_initiated_scoped_to_target() -> None:
@@ -2561,49 +2561,50 @@ roadmap: docs/roadmap.md
         "o/r",
     )
     # a pre-record death 60s ago: blocked despite cooldown 0
-    assert pick_self_initiated([], hot, "o/r", NOW, ("reach", NOW - 60)) is None
+    assert pick_self_initiated([], hot, "o/r", NOW, {"reach": NOW - 60}) is None
     # past the floor: dispatches again
     assert (
-        pick_self_initiated([], hot, "o/r", NOW, ("reach", NOW - DEAD_LAUNCH_BACKOFF_S - 1))
+        pick_self_initiated([], hot, "o/r", NOW, {"reach": NOW - DEAD_LAUNCH_BACKOFF_S - 1})
         == "reach"
     )
 
 
-def test_dead_launch_tombstone_persists_across_ticks(tmp_path: Path) -> None:
-    """terra #172 r2: clearing the dead marker immediately made the backoff
-    one-tick amnesia — the tombstone persists until the window is served,
-    refusing dispatch on EVERY tick inside it."""
+def test_dead_launch_tombstones_are_per_benchmark(tmp_path: Path) -> None:
+    """terra #172 r2/r3: crash memory is a per-benchmark tombstone that a
+    SECOND benchmark's launch cannot erase, persists across ticks inside its
+    window, and prunes itself after."""
     from autoresearch.contract import load_contract
     from autoresearch.tick import (
         DEAD_LAUNCH_BACKOFF_S,
-        read_pending,
-        service_research_log,  # noqa: F401  (import side-effect free)
-        service_self_initiated,
-        write_pending,
+        pick_self_initiated,
+        read_tombstones,
+        write_tombstone,
     )
 
     hot = load_contract(
         """
 benchmarks:
   - {name: reach, command: c, metric: m, direction: max}
+  - {name: denoise, command: c, metric: m, direction: max}
 budgets: {gpu_hours_per_run: 1, runs_per_week: 500, attempt_cooldown_minutes: 0}
 scope: {allowed: [src/]}
 roadmap: docs/roadmap.md
 """,
         "o/r",
     )
-    spec = _spec(target="o/r")
-    write_pending(tmp_path, "o/r", "reach", "999", NOW - 60)  # died pre-record
-
-    class DeadSlurm:
-        def status(self, jid):
-            return "FAILED"
-
-    # two consecutive ticks inside the window: both refuse, marker survives
-    for _ in range(2):
-        assert service_self_initiated(tmp_path, DeadSlurm(), spec, hot, NOW) is None
-        assert read_pending(tmp_path, "o/r") is not None
-    # past the window: the tombstone clears (dispatch path proceeds to launch
-    # wiring, which this unit test does not exercise further)
-    service_self_initiated(tmp_path, DeadSlurm(), spec, hot, NOW + DEAD_LAUNCH_BACKOFF_S + 61)
-    assert read_pending(tmp_path, "o/r") is None
+    write_tombstone(tmp_path, "o/r", "reach", NOW - 60)
+    dead = read_tombstones(tmp_path, "o/r", hot, NOW)
+    # reach is floored; denoise still dispatches (width of the SELECTION,
+    # not an overwrite of reach's memory)
+    assert pick_self_initiated([], hot, "o/r", NOW, dead) == "denoise"
+    # denoise also crashes: BOTH tombstones coexist, nothing dispatches
+    write_tombstone(tmp_path, "o/r", "denoise", NOW - 30)
+    dead = read_tombstones(tmp_path, "o/r", hot, NOW)
+    assert pick_self_initiated([], hot, "o/r", NOW, dead) is None
+    # a second tick inside the window: same refusal (persistence)
+    dead = read_tombstones(tmp_path, "o/r", hot, NOW + 60)
+    assert pick_self_initiated([], hot, "o/r", NOW + 60, dead) is None
+    # past the window: pruned on read, dispatch resumes
+    later = NOW + DEAD_LAUNCH_BACKOFF_S + 61
+    assert read_tombstones(tmp_path, "o/r", hot, later) == {}
+    assert pick_self_initiated([], hot, "o/r", later, {}) == "denoise"

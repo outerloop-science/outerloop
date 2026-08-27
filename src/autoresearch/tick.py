@@ -1375,7 +1375,7 @@ def pick_self_initiated(
     contract: Any,
     target: str,
     now: float,
-    pending_attempt: tuple[str, float] | None = None,
+    dead_attempts: dict[str, float] | None = None,
 ) -> str | None:
     """The benchmark to climb next on `target`, or None.
 
@@ -1383,9 +1383,10 @@ def pick_self_initiated(
     to one active run per target, respect the contract's weekly budget and a
     per-benchmark cooldown, then choose the benchmark least recently
     attempted — untouched ones first. Only this target's runs count toward
-    any of it. `pending_attempt` is a (benchmark, submitted_at) from a climb
-    job that died before writing a run record — it counts toward cooldown so
-    a crash loop can't resubmit every tick.
+    any of it. `dead_attempts` maps benchmark -> submitted_at for launches
+    that died BEFORE writing a run record (per-benchmark tombstones) — each
+    counts toward cooldown with a crash-loop floor, so alternating
+    pre-record failures can't ping-pong every tick (terra #172 r2/r3).
     """
     mine = [r for r in records if r.target == target]
 
@@ -1402,8 +1403,7 @@ def pick_self_initiated(
     for r in mine:
         if r.benchmark:
             last_attempt[r.benchmark] = max(last_attempt.get(r.benchmark, 0.0), r.created)
-    if pending_attempt is not None and pending_attempt[0]:
-        bench_name, submitted_at = pending_attempt
+    for bench_name, submitted_at in (dead_attempts or {}).items():
         last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
     cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
     cooldown_s = SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
@@ -1412,18 +1412,64 @@ def pick_self_initiated(
     # guard — it keeps a floor even when the contract dials cooldown to 0
     # (terra #172: zero cooldown otherwise resubmits a crashing launch
     # every tick, uncapped).
-    dead_pending_bench = pending_attempt[0] if pending_attempt else ""
+    dead_benches = set(dead_attempts or ())
     candidates = sorted(
         contract.benchmarks,
         key=lambda b: (last_attempt.get(b.name, 0.0), b.name),
     )
     for bench in candidates:
         floor_s = cooldown_s
-        if bench.name == dead_pending_bench:
+        if bench.name in dead_benches:
             floor_s = max(cooldown_s, DEAD_LAUNCH_BACKOFF_S)
         if now - last_attempt.get(bench.name, 0.0) >= floor_s:
             return str(bench.name)
     return None
+
+
+def _tombstone_path(root: Path, target: str, benchmark: str) -> Path:
+    safe = f"{target.replace('/', '__')}__{benchmark}"
+    return root / "pending-dead" / (safe + ".json")
+
+
+def write_tombstone(root: Path, target: str, benchmark: str, submitted_at: float) -> None:
+    """Per-benchmark crash memory: a launch died before writing a record, so
+    nothing else (runs_per_week, cooldown-by-records) can see it. The
+    tombstone persists independently of the live pending marker — a second
+    benchmark's launch must not erase it (terra #172 r3)."""
+    path = _tombstone_path(root, target, benchmark)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"submitted_at": submitted_at}))
+    except OSError as exc:
+        log.warning("tombstone write failed for %s/%s: %s", target, benchmark, exc)
+
+
+def read_tombstones(root: Path, target: str, contract: Any, now: float) -> dict[str, float]:
+    """benchmark -> submitted_at for unserved crash tombstones; entries past
+    their window (the larger of the crash floor and the contract cooldown)
+    are pruned on read."""
+    cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
+    cooldown_s = SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
+    window = max(DEAD_LAUNCH_BACKOFF_S, cooldown_s)
+    out: dict[str, float] = {}
+    prefix = target.replace("/", "__") + "__"
+    dead_dir = root / "pending-dead"
+    if not dead_dir.is_dir():
+        return out
+    for path in dead_dir.glob(prefix + "*.json"):
+        bench = path.stem[len(prefix) :]
+        try:
+            submitted_at = float(json.loads(path.read_text())["submitted_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            with contextlib.suppress(OSError):
+                path.unlink()
+            continue
+        if now - submitted_at > window:
+            with contextlib.suppress(OSError):
+                path.unlink()  # backoff served
+            continue
+        out[bench] = submitted_at
+    return out
 
 
 def _pending_path(root: Path, target: str) -> Path:
@@ -1686,7 +1732,7 @@ def service_self_initiated(
     try:
         records = list_runs(root)
         pending = read_pending(root, spec.target)
-        pending_attempt: tuple[str, float] | None = None
+        # (crash memory now lives in per-benchmark tombstones, read below)
         if pending is not None:
             submitted_at = float(pending["submitted_at"])
             landed = any(
@@ -1704,22 +1750,14 @@ def service_self_initiated(
                 # Slurm can't say (a dup submit is worse than a slow retry).
                 return None
             else:
-                # Died before writing a record: the marker is the ONLY
-                # memory of the crash (no record exists for runs_per_week or
-                # cooldown to see), so it persists as a TOMBSTONE until the
-                # backoff window is served — clearing immediately made the
-                # attribution one-tick amnesia (terra #172 r2). The window is
-                # the larger of the crash floor and the contract's own
-                # cooldown, which also closes the pre-existing one-tick leak
-                # on standard repos.
-                cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
-                cooldown_s = (
-                    SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
-                )
-                if now - submitted_at > max(DEAD_LAUNCH_BACKOFF_S, cooldown_s):
-                    clear_pending(root, spec.target)  # backoff served
-                pending_attempt = (str(pending.get("benchmark", "")), submitted_at)
-        benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
+                # Died before writing a record: persist the crash memory as a
+                # PER-BENCHMARK tombstone (a second benchmark's launch reuses
+                # the live marker and must not erase this — terra #172 r3),
+                # then free the live slot.
+                write_tombstone(root, spec.target, str(pending.get("benchmark", "")), submitted_at)
+                clear_pending(root, spec.target)
+        dead_attempts = read_tombstones(root, spec.target, contract, now)
+        benchmark = pick_self_initiated(records, contract, spec.target, now, dead_attempts)
         if benchmark is None:
             return None
         if getattr(contract, "merge", "manual") == "auto" and not spec.panel:
