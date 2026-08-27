@@ -141,7 +141,12 @@ jobs:
   # pinned definition.
   provision:
     if: inputs.backend == 'hermes' && github.event.pull_request.head.repo.full_name == github.repository
-    uses: ./.github/workflows/hermes-provision.yml
+    # FULLY QUALIFIED, not `./`: a local path inside a workflow that was
+    # itself called cross-repo does not resolve for the caller (observed
+    # live 2026-08-27: every jepa-agent/egolearn review died at
+    # startup_failure the moment the nested provision landed; this repo's
+    # own calls resolved it fine, which hid the breakage here).
+    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/hermes-provision.yml@main
 
   session:
     runs-on: ubuntu-latest

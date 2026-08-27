@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Cross-repo review callers (jepa-agent, egolearn) died at
+  `startup_failure` the moment the nested provision job landed: a
+  `uses: ./...` local reference inside a workflow that was itself called
+  cross-repo does not resolve for the caller. The nested
+  `hermes-provision.yml` reference is now fully qualified (`@main`).
+  autoresearch's own rounds resolved the local path fine, which hid the
+  breakage from this repo's reviews.
+
+### Fixed
+
 - `AUTORESEARCH_TARGET` joins the tick chain's `.env` allowlist, making the
   launch target a LIVE knob like its siblings. It was only ever inherited
   from the chain-start environment, so a `.env` edit could not retarget the
