@@ -8,6 +8,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Every terminal report now lands in a browsable ledger on the target repo:
+  a file under `reports/` on a `research-log` branch (full redacted report,
+  one file per run) plus a two-line pointer comment routed to where the
+  humans are — the run's claimed issue when there is one, else an open
+  order issue naming the benchmark, else a rolling "Research log" issue
+  created on first use. Closes the gap where self-initiated honest
+  negatives (the most scientifically interesting artifacts) were visible
+  only on the cluster. Best-effort throughout; the ledger never fails a
+  run.
+
+### Added
+
 - The verify lens's rubric gains the code owner's aggregation standard
   (set closing yolo-jepa#16): a delta that clears the significance floor
   only as a MIXTURE of individually sub-floor tweaks is a finding — a

@@ -618,6 +618,57 @@ class GitHubClient:
             {"state": "closed"},
         )
 
+    def ensure_branch(self, repo: str, branch: str) -> bool:
+        """The branch exists (created from the default branch's head if not).
+        Returns False only when creation failed."""
+        quoted = urllib.parse.quote(repo)
+        try:
+            self._request("GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(branch)}")
+            return True
+        except GitHubError:
+            pass
+        if self.dry_run:
+            log.info("[dry-run] create branch %s on %s", branch, repo)
+            return True
+        try:
+            default = self.default_branch(repo)
+            ref = self._request(
+                "GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(default)}"
+            )
+            sha = ref["object"]["sha"] if isinstance(ref, dict) else ""
+            self._request(
+                "POST", f"/repos/{quoted}/git/refs", {"ref": f"refs/heads/{branch}", "sha": sha}
+            )
+            return True
+        except (GitHubError, KeyError, TypeError) as exc:
+            log.warning("could not create branch %s on %s: %s", branch, repo, exc)
+            return False
+
+    def put_file(self, repo: str, path: str, content: str, branch: str, message: str) -> bool:
+        """Create or update one file on `branch` via the contents API."""
+        if self.dry_run:
+            log.info("[dry-run] put %s on %s@%s", path, repo, branch)
+            return True
+        quoted = urllib.parse.quote(repo)
+        api = f"/repos/{quoted}/contents/{urllib.parse.quote(path)}"
+        body: dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(content.encode()).decode(),
+            "branch": branch,
+        }
+        try:
+            existing = self._request("GET", f"{api}?ref={urllib.parse.quote(branch)}")
+            if isinstance(existing, dict) and existing.get("sha"):
+                body["sha"] = existing["sha"]
+        except GitHubError:
+            pass  # new file
+        try:
+            self._request("PUT", api, body)
+            return True
+        except GitHubError as exc:
+            log.warning("could not put %s on %s@%s: %s", path, repo, branch, exc)
+            return False
+
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:
             log.info("[dry-run] comment on %s#%s (%d chars)", repo, issue_number, len(body))

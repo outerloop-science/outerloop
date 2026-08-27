@@ -269,6 +269,93 @@ def _clear_stage(record: RunRecord) -> RunRecord:
     )
 
 
+RESEARCH_LOG_BRANCH = "research-log"
+RESEARCH_LOG_MARKER = "<!-- autoresearch:research-log -->"
+
+
+def _publish_research_log(
+    github: GitHubClient,
+    target: str,
+    run_id: str,
+    benchmark: str,
+    outcome_name: str,
+    baseline: float | None,
+    candidate: float | None,
+    report_text: str,
+    pr_url: str,
+    issue_number: int,
+    secrets: tuple[str, ...],
+) -> None:
+    """Every terminal report lands in the target's browsable ledger — a file
+    on the `research-log` branch — plus a TWO-LINE pointer comment routed to
+    where the humans already are: the run's claimed issue when there is one,
+    else an open order issue naming this benchmark (Mengye: results about
+    heldout_probe belong on its standing order thread), else the rolling
+    pin--style "Research log" issue (created on first use). Negatives are the
+    most scientifically interesting artifacts and were previously invisible
+    off-cluster (self-initiated runs posted nowhere). Best-effort throughout:
+    the ledger must never fail a run.
+    """
+    from datetime import UTC, datetime
+
+    date = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    path = f"reports/{date}-{run_id}.md"
+    body = redact(report_text, secrets)
+
+    def _archive() -> None:
+        if github.ensure_branch(target, RESEARCH_LOG_BRANCH):
+            github.put_file(
+                target,
+                path,
+                body,
+                RESEARCH_LOG_BRANCH,
+                f"research log: {run_id} ({outcome_name})",
+            )
+
+    _best_effort("research-log archive", _archive, secrets)
+
+    def _pointer() -> None:
+        url = f"https://github.com/{target}/blob/{RESEARCH_LOG_BRANCH}/{path}"
+        nums = ""
+        if baseline is not None and candidate is not None:
+            delta = candidate - baseline
+            nums = f" {baseline:.6g} → {candidate:.6g} ({delta:+.4g})"
+        line = f"**{outcome_name}** `{benchmark}`{nums} — [report]({url})"
+        if pr_url:
+            line += f" · {pr_url}"
+        if issue_number:
+            return  # the claimed issue already gets the full finish post
+        # an open ORDER issue naming this benchmark? (delivery routing is
+        # deliberately laxer than intake's exactly-one claim rule: a result
+        # is relevant to a thread that names its benchmark at all)
+        log_issue = 0
+        for issue in github.list_open_issues(target):
+            text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
+            if RESEARCH_LOG_MARKER in text:
+                log_issue = int(issue.get("number", 0))
+                continue
+            if issue.get("pull_request"):
+                continue
+            if benchmark.casefold() in text.casefold():
+                github.comment(target, int(issue["number"]), line)
+                return
+        if not log_issue:
+            log_issue = github.create_issue(
+                target,
+                "Research log",
+                f"{RESEARCH_LOG_MARKER}\nOne two-line comment per finished "
+                f"autoresearch run — the full reports live on the "
+                f"[`{RESEARCH_LOG_BRANCH}`]"
+                f"(https://github.com/{target}/tree/{RESEARCH_LOG_BRANCH}/reports) "
+                "branch. Results relevant to an open order issue are posted "
+                "there instead.",
+            )
+        if log_issue:
+            github.comment(target, log_issue, line)
+
+    _best_effort("research-log pointer", _pointer, secrets)
+
+
 def _post_issue_finished(
     github: GitHubClient,
     target: str,
@@ -562,6 +649,19 @@ def _wake_author_sleep(
             result.outcome,
             "",
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+            secrets,
+        )
+        _publish_research_log(
+            github,
+            config.target,
+            run_id,
+            record.benchmark,
+            result.outcome,
+            result.baseline,
+            result.candidate,
+            result.report(config, redact_secrets=secrets),
+            "",
+            issue_number,
             secrets,
         )
         return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
@@ -1062,6 +1162,19 @@ def resume_run(
                 redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
                 secrets,
             )
+            _publish_research_log(
+                github,
+                config.target,
+                run_id,
+                record.benchmark,
+                "improved",
+                result.baseline,
+                result.candidate,
+                result.report(config, redact_secrets=secrets),
+                pr_url,
+                issue_number,
+                secrets,
+            )
             return AttemptOutcome(
                 run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
             )
@@ -1256,6 +1369,19 @@ def resume_run(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
+        _publish_research_log(
+            github,
+            config.target,
+            run_id,
+            record.benchmark,
+            "improved",
+            result.baseline,
+            result.candidate,
+            result.report(config, redact_secrets=secrets),
+            pr_url,
+            issue_number,
+            secrets,
+        )
         return AttemptOutcome(
             run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
         )
@@ -1294,6 +1420,19 @@ def resume_run(
         result.outcome,
         "",
         redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+        secrets,
+    )
+    _publish_research_log(
+        github,
+        config.target,
+        run_id,
+        record.benchmark,
+        result.outcome,
+        result.baseline,
+        result.candidate,
+        result.report(config, redact_secrets=secrets),
+        "",
+        issue_number,
         secrets,
     )
     return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))

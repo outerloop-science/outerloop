@@ -2893,3 +2893,96 @@ def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> 
     assert len(lenses) == 1 and lenses[0].kind == "review"
     assert secrets == ("sk-judge",)
     assert getattr(lenses[0].harness, "container_image", "") == "/img.sif"
+
+
+class LedgerGitHub:
+    """Purpose-built fake for the research-log publisher."""
+
+    def __init__(self, issues=()):
+        self.issues = list(issues)
+        self.branches = []
+        self.files = []
+        self.comments = []
+        self.created = []
+
+    def ensure_branch(self, repo, branch):
+        self.branches.append((repo, branch))
+        return True
+
+    def put_file(self, repo, path, content, branch, message):
+        self.files.append((repo, path, content, branch, message))
+        return True
+
+    def list_open_issues(self, repo, max_pages=3):
+        return self.issues
+
+    def create_issue(self, repo, title, body):
+        self.created.append((repo, title, body))
+        num = 90 + len(self.created)
+        self.issues.append({"number": num, "title": title, "body": body})
+        return num
+
+    def comment(self, repo, number, body):
+        self.comments.append((number, body))
+
+
+def test_research_log_archives_and_routes_to_the_order_issue() -> None:
+    """A self-initiated result about heldout_probe lands on the standing
+    order issue that names the benchmark (Mengye: results belong where the
+    research is being directed), with the full report on the ledger branch."""
+    from autoresearch.attempt import _publish_research_log
+
+    gh = LedgerGitHub(
+        issues=[
+            {"number": 15, "title": "heldout_probe: invent a better regularizer", "body": "..."},
+            {"number": 7, "title": "unrelated infra chore", "body": ""},
+        ]
+    )
+    _publish_research_log(
+        gh,
+        "org/yolo",
+        "r1",
+        "heldout_probe",
+        "negative-result",
+        0.5438,
+        0.5453,
+        "**Report** sk-SECRET inside",
+        "",
+        0,
+        ("sk-SECRET",),
+    )
+    assert gh.branches == [("org/yolo", "research-log")]
+    ((_, path, content, branch, _),) = gh.files
+    assert path.startswith("reports/") and path.endswith("-r1.md")
+    assert branch == "research-log"
+    assert "sk-SECRET" not in content  # redaction chain holds in the archive
+    ((num, line),) = gh.comments
+    assert num == 15 and "negative-result" in line and "reports/" in line
+    assert gh.created == []  # no rolling issue needed
+
+
+def test_research_log_falls_back_to_a_rolling_issue_and_reuses_it() -> None:
+    from autoresearch.attempt import RESEARCH_LOG_MARKER, _publish_research_log
+
+    gh = LedgerGitHub()
+    _publish_research_log(
+        gh, "org/yolo", "r1", "tsp", "negative-result", 10.0, 9.99, "rep", "", 0, ()
+    )
+    assert len(gh.created) == 1 and RESEARCH_LOG_MARKER in gh.created[0][2]
+    _publish_research_log(
+        gh, "org/yolo", "r2", "tsp", "improved", 10.0, 9.0, "rep", "http://pr", 0, ()
+    )
+    assert len(gh.created) == 1  # reused via the marker, not recreated
+    assert len(gh.comments) == 2 and "http://pr" in gh.comments[1][1]
+
+
+def test_research_log_skips_the_pointer_for_claimed_issues() -> None:
+    """An order-claimed run's issue already receives the full finish post —
+    the ledger file still lands, the two-liner would be duplicate noise."""
+    from autoresearch.attempt import _publish_research_log
+
+    gh = LedgerGitHub(issues=[{"number": 3, "title": "tsp: do it", "body": ""}])
+    _publish_research_log(
+        gh, "org/yolo", "r1", "tsp", "improved", 10.0, 9.0, "rep", "http://pr", 3, ()
+    )
+    assert len(gh.files) == 1 and gh.comments == []
