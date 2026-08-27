@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- `AUTORESEARCH_TARGET` joins the tick chain's `.env` allowlist, making the
+  launch target a LIVE knob like its siblings. It was only ever inherited
+  from the chain-start environment, so a `.env` edit could not retarget the
+  fleet — the tick kept servicing the default (pilot) while review-sweeping
+  other targets' records, which is why closing yolo's PR never produced a
+  dispatch there.
+
 ### Removed
 
 - Audit kill-list: `Compute.submit_after` (no production caller — wake jobs
