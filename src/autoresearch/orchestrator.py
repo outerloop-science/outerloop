@@ -791,6 +791,29 @@ def measure_and_decide(
             candidate=candidate,
             run_seed=seed,
         )
+    # The contract's OWN significance floor, when the benchmark declares one.
+    # Same-seed pairing removes pool noise but not training stochasticity —
+    # a benchmark whose eval trains models calibrates min_delta to its
+    # cross-run sd, and the gate must speak that language too (yolo#16
+    # published at +0.0379 against a declared 0.04 floor because only the
+    # followup path read it). No declared floor -> the relative default
+    # above remains the whole bar.
+    floor = benchmark_floor(baseline, bench.min_delta, bench.min_delta_rel)
+    if floor:
+        delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
+        # STRICTLY greater, matching clears_min_delta: a delta exactly at the
+        # floor is indistinguishable from the noise the floor models
+        if delta <= floor:
+            return AttemptResult(
+                outcome="no-improvement",
+                note=(
+                    f"delta {delta:+.6g} is inside the contract's significance "
+                    f"floor ({floor:g}): real movement, not creditable progress"
+                ),
+                baseline=baseline,
+                candidate=candidate,
+                run_seed=seed,
+            )
 
     # PHASE 2 — suite gate, only for a credited candidate whose diff touched
     # shared code. A second measure set (a second park for a dispatched
@@ -921,7 +944,10 @@ def resume_attempt(
         # no-improvement the same framing the in-job path sets (a clear
         # negative is a success), so a resumed negative does not end note-less.
         note = outcome.note
-        if outcome.outcome == "no-improvement":
+        if outcome.outcome == "no-improvement" and not note:
+            # only a BARE negative gets the generic framing — a specific
+            # reason (e.g. inside the contract's significance floor) must
+            # survive to the record and report
             note = "a negative result reported clearly is a success"
         return dc_replace(outcome, session=session, note=note)
     # credited: candidate cleared the threshold and no sibling regressed. The
@@ -1367,7 +1393,10 @@ def attempt_once(
             # measured (None when it never got that far, e.g. scope-violation),
             # never overwritten with the ledger's brief number.
             note = outcome.note
-            if outcome.outcome == "no-improvement":
+            if outcome.outcome == "no-improvement" and not note:
+                # only a BARE negative gets generic framing — a specific
+                # reason (e.g. inside the contract's significance floor)
+                # must survive to the record and report
                 note = (
                     "the revision addressing panel findings lost the improvement"
                     if panel_reads

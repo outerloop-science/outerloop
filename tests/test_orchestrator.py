@@ -1385,3 +1385,35 @@ def test_wake_without_a_session_id_fails_closed_to_draft(tmp_path: Path) -> None
     assert result.outcome == "improved"
     assert result.panel_blocking_open  # draft path, not a blind fresh session
     assert len(harness.resumes) == 1  # no wake attempted
+
+
+FLOOR_CONTRACT = CONTRACT.replace(
+    "    direction: min\n",
+    "    direction: min\n    min_delta: 0.5\n",
+    1,
+)
+
+
+def test_gate_enforces_the_contracts_declared_floor(tmp_path: Path) -> None:
+    """The yolo#16 class: a delta that clears the relative default but sits
+    inside the contract's declared min_delta must end no-improvement — the
+    gate speaks the contract's significance language, not only the global
+    relative default. (Same-seed pairing removes pool noise, not training
+    stochasticity — which is what a declared floor is calibrated to.)"""
+    # 13.876 -> 13.5: 2.7% relative (clears the 0.5% default) but delta
+    # 0.376 < the declared 0.5 floor
+    result, _, _ = run_climb(tmp_path, [13.876, 13.5], contract=FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
+    assert "significance" in result.note and "floor" in result.note
+
+
+def test_gate_publishes_a_floor_clearing_delta(tmp_path: Path) -> None:
+    result, _, _ = run_climb(tmp_path, [13.876, 13.0], contract=FLOOR_CONTRACT)
+    assert result.outcome == "improved"
+
+
+def test_gate_rejects_an_exact_floor_delta(tmp_path: Path) -> None:
+    # boundary matches clears_min_delta: STRICTLY greater publishes — a
+    # delta exactly at the floor is the noise the floor models (terra #169)
+    result, _, _ = run_climb(tmp_path, [13.876, 13.376], contract=FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
