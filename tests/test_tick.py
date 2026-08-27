@@ -2541,3 +2541,29 @@ roadmap: docs/roadmap.md
     assert pick_self_initiated([just_ended], hot, "o/r", NOW) == "reach"
     standard = load_contract(base % "", "o/r")
     assert pick_self_initiated([just_ended], standard, "o/r", NOW) is None  # 6h holds
+
+
+def test_zero_cooldown_keeps_the_dead_launch_backoff(tmp_path: Path) -> None:
+    """terra #172: a launch that died before writing a record is invisible
+    to runs_per_week, so even a zero-cooldown contract backs it off by the
+    dead-launch floor instead of resubmitting every tick."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import DEAD_LAUNCH_BACKOFF_S, pick_self_initiated
+
+    hot = load_contract(
+        """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 500, attempt_cooldown_minutes: 0}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "o/r",
+    )
+    # a pre-record death 60s ago: blocked despite cooldown 0
+    assert pick_self_initiated([], hot, "o/r", NOW, ("reach", NOW - 60)) is None
+    # past the floor: dispatches again
+    assert (
+        pick_self_initiated([], hot, "o/r", NOW, ("reach", NOW - DEAD_LAUNCH_BACKOFF_S - 1))
+        == "reach"
+    )

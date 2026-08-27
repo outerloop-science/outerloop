@@ -1355,6 +1355,9 @@ def replace_report(
 
 MAX_ACTIVE_RUNS_PER_TARGET = 1
 SELF_INITIATED_COOLDOWN_S = 6 * 3600
+# the crash-loop floor: a launch that died pre-record backs off at least
+# this long regardless of the contract's cooldown dial
+DEAD_LAUNCH_BACKOFF_S = 30 * 60
 # An implementing run untouched for this long is a crashed climb job; it must
 # not block the lane forever, but the window must exceed the LONGEST honest
 # job — the 120-min contract ceiling plus the panel allowance the tick adds
@@ -1404,12 +1407,21 @@ def pick_self_initiated(
         last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
     cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
     cooldown_s = SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
+    # A launch that died BEFORE writing a run record is invisible to the
+    # runs_per_week cap, so its cooldown attribution is the ONLY crash-loop
+    # guard — it keeps a floor even when the contract dials cooldown to 0
+    # (terra #172: zero cooldown otherwise resubmits a crashing launch
+    # every tick, uncapped).
+    dead_pending_bench = pending_attempt[0] if pending_attempt else ""
     candidates = sorted(
         contract.benchmarks,
         key=lambda b: (last_attempt.get(b.name, 0.0), b.name),
     )
     for bench in candidates:
-        if now - last_attempt.get(bench.name, 0.0) >= cooldown_s:
+        floor_s = cooldown_s
+        if bench.name == dead_pending_bench:
+            floor_s = max(cooldown_s, DEAD_LAUNCH_BACKOFF_S)
+        if now - last_attempt.get(bench.name, 0.0) >= floor_s:
             return str(bench.name)
     return None
 
