@@ -870,6 +870,16 @@ def _publish_ledger_entry(
             with contextlib.suppress(OSError, ValueError):
                 log_issue = int(cache.read_text().strip())
             if not log_issue:
+                # cache miss (first use, or a lost/failed cache write): find
+                # the rolling issue by its marker BEFORE creating another —
+                # the cache is a fast path, never the source of truth
+                # (terra #170 r5: a failed cache write must not duplicate
+                # the rolling issue)
+                for issue in github.list_open_issues(target):
+                    if RESEARCH_LOG_MARKER in str(issue.get("body") or ""):
+                        log_issue = int(issue.get("number", 0))
+                        break
+            if not log_issue:
                 log_issue = github.create_issue(
                     target,
                     "Research log",
@@ -879,11 +889,18 @@ def _publish_ledger_entry(
                     "branch. Results relevant to an open order issue are posted "
                     "there instead.",
                 )
-                if log_issue:
-                    with contextlib.suppress(OSError):
-                        cache.write_text(str(log_issue))
             if log_issue:
-                github.comment(target, log_issue, line)
+                with contextlib.suppress(OSError):
+                    cache.write_text(str(log_issue))
+                try:
+                    github.comment(target, log_issue, line)
+                except Exception:
+                    # a stale cached number (locked/deleted/transferred issue)
+                    # must not stall delivery forever: drop the cache so the
+                    # next pass re-discovers or re-creates (terra #170 r5)
+                    with contextlib.suppress(OSError):
+                        cache.unlink()
+                    raise
         _mark("done")  # write just proved out via the probe; failure = freak
         return True
     except Exception as exc:  # advisory ledger: never fail the tick

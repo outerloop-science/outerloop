@@ -2465,3 +2465,51 @@ def test_research_log_unwritable_marker_stalls_without_posting(tmp_path: Path) -
         os.chmod(rd, 0o755)
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
     assert len(gh.comments) == 1  # posts exactly once after recovery
+
+
+def test_research_log_stale_cached_issue_self_heals(tmp_path: Path) -> None:
+    """terra #170 r5: a cached rolling-issue number that no longer accepts
+    comments (locked/deleted) must not stall delivery forever — the failed
+    comment drops the cache, and the next pass re-creates."""
+    from autoresearch.tick import (
+        _ledger_issue_cache,
+        _ledger_since,
+        service_research_log,
+    )
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-9", benchmark="tsp")
+    _ledger_issue_cache(tmp_path, "org/yolo").write_text("404")  # stale
+
+    gh = LedgerGitHub()
+    real_comment = gh.comment
+
+    def locked_404(repo, number, body):
+        if number == 404:
+            raise RuntimeError("issue locked")
+        real_comment(repo, number, body)
+
+    gh.comment = locked_404  # type: ignore[method-assign]
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert not _ledger_issue_cache(tmp_path, "org/yolo").exists()  # dropped
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1  # re-created
+    assert gh.created == ["Research log"] and len(gh.comments) == 1
+
+
+def test_research_log_lost_cache_rediscovers_instead_of_duplicating(tmp_path: Path) -> None:
+    """A failed/lost cache write must not spawn a second rolling issue: the
+    marker scan is the source of truth, the cache only a fast path."""
+    from autoresearch.tick import (
+        RESEARCH_LOG_MARKER,
+        _ledger_issue_cache,
+        _ledger_since,
+        service_research_log,
+    )
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-10", benchmark="tsp")
+    gh = LedgerGitHub(issues=[{"number": 77, "title": "Research log", "body": RESEARCH_LOG_MARKER}])
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert gh.created == []  # rediscovered via the marker, no duplicate
+    assert gh.comments == [(77, gh.comments[0][1])]
+    assert _ledger_issue_cache(tmp_path, "org/yolo").read_text() == "77"  # re-cached
