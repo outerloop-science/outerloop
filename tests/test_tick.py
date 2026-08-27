@@ -2272,3 +2272,122 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     assert times[0] == session_minutes + ATTEMPT_OVERHEAD_MINUTES  # fits the session
     assert times[0] > 20  # far more than a candidate wake's base
     assert f"--session-minutes {session_minutes}" in joined_argv[0]  # self-deadline set
+
+
+class LedgerGitHub:
+    """Duck-typed fake for the research-log service (cast at call sites)."""
+
+    def __init__(self, issues=(), put_ok=True):
+        self.issues = list(issues)
+        self.put_ok = put_ok
+        self.files = []
+        self.comments = []
+        self.created = []
+
+    def ensure_branch(self, repo, branch):
+        return True
+
+    def put_file(self, repo, path, content, branch, message):
+        if not self.put_ok:
+            return False
+        self.files.append((path, content, branch))
+        return True
+
+    def list_open_issues(self, repo, max_pages=3):
+        return self.issues
+
+    def create_issue(self, repo, title, body):
+        self.created.append(title)
+        return 91
+
+    def comment(self, repo, number, body):
+        self.comments.append((number, body))
+
+
+def _ended_run(root: Path, run_id: str, **over) -> None:
+    from autoresearch.runstate import run_dir as _rd
+
+    base = dict(
+        run_id=run_id,
+        target="org/yolo",
+        task_title="t",
+        state=ENDED,
+        ending="negative-result",
+        benchmark="heldout_probe",
+        updated=NOW,
+    )
+    save_record(root, RunRecord(**{**base, **over}), NOW)
+    (_rd(root, run_id) / "report.md").write_text("# report\ncontent")
+
+
+def _spec(target="org/yolo"):
+    from autoresearch.tick import FollowupSpec
+
+    return FollowupSpec(
+        account="a",
+        partition="p",
+        run_root=Path("/tmp"),
+        image="i.sif",
+        home=Path("/tmp"),
+        target=target,
+    )
+
+
+def test_research_log_first_pass_adopts_history_silently(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_marker, service_research_log
+
+    _ended_run(tmp_path, "old-1")
+    gh = LedgerGitHub()
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert gh.files == [] and gh.comments == []  # no backfill spam
+    assert _ledger_marker(tmp_path, "old-1").exists()  # adopted
+
+
+def test_research_log_publishes_once_and_routes_to_the_order_issue(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")  # past first pass
+    _ended_run(tmp_path, "r-1")
+    gh = LedgerGitHub(issues=[{"number": 15, "title": "heldout_probe: order", "body": ""}])
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    ((path, content, branch),) = gh.files
+    assert branch == "research-log" and path.endswith("-r-1.md") and "content" in content
+    ((num, line),) = gh.comments
+    assert num == 15 and "negative-result" in line and "research-log" in line
+    # idempotent: second pass publishes nothing
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+
+
+def test_research_log_archive_failure_defers_pointer_and_retries(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-2")
+    gh = LedgerGitHub(put_ok=False)
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert gh.comments == []  # no dead link
+    assert not _ledger_marker(tmp_path, "r-2").exists()  # retried next tick
+    gh.put_ok = True
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+
+
+def test_research_log_rolling_issue_created_once_via_cache(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-3", benchmark="tsp")
+    _ended_run(tmp_path, "r-4", benchmark="tsp")
+    gh = LedgerGitHub()  # no order issues -> rolling issue
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 2
+    assert gh.created == ["Research log"]  # created once, cached, reused
+    assert [n for n, _ in gh.comments] == [91, 91]
+
+
+def test_research_log_claimed_issue_gets_no_duplicate_pointer(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-5", issue_number=15)
+    gh = LedgerGitHub(issues=[{"number": 15, "title": "heldout_probe: order", "body": ""}])
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert len(gh.files) == 1 and gh.comments == []  # archived, not re-posted
