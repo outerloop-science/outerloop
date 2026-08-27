@@ -12,13 +12,16 @@ Versions follow [SemVer](https://semver.org).
   wide first round fans out several hermes (terra) lens sessions at once, and
   GitHub 429s the concurrent ANONYMOUS clones of the same public repo
   (observed live: 3/5 lens sessions died at exit 128 before the model ran).
-  Fix, three layers: (1) the clone is AUTHENTICATED with the job's read-only
-  token (via `GIT_CONFIG_*`, never persisted) — the authenticated tier means
-  even concurrent cold-cache clones no longer 429; (2) the pinned clone is
-  CACHED — and because the review workflows run on `pull_request_target`,
-  every run on every PR shares the base-branch cache scope, so one round
-  populates it for all future PRs (cold = first run on a fresh tag only);
-  (3) a backoff+jitter retry remains as the last backstop. The cache is
+  Fix: (1) the pinned clone is CACHED — and because the review workflows run
+  on `pull_request_target`, every run on every PR shares the base-branch
+  cache scope, so one round populates it for all future PRs (cold = first
+  run on a fresh tag only); (2) a backoff+jitter retry rides out the
+  anonymous rate limit on a cold fan-out. The clone is deliberately
+  ANONYMOUS: the job's `GITHUB_TOKEN` is a repo-scoped installation token,
+  and git-over-HTTP rejects a foreign-repo credential outright (observed
+  live on the first post-merge run: six identical "could not read Username"
+  failures), so for a foreign public repo anonymous succeeds where the
+  token cannot. The cache is
   written by an explicit `actions/cache/save` placed BEFORE the session step
   and verified against the pinned commit sha on restore (wipe + re-clone on
   mismatch) — a post-job save would have let a prompt-injected session

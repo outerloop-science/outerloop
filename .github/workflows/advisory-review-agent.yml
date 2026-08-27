@@ -188,13 +188,6 @@ jobs:
       # Pinned artifacts, same discipline across backends: claude installer
       # pin, codex npm pin, hermes release tag. Bump deliberately.
       - name: Install the ${{ inputs.backend }} backend
-        env:
-          # authenticate the hermes clone: anonymous clones share a low
-          # per-IP limit that the wide round's fan-out trips; the job's
-          # read-only token lifts it to the authenticated tier. Passed via
-          # GIT_CONFIG_* (below), never git config --global — the token must
-          # not persist into ~/.gitconfig where the model session could read it.
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "$BACKEND" in
@@ -212,19 +205,15 @@ jobs:
               else
                 # cold cache, or a restore failing the sha/clean check — an
                 # unverified tree never runs with the reviewer key. Clone
-                # fresh, authenticated: the token rides GIT_CONFIG_* (not
-                # argv, not --global — it must not persist into ~/.gitconfig
-                # where the session could read it), and the authenticated
-                # tier means a concurrent cold fan-out no longer 429s.
+                # fresh, ANONYMOUSLY — deliberately: the job's GITHUB_TOKEN
+                # is a repo-scoped installation token, and git-over-HTTP
+                # 401s a foreign-repo credential outright (observed live,
+                # jepa-agent#11: "could not read Username" x6 — git tries to
+                # prompt after the reject). For a public foreign repo,
+                # anonymous succeeds where the token cannot; the cache keeps
+                # this to one clone per repo per version, and the retry
+                # rides out the anonymous rate limit on a cold fan-out.
                 rm -rf "$GITHUB_WORKSPACE/hermes-agent"
-                if [ -n "${GITHUB_TOKEN:-}" ]; then
-                  # additive-only: an EMPTY bearer header would 401 a public
-                  # clone (worse than anonymous), so auth only arms when the
-                  # token is present; without it the retry still covers us
-                  export GIT_CONFIG_COUNT=1
-                  export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
-                  export GIT_CONFIG_VALUE_0="AUTHORIZATION: Bearer ${GITHUB_TOKEN}"
-                fi
                 for i in 1 2 3 4 5 6; do
                   if git clone --depth 1 --branch "$HERMES_REF" \
                       https://github.com/NousResearch/hermes-agent \
