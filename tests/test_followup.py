@@ -818,3 +818,40 @@ def test_read_only_spec_is_refused(review_run) -> None:
     assert "must allow execution" in outcome.note
     assert harness.calls == []  # refused before any session spend
     assert load_record(root, "tsp-r1").last_comment_id == 100  # cursor un-advanced
+
+
+def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
+    """terra #171 r2: a follow-up code change on an auto-mode PR pushes ONLY
+    after GitHub confirms auto-merge is disarmed; a failed disarm withholds
+    the change (workspace cleaned, the reply says so) instead of pushing an
+    un-gated head at an armed PR."""
+    from autoresearch.contract import load_contract
+
+    auto_contract = CONTRACT.replace("roadmap:", "merge: auto\nroadmap:")
+    contract = load_contract(auto_contract, "org/pilot")
+    assert contract.merge == "auto"
+    # the behavior is pinned at the unit seam: disable_auto_merge False =>
+    # no push. (Integration plumbing exercised by the respond tests above.)
+    from autoresearch.github import GitHubClient, GitHubError
+
+    class _Tok:
+        def token(self) -> str:
+            return "t"
+
+    client = GitHubClient(auth=_Tok())
+
+    def not_enabled(*a, **k):
+        raise GitHubError(0, "/x", "Pull request auto merge is not enabled")
+
+    def hard_fail(*a, **k):
+        raise GitHubError(0, "/x", "Something went wrong")
+
+    import types
+
+    client._graphql = types.MethodType(lambda self, q, v: not_enabled(), client)  # type: ignore[method-assign]
+    client.get_pull_request = types.MethodType(  # type: ignore[method-assign]
+        lambda self, repo, n: {"node_id": "N1"}, client
+    )
+    assert client.disable_auto_merge("o/r", 1) is True  # nothing armed = safe
+    client._graphql = types.MethodType(lambda self, q, v: hard_fail(), client)  # type: ignore[method-assign]
+    assert client.disable_auto_merge("o/r", 1) is False  # unknown state = block

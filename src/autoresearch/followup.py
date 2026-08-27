@@ -578,32 +578,54 @@ def _respond(
                                     if b.display_digits
                                 },
                             )
-                    branch = _current_branch(ws)
-                    verb = "steward" if is_steward else "agent"
-                    ws.commit_all(
-                        f"{verb}: address review feedback "
-                        f"({bench.metric}={fmt_metric(candidate, bench.display_digits)})"
-                        f"\n\nAgent: {record.agent_id}",
-                        author=bot_login,
-                        forbidden=lambda p: (
-                            p not in PROGRESS_PATHS and bool(scope_check([p], contract))
-                        ),
-                    )
-                    ws.push(branch)
-                    change_pushed = True
-                    worse = prior is not None and not orch_improved(
-                        prior.best, candidate, bench.direction, 0.0
-                    )
-                    measured_note = (
-                        f"\n\n**Re-measured after this change: `{bench.metric}` = "
-                        f"{fmt_metric(candidate, bench.display_digits)}**"
-                        + (
-                            " — worse than the PR's previous number, stated plainly."
-                            if worse
-                            else ""
+                    # AUTO merge mode: an armed PR would merge THIS new head
+                    # on green CI without a fresh gate/suite/panel, so the
+                    # commit+push are GATED on a confirmed disarm (terra #171
+                    # r2: ignoring a failed disarm pushed anyway). On failure
+                    # the change is withheld like a failed eval — workspace
+                    # cleaned, the reply says so, next pass retries.
+                    disarmed = True
+                    if getattr(contract, "merge", "manual") == "auto":
+                        try:
+                            disarmed = github.disable_auto_merge(record.target, number)
+                        except Exception as exc:
+                            disarmed = False
+                            log.warning("auto-merge disarm errored: %s", exc)
+                    if not disarmed:
+                        ws.git("checkout", "--", ".")
+                        ws.git("clean", "-fdq")
+                        measured_note = (
+                            "\n\n_(A code change was validated but WITHHELD: "
+                            "auto-merge could not be confirmed disarmed on this "
+                            "auto-mode PR; the follow-up will retry.)_"
                         )
-                        + floor_note
-                    )
+                    else:
+                        branch = _current_branch(ws)
+                        verb = "steward" if is_steward else "agent"
+                        ws.commit_all(
+                            f"{verb}: address review feedback "
+                            f"({bench.metric}={fmt_metric(candidate, bench.display_digits)})"
+                            f"\n\nAgent: {record.agent_id}",
+                            author=bot_login,
+                            forbidden=lambda p: (
+                                p not in PROGRESS_PATHS and bool(scope_check([p], contract))
+                            ),
+                        )
+                        ws.push(branch)
+                        change_pushed = True
+                        worse = prior is not None and not orch_improved(
+                            prior.best, candidate, bench.direction, 0.0
+                        )
+                        measured_note = (
+                            f"\n\n**Re-measured after this change: `{bench.metric}` = "
+                            f"{fmt_metric(candidate, bench.display_digits)}**"
+                            + (
+                                " — worse than the PR's previous number, stated plainly."
+                                if worse
+                                else ""
+                            )
+                            + floor_note
+                        )
 
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
     if change_pushed:

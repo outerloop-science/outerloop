@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- The merge-policy dial: a contract-level `merge: manual | auto` knob
+  (default `manual`, unchanged behavior). In `auto`, a gate+panel-clean PR
+  merges itself — the publish arms GitHub auto-merge, or merges directly
+  when nothing is pending to arm against; the manual-mode review-required
+  guard deliberately does not apply (the target owner opted in, and the
+  gate — contract floor, suite phase, panel taste — binds before publish).
+  The base-moved decline holds in BOTH modes: a stale claim never
+  self-merges. Repo prerequisites for `auto` are documented on the field.
+
 ### Fixed
 
 - The gate now enforces the contract's declared significance floor

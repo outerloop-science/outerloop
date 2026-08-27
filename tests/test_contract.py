@@ -299,3 +299,22 @@ scope: {allowed: [src/]}
 roadmap: docs/roadmap.md
 """
     assert load_contract(both, "o/r").budgets.attempt_job_minutes == 120
+
+
+def test_merge_mode_defaults_manual_and_validates() -> None:
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+%s
+"""
+    assert load_contract(base % "", "o/r").merge == "manual"
+    assert load_contract(base % "merge: auto", "o/r").merge == "auto"
+    import pytest
+
+    with pytest.raises(Exception, match="merge"):
+        load_contract(base % "merge: yolo", "o/r")

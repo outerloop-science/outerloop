@@ -424,6 +424,80 @@ class GitHubClient:
         self.enable_auto_merge(repo, number, method=methods[0])
         return True
 
+    def disable_auto_merge(self, repo: str, number: int) -> bool:
+        """Disarm GitHub auto-merge (GraphQL). The follow-up lane calls this
+        before pushing new commits to an auto-mode PR: an armed PR would
+        merge the NEW head on green CI without a fresh gate/suite/panel
+        (terra #171). Returns False when nothing was armed or on error."""
+        if self.dry_run:
+            log.info("[dry-run] disarm auto-merge on %s#%d", repo, number)
+            return True
+        try:
+            node_id = self.get_pull_request(repo, number).get("node_id")
+            if not node_id:
+                return False
+            mutation = (
+                "mutation($pr: ID!) {"
+                " disablePullRequestAutoMerge(input: {pullRequestId: $pr})"
+                " { pullRequest { number } } }"
+            )
+            self._graphql(mutation, {"pr": str(node_id)})
+            return True
+        except GitHubError as exc:
+            if "not enabled" in str(exc).casefold():
+                # nothing was armed — the state we wanted; pushing is safe
+                return True
+            log.warning("auto-merge disarm on %s#%s failed: %s", repo, number, exc)
+            return False
+
+    def merge_pull(self, repo: str, number: int, method: str = "merge") -> bool:
+        """Directly merge a pull request (REST). Used only by AUTO merge mode
+        when nothing is pending for auto-merge to arm against."""
+        if self.dry_run:
+            log.info("[dry-run] merge %s#%s", repo, number)
+            return True
+        try:
+            self._request(
+                "PUT",
+                f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/merge",
+                {"merge_method": method},
+            )
+            return True
+        except GitHubError as exc:
+            log.warning("direct merge of %s#%s failed: %s", repo, number, exc)
+            return False
+
+    def arm_auto_merge_auto_mode(self, repo: str, number: int) -> bool:
+        """AUTO merge mode (the contract's `merge: auto` dial): arm
+        auto-merge so the PR merges when its required checks pass; when
+        GitHub declines ONLY because nothing is pending (clean status),
+        merge directly. Any other decline — auto-merge disabled in repo
+        settings, missing permission — is a repo-owner control and STOPS
+        here (terra #171: the broad fallback would have bulldozed a
+        deliberately disabled auto-merge setting). The manual-mode
+        review-required guard deliberately does not apply — the owner
+        opted this repo in, and the gate/panel bound before publish."""
+        methods = self.allowed_merge_methods(repo) or ["MERGE"]
+        try:
+            self.enable_auto_merge(repo, number, method=methods[0])
+            return True
+        except GitHubError as exc:
+            if "clean status" not in str(exc).casefold():
+                log.warning(
+                    "auto-merge arming on %s#%s failed (%s); NOT merging "
+                    "directly — the decline may be a repo-owner control",
+                    repo,
+                    number,
+                    exc,
+                )
+                return False
+            log.info(
+                "auto-merge arming on %s#%s: PR already clean; merging directly",
+                repo,
+                number,
+            )
+        return self.merge_pull(repo, number, method=methods[0].lower())
+
     def get_pull_request_diff(self, repo: str, number: int) -> str:
         """Fetch a PR's unified diff (uses the diff media type)."""
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
