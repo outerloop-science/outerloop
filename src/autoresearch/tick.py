@@ -1704,9 +1704,20 @@ def service_self_initiated(
                 # Slurm can't say (a dup submit is worse than a slow retry).
                 return None
             else:
-                # Died before writing a record. Keep its cooldown so a
-                # crash-at-startup loop can't resubmit every tick.
-                clear_pending(root, spec.target)
+                # Died before writing a record: the marker is the ONLY
+                # memory of the crash (no record exists for runs_per_week or
+                # cooldown to see), so it persists as a TOMBSTONE until the
+                # backoff window is served — clearing immediately made the
+                # attribution one-tick amnesia (terra #172 r2). The window is
+                # the larger of the crash floor and the contract's own
+                # cooldown, which also closes the pre-existing one-tick leak
+                # on standard repos.
+                cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
+                cooldown_s = (
+                    SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
+                )
+                if now - submitted_at > max(DEAD_LAUNCH_BACKOFF_S, cooldown_s):
+                    clear_pending(root, spec.target)  # backoff served
                 pending_attempt = (str(pending.get("benchmark", "")), submitted_at)
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
