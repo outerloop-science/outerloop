@@ -245,6 +245,27 @@ def test_blind_park_before_its_deadline_is_left_alone(tmp_path: Path) -> None:
     assert dispatcher.dispatched == []
 
 
+def test_sealed_candidate_park_wakes_immediately(tmp_path: Path) -> None:
+    """A submit-park (candidate sealed in the stage, no jobs to wait on) is
+    not blind — the decide can start now. Observed live on the first
+    submit-path run (2026-08-27): the sweep rode the 12h deadline floor
+    instead of waking a run whose stage already carried the candidate."""
+    waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        deadline=NOW + 10_000,  # far future: the wake must NOT need the floor
+        stage={
+            "afterany": "",
+            "base_branch": "main",
+            "base_sha": "b" * 40,
+            "candidate_ref": "refs/autoresearch/r1",
+            "candidate_sha": "c" * 40,
+        },
+    )
+    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
+    assert dispatcher.dispatched == [("r1", "sealed candidate awaiting decide")]
+
+
 def test_multi_job_park_wakes_when_all_afterany_jobs_finish(tmp_path: Path) -> None:
     """A multi-job park (candidate + siblings, several author launches)
     records no single experiment_job_id — the sweep polls every id in the

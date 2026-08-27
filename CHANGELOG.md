@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- A submit-park wakes immediately: a waiting run whose stage carries the
+  SEALED CANDIDATE (the author's `submit` staged base+candidate and
+  hibernated) has nothing to wait on, but the sweep classified every
+  no-poll-target park as blind and rode the 12h deadline floor. Observed
+  live on the first submit-path run (2026-08-27, yolo heldout_probe): two
+  ticks swept the staged run without waking it. The sweep now wakes a
+  sealed-candidate park on sight ("sealed candidate awaiting decide");
+  genuinely blind parks keep the deadline floor.
+
 ### Removed
 
 - The review-path hermes CACHE machinery, wholesale (provision job, shared
