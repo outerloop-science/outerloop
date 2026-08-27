@@ -907,6 +907,9 @@ def _sweep_one(
             # so `MeasurementPending` carried no ids) still hibernated with a
             # deadline — the deadline floor is its ONLY wake, so fire on it. A
             # genuinely mid-write record has no deadline and is left alone.
+            # (A jobless CHECKPOINT SLEEP arrives here too — its deadline is
+            # near-term by construction, attempt.py sizes it to the next sweep
+            # pass, not the 12h queue slack that protects queued jobs.)
             if record.deadline > 0 and now > record.deadline:
                 wake(record, "blind park past deadline", "deadline")
             return

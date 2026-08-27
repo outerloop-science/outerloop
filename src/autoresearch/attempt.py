@@ -309,6 +309,9 @@ def _post_issue_finished(
 # healthy eval can legitimately sit queued-then-running, or `tick._sweep_one`
 # would cancel a still-queued job as "unschedulable".
 PARK_QUEUE_SLACK_MIN = 12 * 60
+# a jobless checkpoint sleep only needs to survive to the next sweep pass:
+# one cadence + coalescing headroom, not queue slack
+CHECKPOINT_SLEEP_SLACK_MIN = 45
 
 
 def _park_run(
@@ -401,7 +404,20 @@ def _park_run(
         # a submitted candidate with sibling launches waits on gate evals AND
         # launches — the floor must sit past the longest of either
         floor_minutes = max(floor_minutes, *(la.minutes for la in parked.syscall.launches), 0)
-    deadline = now + (floor_minutes + PARK_QUEUE_SLACK_MIN) * 60
+    checkpoint_sleep = (
+        parked.phase == "author-sleep"
+        and parked.syscall is not None
+        and not parked.syscall.launches
+    )
+    if checkpoint_sleep:
+        # a CHECKPOINT SLEEP has nothing in any queue, so the 12h queue slack
+        # (sized to protect queued Slurm jobs from cancel-on-pending) does not
+        # apply — the deadline needs only to reach the sweep's next pass.
+        # Observed live (yolo heldout_probe, 2026-08-27): a jobless nap
+        # inherited the queue slack and became a 12h coma.
+        deadline = now + CHECKPOINT_SLEEP_SLACK_MIN * 60
+    else:
+        deadline = now + (floor_minutes + PARK_QUEUE_SLACK_MIN) * 60
     waiting = RunRecord(
         **{
             **record.__dict__,
