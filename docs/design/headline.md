@@ -123,10 +123,15 @@ step · failure model (driver dies vs sweep heals).
 
 ## Build list (sequenced)
 
-1. **min_delta gate audit** (why yolo#16 published sub-floor) — prerequisite
-   for everything `auto`.
-2. **Suite no-regression gate** (metric-taxonomy note has the vocabulary).
-3. **`merge: manual|auto` contract knob** + repo-settings runbook.
+1. **min_delta gate audit** — DONE (#169: the gate enforces the contract's
+   declared floor; strictly-greater boundary).
+2. **Suite no-regression gate** — ALREADY BUILT (decide PHASE 2:
+   `suite_regressed` is floor-aware per sibling, same-seed paired, fails
+   closed; this list previously carried a stale "to build" — Mengye caught
+   it).
+3. **`merge: manual|auto` contract knob** + repo-settings runbook + the
+   publish change (merge directly when the gate CI is the sole requirement;
+   arm otherwise) — the LAST auto-mode item.
 4. **Width dial**: portfolio climbs on one benchmark (lift
    MAX_ACTIVE_RUNS_PER_TARGET; attempt dedup/selection; merge/race policy
    for concurrent PRs).

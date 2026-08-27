@@ -172,6 +172,7 @@ def _arm_unless_base_moved(
     base_branch: str,
     measured_base_sha: str,
     secrets: tuple[str, ...],
+    merge_mode: str = "manual",
 ) -> None:
     """Arm auto-merge only while origin/<base_branch> still equals the base the
     claim was measured against. A moved base still OPENS the PR — review owns
@@ -194,7 +195,13 @@ def _arm_unless_base_moved(
                 fresh[:12],
             )
             return
-        github.arm_auto_merge_when_review_required(target, int(pr_number))
+        if merge_mode == "auto":
+            # the contract's autonomy dial: the owner opted this repo into
+            # self-merging gate-clean PRs — arm, or merge directly when
+            # nothing is pending to arm against
+            github.arm_auto_merge_auto_mode(target, int(pr_number))
+        else:
+            github.arm_auto_merge_when_review_required(target, int(pr_number))
 
     _best_effort("auto-merge arming", _check_and_arm, secrets)
 
@@ -1031,7 +1038,14 @@ def resume_run(
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
             if pr_number.isdigit() and not existing.get("draft"):
                 _arm_unless_base_moved(
-                    github, ws, config.target, pr_number, base_branch, base_sha, secrets
+                    github,
+                    ws,
+                    config.target,
+                    pr_number,
+                    base_branch,
+                    base_sha,
+                    secrets,
+                    merge_mode=getattr(contract, "merge", "manual"),
                 )
             report_path = run_dir / "report.md"
             _best_effort(
@@ -1199,7 +1213,14 @@ def resume_run(
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
             if pr_number.isdigit() and not draft:
                 _arm_unless_base_moved(
-                    github, ws, config.target, pr_number, base_branch, base_sha, secrets
+                    github,
+                    ws,
+                    config.target,
+                    pr_number,
+                    base_branch,
+                    base_sha,
+                    secrets,
+                    merge_mode=getattr(contract, "merge", "manual"),
                 )
         except Exception as exc:
             # push / PR / commit failed — end as an error. Save the ENDED record
@@ -1945,7 +1966,14 @@ def live_attempt(
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
             if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
                 _arm_unless_base_moved(
-                    github, ws, config.target, pr_number, base_branch, pre_session_sha, secrets
+                    github,
+                    ws,
+                    config.target,
+                    pr_number,
+                    base_branch,
+                    pre_session_sha,
+                    secrets,
+                    merge_mode=getattr(contract, "merge", "manual"),
                 )
             final = RunRecord(
                 **{

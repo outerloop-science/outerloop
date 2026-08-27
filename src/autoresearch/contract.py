@@ -206,6 +206,17 @@ class Contract(_StrictModel):
     roadmap: str = Field(min_length=1)
     suite: SuiteAggregate | None = None
     steward: StewardScope | None = None
+    # MERGE POLICY — the autonomy mode dial (docs/design/headline.md), the
+    # target owner's declaration like a harness permission mode:
+    #   manual (default): the bot opens PRs and arms auto-merge only when a
+    #     required human review stands between arming and merging.
+    #   auto: a gate+panel-clean PR merges itself. Repo prerequisites the
+    #     owner sets alongside this knob: "Allow auto-merge" on; branch
+    #     protection whose required checks are the repo's own CI; NO required
+    #     review. The gate is the whole conscience in auto mode — the floor
+    #     (min_delta), the suite no-regression phase, and the panel's taste
+    #     rubric all bind BEFORE publish.
+    merge: Literal["manual", "auto"] = "manual"
 
     @field_validator("benchmarks")
     @classmethod
