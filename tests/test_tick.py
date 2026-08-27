@@ -2396,17 +2396,47 @@ def test_research_log_claimed_issue_gets_no_duplicate_pointer(tmp_path: Path) ->
     assert len(gh.files) == 1 and gh.comments == []  # archived, not re-posted
 
 
-def test_research_log_lost_marker_does_not_duplicate_pointers(tmp_path: Path) -> None:
-    """A marker write can fail after a successful publish; the next pass
-    re-puts the archive (harmless) but must NOT re-post the pointer — the
-    created/updated distinction is the idempotency backstop (terra #170)."""
+def test_research_log_pointer_failure_retries_pointer_only(tmp_path: Path) -> None:
+    """terra #170 r3: a comment failure after a successful archive must NOT
+    be treated as posted — the staged marker ("archived") makes the next
+    pass retry the POINTER without re-putting the archive, then mark done."""
     from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-6")
+
+    gh = LedgerGitHub()
+    boom = {"on": True}
+    real_comment = gh.comment
+
+    def flaky_comment(repo, number, body):
+        if boom["on"]:
+            raise RuntimeError("comment API down")
+        real_comment(repo, number, body)
+
+    gh.comment = flaky_comment  # type: ignore[method-assign]
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert _ledger_marker(tmp_path, "r-6").read_text() == "archived"
+    assert len(gh.files) == 1 and gh.comments == []
+    boom["on"] = False
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert _ledger_marker(tmp_path, "r-6").read_text() == "done"
+    assert len(gh.files) == 1  # archive NOT re-put
+    assert len(gh.comments) == 1  # the pointer arrived exactly once
+
+
+def test_research_log_lost_marker_duplicates_at_most_once(tmp_path: Path) -> None:
+    """If the marker FILE is lost after full success, the retry re-posts one
+    pointer — the bounded duplicate is the accepted price of never silently
+    losing a pointer (the r2/r3 trade, documented in the publisher)."""
+    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-7")
     gh = LedgerGitHub()
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
-    _ledger_marker(tmp_path, "r-6").unlink()  # simulate the lost marker
-    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1  # re-marked
-    assert len([p for p, _, _ in gh.files if p.endswith("-r-6.md")]) == 2  # re-put
-    assert len(gh.comments) == 1  # but no duplicate pointer
+    _ledger_marker(tmp_path, "r-7").unlink()
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert _ledger_marker(tmp_path, "r-7").read_text() == "done"  # settled
+    assert len(gh.comments) == 2  # one bounded duplicate, then stable
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0

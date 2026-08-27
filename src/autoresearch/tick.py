@@ -774,7 +774,10 @@ def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float
             continue
         marker = _ledger_marker(root, record.run_id)
         report_path = run_dir(root, record.run_id) / "report.md"
-        if marker.exists() or not report_path.exists():
+        state = ""
+        with contextlib.suppress(OSError):
+            state = marker.read_text()
+        if state.startswith(("done", "adopted")) or not report_path.exists():
             continue
         if first_pass and (record.updated or record.created) < now:
             # adopt pre-feature history silently: browsable going forward,
@@ -791,44 +794,57 @@ def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float
         except OSError:
             continue
         outcome = record.ending or ("improved" if record.state == IN_REVIEW else "ended")
-        if _publish_ledger_entry(github, spec.target, root, record, outcome, report):
-            try:
-                marker.write_text(str(now))
-            except OSError as exc:
-                # loud: a lost marker costs an archive re-put next tick (the
-                # created/updated check stops pointer duplication)
-                log.warning("ledger marker write failed for %s: %s", record.run_id, exc)
+        if _publish_ledger_entry(github, spec.target, root, record, outcome, report, marker, state):
             published += 1
     return published
 
 
 def _publish_ledger_entry(
-    github: Any, target: str, root: Path, record: RunRecord, outcome: str, report: str
+    github: Any,
+    target: str,
+    root: Path,
+    record: RunRecord,
+    outcome: str,
+    report: str,
+    marker: Path,
+    state: str,
 ) -> bool:
+    """Two-stage publish with the marker recording WHICH stage completed
+    ("archived" then "done"), so a failure between archive and pointer
+    retries the POINTER only (terra #170 r3: inferring pointer-posted from
+    an existing archive silently lost pointers). If the marker file itself
+    is lost after full success, the retry re-posts one pointer — a bounded
+    duplicate is the accepted price of never losing one (r2/r3 trade)."""
     from datetime import UTC, datetime
+
+    def _mark(value: str) -> None:
+        try:
+            marker.write_text(value)
+        except OSError as exc:
+            log.warning("ledger marker write failed for %s: %s", record.run_id, exc)
 
     date = datetime.fromtimestamp(record.updated or record.created, tz=UTC).strftime("%Y-%m-%d")
     path = f"reports/{date}-{record.run_id}.md"
     try:
-        if not github.ensure_branch(target, RESEARCH_LOG_BRANCH):
-            return False
-        archived = github.put_file(
-            target, path, report, RESEARCH_LOG_BRANCH, f"research log: {record.run_id} ({outcome})"
-        )
-        if not archived:
-            return False  # pointer only after a live archive — no dead links
-        if archived == "updated":
-            # the file already existed: a prior publish got this far, so the
-            # pointer was (very likely) posted and only the marker write
-            # failed — re-marking without re-commenting keeps the ledger
-            # idempotent even when markers are lost (terra #170 r2)
-            return True
+        if not state.startswith("archived"):
+            if not github.ensure_branch(target, RESEARCH_LOG_BRANCH):
+                return False
+            if not github.put_file(
+                target,
+                path,
+                report,
+                RESEARCH_LOG_BRANCH,
+                f"research log: {record.run_id} ({outcome})",
+            ):
+                return False  # retry the whole publish next tick
+            _mark("archived")
         url = f"https://github.com/{target}/blob/{RESEARCH_LOG_BRANCH}/{path}"
         line = f"**{outcome}** `{record.benchmark}` — [report]({url})"
         if record.pr_url:
             line += f" · {record.pr_url}"
         if record.issue_number:
-            return True  # the claimed issue already received the full finish
+            _mark("done")  # the claimed issue already received the full finish
+            return True
         bench = record.benchmark.casefold()
         if bench:
             for issue in github.list_open_issues(target):
@@ -837,6 +853,7 @@ def _publish_ledger_entry(
                     continue
                 if bench in text.casefold():
                     github.comment(target, int(issue["number"]), line)
+                    _mark("done")
                     return True
         cache = _ledger_issue_cache(root, target)
         log_issue = 0
@@ -856,6 +873,7 @@ def _publish_ledger_entry(
                     cache.write_text(str(log_issue))
         if log_issue:
             github.comment(target, log_issue, line)
+        _mark("done")
         return True
     except Exception as exc:  # advisory ledger: never fail the tick
         log.warning("research-log publish failed for %s: %s", record.run_id, exc)
