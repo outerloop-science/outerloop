@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Removed
+
+- The `autoresearch.climb` compat shim (added in #156 for jobs queued before
+  the climb->attempt rename): its window — jobs submitted pre-rename still
+  pending in Slurm — closed within a day of the deploy (climbs cap at 6h and
+  the tick drains every 15 min). `-m autoresearch.attempt` is the only entry.
+  Same class: the tick's legacy `climb-terminal-seen` kill-stamp fallback
+  (its window was one in-flight KillWait grace across the deploy).
+
 ### Fixed
 
 - Wide-round lens sessions no longer die on GitHub's clone rate limit. The

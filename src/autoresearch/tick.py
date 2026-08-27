@@ -731,15 +731,7 @@ def sweep(
 
 
 def _kill_stamp(root: Path, run_id: str) -> Path:
-    # the current name; a legacy `climb-terminal-seen` from a run stamped
-    # before the rename is honored by _kill_stamp_read (a stamp only lives
-    # during a KillWait grace, so this tolerance matters for at most one
-    # in-flight run across the deploy).
     return run_dir(root, run_id) / "attempt-terminal-seen"
-
-
-def _legacy_kill_stamp(root: Path, run_id: str) -> Path:
-    return run_dir(root, run_id) / "climb-terminal-seen"
 
 
 def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: float) -> list[str]:
@@ -775,11 +767,6 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
                 # concurrently written ending), and the waiting sweep's
                 # terminal_seen field stays reserved for the EXPERIMENT job.
                 stamp = _kill_stamp(root, record.run_id)
-                legacy = _legacy_kill_stamp(root, record.run_id)
-                if legacy.exists() and not stamp.exists():
-                    # a run stamped just before the rename: adopt its clock so
-                    # the KillWait grace is measured from the original sighting
-                    stamp = legacy
                 if not stamp.exists():
                     try:
                         fd = os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)

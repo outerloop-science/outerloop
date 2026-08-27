@@ -950,26 +950,6 @@ def test_killed_climb_is_ended_after_first_seen_grace(tmp_path: Path) -> None:
     assert "aborted" in (_run_dir(tmp_path, "r-killed") / "report.md").read_text()
 
 
-def test_legacy_kill_stamp_grace_is_honored_across_the_rename(tmp_path: Path) -> None:
-    """A run stamped just before the climb->attempt rename carries a legacy
-    `climb-terminal-seen` file. The sweep must adopt its clock so the KillWait
-    grace is measured from the ORIGINAL sighting — not restarted (which would
-    re-grace a job already past its window) or ignored."""
-    from autoresearch.tick import _kill_stamp, _legacy_kill_stamp
-
-    _implementing_run(tmp_path, "r-legacy", job_id="77", age_s=3600)
-    # a legacy stamp written a full grace ago, and NO current-name stamp
-    legacy = _legacy_kill_stamp(tmp_path, "r-legacy")
-    legacy.write_text(str(NOW - GRACE - 1))
-    assert not _kill_stamp(tmp_path, "r-legacy").exists()
-
-    report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "TIMEOUT"}))
-    # the grace already elapsed by the legacy clock -> ended THIS tick, not
-    # re-stamped under the new name
-    assert report.implementing_ended == ("r-legacy",)
-    assert load_record(tmp_path, "r-legacy").state == ENDED
-
-
 def test_climb_that_lands_its_own_ending_wins_the_race(tmp_path: Path) -> None:
     """Between first-seen and grace expiry the climb's honest ending (or a
     move to waiting) must never be clobbered by the sweep."""
