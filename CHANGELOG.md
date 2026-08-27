@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- The verify lens's rubric gains the code owner's aggregation standard
+  (set closing yolo-jepa#16): a delta that clears the significance floor
+  only as a MIXTURE of individually sub-floor tweaks is a finding — a
+  publishable improvement needs an identifiable mechanism that clears the
+  floor on its own. New `aggregation` category in the verify taxonomy.
+
 ### Fixed
 
 - A jobless checkpoint sleep no longer inherits the 12h QUEUE slack: the

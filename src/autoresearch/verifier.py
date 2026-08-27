@@ -118,6 +118,7 @@ CATEGORIES = (
     "overfitting",
     "unsupported-claim",
     "measurement-gap",
+    "aggregation",
     "other",
 )
 
@@ -151,6 +152,13 @@ measured:
   mechanism) that the provided evidence does not back
 - measurement-gap: noise floors, seeds, or protocol issues that make the
   claimed delta unconvincing at its size
+- aggregation: the delta clears the significance floor only as a MIXTURE
+  of several individually sub-floor tweaks. The code owner's standard
+  (set closing yolo-jepa#16): a publishable improvement needs an
+  identifiable mechanism whose effect clears the floor ON ITS OWN — an
+  even blend of small terms buys a number while losing clarity on what
+  actually works. Check the ablations: if no single component carries the
+  win, say so
 
 Use the contract (the rules), the ruler source (how the eval actually
 works), the claimed numbers, and the agent's own report. The report's
