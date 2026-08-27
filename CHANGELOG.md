@@ -12,12 +12,17 @@ Versions follow [SemVer](https://semver.org).
   `actions: write`, which the model-running session jobs deliberately never
   hold — the service refused their reservations (masked as "unable to
   reserve... another job"), so no session save ever committed, in any repo.
-  A new modelless `provision` job in the reusable review workflow is the
-  sole holder of `actions: write`: it clones the pin once, sha-verifies, and
-  commits the cache; sessions are restore-only with the anonymous
-  clone+retry as fallback. Sessions being UNABLE to write the shared cache
-  replaces save-ordering as the poisoning defense. Callers grant the
-  `actions: write` ceiling (the session jobs still downscope to read-only).
+  Provisioning is ONE shared reusable workflow (`hermes-provision.yml`),
+  modelless and the sole holder of `actions: write`: restore, clone the pin
+  (sha-verified), commit the cache. autoresearch's review.yml calls it ONCE
+  before the lens fan-out (a cold cache costs one clone total — terra #162,
+  all five lenses agreed); the agent workflow nests it so single-call repos
+  provision with zero wiring (no-op on a warm cache). Sessions are
+  restore-only with the anonymous clone+retry as fallback — being UNABLE to
+  write the shared cache replaces save-ordering as the poisoning defense.
+  Callers and the reusable's own top-level block grant the `actions: write`
+  ceiling (terra's advisory: the reusable's block would have capped its own
+  provision job); session jobs still downscope to read-only.
 
 ### Fixed
 

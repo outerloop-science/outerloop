@@ -118,10 +118,13 @@ on:
           once it is public.
         required: false
 
-# The caller grants this much; each job below narrows it further.
+# The caller grants this much; each job below narrows it further. Only the
+# modelless provision job takes actions:write (cache save); the session
+# job's own block excludes it, so the model's token never gains it.
 permissions:
   contents: read
   pull-requests: write
+  actions: write
 
 # One review per opinion per PR at a time. Do NOT cancel in progress: a running
 # session is a paid model call, so queue behind it rather than kill it.
@@ -130,56 +133,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Provisions the pinned hermes clone into the Actions cache, ONCE per
-  # version. This job runs NO model code, so it alone may hold the
-  # actions:write that cache SAVES require — the session jobs are
-  # deliberately read-only (the model runs there), which makes the cache
-  # service refuse their reservations ("unable to reserve"; why no session
-  # save ever committed). Sessions being UNABLE to write the shared cache
-  # is the cache-poisoning defense, stronger than any save ordering.
+  # One shared provisioning definition (hermes-provision.yml): nested here
+  # so single-call repos provision with zero extra wiring; wide-round
+  # callers (autoresearch review.yml) ALSO call it once before their lens
+  # fan-out, so this nested call no-ops on the warm cache. `./` resolves
+  # against THIS workflow's repo+ref, so cross-repo callers get the same
+  # pinned definition.
   provision:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 15
     if: inputs.backend == 'hermes' && github.event.pull_request.head.repo.full_name == github.repository
-    permissions:
-      actions: write
-    env:
-      HERMES_REF: v2026.8.13
-      # the COMMIT sha (the v-tags are annotated: pin ls-remote's ^{} line)
-      HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
-    steps:
-      - name: Restore the hermes clone
-        id: hermes-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ github.workspace }}/hermes-agent
-          key: hermes-agent-${{ env.HERMES_REF }}
-      - name: Clone at the pin (cache miss only)
-        if: steps.hermes-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          for i in 1 2 3; do
-            if git clone --depth 1 --branch "$HERMES_REF" \
-                https://github.com/NousResearch/hermes-agent \
-                "$GITHUB_WORKSPACE/hermes-agent"; then
-              break
-            fi
-            [ "$i" = 3 ] && exit 1  # sessions fall back to their own clone
-            sleep $(( i * 10 + RANDOM % 10 ))
-            rm -rf "$GITHUB_WORKSPACE/hermes-agent"
-          done
-          head=$(git -C "$GITHUB_WORKSPACE/hermes-agent" rev-parse HEAD)
-          if [ "$head" != "$HERMES_SHA" ]; then
-            echo "tag resolves to $head, expected $HERMES_SHA — refusing" >&2
-            exit 1
-          fi
-      - name: Save the pristine clone
-        if: steps.hermes-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/hermes-agent
-          key: hermes-agent-${{ env.HERMES_REF }}
+    uses: ./.github/workflows/hermes-provision.yml
 
   session:
     runs-on: ubuntu-latest

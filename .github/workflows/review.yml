@@ -17,9 +17,19 @@ permissions:
   # the model-running session jobs downscope themselves to read-only
   actions: write
 jobs:
+  # ONE provision before the fan-out: a cold cache costs one clone total,
+  # not one per lens (terra #162 r1, all five lenses agreed). The nested
+  # provision inside each lens call then no-ops on the warm cache.
+  provision:
+    if: github.event.action != 'labeled'
+    uses: ./.github/workflows/hermes-provision.yml
+
   # --- wide first round: a general session + distinct lenses, emit-only ---
   lens:
-    if: github.event.action != 'labeled'
+    needs: provision
+    # !cancelled: a failed provision must not skip the round (sessions carry
+    # their own anonymous-clone fallback)
+    if: ${{ !cancelled() && github.event.action != 'labeled' }}
     strategy:
       fail-fast: false
       matrix:
