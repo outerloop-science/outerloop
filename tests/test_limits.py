@@ -22,17 +22,17 @@ def test_absent_knobs_yield_the_standing_defaults() -> None:
     assert _limits() == EffectiveLimits(
         session_max_turns=120,
         session_minutes=90,
-        climb_job_minutes=120,
+        attempt_job_minutes=120,
         followup_job_minutes=90,
     )
     assert effective_limits(None) == _limits()  # no contract at all
 
 
 def test_contract_shapes_spend_downward() -> None:
-    lim = _limits(", session_max_turns: 20, session_minutes: 15, climb_job_minutes: 40")
+    lim = _limits(", session_max_turns: 20, session_minutes: 15, attempt_job_minutes: 40")
     assert lim.session_max_turns == 20
     assert lim.session_minutes == 15
-    assert lim.climb_job_minutes == 40
+    assert lim.attempt_job_minutes == 40
 
 
 def test_ceilings_cannot_be_raised_by_a_contract() -> None:
@@ -41,25 +41,25 @@ def test_ceilings_cannot_be_raised_by_a_contract() -> None:
     on every knob."""
     lim = _limits(
         ", session_max_turns: 100000, session_minutes: 100000"
-        ", climb_job_minutes: 100000, followup_job_minutes: 100000"
+        ", attempt_job_minutes: 100000, followup_job_minutes: 100000"
     )
     assert lim == effective_limits(None)  # identical to no knobs at all
 
 
 def test_floors_defeat_starvation() -> None:
-    lim = _limits(", session_max_turns: 1, session_minutes: 1, climb_job_minutes: 1")
+    lim = _limits(", session_max_turns: 1, session_minutes: 1, attempt_job_minutes: 1")
     assert lim.session_max_turns == 10
     assert lim.session_minutes == 10
     # floor 40 = session floor (10) + orchestrator overhead (20) + runway:
     # even the floor combination keeps the session inside the job
-    assert lim.climb_job_minutes == 40
-    assert lim.session_minutes <= lim.climb_job_minutes - 20
+    assert lim.attempt_job_minutes == 40
+    assert lim.session_minutes <= lim.attempt_job_minutes - 20
 
 
 def test_session_is_shrunk_to_fit_inside_the_job() -> None:
     """A session that outlives its job ends as a kill, not a report."""
-    lim = _limits(", session_minutes: 60, climb_job_minutes: 60")
-    assert lim.climb_job_minutes == 60
+    lim = _limits(", session_minutes: 60, attempt_job_minutes: 60")
+    assert lim.attempt_job_minutes == 60
     assert lim.session_minutes == 40  # 60 - 20 overhead
 
 

@@ -6,6 +6,7 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Fixed
 
 - Session-planted git filter drivers are neutralized on every orchestrator
@@ -22,6 +23,138 @@ Versions follow [SemVer](https://semver.org).
   build their `afterany` dependency directly), the never-populated
   `RunRecord.wake_job_id` field (old records still load; unknown keys are
   ignored), and orphaned test scaffolding (`QueueEvaluator` in test_climb).
+=======
+### Removed
+
+- The `autoresearch.climb` compat shim (added in #156 for jobs queued before
+  the climb->attempt rename): its window — jobs submitted pre-rename still
+  pending in Slurm — closed within a day of the deploy (climbs cap at 6h and
+  the tick drains every 15 min). `-m autoresearch.attempt` is the only entry.
+  Same class: the tick's legacy `climb-terminal-seen` kill-stamp fallback
+  (its window was one in-flight KillWait grace across the deploy).
+
+### Fixed
+
+- The hermes Actions cache now actually commits: cache SAVES require
+  `actions: write`, which the model-running session jobs deliberately never
+  hold — the service refused their reservations (masked as "unable to
+  reserve... another job"), so no session save ever committed, in any repo.
+  Provisioning is ONE shared reusable workflow (`hermes-provision.yml`),
+  modelless and the sole holder of `actions: write`: restore, clone the pin
+  (sha-verified), commit the cache. autoresearch's review.yml calls it ONCE
+  before the lens fan-out (a cold cache costs one clone total — terra #162,
+  all five lenses agreed); the agent workflow nests it so single-call repos
+  provision with zero wiring (no-op on a warm cache). Sessions are
+  restore-only with the anonymous clone+retry as fallback — being UNABLE to
+  write the shared cache replaces save-ordering as the poisoning defense.
+  Callers and the reusable's own top-level block grant the `actions: write`
+  ceiling (terra's advisory: the reusable's block would have capped its own
+  provision job); session jobs still downscope to read-only.
+
+### Fixed
+
+- Wide-round lens sessions no longer die on GitHub's clone rate limit. The
+  wide first round fans out several hermes (terra) lens sessions at once, and
+  GitHub 429s the concurrent ANONYMOUS clones of the same public repo
+  (observed live: 3/5 lens sessions died at exit 128 before the model ran).
+  Fix: (1) the pinned clone is CACHED — and because the review workflows run
+  on `pull_request_target`, every run on every PR shares the base-branch
+  cache scope, so one round populates it for all future PRs (cold = first
+  run on a fresh tag only); (2) a backoff+jitter retry rides out the
+  anonymous rate limit on a cold fan-out. The clone is deliberately
+  ANONYMOUS: the job's `GITHUB_TOKEN` is a repo-scoped installation token,
+  and git-over-HTTP rejects a foreign-repo credential outright (observed
+  live on the first post-merge run: six identical "could not read Username"
+  failures), so for a foreign public repo anonymous succeeds where the
+  token cannot. The cache is
+  written by an explicit `actions/cache/save` placed BEFORE the session step
+  and verified against the pinned commit sha on restore (wipe + re-clone on
+  mismatch) — a post-job save would have let a prompt-injected session
+  poison the shared tree every later run executes with the reviewer key. A
+  genuine clone failure still degrades to the advisory missing-repo stub.
+  Also fixes the sha pin itself (here and in `scripts/install_hermes.sh`):
+  hermes v-tags are ANNOTATED, so `ls-remote` had yielded the tag OBJECT's
+  sha — every verify comparing `rev-parse HEAD` (a commit) against it would
+  have always failed, stubbing out all hermes lenses and making the Torch
+  installer refuse. Pins are now the dereferenced `^{}` commit sha, and the
+  installer's three paths (fresh / idempotent / tamper re-pin) were executed
+  live against the real repo (a 222 MB clone — the cache earns its keep).
+
+### Changed
+
+- The author brief is de-prescriptified (Mengye, "don't dictate the
+  contract"; research-loop.md, author-directed): the Task's `expected_effect`
+  and `done_criteria` shift from directives to ORIENTATION. The metric line is
+  now a fact ("mean_tour_length (lower is better), currently 10.84" — or "no
+  score recorded yet"), not a target; the finish is stated as the AUTHOR's
+  call ("You decide when your result is worth publishing — a negative result
+  reported clearly is a success"), with the gate/suite framed as how a claim
+  is verified rather than a bar to clear. The gate itself is unchanged — it,
+  never the brief, is the real bar; naming a target in the brief only invited
+  optimizing that number. Rendered labels: "Metric:" / "Finishing:".
+
+- Completed the climb->attempt vocabulary in the limits/contract surface:
+  `climb_job_minutes`->`attempt_job_minutes` (contract budget field),
+  `CLIMB_JOB_MINUTES_FLOOR`/`CLIMB_OVERHEAD_MINUTES`/`MAX_CLIMB_JOB_MINUTES`
+  ->`ATTEMPT_*`, and the `EffectiveLimits` field + `_BOUNDS` key. The old
+  contract field name is accepted as a TRANSITIONAL pydantic alias so the two
+  live contracts (pilot, yolo-jepa) migrate at leisure; the alias drops once
+  they have.
+
+### Changed
+
+- Vocabulary: the author-role activity is an **attempt** (a type of run), the
+  substrate stays **run**. `climb.py`→`attempt.py`, `climb_once`→
+  `attempt_once`, `live_climb`→`live_attempt`, `resume_climb`→`resume_attempt`,
+  `ClimbResult`→`AttemptResult`, `LiveClimbOutcome`→`AttemptOutcome`; the
+  general-substrate names become `RunParked`/`RunConfig`, while `RunRecord`,
+  `run_id`, `resume_run`, and park/wake are unchanged. The `-m
+  autoresearch.attempt` CLI verb replaces `-m autoresearch.climb`. Deploy-safe:
+  the renamed module and the tick's argv land together (the tick pulls at
+  tick-start), a `load_record` shim maps a pre-rename record's `climb_job_id`
+  to `run_job_id`, and the kill-stamp reader honors a legacy
+  `climb-terminal-seen` — so an in-flight run started before the rename still
+  wakes and ends correctly.
+
+### Added
+
+- Hermes container mode: `HermesHarness` runs under apptainer like the other
+  backends when an image is set — workspace and per-run home bound, the
+  pinned hermes-agent clone read-only, the project venv and uv cache in the
+  per-run home, key and uv vars via `APPTAINERENV_*` (never argv). With
+  containment uniform, the panel gate admits `hermes` lenses: the shelled-
+  judge rules (image required; the judge's OWN key, neither the author's nor
+  the claude panel key) move into one shared helper covering codex and
+  hermes, mirrored in the tick preflight; `AUTORESEARCH_PANEL_HERMES_KEY_FILE`
+  + `REVIEW_HERMES_*` ride the .env allowlist, and the chain provisions the
+  pinned clone (`scripts/install_hermes.sh`) when the panel names hermes.
+
+### Added
+
+- Wide first round, narrow convergence (docs/design/reviewer-infra.md): on
+  PR open, the advisory review fans out three distinct-lens terra opinions
+  (credentials & containment; the deployment chain end-to-end; test honesty)
+  as emit-only sessions, and a SUMMARIZER role merges them into the one
+  posted round — dedup, blocking first, lens attribution, and every rejected
+  finding listed with its reason (never dropped silently). Label-triggered
+  convergence rounds stay a single full-rubric session. Mechanically:
+  `REVIEW_LENSES` + a `lens` brief seam, `summarizer_spec`,
+  `review_summarize_cli` (passthrough when only one real opinion — a model
+  session only when there is merging to do), a reusable
+  `advisory-review-summarize.yml`, and `lens`/`post` inputs on the reusable
+  reviewer workflow (defaults keep existing callers unchanged).
+
+### Added
+
+- Claude-on-Vertex (ADC) billing, config-driven: set
+  `AUTORESEARCH_VERTEX_PROJECT` (+ optional `_REGION`, `_ADC` file) and every
+  claude-backend session — author, panel judge, reviewer — authenticates to
+  Vertex AI via Application Default Credentials instead of an Anthropic API
+  key (the session env then carries no key at all; contained sessions get the
+  ADC file bind-mounted read-only). One env owner (`harness.vertex_from_env`);
+  unset the project to fall back to API-key billing instantly. Codex/hermes
+  are unaffected — OpenAI models are not on GCP.
+>>>>>>> origin/main
 
 ### Changed
 

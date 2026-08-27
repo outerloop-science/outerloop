@@ -35,8 +35,12 @@ def main() -> int:
     if not bot_login:
         log.warning("REVIEW_BOT_LOGIN is unset; skipping (cannot identify bot-authored PRs)")
         return 0
+    from autoresearch.harness import vertex_from_env
+
     api_key = os.environ.get("ANTHROPIC_VERIFIER_KEY", "").strip()
-    if not api_key:
+    # ADC-only deployments: Vertex covering the (claude) verifier stands in
+    # for the key, same tolerance as role_key
+    if not api_key and vertex_from_env() is None:
         log.warning("ANTHROPIC_VERIFIER_KEY is unset or empty; skipping verification")
         return 0
     # The directory holding the workflow's two checkouts: pr-head/

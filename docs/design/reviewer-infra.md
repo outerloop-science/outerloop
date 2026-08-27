@@ -186,6 +186,58 @@ model key, no write credential). The split workflow is what gates accepting
 fork PRs after the repo goes public. See `public-surface.md` for that threat
 model.
 
+## Wide first round, narrow convergence (design note, 2026-08-26)
+
+A single reviewer SATISFICES: it reports the most salient defect and stops,
+so a defect-dense PR converges one-finding-per-round. Measured on the codex-
+panel-lens PR (#152): eight rounds, seven distinct confirmed defects — about
+five of which existed at PR-open and could in principle have been found
+together. The serial loop's cost is not tokens (a round is cents); it is
+wall-clock and the operator's fix-context-switch per round trip.
+
+Two facts bound what parallelism can buy:
+
+- Breadth pays through DISTINCT LENSES, not reviewer count. The one
+  large-panel experiment (20 same-model agents, ~2M tokens, PR #147) yielded
+  one unique blocking find; its few dimension-scoped reviewers did the
+  productive work, its many same-lens verifiers mostly re-found.
+- Roughly a quarter of findings across the recent arc were introduced by the
+  FIXES to earlier findings. Those defects did not exist at PR-open; only a
+  serial re-review can catch them. Parallelism compresses the discovery
+  prefix, never the fix-review-fix tail.
+
+**The design:** for PRs touching credentials, deployment plumbing (env
+allowlists, provisioning, preflights), or the publish/trust path, the FIRST
+round fans out 2–3 opinions with distinct lens prompts — e.g. (a)
+credentials & containment, (b) the deployment chain end-to-end, (c)
+test-honesty/coverage of the diff. A SUMMARIZER session then merges the
+opinions into the one posted round: dedup by file/claim, rank blocking
+first, attribute each finding to its lens, and drop nothing silently (a
+finding the summarizer rejects is listed as rejected, with the reason).
+Subsequent rounds revert to the single reviewer until one finds nothing —
+the convergence rule is unchanged. Ordinary PRs keep the single-reviewer
+flow throughout.
+
+The wide round always includes ONE general full-rubric session beside the
+lenses (Mengye: "what if also just general bugs?") — the unknown-unknowns
+catcher; lenses complement it, never replace it.
+
+Lens selection is ERA CONFIG, not a constant (Mengye): the measured top
+classes track what the current push builds — an infra month yields
+credentials/deployment/lifecycle findings, a science month would yield
+measurement-integrity ones. The lens LIBRARY lives in code
+(review.REVIEW_LENSES); WHICH lenses run is the caller workflow's matrix,
+retuned when the push changes. Adaptive per-PR lens picking (path-mapped or
+a triage session) is a possible later step, not built.
+
+BUILT (2026-08-26): `REVIEW_LENSES`/`build_summarizer_brief` (review.py),
+`summarizer_spec` (roles.py), `review_summarize_cli` (passthrough on a
+single real opinion; a model session only when merging), the reusable
+`advisory-review-summarize.yml`, and `lens`/`post` inputs on
+`advisory-review-agent.yml`. review.yml routes: opened/reopened → three
+emit-only lens opinions + the summarized round; label re-trigger → the
+single full-rubric convergence session.
+
 ## What's next
 
 The harness runs agent sessions over the PR-head checkout — that part is done,

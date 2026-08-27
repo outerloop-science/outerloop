@@ -123,11 +123,24 @@ if [ -r "$ENV_FILE" ]; then
     if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
         for _k in AUTORESEARCH_AUTHOR_BACKEND AUTORESEARCH_AUTHOR_MODEL \
                   AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
-                  AUTORESEARCH_HARNESS_KEY_FILE; do
-            _v=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
-            _v=${_v%$'\r'}                         # CRLF-edited file
-            _v=${_v#[\"\']}; _v=${_v%[\"\']}       # optional surrounding quote
-            [ -n "$_v" ] && export "$_k=$_v"
+                  AUTORESEARCH_HARNESS_KEY_FILE \
+                  AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
+                  AUTORESEARCH_VERTEX_ADC \
+                  AUTORESEARCH_PANEL AUTORESEARCH_PANEL_KEY_FILE \
+                  AUTORESEARCH_PANEL_CODEX_KEY_FILE \
+                  AUTORESEARCH_PANEL_HERMES_KEY_FILE \
+                  REVIEW_HERMES_REPO REVIEW_HERMES_PROVIDER; do
+            _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
+            # PRESENCE-based, not value-based: a key set to "" in .env is a
+            # live OFF-SWITCH (AUTORESEARCH_PANEL="" disables the panel,
+            # VERTEX_PROJECT="" reverts to API-key billing) and must override
+            # an inherited chain value; an ABSENT key changes nothing.
+            if [ -n "$_line" ]; then
+                _v=${_line#*=}
+                _v=${_v%$'\r'}                     # CRLF-edited file
+                _v=${_v#[\"\']}; _v=${_v%[\"\']}   # optional surrounding quote
+                export "$_k=$_v"
+            fi
         done
     else
         echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
@@ -136,12 +149,26 @@ if [ -r "$ENV_FILE" ]; then
 fi
 
 # The codex author binary is a host prerequisite; install it (idempotent, fast
-# path is a local version check) only when the fleet author is codex. Best-effort:
-# a failure here must never break the chain — the climb will report a missing
-# codex clearly if it comes to that.
-if [ "${AUTORESEARCH_AUTHOR_BACKEND:-}" = "codex" ]; then
-    bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
-fi
+# path is a local version check) when ANY codex role is deployed — the fleet
+# author, or a codex panel lens (a claude-author/codex-panel rollout still
+# bind-mounts the binary into every judge container). Best-effort: a failure
+# here must never break the chain — the climb will report a missing codex
+# clearly if it comes to that.
+case "${AUTORESEARCH_AUTHOR_BACKEND:-}:${AUTORESEARCH_PANEL:-}" in
+    codex:*|*:*codex*)
+        bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
+        ;;
+esac
+case "${AUTORESEARCH_PANEL:-}" in
+    *hermes*)
+        # the default install location IS the default config: exporting it
+        # here connects the provisioned clone to the preflight/climb without
+        # requiring the operator to name a path they didn't choose
+        export REVIEW_HERMES_REPO="${REVIEW_HERMES_REPO:-$HOME/hermes-agent}"
+        bash "$AUTORESEARCH_HOME/scripts/install_hermes.sh" "$REVIEW_HERMES_REPO" \
+            || echo "deploy: hermes install failed"
+        ;;
+esac
 
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
 #        further down in the harness) ---

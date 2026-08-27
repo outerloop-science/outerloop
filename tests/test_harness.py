@@ -746,3 +746,99 @@ def test_no_container_means_no_apptainer(tmp_path: Path) -> None:
     argv = (tmp_path / "seen_argv").read_text()
     assert "apptainer" not in argv and "--containall" not in argv
     assert "APPTAINERENV_" not in (tmp_path / "seen_env").read_text()
+
+
+def test_vertex_mode_swaps_the_key_for_adc_env(tmp_path: Path, monkeypatch) -> None:
+    # vertex on: the session env carries the Vertex triple + ADC path and NO
+    # ANTHROPIC_API_KEY (the CLI must not silently fall back to direct billing)
+    from autoresearch.harness import ClaudeCodeHarness, VertexConfig
+
+    captured = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured["command"] = command
+        captured["env"] = env
+        raise OSError("stop here")  # run() contains it as an error result
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    h = ClaudeCodeHarness(
+        api_key="sk-should-not-appear",
+        vertex=VertexConfig(project="p-123", region="global", adc_file=str(tmp_path / "adc.json")),
+    )
+    result = h.run("brief", tmp_path)
+    assert result.is_error  # the fake Popen stopped the run
+    env = captured["env"]
+    assert env["CLAUDE_CODE_USE_VERTEX"] == "1"
+    assert env["ANTHROPIC_VERTEX_PROJECT_ID"] == "p-123"
+    assert env["CLOUD_ML_REGION"] == "global"
+    assert env["GOOGLE_APPLICATION_CREDENTIALS"] == str(tmp_path / "adc.json")
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_vertex_contained_session_binds_the_adc_file(tmp_path: Path, monkeypatch) -> None:
+    from autoresearch.harness import ClaudeCodeHarness, VertexConfig
+
+    adc = tmp_path / "adc.json"
+    adc.write_text("{}")
+    captured = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured["command"] = command
+        captured["env"] = env
+        raise OSError("stop here")
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    h = ClaudeCodeHarness(
+        api_key="",
+        binary="/abs/claude",
+        container_image="/img.sif",
+        vertex=VertexConfig(project="p-123", adc_file=str(adc)),
+    )
+    h.run("brief", tmp_path)
+    cmd = captured["command"]
+    assert f"{adc.resolve()}:{ClaudeCodeHarness.CONTAINER_ADC}:ro" in cmd
+    env = captured["env"]
+    # inside the container the credential path is the BOUND path
+    assert env["APPTAINERENV_GOOGLE_APPLICATION_CREDENTIALS"] == ClaudeCodeHarness.CONTAINER_ADC
+    assert env["APPTAINERENV_CLAUDE_CODE_USE_VERTEX"] == "1"
+    assert "APPTAINERENV_ANTHROPIC_API_KEY" not in env
+
+
+def test_vertex_from_env_is_the_single_owner(monkeypatch) -> None:
+    from autoresearch.harness import vertex_from_env
+
+    monkeypatch.delenv("AUTORESEARCH_VERTEX_PROJECT", raising=False)
+    assert vertex_from_env() is None
+    monkeypatch.setenv("AUTORESEARCH_VERTEX_PROJECT", "p-9")
+    monkeypatch.setenv("AUTORESEARCH_VERTEX_ADC", "~/adc.json")
+    cfg = vertex_from_env()
+    assert cfg is not None and cfg.project == "p-9" and cfg.region == "global"
+    assert cfg.adc_file.endswith("/adc.json") and not cfg.adc_file.startswith("~")
+
+
+def test_vertex_from_env_resolves_ambient_adc_under_the_real_home(tmp_path, monkeypatch) -> None:
+    # sessions get a scrubbed per-run HOME, so the gcloud default must be
+    # resolved to an explicit path at config time, under the REAL home
+    from autoresearch.harness import vertex_from_env
+
+    default = tmp_path / ".config" / "gcloud" / "application_default_credentials.json"
+    default.parent.mkdir(parents=True)
+    default.write_text("{}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTORESEARCH_VERTEX_PROJECT", "p-9")
+    monkeypatch.delenv("AUTORESEARCH_VERTEX_ADC", raising=False)
+    cfg = vertex_from_env()
+    assert cfg is not None and cfg.adc_file == str(default)
+
+
+def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypatch) -> None:
+    from autoresearch.role_runner import role_key
+
+    missing = tmp_path / "no-such-key"
+    monkeypatch.delenv("AUTORESEARCH_VERTEX_PROJECT", raising=False)
+    with pytest.raises(ValueError):
+        role_key(missing)  # no vertex: loud, as ever
+    monkeypatch.setenv("AUTORESEARCH_VERTEX_PROJECT", "p-9")
+    assert role_key(missing) == ""  # ADC-only claude deployment
+    with pytest.raises(ValueError):
+        role_key(missing, "codex")  # vertex never excuses a non-claude backend

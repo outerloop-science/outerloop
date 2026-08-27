@@ -916,7 +916,7 @@ def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 
             task_title="t",
             benchmark="tsp",
             state=IMPLEMENTING,
-            climb_job_id=job_id,
+            run_job_id=job_id,
         ),
         now=NOW - age_s,
     )
@@ -964,7 +964,7 @@ def test_climb_that_lands_its_own_ending_wins_the_race(tmp_path: Path) -> None:
     assert load_record(tmp_path, "r-race").ending == "negative-result"
 
 
-def test_live_climb_job_is_left_alone(tmp_path: Path) -> None:
+def test_live_attempt_job_is_left_alone(tmp_path: Path) -> None:
     _implementing_run(tmp_path, "r-live", job_id="77", age_s=GRACE + 60)
     report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "RUNNING"}))
     assert report.implementing_ended == ()
@@ -1009,7 +1009,7 @@ def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) ->
 
 def test_self_initiated_carries_contract_limits_into_the_job(tmp_path: Path) -> None:
     """The submitted climb job wears the contract's (clamped) limits: Slurm
-    walltime from climb_job_minutes, and the climb argv carries the session
+    walltime from attempt_job_minutes, and the climb argv carries the session
     knobs plus its own walltime for the self-deadline."""
     from autoresearch.contract import load_contract
     from autoresearch.tick import FollowupSpec, service_self_initiated
@@ -1023,7 +1023,7 @@ budgets:
   runs_per_week: 3
   session_max_turns: 30
   session_minutes: 25
-  climb_job_minutes: 100000
+  attempt_job_minutes: 100000
 scope: {allowed: [src/]}
 roadmap: docs/roadmap.md
 """,
@@ -1924,9 +1924,26 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     err = _panel_preflight_error(both_wrong)
     assert "unknown kind" in err  # kind is checked before backend
     assert "claude backend" not in err
-    assert "only the claude backend" in _panel_preflight_error(
+    # a hermes lens preflights the shelled-judge rules (image first)
+    assert "requires a real container image" in _panel_preflight_error(
         make(panel="verify:hermes", panel_key_file=str(good))
     )
+    # a codex lens preflights the image requirement too (climb parity)
+    judge = tmp_path / "panel_codex_key"
+    judge.write_text("sk-judge")
+    judge.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge))
+    no_image = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="",
+        home=tmp_path,
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(good),
+    )
+    assert "requires a real container image" in _panel_preflight_error(no_image)
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
     # role separation: the panel key must not BE the (resolved) author key. The
     # author key is now config-driven — resolved per the fleet backend from env —
@@ -2001,14 +2018,14 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     # panel-augmented total clamps at the 6h partition cap (sbatch would
     # REJECT a longer request outright, grounding every climb)
     from autoresearch.limits import effective_limits
-    from autoresearch.tick import MAX_CLIMB_JOB_MINUTES, _panel_job_minutes
+    from autoresearch.tick import MAX_ATTEMPT_JOB_MINUTES, _panel_job_minutes
 
     limits = effective_limits()  # defaults: 120-min job, 90-min session
     assert _panel_job_minutes(make(panel=""), limits) == 0
-    wanted = limits.climb_job_minutes + _panel_job_minutes(make(), limits)
+    wanted = limits.attempt_job_minutes + _panel_job_minutes(make(), limits)
     # the default path NEEDS the clamp (spec.max_job_minutes defaults to
-    # MAX_CLIMB_JOB_MINUTES = cpu_short's 6h MaxTime)
-    assert wanted > MAX_CLIMB_JOB_MINUTES
+    # MAX_ATTEMPT_JOB_MINUTES = cpu_short's 6h MaxTime)
+    assert wanted > MAX_ATTEMPT_JOB_MINUTES
     submitted2: list[str] = []
 
     def runner2(argv, timeout_s):
@@ -2055,8 +2072,8 @@ roadmap: docs/roadmap.md
         tmp_path, SlurmCompute(runner=runner2), ok2, default_contract, NOW + 9000
     )
     assert out2 is not None
-    assert f"--time={MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
-    assert f"--job-minutes {MAX_CLIMB_JOB_MINUTES}" in submitted2[0]
+    assert f"--time={MAX_ATTEMPT_JOB_MINUTES}" in submitted2[0]
+    assert f"--job-minutes {MAX_ATTEMPT_JOB_MINUTES}" in submitted2[0]
 
 
 def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, monkeypatch):
@@ -2100,7 +2117,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert job_id == "9001"  # async: the wake job now owns the lease
     argv = submits[0]
     joined = " ".join(argv)
-    assert "autoresearch.climb" in joined and "--resume tsp-1" in joined
+    assert "autoresearch.attempt" in joined and "--resume tsp-1" in joined
     assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
     assert "--panel verify,review" in joined  # the wake runs the verification panel
     assert "--account=acct" in argv and "--partition=cpu_short" in argv
@@ -2186,7 +2203,7 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     # an author-sleep wake resumes a FULL author session, so its Slurm job must
     # fit the session (+ overhead) and pass --session-minutes, not the short
     # candidate-wake budget (terra #135 r3).
-    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
     from autoresearch.roles import author_spec
     from autoresearch.runstate import RunRecord
     from autoresearch.tick import FollowupSpec, JobWakeDispatcher
@@ -2219,6 +2236,6 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     )
     JobWakeDispatcher(SlurmCompute(runner=runner), spec, now=NOW).dispatch(sleep_rec, "x")
     session_minutes = author_spec().budget.walltime_s // 60
-    assert times[0] == session_minutes + CLIMB_OVERHEAD_MINUTES  # fits the session
+    assert times[0] == session_minutes + ATTEMPT_OVERHEAD_MINUTES  # fits the session
     assert times[0] > 20  # far more than a candidate wake's base
     assert f"--session-minutes {session_minutes}" in joined_argv[0]  # self-deadline set

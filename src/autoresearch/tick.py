@@ -149,7 +149,7 @@ class TickReport:
 # longer than 10 h need that window made spec-aware first (named gap). The
 # self-deadline arms at the CLAMPED value, so a job that wanted more time
 # fails safe mid-panel instead of never starting.
-MAX_CLIMB_JOB_MINUTES = 6 * 60
+MAX_ATTEMPT_JOB_MINUTES = 6 * 60
 MAX_JOB_MINUTES_CEILING = 10 * 60
 
 
@@ -187,8 +187,8 @@ class FollowupSpec:
     # scheduling priority, so the two deserve independent placement.
     job_partition: str = ""
     # Partition MaxTime for work jobs — the panel-augmented walltime clamps
-    # here (see MAX_CLIMB_JOB_MINUTES). Raise together with job_partition.
-    max_job_minutes: int = MAX_CLIMB_JOB_MINUTES
+    # here (see MAX_ATTEMPT_JOB_MINUTES). Raise together with job_partition.
+    max_job_minutes: int = MAX_ATTEMPT_JOB_MINUTES
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -731,13 +731,13 @@ def sweep(
 
 
 def _kill_stamp(root: Path, run_id: str) -> Path:
-    return run_dir(root, run_id) / "climb-terminal-seen"
+    return run_dir(root, run_id) / "attempt-terminal-seen"
 
 
 def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: float) -> list[str]:
     """End `implementing` records whose climb job died without a verdict.
 
-    A climb that CRASHES contains its own ending (climb.py); a climb that is
+    A climb that CRASHES contains its own ending (attempt.py); a climb that is
     KILLED — walltime, preemption, scancel after the SIGTERM grace, node
     death — leaves no exception to contain, so this pass records the ending
     (the picker's stranded guard only frees the lane). Slurm truth decides:
@@ -750,9 +750,9 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
         if record.state != IMPLEMENTING:
             continue
         try:
-            if record.climb_job_id:
+            if record.run_job_id:
                 try:
-                    state = compute.status(record.climb_job_id)
+                    state = compute.status(record.run_job_id)
                 except SlurmQueryError:
                     continue  # Slurm outage must not read as a dead job
                 if not (is_terminal(state) or state == GONE):
@@ -792,7 +792,7 @@ def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: 
                         continue  # stamp vanished mid-read; next tick decides
                 if now - seen < grace_s:
                     continue
-                note = f"climb job {record.climb_job_id} ended {state} without a verdict"
+                note = f"climb job {record.run_job_id} ended {state} without a verdict"
             else:
                 # No Slurm evidence at all (legacy record, or a manual dev
                 # invocation without SLURM_JOB_ID): only the run DEADLINE —
@@ -1269,7 +1269,7 @@ def _author_config_error(spec: FollowupSpec) -> str:
     (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex with no non-claude model) never
     strands a claimed intake issue. Reads the fleet author config from env — the
     same source the climb defaults from — and the image the tick already knows."""
-    from autoresearch.climb import codex_author_config_error
+    from autoresearch.attempt import codex_author_config_error
 
     backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
     model = os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
@@ -1290,14 +1290,75 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from autoresearch.climb import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from autoresearch.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
         from autoresearch.github import FileTokenProvider
         from autoresearch.panel import parse_lenses
 
         try:
-            parse_lenses(spec.panel)
+            lenses = parse_lenses(spec.panel)
         except ValueError as exc:
             return str(exc)
+        # non-claude (shelled) lenses: mirror the climb's rules exactly, per
+        # backend — image required, the judge's OWN key (set + absolute +
+        # neither the author's nor the claude panel key + readable), and for
+        # hermes its pinned clone.
+        shelled = {
+            "codex": "AUTORESEARCH_PANEL_CODEX_KEY_FILE",
+            "hermes": "AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+        }
+        for lens_backend, key_env in shelled.items():
+            if not any(backend == lens_backend for _, backend, _ in lenses):
+                continue
+            if not spec.image or not Path(spec.image).is_file():
+                return (
+                    f"a {lens_backend} panel lens requires a real container image "
+                    f"(AUTORESEARCH_IMAGE={spec.image!r})"
+                )
+            key_raw = os.environ.get(key_env, "").strip()
+            if not key_raw:
+                return (
+                    f"a {lens_backend} panel lens needs {key_env} "
+                    "(role separation: the judge's own key, never the author's)"
+                )
+            key_path = Path(key_raw).expanduser()
+            if not key_path.is_absolute():
+                return (
+                    f"{lens_backend} panel key path {key_path} is relative; only absolute paths fly"
+                )
+            author = Path(resolve_author_key_file("codex")).expanduser()
+            if key_path.resolve() == author.resolve():
+                return (
+                    f"{lens_backend} panel key file {key_path} is the codex author "
+                    "key (role separation: the judge needs its own key)"
+                )
+            claude_panel = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+            if key_path.resolve() == claude_panel.resolve():
+                return (
+                    f"{lens_backend} panel key file {key_path} is the claude panel "
+                    "key file (an anthropic key must never reach another "
+                    "provider's login)"
+                )
+            FileTokenProvider(key_path).token()
+            if lens_backend == "hermes":
+                repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+                # a REAL clone, not merely a directory: the harness executes
+                # run_agent.py from it with the panel key, so an arbitrary or
+                # empty path must fail here, never after a run is claimed
+                if not repo or not (Path(repo).expanduser() / "run_agent.py").is_file():
+                    return (
+                        f"a hermes panel lens needs REVIEW_HERMES_REPO pointing at "
+                        f"the pinned clone (run_agent.py not found under {repo!r})"
+                    )
+                from autoresearch.role_runner import _HERMES_PROVIDERS
+
+                provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
+                if provider not in _HERMES_PROVIDERS:
+                    return (
+                        f"unknown REVIEW_HERMES_PROVIDER {provider!r} "
+                        f"(have: {sorted(_HERMES_PROVIDERS)})"
+                    )
+        if not any(backend == "claude" for _, backend, _ in lenses):
+            return ""  # codex-only panel: the claude key checks below don't apply
         path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
         if not path.is_absolute():
             # the climb runs from a flight directory, not the tick's cwd — a
@@ -1319,7 +1380,12 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
                 f"panel key file {path} is the author key file "
                 "(role separation: the verifier needs its own key)"
             )
-        FileTokenProvider(path).token()
+        # ADC-only deployments (Vertex covering the claude panel) hold no
+        # Anthropic key at all — the same tolerance role_key applies at run
+        # time, so the preflight and the climb agree.
+        from autoresearch.role_runner import role_key
+
+        role_key(path)
         return ""
     except Exception as exc:
         # never raises: an unexpected failure (partial deploy, ELOOP, unset
@@ -1328,15 +1394,15 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         return f"{type(exc).__name__}: {exc}"
 
 
-def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
+def _attempt_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
     """The submitted climb walltime: contract budget + panel allowance,
     clamped at the partition cap. Warns when the cap cuts below the session
     budget — the self-deadline would then fire before the author's own
     clock, and that must be a visible operator choice, never a silent
     surprise."""
-    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
 
-    wanted = limits.climb_job_minutes + _panel_job_minutes(spec, limits)
+    wanted = limits.attempt_job_minutes + _panel_job_minutes(spec, limits)
     job = min(wanted, spec.max_job_minutes)
     if job < wanted:
         log.info(
@@ -1345,14 +1411,14 @@ def _climb_job_minutes(spec: FollowupSpec, limits: EffectiveLimits) -> int:
             job,
             wanted,
         )
-    if job < limits.session_minutes + CLIMB_OVERHEAD_MINUTES:
+    if job < limits.session_minutes + ATTEMPT_OVERHEAD_MINUTES:
         log.warning(
             "work-job cap %d min leaves no runway around the %d-min session "
             "(the orchestrator needs ~%d min); sessions or endings will be "
             "cut short by the self-deadline",
             job,
             limits.session_minutes,
-            CLIMB_OVERHEAD_MINUTES,
+            ATTEMPT_OVERHEAD_MINUTES,
         )
     return job
 
@@ -1384,9 +1450,9 @@ def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
     CAPPED job with the same rule limits.effective_limits applies to
     contract values — better a short session that ends cleanly than a full
     one the self-deadline kills mid-flight."""
-    from autoresearch.limits import CLIMB_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
+    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
 
-    session = min(limits.session_minutes, job_minutes - CLIMB_OVERHEAD_MINUTES)
+    session = min(limits.session_minutes, job_minutes - ATTEMPT_OVERHEAD_MINUTES)
     return [
         "--max-turns",
         str(limits.session_max_turns),
@@ -1466,13 +1532,13 @@ def service_self_initiated(
             return None
         if dry_run:
             return (benchmark, "dry-run")
-        job_minutes = _climb_job_minutes(spec, limits)
+        job_minutes = _attempt_job_minutes(spec, limits)
         argv = [
             "uv",
             "run",
             "python",
             "-m",
-            "autoresearch.climb",
+            "autoresearch.attempt",
             "--target",
             spec.target,
             "--benchmark",
@@ -1597,7 +1663,7 @@ def service_steward(
             spec.steward_key_file,
             # the SAME clamped walltime the JobSpec requests, so the
             # self-deadline arms against the real clock
-            *_climb_limit_argv(limits, min(limits.climb_job_minutes, spec.max_job_minutes)),
+            *_climb_limit_argv(limits, min(limits.attempt_job_minutes, spec.max_job_minutes)),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -1607,7 +1673,7 @@ def service_steward(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
                     partition=spec.job_partition or spec.partition,
-                    time_minutes=min(limits.climb_job_minutes, spec.max_job_minutes),
+                    time_minutes=min(limits.attempt_job_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
@@ -1689,7 +1755,7 @@ def service_intake(
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
-        job_minutes = _climb_job_minutes(spec, limits)
+        job_minutes = _attempt_job_minutes(spec, limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from autoresearch.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
@@ -1708,7 +1774,7 @@ def service_intake(
             "run",
             "python",
             "-m",
-            "autoresearch.climb",
+            "autoresearch.attempt",
             "--target",
             target,
             "--benchmark",
@@ -1792,7 +1858,7 @@ class JobWakeDispatcher:
             "run",
             "python",
             "-m",
-            "autoresearch.climb",
+            "autoresearch.attempt",
             "--resume",
             record.run_id,
             "--run-root",
@@ -1818,13 +1884,13 @@ class JobWakeDispatcher:
         # budget + overhead and pass --session-minutes so the in-job
         # self-deadline fires BEFORE Slurm's walltime. A candidate wake keeps
         # the short budget (read results + panel).
-        from autoresearch.limits import CLIMB_OVERHEAD_MINUTES
+        from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
         from autoresearch.roles import author_spec
 
         if record.stage.get("phase") == "author-sleep":
             session_minutes = author_spec().budget.walltime_s // 60
             argv += ["--session-minutes", str(session_minutes)]
-            job_minutes = min(session_minutes + CLIMB_OVERHEAD_MINUTES, self.spec.max_job_minutes)
+            job_minutes = min(session_minutes + ATTEMPT_OVERHEAD_MINUTES, self.spec.max_job_minutes)
         else:
             job_minutes = self.wake_minutes + _wake_panel_minutes(self.spec)
         if self.spec.pat_file:
@@ -1900,17 +1966,17 @@ def _max_job_minutes_from_env() -> int:
     rejected), at most the ceiling the stranded window allows. A clamped
     value logs — a silently-changed cap would read as the partition
     rejecting jobs for no reason."""
-    from autoresearch.limits import CLIMB_JOB_MINUTES_FLOOR
+    from autoresearch.limits import ATTEMPT_JOB_MINUTES_FLOOR
 
     raw = os.environ.get("AUTORESEARCH_MAX_JOB_MINUTES", "").strip()
     if not raw:
-        return MAX_CLIMB_JOB_MINUTES
+        return MAX_ATTEMPT_JOB_MINUTES
     try:
         value = int(raw)
     except ValueError:
         log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
-        return MAX_CLIMB_JOB_MINUTES
-    clamped = max(CLIMB_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
+        return MAX_ATTEMPT_JOB_MINUTES
+    clamped = max(ATTEMPT_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
     if clamped != value:
         log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
     return clamped

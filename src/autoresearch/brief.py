@@ -48,8 +48,10 @@ class Task:
 
     hypothesis: str
     benchmark: str  # contract benchmark name this task targets
-    expected_effect: str  # e.g. "success_rate up from 0.25"
-    done_criteria: str  # what makes this attempt finished, success or not
+    # orientation, not directives (research-loop.md, author-directed): a fact
+    # about the metric + the current score, and whose call the finish is.
+    expected_effect: str  # e.g. "success_rate (higher is better), currently 0.25"
+    done_criteria: str  # who decides the finish (the author) + how a claim is verified
 
 
 @dataclass(frozen=True)
@@ -189,8 +191,8 @@ def render(brief: SessionBrief) -> str:
         "# Task",
         f"Hypothesis: {brief.task.hypothesis}",
         f"Benchmark: {brief.task.benchmark}",
-        f"Expected effect: {brief.task.expected_effect}",
-        f"Done when: {brief.task.done_criteria}",
+        f"Metric: {brief.task.expected_effect}",
+        f"Finishing: {brief.task.done_criteria}",
         "",
         "# Contract (.autoresearch.yaml — the scope and budget rules that bind you)",
         brief.contract_text,

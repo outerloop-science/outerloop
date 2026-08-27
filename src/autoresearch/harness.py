@@ -101,6 +101,54 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     return env
 
 
+@dataclass(frozen=True)
+class VertexConfig:
+    """Claude-on-Vertex auth (ADC): set to bill Anthropic sessions to a GCP
+    project instead of an Anthropic API key. The single owner of the
+    AUTORESEARCH_VERTEX_* env contract is `vertex_from_env`."""
+
+    project: str
+    region: str = "global"
+    # GOOGLE_APPLICATION_CREDENTIALS. Sessions run with a scrubbed per-run
+    # HOME, so ambient ADC discovery inside the session can never find the
+    # real ~/.config/gcloud — vertex_from_env resolves that default to an
+    # explicit path up front. "" only where a metadata server provides
+    # credentials (GCE / workload identity).
+    adc_file: str = ""
+
+    def env(self) -> dict[str, str]:
+        out = {
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": self.project,
+            "CLOUD_ML_REGION": self.region,
+        }
+        if self.adc_file:
+            out["GOOGLE_APPLICATION_CREDENTIALS"] = self.adc_file
+        return out
+
+
+def vertex_from_env() -> VertexConfig | None:
+    """The deployment's Vertex coordinates, or None (Anthropic-direct). A live
+    flip needs only the env: set AUTORESEARCH_VERTEX_PROJECT to route every
+    claude session through Vertex; unset it to fall back to the API key."""
+    project = os.environ.get("AUTORESEARCH_VERTEX_PROJECT", "").strip()
+    if not project:
+        return None
+    adc = os.path.expanduser(os.environ.get("AUTORESEARCH_VERTEX_ADC", "").strip())
+    if not adc:
+        # resolve the gcloud default NOW, under the real HOME — the session's
+        # HOME is a scrubbed per-run directory where ambient discovery would
+        # find nothing. Absent file: leave "" for metadata-server credentials.
+        default = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+        if os.path.isfile(default):
+            adc = default
+    return VertexConfig(
+        project=project,
+        region=os.environ.get("AUTORESEARCH_VERTEX_REGION", "global").strip() or "global",
+        adc_file=adc,
+    )
+
+
 def redact(text: str, secrets: tuple[str, ...]) -> str:
     """Strip known secrets from text before it is stored anywhere."""
     for secret in secrets:
@@ -393,8 +441,12 @@ class ClaudeCodeHarness:
     # generic (python + uv + git); the binary is bind-mounted in.
     container_image: str = ""
     apptainer_binary: str = "apptainer"
+    # Claude-on-Vertex (ADC) instead of the Anthropic API key; the api_key is
+    # ignored when set. Contained sessions get the ADC file bind-mounted.
+    vertex: VertexConfig | None = None
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
+    CONTAINER_ADC = "/opt/agent/adc.json"
     supports_resume = True  # native --resume
 
     def run(
@@ -466,6 +518,11 @@ class ClaudeCodeHarness:
                 f"{session_home}:{session_home}",
                 "--bind",
                 f"{self.binary}:{self.CONTAINER_CLAUDE}:ro",
+                *(
+                    ["--bind", f"{Path(self.vertex.adc_file).resolve()}:{self.CONTAINER_ADC}:ro"]
+                    if self.vertex is not None and self.vertex.adc_file
+                    else []
+                ),
                 "--pwd",
                 str(workspace),
                 self.container_image,
@@ -478,13 +535,26 @@ class ClaudeCodeHarness:
             # children included) in one process group we can kill as a unit —
             # a timed-out session must not leave orphans holding the API key
             # and writing into the clone.
-            env = session_env(self.api_key, "ANTHROPIC_API_KEY", session_home)
-            if self.container_image:
-                # --cleanenv drops the host environment inside the container
-                # EXCEPT APPTAINERENV_* variables, which apptainer injects
-                # with the prefix stripped — the key travels via the
-                # environment, never argv (argv is world-readable in /proc).
-                env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
+            if self.vertex is not None:
+                # vertex auth: ADC only — ANTHROPIC_API_KEY is deliberately
+                # absent so the CLI cannot fall back to direct billing
+                env = session_env("", "ANTHROPIC_API_KEY", session_home)
+                del env["ANTHROPIC_API_KEY"]
+                vertex_env = dict(self.vertex.env())
+                if self.container_image and self.vertex.adc_file:
+                    vertex_env["GOOGLE_APPLICATION_CREDENTIALS"] = self.CONTAINER_ADC
+                env |= vertex_env
+                if self.container_image:
+                    for k, v in vertex_env.items():
+                        env[f"APPTAINERENV_{k}"] = v
+            else:
+                env = session_env(self.api_key, "ANTHROPIC_API_KEY", session_home)
+                if self.container_image:
+                    # --cleanenv drops the host environment inside the container
+                    # EXCEPT APPTAINERENV_* variables, which apptainer injects
+                    # with the prefix stripped — the key travels via the
+                    # environment, never argv (argv is world-readable in /proc).
+                    env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -1117,6 +1187,14 @@ class HermesHarness:
         "memory",
     )
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    # Apptainer image for session containment, same stance as the other
+    # backends: when set, the session runs under `apptainer exec --containall
+    # --cleanenv` seeing only the workspace, the per-run home, and a read-only
+    # bind of the pinned hermes repo. The project venv and uv cache live in
+    # the per-run home (UV_PROJECT_ENVIRONMENT/UV_CACHE_DIR), so the repo
+    # bind stays read-only and nothing survives across runs.
+    container_image: str = ""
+    apptainer_binary: str = "apptainer"
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
@@ -1182,8 +1260,42 @@ class HermesHarness:
             self.disabled_toolsets,
             self.extra_args,
         )
+        if self.container_image:
+            workspace_abs = workspace.resolve()
+            home_abs = session_home.resolve()
+            repo_abs = Path(self.repo_dir).resolve()
+            command = [
+                self.apptainer_binary,
+                "exec",
+                "--containall",
+                "--cleanenv",
+                "--bind",
+                f"{workspace_abs}:{workspace_abs}",
+                # --home mounts the per-run home at the same path inside and
+                # sets $HOME to it — hermes config, brief, samples, and the
+                # resume transcript all persist on the shared FS
+                "--home",
+                f"{home_abs}:{home_abs}",
+                "--bind",
+                f"{repo_abs}:{repo_abs}:ro",
+                "--pwd",
+                str(home_abs),
+                self.container_image,
+                *command,
+            ]
         try:
             env = session_env(self.api_key, self.key_env, session_home)
+            # the repo bind is read-only: uv builds the project venv and its
+            # cache in the per-run home instead (fresh per run; nothing shared
+            # across sessions)
+            env["UV_PROJECT_ENVIRONMENT"] = str(session_home / "venv")
+            env["UV_CACHE_DIR"] = str(session_home / "uv-cache")
+            env["UV_LINK_MODE"] = "copy"
+            if self.container_image:
+                # --cleanenv drops the host env inside the container EXCEPT
+                # APPTAINERENV_* — the key travels via env, never argv
+                for k in (self.key_env, "UV_PROJECT_ENVIRONMENT", "UV_CACHE_DIR", "UV_LINK_MODE"):
+                    env[f"APPTAINERENV_{k}"] = env[k]
             # cwd is the per-run home, NOT the workspace: --save_sample writes
             # its trajectory JSON to cwd, and artifacts must never land in the
             # clone (they would enter the diff).

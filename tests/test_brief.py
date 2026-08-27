@@ -140,3 +140,20 @@ def test_wake_prompt_is_bounded_and_asks_for_conclusion() -> None:
     huge = render_wake("x" * 100_000, budget)
     assert len(huge) < MAX_WAKE_CHARS + 600
     assert "[truncated" in huge
+
+
+def test_render_uses_orientation_labels_not_directives() -> None:
+    # the de-prescriptified brief labels the metric/finish as context
+    from autoresearch.brief import BriefInputs, Task, build_brief, render
+
+    t = Task(
+        hypothesis="h",
+        benchmark="tsp",
+        expected_effect="mean_tour_length (lower is better), currently 10.84",
+        done_criteria="You decide when your result is worth publishing; CI runs the tests.",
+    )
+    text = render(build_brief(BriefInputs(task=t, contract_text="c", ruler="r"), created="t"))
+    assert "Metric: mean_tour_length (lower is better), currently 10.84" in text
+    assert "Finishing: You decide" in text
+    # the retired directive labels are gone
+    assert "Expected effect:" not in text and "Done when:" not in text

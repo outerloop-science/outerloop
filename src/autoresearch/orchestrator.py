@@ -1,6 +1,6 @@
 """Orchestrator v1: one climb attempt on one benchmark of one target.
 
-Deliberately narrow: `climb_once` runs a single
+Deliberately narrow: `attempt_once` runs a single
 implement→evaluate→verify→PR cycle for the configured benchmark. Task
 selection across benchmarks, the planner, experiment sbatch + wakes, and
 notebook reports grow from here — each behind a seam that already exists.
@@ -89,9 +89,9 @@ class EvalError(RuntimeError):
     """The benchmark command failed or produced no readable metric."""
 
 
-class ClimbParked(Exception):
+class RunParked(Exception):
     """A dispatched climb submitted its measures and must hibernate until they
-    finish. `climb_once` raises it (a park is an exceptional exit); the caller,
+    finish. `attempt_once` raises it (a park is an exceptional exit); the caller,
     which owns the run record and git, persists the fields below as the WAITING
     stage — `afterany` among them, the dependency set the wake waits on — and
     ends the run's turn, keeping the candidate snapshot alive so the wake can
@@ -378,7 +378,7 @@ def _metric_from_output(stdout: str, metric: str) -> float | None:
 
 
 @dataclass(frozen=True)
-class ClimbConfig:
+class RunConfig:
     target: str  # owner/repo
     benchmark: str  # the ONE benchmark this loop works on
     branch_prefix: str = "feat/auto/agent-01"
@@ -405,7 +405,7 @@ class SuiteMeasurement:
 
 
 @dataclass(frozen=True)
-class ClimbResult:
+class AttemptResult:
     """What one attempt produced — the raw material of the run report."""
 
     # improved | no-improvement | session-error | session-budget |
@@ -419,7 +419,7 @@ class ClimbResult:
     measured_paths: tuple[str, ...] = ()
     # the sealed candidate snapshot this result was measured on (set on
     # `improved`); a caller can publish THIS tree (the wake path does,
-    # climb.py) and a depth loop can select the best across passes by it.
+    # attempt.py) and a depth loop can select the best across passes by it.
     # "" on non-improved outcomes.
     candidate_sha: str = ""
     session: SessionResult | None = None
@@ -442,7 +442,7 @@ class ClimbResult:
     panel_blocking_open: bool = False
     panel_degraded: bool = False
 
-    def report(self, config: ClimbConfig, redact_secrets: tuple[str, ...] = ()) -> str:
+    def report(self, config: RunConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
             f"# Run report — {config.target} / {config.benchmark}",
             f"Outcome: **{self.outcome}**",
@@ -643,13 +643,15 @@ def make_task(
     contract: Contract, benchmark_name: str, baseline: float | None, hypothesis: str = ""
 ) -> Task:
     bench = _benchmark(contract, benchmark_name)
-    better = "up" if bench.direction == "max" else "down"
+    better = "lower" if bench.direction == "min" else "higher"
     suite_gated = bool(contract.scope.shared) and len(contract.benchmarks) > 1
-    # `baseline` orients the brief only (the last-known score from the ledger);
-    # the GATE re-measures both sides after the session, so a missing baseline
-    # (a benchmark's first run) just drops the reference number, never the gate.
-    versus = f" from {baseline}" if baseline is not None else ""
-    against = f" versus {baseline}" if baseline is not None else ""
+    # ORIENTATION, not direction: the brief states the current score and how
+    # the metric reads as FACTS, and leaves the goal and the finish to the
+    # author (research-loop.md, author-directed). The GATE — never the brief —
+    # is the real bar: it re-measures both sides after the session, so a
+    # missing baseline (a benchmark's first run) just drops the reference
+    # number. Naming a target here would only invite optimizing that number.
+    current = f"currently {baseline}" if baseline is not None else "no score recorded yet"
     return Task(
         hypothesis=hypothesis
         or (
@@ -658,16 +660,21 @@ def make_task(
             f"for why it underperforms, and implement it."
         ),
         benchmark=bench.name,
-        expected_effect=f"{bench.metric} {better}{versus}",
+        # a fact about the metric, not a target to chase
+        expected_effect=f"{bench.metric} ({better} is better), {current}",
+        # the finish is the AUTHOR's call; the gate decides what publishes
         done_criteria=(
-            f"`{bench.command}` runs clean and {bench.metric} moves {better}"
-            f"{against}; repository tests pass"
+            "You decide when your result is worth publishing — and a negative "
+            "result reported clearly is a success. The orchestrator re-measures "
+            f"`{bench.command}` on a private seed to verify any improvement "
+            "claim, and the PR's CI runs the repository tests"
             + (
-                "; a change touching shared paths is suite-gated — no sibling "
+                "; changes touching shared paths are suite-gated, so no sibling "
                 "benchmark may regress beyond its floor"
                 if suite_gated
                 else ""
             )
+            + "."
         ),
     )
 
@@ -707,7 +714,7 @@ def measure_and_decide(
     measured_paths: Sequence[str],
     measurer: Measurer,
     min_relative_improvement: float,
-) -> ClimbResult | MeasureOK:
+) -> AttemptResult | MeasureOK:
     """The post-session decision as a PURE function of committed shas and a
     `Measurer` — the re-enterable core a wake reconstructs from the record.
 
@@ -715,7 +722,7 @@ def measure_and_decide(
     common random numbers) and, when the diff touches shared code, each
     sibling's paired base/cand (on the sibling's OWN seed var, all sharing the
     single `suite_seed`), then applies the improvement threshold and the suite
-    gate. Returns a TERMINAL `ClimbResult` on any stop (scope-violation,
+    gate. Returns a TERMINAL `AttemptResult` on any stop (scope-violation,
     eval-error, no-improvement, suite-regression), or a `MeasureOK` carrying
     the credited values. No session and no git: the same shas rebuild the same
     plan and read cached results, so a wake re-enters here unchanged. A
@@ -736,7 +743,7 @@ def measure_and_decide(
     # because the out-of-scope edit could be to the ruler itself.
     violations = out_of_scope(list(measured_paths), contract)
     if violations:
-        return ClimbResult(
+        return AttemptResult(
             outcome="scope-violation",
             note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
             run_seed=seed,
@@ -767,18 +774,18 @@ def measure_and_decide(
 
     # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
     # candidate has cleared the threshold: a non-improving candidate must never
-    # burn the (expensive) sibling evals, matching climb_once's lazy order.
+    # burn the (expensive) sibling evals, matching attempt_once's lazy order.
     try:
         main = measurer.results(
             plan_measures(bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed)
         )
     except EvalError as exc:
-        return ClimbResult(outcome="eval-error", note=str(exc), run_seed=seed)
+        return AttemptResult(outcome="eval-error", note=str(exc), run_seed=seed)
 
     baseline = main["baseline"]
     candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
-        return ClimbResult(
+        return AttemptResult(
             outcome="no-improvement",
             baseline=baseline,
             candidate=candidate,
@@ -808,7 +815,7 @@ def measure_and_decide(
         vals = measurer.results(sib_plan)
     except EvalError as exc:
         # phase 1 already credited the main pair — carry it into the report.
-        return ClimbResult(
+        return AttemptResult(
             outcome="eval-error",
             baseline=baseline,
             candidate=candidate,
@@ -835,7 +842,7 @@ def measure_and_decide(
     regressed = [r for r in suite if r.regressed]
     if regressed:
         named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
-        return ClimbResult(
+        return AttemptResult(
             outcome="suite-regression",
             baseline=baseline,
             candidate=candidate,
@@ -853,7 +860,7 @@ def measure_and_decide(
     )
 
 
-def resume_climb(
+def resume_attempt(
     contract: Contract,
     bench: Benchmark,
     *,
@@ -865,7 +872,7 @@ def resume_climb(
     session: SessionResult,
     measurer: Measurer,
     min_relative_improvement: float,
-) -> ClimbResult:
+) -> AttemptResult:
     """Re-enter a parked climb's post-session decision — the WAKE side of a
     dispatched candidate park. The candidate is already committed (its sha is in
     the record), so the session does NOT re-run: its edits are captured in
@@ -877,7 +884,7 @@ def resume_climb(
     The measurer reads the cached eval results and this returns the decision, OR
     the decision needs a measure not yet done — the suite pairs after an
     improving candidate, "another round of experiments" — and it re-parks by
-    raising `ClimbParked`, exactly as the first pass did.
+    raising `RunParked`, exactly as the first pass did.
 
     This is the re-entry seam the depth axis (docs/design/research-loop.md)
     builds on.
@@ -899,7 +906,7 @@ def resume_climb(
     except MeasurementPending as pending:
         # a measure is not done yet (the suite pairs this wake just dispatched):
         # re-park on the new afterany set, same shape as the first candidate park
-        raise ClimbParked(
+        raise RunParked(
             phase="candidate",
             afterany=pending.afterany(),
             base_sha=base_sha,
@@ -908,7 +915,7 @@ def resume_climb(
             candidate_sha=candidate_sha,
             session=session,
         ) from None
-    if isinstance(outcome, ClimbResult):
+    if isinstance(outcome, AttemptResult):
         # a terminal measurement outcome (no-improvement / suite-regression /
         # eval-error): carry the reconstructed session, and give a bare
         # no-improvement the same framing the in-job path sets (a clear
@@ -919,7 +926,7 @@ def resume_climb(
         return dc_replace(outcome, session=session, note=note)
     # credited: candidate cleared the threshold and no sibling regressed. The
     # caller sets `branch` when it opens the PR.
-    return ClimbResult(
+    return AttemptResult(
         outcome="improved",
         baseline=outcome.baseline,
         candidate=outcome.candidate,
@@ -940,8 +947,8 @@ def _merge_afterany(*parts: str) -> str:
     return "afterany:" + ":".join(ids) if ids else ""
 
 
-def climb_once(
-    config: ClimbConfig,
+def attempt_once(
+    config: RunConfig,
     contract_text: str,
     workspace: Path,
     harness: Harness,
@@ -962,7 +969,7 @@ def climb_once(
     launcher: Callable[[str, SyscallRequest], str] | None = None,
     launches_used: int = 0,
     sleeps_used: int = 0,
-) -> ClimbResult:
+) -> AttemptResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
     The caller owns the git side (clone before, diff/commit/push/PR after) —
@@ -994,7 +1001,7 @@ def climb_once(
     session that ends having asked to launch-and-sleep parks this climb as
     `author-sleep` instead of measuring: the tree is sealed via `snapshot()`,
     the launcher submits the jobs (caller-owned — it is compute work), and the
-    ClimbParked carries the request plus the budget counts. A `submit` rides
+    RunParked carries the request plus the budget counts. A `submit` rides
     the same request: the gate (and any sibling launches) run on the sealed
     tree — a dispatched gate parks as a `candidate` with the `submitted`
     marker, an inline gate feeds back in-session. `launches_used` /
@@ -1005,7 +1012,7 @@ def climb_once(
     bench = _benchmark(contract, config.benchmark)
     spec = spec or author_spec()
     if not spec.execution.can_execute:
-        raise ValueError("climb_once runs an editing role; the spec must allow execution")
+        raise ValueError("attempt_once runs an editing role; the spec must allow execution")
     if not spec.scope:
         spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
 
@@ -1102,7 +1109,7 @@ def climb_once(
             kind = "session-budget"
         else:
             kind = "session-error"
-        return ClimbResult(
+        return AttemptResult(
             outcome=kind,
             baseline=baseline,
             session=session,
@@ -1135,9 +1142,9 @@ def climb_once(
     measured: tuple[str, ...] = ()
     refused_once = False
 
-    def _resume(prompt: str) -> ClimbResult | None:
+    def _resume(prompt: str) -> AttemptResult | None:
         """Resume the author session with `prompt`: None on success (session
-        advanced), else the terminal ClimbResult for the failed resume."""
+        advanced), else the terminal AttemptResult for the failed resume."""
         nonlocal session
         wake_result = run_role(
             spec, harness, prompt, workspace, resume_session_id=session.session_id
@@ -1151,7 +1158,7 @@ def climb_once(
             kind = "session-budget"
         else:
             kind = "session-error"
-        return ClimbResult(
+        return AttemptResult(
             outcome=kind,
             baseline=baseline,
             candidate=candidate,
@@ -1189,7 +1196,7 @@ def climb_once(
                 request = read_syscall_request(workspace)
             except SyscallError as exc:
                 # loud, never silent: the author meant something by the file
-                return ClimbResult(
+                return AttemptResult(
                     outcome="session-error",
                     baseline=baseline,
                     session=session,
@@ -1222,7 +1229,7 @@ def climb_once(
                 # job. Same ending as the candidate path.
                 violations = out_of_scope(list(changed_paths()), contract)
                 if violations:
-                    return ClimbResult(
+                    return AttemptResult(
                         outcome="scope-violation",
                         baseline=baseline,
                         session=session,
@@ -1232,7 +1239,7 @@ def climb_once(
                         run_seed=run_seed,
                     )
                 sha = snapshot()
-                raise ClimbParked(
+                raise RunParked(
                     phase="author-sleep",
                     afterany=launcher(sha, request),
                     base_sha=base_sha,
@@ -1267,7 +1274,7 @@ def climb_once(
         # which re-enters it directly).
         violations = out_of_scope(list(measured), contract)
         if violations:
-            return ClimbResult(
+            return AttemptResult(
                 outcome="scope-violation",
                 baseline=baseline,
                 session=session,
@@ -1285,7 +1292,7 @@ def climb_once(
         try:
             candidate_sha = snapshot()
         except EvalError as exc:
-            return ClimbResult(
+            return AttemptResult(
                 outcome="eval-error",
                 baseline=baseline,
                 session=session,
@@ -1320,7 +1327,7 @@ def climb_once(
                 assert launcher is not None  # a submit only arrives through it
                 launch_afterany = launcher(candidate_sha, submitted)
                 launches_used += len(submitted.launches)
-            raise ClimbParked(
+            raise RunParked(
                 phase="candidate",
                 afterany=_merge_afterany(pending.afterany(), launch_afterany),
                 base_sha=base_sha,
@@ -1333,7 +1340,7 @@ def climb_once(
                 sleeps_used=sleeps_used,
                 submitted=submitted is not None,
             ) from None
-        if isinstance(outcome, ClimbResult):
+        if isinstance(outcome, AttemptResult):
             if (
                 submitted is not None
                 and outcome.outcome in ("no-improvement", "suite-regression", "eval-error")
@@ -1403,7 +1410,7 @@ def climb_once(
         panel_blocking_open = bool(verdict.blocking)
         break
 
-    return ClimbResult(
+    return AttemptResult(
         outcome="improved",
         baseline=baseline,
         candidate=candidate,
@@ -1422,8 +1429,8 @@ def climb_once(
 
 
 def pr_body(
-    result: ClimbResult,
-    config: ClimbConfig,
+    result: AttemptResult,
+    config: RunConfig,
     redact_secrets: tuple[str, ...],
     display_digits: int | None = None,
 ) -> str:

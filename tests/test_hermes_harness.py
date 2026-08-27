@@ -289,3 +289,49 @@ def test_config_write_refuses_symlink(tmp_path: Path) -> None:
     (tmp_path / "config.yaml").symlink_to(target)
     assert _write_private_fixed(tmp_path / "config.yaml", "NEW") is False  # refused
     assert target.read_text() == "ORIG"  # redirect target untouched
+
+
+def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
+    # container on: apptainer wraps the identical hermes argv — workspace and
+    # per-run home bound, the pinned repo read-only, key + uv vars via
+    # APPTAINERENV, never argv
+    import subprocess
+
+    from autoresearch.harness import HermesHarness
+
+    captured = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured["command"] = command
+        captured["env"] = env
+        raise OSError("stop here")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    repo = tmp_path / "hermes-agent"
+    repo.mkdir()
+    ws = tmp_path / "runs" / "r1" / "ws"
+    ws.mkdir(parents=True)
+    h = HermesHarness(
+        api_key="sk-h",
+        repo_dir=repo,
+        provider="openai-api",
+        container_image="/img.sif",
+    )
+    result = h.run("brief", ws)
+    assert result.is_error  # the fake Popen stopped the run
+    cmd = captured["command"]
+    assert cmd[0] == "apptainer" and "--containall" in cmd and "--cleanenv" in cmd
+    assert f"{ws.resolve()}:{ws.resolve()}" in cmd
+    assert f"{repo.resolve()}:{repo.resolve()}:ro" in cmd
+    home = (ws.parent / f"{ws.name}-home").resolve()
+    assert f"{home}:{home}" in cmd  # --home bind
+    assert "/img.sif" in cmd
+    assert "sk-h" not in " ".join(cmd)  # the key never rides argv
+    env = captured["env"]
+    assert env["APPTAINERENV_OPENROUTER_API_KEY"] == "sk-h"
+    assert env["APPTAINERENV_UV_PROJECT_ENVIRONMENT"].startswith(str(home))
+    # uncontained: same argv, no apptainer
+    captured.clear()
+    h2 = HermesHarness(api_key="sk-h", repo_dir=repo, provider="openai-api")
+    h2.run("brief", ws)
+    assert captured["command"][0] == "uv"

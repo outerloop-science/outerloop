@@ -1,6 +1,6 @@
-"""One live climb, end to end: clone → climb_once → commit/push/PR → report.
+"""One live climb, end to end: clone → attempt_once → commit/push/PR → report.
 
-This is the glue `orchestrator.climb_once` deliberately does not own: the git
+This is the glue `orchestrator.attempt_once` deliberately does not own: the git
 side (bot-auth clone, veto-checked commit, push, PR) and the run's durable
 record. One invocation = one run = at most one PR.
 
@@ -39,15 +39,15 @@ from autoresearch.github import (
 from autoresearch.harness import Harness, SessionResult, redact
 from autoresearch.measure import DispatchedMeasurer, DispatchSettings
 from autoresearch.orchestrator import (
-    ClimbConfig,
-    ClimbParked,
-    ClimbResult,
+    AttemptResult,
     EvalError,
     Measurer,
+    RunConfig,
+    RunParked,
     _benchmark,
-    climb_once,
+    attempt_once,
     pr_body,
-    resume_climb,
+    resume_attempt,
 )
 from autoresearch.panel import PanelLens, PanelVerdict, run_panel
 from autoresearch.progress import (
@@ -57,7 +57,7 @@ from autoresearch.progress import (
     write_progress,
 )
 from autoresearch.review import PullRequest
-from autoresearch.role_runner import build_harness
+from autoresearch.role_runner import build_harness, role_key
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -231,7 +231,7 @@ _ENDINGS_BY_OUTCOME = {
 
 
 @dataclass(frozen=True)
-class LiveClimbOutcome:
+class AttemptOutcome:
     run_id: str
     outcome: str
     pr_url: str = ""
@@ -314,7 +314,7 @@ PARK_QUEUE_SLACK_MIN = 12 * 60
 def _park_run(
     run_root: Path,
     record: RunRecord,
-    parked: ClimbParked,
+    parked: RunParked,
     candidate_ref: str,
     eval_minutes: int | None,
     now: float,
@@ -426,7 +426,7 @@ def _park_run(
 
 def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str):
     """The launch side of the author syscalls, shared by the first pass
-    (live_climb) and the author-sleep wake: each launch becomes a jailed job on
+    (live_attempt) and the author-sleep wake: each launch becomes a jailed job on
     the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
     partially-submitted batch is reaped rather than orphaned."""
 
@@ -492,7 +492,7 @@ def _wake_author_sleep(
     contract_text: str,
     contract: Contract,
     bench: Benchmark,
-    config: ClimbConfig,
+    config: RunConfig,
     measurer: Measurer,
     harness: Harness | None,
     spec: RoleSpec | None,
@@ -500,7 +500,7 @@ def _wake_author_sleep(
     issue_number: int,
     eval_minutes: int | None,
     extra_update: str = "",
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Wake a syscall park and resume the AUTHOR: deliver the launches' results
     into the sandbox, resume the SAME session through the climb's resume-entry
     with them (data-fenced), and let the climb run — it may sleep again
@@ -515,7 +515,7 @@ def _wake_author_sleep(
     from autoresearch.syscall import Launch as SyscallLaunch
     from autoresearch.syscall import gather_results, render_wake, write_budget
 
-    def _end(result: ClimbResult, drop_refs: list[str]) -> LiveClimbOutcome:
+    def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         # a terminal from the resumed climb: report, ending record, issue note —
         # the same ending shape every other terminal takes.
         for ref in drop_refs:
@@ -548,7 +548,7 @@ def _wake_author_sleep(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
-        return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+        return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
     # The wake NEEDS the author harness (it resumes the session). Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
@@ -561,7 +561,7 @@ def _wake_author_sleep(
         or not getattr(harness, "supports_resume", True)
     ):
         return _end(
-            ClimbResult(
+            AttemptResult(
                 outcome="session-error",
                 note="author-sleep wake needs the author harness/spec and a resumable session",
             ),
@@ -637,10 +637,10 @@ def _wake_author_sleep(
         else None
     )
 
-    parked: ClimbParked | None = None
+    parked: RunParked | None = None
     kept_ref = ""
     try:
-        result = climb_once(
+        result = attempt_once(
             config,
             contract_text,
             workspace,
@@ -658,7 +658,7 @@ def _wake_author_sleep(
             launches_used=launches_used,
             sleeps_used=sleeps_used,
         )
-    except ClimbParked as p:
+    except RunParked as p:
         # slept again, or the gate dispatched its measures (a candidate park the
         # existing wake path decides). Keep the NEW park's snapshot ref; the OLD
         # sleep ref is superseded once the new park persists.
@@ -682,7 +682,7 @@ def _wake_author_sleep(
             raise
         parked = p
         drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
-        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+        return AttemptOutcome(run_id=run_id, outcome="parked")
     finally:
         for snap in snapshots:
             if parked and kept_ref and snap.ref == kept_ref:
@@ -724,14 +724,14 @@ def resume_run(
     panel_lenses: tuple[PanelLens, ...] = (),
     harness: Harness | None = None,
     spec: RoleSpec | None = None,
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Wake a parked dispatched climb and re-enter its decision WITHOUT the
-    session (`orchestrator.resume_climb`), from the record `_park_run` wrote.
+    session (`orchestrator.resume_attempt`), from the record `_park_run` wrote.
     The three exits:
 
     * **re-park** — the wake dispatched a measure that is not done yet (the
       suite pairs an improving candidate fans out, "another round of
-      experiments"): `resume_climb` raises `ClimbParked`, and this re-persists
+      experiments"): `resume_attempt` raises `RunParked`, and this re-persists
       the WAITING stage on the new afterany, keeping the same candidate
       snapshot;
     * **a negative terminal** (no-improvement / suite-regression / eval-error):
@@ -776,7 +776,7 @@ def resume_run(
     contract_text = ws.git("show", f"{base_sha}:.autoresearch.yaml")
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
-    config = ClimbConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
+    config = RunConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
     eval_minutes = next(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
@@ -838,7 +838,7 @@ def resume_run(
         transcript_path="",
     )
     try:
-        result = resume_climb(
+        result = resume_attempt(
             contract,
             bench,
             base_sha=base_sha,
@@ -850,7 +850,7 @@ def resume_run(
             measurer=measurer,
             min_relative_improvement=config.min_relative_improvement,
         )
-    except ClimbParked as parked:
+    except RunParked as parked:
         # another measure this wake dispatched is not done — re-park on the new
         # afterany, keeping the SAME candidate snapshot the next wake reads.
         # PROGRESS only if this wake dispatched a NEW job set (e.g. the candidate
@@ -900,7 +900,7 @@ def resume_run(
             base_branch=base_branch,
             panel_reads=panel_reads,
         )
-        return LiveClimbOutcome(run_id=run_id, outcome="parked")
+        return AttemptOutcome(run_id=run_id, outcome="parked")
 
     # A SUBMITTED park (the author's `submit` syscall, buildout Phase B): gate
     # and panel results go back to the AUTHOR — it revises and resubmits, runs
@@ -915,7 +915,7 @@ def resume_run(
         and getattr(harness, "supports_resume", True)
     )
 
-    def _wake_author(extra_update: str) -> LiveClimbOutcome:
+    def _wake_author(extra_update: str) -> AttemptOutcome:
         # resume the submitted park's author with the gate/panel feedback
         # leading its wake text; the candidate ref is this park's held snapshot
         return _wake_author_sleep(
@@ -981,7 +981,7 @@ def resume_run(
                 RunRecord(**{**record.__dict__, "state": ENDED, "ending": NEGATIVE_RESULT})
             )
             _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
-            return LiveClimbOutcome(run_id=run_id, outcome="no-improvement")
+            return AttemptOutcome(run_id=run_id, outcome="no-improvement")
 
         from datetime import UTC as _UTC
         from datetime import datetime as _dt
@@ -1046,7 +1046,7 @@ def resume_run(
                 redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
                 secrets,
             )
-            return LiveClimbOutcome(
+            return AttemptOutcome(
                 run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
             )
 
@@ -1203,7 +1203,7 @@ def resume_run(
             )
             if _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets):
                 drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-            return LiveClimbOutcome(run_id=run_id, outcome="publish-error")
+            return AttemptOutcome(run_id=run_id, outcome="publish-error")
         # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
         # fails, the record stays `waiting` with the snapshot intact, so the run
         # is recoverable rather than an ABORTED record over a live PR.
@@ -1240,7 +1240,7 @@ def resume_run(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
-        return LiveClimbOutcome(
+        return AttemptOutcome(
             run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
         )
 
@@ -1280,32 +1280,111 @@ def resume_run(
         redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
         secrets,
     )
-    return LiveClimbOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+    return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
 
 
-def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
+def _judge_lens_key(
+    *,
+    backend: str,
+    key_file_env: str,
+    author_backend: str,
+    claude_panel_path: Path,
+    image: str,
+) -> str:
+    """Resolve a non-claude judge lens's OWN key file, enforcing the three
+    separations every shelled judge shares (codex, hermes, any future
+    backend): the image is required (a judge never runs uncontained next to
+    key files), the key must be named explicitly, and it must differ from BOTH
+    the author's key of the same provider AND the claude panel key (a
+    cross-provider send would leak an anthropic credential to another login).
+    Returns the redacted key (or "" under an ADC-covered deployment)."""
+    if not image:
+        raise ValueError(
+            f"a {backend} panel lens requires --image (a shelled judge only "
+            "ever runs inside the container)"
+        )
+    raw = os.environ.get(key_file_env, "").strip()
+    if not raw:
+        raise ValueError(
+            f"a {backend} panel lens needs {key_file_env} "
+            "(role separation: the judge's own key, never the author's)"
+        )
+    path = Path(raw).expanduser()
+    author_path = Path(resolve_author_key_file(author_backend)).expanduser()
+    if path.resolve() == author_path.resolve():
+        raise ValueError(
+            f"{backend} panel key file {path} is the {author_backend} author key "
+            "(role separation: the judge needs its own key)"
+        )
+    if path.resolve() == claude_panel_path.resolve():
+        raise ValueError(
+            f"{backend} panel key file {path} is the claude panel key file "
+            "(an anthropic key must never reach another provider's login)"
+        )
+    return role_key(raw, author_backend)
+
+
+def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str, ...]]:
     """Build the verification-panel lenses from the CLI args (empty `--panel`
-    disables it). Shared by the fresh-climb and the `--resume` wake paths so a
-    dispatched improvement runs the SAME panel as an inline one. Raises
-    ValueError on a bad panel/backend config — a configured gate must never
-    silently vanish."""
+    disables it), returning `(lenses, panel_secrets)` — the ONE owner of
+    panel credentials: each backend's judge key is read only when a lens uses
+    it, role separation is enforced HERE (a manual climb gets the same rule
+    as the tick preflight), and every key a judge holds joins the caller's
+    redaction set via `panel_secrets`. Shared by the fresh-climb and the
+    `--resume` wake paths so a dispatched improvement runs the SAME panel as
+    an inline one. Raises ValueError on a bad panel/backend config — a
+    configured gate must never silently vanish."""
     import os
 
     if not args.panel.strip():
-        return ()
+        return (), ()
     from autoresearch.panel import parse_lenses
     from autoresearch.roles import reviewer_spec
 
-    panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
+    parsed = parse_lenses(args.panel)
+    # the anthropic panel key is read only when a claude lens will use it —
+    # a codex-only panel must not demand an unrelated credential
+    panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
     lenses = []
-    for kind, backend, model in parse_lenses(args.panel):
+    secrets: list[str] = [panel_key] if panel_key else []
+    for kind, backend, model in parsed:
         hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+        # per-backend judge keys coexist — a codex lens is never handed the
+        # anthropic panel key, and role separation forbids defaulting to the
+        # AUTHOR's codex key: the judge key is its own, named explicitly
+        claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
+        if backend == "codex":
+            lens_key = _judge_lens_key(
+                backend="codex",
+                key_file_env="AUTORESEARCH_PANEL_CODEX_KEY_FILE",
+                author_backend="codex",
+                claude_panel_path=claude_panel_path,
+                image=args.image,
+            )
+            if lens_key:
+                secrets.append(lens_key)
+        elif backend == "hermes":
+            # hermes reads its key from its provider's env var, but the FILE
+            # is resolved and separated exactly like codex's (the key still
+            # lands next to the session). The author's OpenAI key coexists, so
+            # separate against the codex author key.
+            lens_key = _judge_lens_key(
+                backend="hermes",
+                key_file_env="AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+                author_backend="codex",
+                claude_panel_path=claude_panel_path,
+                image=args.image,
+            )
+            if lens_key:
+                secrets.append(lens_key)
+        else:
+            lens_key = panel_key
         try:
             judge = build_harness(
-                panel_key,
+                lens_key,
                 reviewer_spec(),
                 backend=backend,
-                binary=args.claude_bin if backend == "claude" else None,
+                binary=args.claude_bin if backend == "claude" else args.codex_bin,
                 model=model or None,
                 # ALWAYS contained: the panel runs on the climb host next to key
                 # files, and a judge now holds a shell (codex `danger-full-access`),
@@ -1320,7 +1399,7 @@ def _panel_lenses_from_args(args: Any) -> tuple[PanelLens, ...]:
         except ValueError as exc:
             raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
         lenses.append(PanelLens(kind=kind, harness=judge))
-    return tuple(lenses)
+    return tuple(lenses), tuple(dict.fromkeys(secrets))
 
 
 def build_panel_runner(
@@ -1411,8 +1490,8 @@ def build_panel_runner(
     return runner
 
 
-def live_climb(
-    config: ClimbConfig,
+def live_attempt(
+    config: RunConfig,
     run_root: Path,
     run_id: str,
     harness: Harness,
@@ -1431,7 +1510,7 @@ def live_climb(
     panel_lenses: tuple[PanelLens, ...] = (),
     dispatch: DispatchSettings | None = None,
     eval_image: str = "",
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Run one climb against the real target repo. With `panel_lenses`, the
     pre-PR verification panel gates the claim before any PR exists
     (docs/design/orchestrator-verify.md); blocking findings still open at
@@ -1456,7 +1535,7 @@ def live_climb(
         author_backend=author_backend,
         author_model=author_model,
         author_key_file=author_key_file,
-        climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
+        run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
         save_record(run_root, record, now)
@@ -1480,14 +1559,14 @@ def live_climb(
                 ),
                 secrets,
             )
-        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
+        return AttemptOutcome(run_id=run_id, outcome="attempt-error")
 
     try:
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # Build ON the requested PR base: the clone checks out the remote
         # DEFAULT branch, which need not be `base_branch` — the session must
         # edit, and the gate must measure, the tree the PR will land on.
-        # A missing base branch fails loudly as climb-error.
+        # A missing base branch fails loudly as attempt-error.
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
@@ -1639,13 +1718,13 @@ def live_climb(
             assert dispatch is not None  # folded into author_syscalls above
             launcher = _make_launcher(dispatch, run_dir, workspace, run_id)
 
-        parked: ClimbParked | None = None
+        parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
             # the last-known score orients the brief only; the gate re-measures
             # both sides after the session, so None (a first run) is fine.
             prior_best = load_leader(workspace).get(config.benchmark)
-            result = climb_once(
+            result = attempt_once(
                 config,
                 contract_text,
                 workspace,
@@ -1662,7 +1741,7 @@ def live_climb(
                 brief_baseline=prior_best.best if prior_best else None,
                 launcher=launcher,
             )
-        except ClimbParked as p:
+        except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
             # re-entry stage as a WAITING record (not an error), keep the
             # candidate snapshot alive for the wake, and end. The wake re-enters
@@ -1703,7 +1782,7 @@ def live_climb(
                     dispatch.compute.cancel(job_id)
                 raise
             parked = p
-            return LiveClimbOutcome(run_id=run_id, outcome="parked")
+            return AttemptOutcome(run_id=run_id, outcome="parked")
         finally:
             for snap in snapshots:
                 # a candidate park must OUTLIVE the wake — keep the ONE recorded
@@ -1729,7 +1808,7 @@ def live_climb(
             "error report",
             lambda: report_path.write_text(
                 f"# Run report — {config.target} / {config.benchmark}\n"
-                f"Outcome: **climb-error**\n"
+                f"Outcome: **attempt-error**\n"
                 f"Note: {note}\n"
             ),
             secrets,
@@ -1744,14 +1823,14 @@ def live_climb(
                 lambda: github.comment(
                     config.target,
                     issue_number,
-                    f"Run `{run_id}` finished (climb-error): {exc_name}. "
+                    f"Run `{run_id}` finished (attempt-error): {exc_name}. "
                     f"Details are in the run's record and report on the orchestrator.",
                 ),
                 secrets,
             )
-        return LiveClimbOutcome(
+        return AttemptOutcome(
             run_id=run_id,
-            outcome="climb-error",
+            outcome="attempt-error",
             # an outcome must never point at a report that was not written
             report_path=str(report_path) if wrote else "",
         )
@@ -1930,7 +2009,7 @@ def live_climb(
             secrets,
         )
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
-    return LiveClimbOutcome(
+    return AttemptOutcome(
         run_id=run_id,
         outcome=outcome_name,
         pr_url=pr_url,
@@ -2026,7 +2105,7 @@ def main() -> int:
 
     arm_sigterm_containment()
 
-    parser = argparse.ArgumentParser(description="One live climb on one benchmark.")
+    parser = argparse.ArgumentParser(description="One live attempt on one benchmark.")
     # --target/--benchmark drive a fresh climb; they are read from the record
     # on a --resume wake instead, so they are optional (validated below).
     parser.add_argument("--target", default="")
@@ -2182,10 +2261,9 @@ def main() -> int:
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
-            wake_lenses = _panel_lenses_from_args(args)
+            wake_lenses, wake_panel_secrets = _panel_lenses_from_args(args)
         except ValueError as exc:
             parser.error(str(exc))
-        wake_panel_key = ""
         wake_api_key = ""
         wake_harness = None
         wake_spec = None
@@ -2195,17 +2273,12 @@ def main() -> int:
         # with its launches' results). A panel-less candidate wake stays a pure
         # read-decide-publish job and must not require the author key.
         _wake_stage = getattr(_wake_record, "stage", None) or {}
-        if wake_lenses:
-            # the panel's judges need the verifier key; an author-sleep wake
-            # alone does NOT — a panel-less deployment must not be forced to
-            # provision an unused credential.
-            wake_panel_key = FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
         if (
             wake_lenses
             or _wake_stage.get("phase") == "author-sleep"
             or _wake_stage.get("submitted")
         ):
-            wake_api_key = FileTokenProvider(Path(wake_key_file)).token()
+            wake_api_key = role_key(wake_key_file, wake_backend)
             wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_harness(
                 wake_api_key,
@@ -2229,7 +2302,9 @@ def main() -> int:
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
-                secrets=tuple(k for k in (bot_auth.token(), wake_panel_key, wake_api_key) if k),
+                secrets=tuple(
+                    k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k
+                ),
                 base_branch=args.base_branch,
                 panel_lenses=wake_lenses,
                 harness=wake_harness,
@@ -2255,8 +2330,9 @@ def main() -> int:
     # config-driven: the author key defaults per backend (claude vs codex) so the
     # tick never threads it — see resolve_author_key_file (result is ~-expanded).
     args.key_file = resolve_author_key_file(args.author_backend, args.key_file)
-    # same 0600 discipline as the PAT: this key spends real money
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    # same 0600 discipline as the PAT: this key spends real money. A missing
+    # file is tolerated only when Vertex (ADC) covers the claude backend.
+    api_key = role_key(args.key_file, args.author_backend)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"{args.benchmark}-{stamp}"
 
@@ -2297,16 +2373,9 @@ def main() -> int:
     # Pre-PR panel lenses: judge sessions on the verifier's own key (separate
     # identity from the author). kind[:backend[:model]]; claude by default.
     try:
-        panel_lenses = _panel_lenses_from_args(args)
+        panel_lenses, panel_secrets = _panel_lenses_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    # the panel key joins the redaction set: judge error text can echo request
-    # material like any other model error.
-    panel_key = (
-        FileTokenProvider(Path(args.panel_key_file).expanduser()).token()
-        if args.panel.strip()
-        else ""
-    )
 
     # Dispatched measurement needs the full cluster triple AND a real image
     # file to bind against; missing any, the climb measures inline (the tick
@@ -2323,8 +2392,8 @@ def main() -> int:
         )
     try:
         try:
-            outcome = live_climb(
-                config=ClimbConfig(target=args.target, benchmark=args.benchmark),
+            outcome = live_attempt(
+                config=RunConfig(target=args.target, benchmark=args.benchmark),
                 base_branch=args.base_branch,
                 run_root=args.run_root,
                 run_id=run_id,
@@ -2352,7 +2421,7 @@ def main() -> int:
                     for k in (
                         api_key,
                         bot_auth.token(),
-                        panel_key,
+                        *panel_secrets,
                     )
                     if k
                 ),
@@ -2367,7 +2436,7 @@ def main() -> int:
                 ),
             )
         except Terminated as exc:
-            # Fired in live_climb's microseconds-wide pre-containment window:
+            # Fired in live_attempt's microseconds-wide pre-containment window:
             # any record it saved strands and the sweep ends it from Slurm
             # truth; here we only avoid dying as an unexplained traceback.
             log.error("self-deadline fired before containment: %s", exc)

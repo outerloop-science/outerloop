@@ -10,12 +10,12 @@ from autoresearch.contract import load_contract
 from autoresearch.harness import SessionResult
 from autoresearch.measure import Measure, MeasurementPending
 from autoresearch.orchestrator import (
-    ClimbParked,
     EvalError,
     MeasureOK,
+    RunParked,
     _benchmark,
     measure_and_decide,
-    resume_climb,
+    resume_attempt,
 )
 
 # main benchmark + one sibling; a `shared` scope path drives the suite gate.
@@ -258,7 +258,7 @@ def test_empty_shared_scope_does_not_require_suite_seed():
     assert isinstance(out, MeasureOK)
 
 
-# --- resume_climb: the wake side, re-entering the decision without a session ---
+# --- resume_attempt: the wake side, re-entering the decision without a session ---
 
 REPORT = "swapped the construction heuristic; tours shortened."
 
@@ -277,7 +277,7 @@ def _woke_session():
 
 def _resume(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, text=CONTRACT):
     contract = load_contract(text, "x/y")
-    return resume_climb(
+    return resume_attempt(
         contract,
         _benchmark(contract, "main"),
         base_sha=BASE,
@@ -320,7 +320,7 @@ def test_resume_reparks_when_a_measure_is_not_done():
     # on the new afterany set, same shape as the first candidate park, carrying
     # the reconstructed session so a later wake still has the write-up.
     m = FakeMeasurer(raise_exc=MeasurementPending(("501", "502")))
-    with pytest.raises(ClimbParked) as excinfo:
+    with pytest.raises(RunParked) as excinfo:
         _resume(m)
     parked = excinfo.value
     assert parked.phase == "candidate"

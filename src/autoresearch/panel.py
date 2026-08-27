@@ -44,10 +44,12 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
     parser.error, and the tick preflights the SAME rules before claiming an
     intake issue — otherwise a typo'd spec passes the tick, the issue is
     claimed, and the climb dies at argument parsing with the claim stranded.
-    Only the claude backend is accepted for panel judges: non-claude judges
-    execute or read broadly and would run UNCONTAINED on the orchestrator
-    host, next to key files. The seam supports them; enable when their
-    containment on that host lands (claude runs inside the climb's image)."""
+    Backends are peers on the panel as everywhere else; the one gate is
+    CONTAINMENT on the orchestrator host (judges hold a shell and run next
+    to key files): claude, codex, and hermes all run inside the climb's
+    image, so any backend may judge — the image is required for a
+    non-claude lens (claude's --uncontained dev concession never extends to
+    a shelled judge)."""
     entries: list[tuple[str, str, str]] = []
     for raw in panel.split(","):
         entry = raw.strip()
@@ -56,10 +58,9 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
         backend = backend or "claude"
         if kind not in LENS_KINDS:
             raise ValueError(f"panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
-        if backend != "claude":
+        if backend not in ("claude", "codex", "hermes"):
             raise ValueError(
-                f"panel entry {entry!r}: only the claude backend is contained "
-                "on the orchestrator host so far"
+                f"panel entry {entry!r}: unknown backend {backend!r} (claude, codex, hermes)"
             )
         entries.append((kind, backend, model))
     return tuple(entries)

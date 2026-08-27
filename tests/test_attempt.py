@@ -1,4 +1,4 @@
-"""live_climb end to end: real local git repos, fake harness/evaluator/API."""
+"""live_attempt end to end: real local git repos, fake harness/evaluator/API."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch import climb as climb_mod
-from autoresearch.climb import _park_run, live_climb, resume_run
+from autoresearch import attempt as climb_mod
+from autoresearch.attempt import _park_run, live_attempt, resume_run
 from autoresearch.dispatch import Snapshot
 from autoresearch.harness import SessionResult
-from autoresearch.orchestrator import ClimbConfig, ClimbParked
+from autoresearch.orchestrator import RunConfig, RunParked
 from autoresearch.runstate import RunRecord, load_record, save_record
 
 CONTRACT = """\
@@ -51,7 +51,7 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
         run_id="tsp-1", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
     )
     snap = Snapshot(commit="c" * 40, tree="d" * 40, ref="refs/dispatch/tok")
-    parked = ClimbParked(
+    parked = RunParked(
         phase="candidate",
         afterany="afterany:101:102",
         base_sha="b" * 40,
@@ -94,7 +94,7 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
     record = RunRecord(
         run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
     )
-    parked = ClimbParked(
+    parked = RunParked(
         phase="author-sleep",
         afterany="afterany:501",
         base_sha="b" * 40,
@@ -146,7 +146,7 @@ def test_park_run_redacts_the_saved_report(tmp_path) -> None:
         final_text="used key sk-secret-123 to fetch",
         transcript_path="",
     )
-    parked = ClimbParked(
+    parked = RunParked(
         phase="candidate",
         afterany="afterany:1",
         base_sha="b" * 40,
@@ -166,7 +166,7 @@ def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
     record = RunRecord(
         run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
     )
-    parked = ClimbParked(
+    parked = RunParked(
         phase="baseline", afterany="afterany:77", base_sha="b" * 40, seed=0, suite_seed=0
     )
     _park_run(tmp_path, record, parked, "", eval_minutes=90, now=1000.0)
@@ -185,7 +185,7 @@ def test_park_resets_wake_attempts_a_productive_park_left_waiting(tmp_path) -> N
         benchmark="tsp",
         wake_attempts=2,
     )
-    parked = ClimbParked(
+    parked = RunParked(
         phase="baseline", afterany="afterany:9", base_sha="b" * 40, seed=0, suite_seed=0
     )
     _park_run(tmp_path, record, parked, "", eval_minutes=90, now=1000.0)
@@ -196,7 +196,7 @@ def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
     record = RunRecord(
         run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
     )
-    parked = ClimbParked(
+    parked = RunParked(
         phase="baseline", afterany="afterany:55", base_sha="b" * 40, seed=0, suite_seed=0
     )
     _park_run(tmp_path, record, parked, "", eval_minutes=90, now=1000.0)
@@ -357,7 +357,7 @@ class NoAuth:
 @contextlib.contextmanager
 def _queued_local(queue):
     """Route the gate's local eval jobs through QueueCompute(queue)."""
-    import autoresearch.climb as _climb_mod
+    import autoresearch.attempt as _climb_mod
 
     orig = _climb_mod.LocalCompute
     _climb_mod.LocalCompute = lambda: QueueCompute(values=queue)  # type: ignore[assignment,misc]
@@ -382,8 +382,8 @@ def run_live(
     github = FakeGitHub()
     queue = list(values)
     with _queued_local(queue):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id=run_id,
             harness=ScriptedHarness(edits=edits),
@@ -483,7 +483,7 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
     recorded key path survives (else it resolves per backend)."""
     from types import SimpleNamespace
 
-    from autoresearch.climb import resume_author
+    from autoresearch.attempt import resume_author
 
     monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "/h")
     monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/c")
@@ -516,7 +516,7 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
 
 def test_codex_author_config_error() -> None:
     """codex needs --image and a non-claude model; claude is always fine."""
-    from autoresearch.climb import codex_author_config_error
+    from autoresearch.attempt import codex_author_config_error
 
     assert codex_author_config_error("claude", "claude-opus-5", "") == ""
     assert codex_author_config_error("codex", "gpt-5.6-terra", "img.sif") == ""
@@ -532,7 +532,7 @@ def test_resolve_author_key_file(monkeypatch) -> None:
     path wins, else the per-backend env var, else the packaged default."""
     import os
 
-    from autoresearch.climb import (
+    from autoresearch.attempt import (
         CODEX_KEY_DEFAULT,
         HARNESS_KEY_DEFAULT,
         resolve_author_key_file,
@@ -616,8 +616,8 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
     github = FakeGitHub()
     _q = list([13.876])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-err",
             harness=DeadHarness(),
@@ -630,7 +630,7 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
     assert github.prs == []
 
 
-def test_exhausted_live_climb_ends_budget_exhausted(tmp_path, target_repo) -> None:
+def test_exhausted_live_attempt_ends_budget_exhausted(tmp_path, target_repo) -> None:
     """The session-budget outcome flows through the ending map on a LIVE
     climb: the record says budget-exhausted with the real cause."""
 
@@ -650,8 +650,8 @@ def test_exhausted_live_climb_ends_budget_exhausted(tmp_path, target_repo) -> No
 
     _q = list([13.876])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-dry",
             harness=DryHarness(),
@@ -689,8 +689,8 @@ def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> 
 
     _q = [13.876, 13.1]
     with _queued_local(_q):
-        live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-orphan",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "q=4\n"}),
@@ -785,8 +785,8 @@ def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
     github = FakeGitHub()
     _q = list([1.0])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="chess"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="chess"),
             run_root=tmp_path / "state",
             run_id="chess-2",
             harness=ScriptedHarness(edits={}),
@@ -795,12 +795,12 @@ def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
             now=1_000_000.0,
             created="t",
         )
-    assert outcome.outcome == "climb-error"
+    assert outcome.outcome == "attempt-error"
     assert Path(outcome.report_path).read_text().startswith("# Run report")
 
 
 def test_title_pair_never_renders_identical() -> None:
-    from autoresearch.climb import _title_pair
+    from autoresearch.attempt import _title_pair
 
     assert _title_pair(13.875696168157484, 10.844662077277105) == "13.88 -> 10.84"
     assert _title_pair(10.00001, 10.00002) == "10.00001 -> 10.00002"
@@ -812,8 +812,8 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
     github = CommentingGitHub()
     _q = list([13.876, 13.1])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-iss",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "i=1\n"}),
@@ -845,8 +845,8 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
     github = CommentingGitHub()
     _q: list = []
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-clonefail",
             harness=ScriptedHarness(edits={}),
@@ -856,11 +856,11 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
             created="t",
             issue_number=7,
         )
-    assert outcome.outcome == "climb-error"
+    assert outcome.outcome == "attempt-error"
     record = load_record(tmp_path / "state", "tsp-clonefail")
     assert record.state == "ended" and record.ending == "aborted"
     assert "quota" in record.ending_note
-    assert any("climb-error" in body for _, body in github.issue_comments)
+    assert any("attempt-error" in body for _, body in github.issue_comments)
     # exception DETAIL stays local: redact() only knows the secrets tuple,
     # so raw messages (paths, embedded tokens) never reach the public issue
     assert not any("quota" in body for _, body in github.issue_comments)
@@ -890,8 +890,8 @@ def test_ending_steps_degrade_independently(tmp_path, target_repo, monkeypatch) 
     github = CommentingGitHub()
     _q = list([1.0])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="chess"),  # not in contract
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="chess"),  # not in contract
             run_root=tmp_path / "state",
             run_id="chess-disk",
             harness=ScriptedHarness(edits={}),
@@ -901,9 +901,9 @@ def test_ending_steps_degrade_independently(tmp_path, target_repo, monkeypatch) 
             created="t",
             issue_number=7,
         )
-    assert outcome.outcome == "climb-error"  # returned, never raised
+    assert outcome.outcome == "attempt-error"  # returned, never raised
     # the record could not be ended (disk dead) — but the failure is VISIBLE:
-    assert any("climb-error" in body for _, body in github.issue_comments)
+    assert any("attempt-error" in body for _, body in github.issue_comments)
     assert Path(outcome.report_path).exists()
     assert not any("not in contract" in body for _, body in github.issue_comments)
 
@@ -917,8 +917,8 @@ def test_final_record_failure_does_not_lose_pr_or_issue_report(
     github = CommentingGitHub()
     _q = list([13.876, 13.1])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-finaldisk",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "z=1\n"}),
@@ -940,7 +940,7 @@ def test_final_record_failure_does_not_lose_pr_or_issue_report(
 
 def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypatch) -> None:
     """If not even the initial record can be written, the run must not
-    proceed invisibly OR crash the caller: climb-error plus an issue post."""
+    proceed invisibly OR crash the caller: attempt-error plus an issue post."""
 
     def always_failing(root, record, now):
         raise OSError(122, "Disk quota exceeded")
@@ -949,8 +949,8 @@ def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypa
     github = CommentingGitHub()
     _q: list = []
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-recfail",
             harness=ScriptedHarness(edits={}),
@@ -960,7 +960,7 @@ def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypa
             created="t",
             issue_number=7,
         )
-    assert outcome.outcome == "climb-error"
+    assert outcome.outcome == "attempt-error"
     assert outcome.report_path == ""  # never point at a report that was not written
     assert any("could not start" in body for _, body in github.issue_comments)
 
@@ -985,8 +985,8 @@ def test_arming_failure_never_fails_the_publish(tmp_path, target_repo) -> None:
     github = FakeGitHub(arming_error="auto merge is not allowed")
     _q = list([13.876, 13.1])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-noarm",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "na=2\n"}),
@@ -1012,8 +1012,8 @@ def test_moved_base_publishes_the_sealed_candidate_without_merging(tmp_path, tar
     _q = [13.876, 13.1]
     github = FakeGitHub()
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-moved",
             harness=MovingHarness(edits={"src/pilot/solvers/tsp.py": "m=1\n"}),
@@ -1052,13 +1052,13 @@ def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, ta
     ws_root = tmp_path / "state" / "runs" / "tsp-seal" / "ws"
     _q = [13.876, 13.1]
     github = FakeGitHub()
-    import autoresearch.climb as _climb_mod
+    import autoresearch.attempt as _climb_mod
 
     orig = _climb_mod.LocalCompute
     _climb_mod.LocalCompute = lambda: DivergingCompute(_q, ws_root)  # type: ignore[assignment,misc]
     try:
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-seal",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 7\n"}),
@@ -1106,8 +1106,8 @@ def test_non_default_base_branch_is_built_on_and_measured(tmp_path, target_repo)
     _q = [13.876, 13.1]
     github = FakeGitHub()
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-dev",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "d=1\n"}),
@@ -1141,7 +1141,7 @@ def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str
 def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
     """A SIGTERM surfaced as Terminated mid-session must end the run through
     the ordinary containment: record aborted, report written."""
-    from autoresearch.climb import Terminated
+    from autoresearch.attempt import Terminated
 
     @dataclass
     class KilledHarness(ScriptedHarness):
@@ -1151,8 +1151,8 @@ def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
     github = CommentingGitHub()
     _q = list([13.876])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-term",
             harness=KilledHarness(edits={}),
@@ -1162,11 +1162,11 @@ def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
             created="t",
             issue_number=7,
         )
-    assert outcome.outcome == "climb-error"
+    assert outcome.outcome == "attempt-error"
     record = load_record(tmp_path / "state", "tsp-term")
     assert record.state == "ended" and record.ending == "aborted"
     assert "SIGTERM" in record.ending_note
-    assert any("climb-error" in body for _, body in github.issue_comments)
+    assert any("attempt-error" in body for _, body in github.issue_comments)
 
 
 def test_sigterm_containment_is_one_shot() -> None:
@@ -1177,7 +1177,7 @@ def test_sigterm_containment_is_one_shot() -> None:
 
     import pytest
 
-    from autoresearch.climb import Terminated, arm_sigterm_containment
+    from autoresearch.attempt import Terminated, arm_sigterm_containment
 
     original = signal.getsignal(signal.SIGTERM)
     try:
@@ -1189,7 +1189,7 @@ def test_sigterm_containment_is_one_shot() -> None:
         signal.signal(signal.SIGTERM, original)
 
 
-def test_climb_job_id_is_stamped_from_slurm_env(tmp_path, target_repo, monkeypatch) -> None:
+def test_run_job_id_is_stamped_from_slurm_env(tmp_path, target_repo, monkeypatch) -> None:
     """The sweep's entire kill-detection keys on this field: the record must
     carry the climb's own SLURM_JOB_ID."""
     monkeypatch.setenv("SLURM_JOB_ID", "4242")
@@ -1200,7 +1200,7 @@ def test_climb_job_id_is_stamped_from_slurm_env(tmp_path, target_repo, monkeypat
         values=[13.876, 13.1],
         run_id="tsp-jid",
     )
-    assert load_record(tmp_path / "state", "tsp-jid").climb_job_id == "4242"
+    assert load_record(tmp_path / "state", "tsp-jid").run_job_id == "4242"
 
 
 def test_self_deadline_arms_before_the_walltime(monkeypatch) -> None:
@@ -1209,7 +1209,7 @@ def test_self_deadline_arms_before_the_walltime(monkeypatch) -> None:
     inside a real allocation SLURM_JOB_START_TIME would change the math."""
     import signal
 
-    from autoresearch.climb import arm_self_deadline
+    from autoresearch.attempt import arm_self_deadline
 
     monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
     original = signal.getsignal(signal.SIGALRM)
@@ -1228,7 +1228,7 @@ def test_self_deadline_anchors_on_slurm_job_start(monkeypatch) -> None:
     import signal
     import time
 
-    from autoresearch.climb import arm_self_deadline
+    from autoresearch.attempt import arm_self_deadline
 
     monkeypatch.setenv("SLURM_JOB_START_TIME", str(int(time.time()) - 600))
     original = signal.getsignal(signal.SIGALRM)
@@ -1243,7 +1243,7 @@ def test_self_deadline_anchors_on_slurm_job_start(monkeypatch) -> None:
 def test_self_deadline_margin_floor_and_off_switch(monkeypatch) -> None:
     import signal
 
-    from autoresearch.climb import MIN_ARM_S, arm_self_deadline
+    from autoresearch.attempt import MIN_ARM_S, arm_self_deadline
 
     monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
     original = signal.getsignal(signal.SIGALRM)
@@ -1263,7 +1263,7 @@ def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
 
     import pytest
 
-    from autoresearch.climb import Terminated, arm_self_deadline
+    from autoresearch.attempt import Terminated, arm_self_deadline
 
     monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
     original = signal.getsignal(signal.SIGALRM)
@@ -1371,8 +1371,8 @@ def test_panel_clean_read_lands_a_normal_pr_with_transcript(tmp_path, target_rep
     github = FakeGitHub()
     _q = list([13.876, 13.1])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-panel-ok",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
@@ -1419,8 +1419,8 @@ def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_rep
     github = FakeGitHub()
     _q = list([13.876, 13.1, 13.05])
     with _queued_local(_q):
-        outcome = live_climb(
-            config=ClimbConfig(target="org/pilot", benchmark="tsp"),
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id="tsp-panel-draft",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=2\n"}),
@@ -1754,7 +1754,7 @@ def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
         values=[],
         dispatch=dispatch,
     )
-    assert outcome.outcome == "climb-error"
+    assert outcome.outcome == "attempt-error"
     assert cancelled == ["1000"]  # the successful submit was reaped, not orphaned
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "ended"
@@ -1781,7 +1781,7 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
         values=[],
         dispatch=dispatch,
     )
-    assert outcome.outcome == "climb-error"  # the failed park ends the run
+    assert outcome.outcome == "attempt-error"  # the failed park ends the run
     assert cancelled == ["1000", "1001"]  # both dispatched jobs were cancelled
 
 
@@ -1892,7 +1892,7 @@ def _write_parked_candidate(
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
     # the wake pushes to the canonical target URL (never the ws git config);
     # point that at this run's local bare so the improved-wake test can push.
-    monkeypatch.setattr("autoresearch.climb._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
     return state, run_id
 
 
@@ -2134,7 +2134,7 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     # the wake job holds the run's lease (transferred by the sweep on dispatch);
     # the --resume CLI must release it on every exit so a re-parked run is
     # immediately eligible for the next sweep, not stuck until the TTL reap.
-    from autoresearch.climb import LiveClimbOutcome, main
+    from autoresearch.attempt import AttemptOutcome, main
     from autoresearch.runstate import acquire_lease, run_dir
 
     run_id = "tsp-wake"
@@ -2152,7 +2152,7 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         climb_mod,
         "resume_run",
-        lambda *a, **k: LiveClimbOutcome(run_id=run_id, outcome="parked"),
+        lambda *a, **k: AttemptOutcome(run_id=run_id, outcome="parked"),
     )
     monkeypatch.setattr(
         "sys.argv",
@@ -2700,3 +2700,162 @@ def test_author_sleep_wake_without_harness_ends_loudly(tmp_path, monkeypatch) ->
     assert record.state == "ended"
     assert "author harness" in record.ending_note
     assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
+    # role separation: a codex lens must name the JUDGE's key explicitly —
+    # never inherit the anthropic panel key or default to the author's
+    import argparse
+
+    import pytest
+
+    from autoresearch.attempt import _panel_lenses_from_args
+
+    monkeypatch.delenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", raising=False)
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    monkeypatch.setattr("autoresearch.attempt.role_key", lambda *a, **k: "k")
+    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_CODEX_KEY_FILE"):
+        _panel_lenses_from_args(args)
+
+
+def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> None:
+    # a codex-only panel must not demand the (unused) anthropic panel key
+    import argparse
+
+    from autoresearch.attempt import _panel_lenses_from_args
+
+    codex_key = tmp_path / "panel_codex_key"
+    codex_key.write_text("sk-judge")
+    codex_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(codex_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(tmp_path / "no-such-anthropic-key"),  # absent, must not matter
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    lenses, secrets = _panel_lenses_from_args(args)
+    assert len(lenses) == 1 and lenses[0].kind == "review"
+    assert secrets == ("sk-judge",)  # the codex judge key joins the redaction set
+
+
+def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> None:
+    # role separation enforced in the BUILDER, so a manual climb (not just the
+    # tick preflight) refuses a judge running on the author's token
+    import argparse
+
+    import pytest
+
+    from autoresearch.attempt import _panel_lenses_from_args
+
+    author_key = tmp_path / "codex_key"
+    author_key.write_text("sk-author")
+    author_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(author_key))
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(author_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    with pytest.raises(ValueError, match="role separation"):
+        _panel_lenses_from_args(args)
+
+
+def test_codex_panel_key_must_not_be_the_claude_panel_key(monkeypatch, tmp_path) -> None:
+    # provider-key confusion: pointing the codex lens at the claude panel key
+    # would send the anthropic credential to OpenAI login
+    import argparse
+
+    import pytest
+
+    from autoresearch.attempt import _panel_lenses_from_args
+
+    shared = tmp_path / "verifier_key"
+    shared.write_text("sk-ant")
+    shared.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(shared))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file=str(shared),
+        claude_bin="claude",
+        codex_bin="codex",
+        image="/img.sif",
+    )
+    with pytest.raises(ValueError, match="another provider"):
+        _panel_lenses_from_args(args)
+
+
+def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> None:
+    # --uncontained (image="") must never produce a danger-full-access codex
+    # judge on the host
+    import argparse
+
+    import pytest
+
+    from autoresearch.attempt import _panel_lenses_from_args
+
+    judge_key = tmp_path / "panel_codex_key"
+    judge_key.write_text("sk-judge")
+    judge_key.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge_key))
+    args = argparse.Namespace(
+        panel="review:codex:gpt-5.6-terra",
+        panel_key_file="/dev/null",
+        claude_bin="claude",
+        codex_bin="codex",
+        image="",  # dev --uncontained
+    )
+    with pytest.raises(ValueError, match="requires --image"):
+        _panel_lenses_from_args(args)
+
+
+def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> None:
+    # hermes joins the shelled-judge rules via the SAME helper as codex:
+    # image required, own key named, never the author's or the claude panel's
+    import argparse
+
+    import pytest
+
+    from autoresearch.attempt import _panel_lenses_from_args
+
+    def args(image="/img.sif"):
+        return argparse.Namespace(
+            panel="review:hermes:gpt-5.6-terra",
+            panel_key_file="/dev/null",
+            claude_bin="claude",
+            codex_bin="codex",
+            image=image,
+        )
+
+    monkeypatch.delenv("AUTORESEARCH_PANEL_HERMES_KEY_FILE", raising=False)
+    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_HERMES_KEY_FILE"):
+        _panel_lenses_from_args(args())
+    judge = tmp_path / "panel_hermes_key"
+    judge.write_text("sk-judge")
+    judge.chmod(0o600)
+    monkeypatch.setenv("AUTORESEARCH_PANEL_HERMES_KEY_FILE", str(judge))
+    with pytest.raises(ValueError, match="requires --image"):
+        _panel_lenses_from_args(args(image=""))
+    # author-key reuse refused (the codex author key is the OpenAI author key)
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(judge))
+    with pytest.raises(ValueError, match="role separation"):
+        _panel_lenses_from_args(args())
+    monkeypatch.delenv("AUTORESEARCH_CODEX_KEY_FILE", raising=False)
+    # a properly separated key builds the contained hermes judge
+    repo = tmp_path / "hermes-agent"
+    repo.mkdir()
+    monkeypatch.setenv("REVIEW_HERMES_REPO", str(repo))
+    lenses, secrets = _panel_lenses_from_args(args())
+    assert len(lenses) == 1 and lenses[0].kind == "review"
+    assert secrets == ("sk-judge",)
+    assert getattr(lenses[0].harness, "container_image", "") == "/img.sif"

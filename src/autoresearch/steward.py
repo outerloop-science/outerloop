@@ -26,8 +26,8 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from autoresearch.climb import (
-    LiveClimbOutcome,
+from autoresearch.attempt import (
+    AttemptOutcome,
     Terminated,
     WorkspaceDrift,
     _best_effort,
@@ -53,7 +53,7 @@ from autoresearch.progress import (
     load_leader,
     write_progress,
 )
-from autoresearch.role_runner import build_harness, run_role
+from autoresearch.role_runner import build_harness, role_key, run_role
 from autoresearch.roles import steward_spec
 from autoresearch.rolespec import RoleSpec
 from autoresearch.runstate import (
@@ -416,11 +416,11 @@ def live_steward(
     issue_number: int = 0,
     work_order: str = "",
     spec: RoleSpec | None = None,
-) -> LiveClimbOutcome:
+) -> AttemptOutcome:
     """Run one stewardship against the real target repo."""
     import os as _os
 
-    # a deployment bug is loud and immediate — same guard as climb_once
+    # a deployment bug is loud and immediate — same guard as attempt_once
     spec = spec or steward_spec()
     if not spec.execution.can_execute:
         raise ValueError("the steward is an editing role; the spec must allow execution")
@@ -438,7 +438,7 @@ def live_steward(
         agent_id=STEWARD_AGENT_ID,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
-        climb_job_id=_os.environ.get("SLURM_JOB_ID", ""),
+        run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
     )
     try:
         save_record(run_root, record, now)
@@ -456,7 +456,7 @@ def live_steward(
                 ),
                 secrets,
             )
-        return LiveClimbOutcome(run_id=run_id, outcome="climb-error")
+        return AttemptOutcome(run_id=run_id, outcome="attempt-error")
 
     tree_hashes: list[str] = []
     try:
@@ -540,9 +540,7 @@ def live_steward(
                     ),
                     secrets,
                 )
-            return LiveClimbOutcome(
-                run_id=run_id, outcome=outcome_name, report_path=str(report_path)
-            )
+            return AttemptOutcome(run_id=run_id, outcome=outcome_name, report_path=str(report_path))
 
         violations = steward_out_of_scope(changed, contract)
         if violations:
@@ -707,7 +705,7 @@ def live_steward(
                 lambda: github.comment(config.target, issue_number, release),
                 secrets,
             )
-        return LiveClimbOutcome(
+        return AttemptOutcome(
             run_id=run_id,
             outcome=outcome_label,
             report_path=str(report_path) if wrote else "",
@@ -736,7 +734,7 @@ def live_steward(
             secrets,
         )
     log.info("steward run %s: %s %s", run_id, outcome_name, pr_url)
-    return LiveClimbOutcome(
+    return AttemptOutcome(
         run_id=run_id, outcome=outcome_name, pr_url=pr_url, report_path=str(report_path)
     )
 
@@ -781,7 +779,7 @@ def main() -> int:
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
-    api_key = FileTokenProvider(Path(args.key_file)).token()
+    api_key = role_key(args.key_file)  # steward runs the claude backend
     bot_auth = FileTokenProvider(Path(args.pat_file))
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"steward-{args.benchmark}-{stamp}"
