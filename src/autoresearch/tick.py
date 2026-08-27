@@ -776,9 +776,11 @@ def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float
         report_path = run_dir(root, record.run_id) / "report.md"
         if marker.exists() or not report_path.exists():
             continue
-        if first_pass:
+        if first_pass and (record.updated or record.created) < now:
             # adopt pre-feature history silently: browsable going forward,
-            # no retroactive issue spam
+            # no retroactive issue spam. Only records OLDER than the since
+            # marker — a run that goes terminal during this very pass is new
+            # work and publishes normally (terra #170 r2).
             with contextlib.suppress(OSError):
                 marker.write_text("adopted-unpublished")
             continue

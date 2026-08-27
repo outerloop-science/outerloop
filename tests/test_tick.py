@@ -2304,7 +2304,7 @@ class LedgerGitHub:
         self.comments.append((number, body))
 
 
-def _ended_run(root: Path, run_id: str, **over) -> None:
+def _ended_run(root: Path, run_id: str, saved_at: float = NOW, **over) -> None:
     from autoresearch.runstate import run_dir as _rd
 
     base = dict(
@@ -2314,9 +2314,9 @@ def _ended_run(root: Path, run_id: str, **over) -> None:
         state=ENDED,
         ending="negative-result",
         benchmark="heldout_probe",
-        updated=NOW,
     )
-    save_record(root, RunRecord(**{**base, **over}), NOW)
+    # save_record stamps `updated` with the save time
+    save_record(root, RunRecord(**{**base, **over}), saved_at)
     (_rd(root, run_id) / "report.md").write_text("# report\ncontent")
 
 
@@ -2336,11 +2336,13 @@ def _spec(target="org/yolo"):
 def test_research_log_first_pass_adopts_history_silently(tmp_path: Path) -> None:
     from autoresearch.tick import _ledger_marker, service_research_log
 
-    _ended_run(tmp_path, "old-1")
+    _ended_run(tmp_path, "old-1", saved_at=NOW - 100)
+    # a run that went terminal DURING the first pass is new work, not history
+    _ended_run(tmp_path, "fresh-1", saved_at=NOW + 1)
     gh = LedgerGitHub()
-    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
-    assert gh.files == [] and gh.comments == []  # no backfill spam
-    assert _ledger_marker(tmp_path, "old-1").exists()  # adopted
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert len(gh.files) == 1 and gh.files[0][0].endswith("-fresh-1.md")
+    assert _ledger_marker(tmp_path, "old-1").exists()  # adopted silently
 
 
 def test_research_log_publishes_once_and_routes_to_the_order_issue(tmp_path: Path) -> None:
