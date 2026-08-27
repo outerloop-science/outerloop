@@ -801,7 +801,9 @@ def measure_and_decide(
     floor = benchmark_floor(baseline, bench.min_delta, bench.min_delta_rel)
     if floor:
         delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
-        if delta < floor:
+        # STRICTLY greater, matching clears_min_delta: a delta exactly at the
+        # floor is indistinguishable from the noise the floor models
+        if delta <= floor:
             return AttemptResult(
                 outcome="no-improvement",
                 note=(

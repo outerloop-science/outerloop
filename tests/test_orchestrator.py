@@ -1410,3 +1410,10 @@ def test_gate_enforces_the_contracts_declared_floor(tmp_path: Path) -> None:
 def test_gate_publishes_a_floor_clearing_delta(tmp_path: Path) -> None:
     result, _, _ = run_climb(tmp_path, [13.876, 13.0], contract=FLOOR_CONTRACT)
     assert result.outcome == "improved"
+
+
+def test_gate_rejects_an_exact_floor_delta(tmp_path: Path) -> None:
+    # boundary matches clears_min_delta: STRICTLY greater publishes — a
+    # delta exactly at the floor is the noise the floor models (terra #169)
+    result, _, _ = run_climb(tmp_path, [13.876, 13.376], contract=FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
