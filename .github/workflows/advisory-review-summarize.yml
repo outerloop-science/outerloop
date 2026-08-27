@@ -100,17 +100,6 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Restore-ONLY: the agent workflow's provision job commits this cache
-      # (read-only jobs like this one cannot write it); by the time the
-      # summarizer runs, the lens round has warmed it. The clone fallback
-      # below covers a cold cache.
-      - name: Restore the hermes clone
-        id: hermes-cache
-        if: inputs.backend == 'hermes'
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ github.workspace }}/hermes-agent
-          key: hermes-agent-${{ env.HERMES_REF }}
       - name: Install the ${{ inputs.backend }} backend
         run: |
           set -euo pipefail

@@ -6,6 +6,22 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Removed
+
+- The review-path hermes CACHE machinery, wholesale (provision job, shared
+  hermes-provision workflow, restore/save steps, callers' actions:write
+  ceilings). The evidence was all one way: no cache entry ever committed
+  (pull_request_target runs appear cache-write-blocked regardless of
+  token permissions — the "unable to reserve" message masks it), and the
+  machinery caused two review outages in one night (cross-repo `./`
+  resolution; a hard-coded @main nested reference running mutable
+  privileged code under pinned callers — terra #164). What it optimized
+  is a 5-7s runner-side anonymous clone that backoff-retry already made
+  reliable across the 5-lens fan-out (two live wide rounds). Sessions
+  keep the sha-verified clone with retries — the proven path. If clone
+  cost ever matters again, provision the cache from a scheduled (non-PR)
+  workflow per repo, which is the only event class that can write it.
+
 ### Fixed
 
 - Cross-repo review callers (jepa-agent, egolearn) died at
