@@ -100,10 +100,10 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Cache scope: this workflow runs on pull_request_target, so every run —
-      # any PR — executes in the BASE branch context and shares ONE cache
-      # scope. One round populates it; every later round hits. Cold is only
-      # the first run on a fresh HERMES_REF (or 7-day eviction).
+      # Restore-ONLY: the agent workflow's provision job commits this cache
+      # (read-only jobs like this one cannot write it); by the time the
+      # summarizer runs, the lens round has warmed it. The clone fallback
+      # below covers a cold cache.
       - name: Restore the hermes clone
         id: hermes-cache
         if: inputs.backend == 'hermes'
@@ -168,18 +168,6 @@ jobs:
               exit 0  # advisory: never red the caller's CI
               ;;
           esac
-      # Save BEFORE the session step, never post-job: the cache is shared by
-      # every future run (base-branch scope), so it must only ever hold the
-      # pristine verified clone — a post-job save would persist whatever the
-      # session left in the workspace into a tree later runs EXECUTE with the
-      # reviewer key (cache poisoning). Immutability then works for us: the
-      # first save wins and nothing can overwrite it.
-      - name: Save the pristine hermes clone
-        if: inputs.backend == 'hermes' && steps.hermes-cache.outputs.cache-hit != 'true' && hashFiles('hermes-agent/**') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/hermes-agent
-          key: hermes-agent-${{ env.HERMES_REF }}
       - name: Download lens opinions
         # NO required-download here: the summarizer CLI itself turns "no
         # envelopes" into a visible skip-stub, so a died-before-emitting lens

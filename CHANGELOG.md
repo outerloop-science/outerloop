@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The hermes Actions cache now actually commits: cache SAVES require
+  `actions: write`, which the model-running session jobs deliberately never
+  hold — the service refused their reservations (masked as "unable to
+  reserve... another job"), so no session save ever committed, in any repo.
+  A new modelless `provision` job in the reusable review workflow is the
+  sole holder of `actions: write`: it clones the pin once, sha-verifies, and
+  commits the cache; sessions are restore-only with the anonymous
+  clone+retry as fallback. Sessions being UNABLE to write the shared cache
+  replaces save-ordering as the poisoning defense. Callers grant the
+  `actions: write` ceiling (the session jobs still downscope to read-only).
+
+### Fixed
+
 - Wide-round lens sessions no longer die on GitHub's clone rate limit. The
   wide first round fans out several hermes (terra) lens sessions at once, and
   GitHub 429s the concurrent ANONYMOUS clones of the same public repo

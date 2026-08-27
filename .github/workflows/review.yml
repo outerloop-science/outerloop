@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # ceiling for the called workflows' provision job (cache save needs it);
+  # the model-running session jobs downscope themselves to read-only
+  actions: write
 jobs:
   # --- wide first round: a general session + distinct lenses, emit-only ---
   lens:

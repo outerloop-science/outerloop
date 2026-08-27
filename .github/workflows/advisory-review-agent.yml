@@ -130,8 +130,62 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Provisions the pinned hermes clone into the Actions cache, ONCE per
+  # version. This job runs NO model code, so it alone may hold the
+  # actions:write that cache SAVES require — the session jobs are
+  # deliberately read-only (the model runs there), which makes the cache
+  # service refuse their reservations ("unable to reserve"; why no session
+  # save ever committed). Sessions being UNABLE to write the shared cache
+  # is the cache-poisoning defense, stronger than any save ordering.
+  provision:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    if: inputs.backend == 'hermes' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: write
+    env:
+      HERMES_REF: v2026.8.13
+      # the COMMIT sha (the v-tags are annotated: pin ls-remote's ^{} line)
+      HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
+    steps:
+      - name: Restore the hermes clone
+        id: hermes-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/hermes-agent
+          key: hermes-agent-${{ env.HERMES_REF }}
+      - name: Clone at the pin (cache miss only)
+        if: steps.hermes-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if git clone --depth 1 --branch "$HERMES_REF" \
+                https://github.com/NousResearch/hermes-agent \
+                "$GITHUB_WORKSPACE/hermes-agent"; then
+              break
+            fi
+            [ "$i" = 3 ] && exit 1  # sessions fall back to their own clone
+            sleep $(( i * 10 + RANDOM % 10 ))
+            rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+          done
+          head=$(git -C "$GITHUB_WORKSPACE/hermes-agent" rev-parse HEAD)
+          if [ "$head" != "$HERMES_SHA" ]; then
+            echo "tag resolves to $head, expected $HERMES_SHA — refusing" >&2
+            exit 1
+          fi
+      - name: Save the pristine clone
+        if: steps.hermes-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/hermes-agent
+          key: hermes-agent-${{ env.HERMES_REF }}
+
   session:
     runs-on: ubuntu-latest
+    # a skipped/failed provision (non-hermes backend, clone outage) must not
+    # skip the session — it has its own clone fallback
+    needs: provision
     # Advisory means advisory: an infrastructure failure here must never turn
     # the caller's PR red. (Failures still show in this job's run log.)
     continue-on-error: true
@@ -139,7 +193,7 @@ jobs:
     timeout-minutes: 70
     # Fork PRs must not reach any secret. `pull_request_target` runs in the
     # base repo's context, so this gate is what closes the pwn-request hole.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
     # READ-ONLY: the session runs here, so the job token must not be worth
     # stealing. pull-requests:read lets the CLI fetch the PR metadata/diff.
     permissions:
@@ -174,10 +228,10 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Cache scope: this workflow runs on pull_request_target, so every run —
-      # any PR — executes in the BASE branch context and shares ONE cache
-      # scope. One round populates it; every later round hits. Cold is only
-      # the first run on a fresh HERMES_REF (or 7-day eviction).
+      # Restore-ONLY: the provision job (the sole holder of actions:write)
+      # commits this cache; read-only session jobs cannot write it at all.
+      # pull_request_target runs share the base-branch cache scope, so one
+      # provision serves every PR until the pin moves (or 7-day eviction).
       - name: Restore the hermes clone
         id: hermes-cache
         if: inputs.backend == 'hermes'
@@ -244,18 +298,6 @@ jobs:
               exit 0  # advisory: never red the caller's CI
               ;;
           esac
-      # Save BEFORE the session step, never post-job: the cache is shared by
-      # every future run (base-branch scope), so it must only ever hold the
-      # pristine verified clone — a post-job save would persist whatever the
-      # session left in the workspace into a tree later runs EXECUTE with the
-      # reviewer key (cache poisoning). Immutability then works for us: the
-      # first save wins and nothing can overwrite it.
-      - name: Save the pristine hermes clone
-        if: inputs.backend == 'hermes' && steps.hermes-cache.outputs.cache-hit != 'true' && hashFiles('hermes-agent/**') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/hermes-agent
-          key: hermes-agent-${{ env.HERMES_REF }}
       - name: Run the session (emit only — nothing posted from this job)
         working-directory: .autoresearch
         env:
