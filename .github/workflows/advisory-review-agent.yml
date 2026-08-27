@@ -118,10 +118,13 @@ on:
           once it is public.
         required: false
 
-# The caller grants this much; each job below narrows it further.
+# The caller grants this much; each job below narrows it further. Only the
+# modelless provision job takes actions:write (cache save); the session
+# job's own block excludes it, so the model's token never gains it.
 permissions:
   contents: read
   pull-requests: write
+  actions: write
 
 # One review per opinion per PR at a time. Do NOT cancel in progress: a running
 # session is a paid model call, so queue behind it rather than kill it.
@@ -130,8 +133,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One shared provisioning definition (hermes-provision.yml): nested here
+  # so single-call repos provision with zero extra wiring; wide-round
+  # callers (autoresearch review.yml) ALSO call it once before their lens
+  # fan-out, so this nested call no-ops on the warm cache. `./` resolves
+  # against THIS workflow's repo+ref, so cross-repo callers get the same
+  # pinned definition.
+  provision:
+    if: inputs.backend == 'hermes' && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/hermes-provision.yml
+
   session:
     runs-on: ubuntu-latest
+    # a skipped/failed provision (non-hermes backend, clone outage) must not
+    # skip the session — it has its own clone fallback
+    needs: provision
     # Advisory means advisory: an infrastructure failure here must never turn
     # the caller's PR red. (Failures still show in this job's run log.)
     continue-on-error: true
@@ -139,7 +155,7 @@ jobs:
     timeout-minutes: 70
     # Fork PRs must not reach any secret. `pull_request_target` runs in the
     # base repo's context, so this gate is what closes the pwn-request hole.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
     # READ-ONLY: the session runs here, so the job token must not be worth
     # stealing. pull-requests:read lets the CLI fetch the PR metadata/diff.
     permissions:
@@ -174,10 +190,10 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
-      # Cache scope: this workflow runs on pull_request_target, so every run —
-      # any PR — executes in the BASE branch context and shares ONE cache
-      # scope. One round populates it; every later round hits. Cold is only
-      # the first run on a fresh HERMES_REF (or 7-day eviction).
+      # Restore-ONLY: the provision job (the sole holder of actions:write)
+      # commits this cache; read-only session jobs cannot write it at all.
+      # pull_request_target runs share the base-branch cache scope, so one
+      # provision serves every PR until the pin moves (or 7-day eviction).
       - name: Restore the hermes clone
         id: hermes-cache
         if: inputs.backend == 'hermes'
@@ -244,18 +260,6 @@ jobs:
               exit 0  # advisory: never red the caller's CI
               ;;
           esac
-      # Save BEFORE the session step, never post-job: the cache is shared by
-      # every future run (base-branch scope), so it must only ever hold the
-      # pristine verified clone — a post-job save would persist whatever the
-      # session left in the workspace into a tree later runs EXECUTE with the
-      # reviewer key (cache poisoning). Immutability then works for us: the
-      # first save wins and nothing can overwrite it.
-      - name: Save the pristine hermes clone
-        if: inputs.backend == 'hermes' && steps.hermes-cache.outputs.cache-hit != 'true' && hashFiles('hermes-agent/**') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/hermes-agent
-          key: hermes-agent-${{ env.HERMES_REF }}
       - name: Run the session (emit only — nothing posted from this job)
         working-directory: .autoresearch
         env:
