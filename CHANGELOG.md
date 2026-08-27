@@ -14,6 +14,20 @@ Versions follow [SemVer](https://semver.org).
   publishable improvement needs an identifiable mechanism that clears the
   floor on its own. New `aggregation` category in the verify taxonomy.
 
+### Fixed
+
+- A jobless checkpoint sleep no longer inherits the 12h QUEUE slack: the
+  park deadline added `PARK_QUEUE_SLACK_MIN` (12h, sized to keep the sweep
+  from cancelling healthy-but-queued Slurm jobs) to every park — including
+  an author checkpoint sleep with nothing in any queue, turning "wake at
+  the first deadline pass" into a 12h coma (observed live on the yolo
+  heldout_probe run, 2026-08-27). A launch-less author-sleep park now gets
+  a near-term deadline (`CHECKPOINT_SLEEP_SLACK_MIN`, 45 min) and the
+  existing blind-park deadline branch delivers the wake; parks with queued
+  jobs keep the full queue slack, and the sweep gains no new predicate
+  (terra #166: a wake-on-sight predicate over-matched blind re-parks and
+  long sleeps).
+
 ### Removed
 
 - The review-path hermes CACHE machinery, wholesale (provision job, shared

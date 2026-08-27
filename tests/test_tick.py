@@ -245,6 +245,39 @@ def test_blind_park_before_its_deadline_is_left_alone(tmp_path: Path) -> None:
     assert dispatcher.dispatched == []
 
 
+def test_checkpoint_sleep_park_deadline_is_near_term() -> None:
+    """A jobless checkpoint sleep must not inherit the 12h QUEUE slack (it has
+    nothing in any queue) — its deadline reaches only the next sweep pass.
+    Observed live (yolo heldout_probe, 2026-08-27): a nap became a 12h coma,
+    and the existing deadline-floor branch then wakes it promptly."""
+    from autoresearch.attempt import CHECKPOINT_SLEEP_SLACK_MIN, PARK_QUEUE_SLACK_MIN
+
+    assert CHECKPOINT_SLEEP_SLACK_MIN * 60 < 3600  # near-term, sub-hour
+    assert PARK_QUEUE_SLACK_MIN == 12 * 60  # queue slack untouched
+
+
+def test_jobless_park_past_deadline_wakes_via_floor(tmp_path: Path) -> None:
+    # the sweep side of the checkpoint-sleep story: once its (now near-term)
+    # deadline passes, the existing blind-park floor delivers the wake — no
+    # special predicate that could over-match blind re-parks or long sleeps
+    waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        deadline=NOW - 1,
+        stage={
+            "afterany": "",
+            "base_branch": "main",
+            "base_sha": "b" * 40,
+            "candidate_ref": "refs/autoresearch/r1",
+            "candidate_sha": "c" * 40,
+            "phase": "author-sleep",
+            "syscall_launches": [],
+        },
+    )
+    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
+    assert dispatcher.dispatched == [("r1", "blind park past deadline")]
+
+
 def test_multi_job_park_wakes_when_all_afterany_jobs_finish(tmp_path: Path) -> None:
     """A multi-job park (candidate + siblings, several author launches)
     records no single experiment_job_id — the sweep polls every id in the
