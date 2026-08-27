@@ -1402,12 +1402,14 @@ def pick_self_initiated(
     if pending_attempt is not None and pending_attempt[0]:
         bench_name, submitted_at = pending_attempt
         last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
+    cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
+    cooldown_s = SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
     candidates = sorted(
         contract.benchmarks,
         key=lambda b: (last_attempt.get(b.name, 0.0), b.name),
     )
     for bench in candidates:
-        if now - last_attempt.get(bench.name, 0.0) >= SELF_INITIATED_COOLDOWN_S:
+        if now - last_attempt.get(bench.name, 0.0) >= cooldown_s:
             return str(bench.name)
     return None
 

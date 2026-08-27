@@ -2513,3 +2513,31 @@ def test_research_log_lost_cache_rediscovers_instead_of_duplicating(tmp_path: Pa
     assert gh.created == []  # rediscovered via the marker, no duplicate
     assert gh.comments == [(77, gh.comments[0][1])]
     assert _ledger_issue_cache(tmp_path, "org/yolo").read_text() == "77"  # re-cached
+
+
+def test_cooldown_dial_zero_redispatches_immediately(tmp_path: Path) -> None:
+    """The RSI-era dial: attempt_cooldown_minutes: 0 re-dispatches
+    back-to-back (runs_per_week is the spend guard); unset keeps the 6h
+    default for standard research repos."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import pick_self_initiated
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 500%s}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    just_ended = RunRecord(
+        run_id="r1",
+        target="o/r",
+        task_title="t",
+        state=ENDED,
+        benchmark="reach",
+        created=NOW - 60,
+    )
+    hot = load_contract(base % ", attempt_cooldown_minutes: 0", "o/r")
+    assert pick_self_initiated([just_ended], hot, "o/r", NOW) == "reach"
+    standard = load_contract(base % "", "o/r")
+    assert pick_self_initiated([just_ended], standard, "o/r", NOW) is None  # 6h holds

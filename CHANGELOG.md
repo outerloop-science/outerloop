@@ -8,6 +8,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `attempt_cooldown_minutes` joins the contract budgets: the per-benchmark
+  self-initiated cooldown becomes a target-owner dial. Unset keeps the 6h
+  default (right for a standard research repo); an RSI/speedrun target sets
+  0 for back-to-back re-dispatch, with `runs_per_week` as the spend guard.
+  Still serial per target until the width dial lands.
+
+### Added
+
 - The merge-policy dial: a contract-level `merge: manual | auto` knob
   (default `manual`, unchanged behavior). In `auto`, a gate+panel-clean PR
   merges itself — the publish arms GitHub auto-merge, or merges directly
