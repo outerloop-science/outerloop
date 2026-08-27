@@ -14,6 +14,7 @@ own comments and the advisory marker — is ignored.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -589,6 +590,13 @@ def _respond(
                             p not in PROGRESS_PATHS and bool(scope_check([p], contract))
                         ),
                     )
+                    if getattr(contract, "merge", "manual") == "auto":
+                        # an armed auto-mode PR would merge THIS new head on
+                        # green CI without a fresh gate/suite/panel — disarm
+                        # first; a human (or a fresh publish) re-arms
+                        # deliberately (terra #171)
+                        with contextlib.suppress(Exception):
+                            github.disable_auto_merge(record.target, number)
                     ws.push(branch)
                     change_pushed = True
                     worse = prior is not None and not orch_improved(

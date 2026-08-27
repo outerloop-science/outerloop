@@ -1697,6 +1697,17 @@ def service_self_initiated(
         benchmark = pick_self_initiated(records, contract, spec.target, now, pending_attempt)
         if benchmark is None:
             return None
+        if getattr(contract, "merge", "manual") == "auto" and not spec.panel:
+            # auto merge mode means gate+PANEL clean self-merges; a
+            # deployment with no panel configured must not launch attempts
+            # that would publish panel-less self-merging PRs (terra #171)
+            log.error(
+                "attempt on %s not launched: contract sets merge:auto but "
+                "no panel is configured (set AUTORESEARCH_PANEL, or the "
+                "contract back to merge:manual)",
+                benchmark,
+            )
+            return None
         author_error = _author_config_error(spec)
         if author_error:
             log.error(
@@ -1919,6 +1930,17 @@ def service_intake(
         limits = limits if limits is not None else effective_limits(contract.budgets)
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
+            return None
+        if getattr(contract, "merge", "manual") == "auto" and not spec.panel:
+            # auto merge mode means gate+PANEL clean self-merges; a
+            # deployment with no panel configured must not launch attempts
+            # that would publish panel-less self-merging PRs (terra #171)
+            log.error(
+                "attempt on %s not launched: contract sets merge:auto but "
+                "no panel is configured (set AUTORESEARCH_PANEL, or the "
+                "contract back to merge:manual)",
+                task.benchmark,
+            )
             return None
         author_error = _author_config_error(spec)
         if author_error:

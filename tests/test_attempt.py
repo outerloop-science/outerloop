@@ -2929,7 +2929,15 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
 
     gh = ArmingGitHub()
     _arm_unless_base_moved(
-        cast(Any, gh), cast(Any, StillWs()), "o/r", "7", "main", "b" * 40, (), merge_mode="auto"
+        cast(Any, gh),
+        cast(Any, StillWs()),
+        "o/r",
+        "7",
+        "main",
+        "b" * 40,
+        (),
+        merge_mode="auto",
+        panel_ran=True,
     )
     assert gh.auto == [("o/r", 7)] and gh.manual == []
     _arm_unless_base_moved(
@@ -2942,6 +2950,71 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
             return "c" * 40  # base moved
 
     _arm_unless_base_moved(
-        cast(Any, gh), cast(Any, MovedWs()), "o/r", "9", "main", "b" * 40, (), merge_mode="auto"
+        cast(Any, gh),
+        cast(Any, MovedWs()),
+        "o/r",
+        "9",
+        "main",
+        "b" * 40,
+        (),
+        merge_mode="auto",
+        panel_ran=True,
     )
     assert ("o/r", 9) not in gh.auto  # moved base never self-merges
+
+
+def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
+    """auto means gate+PANEL clean: a publish that ran no panel falls back
+    to the manual review-required guard (terra #171)."""
+    from autoresearch.attempt import _arm_unless_base_moved
+
+    class ArmingGitHub:
+        def __init__(self):
+            self.auto = []
+            self.manual = []
+
+        def arm_auto_merge_auto_mode(self, repo, number):
+            self.auto.append(number)
+            return True
+
+        def arm_auto_merge_when_review_required(self, repo, number):
+            self.manual.append(number)
+            return True
+
+    class StillWs:
+        url = ""
+
+        def git_network(self, *a):
+            return ""
+
+        def git(self, *a):
+            return "b" * 40
+
+        def remote_url(self):
+            return "https://x"
+
+    gh = ArmingGitHub()
+    _arm_unless_base_moved(
+        cast(Any, gh),
+        cast(Any, StillWs()),
+        "o/r",
+        "5",
+        "main",
+        "b" * 40,
+        (),
+        merge_mode="auto",
+        panel_ran=False,
+    )
+    assert gh.auto == [] and gh.manual == [5]
+    _arm_unless_base_moved(
+        cast(Any, gh),
+        cast(Any, StillWs()),
+        "o/r",
+        "6",
+        "main",
+        "b" * 40,
+        (),
+        merge_mode="auto",
+        panel_ran=True,
+    )
+    assert gh.auto == [6]

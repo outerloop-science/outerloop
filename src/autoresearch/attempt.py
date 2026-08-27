@@ -173,6 +173,7 @@ def _arm_unless_base_moved(
     measured_base_sha: str,
     secrets: tuple[str, ...],
     merge_mode: str = "manual",
+    panel_ran: bool = False,
 ) -> None:
     """Arm auto-merge only while origin/<base_branch> still equals the base the
     claim was measured against. A moved base still OPENS the PR — review owns
@@ -195,7 +196,18 @@ def _arm_unless_base_moved(
                 fresh[:12],
             )
             return
-        if merge_mode == "auto":
+        if merge_mode == "auto" and not panel_ran:
+            # the dial's own precondition: auto means GATE+PANEL clean, so a
+            # publish that ran no panel must not self-merge — fall back to
+            # the manual guard and say so (terra #171: a panel-less
+            # deployment could otherwise self-merge on the metric gate alone)
+            log.warning(
+                "merge mode auto on %s#%s but no panel ran this attempt; "
+                "arming manual-mode instead",
+                target,
+                pr_number,
+            )
+        if merge_mode == "auto" and panel_ran:
             # the contract's autonomy dial: the owner opted this repo into
             # self-merging gate-clean PRs — arm, or merge directly when
             # nothing is pending to arm against
@@ -1046,6 +1058,7 @@ def resume_run(
                     base_sha,
                     secrets,
                     merge_mode=getattr(contract, "merge", "manual"),
+                    panel_ran=result.panel_rounds > 0,
                 )
             report_path = run_dir / "report.md"
             _best_effort(
@@ -1221,6 +1234,7 @@ def resume_run(
                     base_sha,
                     secrets,
                     merge_mode=getattr(contract, "merge", "manual"),
+                    panel_ran=result.panel_rounds > 0,
                 )
         except Exception as exc:
             # push / PR / commit failed — end as an error. Save the ENDED record
@@ -1974,6 +1988,7 @@ def live_attempt(
                     pre_session_sha,
                     secrets,
                     merge_mode=getattr(contract, "merge", "manual"),
+                    panel_ran=result.panel_rounds > 0,
                 )
             final = RunRecord(
                 **{

@@ -394,3 +394,39 @@ def test_non_utf8_filter_config_neither_crashes_nor_executes(tmp_path: Path) -> 
     ws.git("status", "--porcelain")  # must not raise on the non-UTF-8 config
     ws.git("checkout", "-f", "HEAD", "--", ".")
     assert not marker.exists()
+
+
+def test_auto_mode_arming_merges_only_on_clean_status(monkeypatch) -> None:
+    """terra #171: the direct-merge fallback fires ONLY when GitHub declines
+    arming because the PR is already clean; any other decline (auto-merge
+    disabled in repo settings, missing permission) is a repo-owner control
+    and stops."""
+    from autoresearch.github import GitHubClient, GitHubError
+
+    class _Tok:
+        def token(self) -> str:
+            return "t"
+
+    client = GitHubClient(auth=_Tok())
+    merged: list = []
+    monkeypatch.setattr(client, "allowed_merge_methods", lambda repo: ["MERGE"])
+
+    def _fake_merge(repo, n, method):
+        merged.append(n)
+        return True
+
+    monkeypatch.setattr(client, "merge_pull", _fake_merge)
+
+    def clean_status(repo, n, method="MERGE"):
+        raise GitHubError(0, "/x", "Pull request is in clean status")
+
+    monkeypatch.setattr(client, "enable_auto_merge", clean_status)
+    assert client.arm_auto_merge_auto_mode("o/r", 7) is True
+    assert merged == [7]
+
+    def not_allowed(repo, n, method="MERGE"):
+        raise GitHubError(0, "/x", "Auto merge is not allowed for this repository")
+
+    monkeypatch.setattr(client, "enable_auto_merge", not_allowed)
+    assert client.arm_auto_merge_auto_mode("o/r", 8) is False
+    assert merged == [7]  # no bulldozing a repo-owner control
