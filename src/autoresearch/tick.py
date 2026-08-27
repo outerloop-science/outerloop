@@ -809,24 +809,28 @@ def _publish_ledger_entry(
     marker: Path,
     state: str,
 ) -> bool:
-    """Two-stage publish with the marker recording WHICH stage completed
-    ("archived" then "done"), so a failure between archive and pointer
-    retries the POINTER only (terra #170 r3: inferring pointer-posted from
-    an existing archive silently lost pointers). If the marker file itself
-    is lost after full success, the retry re-posts one pointer — a bounded
-    duplicate is the accepted price of never losing one (r2/r3 trade)."""
+    """Staged publish whose marker doubles as a WRITABILITY PROBE: stages
+    are "archived" -> "pointer-pending" -> "done", and no pointer is ever
+    posted in a pass where a marker write is failing (terra #170 r4: a
+    persistently unwritable marker must stall the publish, not stream a
+    duplicate pointer every tick). A pointer failure retries pointer-only;
+    a marker lost after full success re-posts at most once; the residual
+    crash-between-probe-and-post window costs at most one duplicate per
+    incident, never an unbounded stream."""
     from datetime import UTC, datetime
 
-    def _mark(value: str) -> None:
+    def _mark(value: str) -> bool:
         try:
             marker.write_text(value)
+            return True
         except OSError as exc:
             log.warning("ledger marker write failed for %s: %s", record.run_id, exc)
+            return False
 
     date = datetime.fromtimestamp(record.updated or record.created, tz=UTC).strftime("%Y-%m-%d")
     path = f"reports/{date}-{record.run_id}.md"
     try:
-        if not state.startswith("archived"):
+        if not state.startswith(("archived", "pointer-pending")):
             if not github.ensure_branch(target, RESEARCH_LOG_BRANCH):
                 return False
             if not github.put_file(
@@ -837,7 +841,11 @@ def _publish_ledger_entry(
                 f"research log: {record.run_id} ({outcome})",
             ):
                 return False  # retry the whole publish next tick
-            _mark("archived")
+            if not _mark("archived"):
+                return False  # unwritable state: stall BEFORE any pointer
+        # the probe: a fresh successful write is the license to post
+        if not _mark("pointer-pending"):
+            return False
         url = f"https://github.com/{target}/blob/{RESEARCH_LOG_BRANCH}/{path}"
         line = f"**{outcome}** `{record.benchmark}` — [report]({url})"
         if record.pr_url:
@@ -846,6 +854,7 @@ def _publish_ledger_entry(
             _mark("done")  # the claimed issue already received the full finish
             return True
         bench = record.benchmark.casefold()
+        posted = False
         if bench:
             for issue in github.list_open_issues(target):
                 text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
@@ -853,27 +862,29 @@ def _publish_ledger_entry(
                     continue
                 if bench in text.casefold():
                     github.comment(target, int(issue["number"]), line)
-                    _mark("done")
-                    return True
-        cache = _ledger_issue_cache(root, target)
-        log_issue = 0
-        with contextlib.suppress(OSError, ValueError):
-            log_issue = int(cache.read_text().strip())
-        if not log_issue:
-            log_issue = github.create_issue(
-                target,
-                "Research log",
-                f"{RESEARCH_LOG_MARKER}\nOne two-line comment per finished "
-                f"autoresearch run — full reports live on the [`{RESEARCH_LOG_BRANCH}`]"
-                f"(https://github.com/{target}/tree/{RESEARCH_LOG_BRANCH}/reports) branch. "
-                "Results relevant to an open order issue are posted there instead.",
-            )
+                    posted = True
+                    break
+        if not posted:
+            cache = _ledger_issue_cache(root, target)
+            log_issue = 0
+            with contextlib.suppress(OSError, ValueError):
+                log_issue = int(cache.read_text().strip())
+            if not log_issue:
+                log_issue = github.create_issue(
+                    target,
+                    "Research log",
+                    f"{RESEARCH_LOG_MARKER}\nOne two-line comment per finished "
+                    f"autoresearch run — full reports live on the [`{RESEARCH_LOG_BRANCH}`]"
+                    f"(https://github.com/{target}/tree/{RESEARCH_LOG_BRANCH}/reports) "
+                    "branch. Results relevant to an open order issue are posted "
+                    "there instead.",
+                )
+                if log_issue:
+                    with contextlib.suppress(OSError):
+                        cache.write_text(str(log_issue))
             if log_issue:
-                with contextlib.suppress(OSError):
-                    cache.write_text(str(log_issue))
-        if log_issue:
-            github.comment(target, log_issue, line)
-        _mark("done")
+                github.comment(target, log_issue, line)
+        _mark("done")  # write just proved out via the probe; failure = freak
         return True
     except Exception as exc:  # advisory ledger: never fail the tick
         log.warning("research-log publish failed for %s: %s", record.run_id, exc)

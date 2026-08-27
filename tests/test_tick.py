@@ -2416,7 +2416,7 @@ def test_research_log_pointer_failure_retries_pointer_only(tmp_path: Path) -> No
 
     gh.comment = flaky_comment  # type: ignore[method-assign]
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
-    assert _ledger_marker(tmp_path, "r-6").read_text() == "archived"
+    assert _ledger_marker(tmp_path, "r-6").read_text() == "pointer-pending"
     assert len(gh.files) == 1 and gh.comments == []
     boom["on"] = False
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
@@ -2440,3 +2440,28 @@ def test_research_log_lost_marker_duplicates_at_most_once(tmp_path: Path) -> Non
     assert _ledger_marker(tmp_path, "r-7").read_text() == "done"  # settled
     assert len(gh.comments) == 2  # one bounded duplicate, then stable
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+
+
+def test_research_log_unwritable_marker_stalls_without_posting(tmp_path: Path) -> None:
+    """terra #170 r4: a persistently unwritable marker must stall the
+    publish (retry next tick), never stream duplicate pointers — the marker
+    write is the license to post."""
+    import os
+
+    from autoresearch.runstate import run_dir as _rd
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-8")
+    gh = LedgerGitHub()
+    rd = _rd(tmp_path, "r-8")
+    os.chmod(rd, 0o555)  # marker dir read-only
+    try:
+        assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+        assert gh.comments == []  # no pointer without a successful probe
+        assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+        assert gh.comments == []  # still stalled, still zero — bounded
+    finally:
+        os.chmod(rd, 0o755)
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert len(gh.comments) == 1  # posts exactly once after recovery
