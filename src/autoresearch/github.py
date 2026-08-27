@@ -444,7 +444,10 @@ class GitHubClient:
             self._graphql(mutation, {"pr": str(node_id)})
             return True
         except GitHubError as exc:
-            log.info("auto-merge disarm on %s#%s: %s", repo, number, exc)
+            if "not enabled" in str(exc).casefold():
+                # nothing was armed — the state we wanted; pushing is safe
+                return True
+            log.warning("auto-merge disarm on %s#%s failed: %s", repo, number, exc)
             return False
 
     def merge_pull(self, repo: str, number: int, method: str = "merge") -> bool:
