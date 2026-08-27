@@ -128,8 +128,42 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
         {"name": "train", "minutes": 180, "artifacts": ["out/curve.json"]}
     ]
     assert r.stage["syscall_note"] == "compare to the lr sweep"
-    assert r.resume_session_id == "s9"  # the record's own field; no stage duplicate
     assert r.stage["launches_used"] == 1 and r.stage["sleeps_used"] == 1
+    assert r.resume_session_id == "s9"  # the record's own field; no stage duplicate
+
+
+def test_checkpoint_sleep_park_gets_a_near_term_deadline(tmp_path) -> None:
+    """A LAUNCH-LESS author sleep has nothing in any queue — its deadline
+    must reach only the next sweep pass (CHECKPOINT_SLEEP_SLACK_MIN), never
+    the 12h queue slack. Observed live (yolo heldout_probe, 2026-08-27): the
+    queue slack turned a checkpoint nap into a 12h coma."""
+    from autoresearch.attempt import CHECKPOINT_SLEEP_SLACK_MIN
+    from autoresearch.syscall import SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    parked = RunParked(
+        phase="author-sleep",
+        afterany="",
+        base_sha="b" * 40,
+        seed=7,
+        suite_seed=9,
+        candidate_sha="c" * 40,
+        session=_session("s10"),
+        syscall=SyscallRequest(launches=(), note="pausing to reread results next wake"),
+        launches_used=2,
+        sleeps_used=3,
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=90, now=1000.0)
+
+    r = load_record(tmp_path, "tsp-3")
+    assert r.state == "waiting"
+    # the writer itself must produce the near-term deadline — not the queue
+    # slack, and not the benchmark eval hint (nothing was dispatched)
+    assert r.deadline == 1000.0 + CHECKPOINT_SLEEP_SLACK_MIN * 60
+    assert r.stage["syscall_launches"] == []
+    assert r.stage["launches_used"] == 2 and r.stage["sleeps_used"] == 3
 
 
 def test_park_run_redacts_the_saved_report(tmp_path) -> None:
