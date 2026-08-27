@@ -730,6 +730,184 @@ def sweep(
     )
 
 
+RESEARCH_LOG_BRANCH = "research-log"
+RESEARCH_LOG_MARKER = "<!-- autoresearch:research-log -->"
+RESEARCH_LOG_PER_TICK = 3
+
+
+def _ledger_marker(root: Path, run_id: str) -> Path:
+    return run_dir(root, run_id) / "ledger-published"
+
+
+def _ledger_since(root: Path, target: str) -> Path:
+    return root / ("research-log-since-" + target.replace("/", "__"))
+
+
+def _ledger_issue_cache(root: Path, target: str) -> Path:
+    return root / ("research-log-issue-" + target.replace("/", "__"))
+
+
+def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float) -> int:
+    """STATE-driven ledger (terra #170 r1: wiring publisher calls at terminal
+    sites missed four terminal paths — attempt error, zero-change resume,
+    the direct live terminal, steward): any run of this target whose
+    terminal report exists but carries no published marker gets archived on
+    the `research-log` branch and a two-line pointer routed — to the run's
+    claimed issue never (it already got the full finish post), else to an
+    open order issue naming the benchmark, else to the rolling log issue
+    whose number is CACHED in the state dir (no 300-issue pagination scan,
+    no duplicate creation). Running in the single tick also removes the
+    concurrent-first-archive races by construction. The pointer posts only
+    AFTER a successful archive (no dead links); the marker is written only
+    after full success, so a crashed publish retries next tick. Runs ended
+    before the feature's first pass are marker-stamped silently (no
+    backfill spam).
+    """
+    since_path = _ledger_since(root, spec.target)
+    first_pass = not since_path.exists()
+    if first_pass:
+        with contextlib.suppress(OSError):
+            since_path.write_text(str(now))
+    published = 0
+    for record in list_runs(root):
+        if record.target != spec.target or record.state not in (ENDED, IN_REVIEW):
+            continue
+        marker = _ledger_marker(root, record.run_id)
+        report_path = run_dir(root, record.run_id) / "report.md"
+        state = ""
+        with contextlib.suppress(OSError):
+            state = marker.read_text()
+        if state.startswith(("done", "adopted")) or not report_path.exists():
+            continue
+        if first_pass and (record.updated or record.created) < now:
+            # adopt pre-feature history silently: browsable going forward,
+            # no retroactive issue spam. Only records OLDER than the since
+            # marker — a run that goes terminal during this very pass is new
+            # work and publishes normally (terra #170 r2).
+            with contextlib.suppress(OSError):
+                marker.write_text("adopted-unpublished")
+            continue
+        if published >= RESEARCH_LOG_PER_TICK:
+            break
+        try:
+            report = report_path.read_text()
+        except OSError:
+            continue
+        outcome = record.ending or ("improved" if record.state == IN_REVIEW else "ended")
+        if _publish_ledger_entry(github, spec.target, root, record, outcome, report, marker, state):
+            published += 1
+    return published
+
+
+def _publish_ledger_entry(
+    github: Any,
+    target: str,
+    root: Path,
+    record: RunRecord,
+    outcome: str,
+    report: str,
+    marker: Path,
+    state: str,
+) -> bool:
+    """Staged publish whose marker doubles as a WRITABILITY PROBE: stages
+    are "archived" -> "pointer-pending" -> "done", and no pointer is ever
+    posted in a pass where a marker write is failing (terra #170 r4: a
+    persistently unwritable marker must stall the publish, not stream a
+    duplicate pointer every tick). A pointer failure retries pointer-only;
+    a marker lost after full success re-posts at most once; the residual
+    crash-between-probe-and-post window costs at most one duplicate per
+    incident, never an unbounded stream."""
+    from datetime import UTC, datetime
+
+    def _mark(value: str) -> bool:
+        try:
+            marker.write_text(value)
+            return True
+        except OSError as exc:
+            log.warning("ledger marker write failed for %s: %s", record.run_id, exc)
+            return False
+
+    date = datetime.fromtimestamp(record.updated or record.created, tz=UTC).strftime("%Y-%m-%d")
+    path = f"reports/{date}-{record.run_id}.md"
+    try:
+        if not state.startswith(("archived", "pointer-pending")):
+            if not github.ensure_branch(target, RESEARCH_LOG_BRANCH):
+                return False
+            if not github.put_file(
+                target,
+                path,
+                report,
+                RESEARCH_LOG_BRANCH,
+                f"research log: {record.run_id} ({outcome})",
+            ):
+                return False  # retry the whole publish next tick
+            if not _mark("archived"):
+                return False  # unwritable state: stall BEFORE any pointer
+        # the probe: a fresh successful write is the license to post
+        if not _mark("pointer-pending"):
+            return False
+        url = f"https://github.com/{target}/blob/{RESEARCH_LOG_BRANCH}/{path}"
+        line = f"**{outcome}** `{record.benchmark}` — [report]({url})"
+        if record.pr_url:
+            line += f" · {record.pr_url}"
+        if record.issue_number:
+            _mark("done")  # the claimed issue already received the full finish
+            return True
+        bench = record.benchmark.casefold()
+        posted = False
+        if bench:
+            for issue in github.list_open_issues(target):
+                text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
+                if RESEARCH_LOG_MARKER in text or issue.get("pull_request"):
+                    continue
+                if bench in text.casefold():
+                    github.comment(target, int(issue["number"]), line)
+                    posted = True
+                    break
+        if not posted:
+            cache = _ledger_issue_cache(root, target)
+            log_issue = 0
+            with contextlib.suppress(OSError, ValueError):
+                log_issue = int(cache.read_text().strip())
+            if not log_issue:
+                # cache miss (first use, or a lost/failed cache write): find
+                # the rolling issue by its marker BEFORE creating another —
+                # the cache is a fast path, never the source of truth
+                # (terra #170 r5: a failed cache write must not duplicate
+                # the rolling issue)
+                for issue in github.list_open_issues(target):
+                    if RESEARCH_LOG_MARKER in str(issue.get("body") or ""):
+                        log_issue = int(issue.get("number", 0))
+                        break
+            if not log_issue:
+                log_issue = github.create_issue(
+                    target,
+                    "Research log",
+                    f"{RESEARCH_LOG_MARKER}\nOne two-line comment per finished "
+                    f"autoresearch run — full reports live on the [`{RESEARCH_LOG_BRANCH}`]"
+                    f"(https://github.com/{target}/tree/{RESEARCH_LOG_BRANCH}/reports) "
+                    "branch. Results relevant to an open order issue are posted "
+                    "there instead.",
+                )
+            if log_issue:
+                with contextlib.suppress(OSError):
+                    cache.write_text(str(log_issue))
+                try:
+                    github.comment(target, log_issue, line)
+                except Exception:
+                    # a stale cached number (locked/deleted/transferred issue)
+                    # must not stall delivery forever: drop the cache so the
+                    # next pass re-discovers or re-creates (terra #170 r5)
+                    with contextlib.suppress(OSError):
+                        cache.unlink()
+                    raise
+        _mark("done")  # write just proved out via the probe; failure = freak
+        return True
+    except Exception as exc:  # advisory ledger: never fail the tick
+        log.warning("research-log publish failed for %s: %s", record.run_id, exc)
+        return False
+
+
 def _kill_stamp(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / "attempt-terminal-seen"
 
@@ -1103,6 +1281,10 @@ def tick(
             dry_run=followup_dry_run,
             allow_submit=launch_ok,
         )
+        try:
+            service_research_log(root, github, spec, now)
+        except Exception as exc:  # the ledger is advisory; the tick continues
+            log.warning("research-log service failed: %s", exc)
         intake_job = (
             service_intake(
                 root, github, compute, spec, now, contract, limits, dry_run=followup_dry_run

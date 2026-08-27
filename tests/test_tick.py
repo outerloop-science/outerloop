@@ -2272,3 +2272,244 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     assert times[0] == session_minutes + ATTEMPT_OVERHEAD_MINUTES  # fits the session
     assert times[0] > 20  # far more than a candidate wake's base
     assert f"--session-minutes {session_minutes}" in joined_argv[0]  # self-deadline set
+
+
+class LedgerGitHub:
+    """Duck-typed fake for the research-log service (cast at call sites)."""
+
+    def __init__(self, issues=(), put_ok=True):
+        self.issues = list(issues)
+        self.put_ok = put_ok
+        self.files = []
+        self.comments = []
+        self.created = []
+
+    def ensure_branch(self, repo, branch):
+        return True
+
+    def put_file(self, repo, path, content, branch, message):
+        if not self.put_ok:
+            return ""
+        created = path not in {p for p, _, _ in self.files}
+        self.files.append((path, content, branch))
+        return "created" if created else "updated"
+
+    def list_open_issues(self, repo, max_pages=3):
+        return self.issues
+
+    def create_issue(self, repo, title, body):
+        self.created.append(title)
+        return 91
+
+    def comment(self, repo, number, body):
+        self.comments.append((number, body))
+
+
+def _ended_run(root: Path, run_id: str, saved_at: float = NOW, **over) -> None:
+    from autoresearch.runstate import run_dir as _rd
+
+    base = dict(
+        run_id=run_id,
+        target="org/yolo",
+        task_title="t",
+        state=ENDED,
+        ending="negative-result",
+        benchmark="heldout_probe",
+    )
+    # save_record stamps `updated` with the save time
+    save_record(root, RunRecord(**{**base, **over}), saved_at)
+    (_rd(root, run_id) / "report.md").write_text("# report\ncontent")
+
+
+def _spec(target="org/yolo"):
+    from autoresearch.tick import FollowupSpec
+
+    return FollowupSpec(
+        account="a",
+        partition="p",
+        run_root=Path("/tmp"),
+        image="i.sif",
+        home=Path("/tmp"),
+        target=target,
+    )
+
+
+def test_research_log_first_pass_adopts_history_silently(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_marker, service_research_log
+
+    _ended_run(tmp_path, "old-1", saved_at=NOW - 100)
+    # a run that went terminal DURING the first pass is new work, not history
+    _ended_run(tmp_path, "fresh-1", saved_at=NOW + 1)
+    gh = LedgerGitHub()
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert len(gh.files) == 1 and gh.files[0][0].endswith("-fresh-1.md")
+    assert _ledger_marker(tmp_path, "old-1").exists()  # adopted silently
+
+
+def test_research_log_publishes_once_and_routes_to_the_order_issue(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")  # past first pass
+    _ended_run(tmp_path, "r-1")
+    gh = LedgerGitHub(issues=[{"number": 15, "title": "heldout_probe: order", "body": ""}])
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    ((path, content, branch),) = gh.files
+    assert branch == "research-log" and path.endswith("-r-1.md") and "content" in content
+    ((num, line),) = gh.comments
+    assert num == 15 and "negative-result" in line and "research-log" in line
+    # idempotent: second pass publishes nothing
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+
+
+def test_research_log_archive_failure_defers_pointer_and_retries(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-2")
+    gh = LedgerGitHub(put_ok=False)
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert gh.comments == []  # no dead link
+    assert not _ledger_marker(tmp_path, "r-2").exists()  # retried next tick
+    gh.put_ok = True
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+
+
+def test_research_log_rolling_issue_created_once_via_cache(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-3", benchmark="tsp")
+    _ended_run(tmp_path, "r-4", benchmark="tsp")
+    gh = LedgerGitHub()  # no order issues -> rolling issue
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 2
+    assert gh.created == ["Research log"]  # created once, cached, reused
+    assert [n for n, _ in gh.comments] == [91, 91]
+
+
+def test_research_log_claimed_issue_gets_no_duplicate_pointer(tmp_path: Path) -> None:
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-5", issue_number=15)
+    gh = LedgerGitHub(issues=[{"number": 15, "title": "heldout_probe: order", "body": ""}])
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert len(gh.files) == 1 and gh.comments == []  # archived, not re-posted
+
+
+def test_research_log_pointer_failure_retries_pointer_only(tmp_path: Path) -> None:
+    """terra #170 r3: a comment failure after a successful archive must NOT
+    be treated as posted — the staged marker ("archived") makes the next
+    pass retry the POINTER without re-putting the archive, then mark done."""
+    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-6")
+
+    gh = LedgerGitHub()
+    boom = {"on": True}
+    real_comment = gh.comment
+
+    def flaky_comment(repo, number, body):
+        if boom["on"]:
+            raise RuntimeError("comment API down")
+        real_comment(repo, number, body)
+
+    gh.comment = flaky_comment  # type: ignore[method-assign]
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert _ledger_marker(tmp_path, "r-6").read_text() == "pointer-pending"
+    assert len(gh.files) == 1 and gh.comments == []
+    boom["on"] = False
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert _ledger_marker(tmp_path, "r-6").read_text() == "done"
+    assert len(gh.files) == 1  # archive NOT re-put
+    assert len(gh.comments) == 1  # the pointer arrived exactly once
+
+
+def test_research_log_lost_marker_duplicates_at_most_once(tmp_path: Path) -> None:
+    """If the marker FILE is lost after full success, the retry re-posts one
+    pointer — the bounded duplicate is the accepted price of never silently
+    losing a pointer (the r2/r3 trade, documented in the publisher)."""
+    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-7")
+    gh = LedgerGitHub()
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    _ledger_marker(tmp_path, "r-7").unlink()
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert _ledger_marker(tmp_path, "r-7").read_text() == "done"  # settled
+    assert len(gh.comments) == 2  # one bounded duplicate, then stable
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+
+
+def test_research_log_unwritable_marker_stalls_without_posting(tmp_path: Path) -> None:
+    """terra #170 r4: a persistently unwritable marker must stall the
+    publish (retry next tick), never stream duplicate pointers — the marker
+    write is the license to post."""
+    import os
+
+    from autoresearch.runstate import run_dir as _rd
+    from autoresearch.tick import _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-8")
+    gh = LedgerGitHub()
+    rd = _rd(tmp_path, "r-8")
+    os.chmod(rd, 0o555)  # marker dir read-only
+    try:
+        assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+        assert gh.comments == []  # no pointer without a successful probe
+        assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+        assert gh.comments == []  # still stalled, still zero — bounded
+    finally:
+        os.chmod(rd, 0o755)
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert len(gh.comments) == 1  # posts exactly once after recovery
+
+
+def test_research_log_stale_cached_issue_self_heals(tmp_path: Path) -> None:
+    """terra #170 r5: a cached rolling-issue number that no longer accepts
+    comments (locked/deleted) must not stall delivery forever — the failed
+    comment drops the cache, and the next pass re-creates."""
+    from autoresearch.tick import (
+        _ledger_issue_cache,
+        _ledger_since,
+        service_research_log,
+    )
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-9", benchmark="tsp")
+    _ledger_issue_cache(tmp_path, "org/yolo").write_text("404")  # stale
+
+    gh = LedgerGitHub()
+    real_comment = gh.comment
+
+    def locked_404(repo, number, body):
+        if number == 404:
+            raise RuntimeError("issue locked")
+        real_comment(repo, number, body)
+
+    gh.comment = locked_404  # type: ignore[method-assign]
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
+    assert not _ledger_issue_cache(tmp_path, "org/yolo").exists()  # dropped
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1  # re-created
+    assert gh.created == ["Research log"] and len(gh.comments) == 1
+
+
+def test_research_log_lost_cache_rediscovers_instead_of_duplicating(tmp_path: Path) -> None:
+    """A failed/lost cache write must not spawn a second rolling issue: the
+    marker scan is the source of truth, the cache only a fast path."""
+    from autoresearch.tick import (
+        RESEARCH_LOG_MARKER,
+        _ledger_issue_cache,
+        _ledger_since,
+        service_research_log,
+    )
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-10", benchmark="tsp")
+    gh = LedgerGitHub(issues=[{"number": 77, "title": "Research log", "body": RESEARCH_LOG_MARKER}])
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    assert gh.created == []  # rediscovered via the marker, no duplicate
+    assert gh.comments == [(77, gh.comments[0][1])]
+    assert _ledger_issue_cache(tmp_path, "org/yolo").read_text() == "77"  # re-cached

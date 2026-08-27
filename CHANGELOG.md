@@ -22,6 +22,23 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Every terminal report now lands in a browsable ledger on the target repo,
+  via a STATE-driven tick service (terra #170: wiring publisher calls at
+  terminal sites missed four terminal paths — the service instead publishes
+  any ended run whose report lacks a published marker, catching every
+  terminal past and future by construction, steward and sweep-aborted runs
+  included, and retrying after crashes). The full redacted report becomes
+  `reports/<date>-<run_id>.md` on a `research-log` branch; a two-line
+  pointer routes to the run's claimed issue never (it already got the full
+  finish post), else an open order issue naming the benchmark, else a
+  rolling "Research log" issue whose number is cached in the state dir (no
+  pagination scans, no duplicate creation; single-tick execution removes
+  the concurrency races). The pointer posts only after a successful archive
+  — no dead links. Pre-feature history is adopted silently, browsable
+  without backfill spam.
+
+### Added
+
 - The verify lens's rubric gains the code owner's aggregation standard
   (set closing yolo-jepa#16): a delta that clears the significance floor
   only as a MIXTURE of individually sub-floor tweaks is a finding — a
