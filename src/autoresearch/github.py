@@ -644,11 +644,14 @@ class GitHubClient:
             log.warning("could not create branch %s on %s: %s", branch, repo, exc)
             return False
 
-    def put_file(self, repo: str, path: str, content: str, branch: str, message: str) -> bool:
-        """Create or update one file on `branch` via the contents API."""
+    def put_file(self, repo: str, path: str, content: str, branch: str, message: str) -> str:
+        """Create or update one file on `branch` via the contents API.
+        Returns "created" | "updated" ("" on failure) — callers use the
+        distinction for idempotency (an update means this artifact was
+        already published once)."""
         if self.dry_run:
             log.info("[dry-run] put %s on %s@%s", path, repo, branch)
-            return True
+            return "created"
         quoted = urllib.parse.quote(repo)
         api = f"/repos/{quoted}/contents/{urllib.parse.quote(path)}"
         body: dict[str, Any] = {
@@ -664,10 +667,10 @@ class GitHubClient:
             pass  # new file
         try:
             self._request("PUT", api, body)
-            return True
+            return "updated" if "sha" in body else "created"
         except GitHubError as exc:
             log.warning("could not put %s on %s@%s: %s", path, repo, branch, exc)
-            return False
+            return ""
 
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:

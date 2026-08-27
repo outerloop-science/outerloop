@@ -2289,9 +2289,10 @@ class LedgerGitHub:
 
     def put_file(self, repo, path, content, branch, message):
         if not self.put_ok:
-            return False
+            return ""
+        created = path not in {p for p, _, _ in self.files}
         self.files.append((path, content, branch))
-        return True
+        return "created" if created else "updated"
 
     def list_open_issues(self, repo, max_pages=3):
         return self.issues
@@ -2393,3 +2394,19 @@ def test_research_log_claimed_issue_gets_no_duplicate_pointer(tmp_path: Path) ->
     gh = LedgerGitHub(issues=[{"number": 15, "title": "heldout_probe: order", "body": ""}])
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
     assert len(gh.files) == 1 and gh.comments == []  # archived, not re-posted
+
+
+def test_research_log_lost_marker_does_not_duplicate_pointers(tmp_path: Path) -> None:
+    """A marker write can fail after a successful publish; the next pass
+    re-puts the archive (harmless) but must NOT re-post the pointer — the
+    created/updated distinction is the idempotency backstop (terra #170)."""
+    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+
+    _ledger_since(tmp_path, "org/yolo").write_text("1")
+    _ended_run(tmp_path, "r-6")
+    gh = LedgerGitHub()
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
+    _ledger_marker(tmp_path, "r-6").unlink()  # simulate the lost marker
+    assert service_research_log(tmp_path, gh, _spec(), NOW) == 1  # re-marked
+    assert len([p for p, _, _ in gh.files if p.endswith("-r-6.md")]) == 2  # re-put
+    assert len(gh.comments) == 1  # but no duplicate pointer

@@ -792,8 +792,12 @@ def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float
             continue
         outcome = record.ending or ("improved" if record.state == IN_REVIEW else "ended")
         if _publish_ledger_entry(github, spec.target, root, record, outcome, report):
-            with contextlib.suppress(OSError):
+            try:
                 marker.write_text(str(now))
+            except OSError as exc:
+                # loud: a lost marker costs an archive re-put next tick (the
+                # created/updated check stops pointer duplication)
+                log.warning("ledger marker write failed for %s: %s", record.run_id, exc)
             published += 1
     return published
 
@@ -808,10 +812,17 @@ def _publish_ledger_entry(
     try:
         if not github.ensure_branch(target, RESEARCH_LOG_BRANCH):
             return False
-        if not github.put_file(
+        archived = github.put_file(
             target, path, report, RESEARCH_LOG_BRANCH, f"research log: {record.run_id} ({outcome})"
-        ):
+        )
+        if not archived:
             return False  # pointer only after a live archive — no dead links
+        if archived == "updated":
+            # the file already existed: a prior publish got this far, so the
+            # pointer was (very likely) posted and only the marker write
+            # failed — re-marking without re-commenting keeps the ledger
+            # idempotent even when markers are lost (terra #170 r2)
+            return True
         url = f"https://github.com/{target}/blob/{RESEARCH_LOG_BRANCH}/{path}"
         line = f"**{outcome}** `{record.benchmark}` — [report]({url})"
         if record.pr_url:
