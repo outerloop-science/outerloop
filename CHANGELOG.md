@@ -6,6 +6,20 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- The gate now enforces the contract's declared significance floor
+  (`min_delta`/`min_delta_rel`): the decide previously applied only the
+  global relative default (0.5%), so a benchmark's calibrated noise floor
+  was consulted by the followup comparison path but never by the publish
+  gate — yolo#16 shipped at +0.0379 against a declared 0.04 floor. A delta
+  inside the floor now ends `no-improvement` with the reason on the record;
+  benchmarks that declare no floor keep today's behavior. Same-seed pairing
+  removes pool noise, not training stochasticity — which is exactly what a
+  declared floor is calibrated to. Specific no-improvement reasons now
+  survive to the record instead of being overwritten by generic framing.
+  Auto-mode prerequisite #1 (docs/design/headline.md) done.
+
 ### Added
 
 - The verify lens's rubric gains the code owner's aggregation standard
