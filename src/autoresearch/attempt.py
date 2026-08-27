@@ -265,7 +265,6 @@ def _clear_stage(record: RunRecord) -> RunRecord:
         experiment_job_id="",
         deadline=0.0,
         terminal_seen=0.0,
-        wake_job_id="",
         wake_attempts=0,
     )
 
@@ -420,7 +419,6 @@ def _park_run(
             # counter (`keep_wake_attempts`), or the loop never reaches the cap.
             "wake_attempts": record.wake_attempts if keep_wake_attempts else 0,
             "terminal_seen": 0.0,
-            "wake_job_id": "",
         }
     )
     save_record(run_root, waiting, now)

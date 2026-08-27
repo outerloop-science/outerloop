@@ -125,7 +125,6 @@ class RunRecord:
     # INVARIANT: any future path that re-enters `implementing` from a NEW
     # job must re-stamp this field, or the sweep will judge the run by a
     # stale terminal job. (No such path exists today.)
-    wake_job_id: str = ""  # the afterany dependency job, when one exists
     resume_session_id: str = ""  # harness session to resume on wake
     pr_url: str = ""  # the run's open PR, once one exists
     benchmark: str = ""  # contract benchmark this run works on

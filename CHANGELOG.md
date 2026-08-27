@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Removed
 
+- Audit kill-list: `Compute.submit_after` (no production caller — wake jobs
+  build their `afterany` dependency directly), the never-populated
+  `RunRecord.wake_job_id` field (old records still load; unknown keys are
+  ignored), and orphaned test scaffolding (`QueueEvaluator` in test_climb).
+
 - The `autoresearch.climb` compat shim (added in #156 for jobs queued before
   the climb->attempt rename): its window — jobs submitted pre-rename still
   pending in Slurm — closed within a day of the deploy (climbs cap at 6h and
@@ -16,6 +21,14 @@ Versions follow [SemVer](https://semver.org).
   (its window was one in-flight KillWait grace across the deploy).
 
 ### Fixed
+
+- Session-planted git filter drivers are neutralized on every orchestrator
+  `Workspace.git` invocation: host global/system config never loads, and any
+  `filter.*` driver in the workspace's session-writable `.git/config` is
+  overridden to a passthrough — a checkout can no longer execute an
+  agent-configured smudge/clean command with the orchestrator's permissions
+  (the containment the dispatched job script already had, now on the shared
+  git surface too; mutation-tested).
 
 - The hermes Actions cache now actually commits: cache SAVES require
   `actions: write`, which the model-running session jobs deliberately never

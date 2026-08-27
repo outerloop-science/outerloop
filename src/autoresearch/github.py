@@ -626,20 +626,75 @@ class GitHubClient:
         self._request("POST", path, {"body": body})
 
 
-def _git_env(token: str | None) -> dict[str, str]:
-    """Environment for a git invocation. The token is present only for network
-    subcommands; local ones also get hooks disabled."""
+def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
+    """GIT_CONFIG pairs that neutralize every filter driver the REPO config
+    defines (each overridden to a passthrough) plus attribute files. The
+    workspace's .git/config and .gitattributes are session-written, so a
+    checkout there must never execute a configured smudge/clean/process
+    command with the orchestrator's permissions — the same neutralization the
+    dispatched job script applies. Env-var pairs, not `-c`: a driver name
+    containing '=' or dots survives correctly."""
+    pairs: list[tuple[str, str]] = [("core.attributesFile", "/dev/null")]
+    if root is None:
+        return pairs
+    listing = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "config",
+            "-z",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+        ],
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        },
+        capture_output=True,
+        timeout=30,
+    )
+    # BYTES + surrogateescape, never text=True: the config is session-written,
+    # so a non-UTF-8 byte in a value must not crash the git call — and the
+    # surrogates roundtrip through the env (os.fsencode), so an override key
+    # still matches a weird-byte driver name EXACTLY (a lossy decode would
+    # silently fail to neutralize that driver).
+    # -z: NUL-separated records, each "key\nvalue" — a value containing a
+    # newline can never masquerade as a second record.
+    for record in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        key = record.split("\n", 1)[0]
+        if not key.startswith("filter.") or "." not in key[len("filter.") :]:
+            continue
+        driver = key[len("filter.") : key.rindex(".")]
+        pairs += [
+            (f"filter.{driver}.clean", "cat"),
+            (f"filter.{driver}.smudge", "cat"),
+            (f"filter.{driver}.process", ""),
+        ]
+    return pairs
+
+
+def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
+    """Environment for a git invocation: host global/system config never
+    loads (a host-configured filter driver must not be selectable by a
+    session-written .gitattributes), repo-defined filter drivers are
+    overridden to passthrough, and the token — present only for network
+    subcommands — rides an env-injected header."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    if token is None:
-        env["GIT_CONFIG_COUNT"] = "0"
-        return env
-    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    env |= {
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
-    }
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    pairs = _filter_override_pairs(root)
+    if token is not None:
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        pairs.append(("http.https://github.com/.extraheader", f"Authorization: Basic {basic}"))
+    env["GIT_CONFIG_COUNT"] = str(len(pairs))
+    for i, (k, v) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{i}"] = k
+        env[f"GIT_CONFIG_VALUE_{i}"] = v
     return env
 
 
@@ -666,15 +721,20 @@ class Workspace:
     url: str | None = None
 
     def git(self, *args: str) -> str:
-        """Run a local git subcommand: no credential, no child-spawning config."""
-        return _run_git(["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None))
+        """Run a local git subcommand: no credential, no child-spawning config,
+        repo-defined filter drivers neutralized."""
+        return _run_git(
+            ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
+        )
 
     def git_network(self, *args: str) -> str:
         """Run a git subcommand that talks to the remote, with credentials."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
         token = self.auth.token() if self.auth is not None else None
-        return _run_git(["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token))
+        return _run_git(
+            ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token, self.root)
+        )
 
     def remote_url(self) -> str:
         """The remote URL as recorded at clone time, read token-free."""

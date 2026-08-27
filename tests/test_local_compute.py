@@ -159,13 +159,6 @@ def test_seed_env_reaches_the_bare_eval(tmp_path: Path) -> None:
         del os.environ["LEAKED_SECRET"]
 
 
-def test_afterany_is_satisfied_trivially() -> None:
-    lc = LocalCompute()
-    first = lc.submit(_spec(command="true"))
-    second = lc.submit_after(_spec(command="true"), first)
-    assert lc.status(second) == "COMPLETED"
-
-
 def test_pending_carries_no_local_semantics() -> None:
     # MeasurementPending is a cluster concept; assert its afterany shape stays
     # intact for the callers that park on it
@@ -191,9 +184,6 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
     class _DeadCompute:
         def submit(self, spec) -> str:
             return "123"  # "ran", but wrote nothing (killed at the walltime)
-
-        def submit_after(self, spec, after_job_id: str) -> str:
-            return self.submit(spec)
 
         def status(self, job_id: str) -> str:
             return "TIMEOUT"
