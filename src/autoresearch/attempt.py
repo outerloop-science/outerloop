@@ -406,6 +406,17 @@ def _park_run(
         stage["launches_used"] = parked.launches_used
         stage["sleeps_used"] = parked.sleeps_used
         stage["gpu_hours_used"] = parked.gpu_hours_used
+        if parked.judged is not None:
+            # the gate's last negative rides the park: a wake that ends on the
+            # same tree reuses it instead of measuring again
+            judged_sha, verdict = parked.judged
+            stage["judged"] = {
+                "sha": judged_sha,
+                "outcome": verdict.outcome,
+                "baseline": verdict.baseline,
+                "candidate": verdict.candidate,
+                "note": redact(verdict.note, secrets),
+            }
         if parked.eval_minutes:
             # the author's declared eval walltime rides the park: the wake's
             # measurer and deadline floor must use it, not the contract's
@@ -729,7 +740,7 @@ def _wake_author_sleep(
             improve_prompt=wake_text,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
-            judged=judged,
+            judged=judged or _stage_judged(record),
             launches_used=launches_used,
             sleeps_used=sleeps_used,
             gpu_hours_used=gpu_hours_used,
@@ -769,6 +780,26 @@ def _wake_author_sleep(
     # scope-violation, eval-error; a dispatched gate never returns improved
     # inline): end the run and release the sleep snapshot.
     return _end(result, drop_refs=[sleep_ref])
+
+
+def _stage_judged(record: RunRecord) -> tuple[str, AttemptResult] | None:
+    """The gate verdict a park carried (written by `_park_run`), or None."""
+    j = (record.stage or {}).get("judged")
+    if not isinstance(j, dict) or not j.get("sha"):
+        return None
+
+    def num(v: object) -> float | None:
+        return float(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+    return (
+        str(j["sha"]),
+        AttemptResult(
+            outcome=str(j.get("outcome") or "no-improvement"),
+            baseline=num(j.get("baseline")),
+            candidate=num(j.get("candidate")),
+            note=str(j.get("note") or ""),
+        ),
+    )
 
 
 def _stage_launches(record: RunRecord) -> list[dict]:
@@ -953,6 +984,7 @@ def resume_run(
             parked.sleeps_used = int(stage.get("sleeps_used", 0))  # type: ignore[call-overload]
             parked.gpu_hours_used = float(stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
             parked.eval_minutes = int(stage.get("eval_minutes", 0) or 0) or None  # type: ignore[call-overload]
+            parked.judged = parked.judged or _stage_judged(record)
             if parked.syscall is None:
                 parked.syscall = _SyscallRequest(
                     launches=tuple(

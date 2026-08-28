@@ -355,11 +355,11 @@ def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
     assert len(evaluator.calls) == 3  # the concluding tree differed, so it was measured
 
 
-def _gate_negative_attempt(tmp_path: Path, harness, evaluator):
+def _gate_negative_attempt(tmp_path: Path, harness, evaluator, contract: str = CONTRACT):
     measurer, snapshot = _wire(evaluator, tmp_path)
     return attempt_once(
         CONFIG,
-        CONTRACT,
+        contract,
         tmp_path,
         harness,
         measurer,
@@ -396,6 +396,19 @@ def test_identical_resubmit_is_told_so_without_a_second_gate(tmp_path: Path) -> 
     assert harness.resumes == [None, "s1", "s2"]
     assert len(evaluator.calls) == 2
     assert "identical to the candidate the gate already measured" in harness.prompts[2]
+
+
+def test_identical_resubmit_past_the_sleep_budget_ends_on_the_verdict(tmp_path: Path) -> None:
+    """The unchanged-tree reuse runs BEFORE the budget check, so an author out
+    of sleeps (or GPU-hours) is not refused a gate it would never run; past
+    the sleep budget the attempt simply ends on the standing verdict."""
+    one_sleep = CONTRACT.replace("    direction: min\n", "    direction: min\n    sleep_k: 1\n", 1)
+    harness = _SeqHarness(["the claim", "again", "never reached"], submit_on=(1, 2))
+    evaluator = FakeEvaluator(values=[13.9, 13.9])
+    result = _gate_negative_attempt(tmp_path, harness, evaluator, contract=one_sleep)
+    assert result.outcome == "no-improvement"
+    assert harness.resumes == [None, "s1"]  # the second resubmit was the last word
+    assert len(evaluator.calls) == 2
 
 
 def test_inline_gate_never_dispatches_a_submits_sibling_launches(tmp_path: Path) -> None:

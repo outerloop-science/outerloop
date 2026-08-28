@@ -84,6 +84,44 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
 
 
+def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
+    """A gate negative the author answered by launching more work rides the
+    park, so the wake that ends on the same tree reuses it (review #182)."""
+    from autoresearch.attempt import _stage_judged
+    from autoresearch.orchestrator import AttemptResult
+    from autoresearch.syscall import Launch, SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    verdict = AttemptResult(
+        outcome="no-improvement", baseline=13.0, candidate=13.0, note="inside the floor"
+    )
+    parked = RunParked(
+        phase="author-sleep",
+        afterany="afterany:501",
+        base_sha="b" * 40,
+        seed=7,
+        suite_seed=9,
+        candidate_sha="c" * 40,
+        session=_session("s9"),
+        syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
+        judged=("d" * 40, verdict),
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
+    r = load_record(tmp_path, "tsp-3")
+    assert r.stage["judged"] == {
+        "sha": "d" * 40,
+        "outcome": "no-improvement",
+        "baseline": 13.0,
+        "candidate": 13.0,
+        "note": "inside the floor",
+    }
+    assert _stage_judged(r) == ("d" * 40, verdict)
+    bare = RunRecord(run_id="x", target="o/p", task_title="t", state="waiting")
+    assert _stage_judged(bare) is None
+
+
 def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_path) -> None:
     # Phase A (research-loop-buildout.md): an author-sleep park carries the
     # launch names/artifacts, note, session id, and budget counts the wake
