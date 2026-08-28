@@ -276,6 +276,15 @@ REVIEW_LENSES = {
         "(could the measured code influence its own measurement?), and "
         "whether a claim is re-verified on the tree that actually lands."
     ),
+    "prose": (
+        "LENS — plain English in everything a person reads: README, docs, "
+        "docstrings, comments, prompts, report and PR text. House style: "
+        + PLAIN_STYLE
+        + " Flag sentences that are ornate, metaphorical, or padded; words a "
+        "reader outside this repo would not know; and claims stated more "
+        "grandly than the code supports. For each, give the plain rewrite in "
+        "the finding. These findings are advisory, never blocking."
+    ),
 }
 
 

@@ -26,7 +26,7 @@ jobs:
         # push is about — infra era: credentials/deployment/lifecycle; science
         # era: swap toward measurement. coverage earns its seat by being the
         # one class serial review never catches.
-        lens: [general, credentials, deployment, lifecycle, coverage]
+        lens: [general, credentials, deployment, lifecycle, coverage, prose]
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: agentic-learning-bot
@@ -54,7 +54,7 @@ jobs:
       model: gpt-5.6-terra
       opinion_label: terra
       # keep in lockstep with the lens matrix above
-      expected_lenses: general credentials deployment lifecycle coverage
+      expected_lenses: general credentials deployment lifecycle coverage prose
     secrets:
       openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
 
