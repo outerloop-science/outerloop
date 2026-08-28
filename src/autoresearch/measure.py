@@ -156,11 +156,16 @@ def read_baseline_cache(
     image: str = "",
     command: str = "",
     metric: str = "",
+    seed_env: str = "",
+    gpus: int = 0,
 ) -> dict[str, Any] | None:
     """The cached base-tree measurement for (benchmark, base sha), or None.
     The entry must have been measured under the SAME determinants the
-    candidate will be — eval image, contract command, metric key — or it is stale
-    (terra #178): a comparison across images is not a comparison. A cache
+    candidate will be — eval image, contract command, metric key, seed
+    variable, GPU count: everything the measurer's own eval identity
+    carries except the tree sha (the key) and the seed VALUE (fresh per
+    attempt by design) — or it is stale (terra #178): a comparison across
+    determinants is not a comparison. A cache
     entry is only ever written from an orchestrator-measured value (below),
     never from anything an author produced."""
     try:
@@ -177,6 +182,8 @@ def read_baseline_cache(
         data.get("image", "") != image
         or data.get("command", "") != command
         or data.get("metric", "") != metric
+        or data.get("seed_env", "") != seed_env
+        or int(data.get("gpus", 0) or 0) != gpus
     ):
         return None
     return data
@@ -193,6 +200,8 @@ def write_baseline_cache(
     image: str = "",
     command: str = "",
     metric: str = "",
+    seed_env: str = "",
+    gpus: int = 0,
 ) -> None:
     """Record an orchestrator-measured baseline for every later attempt on
     this base, with the determinants it was measured under. Atomic (a
@@ -215,6 +224,8 @@ def write_baseline_cache(
                 "image": image,
                 "command": command,
                 "metric": metric,
+                "seed_env": seed_env,
+                "gpus": gpus,
             },
             fh,
         )

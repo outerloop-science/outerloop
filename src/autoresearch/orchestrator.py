@@ -810,6 +810,8 @@ def measure_and_decide(
             image=image,
             command=bench.command,
             metric=bench.metric,
+            seed_env=bench.seed_env or "",
+            gpus=bench.gpus,
         )
         if bench.baseline == "cached" and cache_dir is not None
         else None
@@ -850,6 +852,8 @@ def measure_and_decide(
                 image=image,
                 command=bench.command,
                 metric=bench.metric,
+                seed_env=bench.seed_env or "",
+                gpus=bench.gpus,
             )
     candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
@@ -1345,6 +1349,8 @@ def attempt_once(
                     image=str(getattr(measurer, "image", "")),
                     command=bench.command,
                     metric=bench.metric,
+                    seed_env=bench.seed_env or "",
+                    gpus=bench.gpus,
                 ):
                     main_evals = 1
             problem = syscall_budget_error(

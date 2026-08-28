@@ -150,13 +150,15 @@ class Benchmark(_StrictModel):
                 f"benchmark {self.name!r} asks for {self.gpus} GPU(s) but its evals "
                 "would run in-job: set eval_minutes above the in-job threshold so they dispatch"
             )
-        if self.baseline == "cached" and self.min_delta is None and self.min_delta_rel is None:
+        floor_set = (self.min_delta or 0) > 0 or (self.min_delta_rel or 0) > 0
+        if self.baseline == "cached" and not floor_set:
             # an unpaired comparison has no built-in noise cancellation: the
             # floor is the only thing standing between seed luck and a record
+            # — and benchmark_floor treats 0 as "no floor", so it must be > 0
             raise ValueError(
                 f"benchmark {self.name!r} uses a cached baseline (unpaired comparison) "
-                "but declares no significance floor: set min_delta or min_delta_rel "
-                "from a seed-variance calibration"
+                "but declares no positive significance floor: set min_delta or "
+                "min_delta_rel (> 0) from a seed-variance calibration"
             )
         return self
 
