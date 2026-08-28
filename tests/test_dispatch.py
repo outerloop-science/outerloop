@@ -394,3 +394,32 @@ def test_gpu_jobs_get_nv_and_gpus(tmp_path):
     )
     assert spec.gpus == 1 and "--gpus=1" in spec.to_argv()
     assert spec.time_minutes == 250  # a 4h GPU eval fits under the raised ceiling
+
+
+def test_gpu_evals_are_sized_per_gpu(tmp_path):
+    """A GPU eval trains: it gets cores and host RAM per GPU (compile workers
+    and data loading OOM-kill at the CPU eval's 4 cores / 8 GB); CPU evals
+    keep the small defaults; an explicit larger request is never shrunk."""
+    from autoresearch.dispatch import EVAL_CPUS_PER_GPU, EVAL_MEM_GB_PER_GPU
+
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/sh\n")
+    cpu = eval_job_spec(script, job_name="e", account="a", partition="p", eval_minutes=30)
+    assert (cpu.cpus, cpu.mem) == (4, "8G")
+    one = eval_job_spec(
+        script, job_name="e", account="a", partition="h200", eval_minutes=240, gpus=1
+    )
+    assert (one.cpus, one.mem) == (EVAL_CPUS_PER_GPU, f"{EVAL_MEM_GB_PER_GPU}G")
+    eight = eval_job_spec(script, job_name="e", account="a", partition="p", eval_minutes=60, gpus=8)
+    assert (eight.cpus, eight.mem) == (8 * EVAL_CPUS_PER_GPU, f"{8 * EVAL_MEM_GB_PER_GPU}G")
+    big = eval_job_spec(
+        script,
+        job_name="e",
+        account="a",
+        partition="p",
+        eval_minutes=60,
+        gpus=1,
+        cpus=32,
+        mem="256G",
+    )
+    assert (big.cpus, big.mem) == (32, "256G")

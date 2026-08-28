@@ -18,6 +18,9 @@ Versions follow [SemVer](https://semver.org).
   `eval_minutes`), and stewardships on them are refused for now (their
   validation runs in-job). The dispatched-eval ceiling rises from 240 to
   300 minutes for the ~3.5h single-GPU evals of the speedrun target.
+- GPU evals are sized per GPU (8 cores, 64 GB each) — a training eval's
+  data loading and torch.compile workers do not fit the CPU eval's 4 cores /
+  8 GB; explicit larger requests are never shrunk.
 
 - THE WIDTH DIAL: `budgets.max_active_attempts` runs N self-initiated
   attempts abreast on one target (default 1 — today's serial behavior).

@@ -54,6 +54,10 @@ EVAL_JOB_MINUTES_CEILING = 300
 # Slack added to the job walltime beyond the eval itself: worktree
 # materialization + venv build from the lockfile on node-local scratch.
 EVAL_JOB_SETUP_MINUTES = 10
+# a GPU eval trains: data loading + torch.compile workers need real cores
+# and host RAM; sized per GPU so an 8-GPU eval scales the same way
+EVAL_CPUS_PER_GPU = 8
+EVAL_MEM_GB_PER_GPU = 64
 
 
 def effective_eval_minutes(eval_minutes: int | None) -> int:
@@ -446,7 +450,13 @@ def eval_job_spec(
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
     not create a longer Slurm job than the ceiling allows. `gpus` is the
     benchmark's contract field; the caller has already placed the job on
-    the GPU lane (DispatchSettings.placement) when it is nonzero."""
+    the GPU lane (DispatchSettings.placement) when it is nonzero, and the
+    job is sized for it: a GPU eval gets at least EVAL_CPUS_PER_GPU cores
+    and EVAL_MEM_GB_PER_GPU GB per GPU (a training eval's data loading and
+    torch.compile workers do not fit the CPU eval's 4 cores / 8 GB)."""
+    if gpus > 0:
+        cpus = max(cpus, EVAL_CPUS_PER_GPU * gpus)
+        mem = f"{max(_mem_gb(mem), EVAL_MEM_GB_PER_GPU * gpus)}G"
     return JobSpec(
         job_name=job_name[:60],
         account=account,
@@ -457,6 +467,20 @@ def eval_job_spec(
         mem=mem,
         gpus=gpus,
     )
+
+
+def _mem_gb(mem: str) -> int:
+    """A Slurm --mem value ("8G", "512M", "16") in whole GB, rounded down;
+    unparseable -> 0 so the per-GPU floor wins."""
+    text = mem.strip().upper()
+    try:
+        if text.endswith("G"):
+            return int(float(text[:-1]))
+        if text.endswith("M"):
+            return int(float(text[:-1])) // 1024
+        return int(float(text)) // 1024  # bare Slurm --mem is MB
+    except ValueError:
+        return 0
 
 
 def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
