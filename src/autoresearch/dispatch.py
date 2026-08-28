@@ -511,13 +511,6 @@ def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
         tail = ""
         with contextlib.suppress(OSError, ValueError):
             tail = (ev / "stderr").read_text(errors="replace")[-300:]
-        if code == 143:
-            # the job script traps Slurm's SIGTERM and records 143: the eval
-            # was killed at its walltime, and the author must hear that
-            raise EvalError(
-                f"dispatched eval {name} was killed at its walltime (exit 143, SIGTERM); "
-                f"a slower run needs more minutes than were declared for its eval: {tail}"
-            )
         raise EvalError(f"dispatched eval {name} failed ({code}): {tail}")
     value = _metric_from_output(stdout, metric)
     if value is None:

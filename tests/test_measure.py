@@ -140,15 +140,34 @@ def test_walltime_kill_is_named_in_the_error(tmp_path):
     assert submitted == []
 
 
-def test_walltime_kill_recorded_by_the_job_script_is_named_too(tmp_path):
-    """The job script traps SIGTERM and writes exit-code 143 before Slurm's
-    TIMEOUT lands: that path must carry the same walltime wording."""
+def test_exit_143_is_explained_by_the_jobs_slurm_end_state(tmp_path):
+    """The job script writes exit-code 143 on any TERM — Slurm's walltime,
+    scancel, and preemption alike — so only the job's end state says which.
+    A walltime kill tells the author to declare more minutes; a cancellation
+    or preemption must not be blamed on the tree."""
+
+    def failing(states):
+        m = _measurer(tmp_path, [], states=states)
+        base, cand = _measures()
+        _land(m, base, 0.50)
+        _land(m, cand, code="143", job="102")
+        return m
+
+    with pytest.raises(EvalError, match=r"killed at its walltime \(exit 143\).*more minutes"):
+        failing({"102": "TIMEOUT"}).results(_measures())
+    with pytest.raises(EvalError, match=r"was cancelled \(exit 143\)"):
+        failing({"102": "CANCELLED by 1"}).results(_measures())
+    with pytest.raises(EvalError, match=r"was preempted \(exit 143\)"):
+        failing({"102": "PREEMPTED"}).results(_measures())
+    with pytest.raises(EvalError, match=r"killed by a signal \(exit 143\)"):
+        failing({"102": "GONE"}).results(_measures())
     m = _measurer(tmp_path, [])
     base, cand = _measures()
     _land(m, base, 0.50)
-    _land(m, cand, code="143")
-    with pytest.raises(EvalError, match=r"killed at its walltime \(exit 143, SIGTERM\)"):
+    _land(m, cand, code="97")
+    with pytest.raises(EvalError, match=r"failed \(97\)") as exc:
         m.results(_measures())
+    assert "143" not in str(exc.value)
 
 
 def test_timeout_right_after_submit_is_named(tmp_path):

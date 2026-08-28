@@ -425,7 +425,42 @@ class DispatchedMeasurer:
             pending.append(job_id)
         if pending or blind:
             raise MeasurementPending(tuple(pending))
-        return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}
+        out: dict[str, float] = {}
+        for m in measures:
+            try:
+                out[m.name] = read_eval_result(self.run_dir, self._slot(m), m.metric)
+            except EvalError as exc:
+                raise EvalError(self._explain_signal_exit(m, str(exc))) from None
+        return out
+
+    def _explain_signal_exit(self, m: Measure, message: str) -> str:
+        """Exit 143 is the job script's record of a TERM: Slurm sends one at
+        the walltime, on scancel, and on preemption alike, so only its end
+        state for the job says which. The walltime case is the author's to
+        fix (more minutes); the others are the cluster's."""
+        try:
+            code = (self._ev(m) / "exit-code").read_text().strip()
+        except OSError:
+            return message
+        if code != "143":
+            return message
+        job_id = self._marker(m)
+        try:
+            state = self.compute.status(job_id) if job_id.isdigit() else ""
+        except Exception:
+            state = ""
+        if state.startswith("TIMEOUT"):
+            why = (
+                "was killed at its walltime (exit 143); a slower run needs more minutes "
+                "than were declared for its eval"
+            )
+        elif state.startswith("CANCELLED"):
+            why = "was cancelled (exit 143)"
+        elif state.startswith("PREEMPTED"):
+            why = "was preempted (exit 143); nothing about the tree is known"
+        else:
+            why = "was killed by a signal (exit 143)"
+        return f"measure {m.name} {why}; {message}"
 
 
 @dataclass(frozen=True)
