@@ -139,8 +139,10 @@ The optional knobs — paired seeding and the significance floor
 `attempt_cooldown_minutes`), a stewardship scope, and `merge: manual|auto` —
 are listed in the README's contract table; the schema's own docstrings
 (`src/autoresearch/contract.py`) are the reference. A GPU benchmark needs a
-calibrated floor and a dispatched eval (the validator says so), and
-`gpu_hours_per_run` is a real meter: launches and evals draw on it.
+dispatched eval (`eval_minutes` above the in-job threshold) and a cached
+baseline needs a positive floor — the validator says so — and for GPU
+benchmarks `gpu_hours_per_run` is a real meter: launches and evals draw on
+it (CPU benchmarks meter nothing).
 
 Two things to get right:
 
@@ -192,15 +194,20 @@ Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.
 
-The deployment is configured by environment (the chain reads an allowlist of
-keys from `~/.config/autoresearch/.env` each tick, so most changes take effect
-at the next cadence): `AUTORESEARCH_TARGET` names the repo being climbed;
-`AUTORESEARCH_ACCOUNT`/`AUTORESEARCH_PARTITION` place the CPU jobs (ticks,
-author sessions); `AUTORESEARCH_GPU_PARTITION` (optionally
+The deployment is configured by environment. Placement and paths are set
+when the chain is started: `AUTORESEARCH_ACCOUNT`/`AUTORESEARCH_PARTITION`
+place the CPU jobs (ticks, author sessions), `AUTORESEARCH_HOME`/
+`AUTORESEARCH_ROOT` locate the checkout and the state, `AUTORESEARCH_IMAGE`
+the container. The rest is re-read from `~/.config/autoresearch/.env` each
+tick, so changes take effect at the next cadence: `AUTORESEARCH_TARGET`
+names the repo being climbed; `AUTORESEARCH_GPU_PARTITION` (optionally
 `AUTORESEARCH_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
 comma-separated partition list lets Slurm start each job wherever it fits
-first; `AUTORESEARCH_PANEL` names the verify/review lenses; the author
-backend and its keys are `AUTORESEARCH_AUTHOR_*`. Evals run inside the
+first; `AUTORESEARCH_PANEL` names the verify/review lenses (with
+`AUTORESEARCH_PANEL_*_KEY_FILE` for their keys); the author backend is
+`AUTORESEARCH_AUTHOR_BACKEND`/`AUTORESEARCH_AUTHOR_MODEL`, its key file
+`AUTORESEARCH_HARNESS_KEY_FILE` (Claude) or `AUTORESEARCH_CODEX_KEY_FILE`
+(Codex). Evals run inside the
 Apptainer image at `AUTORESEARCH_IMAGE` (default
 `~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
@@ -232,8 +239,10 @@ unaffected — those models are not on GCP.
 
 On by default. Think hard before changing any of them:
 
-- The bot never merges and is never a code owner — your branch protection
-  applies to it like any contributor.
+- By default the bot never merges and is never a code owner — your branch
+  protection applies to it like any contributor. `merge: auto` is an explicit
+  per-repo opt-in: a gate-and-panel-clean PR merges itself, still through
+  your required checks (strict up-to-date), never around them.
 - Agent sessions run with no credentials in their environment; pushes happen
   after the session ends.
 - Only maintainer-authored issues and comments become tasks. Everything else,

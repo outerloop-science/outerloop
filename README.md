@@ -72,10 +72,11 @@ The knobs that shape a climb, all optional:
 | `steward.allowed` | Paths a separate stewardship lane may maintain (the ruler, the harness) — never the solver |
 | `merge: manual \| auto` | Whether a gate-and-panel-clean PR waits for a human or merges itself |
 
-`gpu_hours_per_run` is metered: an author's experiment launches and its
-candidate's evals draw on it, and the author declares how long its final
-eval may run (`submit --minutes`) — compute is paid for by whoever chose to
-spend it, and never gated as the metric.
+For GPU benchmarks `gpu_hours_per_run` is metered: an author's experiment
+launches and its candidate's evals draw on it, and the author declares how
+long its final eval may run (`submit --minutes`) — compute is paid for by
+whoever chose to spend it, and never gated as the metric. CPU benchmarks
+meter nothing.
 
 ```bash
 uv run python -m autoresearch.contract_cli .autoresearch.yaml   # validate before you push
