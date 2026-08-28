@@ -2169,6 +2169,10 @@ def main() -> int:
     # on a --resume wake instead, so they are optional (validated below).
     parser.add_argument("--target", default="")
     parser.add_argument("--benchmark", default="")
+    # WIDTH: the tick assigns each concurrent slot its own agent identity;
+    # branches, ledger rows, and reports key on it. Resumed runs inherit
+    # the identity from their record instead.
+    parser.add_argument("--agent-id", default="agent-01")
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument(
         "--resume",
@@ -2452,7 +2456,9 @@ def main() -> int:
     try:
         try:
             outcome = live_attempt(
-                config=RunConfig(target=args.target, benchmark=args.benchmark),
+                config=RunConfig(
+                    target=args.target, benchmark=args.benchmark, agent_id=args.agent_id
+                ),
                 base_branch=args.base_branch,
                 run_root=args.run_root,
                 run_id=run_id,

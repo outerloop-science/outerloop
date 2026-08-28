@@ -1394,7 +1394,7 @@ def pick_self_initiated(
         return r.state == IMPLEMENTING and now - max(r.updated, r.created) > STRANDED_IMPLEMENTING_S
 
     active = [r for r in mine if r.state != ENDED and not stranded(r)]
-    if len(active) >= MAX_ACTIVE_RUNS_PER_TARGET:
+    if len(active) >= _attempt_width(contract):
         return None
     week_ago = now - 7 * 24 * 3600
     if sum(1 for r in mine if r.created >= week_ago) >= contract.budgets.runs_per_week:
@@ -1472,13 +1472,16 @@ def read_tombstones(root: Path, target: str, contract: Any, now: float) -> dict[
     return out
 
 
-def _pending_path(root: Path, target: str) -> Path:
-    return root / "pending" / (target.replace("/", "__") + ".json")
+def _pending_path(root: Path, target: str, agent: str = "") -> Path:
+    # agent "" is the legacy single-slot name, still read for back-compat
+    # with a marker written before the width dial deployed
+    suffix = f"__{agent}" if agent else ""
+    return root / "pending" / (target.replace("/", "__") + suffix + ".json")
 
 
-def read_pending(root: Path, target: str) -> dict[str, Any] | None:
+def read_pending(root: Path, target: str, agent: str = "") -> dict[str, Any] | None:
     """The submit-time marker for a climb whose run record may not exist yet."""
-    path = _pending_path(root, target)
+    path = _pending_path(root, target, agent)
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -1486,16 +1489,56 @@ def read_pending(root: Path, target: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) and "submitted_at" in data else None
 
 
-def write_pending(root: Path, target: str, benchmark: str, job_id: str, now: float) -> None:
-    path = _pending_path(root, target)
+def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:
+    """(agent, marker) for every live pending marker of `target` — one per
+    WIDTH slot, plus the legacy un-suffixed marker from a pre-width deploy
+    (attributed to agent-01)."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    stem = target.replace("/", "__")
+    pending_dir = root / "pending"
+    if not pending_dir.is_dir():
+        return out
+    for path in sorted(pending_dir.glob(stem + "*.json")):
+        name = path.stem
+        agent = name[len(stem) + 2 :] if name.startswith(stem + "__") else ""
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "submitted_at" in data:
+            out.append((agent or str(data.get("agent_id") or "agent-01"), data))
+    return out
+
+
+def write_pending(
+    root: Path, target: str, benchmark: str, job_id: str, now: float, agent: str = ""
+) -> None:
+    path = _pending_path(root, target, agent)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"benchmark": benchmark, "job_id": job_id, "submitted_at": now}))
+    tmp.write_text(
+        json.dumps(
+            {"benchmark": benchmark, "job_id": job_id, "submitted_at": now, "agent_id": agent}
+        )
+    )
     os.replace(tmp, path)
 
 
-def clear_pending(root: Path, target: str) -> None:
-    _pending_path(root, target).unlink(missing_ok=True)
+def clear_pending(root: Path, target: str, agent: str = "") -> None:
+    _pending_path(root, target, agent).unlink(missing_ok=True)
+
+
+def _attempt_width(contract: Any) -> int:
+    width = getattr(getattr(contract, "budgets", None), "max_active_attempts", None)
+    return int(width) if width else MAX_ACTIVE_RUNS_PER_TARGET
+
+
+def _free_agent_slot(occupied: set[str], width: int) -> str | None:
+    for i in range(1, width + 1):
+        agent = f"agent-{i:02d}"
+        if agent not in occupied:
+            return agent
+    return None
 
 
 def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
@@ -1731,31 +1774,44 @@ def service_self_initiated(
         return None
     try:
         records = list_runs(root)
-        pending = read_pending(root, spec.target)
-        # (crash memory now lives in per-benchmark tombstones, read below)
-        if pending is not None:
+        width = _attempt_width(contract)
+        # WIDTH: every live pending marker occupies a slot; landed ones
+        # clear; dead ones become per-benchmark tombstones and free theirs.
+        occupied: set[str] = set()
+        for agent, pending in list_pendings(root, spec.target):
+            marker_agent = "" if not pending.get("agent_id") else agent
             submitted_at = float(pending["submitted_at"])
             landed = any(
                 r.target == spec.target and r.created >= submitted_at - 60 for r in records
             )
             expired = now - submitted_at > PENDING_TTL_S
             if landed:
-                clear_pending(root, spec.target)  # the run record carries it now
+                clear_pending(root, spec.target, marker_agent)
             elif (alive := _holder_alive(compute, str(pending.get("job_id", "")))) is True or (
                 not expired and alive is not False
             ):
                 # climb queued or starting; its record isn't written yet. A
-                # provably-alive job waits regardless of the marker's TTL —
-                # queue wait can exceed it — the TTL only breaks ties when
-                # Slurm can't say (a dup submit is worse than a slow retry).
-                return None
+                # provably-alive job holds its SLOT regardless of the
+                # marker's TTL — queue wait can exceed it — the TTL only
+                # breaks ties when Slurm can't say.
+                occupied.add(agent)
             else:
                 # Died before writing a record: persist the crash memory as a
-                # PER-BENCHMARK tombstone (a second benchmark's launch reuses
-                # the live marker and must not erase this — terra #172 r3),
-                # then free the live slot.
+                # PER-BENCHMARK tombstone (a sibling launch must not erase
+                # this — terra #172 r3), then free the slot.
                 write_tombstone(root, spec.target, str(pending.get("benchmark", "")), submitted_at)
-                clear_pending(root, spec.target)
+                clear_pending(root, spec.target, marker_agent)
+        stranded_cutoff = now - STRANDED_IMPLEMENTING_S
+        for r in records:
+            if r.target == spec.target and r.state != ENDED:
+                if r.state == IMPLEMENTING and max(r.updated, r.created) <= stranded_cutoff:
+                    continue  # stranded: pick ignores it, so must occupancy
+                occupied.add(r.agent_id)
+        if len(occupied) >= width:
+            return None
+        slot_agent = _free_agent_slot(occupied, width)
+        if slot_agent is None:
+            return None
         dead_attempts = read_tombstones(root, spec.target, contract, now)
         benchmark = pick_self_initiated(records, contract, spec.target, now, dead_attempts)
         if benchmark is None:
@@ -1806,6 +1862,8 @@ def service_self_initiated(
             str(spec.run_root),
             "--image",
             spec.image,
+            "--agent-id",
+            slot_agent,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
         ]
@@ -1816,16 +1874,18 @@ def service_self_initiated(
         # neither the backend nor its key — a new backend needs zero tick change.
         job_id = compute.submit(
             JobSpec(
-                job_name=f"climb-{benchmark}"[:60],
+                job_name=f"climb-{benchmark}-{slot_agent}"[:60],
                 account=spec.account,
                 partition=spec.job_partition or spec.partition,
                 time_minutes=job_minutes,
-                command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
+                command=_flight_command(
+                    spec.home, f"climb-{benchmark}-{slot_agent}"[:60], now, argv
+                ),
                 cpus=4,
                 mem="8G",
             )
         )
-        write_pending(root, spec.target, benchmark, job_id, now)
+        write_pending(root, spec.target, benchmark, job_id, now, agent=slot_agent)
         log.info("self-initiated climb on %s: job %s", benchmark, job_id)
         return (benchmark, job_id)
     except Exception as exc:  # one bad pass must not break the tick
