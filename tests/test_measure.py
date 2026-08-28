@@ -20,10 +20,16 @@ from autoresearch.orchestrator import EvalError
 
 
 def _measurer(
-    tmp_path: Path, submitted: list, live: dict | None = None, squeue_fails: bool = False
+    tmp_path: Path,
+    submitted: list,
+    live: dict | None = None,
+    squeue_fails: bool = False,
+    states: dict | None = None,
 ) -> DispatchedMeasurer:
-    """`live` maps job-name -> id for jobs squeue should report as running."""
+    """`live` maps job-name -> id for jobs squeue should report as running;
+    `states` maps job id -> the sacct state to report (default PENDING)."""
     live = live or {}
+    states = states or {}
 
     def runner(argv, timeout_s):
         if argv and argv[0] == "sbatch":
@@ -36,6 +42,8 @@ def _measurer(
             return CommandResult(0, (live.get(name, "") + "\n") if live.get(name) else "", "")
         # sacct on a just-submitted job: PENDING, like a real queue (a fake
         # that said COMPLETED would trip the terminal-without-result check)
+        if argv and argv[0] == "sacct" and "-j" in argv:
+            return CommandResult(0, states.get(argv[argv.index("-j") + 1], "PENDING") + "\n", "")
         return CommandResult(0, "PENDING\n", "")
 
     return DispatchedMeasurer(
@@ -116,6 +124,61 @@ def test_dispatched_but_vanished_fails_not_resubmits(tmp_path):
     with pytest.raises(EvalError, match="vanished"):
         m.results(_measures())
     assert submitted == []
+
+
+def test_walltime_kill_is_named_in_the_error(tmp_path):
+    """An eval killed at its walltime leaves no result; the note must say
+    TIMEOUT and what it means (an author read "vanished" as broken
+    infrastructure and resubmitted the same tree with the same walltime)."""
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, live={}, states={"102": "TIMEOUT"})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _dispatched(m, cand, job="102")
+    with pytest.raises(EvalError, match=r"hit its walltime \(TIMEOUT\).*more minutes"):
+        m.results(_measures())
+    assert submitted == []
+
+
+def test_exit_143_is_explained_by_the_jobs_slurm_end_state(tmp_path):
+    """The job script writes exit-code 143 on any TERM — Slurm's walltime,
+    scancel, and preemption alike — so only the job's end state says which.
+    A walltime kill tells the author to declare more minutes; a cancellation
+    or preemption must not be blamed on the tree."""
+
+    def failing(states):
+        m = _measurer(tmp_path, [], states=states)
+        base, cand = _measures()
+        _land(m, base, 0.50)
+        _land(m, cand, code="143", job="102")
+        return m
+
+    with pytest.raises(EvalError, match=r"killed at its walltime \(exit 143\).*more minutes"):
+        failing({"102": "TIMEOUT"}).results(_measures())
+    with pytest.raises(EvalError, match=r"was cancelled \(exit 143\)"):
+        failing({"102": "CANCELLED by 1"}).results(_measures())
+    with pytest.raises(EvalError, match=r"was preempted \(exit 143\)"):
+        failing({"102": "PREEMPTED"}).results(_measures())
+    with pytest.raises(EvalError, match=r"killed by a signal \(exit 143\)"):
+        failing({"102": "GONE"}).results(_measures())
+    m = _measurer(tmp_path, [])
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _land(m, cand, code="97")
+    with pytest.raises(EvalError, match=r"failed \(97\)") as exc:
+        m.results(_measures())
+    assert "143" not in str(exc.value)
+
+
+def test_timeout_right_after_submit_is_named(tmp_path):
+    """A job that is already TIMEOUT when the post-submit status check runs
+    (a local compute's walltime) gets the walltime wording, not the generic
+    ended-state error."""
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, states={"101": "TIMEOUT"})
+    with pytest.raises(EvalError, match=r"hit its walltime \(TIMEOUT\).*more minutes"):
+        m.results(_measures())
+    assert len(submitted) == 1
 
 
 def test_nonzero_exit_raises(tmp_path):

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from autoresearch.compute import Compute, JobSpec, is_terminal
+from autoresearch.compute import GONE, Compute, JobSpec, is_terminal
 from autoresearch.dispatch import (
     eval_job_spec,
     read_eval_result,
@@ -146,6 +146,20 @@ def plan_measures(
 
 def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path:
     return cache_dir / f"{benchmark}@{base_sha}.json"
+
+
+def _no_result_note(job_id: str, state: str) -> str:
+    """The note for a job that ended with no result. A TIMEOUT is the walltime
+    the submit declared (or the contract's default), and the author must
+    hear that a slower run needs more minutes — not that measurement broke."""
+    if state.startswith("TIMEOUT"):
+        return (
+            f"job {job_id} hit its walltime (TIMEOUT) before producing a result; "
+            "a slower run needs more minutes than were declared for its eval"
+        )
+    if state and state != GONE and is_terminal(state):
+        return f"job {job_id} ended {state} without a result"
+    return "dispatched job vanished without a result"
 
 
 def read_baseline_cache(
@@ -315,6 +329,16 @@ class DispatchedMeasurer:
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
 
+    def _ended_without_result(self, m: Measure) -> str:
+        """Why a dispatched job produced no result; a TIMEOUT means the eval
+        needs more walltime."""
+        job_id = self._marker(m)
+        try:
+            state = self.compute.status(job_id) if job_id.isdigit() else ""
+        except Exception:
+            state = ""
+        return _no_result_note(job_id, state)
+
     def _marker(self, m: Measure) -> str:
         f = self._ev(m) / "submitted"
         return f.read_text().strip() if f.exists() else ""
@@ -377,7 +401,7 @@ class DispatchedMeasurer:
                 continue
             if self._marker(m):
                 # was dispatched, not live, no result -> died before result
-                raise EvalError(f"measure {m.name}: dispatched job vanished without a result")
+                raise EvalError(f"measure {m.name}: {self._ended_without_result(m)}")
             # No marker, not live, no result -> never dispatched -> dispatch.
             # RESIDUAL (bounded, accepted): if a prior process died in the
             # microsecond gap between sbatch returning and _dispatch writing
@@ -397,11 +421,46 @@ class DispatchedMeasurer:
                 # the job already ENDED without writing a result (a local
                 # timeout, an instant cluster failure): parking would wait on
                 # a job that will never deliver — fail like a vanished job
-                raise EvalError(f"measure {m.name}: job {job_id} ended {state} without a result")
+                raise EvalError(f"measure {m.name}: {_no_result_note(job_id, state)}")
             pending.append(job_id)
         if pending or blind:
             raise MeasurementPending(tuple(pending))
-        return {m.name: read_eval_result(self.run_dir, self._slot(m), m.metric) for m in measures}
+        out: dict[str, float] = {}
+        for m in measures:
+            try:
+                out[m.name] = read_eval_result(self.run_dir, self._slot(m), m.metric)
+            except EvalError as exc:
+                raise EvalError(self._explain_signal_exit(m, str(exc))) from None
+        return out
+
+    def _explain_signal_exit(self, m: Measure, message: str) -> str:
+        """Exit 143 is the job script's record of a TERM: Slurm sends one at
+        the walltime, on scancel, and on preemption alike, so only its end
+        state for the job says which. The walltime case is the author's to
+        fix (more minutes); the others are the cluster's."""
+        try:
+            code = (self._ev(m) / "exit-code").read_text().strip()
+        except OSError:
+            return message
+        if code != "143":
+            return message
+        job_id = self._marker(m)
+        try:
+            state = self.compute.status(job_id) if job_id.isdigit() else ""
+        except Exception:
+            state = ""
+        if state.startswith("TIMEOUT"):
+            why = (
+                "was killed at its walltime (exit 143); a slower run needs more minutes "
+                "than were declared for its eval"
+            )
+        elif state.startswith("CANCELLED"):
+            why = "was cancelled (exit 143)"
+        elif state.startswith("PREEMPTED"):
+            why = "was preempted (exit 143); nothing about the tree is known"
+        else:
+            why = "was killed by a signal (exit 143)"
+        return f"measure {m.name} {why}; {message}"
 
 
 @dataclass(frozen=True)
