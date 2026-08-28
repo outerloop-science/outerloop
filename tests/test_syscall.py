@@ -617,3 +617,49 @@ def test_cached_gate_is_charged_one_main_eval() -> None:
     assert (
         evals_gpu_hours(sub, gpus=1, eval_minutes_default=0, main_evals=1, suite_gpus=(1,)) == 12.0
     )
+
+
+def test_array_launch_fans_out_and_gathers_per_index(tmp_path: Path) -> None:
+    """`array: K` is one launch that becomes K jobs `<name>-<i>` with
+    SWEEP_INDEX, gathered as K results; it costs K times the GPU-hours but one
+    launch. The width is clamped; zero is refused."""
+    from autoresearch.syscall import (
+        MAX_LAUNCH_ARRAY,
+        Launch,
+        gather_results,
+        launch_jobs,
+        launches_gpu_hours,
+    )
+
+    write_req(
+        tmp_path, {"launches": [{"name": "sweep", "command": "x", "minutes": 10, "array": 3}]}
+    )
+    req = read_request(tmp_path)
+    assert req is not None and req.launches[0].array == 3
+    assert launch_jobs(req.launches[0]) == (
+        ("sweep-0", {"SWEEP_INDEX": "0"}),
+        ("sweep-1", {"SWEEP_INDEX": "1"}),
+        ("sweep-2", {"SWEEP_INDEX": "2"}),
+    )
+    assert launch_jobs(Launch(name="one", command="x", minutes=5)) == (("one", {}),)
+    assert launches_gpu_hours(req, gpus=1) == 30 / 60
+    write_req(tmp_path, {"launches": [{"name": "s", "command": "x", "array": 10**6}]})
+    big = read_request(tmp_path)
+    assert big is not None and big.launches[0].array == MAX_LAUNCH_ARRAY
+    write_req(tmp_path, {"launches": [{"name": "s", "command": "x", "array": 0}]})
+    with pytest.raises(SyscallError):
+        read_request(tmp_path)
+
+    run_dir = tmp_path / "run"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ensure_excluded(ws) if "ensure_excluded" in dir() else None
+    for i, code in enumerate(("0", "1")):
+        ev = run_dir / f"eval-launch-sweep-{i}"
+        ev.mkdir(parents=True)
+        (ev / "exit-code").write_text(code)
+        (ev / "stdout").write_text(f"result {i}\n")
+    results = gather_results(run_dir, ws, (Launch(name="sweep", command="x", minutes=10, array=2),))
+    assert [r.name for r in results] == ["sweep-0", "sweep-1"]
+    assert [r.exit_code for r in results] == [0, 1]
+    assert results[1].stdout_tail.strip() == "result 1"
