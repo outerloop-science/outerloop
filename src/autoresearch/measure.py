@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from autoresearch.compute import Compute, JobSpec, is_terminal
+from autoresearch.compute import GONE, Compute, JobSpec, is_terminal
 from autoresearch.dispatch import (
     eval_job_spec,
     read_eval_result,
@@ -315,6 +315,25 @@ class DispatchedMeasurer:
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
 
+    def _ended_without_result(self, m: Measure) -> str:
+        """Why a dispatched job left no result, as far as Slurm can say. A
+        TIMEOUT is the walltime the submit declared (or the contract's
+        default): the author reading the note must learn that a slower run
+        needs more minutes, not that the measurement broke."""
+        job_id = self._marker(m)
+        try:
+            state = self.compute.status(job_id) if job_id.isdigit() else ""
+        except Exception:
+            state = ""
+        if state.startswith("TIMEOUT"):
+            return (
+                f"job {job_id} hit its walltime (TIMEOUT) before producing a result; "
+                "a slower run needs more minutes than were declared for its eval"
+            )
+        if state and state != GONE and is_terminal(state):
+            return f"job {job_id} ended {state} without a result"
+        return "dispatched job vanished without a result"
+
     def _marker(self, m: Measure) -> str:
         f = self._ev(m) / "submitted"
         return f.read_text().strip() if f.exists() else ""
@@ -377,7 +396,7 @@ class DispatchedMeasurer:
                 continue
             if self._marker(m):
                 # was dispatched, not live, no result -> died before result
-                raise EvalError(f"measure {m.name}: dispatched job vanished without a result")
+                raise EvalError(f"measure {m.name}: {self._ended_without_result(m)}")
             # No marker, not live, no result -> never dispatched -> dispatch.
             # RESIDUAL (bounded, accepted): if a prior process died in the
             # microsecond gap between sbatch returning and _dispatch writing

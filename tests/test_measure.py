@@ -20,10 +20,16 @@ from autoresearch.orchestrator import EvalError
 
 
 def _measurer(
-    tmp_path: Path, submitted: list, live: dict | None = None, squeue_fails: bool = False
+    tmp_path: Path,
+    submitted: list,
+    live: dict | None = None,
+    squeue_fails: bool = False,
+    states: dict | None = None,
 ) -> DispatchedMeasurer:
-    """`live` maps job-name -> id for jobs squeue should report as running."""
+    """`live` maps job-name -> id for jobs squeue should report as running;
+    `states` maps job id -> the sacct state to report (default PENDING)."""
     live = live or {}
+    states = states or {}
 
     def runner(argv, timeout_s):
         if argv and argv[0] == "sbatch":
@@ -36,6 +42,8 @@ def _measurer(
             return CommandResult(0, (live.get(name, "") + "\n") if live.get(name) else "", "")
         # sacct on a just-submitted job: PENDING, like a real queue (a fake
         # that said COMPLETED would trip the terminal-without-result check)
+        if argv and argv[0] == "sacct" and "-j" in argv:
+            return CommandResult(0, states.get(argv[argv.index("-j") + 1], "PENDING") + "\n", "")
         return CommandResult(0, "PENDING\n", "")
 
     return DispatchedMeasurer(
@@ -114,6 +122,20 @@ def test_dispatched_but_vanished_fails_not_resubmits(tmp_path):
     _land(m, base, 0.50)
     _dispatched(m, cand, job="102")  # marker, not live, no result
     with pytest.raises(EvalError, match="vanished"):
+        m.results(_measures())
+    assert submitted == []
+
+
+def test_walltime_kill_is_named_in_the_error(tmp_path):
+    """An eval killed at its walltime leaves no result; the note must say
+    TIMEOUT and what it means (an author read "vanished" as broken
+    infrastructure and resubmitted the same tree with the same walltime)."""
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, live={}, states={"102": "TIMEOUT"})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _dispatched(m, cand, job="102")
+    with pytest.raises(EvalError, match=r"hit its walltime \(TIMEOUT\).*more minutes"):
         m.results(_measures())
     assert submitted == []
 
