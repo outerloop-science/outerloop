@@ -132,6 +132,16 @@ uv run python -m autoresearch.contract_cli .autoresearch.yaml
 
 It prints what the agent would be allowed to do, or exactly what is wrong.
 
+The optional knobs — paired seeding and the significance floor
+(`seed_env`, `min_delta`/`min_delta_rel`), dispatched and GPU evals
+(`eval_minutes`, `gpus`), `baseline: paired|cached`, the depth budgets
+(`depth_k`, `sleep_k`), width and pacing (`max_active_attempts`,
+`attempt_cooldown_minutes`), a stewardship scope, and `merge: manual|auto` —
+are listed in the README's contract table; the schema's own docstrings
+(`src/autoresearch/contract.py`) are the reference. A GPU benchmark needs a
+calibrated floor and a dispatched eval (the validator says so), and
+`gpu_hours_per_run` is a real meter: launches and evals draw on it.
+
 Two things to get right:
 
 1. Your `command` must be **deterministic and re-runnable**, and print the
@@ -161,6 +171,10 @@ A GitHub machine user in your org, with a fine-grained PAT:
   **no workflow permission**
 - Expiration: 90 days, with a rotation reminder
 
+Then **add the bot as a collaborator with write access on every target
+repo** (org members can be added directly). Without it the tick cannot even
+read the contract and idles silently on that target.
+
 Add the bot as a direct collaborator (**Write**) on each opted-in repo. Don't
 add it to a team — teams grant more than it needs and inherit future grants.
 
@@ -175,9 +189,22 @@ that can reach GitHub and your LLM provider works.
 - **A VM or workstation**: run it on a timer.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
-backend (arriving per the roadmap); the interface is small (submit a job, poll
-for completion), so a CI runner, a cloud backend, or a hardware rig plugs in
-the same way.
+backend; the interface is small (submit a job, poll for completion), so a CI
+runner, a cloud backend, or a hardware rig plugs in the same way.
+
+The deployment is configured by environment (the chain reads an allowlist of
+keys from `~/.config/autoresearch/.env` each tick, so most changes take effect
+at the next cadence): `AUTORESEARCH_TARGET` names the repo being climbed;
+`AUTORESEARCH_ACCOUNT`/`AUTORESEARCH_PARTITION` place the CPU jobs (ticks,
+author sessions); `AUTORESEARCH_GPU_PARTITION` (optionally
+`AUTORESEARCH_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
+comma-separated partition list lets Slurm start each job wherever it fits
+first; `AUTORESEARCH_PANEL` names the verify/review lenses; the author
+backend and its keys are `AUTORESEARCH_AUTHOR_*`. Evals run inside the
+Apptainer image at `AUTORESEARCH_IMAGE` (default
+`~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
+checked-out tree — an eval that needs data must fetch it into the tree, and
+GPU jobs are requested per node (`--gpus-per-node`).
 
 ---
 

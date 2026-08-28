@@ -129,19 +129,21 @@ step · failure model (driver dies vs sweep heals).
    `suite_regressed` is floor-aware per sibling, same-seed paired, fails
    closed; this list previously carried a stale "to build" — Mengye caught
    it).
-3. **`merge: manual|auto` contract knob** + repo-settings runbook + the
-   publish change (merge directly when the gate CI is the sole requirement;
-   arm otherwise) — the LAST auto-mode item.
-4. **Width dial**: portfolio climbs on one benchmark (lift
-   MAX_ACTIVE_RUNS_PER_TARGET; attempt dedup/selection; merge/race policy
-   for concurrent PRs).
+3. **`merge: manual|auto` contract knob** — DONE (#171; runbook in the
+   contract's docstring; live on gpt-speedrun 2026-08-28).
+4. **Width dial** — DONE (#173, `max_active_attempts`; per-slot agent
+   identities and markers). Still open: wake-and-reintegrate for
+   superseded siblings (width-V2) before going wider than 4.
 5. **Multi-target servicing** (headline + pilot must coexist; the tick
    report fields are already shaped for it).
-6. **GPU eval jobs** + noise-floor/min_delta calibration for the speedrun
-   contract (seed-hacking defense = our private-seed re-measure).
-7. **Speedrun target repo scaffold** (contract, ruler, baseline
-   reproduction).
-8. **Grid runs + baselines**, then the write-up.
+6. **GPU eval jobs** — DONE (#174 `gpus` + GPU lane + `--nv`; #175 per-GPU
+   job sizing; #176 `--gpus-per-node`; #177 author-declared eval walltime
+   with metered GPU-hours; #178 `baseline: cached`). Calibration DONE:
+   9 runs all cross at 9472 steps → `min_delta: 256`.
+7. **Speedrun target repo scaffold** — DONE (gpt-speedrun: modded-nanogpt
+   baseline reproduced on one H200 at the public log's crossing step).
+8. **Grid runs + baselines**, then the write-up. First autonomous attempts
+   running 2026-08-28 (width 4, auto mode).
 
 Go-public gate (unchanged, tracked elsewhere): the pull_request_target
 fork-PR exfiltration gap must close before any repo flips public.
