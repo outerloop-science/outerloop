@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- Parks arm their own wake: a run that parks on eval or experiment jobs submits its wake job at once, depending on those jobs (`afterany`), so it fires the moment they finish instead of a sweep cadence plus grace later (~30 min per gate decision). Same job and lease as a sweep-delivered wake; the sweep stays the backup, and now also cancels and redelivers an armed wake Slurm will never start. A lease whose holder Slurm reports alive is no longer reaped by age.
+
 ### Fixed
 
 - A tree the gate already turned down in this attempt is never measured again: when the woken author concludes (or resubmits untouched), that verdict stands and the attempt ends on it — no second eval pair, no GPU-hours. An errored eval is still retried.

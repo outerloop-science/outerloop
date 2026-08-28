@@ -108,7 +108,8 @@ def test_lease_staleness_rules(tmp_path: Path) -> None:
     assert not lease_is_stale(lease, now=1001.0, ttl_s=3600, holder_alive=None)
     assert lease_is_stale(lease, now=1000.0 + 3601, ttl_s=3600, holder_alive=None)
     # live holder but ancient → stale (TTL wins: sessions are bounded)
-    assert lease_is_stale(lease, now=1000.0 + 3601, ttl_s=3600, holder_alive=True)
+    # a holder Slurm reports alive is never stale by age (walltime bounds it)
+    assert not lease_is_stale(lease, now=1000.0 + 3601, ttl_s=3600, holder_alive=True)
 
 
 def test_reap_lease_exactly_one_reaper_wins(tmp_path: Path) -> None:

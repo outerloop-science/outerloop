@@ -334,7 +334,10 @@ def reap_lease(root: Path, run_id: str, reaper: str, expected: Lease) -> bool:
 
 
 def lease_is_stale(lease: Lease, now: float, ttl_s: float, holder_alive: bool | None) -> bool:
-    """A lease is stale when its holder is known-dead, or too old.
+    """A lease is stale when its holder is known-dead, or — when Slurm cannot
+    say — too old. A holder Slurm reports alive is never stale by age: a wake
+    armed at park time waits in the queue for as long as the evals run, and
+    its walltime bounds it once it starts.
 
     `holder_alive` is None when Slurm could not answer (query failure) — in
     that case only the TTL can prove staleness, never the holder check:
@@ -342,4 +345,6 @@ def lease_is_stale(lease: Lease, now: float, ttl_s: float, holder_alive: bool | 
     """
     if holder_alive is False:
         return True
+    if holder_alive is True:
+        return False
     return (now - lease.acquired) > ttl_s
