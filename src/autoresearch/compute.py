@@ -176,6 +176,20 @@ class SlurmCompute:
         state = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
         return state if state else GONE
 
+    def pending_reason(self, job_id: str) -> str:
+        """Why a PENDING job is pending — Slurm's reason (`Dependency`,
+        `DependencyNeverSatisfied`, `Priority`, ...), or "" when squeue no
+        longer lists it. Raises SlurmQueryError when the query itself fails."""
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        try:
+            result = self.runner(["squeue", "-j", job_id, "-h", "-o", "%r"], self.command_timeout_s)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"squeue did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
+        return result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
+
     def active_job_names(self) -> list[str]:
         """The names of this user's PENDING and RUNNING jobs. Names, not
         commands: squeue's Command field is not guaranteed to carry --wrap

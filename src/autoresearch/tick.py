@@ -22,7 +22,7 @@ import re
 import socket
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
@@ -48,6 +48,7 @@ from autoresearch.runstate import (
     MAX_WAKE_ATTEMPTS,
     STUCK,
     WAITING,
+    Lease,
     RunRecord,
     acquire_lease,
     lease_is_stale,
@@ -702,6 +703,139 @@ def _wake(
     return True
 
 
+WAKE_SPEC_NAME = "wake-spec.json"
+
+
+def dispatch_wake_armed(root: Path) -> bool:
+    """The operator's on-switch for dispatched wakes: the env var, or the
+    sentinel file (touch/rm, no chain restart). Read by the tick and by every
+    park, so a disarm takes effect at once."""
+    return (
+        bool(os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip())
+        or (root / DISPATCH_WAKE_SENTINEL).exists()
+    )
+
+
+def write_wake_spec(root: Path, spec: FollowupSpec) -> None:
+    """Publish the tick's wake recipe for the jobs that park runs: a park
+    submits its own wake (`arm_wake`) with exactly the tick's settings, so
+    dispatched wakes stay one recipe with one owner."""
+    data = {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(spec).items()}
+    tmp = root / f".{WAKE_SPEC_NAME}.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, root / WAKE_SPEC_NAME)
+
+
+def remove_wake_spec(root: Path) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        (root / WAKE_SPEC_NAME).unlink()
+
+
+def load_wake_spec(root: Path) -> FollowupSpec | None:
+    """The published wake recipe, or None when dispatched wakes are not armed
+    (or the file is unreadable — the sweep still delivers)."""
+    try:
+        data = json.loads((root / WAKE_SPEC_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    names = {f.name for f in FollowupSpec.__dataclass_fields__.values()}
+    kwargs: dict[str, Any] = {
+        k: (Path(v) if k in ("run_root", "home") else v) for k, v in data.items() if k in names
+    }
+    try:
+        return FollowupSpec(**kwargs)
+    except TypeError:
+        return None
+
+
+def arm_wake(
+    root: Path, record: RunRecord, dispatcher: WakeDispatcher, now: float, *, holder_job_id: str
+) -> str:
+    """Submit a parked run's wake NOW, depending on the jobs it waits on, so
+    it fires the moment they finish instead of a sweep cadence (plus grace)
+    later. The same job and lease as a sweep-delivered wake: a wake job that
+    parks again hands its own lease to the wake it arms; any other holder (a
+    tick mid-delivery) keeps it and the sweep delivers as before. Arming is
+    not a redelivery, so it leaves `wake_attempts` — the sweep's stuck
+    counter — alone: an eval requeued by preemption fires the afterany
+    early, the wake re-parks, and that must not count toward STUCK. Returns
+    the wake job id, or "" when nothing was armed. A park with nothing to
+    depend on (a checkpoint sleep, a blind park) is not armed: it rides the
+    deadline floor, as before."""
+    if not _poll_targets(record):
+        return ""
+    lease = read_lease(root, record.run_id)
+    if lease is not None:
+        if not holder_job_id or lease.holder_job_id != holder_job_id:
+            return ""
+    elif not acquire_lease(
+        root, record.run_id, f"park:{holder_job_id or os.getpid()}", holder_job_id="", now=now
+    ):
+        return ""
+    if record.deadline <= 0:  # a waiting record always carries a deadline
+        record = replace(record, deadline=now)
+        save_record(root, record, now)
+    try:
+        job = dispatcher.dispatch(record, "parked")
+    except Exception as exc:
+        log.warning("arming the wake failed for %s: %s: %s", record.run_id, type(exc).__name__, exc)
+        job = ""
+    if job:
+        update_lease_holder(root, record.run_id, f"wake-job:{job}", job, now)
+    elif lease is None:
+        release_lease(root, record.run_id)
+    return job
+
+
+def _armed_wake_lost(
+    root: Path,
+    compute: SlurmCompute,
+    record: RunRecord,
+    lease: Lease,
+    now: float,
+    grace_s: float,
+    dry_run: bool,
+) -> bool:
+    """An armed wake that is still PENDING on its dependency after every job
+    it waits on has been terminal for a full grace window is not coming
+    (Slurm reports the dependency as never satisfiable, or the afterany was
+    lost). Cancel it so the sweep redelivers; the lease is then reaped."""
+    if not lease.holder_job_id:
+        return False
+    job_ids = _poll_targets(record)
+    if not job_ids:
+        return False
+    try:
+        holder_state = compute.status(lease.holder_job_id)
+        if not is_pending(holder_state):
+            return False
+        reason = compute.pending_reason(lease.holder_job_id)
+        states = [compute.status(jid) for jid in job_ids]
+    except SlurmQueryError:
+        return False
+    if reason == "DependencyNeverSatisfied":
+        pass
+    elif reason != "Dependency" or not all(is_terminal(s) for s in states):
+        return False
+    elif record.terminal_seen <= 0:
+        if not dry_run:
+            save_record(root, replace(record, terminal_seen=now), now)
+        return False
+    elif now - record.terminal_seen < grace_s:
+        return False
+    if dry_run:
+        return True
+    try:
+        compute.cancel(lease.holder_job_id)
+        # only a cancellation Slurm confirms lets the sweep redeliver: a
+        # still-pending wake would otherwise run beside its replacement
+        return not is_pending(compute.status(lease.holder_job_id))
+    except Exception:
+        return False
+
+
 def sweep(
     root: Path,
     compute: SlurmCompute,
@@ -1086,7 +1220,9 @@ def _sweep_one(
         if lease is not None:
             alive = _holder_alive(compute, lease.holder_job_id)
             if not lease_is_stale(lease, now, lease_ttl_s, alive):
-                return
+                if not _armed_wake_lost(root, compute, record, lease, now, grace_s, dry_run):
+                    return
+                record = load_record(root, record.run_id)
             if dry_run:
                 reaped.append(record.run_id)
                 return
@@ -2384,11 +2520,7 @@ def _wake_dispatcher_from_env(
     chain restart. So dispatched climbing is turned on deliberately, and a
     half-configured environment fails safe to dry rather than to a wake job
     that cannot run."""
-    armed = (
-        bool(os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip())
-        or (root / DISPATCH_WAKE_SENTINEL).exists()
-    )
-    if not armed:
+    if not dispatch_wake_armed(root):
         return LoggingDispatcher(), False
     if followup_spec is None:
         log.warning("dispatch-wake armed but the chain env is incomplete; wake stays dry")
@@ -2562,6 +2694,11 @@ def main() -> int:
     compute = SlurmCompute()
     now = time.time()
     dispatcher, wake_live = _wake_dispatcher_from_env(compute, followup_spec, now, args.root)
+    # parks arm their own wake from this recipe; without it the sweep delivers
+    if wake_live and followup_spec is not None:
+        write_wake_spec(args.root, followup_spec)
+    else:
+        remove_wake_spec(args.root)
 
     report = tick(
         args.root,

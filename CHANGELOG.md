@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- A park now submits its own wake job, which waits on the park's jobs and
+  starts the moment they finish (previously: the next sweep, a grace
+  window, and another sweep — about 30 minutes). The sweep remains the
+  fallback, and it replaces a wake job Slurm can never start. A lease held
+  by a live Slurm job is no longer reaped by age.
+
 ### Fixed
 
 - A tree the gate already turned down in this attempt is never measured again: when the woken author concludes (or resubmits untouched), that verdict stands and the attempt ends on it — no second eval pair, no GPU-hours. An errored eval is still retried.

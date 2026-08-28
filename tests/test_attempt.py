@@ -84,6 +84,79 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
 
 
+def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, monkeypatch) -> None:
+    """With dispatched wakes on (the tick publishes wake-spec.json), a park
+    submits its wake immediately and the wake job holds the lease; without
+    the recipe nothing is armed and the sweep delivers as before."""
+    from autoresearch.runstate import read_lease
+    from autoresearch.tick import FollowupSpec, write_wake_spec
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+
+    def park(run_id: str) -> None:
+        record = RunRecord(
+            run_id=run_id, target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        )
+        parked = RunParked(
+            phase="candidate",
+            afterany="afterany:501:502",
+            base_sha="b" * 40,
+            seed=7,
+            suite_seed=9,
+            candidate_sha="c" * 40,
+            session=_session("s9"),
+        )
+        _park_run(
+            tmp_path, record, parked, "refs/dispatch/tok", None, 1000.0, dispatch=_fake_dispatch()
+        )
+
+    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    park("tsp-quiet")
+    assert read_lease(tmp_path, "tsp-quiet") is None
+    assert load_record(tmp_path, "tsp-quiet").wake_attempts == 0
+
+    spec = FollowupSpec(
+        account="a", partition="cpu", run_root=tmp_path, image="/img.sif", home=tmp_path
+    )
+    write_wake_spec(tmp_path, spec)
+    park("tsp-disarmed")  # a recipe left behind after a disarm is not used
+    assert read_lease(tmp_path, "tsp-disarmed") is None
+    (tmp_path / "DISPATCH_WAKE").touch()
+    park("tsp-armed")
+    lease = read_lease(tmp_path, "tsp-armed")
+    assert lease is not None and lease.holder == "wake-job:1000"
+    r = load_record(tmp_path, "tsp-armed")
+    assert r.state == "waiting" and r.wake_attempts == 0  # arming is not a redelivery
+
+
+def test_release_own_lease_keeps_a_lease_handed_to_the_armed_wake(tmp_path, monkeypatch) -> None:
+    from autoresearch.attempt import _lease_held_by_another_job, _release_own_lease
+    from autoresearch.runstate import acquire_lease, read_lease, release_lease
+
+    acquire_lease(tmp_path, "r", "wake-job:9001", "9001", now=1.0)
+    monkeypatch.setenv("SLURM_JOB_ID", "55")  # the wake job that armed 9001, exiting
+    assert _lease_held_by_another_job(tmp_path, "r") == "9001"
+    _release_own_lease(tmp_path, "r")
+    assert read_lease(tmp_path, "r") is not None
+    monkeypatch.delenv("SLURM_JOB_ID")  # a manual resume never owns a job-held lease
+    assert _lease_held_by_another_job(tmp_path, "r") == "9001"
+    _release_own_lease(tmp_path, "r")
+    assert read_lease(tmp_path, "r") is not None
+    monkeypatch.setenv("SLURM_JOB_ID", "9001")
+    assert _lease_held_by_another_job(tmp_path, "r") == ""
+    _release_own_lease(tmp_path, "r")
+    assert read_lease(tmp_path, "r") is None
+    # a lease with no job id (a tick's, mid-delivery) is the caller's to release
+    release_lease(tmp_path, "r")
+    acquire_lease(tmp_path, "r", "park:1", "", now=1.0)
+    monkeypatch.delenv("SLURM_JOB_ID")
+    assert _lease_held_by_another_job(tmp_path, "r") == ""
+    _release_own_lease(tmp_path, "r")
+    assert read_lease(tmp_path, "r") is None
+
+
 def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
     """A gate negative the author answered by launching more work rides the
     park, so the wake that ends on the same tree reuses it (review #182)."""
@@ -2262,6 +2335,7 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     # always read it and failed).
     assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
     assert (run_dir(tmp_path, run_id) / "lease.json").exists()
+    monkeypatch.setenv("SLURM_JOB_ID", "1")  # this process IS the wake job that holds it
 
     monkeypatch.setattr(climb_mod, "arm_sigterm_containment", lambda: None)
     monkeypatch.setattr(

@@ -345,6 +345,7 @@ def _park_run(
     keep_wake_attempts: bool = False,
     base_branch: str = "main",
     panel_reads: int = 0,
+    dispatch: DispatchSettings | None = None,
 ) -> None:
     """Persist a dispatched climb's re-entry point as a WAITING record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
@@ -479,6 +480,55 @@ def _park_run(
         }
     )
     save_record(run_root, waiting, now)
+    if dispatch is not None:
+        _arm_park_wake(run_root, record.run_id, now, dispatch)
+
+
+def _arm_park_wake(run_root: Path, run_id: str, now: float, dispatch: DispatchSettings) -> str:
+    """Submit the parked run's wake right away, depending on the jobs it
+    waits on (tick.arm_wake), when the tick has published its wake recipe.
+    Without the recipe — dispatched wakes not armed, or a local compute —
+    the sweep delivers as before."""
+    from autoresearch.compute import SlurmCompute
+    from autoresearch.tick import JobWakeDispatcher, arm_wake, dispatch_wake_armed, load_wake_spec
+
+    if not dispatch_wake_armed(run_root):
+        return ""  # disarmed: a recipe the tick has not yet removed is not used
+    spec = load_wake_spec(run_root)
+    if spec is None or not isinstance(dispatch.compute, SlurmCompute):
+        return ""
+    try:
+        record = load_record(run_root, run_id)
+        dispatcher = JobWakeDispatcher(dispatch.compute, spec, now)
+        return arm_wake(
+            run_root, record, dispatcher, now, holder_job_id=os.environ.get("SLURM_JOB_ID", "")
+        )
+    except Exception as exc:
+        log.warning("park-time wake not armed for %s: %s: %s", run_id, type(exc).__name__, exc)
+        return ""
+
+
+def _lease_held_by_another_job(run_root: Path, run_id: str) -> str:
+    """The job id of a wake that holds this run's lease and is not us, or "".
+    A resume with no job id of its own (a manual run) never counts as the
+    holder of a job-held lease."""
+    from autoresearch.runstate import read_lease
+
+    lease = read_lease(run_root, run_id)
+    mine = os.environ.get("SLURM_JOB_ID", "")
+    if lease is not None and lease.holder_job_id and lease.holder_job_id != mine:
+        return lease.holder_job_id
+    return ""
+
+
+def _release_own_lease(run_root: Path, run_id: str) -> None:
+    """Release the run's lease only while this job still holds it: a park
+    hands the lease to the wake it arms, and that wake must keep it."""
+    from autoresearch.runstate import release_lease
+
+    if _lease_held_by_another_job(run_root, run_id):
+        return
+    release_lease(run_root, run_id)
 
 
 def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
@@ -772,6 +822,7 @@ def _wake_author_sleep(
                 eval_minutes,
                 time.time(),
                 secrets,
+                dispatch=dispatch,
                 base_branch=base_branch,
             )
         except Exception:
@@ -1023,6 +1074,7 @@ def resume_run(
             eval_minutes,
             now,
             secrets,
+            dispatch=dispatch,
             keep_wake_attempts=not made_progress,
             base_branch=base_branch,
             panel_reads=panel_reads,
@@ -1926,6 +1978,7 @@ def live_attempt(
                     eval_minutes,
                     time.time(),
                     secrets,
+                    dispatch=dispatch,
                     base_branch=base_branch,
                 )
             except Exception:
@@ -2407,7 +2460,15 @@ def main() -> int:
                 "--resume needs the cluster triple (--account/--partition/--image) "
                 "to rebuild the dispatched measurer"
             )
-        from autoresearch.runstate import load_record, release_lease
+        from autoresearch.runstate import load_record
+
+        # a wake that is not the lease holder is a straggler (a replacement was
+        # dispatched after it was cancelled, or it was armed and then lost):
+        # it must not touch the run beside the holder
+        other = _lease_held_by_another_job(args.run_root, args.resume)
+        if other:
+            print(f"run {args.resume}: wake job {other} holds the lease; this one exits")
+            return 0
 
         # Reproduce the PARKED run's author, not the current fleet default: the
         # (backend, model) PAIR is persisted on the record — a fleet flip must not
@@ -2429,7 +2490,7 @@ def main() -> int:
             # this wake job HOLDS the run's lease (transferred on dispatch); release
             # it before exiting so a misconfig doesn't strand the run until the TTL
             # reap (the resume_run finally below only runs once we reach it)
-            release_lease(args.run_root, args.resume)
+            _release_own_lease(args.run_root, args.resume)
             parser.error(f"parked run {args.resume}: {_err}")
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
@@ -2483,7 +2544,7 @@ def main() -> int:
             # dispatch); release it on every exit so a re-parked run is
             # immediately eligible for the next sweep instead of waiting out the
             # TTL reap. Idempotent (no-op if no lease file).
-            release_lease(args.run_root, args.resume)
+            _release_own_lease(args.run_root, args.resume)
         print(f"outcome={resumed.outcome} pr={resumed.pr_url or '-'} report={resumed.report_path}")
         return 0
 

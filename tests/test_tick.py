@@ -41,6 +41,8 @@ class FakeSlurm:
 
     states: dict[str, str] = field(default_factory=dict)
     cancelled: list[str] = field(default_factory=list)
+    reasons: dict[str, str] = field(default_factory=dict)  # squeue %r by job id
+    cancel_sticks: bool = True  # scancel moves the job to CANCELLED, like Slurm
 
     def _runner(self, argv, timeout_s):
         if argv[0] == "sacct":
@@ -51,8 +53,13 @@ class FakeSlurm:
             return CommandResult(0, state + "\n" if state else "", "")
         if argv[0] == "scancel":
             self.cancelled.append(argv[1])
+            if self.cancel_sticks:
+                self.states[argv[1]] = "CANCELLED"
             return CommandResult(0, "", "")
         if argv[0] == "squeue":
+            if "-j" in argv:
+                reason = self.reasons.get(argv[argv.index("-j") + 1], "")
+                return CommandResult(0, reason + "\n" if reason else "", "")
             return CommandResult(0, "", "")  # no live jobs
         raise AssertionError(f"unexpected command {argv}")
 
@@ -3002,3 +3009,182 @@ roadmap: docs/roadmap.md
 
     assert "speedrun" in _gpu_lane_error(contract, "tsp", spec(""))
     assert _gpu_lane_error(contract, "tsp", spec("h200")) == ""
+
+
+def _wake_spec(tmp_path: Path):
+    from autoresearch.tick import FollowupSpec
+
+    return FollowupSpec(
+        account="acct", partition="cpu_short", run_root=tmp_path, image="/img/a.sif", home=tmp_path
+    )
+
+
+def _sbatch_capture():
+    submits: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submits.append(list(argv))
+            return CommandResult(0, f"{9000 + len(submits)}\n", "")
+        raise AssertionError(argv)
+
+    return submits, SlurmCompute(runner=runner)
+
+
+def test_arm_wake_submits_the_dependent_wake_and_hands_it_the_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A park submits its own wake at once, depending on the jobs it waits
+    on — the same job and lease the sweep would use, only ~30 minutes
+    (cadence + grace + cadence) earlier; arming is not a redelivery, so the
+    stuck counter does not move."""
+    from autoresearch.tick import JobWakeDispatcher, arm_wake
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": "afterany:501:502"})
+    submits, compute = _sbatch_capture()
+    dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
+    job = arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="")
+    assert job == "9001"
+    assert "--dependency=afterany:501:502" in submits[0]
+    lease = read_lease(tmp_path, "r1")
+    assert lease is not None and lease.holder == "wake-job:9001" and lease.holder_job_id == "9001"
+    assert load_record(tmp_path, "r1").wake_attempts == 0
+
+
+def test_arm_wake_hands_over_its_own_lease_and_leaves_another_holder_alone(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from autoresearch.tick import JobWakeDispatcher, arm_wake
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    submits, compute = _sbatch_capture()
+    dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
+    # a wake job (55) re-parks: its own lease passes to the wake it arms
+    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": "afterany:601"})
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    assert arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="55") == "9001"
+    lease = read_lease(tmp_path, "r1")
+    assert lease is not None and lease.holder_job_id == "9001"
+    # a lease held by someone else (a tick mid-delivery) is respected: nothing armed
+    other = waiting_run(
+        tmp_path, run_id="r2", experiment_job_id="", stage={"afterany": "afterany:7"}
+    )
+    acquire_lease(tmp_path, "r2", "tick:host:1", "", now=NOW - 5)
+    assert arm_wake(tmp_path, other, dispatcher, NOW, holder_job_id="55") == ""
+    assert len(submits) == 1
+    assert load_record(tmp_path, "r2").wake_attempts == 0
+
+
+def test_sweep_leaves_an_armed_pending_wake_alone_however_old(tmp_path: Path) -> None:
+    """A wake armed at park time waits in the queue as long as the evals run;
+    an alive holder is never reaped by age."""
+    waiting_run(tmp_path)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 3 * 3600)
+    slurm = FakeSlurm(states={"100": "RUNNING", "55": "PENDING"}, reasons={"55": "Dependency"})
+    report, dispatcher = run_tick(tmp_path, slurm)
+    assert dispatcher.dispatched == [] and report.reaped_leases == ()
+
+
+def test_sweep_reaps_an_armed_wake_slurm_will_never_start(tmp_path: Path) -> None:
+    """Torch does not kill jobs whose dependency can never be satisfied: such a
+    wake would hold the lease forever. The sweep cancels it, reaps the lease,
+    and redelivers — in the same tick."""
+    waiting_run(tmp_path)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    slurm = FakeSlurm(
+        states={"100": "COMPLETED", "55": "PENDING"}, reasons={"55": "DependencyNeverSatisfied"}
+    )
+    report, dispatcher = run_tick(tmp_path, slurm)
+    assert slurm.cancelled == ["55"]
+    assert report.reaped_leases == ("r1",)
+    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+
+
+def test_sweep_gives_a_dependency_pending_wake_the_grace_window(tmp_path: Path) -> None:
+    """Dependencies all terminal but the wake still pending on them: the grace
+    window runs from when the sweep first saw that, then it is redelivered."""
+    from autoresearch.tick import tick as tick_fn
+
+    waiting_run(tmp_path, terminal_seen=0.0)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    slurm = FakeSlurm(states={"100": "COMPLETED", "55": "PENDING"}, reasons={"55": "Dependency"})
+    from autoresearch.tick import RecordingDispatcher as RD
+
+    d = RD()
+    tick_fn(tmp_path, slurm.compute(), d, now=NOW, min_tick_s=0)
+    assert d.dispatched == [] and slurm.cancelled == []
+    assert load_record(tmp_path, "r1").terminal_seen == NOW
+    tick_fn(tmp_path, slurm.compute(), d, now=NOW + GRACE + 1, min_tick_s=0)
+    assert slurm.cancelled == ["55"] and d.dispatched == [("r1", "experiment COMPLETED")]
+
+
+def test_wake_spec_round_trips_and_is_absent_when_wakes_are_dry(tmp_path: Path) -> None:
+    from autoresearch.tick import load_wake_spec, remove_wake_spec, write_wake_spec
+
+    assert load_wake_spec(tmp_path) is None
+    spec = _wake_spec(tmp_path)
+    write_wake_spec(tmp_path, spec)
+    assert load_wake_spec(tmp_path) == spec
+    remove_wake_spec(tmp_path)
+    assert load_wake_spec(tmp_path) is None
+    (tmp_path / "wake-spec.json").write_text("not json")
+    assert load_wake_spec(tmp_path) is None
+
+
+def test_arm_wake_skips_a_park_with_nothing_to_depend_on(tmp_path: Path, monkeypatch) -> None:
+    """A checkpoint sleep or blind park has no jobs: an armed wake would run
+    at once instead of at the deadline floor, so nothing is armed."""
+    from autoresearch.tick import JobWakeDispatcher, arm_wake
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": ""})
+    submits, compute = _sbatch_capture()
+    dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
+    assert arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="") == ""
+    assert submits == [] and read_lease(tmp_path, "r1") is None
+
+
+def test_sweep_keeps_a_wake_it_could_not_cancel(tmp_path: Path) -> None:
+    """Redelivery waits for a cancellation Slurm confirms: a wake still pending
+    after scancel would otherwise run beside its replacement."""
+    waiting_run(tmp_path)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    slurm = FakeSlurm(
+        states={"100": "COMPLETED", "55": "PENDING"},
+        reasons={"55": "DependencyNeverSatisfied"},
+        cancel_sticks=False,
+    )
+    report, dispatcher = run_tick(tmp_path, slurm)
+    assert slurm.cancelled == ["55"]
+    assert report.reaped_leases == () and dispatcher.dispatched == []
+
+
+def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
+    import pytest
+
+    from autoresearch.compute import SlurmQueryError
+
+    def runner(argv, timeout_s):
+        return CommandResult(1, "", "slurmctld down")
+
+    with pytest.raises(SlurmQueryError):
+        SlurmCompute(runner=runner).pending_reason("55")
+
+
+def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch) -> None:
+    from autoresearch.tick import dispatch_wake_armed
+
+    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    assert not dispatch_wake_armed(tmp_path)
+    (tmp_path / "DISPATCH_WAKE").touch()
+    assert dispatch_wake_armed(tmp_path)
+    (tmp_path / "DISPATCH_WAKE").unlink()
+    monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
+    assert dispatch_wake_armed(tmp_path)
