@@ -144,7 +144,7 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     if args.minutes < 1:
         raise ToolError("--minutes must be a positive integer")
     minutes = min(args.minutes, MAX_LAUNCH_MINUTES)
-    array = getattr(args, "array", 1) or 1
+    array = args.array
     if array < 1:
         raise ToolError("--array must be a positive integer")
     array = min(array, MAX_LAUNCH_ARRAY)
@@ -331,7 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="fan out to N jobs of this command, each with SWEEP_INDEX=0..N-1 "
-        "(a sweep; counts as one launch, N times the GPU-hours)",
+        "and its own results/<name>/<i>/ (a sweep; counts as one launch, "
+        "N times the GPU-hours)",
     )
     la.add_argument(
         "--artifact",

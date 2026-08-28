@@ -9,8 +9,9 @@ Versions follow [SemVer](https://semver.org).
 ### Added
 
 - SWEEPS: `launch --array K` fans one command out to K jobs, each with
-  `SWEEP_INDEX=0..K-1` in its environment, delivered back as K results under
-  one wake. It counts as one launch against `depth_k` and K times the
+  `SWEEP_INDEX=0..K-1` in its environment, delivered back as K results
+  (artifacts under `results/<name>/<i>/`) in one wake. It counts as one
+  launch against `depth_k` and K times the
   walltime against GPU-hours. No Slurm array involved, so every backend and
   the hedged lanes work unchanged.
 - `baseline: cached` (per benchmark; default `paired`): the base tree is

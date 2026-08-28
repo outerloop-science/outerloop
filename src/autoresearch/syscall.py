@@ -141,12 +141,14 @@ class LaunchResult:
 
 def launch_jobs(launch: Launch) -> tuple[tuple[str, dict[str, str]], ...]:
     """The jobs one launch fans out to: (job name, extra env). A plain launch
-    is one job named after it; an array launch is N jobs `<name>-<i>`, each
+    is one job named after it; an array launch is N jobs `<name>.<i>`, each
     told its index through SWEEP_INDEX — the Slurm-array idea without a
-    Slurm array, so every backend and the hedged lanes work unchanged."""
+    Slurm array, so every backend and the hedged lanes work unchanged. The
+    dot is outside the launch-name alphabet, so no plain launch can share a
+    job name (or its files) with an array member."""
     if launch.array <= 1:
         return ((launch.name, {}),)
-    return tuple((f"{launch.name}-{i}", {"SWEEP_INDEX": str(i)}) for i in range(launch.array))
+    return tuple((f"{launch.name}.{i}", {"SWEEP_INDEX": str(i)}) for i in range(launch.array))
 
 
 def _rel_path_ok(path: str) -> bool:
@@ -550,8 +552,9 @@ def gather_results(
     size cap); `_deliver_artifacts` guards the destination side."""
     results: list[LaunchResult] = []
     for launch in launches:
-        # an array launch delivers one result per job, named `<launch>-<i>`
-        for job_name, _env in launch_jobs(launch):
+        # an array launch delivers one result per job, named `<launch>.<i>`,
+        # with artifacts under results/<launch>/<i>/
+        for i, (job_name, _env) in enumerate(launch_jobs(launch)):
             ev = run_dir / f"eval-launch-{job_name}"
             try:
                 exit_code: int | None = int((ev / "exit-code").read_text().strip())
@@ -563,7 +566,9 @@ def gather_results(
                 ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip()
             )
 
-            delivered, skips = _deliver_artifacts(ev / "artifacts", workspace, job_name)
+            delivered, skips = _deliver_artifacts(
+                ev / "artifacts", workspace, launch.name, index=i if launch.array > 1 else None
+            )
             results.append(
                 LaunchResult(
                     name=job_name,
@@ -578,9 +583,11 @@ def gather_results(
 
 
 def _deliver_artifacts(
-    src: Path, workspace: Path, name: str
+    src: Path, workspace: Path, name: str, index: int | None = None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`.
+    """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`
+    (`results/<name>/<index>/` for one member of an array launch; the first
+    member clears the group so the tree is entirely kernel-created).
 
     The author controls `.autoresearch/` in its sandbox, so the DESTINATION is
     hostile too: a symlinked channel dir or output path would
@@ -592,8 +599,6 @@ def _deliver_artifacts(
     (realpath-contained, size-capped) when the job wrote them."""
     import shutil
 
-    if not src.is_dir():
-        return (), ()
     # a symlinked channel ancestor compromises every write under it — deliver
     # nothing rather than follow it (the author still sees exit code + output).
     channel = workspace / SYSCALL_DIR
@@ -601,11 +606,22 @@ def _deliver_artifacts(
     if channel.is_symlink() or results_root.is_symlink():
         return (), (f"artifacts not delivered: {SYSCALL_DIR} channel is a symlink (refused)",)
 
-    dest = results_root / name
+    # an earlier delivery under this name goes first, even when this job wrote
+    # nothing, so a re-used name never shows stale results beside fresh ones
+    group = results_root / name
+    if index is None or index == 0:
+        if group.is_symlink():
+            group.unlink()
+        elif group.exists():
+            shutil.rmtree(group, ignore_errors=True)
+    rel_dest = Path(name) if index is None else Path(name) / str(index)
+    dest = results_root / rel_dest
     if dest.is_symlink():
         dest.unlink()
     elif dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
+    if not src.is_dir():
+        return (), ()
 
     delivered: list[str] = []
     skips: list[str] = []
@@ -618,7 +634,7 @@ def _deliver_artifacts(
             continue
         try:
             shutil.copy(f, out)
-            delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / name / rel))
+            delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / rel_dest / rel))
         except OSError as exc:
             skips.append(f"deliver failed: {rel} ({exc})")
     return tuple(delivered), tuple(skips)

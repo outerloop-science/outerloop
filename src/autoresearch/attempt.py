@@ -971,6 +971,7 @@ def resume_run(
                             # floor still covers the longest launch
                             minutes=int(item.get("minutes") or 1),
                             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
+                            array=int(item.get("array") or 1),
                         )
                         for item in _stage_launches(record)
                     ),
