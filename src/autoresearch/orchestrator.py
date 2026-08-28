@@ -1249,6 +1249,7 @@ def attempt_once(
     candidate: float | None = baseline
     suite: tuple[SuiteMeasurement, ...] = ()
     suite_seed_ran = 0
+    baseline_note = ""
     measured: tuple[str, ...] = ()
     refused_once = False
 
@@ -1546,6 +1547,7 @@ def attempt_once(
         candidate = outcome.candidate
         suite = outcome.suite
         suite_seed_ran = outcome.suite_seed
+        baseline_note = outcome.baseline_note  # cached-baseline provenance, to the report
 
         if panel_runner is None:
             break
@@ -1582,6 +1584,7 @@ def attempt_once(
         run_seed=run_seed,
         suite=suite,
         suite_seed=suite_seed_ran,
+        note=baseline_note,
         panel_transcript="\n\n".join(panel_sections),
         panel_rounds=panel_reads,
         panel_blocking_open=panel_blocking_open,
