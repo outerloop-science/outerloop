@@ -671,3 +671,12 @@ def test_array_launch_fans_out_and_gathers_per_index(tmp_path: Path) -> None:
     assert results[1].delivered == (".autoresearch/results/sweep/1/out/curve.json",)
     first = ws / ".autoresearch" / "results" / "sweep" / "0" / "out" / "curve.json"
     assert first.read_text() == "[0]"
+    # whatever the author left at the group path — a plain file here — is
+    # replaced, not written through or tripped over (terra #181 round 2)
+    import shutil as _shutil
+
+    _shutil.rmtree(ws / ".autoresearch" / "results" / "sweep")
+    (ws / ".autoresearch" / "results" / "sweep").write_text("not a dir")
+    again = gather_results(run_dir, ws, (Launch(name="sweep", command="x", minutes=10, array=2),))
+    assert again[0].delivered == (".autoresearch/results/sweep/0/out/curve.json",)
+    assert first.read_text() == "[0]"

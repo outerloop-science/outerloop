@@ -608,18 +608,20 @@ def _deliver_artifacts(
 
     # an earlier delivery under this name goes first, even when this job wrote
     # nothing, so a re-used name never shows stale results beside fresh ones
+    def clear(path: Path) -> None:
+        # whatever the author left at the path: a symlink or a plain file is
+        # unlinked, a directory removed — so the delivery tree below is ours
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
     group = results_root / name
     if index is None or index == 0:
-        if group.is_symlink():
-            group.unlink()
-        elif group.exists():
-            shutil.rmtree(group, ignore_errors=True)
+        clear(group)
     rel_dest = Path(name) if index is None else Path(name) / str(index)
     dest = results_root / rel_dest
-    if dest.is_symlink():
-        dest.unlink()
-    elif dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
+    clear(dest)
     if not src.is_dir():
         return (), ()
 
