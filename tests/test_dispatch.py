@@ -426,7 +426,15 @@ def test_gpu_evals_are_sized_per_gpu(tmp_path):
     # every Slurm suffix is understood, and an explicit value is never
     # shrunk — a terabyte request stays a terabyte (terra #175 r1); a
     # value we cannot parse passes through untouched
-    for mem, expect in (("1T", "1T"), ("2048M", "64G"), ("70000", "70000"), ("weird", "weird")):
+    cases = (
+        ("1T", "1T"),
+        ("2048M", "64G"),
+        ("70000", "70000"),
+        ("weird", "weird"),
+        ("nanG", "nanG"),  # non-finite: never a crash, passes through (terra #175 r2)
+        ("infG", "infG"),
+    )
+    for mem, expect in cases:
         spec = eval_job_spec(
             script, job_name="e", account="a", partition="p", eval_minutes=60, gpus=1, mem=mem
         )

@@ -484,6 +484,8 @@ def _mem_gb(mem: str) -> int | None:
         value = float(number)
     except ValueError:
         return None
+    if not math.isfinite(value) or value < 0:
+        return None  # "nanG"/"infG": not a size — pass it through untouched
     return int(value * (scale[unit] if unit else 1 / 1024))  # bare Slurm --mem is MB
 
 
