@@ -1376,6 +1376,7 @@ def pick_self_initiated(
     target: str,
     now: float,
     dead_attempts: dict[str, float] | None = None,
+    live_pendings: list[tuple[str, float]] | None = None,
 ) -> str | None:
     """The benchmark to climb next on `target`, or None.
 
@@ -1394,10 +1395,15 @@ def pick_self_initiated(
         return r.state == IMPLEMENTING and now - max(r.updated, r.created) > STRANDED_IMPLEMENTING_S
 
     active = [r for r in mine if r.state != ENDED and not stranded(r)]
-    if len(active) >= MAX_ACTIVE_RUNS_PER_TARGET:
+    if len(active) >= _attempt_width(contract):
         return None
     week_ago = now - 7 * 24 * 3600
-    if sum(1 for r in mine if r.created >= week_ago) >= contract.budgets.runs_per_week:
+    # queued slots count toward the weekly budget BEFORE their records
+    # exist, or a width-N target with one run left could submit N (terra
+    # #173 r2); when a marker lands, the service clears it before calling
+    # here, so a run is never counted twice
+    queued = sum(1 for _, submitted_at in live_pendings or [] if submitted_at >= week_ago)
+    if sum(1 for r in mine if r.created >= week_ago) + queued >= contract.budgets.runs_per_week:
         return None
     last_attempt: dict[str, float] = {}
     for r in mine:
@@ -1405,6 +1411,12 @@ def pick_self_initiated(
             last_attempt[r.benchmark] = max(last_attempt.get(r.benchmark, 0.0), r.created)
     for bench_name, submitted_at in (dead_attempts or {}).items():
         last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
+    for bench_name, submitted_at in live_pendings or []:
+        # a queued sibling starts its benchmark's cooldown clock too:
+        # width spreads across benchmarks first, and re-picking the same
+        # one needs the contract to have set cooldown to 0 (portfolio)
+        if bench_name:
+            last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
     cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
     cooldown_s = SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
     # A launch that died BEFORE writing a run record is invisible to the
@@ -1472,13 +1484,27 @@ def read_tombstones(root: Path, target: str, contract: Any, now: float) -> dict[
     return out
 
 
-def _pending_path(root: Path, target: str) -> Path:
-    return root / "pending" / (target.replace("/", "__") + ".json")
+# WIDTH slots are the only suffixed marker names; the pattern also fences
+# list_pendings against a longer target that shares this one's file-name
+# prefix (org/foo vs org/foobar — "/" encodes as "__", so glob alone is
+# ambiguous)
+_SLOT_AGENT_RE = re.compile(r"agent-\d+")
 
 
-def read_pending(root: Path, target: str) -> dict[str, Any] | None:
+def _pending_path(root: Path, target: str, agent: str = "") -> Path:
+    # agent "" is the legacy single-slot name, still read for back-compat
+    # with a marker written before the width dial deployed. The slot
+    # separator is "@" because it CANNOT appear in a GitHub owner/repo
+    # name — any character legal in repo names ("_", ".", "-") would make
+    # org/pilot's slot file collide with some other target's legacy file
+    # (org/pilot__agent-01 is a valid repo).
+    suffix = f"@{agent}" if agent else ""
+    return root / "pending" / (target.replace("/", "__") + suffix + ".json")
+
+
+def read_pending(root: Path, target: str, agent: str = "") -> dict[str, Any] | None:
     """The submit-time marker for a climb whose run record may not exist yet."""
-    path = _pending_path(root, target)
+    path = _pending_path(root, target, agent)
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -1486,16 +1512,61 @@ def read_pending(root: Path, target: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) and "submitted_at" in data else None
 
 
-def write_pending(root: Path, target: str, benchmark: str, job_id: str, now: float) -> None:
-    path = _pending_path(root, target)
+def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:
+    """(agent, marker) for every live pending marker of `target` — one per
+    WIDTH slot, plus the legacy un-suffixed marker from a pre-width deploy
+    (attributed to agent-01)."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    stem = target.replace("/", "__")
+    pending_dir = root / "pending"
+    if not pending_dir.is_dir():
+        return out
+    for path in sorted(pending_dir.glob(stem + "*.json")):
+        name = path.stem
+        if name == stem:
+            agent = ""
+        elif name.startswith(stem + "@") and _SLOT_AGENT_RE.fullmatch(name[len(stem) + 1 :]):
+            agent = name[len(stem) + 1 :]
+        else:
+            continue  # a longer target sharing this prefix (org/foo vs org/foobar)
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "submitted_at" in data:
+            out.append((agent or str(data.get("agent_id") or "agent-01"), data))
+    return out
+
+
+def write_pending(
+    root: Path, target: str, benchmark: str, job_id: str, now: float, agent: str = ""
+) -> None:
+    path = _pending_path(root, target, agent)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"benchmark": benchmark, "job_id": job_id, "submitted_at": now}))
+    tmp.write_text(
+        json.dumps(
+            {"benchmark": benchmark, "job_id": job_id, "submitted_at": now, "agent_id": agent}
+        )
+    )
     os.replace(tmp, path)
 
 
-def clear_pending(root: Path, target: str) -> None:
-    _pending_path(root, target).unlink(missing_ok=True)
+def clear_pending(root: Path, target: str, agent: str = "") -> None:
+    _pending_path(root, target, agent).unlink(missing_ok=True)
+
+
+def _attempt_width(contract: Any) -> int:
+    width = getattr(getattr(contract, "budgets", None), "max_active_attempts", None)
+    return int(width) if width else MAX_ACTIVE_RUNS_PER_TARGET
+
+
+def _free_agent_slot(occupied: set[str], width: int) -> str | None:
+    for i in range(1, width + 1):
+        agent = f"agent-{i:02d}"
+        if agent not in occupied:
+            return agent
+    return None
 
 
 def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
@@ -1731,33 +1802,69 @@ def service_self_initiated(
         return None
     try:
         records = list_runs(root)
-        pending = read_pending(root, spec.target)
-        # (crash memory now lives in per-benchmark tombstones, read below)
-        if pending is not None:
+        width = _attempt_width(contract)
+        # WIDTH: every live pending marker occupies a slot; landed ones
+        # clear; dead ones become per-benchmark tombstones and free theirs.
+        occupied: set[str] = set()
+        live_pendings: list[tuple[str, float]] = []
+        nonslot_busy = False
+        for agent, pending in list_pendings(root, spec.target):
+            marker_agent = "" if not pending.get("agent_id") else agent
             submitted_at = float(pending["submitted_at"])
+            # A slotted marker lands only when ITS OWN record appears —
+            # matching on target+time alone would let a sibling slot's
+            # record clear a still-live marker (terra #173). A legacy
+            # marker names no slot, so it keeps the lax match.
             landed = any(
-                r.target == spec.target and r.created >= submitted_at - 60 for r in records
+                r.target == spec.target
+                and r.created >= submitted_at - 60
+                and (not marker_agent or r.agent_id == marker_agent)
+                for r in records
             )
             expired = now - submitted_at > PENDING_TTL_S
             if landed:
-                clear_pending(root, spec.target)  # the run record carries it now
+                clear_pending(root, spec.target, marker_agent)
             elif (alive := _holder_alive(compute, str(pending.get("job_id", "")))) is True or (
                 not expired and alive is not False
             ):
                 # climb queued or starting; its record isn't written yet. A
-                # provably-alive job waits regardless of the marker's TTL —
-                # queue wait can exceed it — the TTL only breaks ties when
-                # Slurm can't say (a dup submit is worse than a slow retry).
-                return None
+                # provably-alive job holds its SLOT regardless of the
+                # marker's TTL — queue wait can exceed it — the TTL only
+                # breaks ties when Slurm can't say.
+                occupied.add(agent)
+                live_pendings.append((str(pending.get("benchmark", "")), submitted_at))
+                if not marker_agent:
+                    # a live un-slotted marker is another lane's submit
+                    # (steward/intake, or a pre-width deploy): serial
+                    nonslot_busy = True
             else:
                 # Died before writing a record: persist the crash memory as a
-                # PER-BENCHMARK tombstone (a second benchmark's launch reuses
-                # the live marker and must not erase this — terra #172 r3),
-                # then free the live slot.
+                # PER-BENCHMARK tombstone (a sibling launch must not erase
+                # this — terra #172 r3), then free the slot.
                 write_tombstone(root, spec.target, str(pending.get("benchmark", "")), submitted_at)
-                clear_pending(root, spec.target)
+                clear_pending(root, spec.target, marker_agent)
+        stranded_cutoff = now - STRANDED_IMPLEMENTING_S
+        for r in records:
+            if r.target == spec.target and r.state != ENDED:
+                if r.state == IMPLEMENTING and max(r.updated, r.created) <= stranded_cutoff:
+                    continue  # stranded: pick ignores it, so must occupancy
+                occupied.add(r.agent_id)
+                if not _SLOT_AGENT_RE.fullmatch(r.agent_id):
+                    nonslot_busy = True
+        if nonslot_busy:
+            # steward and intake keep their pre-width one-run-per-target
+            # exclusivity: width applies AMONG self-initiated slots, it
+            # does not license launching beside another lane (terra #173)
+            return None
+        if len(occupied) >= width:
+            return None
+        slot_agent = _free_agent_slot(occupied, width)
+        if slot_agent is None:
+            return None
         dead_attempts = read_tombstones(root, spec.target, contract, now)
-        benchmark = pick_self_initiated(records, contract, spec.target, now, dead_attempts)
+        benchmark = pick_self_initiated(
+            records, contract, spec.target, now, dead_attempts, live_pendings
+        )
         if benchmark is None:
             return None
         if getattr(contract, "merge", "manual") == "auto" and not spec.panel:
@@ -1806,6 +1913,8 @@ def service_self_initiated(
             str(spec.run_root),
             "--image",
             spec.image,
+            "--agent-id",
+            slot_agent,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
         ]
@@ -1816,16 +1925,18 @@ def service_self_initiated(
         # neither the backend nor its key — a new backend needs zero tick change.
         job_id = compute.submit(
             JobSpec(
-                job_name=f"climb-{benchmark}"[:60],
+                job_name=f"climb-{benchmark}-{slot_agent}"[:60],
                 account=spec.account,
                 partition=spec.job_partition or spec.partition,
                 time_minutes=job_minutes,
-                command=_flight_command(spec.home, f"climb-{benchmark}"[:60], now, argv),
+                command=_flight_command(
+                    spec.home, f"climb-{benchmark}-{slot_agent}"[:60], now, argv
+                ),
                 cpus=4,
                 mem="8G",
             )
         )
-        write_pending(root, spec.target, benchmark, job_id, now)
+        write_pending(root, spec.target, benchmark, job_id, now, agent=slot_agent)
         log.info("self-initiated climb on %s: job %s", benchmark, job_id)
         return (benchmark, job_id)
     except Exception as exc:  # one bad pass must not break the tick
@@ -1872,16 +1983,22 @@ def service_steward(
         if any(r.target == target and r.state != ENDED for r in records):
             return None
         # The queue window (submit -> job writes its record) is bridged by
-        # the SAME per-target pending marker the self-initiated lane uses:
-        # while a submitted job is alive without a record, no lane launches.
-        pending = read_pending(root, target)
-        if pending is not None:
+        # the SAME per-target pending markers the self-initiated lane uses
+        # — ALL of them, slotted included: a width slot queued without a
+        # record yet must block a stewardship the same way an active run
+        # does. Liveness first, TTL only breaks unknown ties (queue wait
+        # can outlive the TTL).
+        for slot, pending in list_pendings(root, target):
+            marker_agent = "" if not pending.get("agent_id") else slot
             submitted_at = float(pending.get("submitted_at", 0.0))
-            landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
+            landed = any(
+                r.target == target
+                and r.created >= submitted_at - 60
+                and (not marker_agent or r.agent_id == marker_agent)
+                for r in records
+            )
             expired = now - submitted_at > PENDING_TTL_S
             alive = _holder_alive(compute, str(pending.get("job_id", "")))
-            # liveness first, TTL only breaks unknown ties — same rule as
-            # the self-initiated lane (queue wait can outlive the TTL)
             if not landed and (alive is True or (not expired and alive is not False)):
                 return None
         task = pick_steward_issue(github, target, contract, spec.bot_login)

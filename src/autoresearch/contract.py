@@ -162,6 +162,12 @@ class Budgets(_StrictModel):
     # experiment — no cooldown; make sure the cluster is hot"). Still
     # SERIAL per target until the width dial lands.
     attempt_cooldown_minutes: int | None = Field(default=None, ge=0)
+    # THE WIDTH DIAL: concurrent self-initiated attempts per target. Default
+    # (unset) = 1, today's serial behavior. An RSI/speedrun target raises it
+    # to run N authors abreast — each slot gets its own agent identity
+    # (agent-01..agent-0N), so branches, ledger rows, and reports stay
+    # distinct. runs_per_week and gpu_hours_per_run remain the spend guards.
+    max_active_attempts: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="before")
     @classmethod

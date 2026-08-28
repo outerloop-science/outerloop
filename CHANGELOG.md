@@ -8,6 +8,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- THE WIDTH DIAL: `budgets.max_active_attempts` runs N self-initiated
+  attempts abreast on one target (default 1 — today's serial behavior).
+  Each slot gets its own agent identity (`agent-01..agent-0N`) threaded
+  via `--agent-id`, keeping branches, ledger rows, and reports distinct;
+  pending markers become per-slot (the legacy un-suffixed marker from a
+  pre-width deploy is still read and attributed); live markers and
+  non-stranded active records both occupy slots; resumed runs inherit
+  identity from their record. With `attempt_cooldown_minutes: 0` this is
+  the RSI-era "cluster hot" configuration — `runs_per_week` and
+  `gpu_hours_per_run` remain the spend guards.
+
+### Added
+
 - `attempt_cooldown_minutes` joins the contract budgets: the per-benchmark
   self-initiated cooldown becomes a target-owner dial. Unset keeps the 6h
   default (right for a standard research repo); an RSI/speedrun target sets

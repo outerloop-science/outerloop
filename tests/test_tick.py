@@ -842,7 +842,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     compute = SlurmCompute(runner=runner)
     out = service_self_initiated(tmp_path, compute, spec, contract, NOW)
     assert out == ("denoise", "123")
-    marker = read_pending(tmp_path, "org/pilot")
+    marker = read_pending(tmp_path, "org/pilot", "agent-01")
     assert marker is not None and marker["benchmark"] == "denoise"
     # next tick, record not yet written, job alive -> NO duplicate submit
     assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 1800) is None
@@ -855,7 +855,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
         now=NOW + 1900,
     )
     assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 3600) is None
-    assert read_pending(tmp_path, "org/pilot") is None
+    assert read_pending(tmp_path, "org/pilot", "agent-01") is None
     assert len(submitted) == 1
 
 
@@ -1701,7 +1701,7 @@ roadmap: docs/roadmap.md
     # the queue window is bridged: pending marker written, second pass no-ops
     from autoresearch.tick import read_pending
 
-    marker = read_pending(tmp_path, "org/pilot")
+    marker = read_pending(tmp_path, "org/pilot")  # steward lane: legacy marker
     assert marker is not None and marker["benchmark"] == "steward:tsp"
     assert (
         service_steward(tmp_path, G(), compute, spec("/k"), NOW + 60, with_steward, limits) is None
@@ -2078,6 +2078,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     from autoresearch.tick import clear_pending
 
     clear_pending(tmp_path, "org/pilot")
+    clear_pending(tmp_path, "org/pilot", "agent-01")
     out_low = service_self_initiated(
         tmp_path, SlurmCompute(runner=runner_low), low, contract, NOW + 4000
     )
@@ -2087,6 +2088,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     # clamp): 60-min job - 20-min overhead, never the full 90-min default
     assert "--session-minutes 40" in submitted_low[0]
     clear_pending(tmp_path, "org/pilot")
+    clear_pending(tmp_path, "org/pilot", "agent-01")
 
     ok2 = make(panel_key_file=str(good))
     from autoresearch.contract import load_contract
@@ -2608,3 +2610,245 @@ roadmap: docs/roadmap.md
     later = NOW + DEAD_LAUNCH_BACKOFF_S + 61
     assert read_tombstones(tmp_path, "o/r", hot, later) == {}
     assert pick_self_initiated([], hot, "o/r", later, {}) == "denoise"
+
+
+def test_width_dial_runs_two_slots_and_caps(tmp_path: Path) -> None:
+    """WIDTH-V1: max_active_attempts: 2 dispatches two concurrent attempts
+    with distinct agent identities (branch/ledger uniqueness), refuses a
+    third while both slots are occupied, and frees slots as runs land+end."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 500
+  attempt_cooldown_minutes: 0
+  max_active_attempts: 2
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    panel_key = tmp_path / "vkey"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="acct",
+        partition="part",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        bot_login="bot",
+        panel_key_file=str(panel_key),
+    )
+    submitted: list[str] = []
+    job_ids = iter(["101", "102", "103"])
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submitted.append(" ".join(argv))
+            return CommandResult(0, next(job_ids) + "\n", "")
+        return CommandResult(0, "RUNNING\n", "")  # both holders alive
+
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW) == ("tsp", "101")
+    assert "--agent-id agent-01" in submitted[0]
+    # slot 2: dispatches concurrently with a DISTINCT identity
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 60) == ("tsp", "102")
+    assert "--agent-id agent-02" in submitted[1]
+    # both slots occupied: the third asks is refused
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 120) is None
+    assert len(submitted) == 2
+    # slot 1 lands and ends -> a slot frees, dispatch resumes as agent-01
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="w1",
+            target="org/pilot",
+            task_title="t",
+            state=ENDED,
+            ending="negative-result",
+            benchmark="tsp",
+            agent_id="agent-01",
+            created=NOW + 61,
+        ),
+        NOW + 200,
+    )
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 300) == ("tsp", "103")
+    assert "--agent-id agent-01" in submitted[2]
+    # the landed check is SLOT-SCOPED: agent-01's record must not have
+    # cleared agent-02's still-live marker (terra #173 r1)
+    from autoresearch.tick import read_pending
+
+    assert read_pending(tmp_path, "org/pilot", "agent-02") is not None
+
+
+def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
+    """org/pilot's marker scan must not absorb org/pilotx's markers ("/"
+    encodes as "__" so a bare glob is prefix-ambiguous), nor any suffixed
+    file that isn't a width-slot name (terra #173 r1), nor the LEGACY
+    marker of a repo literally named pilot__agent-01 — "_" is legal in
+    repo names, which is why the slot separator is "@" (terra #173 r2)."""
+    from autoresearch.tick import list_pendings, read_pending, write_pending
+
+    write_pending(tmp_path, "org/pilot", "tsp", "1", NOW, agent="agent-01")
+    write_pending(tmp_path, "org/pilotx", "tsp", "2", NOW)
+    write_pending(tmp_path, "org/pilotx", "tsp", "3", NOW, agent="agent-01")
+    write_pending(tmp_path, "org/pilot", "tsp", "4", NOW, agent="not-a-slot")
+    write_pending(tmp_path, "org/pilot__agent-01", "tsp", "5", NOW)
+    got = [(agent, p["job_id"]) for agent, p in list_pendings(tmp_path, "org/pilot")]
+    assert got == [("agent-01", "1")]
+    marker = read_pending(tmp_path, "org/pilot__agent-01")
+    assert marker is not None and marker["job_id"] == "5"
+
+
+def test_width_queued_slots_count_toward_weekly_budget(tmp_path: Path) -> None:
+    """With one run left in runs_per_week, a width-2 target must not submit
+    two attempts in the pre-record queue window (terra #173 r2)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 1
+  attempt_cooldown_minutes: 0
+  max_active_attempts: 2
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    panel_key = tmp_path / "vkey"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="acct",
+        partition="part",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        bot_login="bot",
+        panel_key_file=str(panel_key),
+    )
+    job_ids = iter(["101", "102"])
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            return CommandResult(0, next(job_ids) + "\n", "")
+        return CommandResult(0, "RUNNING\n", "")
+
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW) == ("tsp", "101")
+    # slot 2 is free, but the queued slot already spent the last weekly run
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 60) is None
+
+
+def test_width_never_launches_beside_a_steward_run(tmp_path: Path) -> None:
+    """Width applies AMONG self-initiated slots; an active stewardship keeps
+    its pre-width one-run-per-target exclusivity (terra #173 r1)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 500
+  max_active_attempts: 2
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="acct",
+        partition="part",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        bot_login="bot",
+    )
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="stew",
+            target="org/pilot",
+            task_title="t",
+            state="implementing",
+            agent_id="steward-01",
+        ),
+        now=NOW - 100,
+    )
+    compute = SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "RUNNING\n", ""))
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW) is None
+
+
+def test_steward_waits_for_a_queued_width_slot(tmp_path: Path) -> None:
+    """A slotted pending marker (width launch queued, record not written yet)
+    blocks the steward lane the same way an active run does (terra #173 r1
+    parity: the lane used to read only the legacy un-suffixed marker)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, effective_limits, service_steward, write_pending
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 20}
+scope: {allowed: [src/pilot/solvers/]}
+steward: {allowed: [src/pilot/instances.py]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    limits = effective_limits(contract.budgets)
+
+    class G:
+        def __init__(self):
+            self.comments_posted = []
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [
+                {
+                    "number": 21,
+                    "title": "re-base the tsp pool",
+                    "body": "",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                    "labels": [{"name": "autoresearch:steward"}],
+                }
+            ]
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return []
+
+        def comment(self, repo, number, body):
+            self.comments_posted.append((number, body))
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        steward_key_file="/k",
+    )
+    write_pending(tmp_path, "org/pilot", "tsp", "777", NOW, agent="agent-02")
+    compute = SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "RUNNING\n", ""))
+    github = G()
+    assert service_steward(tmp_path, github, compute, spec, NOW + 60, contract, limits) is None
+    assert github.comments_posted == []
