@@ -456,7 +456,11 @@ def eval_job_spec(
     torch.compile workers do not fit the CPU eval's 4 cores / 8 GB)."""
     if gpus > 0:
         cpus = max(cpus, EVAL_CPUS_PER_GPU * gpus)
-        mem = f"{max(_mem_gb(mem), EVAL_MEM_GB_PER_GPU * gpus)}G"
+        given = _mem_gb(mem)
+        # an explicit request is never SHRUNK: only a parseable value below
+        # the per-GPU floor is raised; anything unparseable passes through
+        if given is not None and given < EVAL_MEM_GB_PER_GPU * gpus:
+            mem = f"{EVAL_MEM_GB_PER_GPU * gpus}G"
     return JobSpec(
         job_name=job_name[:60],
         account=account,
@@ -469,18 +473,18 @@ def eval_job_spec(
     )
 
 
-def _mem_gb(mem: str) -> int:
-    """A Slurm --mem value ("8G", "512M", "16") in whole GB, rounded down;
-    unparseable -> 0 so the per-GPU floor wins."""
+def _mem_gb(mem: str) -> int | None:
+    """A Slurm --mem value ("8G", "512M", "1T", "16") in whole GB, rounded
+    down; None when unparseable (the caller then leaves it alone)."""
     text = mem.strip().upper()
+    scale = {"K": 1 / (1024 * 1024), "M": 1 / 1024, "G": 1.0, "T": 1024.0}
+    unit = text[-1:] if text[-1:] in scale else ""
+    number = text[:-1] if unit else text
     try:
-        if text.endswith("G"):
-            return int(float(text[:-1]))
-        if text.endswith("M"):
-            return int(float(text[:-1])) // 1024
-        return int(float(text)) // 1024  # bare Slurm --mem is MB
+        value = float(number)
     except ValueError:
-        return 0
+        return None
+    return int(value * (scale[unit] if unit else 1 / 1024))  # bare Slurm --mem is MB
 
 
 def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
