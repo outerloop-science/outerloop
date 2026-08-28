@@ -713,6 +713,9 @@ class MeasureOK:
     candidate: float
     suite: tuple[SuiteMeasurement, ...] = ()
     suite_seed: int = 0
+    # how the baseline number was obtained when it was NOT measured beside
+    # this candidate (`baseline: cached`) — surfaces on the credited result
+    baseline_note: str = ""
 
 
 def measure_and_decide(
@@ -749,7 +752,12 @@ def measure_and_decide(
     # deferred like contract.py's managed_eval_env import: measure -> dispatch
     # -> orchestrator for the eval primitives, so orchestrator imports measure
     # at call time to keep the module graph acyclic.
-    from autoresearch.measure import SiblingSpec, plan_measures
+    from autoresearch.measure import (
+        SiblingSpec,
+        plan_measures,
+        read_baseline_cache,
+        write_baseline_cache,
+    )
 
     # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
     # because the out-of-scope edit could be to the ruler itself.
@@ -787,22 +795,51 @@ def measure_and_decide(
     # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
     # candidate has cleared the threshold: a non-improving candidate must never
     # burn the (expensive) sibling evals, matching attempt_once's lazy order.
+    # `baseline: cached` — the base tree is measured ONCE per (benchmark, base
+    # sha) into the target's cache and reused by every attempt on that base;
+    # only the candidate runs. Unpaired, so the contract's floor carries the
+    # cross-seed noise (the loader requires one). A miss measures both and
+    # records the baseline for the next attempt.
+    cache_dir = getattr(measurer, "baseline_cache", None)
+    cached = (
+        read_baseline_cache(cache_dir, bench.name, base_sha)
+        if bench.baseline == "cached" and cache_dir is not None
+        else None
+    )
+    plan = plan_measures(
+        bench.command,
+        bench.metric,
+        base_sha,
+        candidate_sha,
+        seed_env,
+        seed,
+        gpus=bench.gpus,
+    )
+    if cached is not None:
+        plan = [m for m in plan if m.name != "baseline"]
     try:
-        main = measurer.results(
-            plan_measures(
-                bench.command,
-                bench.metric,
-                base_sha,
-                candidate_sha,
-                seed_env,
-                seed,
-                gpus=bench.gpus,
-            )
-        )
+        main = measurer.results(plan)
     except EvalError as exc:
         return AttemptResult(outcome="eval-error", note=str(exc), run_seed=seed)
 
-    baseline = main["baseline"]
+    baseline_note = ""
+    if cached is not None:
+        baseline = float(cached["value"])
+        baseline_note = (
+            f"baseline {baseline} reused from the cache (measured at seed "
+            f"{cached.get('seed')} by run {cached.get('run')}); candidate at seed {seed}"
+        )
+    else:
+        baseline = main["baseline"]
+        if bench.baseline == "cached" and cache_dir is not None:
+            write_baseline_cache(
+                cache_dir,
+                bench.name,
+                base_sha,
+                value=baseline,
+                seed=seed,
+                run_tag=str(getattr(measurer, "run_tag", "")),
+            )
     candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
         return AttemptResult(
@@ -839,7 +876,7 @@ def measure_and_decide(
     # shared code. A second measure set (a second park for a dispatched
     # backend): an extra CPU wake, never a wasted GPU sibling eval.
     if not (siblings and shared_touched(measured_paths, contract)):
-        return MeasureOK(baseline=baseline, candidate=candidate)
+        return MeasureOK(baseline=baseline, candidate=candidate, baseline_note=baseline_note)
 
     # every seeded sibling runs its pair under the ONE suite_seed, read through
     # its own seed var (mirrors the in-job gate).
@@ -914,6 +951,7 @@ def measure_and_decide(
         candidate=candidate,
         suite=suite,
         suite_seed=suite_seed,  # reached only on the suite path
+        baseline_note=baseline_note,
     )
 
 
@@ -996,6 +1034,7 @@ def resume_attempt(
         suite=outcome.suite,
         suite_seed=outcome.suite_seed,
         candidate_sha=candidate_sha,
+        note=outcome.baseline_note,
     )
 
 

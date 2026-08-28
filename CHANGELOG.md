@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `baseline: cached` (per benchmark; default `paired`): the base tree is
+  measured once per (benchmark, base sha) into a target-wide cache and reused
+  by every attempt on that base, so a gate runs only the candidate — half the
+  eval spend for a benchmark whose baseline is effectively deterministic. The
+  comparison is unpaired, so the contract must declare a calibrated floor
+  (the loader insists), and a credited result says which cached measurement
+  (and seed) its delta was taken against.
 - THE AUTHOR DECLARES ITS EVAL WALLTIME, AND PAYS FOR IT: `submit --minutes
   <N>` sizes the submit's paired gate evals (default: the contract's
   `eval_minutes`), and `gpu_hours_per_run` is now METERED at the syscall for

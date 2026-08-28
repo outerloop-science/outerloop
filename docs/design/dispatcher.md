@@ -89,6 +89,19 @@ eval and has less for experiments — compute is priced by whoever chose to
 spend it, and a legitimate win is never killed by a limit sized to the
 baseline's runtime. `EVAL_JOB_MINUTES_CEILING` is only a 24h backstop.
 
+**Paired or cached baseline.** By default every gate re-measures the base
+tree beside the candidate under one fresh seed (common random numbers): the
+noise-minimal comparison, at two evals per attempt. A benchmark whose
+baseline is effectively deterministic — the speedrun's calibration put nine
+seeds on the same step count — can declare `baseline: cached`: the base
+tree is measured once per (benchmark, base sha) into a target-wide cache
+beside the run dirs, every attempt on that base reuses it, and only the
+candidate runs. The comparison is then unpaired, so the loader requires a
+calibrated floor (`min_delta`/`min_delta_rel`), and the credited result says
+which cached measurement (and seed) the delta was taken against. Two width
+slots that miss the cache at once both measure and both write; last writer
+wins and both values are real.
+
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
 dispatched implementation that *stages* instead of blocking. `climb_once`'s
 transaction (session -> measure -> gates -> panel -> publish) becomes

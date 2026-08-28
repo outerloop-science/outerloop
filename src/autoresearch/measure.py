@@ -18,9 +18,11 @@ phase flows straight through to the decision.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from autoresearch.compute import Compute, JobSpec, is_terminal
 from autoresearch.dispatch import (
@@ -142,6 +144,41 @@ def plan_measures(
     return plan
 
 
+def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path:
+    return cache_dir / f"{benchmark}@{base_sha}.json"
+
+
+def read_baseline_cache(cache_dir: Path, benchmark: str, base_sha: str) -> dict[str, Any] | None:
+    """The cached base-tree measurement for (benchmark, base sha), or None.
+    A cache entry is only ever written from an orchestrator-measured value
+    (below), never from anything an author produced."""
+    try:
+        data = json.loads(_baseline_cache_path(cache_dir, benchmark, base_sha).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or "value" not in data:
+        return None
+    try:
+        float(data["value"])
+    except (TypeError, ValueError):
+        return None
+    return data
+
+
+def write_baseline_cache(
+    cache_dir: Path, benchmark: str, base_sha: str, *, value: float, seed: int, run_tag: str
+) -> None:
+    """Record an orchestrator-measured baseline for every later attempt on
+    this base. Atomic (tmp + replace): two width slots measuring the same
+    base concurrently both write a valid file; last writer wins, and both
+    values are real measurements."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = _baseline_cache_path(cache_dir, benchmark, base_sha)
+    tmp = path.with_suffix(f".{run_tag[:20] or 'tmp'}.tmp")
+    tmp.write_text(json.dumps({"value": value, "seed": seed, "run": run_tag, "base_sha": base_sha}))
+    tmp.replace(path)
+
+
 @dataclass
 class DispatchedMeasurer:
     """Submits and reads a climb's measures as jobs on any `Compute` backend.
@@ -164,6 +201,9 @@ class DispatchedMeasurer:
     # benchmark), everything else on account/partition
     gpu_partition: str = ""
     gpu_account: str = ""
+    # where a `baseline: cached` benchmark's base-tree measurements live
+    # (target-wide); None = no cache, every gate measures its own baseline
+    baseline_cache: Path | None = None
 
     def _placement(self, m: Measure) -> tuple[str, str]:
         if m.gpus <= 0:
@@ -362,4 +402,7 @@ class DispatchSettings:
             run_tag=run_tag,
             gpu_partition=self.gpu_partition,
             gpu_account=self.gpu_account,
+            # target-wide, beside the run dirs: every attempt on one base
+            # shares its cached baseline measurement (Benchmark.baseline)
+            baseline_cache=run_dir.parent / "baselines",
         )
