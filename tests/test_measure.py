@@ -380,9 +380,10 @@ def test_mixed_suite_places_each_measure_on_its_own_lane(tmp_path):
     assert len(cpu_jobs) == 2 and len(gpu_jobs) == 2
     for argv in cpu_jobs:
         assert "--partition=cpu" in argv and "--account=acct" in argv
-        assert not any(a.startswith("--gpus=") for a in argv)
+        assert not any(a.startswith("--gpus") for a in argv)
     for argv in gpu_jobs:
-        assert "--partition=h200" in argv and "--account=gpu-acct" in argv and "--gpus=1" in argv
+        assert "--partition=h200" in argv and "--account=gpu-acct" in argv
+        assert "--gpus-per-node=1" in argv
     # the GPU measures' job scripts carry --nv; the CPU ones do not
     scripts = {n: Path(a[-1]).read_text() for n, a in by_job.items()}
     for n, text in scripts.items():

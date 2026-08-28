@@ -110,7 +110,11 @@ class JobSpec:
             f"--output={self.output}",
         ]
         if self.gpus:
-            argv.append(f"--gpus={self.gpus}")
+            # per-NODE, not per-job (--gpus): every job here is single-node,
+            # and Torch's submit plugin classifies a job by its per-node
+            # GRES — the per-job form was rejected on a GPU partition as
+            # "CPU job setup is not valid"
+            argv.append(f"--gpus-per-node={self.gpus}")
         if self.qos:
             argv.append(f"--qos={self.qos}")
         if self.dependency:

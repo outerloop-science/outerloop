@@ -10,7 +10,9 @@ Versions follow [SemVer](https://semver.org).
 
 - GPU BENCHMARKS: a per-benchmark contract field `gpus` (default 0) sizes
   every dispatched job of that benchmark — gate measures and author
-  launches — with `--gpus=N` on the job and `--nv` on the jail. GPU jobs go
+  launches — with `--gpus-per-node=N` on the job (the per-job `--gpus` form
+  is rejected by Torch's submit plugin as a "CPU job" on a GPU partition —
+  the first fleet speedrun attempt aborted on it) and `--nv` on the jail. GPU jobs go
   to a dedicated lane (`AUTORESEARCH_GPU_PARTITION`, optional
   `AUTORESEARCH_GPU_ACCOUNT`); a `gpus > 0` benchmark on a deployment with no
   lane is refused at launch rather than queued into evals that can never

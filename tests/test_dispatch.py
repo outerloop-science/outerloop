@@ -392,7 +392,11 @@ def test_gpu_jobs_get_nv_and_gpus(tmp_path):
     spec = eval_job_spec(
         script, job_name="e", account="a", partition="h200", eval_minutes=240, gpus=1
     )
-    assert spec.gpus == 1 and "--gpus=1" in spec.to_argv()
+    # --gpus-per-node, not --gpus: Torch's submit plugin classifies a job by
+    # its per-node GRES and rejects a per-job --gpus on a GPU partition as
+    # "CPU job setup is not valid" (the first fleet speedrun attempt died there)
+    assert spec.gpus == 1 and "--gpus-per-node=1" in spec.to_argv()
+    assert not any(a.startswith("--gpus=") for a in spec.to_argv())
     assert spec.time_minutes == 250  # a 4h GPU eval fits under the raised ceiling
 
 
