@@ -781,7 +781,7 @@ def test_self_initiated_selection_rules() -> None:
     records = [_run(f"r{i}", "tsp", NOW - i * 3600) for i in range(3)]
     assert pick(records) is None
     # a pending attempt that died pre-record still counts toward cooldown
-    assert pick([], pending_attempt=("denoise", NOW - 60)) == "reach"
+    assert pick([], dead_attempts={"denoise": NOW - 60}) == "reach"
 
 
 def test_self_initiated_scoped_to_target() -> None:
@@ -2513,3 +2513,98 @@ def test_research_log_lost_cache_rediscovers_instead_of_duplicating(tmp_path: Pa
     assert gh.created == []  # rediscovered via the marker, no duplicate
     assert gh.comments == [(77, gh.comments[0][1])]
     assert _ledger_issue_cache(tmp_path, "org/yolo").read_text() == "77"  # re-cached
+
+
+def test_cooldown_dial_zero_redispatches_immediately(tmp_path: Path) -> None:
+    """The RSI-era dial: attempt_cooldown_minutes: 0 re-dispatches
+    back-to-back (runs_per_week is the spend guard); unset keeps the 6h
+    default for standard research repos."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import pick_self_initiated
+
+    base = """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 500%s}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+"""
+    just_ended = RunRecord(
+        run_id="r1",
+        target="o/r",
+        task_title="t",
+        state=ENDED,
+        benchmark="reach",
+        created=NOW - 60,
+    )
+    hot = load_contract(base % ", attempt_cooldown_minutes: 0", "o/r")
+    assert pick_self_initiated([just_ended], hot, "o/r", NOW) == "reach"
+    standard = load_contract(base % "", "o/r")
+    assert pick_self_initiated([just_ended], standard, "o/r", NOW) is None  # 6h holds
+
+
+def test_zero_cooldown_keeps_the_dead_launch_backoff(tmp_path: Path) -> None:
+    """terra #172: a launch that died before writing a record is invisible
+    to runs_per_week, so even a zero-cooldown contract backs it off by the
+    dead-launch floor instead of resubmitting every tick."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import DEAD_LAUNCH_BACKOFF_S, pick_self_initiated
+
+    hot = load_contract(
+        """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 500, attempt_cooldown_minutes: 0}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "o/r",
+    )
+    # a pre-record death 60s ago: blocked despite cooldown 0
+    assert pick_self_initiated([], hot, "o/r", NOW, {"reach": NOW - 60}) is None
+    # past the floor: dispatches again
+    assert (
+        pick_self_initiated([], hot, "o/r", NOW, {"reach": NOW - DEAD_LAUNCH_BACKOFF_S - 1})
+        == "reach"
+    )
+
+
+def test_dead_launch_tombstones_are_per_benchmark(tmp_path: Path) -> None:
+    """terra #172 r2/r3: crash memory is a per-benchmark tombstone that a
+    SECOND benchmark's launch cannot erase, persists across ticks inside its
+    window, and prunes itself after."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import (
+        DEAD_LAUNCH_BACKOFF_S,
+        pick_self_initiated,
+        read_tombstones,
+        write_tombstone,
+    )
+
+    hot = load_contract(
+        """
+benchmarks:
+  - {name: reach, command: c, metric: m, direction: max}
+  - {name: denoise, command: c, metric: m, direction: max}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 500, attempt_cooldown_minutes: 0}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "o/r",
+    )
+    write_tombstone(tmp_path, "o/r", "reach", NOW - 60)
+    dead = read_tombstones(tmp_path, "o/r", hot, NOW)
+    # reach is floored; denoise still dispatches (width of the SELECTION,
+    # not an overwrite of reach's memory)
+    assert pick_self_initiated([], hot, "o/r", NOW, dead) == "denoise"
+    # denoise also crashes: BOTH tombstones coexist, nothing dispatches
+    write_tombstone(tmp_path, "o/r", "denoise", NOW - 30)
+    dead = read_tombstones(tmp_path, "o/r", hot, NOW)
+    assert pick_self_initiated([], hot, "o/r", NOW, dead) is None
+    # a second tick inside the window: same refusal (persistence)
+    dead = read_tombstones(tmp_path, "o/r", hot, NOW + 60)
+    assert pick_self_initiated([], hot, "o/r", NOW + 60, dead) is None
+    # past the window: pruned on read, dispatch resumes
+    later = NOW + DEAD_LAUNCH_BACKOFF_S + 61
+    assert read_tombstones(tmp_path, "o/r", hot, later) == {}
+    assert pick_self_initiated([], hot, "o/r", later, {}) == "denoise"

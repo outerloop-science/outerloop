@@ -155,6 +155,13 @@ class Budgets(_StrictModel):
     session_minutes: int | None = Field(default=None, gt=0)
     attempt_job_minutes: int | None = Field(default=None, gt=0)
     followup_job_minutes: int | None = Field(default=None, gt=0)
+    # Per-benchmark self-initiated cooldown, in minutes. Default (unset) is
+    # the orchestrator's 6h — right for a standard research repo. An RSI /
+    # speedrun target sets 0: the loop re-dispatches back-to-back and
+    # `runs_per_week` becomes the spend guard (Mengye: "for the RSI
+    # experiment — no cooldown; make sure the cluster is hot"). Still
+    # SERIAL per target until the width dial lands.
+    attempt_cooldown_minutes: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="before")
     @classmethod
