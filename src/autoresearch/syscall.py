@@ -66,6 +66,9 @@ MAX_ARTIFACTS_PER_LAUNCH = 8
 MAX_NOTE_CHARS = 2_000
 # Per-job walltime ask, clamped to the same ceiling as dispatched evals.
 MAX_LAUNCH_MINUTES = 240
+# a submit's declared eval walltime: bounded only by the GPU-hour budget the
+# author draws on, plus this backstop (the dispatcher's own ceiling matches)
+MAX_EVAL_MINUTES = 1440
 # stdout/stderr tail delivered into the wake text, per job.
 MAX_OUTPUT_CHARS = 8_000
 # Per artifact file copied back into the sandbox.
@@ -111,6 +114,12 @@ class SyscallRequest:
     # wake returns verdict + gate result to the author (published directly when
     # it clears cleanly). Costs the sleep it rides on, nothing else.
     submit: bool = False
+    # The author's declared walltime for the submit's paired gate evals
+    # (None = the contract's eval_minutes). Walltime is a budget, never the
+    # metric: compute is priced in GPU-hours against the run's budget, so a
+    # candidate whose eval runs longer is paid for here, not killed by a
+    # fixed limit.
+    eval_minutes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -167,7 +176,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # so anything else here (e.g. a verdict) is a wrong-type request, not a sleep.
     if data.get("type") != "sleep":
         raise SyscallError(f"expected a sleep syscall, got type {data.get('type')!r}")
-    unknown = set(data) - {"type", "launches", "note", "submit"}
+    unknown = set(data) - {"type", "launches", "note", "submit", "eval_minutes"}
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
     note = data.get("note", "")
@@ -176,6 +185,13 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     submit = data.get("submit", False)
     if not isinstance(submit, bool):
         raise SyscallError("submit must be a boolean")
+    eval_minutes = data.get("eval_minutes")
+    if eval_minutes is not None:
+        if not isinstance(eval_minutes, int) or isinstance(eval_minutes, bool) or eval_minutes < 1:
+            raise SyscallError("eval_minutes must be a positive integer")
+        if not submit:
+            raise SyscallError("eval_minutes only applies to a submit")
+        eval_minutes = min(eval_minutes, MAX_EVAL_MINUTES)
     raw_launches = data.get("launches", [])
     if not isinstance(raw_launches, list):
         raise SyscallError("launches must be a list")
@@ -219,7 +235,22 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # a sleep with no launches is legitimate: checkpoint-and-reschedule
     # (research-loop.md, "the session clock is visible") — it still burns a
     # sleep count, which is what bounds living forever.
-    return SyscallRequest(launches=tuple(launches), note=note, submit=submit)
+    return SyscallRequest(
+        launches=tuple(launches), note=note, submit=submit, eval_minutes=eval_minutes
+    )
+
+
+def gpu_hours_cost(request: SyscallRequest, *, gpus: int, eval_minutes_default: int) -> float:
+    """What honoring `request` draws from the run's GPU-hour budget: every
+    launch's walltime, and — for a submit — the two paired gate evals at the
+    declared (else the contract's) walltime, each times the benchmark's GPUs.
+    A CPU benchmark (gpus 0) meters nothing."""
+    if gpus <= 0:
+        return 0.0
+    minutes = sum(la.minutes for la in request.launches)
+    if request.submit:
+        minutes += 2 * (request.eval_minutes or eval_minutes_default or 0)
+    return minutes * gpus / 60.0
 
 
 def read_verdict(workspace: Path) -> dict[str, Any] | None:
@@ -377,14 +408,24 @@ def install_tool(workspace: Path) -> None:
     tool.chmod(0o755)
 
 
-def write_budget(workspace: Path, *, launches_remaining: int, sleeps_remaining: int) -> None:
+def write_budget(
+    workspace: Path,
+    *,
+    launches_remaining: int,
+    sleeps_remaining: int,
+    gpu_hours_remaining: float | None = None,
+) -> None:
     """Kernel-written budget the tool's `status` shows. Informational for the
     author's planning only — enforcement stays in `budget_error`."""
     d = workspace / SYSCALL_DIR
     d.mkdir(exist_ok=True)
-    (d / "budget.json").write_text(
-        json.dumps({"launches_remaining": launches_remaining, "sleeps_remaining": sleeps_remaining})
-    )
+    budget: dict[str, Any] = {
+        "launches_remaining": launches_remaining,
+        "sleeps_remaining": sleeps_remaining,
+    }
+    if gpu_hours_remaining is not None:
+        budget["gpu_hours_remaining"] = round(gpu_hours_remaining, 2)
+    (d / "budget.json").write_text(json.dumps(budget))
 
 
 def budget_error(
@@ -394,10 +435,16 @@ def budget_error(
     launch_budget: int,
     sleeps_used: int,
     sleep_budget: int,
+    gpu_hours_used: float = 0.0,
+    gpu_hour_budget: float | None = None,
+    gpus: int = 0,
+    eval_minutes_default: int = 0,
 ) -> str:
     """The budget check, arithmetic only ('' = within budget). The PROMPT
     carries warnings; this refuses only genuine exhaustion. The sleep being
-    requested right now counts toward the sleep budget."""
+    requested right now counts toward the sleep budget; for a GPU benchmark
+    the request's compute (launches, and a submit's two gate evals at the
+    declared walltime) must fit the run's remaining GPU-hours."""
     if sleeps_used + 1 > sleep_budget:
         return (
             f"sleep budget exhausted ({sleeps_used}/{sleep_budget} used): "
@@ -408,6 +455,14 @@ def budget_error(
             f"launch budget would be exceeded: {launches_used} used + "
             f"{len(request.launches)} requested > {launch_budget} allowed"
         )
+    if gpu_hour_budget is not None and gpus > 0:
+        cost = gpu_hours_cost(request, gpus=gpus, eval_minutes_default=eval_minutes_default)
+        if gpu_hours_used + cost > gpu_hour_budget:
+            return (
+                f"GPU-hour budget would be exceeded: {gpu_hours_used:.1f} used + "
+                f"{cost:.1f} requested > {gpu_hour_budget:g} allowed "
+                "(shorter launches, or a smaller `submit --minutes`)"
+            )
     return ""
 
 

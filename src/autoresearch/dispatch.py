@@ -50,7 +50,11 @@ _SHELL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 IN_JOB_EVAL_MINUTES = 5
 # Ceiling for the contract's eval_minutes hint: OUR spend cap, not the
 # target's to raise (same grammar as every budget ceiling).
-EVAL_JOB_MINUTES_CEILING = 300
+# A BACKSTOP, not a policy knob: the eval walltime is the contract's hint
+# or the author's own declaration at submit, and spend is metered in
+# GPU-hours against gpu_hours_per_run (syscall.budget_error). This only
+# caps a runaway value.
+EVAL_JOB_MINUTES_CEILING = 1440
 # Slack added to the job walltime beyond the eval itself: worktree
 # materialization + venv build from the lockfile on node-local scratch.
 EVAL_JOB_SETUP_MINUTES = 10

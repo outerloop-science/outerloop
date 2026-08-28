@@ -74,7 +74,20 @@ rejects a GPU benchmark whose `eval_minutes` would keep its evals in-job
 (the climb job has no allocation), and the steward lane refuses GPU
 benchmarks outright for now — a stewardship validates its rewrite in-job.
 The first target in this shape is the speedrun (`gpt-speedrun`: one H200
-per eval, ~3.5h — hence the 300-minute ceiling).
+per eval, ~3.5h).
+
+**Who decides the eval walltime.** The gate measures steps, not time, so
+walltime should bound only SPEND — and the attempt already has a spend
+budget. The contract's `eval_minutes` is the DEFAULT; the author may declare
+its own at submit (`submit --minutes <N>`, carried on the run record so a
+wake re-parks and re-floors on it), and `gpu_hours_per_run` is metered at
+the syscall for GPU benchmarks: every launch (minutes × GPUs) and every
+submit (two paired evals × walltime × GPUs) draws on it, and an over-budget
+request is refused with the numbers before anything runs. An author that
+wants a slower-per-step candidate spends more of its budget on the final
+eval and has less for experiments — compute is priced by whoever chose to
+spend it, and a legitimate win is never killed by a limit sized to the
+baseline's runtime. `EVAL_JOB_MINUTES_CEILING` is only a 24h backstop.
 
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
 dispatched implementation that *stages* instead of blocking. `climb_once`'s

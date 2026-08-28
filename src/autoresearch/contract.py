@@ -167,6 +167,14 @@ class SuiteAggregate(_StrictModel):
 
 
 class Budgets(_StrictModel):
+    # The attempt's compute allowance, METERED at the syscall for GPU
+    # benchmarks: every author launch (minutes x gpus) and a submit's two
+    # paired gate evals (2 x eval walltime x gpus) draw on it, and an
+    # over-budget request is refused with the numbers. The author may
+    # declare its own eval walltime at submit (`submit --minutes`), so a
+    # candidate whose eval runs longer is paid for out of this budget rather
+    # than killed by a fixed limit — walltime is never the metric; compute
+    # is priced here. 0 for CPU benchmarks (nothing to meter).
     gpu_hours_per_run: float = Field(ge=0)
     runs_per_week: int = Field(gt=0)
     # Optional per-repo shaping of the orchestrator's session/job limits.
@@ -179,13 +187,13 @@ class Budgets(_StrictModel):
     followup_job_minutes: int | None = Field(default=None, gt=0)
     # Per-benchmark self-initiated cooldown, in minutes. Default (unset) is
     # the orchestrator's 6h — right for a standard research repo. An RSI /
-    # speedrun target sets 0: the loop re-dispatches back-to-back and
+    # hot-loop target sets 0: the loop re-dispatches back-to-back and
     # `runs_per_week` becomes the spend guard (Mengye: "for the RSI
     # experiment — no cooldown; make sure the cluster is hot"). Still
     # SERIAL per target until the width dial lands.
     attempt_cooldown_minutes: int | None = Field(default=None, ge=0)
     # THE WIDTH DIAL: concurrent self-initiated attempts per target. Default
-    # (unset) = 1, today's serial behavior. An RSI/speedrun target raises it
+    # (unset) = 1, today's serial behavior. A hot-loop target raises it
     # to run N authors abreast — each slot gets its own agent identity
     # (agent-01..agent-0N), so branches, ledger rows, and reports stay
     # distinct. runs_per_week and gpu_hours_per_run remain the spend guards.

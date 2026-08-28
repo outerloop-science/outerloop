@@ -56,6 +56,8 @@ MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
 MAX_NOTE_CHARS = 2_000
 MAX_LAUNCH_MINUTES = 240
+# a submit's declared eval walltime (matches the kernel's backstop)
+MAX_EVAL_MINUTES = 1440
 # judge (finding/conclude) bounds
 CONFIDENCES = ("low", "medium", "high")
 KINDS = ("change", "suggestion", "question", "note")
@@ -98,6 +100,7 @@ def _load_staged(root: Path) -> dict:
         ("launches", []),
         ("note", ""),
         ("submit", False),
+        ("eval_minutes", None),
         ("findings", []),
         ("notes", ""),
     ):
@@ -112,9 +115,11 @@ def _save_staged(root: Path, data: dict) -> None:
 def _budget_line(root: Path) -> str:
     try:
         b = json.loads((root / DIR / BUDGET).read_text())
+        gpu = b.get("gpu_hours_remaining")
+        gpu_part = f", {gpu:g} GPU-hours" if isinstance(gpu, int | float) else ""
         return (
             f"budget: {b.get('launches_remaining', '?')} launches, "
-            f"{b.get('sleeps_remaining', '?')} sleeps remaining"
+            f"{b.get('sleeps_remaining', '?')} sleeps{gpu_part} remaining"
         )
     except (OSError, json.JSONDecodeError):
         return "budget: (unknown)"
@@ -168,14 +173,26 @@ def cmd_note(root: Path, args: argparse.Namespace) -> str:
     return "note saved (delivered back to you on wake)."
 
 
-def cmd_submit(root: Path, _args: argparse.Namespace) -> str:
+def cmd_submit(root: Path, args: argparse.Namespace) -> str:
     staged = _load_staged(root)
     staged["submit"] = True
+    minutes = getattr(args, "minutes", None)
+    if minutes is not None:
+        if minutes < 1:
+            raise ToolError("--minutes must be a positive integer")
+        staged["eval_minutes"] = min(minutes, MAX_EVAL_MINUTES)
     _save_staged(root, staged)
+    declared = staged.get("eval_minutes")
+    walltime = (
+        f"each paired eval gets {declared} min of walltime (your declaration; "
+        "2 evals x minutes x GPUs draws on your GPU-hour budget)"
+        if declared
+        else "each paired eval gets the contract's default walltime (declare more with --minutes)"
+    )
     return (
         "staged submit: on `sleep` your current tree is SEALED and measured "
         "against the baseline, and the review panel reads the claim; you will "
-        "be woken with the result (published if it clears cleanly). "
+        f"be woken with the result (published if it clears cleanly). {walltime}. "
         f"{_budget_line(root)}."
     )
 
@@ -189,6 +206,8 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
         "note": staged["note"],
         "submit": bool(staged["submit"]),
     }
+    if staged["submit"] and staged.get("eval_minutes"):
+        payload["eval_minutes"] = int(staged["eval_minutes"])
     (_dir(root) / ABI).write_text(json.dumps(payload))
     (root / DIR / REQUEST).unlink(missing_ok=True)
     n = len(staged["launches"])
@@ -302,9 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
     la.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
     no = sub.add_parser("note", help="save a note to yourself, echoed back on wake")
     no.add_argument("text")
-    sub.add_parser(
+    su = sub.add_parser(
         "submit",
         help="stage a submit: on sleep, seal this tree for the gate + review panel",
+    )
+    su.add_argument(
+        "--minutes",
+        type=int,
+        default=None,
+        help="walltime for each paired gate eval (default: the contract's; "
+        "2 evals x minutes x GPUs draws on your GPU-hour budget)",
     )
     sub.add_parser("sleep", help="commit staged launches/submit; then end your turn")
     # judge verbs

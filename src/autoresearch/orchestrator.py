@@ -41,7 +41,7 @@ from autoresearch.panel import PanelVerdict
 from autoresearch.role_runner import run_role
 from autoresearch.roles import author_spec
 from autoresearch.rolespec import RoleSpec
-from autoresearch.syscall import SyscallError, SyscallRequest
+from autoresearch.syscall import SyscallError, SyscallRequest, gpu_hours_cost
 from autoresearch.syscall import budget_error as syscall_budget_error
 from autoresearch.syscall import read_request as read_syscall_request
 from autoresearch.syscall import render_refusal as render_syscall_refusal
@@ -114,6 +114,8 @@ class RunParked(Exception):
         launches_used: int = 0,
         sleeps_used: int = 0,
         submitted: bool = False,
+        gpu_hours_used: float = 0.0,
+        eval_minutes: int | None = None,
     ):
         self.phase = phase
         self.afterany = afterany
@@ -122,6 +124,11 @@ class RunParked(Exception):
         self.suite_seed = suite_seed
         self.candidate_sha = candidate_sha
         self.session = session
+        # GPU-hours drawn so far (launches + gate evals), and the eval
+        # walltime the author declared at submit — the wake re-parks and
+        # re-floors on the same numbers
+        self.gpu_hours_used = gpu_hours_used
+        self.eval_minutes = eval_minutes
         # Syscall parks (an author-sleep, or a SUBMITTED candidate — Phase B):
         # the request the wake gathers results for, and the budget counts AFTER
         # this park. `submitted` marks a candidate park raised by `submit`: the
@@ -1017,6 +1024,7 @@ def attempt_once(
     launcher: Callable[[str, SyscallRequest], str] | None = None,
     launches_used: int = 0,
     sleeps_used: int = 0,
+    gpu_hours_used: float = 0.0,
 ) -> AttemptResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1140,6 +1148,13 @@ def attempt_once(
                 # (never a tool the author cannot actually call)
                 launch_budget=bench.depth_k if launcher is not None else 0,
                 sleep_budget=bench.sleep_k if launcher is not None else 0,
+                # GPU benchmarks: the compute meter the author budgets against
+                gpu_hour_budget=(
+                    contract.budgets.gpu_hours_per_run
+                    if launcher is not None and bench.gpus
+                    else 0.0
+                ),
+                eval_minutes_default=bench.eval_minutes or 0,
             ),
             created=created,
         )
@@ -1221,9 +1236,14 @@ def attempt_once(
         return bool(session.session_id) and getattr(harness, "supports_resume", True)
 
     def _budgets_line() -> str:
+        gpu = (
+            f", {max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used):.1f} GPU-hours"
+            if bench.gpus
+            else ""
+        )
         return (
             f"Budgets: {max(0, bench.depth_k - launches_used)} launches and "
-            f"{max(0, bench.sleep_k - sleeps_used)} sleeps remaining."
+            f"{max(0, bench.sleep_k - sleeps_used)} sleeps{gpu} remaining."
         )
 
     def _not_run_note(request: SyscallRequest | None) -> str:
@@ -1258,17 +1278,31 @@ def attempt_once(
                 launch_budget=bench.depth_k,
                 sleeps_used=sleeps_used,
                 sleep_budget=bench.sleep_k,
+                gpu_hours_used=gpu_hours_used,
+                gpu_hour_budget=contract.budgets.gpu_hours_per_run,
+                gpus=bench.gpus,
+                eval_minutes_default=bench.eval_minutes or 0,
             )
             if not problem:
+                # the request's compute is charged when it is ACCEPTED: a launch
+                # park charges its launches here; a submit charges its two gate
+                # evals (plus sibling launches) here too, so the park it raises
+                # below carries the drawn total
+                gpu_hours_used += gpu_hours_cost(
+                    request, gpus=bench.gpus, eval_minutes_default=bench.eval_minutes or 0
+                )
                 if request.submit:
                     # a submit rides the measurement below on the SEALED tree —
                     # "a launch whose job is the gate" (buildout Phase B). The
                     # sleep it rides on is counted now; sibling launches are
                     # dispatched (and counted) only if the gate parks — an
                     # inline gate must never orphan launch jobs no wake would
-                    # gather.
+                    # gather. The author's declared eval walltime (its own
+                    # compute, paid from its budget) sizes the gate's jobs.
                     submitted = request
                     sleeps_used += 1
+                    if request.eval_minutes and hasattr(measurer, "eval_minutes"):
+                        measurer.eval_minutes = request.eval_minutes
                     break
                 # Scope BEFORE the snapshot, same invariant as the candidate
                 # path below: an out-of-scope tree is never snapshotted OR
@@ -1298,6 +1332,7 @@ def attempt_once(
                     syscall=request,
                     launches_used=launches_used + len(request.launches),
                     sleeps_used=sleeps_used + 1,
+                    gpu_hours_used=gpu_hours_used,
                 )
             if refused_once or not _can_resume():
                 log.warning("syscall request dropped after refusal (%s); measuring as-is", problem)
@@ -1387,6 +1422,8 @@ def attempt_once(
                 launches_used=launches_used,
                 sleeps_used=sleeps_used,
                 submitted=submitted is not None,
+                gpu_hours_used=gpu_hours_used,
+                eval_minutes=submitted.eval_minutes if submitted is not None else None,
             ) from None
         if isinstance(outcome, AttemptResult):
             if (

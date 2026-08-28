@@ -514,3 +514,84 @@ def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     # SYMLINK refused: the out-of-tree target was never delivered
     assert "leak.txt" in log
     assert not (ev / "artifacts" / "leak.txt").exists()
+
+
+def test_submit_carries_a_declared_eval_walltime(tmp_path: Path) -> None:
+    """`eval_minutes` is the author's walltime for the submit's paired gate
+    evals: positive, clamped to the backstop, and meaningless without a
+    submit (refused loudly rather than silently ignored)."""
+    from autoresearch.syscall import MAX_EVAL_MINUTES
+
+    write_req(tmp_path, {"launches": [], "submit": True, "eval_minutes": 420})
+    req = read_request(tmp_path)
+    assert req is not None and req.submit and req.eval_minutes == 420
+    write_req(tmp_path, {"launches": [], "submit": True, "eval_minutes": 10**6})
+    req = read_request(tmp_path)
+    assert req is not None and req.eval_minutes == MAX_EVAL_MINUTES
+    write_req(tmp_path, {"launches": [], "submit": True})
+    req = read_request(tmp_path)
+    assert req is not None and req.eval_minutes is None
+    for bad in (
+        {"launches": [], "eval_minutes": 60},
+        {"launches": [], "submit": True, "eval_minutes": 0},
+    ):
+        write_req(tmp_path, bad)
+        with pytest.raises(SyscallError):
+            read_request(tmp_path)
+
+
+def test_gpu_hours_are_metered_against_the_run_budget() -> None:
+    """Compute is priced, steps are not: launches (minutes x GPUs) and a
+    submit's two gate evals (at the declared, else default, walltime) draw on
+    gpu_hours_per_run; an over-budget request is refused with the numbers.
+    CPU benchmarks meter nothing."""
+    from autoresearch.syscall import gpu_hours_cost
+
+    launches = (_launch("a"), _launch("b"))  # 5 min each
+    plain = SyscallRequest(launches=launches)
+    assert gpu_hours_cost(plain, gpus=1, eval_minutes_default=240) == 10 / 60
+    assert gpu_hours_cost(plain, gpus=0, eval_minutes_default=240) == 0.0
+    sub_default = SyscallRequest(launches=(), submit=True)
+    assert gpu_hours_cost(sub_default, gpus=1, eval_minutes_default=240) == 8.0
+    sub_declared = SyscallRequest(launches=(), submit=True, eval_minutes=420)
+    assert gpu_hours_cost(sub_declared, gpus=2, eval_minutes_default=240) == 28.0
+    # fits: 8 GPU-hours of evals into a 60-hour budget with 50 used
+    ok = budget_error(
+        sub_default,
+        launches_used=0,
+        launch_budget=4,
+        sleeps_used=0,
+        sleep_budget=4,
+        gpu_hours_used=50.0,
+        gpu_hour_budget=60.0,
+        gpus=1,
+        eval_minutes_default=240,
+    )
+    assert ok == ""
+    # does not fit: a 14-hour eval pair on top of 50 used
+    over = budget_error(
+        sub_declared,
+        launches_used=0,
+        launch_budget=4,
+        sleeps_used=0,
+        sleep_budget=4,
+        gpu_hours_used=50.0,
+        gpu_hour_budget=60.0,
+        gpus=1,
+        eval_minutes_default=240,
+    )
+    assert "GPU-hour budget would be exceeded" in over and "60" in over
+    # a CPU benchmark never meters, whatever the numbers say
+    assert (
+        budget_error(
+            sub_declared,
+            launches_used=0,
+            launch_budget=4,
+            sleeps_used=0,
+            sleep_budget=4,
+            gpu_hours_used=999.0,
+            gpu_hour_budget=1.0,
+            gpus=0,
+        )
+        == ""
+    )
