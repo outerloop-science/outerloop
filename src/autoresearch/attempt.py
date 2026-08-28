@@ -490,8 +490,10 @@ def _arm_park_wake(run_root: Path, run_id: str, now: float, dispatch: DispatchSe
     Without the recipe — dispatched wakes not armed, or a local compute —
     the sweep delivers as before."""
     from autoresearch.compute import SlurmCompute
-    from autoresearch.tick import JobWakeDispatcher, arm_wake, load_wake_spec
+    from autoresearch.tick import JobWakeDispatcher, arm_wake, dispatch_wake_armed, load_wake_spec
 
+    if not dispatch_wake_armed(run_root):
+        return ""  # disarmed: a recipe the tick has not yet removed is not used
     spec = load_wake_spec(run_root)
     if spec is None or not isinstance(dispatch.compute, SlurmCompute):
         return ""
@@ -506,14 +508,25 @@ def _arm_park_wake(run_root: Path, run_id: str, now: float, dispatch: DispatchSe
         return ""
 
 
-def _release_own_lease(run_root: Path, run_id: str) -> None:
-    """Release the run's lease only while this job still holds it: a park
-    hands the lease to the wake it arms, and that wake must keep it."""
-    from autoresearch.runstate import read_lease, release_lease
+def _lease_held_by_another_job(run_root: Path, run_id: str) -> str:
+    """The job id of a wake that holds this run's lease and is not us, or "".
+    A resume with no job id of its own (a manual run) never counts as the
+    holder of a job-held lease."""
+    from autoresearch.runstate import read_lease
 
     lease = read_lease(run_root, run_id)
     mine = os.environ.get("SLURM_JOB_ID", "")
-    if lease is not None and lease.holder_job_id and mine and lease.holder_job_id != mine:
+    if lease is not None and lease.holder_job_id and lease.holder_job_id != mine:
+        return lease.holder_job_id
+    return ""
+
+
+def _release_own_lease(run_root: Path, run_id: str) -> None:
+    """Release the run's lease only while this job still holds it: a park
+    hands the lease to the wake it arms, and that wake must keep it."""
+    from autoresearch.runstate import release_lease
+
+    if _lease_held_by_another_job(run_root, run_id):
         return
     release_lease(run_root, run_id)
 
@@ -2448,6 +2461,14 @@ def main() -> int:
                 "to rebuild the dispatched measurer"
             )
         from autoresearch.runstate import load_record
+
+        # a wake that is not the lease holder is a straggler (a replacement was
+        # dispatched after it was cancelled, or it was armed and then lost):
+        # it must not touch the run beside the holder
+        other = _lease_held_by_another_job(args.run_root, args.resume)
+        if other:
+            print(f"run {args.resume}: wake job {other} holds the lease; this one exits")
+            return 0
 
         # Reproduce the PARKED run's author, not the current fleet default: the
         # (backend, model) PAIR is persisted on the record — a fleet flip must not

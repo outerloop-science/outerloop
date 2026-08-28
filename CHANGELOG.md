@@ -8,7 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- Parks arm their own wake: a run that parks on eval or experiment jobs submits its wake job at once, depending on those jobs (`afterany`), so it fires the moment they finish instead of a sweep cadence plus grace later (~30 min per gate decision). Same job and lease as a sweep-delivered wake; the sweep stays the backup, and now also cancels and redelivers an armed wake Slurm will never start. A lease whose holder Slurm reports alive is no longer reaped by age.
+- A park now submits its own wake job, which waits on the park's jobs and
+  starts the moment they finish (previously: the next sweep, a grace
+  window, and another sweep — about 30 minutes). The sweep remains the
+  fallback, and it replaces a wake job Slurm can never start. A lease held
+  by a live Slurm job is no longer reaped by age.
 
 ### Fixed
 

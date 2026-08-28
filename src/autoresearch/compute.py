@@ -187,7 +187,7 @@ class SlurmCompute:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SlurmQueryError(f"squeue did not run: {exc}") from exc
         if result.returncode != 0:
-            return ""  # squeue errors for a job it no longer knows; sacct is the record
+            raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
         return result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
 
     def active_job_names(self) -> list[str]:

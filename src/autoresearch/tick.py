@@ -706,6 +706,16 @@ def _wake(
 WAKE_SPEC_NAME = "wake-spec.json"
 
 
+def dispatch_wake_armed(root: Path) -> bool:
+    """The operator's on-switch for dispatched wakes: the env var, or the
+    sentinel file (touch/rm, no chain restart). Read by the tick and by every
+    park, so a disarm takes effect at once."""
+    return (
+        bool(os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip())
+        or (root / DISPATCH_WAKE_SENTINEL).exists()
+    )
+
+
 def write_wake_spec(root: Path, spec: FollowupSpec) -> None:
     """Publish the tick's wake recipe for the jobs that park runs: a park
     submits its own wake (`arm_wake`) with exactly the tick's settings, so
@@ -751,7 +761,11 @@ def arm_wake(
     not a redelivery, so it leaves `wake_attempts` — the sweep's stuck
     counter — alone: an eval requeued by preemption fires the afterany
     early, the wake re-parks, and that must not count toward STUCK. Returns
-    the wake job id, or "" when nothing was armed."""
+    the wake job id, or "" when nothing was armed. A park with nothing to
+    depend on (a checkpoint sleep, a blind park) is not armed: it rides the
+    deadline floor, as before."""
+    if not _poll_targets(record):
+        return ""
     lease = read_lease(root, record.run_id)
     if lease is not None:
         if not holder_job_id or lease.holder_job_id != holder_job_id:
@@ -811,10 +825,15 @@ def _armed_wake_lost(
         return False
     elif now - record.terminal_seen < grace_s:
         return False
-    if not dry_run:
-        with contextlib.suppress(Exception):
-            compute.cancel(lease.holder_job_id)
-    return True
+    if dry_run:
+        return True
+    try:
+        compute.cancel(lease.holder_job_id)
+        # only a cancellation Slurm confirms lets the sweep redeliver: a
+        # still-pending wake would otherwise run beside its replacement
+        return not is_pending(compute.status(lease.holder_job_id))
+    except Exception:
+        return False
 
 
 def sweep(
@@ -2501,11 +2520,7 @@ def _wake_dispatcher_from_env(
     chain restart. So dispatched climbing is turned on deliberately, and a
     half-configured environment fails safe to dry rather than to a wake job
     that cannot run."""
-    armed = (
-        bool(os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip())
-        or (root / DISPATCH_WAKE_SENTINEL).exists()
-    )
-    if not armed:
+    if not dispatch_wake_armed(root):
         return LoggingDispatcher(), False
     if followup_spec is None:
         log.warning("dispatch-wake armed but the chain env is incomplete; wake stays dry")

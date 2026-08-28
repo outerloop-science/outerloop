@@ -42,6 +42,7 @@ class FakeSlurm:
     states: dict[str, str] = field(default_factory=dict)
     cancelled: list[str] = field(default_factory=list)
     reasons: dict[str, str] = field(default_factory=dict)  # squeue %r by job id
+    cancel_sticks: bool = True  # scancel moves the job to CANCELLED, like Slurm
 
     def _runner(self, argv, timeout_s):
         if argv[0] == "sacct":
@@ -52,6 +53,8 @@ class FakeSlurm:
             return CommandResult(0, state + "\n" if state else "", "")
         if argv[0] == "scancel":
             self.cancelled.append(argv[1])
+            if self.cancel_sticks:
+                self.states[argv[1]] = "CANCELLED"
             return CommandResult(0, "", "")
         if argv[0] == "squeue":
             if "-j" in argv:
@@ -3131,3 +3134,57 @@ def test_wake_spec_round_trips_and_is_absent_when_wakes_are_dry(tmp_path: Path) 
     assert load_wake_spec(tmp_path) is None
     (tmp_path / "wake-spec.json").write_text("not json")
     assert load_wake_spec(tmp_path) is None
+
+
+def test_arm_wake_skips_a_park_with_nothing_to_depend_on(tmp_path: Path, monkeypatch) -> None:
+    """A checkpoint sleep or blind park has no jobs: an armed wake would run
+    at once instead of at the deadline floor, so nothing is armed."""
+    from autoresearch.tick import JobWakeDispatcher, arm_wake
+
+    monkeypatch.setattr(
+        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+    )
+    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": ""})
+    submits, compute = _sbatch_capture()
+    dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
+    assert arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="") == ""
+    assert submits == [] and read_lease(tmp_path, "r1") is None
+
+
+def test_sweep_keeps_a_wake_it_could_not_cancel(tmp_path: Path) -> None:
+    """Redelivery waits for a cancellation Slurm confirms: a wake still pending
+    after scancel would otherwise run beside its replacement."""
+    waiting_run(tmp_path)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    slurm = FakeSlurm(
+        states={"100": "COMPLETED", "55": "PENDING"},
+        reasons={"55": "DependencyNeverSatisfied"},
+        cancel_sticks=False,
+    )
+    report, dispatcher = run_tick(tmp_path, slurm)
+    assert slurm.cancelled == ["55"]
+    assert report.reaped_leases == () and dispatcher.dispatched == []
+
+
+def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
+    import pytest
+
+    from autoresearch.compute import SlurmQueryError
+
+    def runner(argv, timeout_s):
+        return CommandResult(1, "", "slurmctld down")
+
+    with pytest.raises(SlurmQueryError):
+        SlurmCompute(runner=runner).pending_reason("55")
+
+
+def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch) -> None:
+    from autoresearch.tick import dispatch_wake_armed
+
+    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    assert not dispatch_wake_armed(tmp_path)
+    (tmp_path / "DISPATCH_WAKE").touch()
+    assert dispatch_wake_armed(tmp_path)
+    (tmp_path / "DISPATCH_WAKE").unlink()
+    monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
+    assert dispatch_wake_armed(tmp_path)
