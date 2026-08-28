@@ -50,7 +50,7 @@ _SHELL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 IN_JOB_EVAL_MINUTES = 5
 # Ceiling for the contract's eval_minutes hint: OUR spend cap, not the
 # target's to raise (same grammar as every budget ceiling).
-EVAL_JOB_MINUTES_CEILING = 240
+EVAL_JOB_MINUTES_CEILING = 300
 # Slack added to the job walltime beyond the eval itself: worktree
 # materialization + venv build from the lockfile on node-local scratch.
 EVAL_JOB_SETUP_MINUTES = 10
@@ -248,8 +248,13 @@ def write_eval_job(
     extra_env: dict[str, str] | None = None,
     artifacts: tuple[str, ...] = (),
     artifact_max_bytes: int = 0,
+    gpus: int = 0,
 ) -> Path:
     """Write the orchestrator-authored job script for one dispatched eval.
+
+    `gpus` > 0 adds `--nv` to the jail so the job's allocated GPUs (the
+    JobSpec requests them) are visible inside the container; nothing else
+    about the containment changes.
 
     Trust layout, matching the in-job evaluator exactly:
       * the contract COMMAND goes into its own file, read back with
@@ -352,7 +357,8 @@ def write_eval_job(
             # redirected OUTSIDE apptainer, so the result lands in the run dir
             # without the jailed process ever seeing it
             f"{shlex.quote(apptainer_binary)} exec --containall --cleanenv "
-            '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
+            + ("--nv " if gpus > 0 else "")
+            + '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
             '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
             f"{shlex.quote(image)} "
             'sh -c "$(cat "$EV/command.txt")" '
@@ -438,9 +444,9 @@ def eval_job_spec(
 ) -> JobSpec:
     """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
-    not create a longer Slurm job than the ceiling allows. GPU counts arrive
-    with later contract fields; the parameter exists so the seam does
-    not change shape then."""
+    not create a longer Slurm job than the ceiling allows. `gpus` is the
+    benchmark's contract field; the caller has already placed the job on
+    the GPU lane (DispatchSettings.placement) when it is nonzero."""
     return JobSpec(
         job_name=job_name[:60],
         account=account,

@@ -92,6 +92,13 @@ class Benchmark(_StrictModel):
     # the first eval once measured durations exist. None = in-job (today's
     # behavior).
     eval_minutes: int | None = Field(default=None, ge=1)
+    # GPUs for every dispatched job of this benchmark — gate measures and
+    # author launches alike. 0 (default) = CPU. A GPU benchmark needs the
+    # deployment to name a GPU lane (AUTORESEARCH_GPU_PARTITION, optionally
+    # AUTORESEARCH_GPU_ACCOUNT); without one the tick refuses to launch
+    # attempts on it rather than queue evals that can never run. Bounded at
+    # one node's worth: multi-node evals are not a shape the jail supports.
+    gpus: int = Field(default=0, ge=0, le=8)
     # Depth budget (docs/design/research-loop.md, "one syscall, author-directed"):
     # how many external experiment jobs the author may LAUNCH within one attempt.
     # A generous meter on actions, not a loop the kernel drives — the author
@@ -118,6 +125,21 @@ class Benchmark(_StrictModel):
                 f"seed_env must not name or prefix the evaluator's managed environment ({value!r})"
             )
         return value
+
+    @model_validator(mode="after")
+    def _gpu_benchmarks_dispatch(self) -> Benchmark:
+        # GPUs only exist on dispatched jobs: the in-job evaluator runs inside
+        # the CPU climb job with no allocation and no --nv, so a GPU benchmark
+        # under the in-job threshold would measure on a machine with no GPU
+        # (terra #174 r2). Make the contract say so up front.
+        from autoresearch.dispatch import should_dispatch
+
+        if self.gpus > 0 and not should_dispatch(self.eval_minutes):
+            raise ValueError(
+                f"benchmark {self.name!r} asks for {self.gpus} GPU(s) but its evals "
+                "would run in-job: set eval_minutes above the in-job threshold so they dispatch"
+            )
+        return self
 
     # Cross-seed noise floor. A comparison against the RECORDED best was
     # measured under a different seed, so a delta inside the floor is noise,

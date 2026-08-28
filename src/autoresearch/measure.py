@@ -61,6 +61,9 @@ class Measure:
     command: str
     metric: str
     extra_env: tuple[tuple[str, str], ...] = ()
+    # the measured BENCHMARK's GPUs — per measure, because a suite gate
+    # measures siblings that may need a different lane than the climbed one
+    gpus: int = 0
 
     def env(self) -> dict[str, str]:
         return dict(self.extra_env)
@@ -82,6 +85,7 @@ class SiblingSpec:
     metric: str
     seed_env: str = ""
     seed: int = 0
+    gpus: int = 0
 
     def env(self) -> tuple[tuple[str, str], ...]:
         # inject only a REAL drawn seed: 0 is the ledger's "no seed recorded"
@@ -99,6 +103,7 @@ def plan_measures(
     seed_env: str = "",
     seed: int = 0,
     siblings: tuple[SiblingSpec, ...] = (),
+    gpus: int = 0,
 ) -> list[Measure]:
     """The measures a climb needs, as a pure function of its committed shas
     and contract facts — the same inputs a wake process reconstructs from the
@@ -115,13 +120,24 @@ def plan_measures(
     # sentinel, never a value to run under (see SiblingSpec.env / draw_run_seed).
     env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env and seed else ()
     plan = [
-        Measure("baseline", base_sha, command, metric, env),
-        Measure("candidate", candidate_sha, command, metric, env),
+        Measure("baseline", base_sha, command, metric, env, gpus=gpus),
+        Measure("candidate", candidate_sha, command, metric, env, gpus=gpus),
     ]
     for sib in siblings:
-        plan.append(Measure(f"sib-{sib.name}-base", base_sha, sib.command, sib.metric, sib.env()))
         plan.append(
-            Measure(f"sib-{sib.name}-cand", candidate_sha, sib.command, sib.metric, sib.env())
+            Measure(
+                f"sib-{sib.name}-base", base_sha, sib.command, sib.metric, sib.env(), gpus=sib.gpus
+            )
+        )
+        plan.append(
+            Measure(
+                f"sib-{sib.name}-cand",
+                candidate_sha,
+                sib.command,
+                sib.metric,
+                sib.env(),
+                gpus=sib.gpus,
+            )
         )
     return plan
 
@@ -143,6 +159,21 @@ class DispatchedMeasurer:
     partition: str
     eval_minutes: int
     run_tag: str = "run"  # disambiguates job names across runs on one account
+    # the GPU lane; a measure with `gpus > 0` is placed there at dispatch
+    # time (per MEASURE — a suite's siblings may differ from the climbed
+    # benchmark), everything else on account/partition
+    gpu_partition: str = ""
+    gpu_account: str = ""
+
+    def _placement(self, m: Measure) -> tuple[str, str]:
+        if m.gpus <= 0:
+            return self.account, self.partition
+        if not self.gpu_partition:
+            raise ValueError(
+                f"measure {m.name} needs {m.gpus} GPU(s) but no GPU lane is configured "
+                "(set AUTORESEARCH_GPU_PARTITION)"
+            )
+        return self.gpu_account or self.account, self.gpu_partition
 
     def _det(self, m: Measure) -> str:
         # Everything a measure's RESULT depends on and that can vary across a
@@ -204,13 +235,16 @@ class DispatchedMeasurer:
             command=m.command,
             image=self.image,
             extra_env=m.env(),
+            gpus=m.gpus,
         )
+        account, partition = self._placement(m)
         spec: JobSpec = eval_job_spec(
             script,
             job_name=self._job_name(m),
-            account=self.account,
-            partition=self.partition,
+            account=account,
+            partition=partition,
             eval_minutes=self.eval_minutes,
+            gpus=m.gpus,
         )
         job_id = self.compute.submit(spec)
         (self._ev(m) / "submitted").write_text(job_id)
@@ -290,6 +324,24 @@ class DispatchSettings:
     image: str
     account: str
     partition: str
+    # the GPU lane: where jobs of a benchmark with `gpus > 0` go. Empty
+    # gpu_partition = this deployment cannot place GPU jobs (the tick refuses
+    # to launch such benchmarks); empty gpu_account = same account as CPU jobs.
+    gpu_partition: str = ""
+    gpu_account: str = ""
+
+    def placement(self, gpus: int) -> tuple[str, str]:
+        """(account, partition) for a job needing `gpus` GPUs. Raises when a
+        GPU job has no lane — a queue that can never run is worse than a
+        loud refusal."""
+        if gpus <= 0:
+            return self.account, self.partition
+        if not self.gpu_partition:
+            raise ValueError(
+                f"benchmark needs {gpus} GPU(s) but no GPU lane is configured "
+                "(set AUTORESEARCH_GPU_PARTITION)"
+            )
+        return self.gpu_account or self.account, self.gpu_partition
 
     def measurer(
         self, run_dir: Path, repo_root: Path, eval_minutes: int, run_tag: str
@@ -297,7 +349,8 @@ class DispatchSettings:
         """Bind these coordinates to one run's dispatched measurer. `repo_root`
         is the workspace whose `refs/dispatch/*` snapshots the eval jobs check
         out; `eval_minutes` is the benchmark's contract hint (clamped in the
-        job spec)."""
+        job spec). GPUs are per MEASURE (Measure.gpus): the measurer carries
+        the lane and places each measure when it dispatches it."""
         return DispatchedMeasurer(
             compute=self.compute,
             run_dir=run_dir,
@@ -307,4 +360,6 @@ class DispatchSettings:
             partition=self.partition,
             eval_minutes=eval_minutes,
             run_tag=run_tag,
+            gpu_partition=self.gpu_partition,
+            gpu_account=self.gpu_account,
         )

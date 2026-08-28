@@ -2852,3 +2852,153 @@ roadmap: docs/roadmap.md
     github = G()
     assert service_steward(tmp_path, github, compute, spec, NOW + 60, contract, limits) is None
     assert github.comments_posted == []
+
+
+def test_gpu_benchmark_refused_without_a_gpu_lane(tmp_path: Path) -> None:
+    """A contract asking for GPUs on a deployment with no GPU lane must not
+    launch: its evals would queue into jobs that can never run. With a lane,
+    the launch proceeds and the climb job carries the lane coordinates."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: speedrun, command: c, metric: m, direction: min, gpus: 1, eval_minutes: 240}
+budgets:
+  gpu_hours_per_run: 60
+  runs_per_week: 40
+  attempt_cooldown_minutes: 0
+scope: {allowed: [train.py]}
+roadmap: docs/roadmap.md
+""",
+        "org/speedrun",
+    )
+    panel_key = tmp_path / "vkey"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+
+    def spec(gpu_partition: str) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/speedrun",
+            account="acct",
+            partition="cpu",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            bot_login="bot",
+            panel_key_file=str(panel_key),
+            gpu_partition=gpu_partition,
+        )
+
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submitted.append(" ".join(argv))
+            return CommandResult(0, "501\n", "")
+        return CommandResult(0, "RUNNING\n", "")
+
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, spec(""), contract, NOW) is None
+    assert submitted == []
+    assert service_self_initiated(tmp_path, compute, spec("h200"), contract, NOW) == (
+        "speedrun",
+        "501",
+    )
+
+
+def test_gpu_benchmark_is_not_stewarded(tmp_path: Path) -> None:
+    """A stewardship validates its rewrite in-job, inside the CPU work job:
+    a GPU benchmark cannot be stewarded yet, lane or no lane (terra #174 r2)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, effective_limits, service_steward
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: speedrun, command: c, metric: m, direction: min, gpus: 1, eval_minutes: 240}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [train.py]}
+steward: {allowed: [eval/]}
+roadmap: docs/roadmap.md
+""",
+        "org/speedrun",
+    )
+    limits = effective_limits(contract.budgets)
+
+    class G:
+        def __init__(self):
+            self.comments_posted = []
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [
+                {
+                    "number": 7,
+                    "title": "re-cut the val shard",
+                    "body": "",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                    "labels": [{"name": "autoresearch:steward"}],
+                }
+            ]
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return []
+
+        def comment(self, repo, number, body):
+            self.comments_posted.append((number, body))
+
+    spec = FollowupSpec(
+        target="org/speedrun",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        steward_key_file="/k",
+        gpu_partition="h200",
+    )
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "9\n", "")
+
+    compute = SlurmCompute(runner=runner)
+    github = G()
+    assert service_steward(tmp_path, github, compute, spec, NOW, contract, limits) is None
+    assert submitted == [] and github.comments_posted == []
+
+
+def test_gpu_sibling_needs_the_lane_even_for_a_cpu_climb(tmp_path: Path) -> None:
+    """The suite gate measures siblings: a CPU benchmark's climb on a
+    contract with a GPU sibling still needs the GPU lane (terra #174 r3)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, _gpu_lane_error
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+  - {name: speedrun, command: s, metric: steps, direction: min, gpus: 1, eval_minutes: 240}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/mixed",
+    )
+
+    def spec(gpu_partition: str) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/mixed",
+            account="acct",
+            partition="cpu",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            gpu_partition=gpu_partition,
+        )
+
+    assert "speedrun" in _gpu_lane_error(contract, "tsp", spec(""))
+    assert _gpu_lane_error(contract, "tsp", spec("h200")) == ""

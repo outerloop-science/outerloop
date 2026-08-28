@@ -777,7 +777,15 @@ def measure_and_decide(
     # burn the (expensive) sibling evals, matching attempt_once's lazy order.
     try:
         main = measurer.results(
-            plan_measures(bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed)
+            plan_measures(
+                bench.command,
+                bench.metric,
+                base_sha,
+                candidate_sha,
+                seed_env,
+                seed,
+                gpus=bench.gpus,
+            )
         )
     except EvalError as exc:
         return AttemptResult(outcome="eval-error", note=str(exc), run_seed=seed)
@@ -824,13 +832,27 @@ def measure_and_decide(
     # every seeded sibling runs its pair under the ONE suite_seed, read through
     # its own seed var (mirrors the in-job gate).
     sib_specs = tuple(
-        SiblingSpec(b.name, b.command, b.metric, seed_env=b.seed_env or "", seed=suite_seed)
+        SiblingSpec(
+            b.name,
+            b.command,
+            b.metric,
+            seed_env=b.seed_env or "",
+            seed=suite_seed,
+            gpus=b.gpus,  # each sibling on ITS lane, not the climbed benchmark's
+        )
         for b in siblings
     )
     sib_plan = [
         m
         for m in plan_measures(
-            bench.command, bench.metric, base_sha, candidate_sha, seed_env, seed, siblings=sib_specs
+            bench.command,
+            bench.metric,
+            base_sha,
+            candidate_sha,
+            seed_env,
+            seed,
+            siblings=sib_specs,
+            gpus=bench.gpus,
         )
         if m.name.startswith("sib-")  # baseline/candidate already measured (phase 1)
     ]

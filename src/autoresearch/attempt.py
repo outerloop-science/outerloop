@@ -11,6 +11,7 @@ has ended; the session sees only its own capped API key inside its container.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
 import os
@@ -459,11 +460,31 @@ def _park_run(
     save_record(run_root, waiting, now)
 
 
-def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str):
+def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
+    """The cluster coordinates from the CLI, read in ONE place for both the
+    fresh climb and the wake (a second constructor drifted once — terra
+    #174: the wake dropped the GPU lane)."""
+    from autoresearch.compute import SlurmCompute
+
+    return DispatchSettings(
+        compute=SlurmCompute(),
+        image=args.image,
+        account=args.account,
+        partition=args.partition,
+        gpu_partition=getattr(args, "gpu_partition", ""),
+        gpu_account=getattr(args, "gpu_account", ""),
+    )
+
+
+def _make_launcher(
+    dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str, gpus: int = 0
+):
     """The launch side of the author syscalls, shared by the first pass
     (live_attempt) and the author-sleep wake: each launch becomes a jailed job on
     the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
-    partially-submitted batch is reaped rather than orphaned."""
+    partially-submitted batch is reaped rather than orphaned. `gpus` is the
+    benchmark's: an author's experiments run on the same lane as its evals."""
+    account, partition = dispatch.placement(gpus)
 
     def launcher(sha: str, request: SyscallRequest) -> str:
         from autoresearch.dispatch import eval_job_spec, write_eval_job
@@ -480,15 +501,17 @@ def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, r
                     image=dispatch.image,
                     artifacts=launch.artifacts,
                     artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                    gpus=gpus,
                 )
                 ids.append(
                     dispatch.compute.submit(
                         eval_job_spec(
                             script,
                             job_name=f"{run_id}-launch-{launch.name}",
-                            account=dispatch.account,
-                            partition=dispatch.partition,
+                            account=account,
+                            partition=partition,
                             eval_minutes=launch.minutes,
+                            gpus=gpus,
                         )
                     )
                 )
@@ -689,7 +712,7 @@ def _wake_author_sleep(
             panel_runner=panel_runner,
             resume_session_id=record.resume_session_id,
             improve_prompt=wake_text,
-            launcher=_make_launcher(dispatch, run_dir, workspace, run_id),
+            launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
             launches_used=launches_used,
             sleeps_used=sleeps_used,
         )
@@ -1767,7 +1790,9 @@ def live_attempt(
         launcher = None
         if author_syscalls:
             assert dispatch is not None  # folded into author_syscalls above
-            launcher = _make_launcher(dispatch, run_dir, workspace, run_id)
+            launcher = _make_launcher(
+                dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
+            )
 
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
@@ -2193,6 +2218,10 @@ def main() -> int:
     )
     parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
     parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
+    # the GPU lane for benchmarks with `gpus > 0` (evals + author launches);
+    # empty = this deployment cannot place GPU jobs
+    parser.add_argument("--gpu-partition", default=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""))
+    parser.add_argument("--gpu-account", default=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""))
     parser.add_argument(
         "--uncontained",
         action="store_true",
@@ -2296,7 +2325,6 @@ def main() -> int:
                 "--resume needs the cluster triple (--account/--partition/--image) "
                 "to rebuild the dispatched measurer"
             )
-        from autoresearch.compute import SlurmCompute
         from autoresearch.runstate import load_record, release_lease
 
         # Reproduce the PARKED run's author, not the current fleet default: the
@@ -2356,12 +2384,7 @@ def main() -> int:
             resumed = resume_run(
                 args.run_root,
                 args.resume,
-                dispatch=DispatchSettings(
-                    compute=SlurmCompute(),
-                    image=args.image,
-                    account=args.account,
-                    partition=args.partition,
-                ),
+                dispatch=_dispatch_settings(args),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
@@ -2447,14 +2470,7 @@ def main() -> int:
     # sets these on the climb job's env, a bare CLI run leaves them empty).
     dispatch: DispatchSettings | None = None
     if args.account and args.partition and args.image and Path(args.image).is_file():
-        from autoresearch.compute import SlurmCompute
-
-        dispatch = DispatchSettings(
-            compute=SlurmCompute(),
-            image=args.image,
-            account=args.account,
-            partition=args.partition,
-        )
+        dispatch = _dispatch_settings(args)
     try:
         try:
             outcome = live_attempt(

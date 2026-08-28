@@ -181,6 +181,12 @@ class FollowupSpec:
     # overrun still fails safe through the self-deadline.
     panel: str = "verify,review"
     panel_key_file: str = ""  # "" = the climb CLI's default verifier-key path
+    # The GPU lane for benchmarks whose contract sets `gpus > 0` (their evals
+    # and author launches); empty = this deployment cannot place GPU jobs,
+    # and the launch lanes refuse such benchmarks (a queue that can never
+    # run is worse than a loud refusal). gpu_account "" = same as `account`.
+    gpu_partition: str = ""
+    gpu_account: str = ""
     # Where submitted WORK jobs (climb/steward/followup) run; empty = same as
     # `partition`. The tick chain itself always stays on `partition` — ticks
     # are minutes, work jobs can be hours, and Slurm prices walltime into
@@ -230,6 +236,30 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
     except (OSError, subprocess.SubprocessError) as exc:
         log.warning("flight snapshot failed for %s (%s); using the shared checkout", name, exc)
         return home
+
+
+def _benchmark_gpus(contract: Any, benchmark: str) -> int:
+    bench = next((b for b in getattr(contract, "benchmarks", []) if b.name == benchmark), None)
+    return int(getattr(bench, "gpus", 0) or 0)
+
+
+def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
+    """Why an attempt on `benchmark` cannot launch here, or "": a contract
+    with GPU benchmarks needs this deployment to name a GPU lane — otherwise
+    evals would queue into jobs that can never run (the climb would then
+    park forever on a phantom eval). ANY GPU benchmark in the contract
+    counts, not just the climbed one: the suite gate measures siblings."""
+    if spec.gpu_partition:
+        return ""
+    gpu_benches = [
+        b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "gpus", 0) or 0)
+    ]
+    if gpu_benches:
+        return (
+            f"contract has GPU benchmarks ({', '.join(gpu_benches)}) but no GPU lane is "
+            "configured (set AUTORESEARCH_GPU_PARTITION)"
+        )
+    return ""
 
 
 def _flight_command(home: Path, job_name: str, now: float, argv: list[str]) -> str:
@@ -1878,6 +1908,9 @@ def service_self_initiated(
                 benchmark,
             )
             return None
+        if lane_error := _gpu_lane_error(contract, benchmark, spec):
+            log.error("attempt on %s not launched: %s", benchmark, lane_error)
+            return None
         author_error = _author_config_error(spec)
         if author_error:
             log.error(
@@ -2004,6 +2037,17 @@ def service_steward(
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
+        if _benchmark_gpus(contract, task.benchmark) > 0:
+            # the stewardship validates its rewrite IN-JOB (SubprocessEvaluator
+            # inside the CPU work job — no GPUs, no --nv), so a GPU benchmark
+            # cannot be stewarded yet; refuse rather than launch a validation
+            # that can only fail (terra #174 r2)
+            log.error(
+                "stewardship on %s not launched: GPU benchmarks validate in-job "
+                "and the steward job has no GPU allocation",
+                task.benchmark,
+            )
+            return None
         if dry_run:
             return (f"steward-issue-{task.number}", "dry-run")
         from autoresearch.intake import CLAIM_MARKER, issue_hypothesis
@@ -2121,6 +2165,9 @@ def service_intake(
                 "contract back to merge:manual)",
                 task.benchmark,
             )
+            return None
+        if lane_error := _gpu_lane_error(contract, task.benchmark, spec):
+            log.error("attempt on %s not launched: %s", task.benchmark, lane_error)
             return None
         author_error = _author_config_error(spec)
         if author_error:
@@ -2256,6 +2303,10 @@ class JobWakeDispatcher:
             self.spec.account,
             "--partition",
             self.spec.partition,
+            "--gpu-partition",
+            self.spec.gpu_partition,
+            "--gpu-account",
+            self.spec.gpu_account,
             # the wake runs the SAME verification panel as the fresh climb, so a
             # dispatched improvement is verified before it is published.
             *_climb_panel_argv(self.spec),
@@ -2460,6 +2511,8 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
                 panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
                 job_partition=os.environ.get("AUTORESEARCH_JOB_PARTITION", ""),
+                gpu_partition=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""),
+                gpu_account=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""),
                 max_job_minutes=_max_job_minutes_from_env(),
             )
             return github, followup_spec
