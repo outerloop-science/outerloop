@@ -472,6 +472,37 @@ def test_local_question_and_note_stay_in_body() -> None:
     assert "Uses tabs here" in body
 
 
+def test_unanchored_suggestion_keeps_its_text_in_the_body() -> None:
+    """A suggestion that cannot anchor inline (its line is not in the diff)
+    is rendered with its detail: for a prose finding the detail IS the
+    rewrite, and a bare claim would lose it. Notes stay one line."""
+    from autoresearch.review import Finding, ReviewResult, format_review
+
+    rewrite = Finding(
+        file="docs/guide.md",
+        line=3,
+        confidence="high",
+        summary="Ornate sentence",
+        detail="[prose] Rewrite: The tick runs every 15 minutes.",
+        blocking=False,
+        kind="suggestion",
+    )
+    note = Finding(
+        file="docs/guide.md",
+        line=4,
+        confidence="low",
+        summary="Uses tabs here",
+        detail="Rest of file is spaces.",
+        blocking=False,
+        kind="note",
+    )
+    body, inline = format_review(ReviewResult([rewrite, note], notes=""), DIFF)  # type: ignore[misc]
+    assert inline == []
+    shown = "- Suggestion: **Ornate sentence.** [prose] Rewrite: The tick runs every 15 minutes."
+    assert shown in body
+    assert "Rest of file is spaces" not in body
+
+
 def test_commentable_lines_survives_header_lookalike_content() -> None:
     """An added line whose CONTENT starts with '++ b/' arrives as
     '+++ b/...' and must not rebind the file mid-hunk (review finding:

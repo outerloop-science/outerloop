@@ -320,10 +320,12 @@ def build_summarizer_brief(opinions: list[dict], *, syscall_cmd: str = DEFAULT_S
         "duplicative is listed in your concluding notes as rejected, with "
         "one sentence of reason;\n"
         "- a [prose] finding IS its rewrite: carry the plain rewrite into the "
-        "merged detail verbatim.\n\n"
+        "merged detail verbatim and record it with --kind suggestion, so the "
+        "rewrite is shown to the reader.\n\n"
         f"Record each merged finding with the tool, then conclude:\n"
         f"    {syscall_cmd} finding --file <path> [--line N] --confidence "
-        "<low|medium|high> --summary <claim> --detail <evidence> [--blocking]\n"
+        "<low|medium|high> --summary <claim> --detail <evidence> [--blocking] "
+        "[--kind <change|suggestion|question|note>]\n"
         f"    {syscall_cmd} conclude --notes <summary + rejected list>\n\n"
         f"{joined}"
     )
@@ -547,7 +549,15 @@ def _render_body(
         lines.append("")
     if advisory:
         lines.append("**Advisory (non-blocking):**")
-        lines += [_finding_brief(f) for f in advisory]
+        # a suggestion that could not anchor inline keeps its text here (for
+        # a prose finding the text IS the rewrite); questions and notes stay
+        # one line each
+        lines += [
+            f"- {_BRIEF_LABEL.get(f.kind, '')}{_finding_paragraph(f)}"
+            if _inlines(f)
+            else _finding_brief(f)
+            for f in advisory
+        ]
         lines.append("")
     if result.notes:
         lines += [result.notes]
