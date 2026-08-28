@@ -148,3 +148,17 @@ def test_two_real_opinions_run_the_summarizer_session(tmp_path, monkeypatch) -> 
     assert "lens: general" in captured["brief"]
     assert captured["spec"].name == "summarizer"
     assert "lens: credentials" in captured["brief"]
+
+
+def test_prose_lens_reviews_human_facing_text_against_the_house_style():
+    """The prose lens is the one sanctioned style reviewer: it carries the
+    house style, asks for a rewrite per finding, stays advisory, and the
+    shared rubric names it as the exception to "no style findings"."""
+    from autoresearch.style import PLAIN_STYLE
+
+    lens = REVIEW_LENSES["prose"]
+    assert PLAIN_STYLE in lens and "rewrite" in lens and "advisory" in lens
+    brief = build_agent_brief(_pr(), lens="prose")
+    assert lens in brief and "the one exception is the `prose` lens" in brief
+    merged = build_summarizer_brief([{"lens": "prose", "data": {"findings": []}}])
+    assert "[prose] finding IS its rewrite" in merged

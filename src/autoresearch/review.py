@@ -80,7 +80,9 @@ material is unverifiable from the context, say so in one line in the notes
 instead of raising a finding.
 
 Do not report: style preferences, naming opinions, or restatements of what the
-diff does. If you find nothing, say so.
+diff does — the one exception is the `prose` lens, which reports plain-English
+problems in text people read, each with its rewrite. If you find nothing, say
+so.
 
 The summary is one short sentence naming the defect. The detail is ONE
 sentence: the evidence and the consequence. """
@@ -276,6 +278,15 @@ REVIEW_LENSES = {
         "(could the measured code influence its own measurement?), and "
         "whether a claim is re-verified on the tree that actually lands."
     ),
+    "prose": (
+        "LENS — plain English in everything a person reads: README, docs, "
+        "docstrings, comments, prompts, report and PR text. House style: "
+        + PLAIN_STYLE
+        + " Flag sentences that are ornate, metaphorical, or padded; words a "
+        "reader outside this repo would not know; and claims stated more "
+        "grandly than the code supports. For each, give the plain rewrite in "
+        "the finding. These findings are advisory, never blocking."
+    ),
 }
 
 
@@ -307,10 +318,14 @@ def build_summarizer_brief(opinions: list[dict], *, syscall_cmd: str = DEFAULT_S
         "'[credentials] ...' ('[credentials+deployment]' when lenses agree);\n"
         "- NEVER drop a finding silently: one you judge mistaken or "
         "duplicative is listed in your concluding notes as rejected, with "
-        "one sentence of reason.\n\n"
+        "one sentence of reason;\n"
+        "- a [prose] finding IS its rewrite: carry the plain rewrite into the "
+        "merged detail verbatim and record it with --kind suggestion, so the "
+        "rewrite is shown to the reader.\n\n"
         f"Record each merged finding with the tool, then conclude:\n"
         f"    {syscall_cmd} finding --file <path> [--line N] --confidence "
-        "<low|medium|high> --summary <claim> --detail <evidence> [--blocking]\n"
+        "<low|medium|high> --summary <claim> --detail <evidence> [--blocking] "
+        "[--kind <change|suggestion|question|note>]\n"
         f"    {syscall_cmd} conclude --notes <summary + rejected list>\n\n"
         f"{joined}"
     )
@@ -534,7 +549,15 @@ def _render_body(
         lines.append("")
     if advisory:
         lines.append("**Advisory (non-blocking):**")
-        lines += [_finding_brief(f) for f in advisory]
+        # a suggestion that could not anchor inline keeps its text here (for
+        # a prose finding the text IS the rewrite); questions and notes stay
+        # one line each
+        lines += [
+            f"- {_BRIEF_LABEL.get(f.kind, '')}{_finding_paragraph(f)}"
+            if _inlines(f)
+            else _finding_brief(f)
+            for f in advisory
+        ]
         lines.append("")
     if result.notes:
         lines += [result.notes]

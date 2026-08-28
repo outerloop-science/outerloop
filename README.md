@@ -73,12 +73,11 @@ The knobs that shape a climb, all optional:
 | `steward.allowed` | Paths a separate stewardship lane may maintain (the ruler, the harness) — never the solver |
 | `merge: manual \| auto` | Whether a gate-and-panel-clean PR waits for a human or merges itself |
 
-For GPU benchmarks `gpu_hours_per_run` is metered: an author's experiment
-launches and its gate evals (baseline and candidate when paired) draw on
-it, and the author declares how
-long its final eval may run (`submit --minutes`) — compute is paid for by
-whoever chose to spend it, and never gated as the metric. CPU benchmarks
-meter nothing.
+For GPU benchmarks `gpu_hours_per_run` is a real budget. An author's
+experiment launches and its gate evals (baseline and candidate when paired)
+draw on it, and the author sets how long its final eval may run
+(`submit --minutes`). Compute is charged to the author that spends it; it
+is never the metric. CPU benchmarks are not metered.
 
 ```bash
 uv run python -m autoresearch.contract_cli .autoresearch.yaml   # validate before you push
@@ -97,8 +96,8 @@ account, a contract, and a Slurm cluster with Apptainer.
   never writable by the agent, whatever the contract says.
 - **Your gates apply.** The agent is an ordinary contributor: branch
   protection, required checks, and code owners bind it like anyone else. In
-  `merge: auto` mode your required CI with strict up-to-date checks is the
-  last word, and GitHub itself refuses a stale-base merge.
+  `merge: auto` mode your required CI (with strict up-to-date checks) decides,
+  and GitHub itself refuses a merge against a stale base.
 - **Untrusted by default.** PR text, diffs, issue text, and job output are
   data, never instructions. Authors run without credentials in their
   environment; evals run in a jail that sees only the checked-out tree.
@@ -108,10 +107,10 @@ account, a contract, and a Slurm cluster with Apptainer.
   PR exists.
 - **Nothing leaves your infrastructure.** Experiments run where you say
   (Slurm is the first backend; the compute interface is small and pluggable).
-- **No resident process.** The whole system is a self-perpetuating chain of
-  short Slurm ticks with all state in records on the shared filesystem —
-  every role is its own job, and a crash anywhere heals into an honest
-  ending on the next tick.
+- **No resident process.** The system is a chain of short Slurm jobs
+  ("ticks") that resubmit themselves; all state lives in records on the
+  shared filesystem, and every role is its own job. If any job dies, the
+  next tick records the run as ended and moves on.
 - **No model lock-in.** Every model call goes through the harness layer, so
   backends are swappable — Claude Code, Codex, and hermes-agent are wired today.
 
