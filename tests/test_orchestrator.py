@@ -352,6 +352,50 @@ def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
     )
     assert result.outcome == "no-improvement"
     assert harness.resumes == [None, "s1"]  # the author heard the gate result
+    assert len(evaluator.calls) == 3  # the concluding tree differed, so it was measured
+
+
+def _gate_negative_attempt(tmp_path: Path, harness, evaluator):
+    measurer, snapshot = _wire(evaluator, tmp_path)
+    return attempt_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        launcher=lambda sha, req: "",
+        tree_of=lambda sha: "same-tree",  # every seal has the same content
+    )
+
+
+def test_unchanged_tree_after_a_gate_negative_is_not_measured_again(tmp_path: Path) -> None:
+    """The author hears the gate's negative and concludes without touching the
+    tree: that verdict stands, and the identical tree is not sealed and
+    measured a second time (the speedrun fleet paid a second 8 GPU-hour gate
+    for an identical tree, 2026-08-28)."""
+    harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
+    evaluator = FakeEvaluator(values=[13.9, 13.9])  # a third eval would empty the queue
+    result = _gate_negative_attempt(tmp_path, harness, evaluator)
+    assert result.outcome == "no-improvement"
+    assert harness.resumes == [None, "s1"]
+    assert len(evaluator.calls) == 2
+
+
+def test_identical_resubmit_is_told_so_without_a_second_gate(tmp_path: Path) -> None:
+    """A resubmit of the tree the gate already judged runs nothing: the author
+    is told the verdict stands and decides again (bounded by sleep_k)."""
+    harness = _SeqHarness(["the claim", "again", "conceded"], submit_on=(1, 2))
+    evaluator = FakeEvaluator(values=[13.9, 13.9])
+    result = _gate_negative_attempt(tmp_path, harness, evaluator)
+    assert result.outcome == "no-improvement"
+    assert harness.resumes == [None, "s1", "s2"]
+    assert len(evaluator.calls) == 2
+    assert "identical to the candidate the gate already measured" in harness.prompts[2]
 
 
 def test_inline_gate_never_dispatches_a_submits_sibling_launches(tmp_path: Path) -> None:
@@ -1176,11 +1220,13 @@ class _SeqHarness:
     ) -> None:
         self._texts = list(texts)
         self.resumes: list[str | None] = []
+        self.prompts: list[str] = []
         self.supports_resume = supports_resume
         self.submit_on = set(submit_on)
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         self.resumes.append(resume_session_id)
+        self.prompts.append(brief_text)
         if len(self.resumes) in self.submit_on:
             import json as _json
 
