@@ -61,6 +61,8 @@ def tool_command(workspace: Path) -> str:
 # roomy for the field bounds below (8 launches x 2000-char commands + note).
 MAX_REQUEST_BYTES = 65_536
 MAX_LAUNCHES_PER_SLEEP = 8
+# jobs one launch may fan out to (`--array N`, a sweep)
+MAX_LAUNCH_ARRAY = 16
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS_PER_LAUNCH = 8
 MAX_NOTE_CHARS = 2_000
@@ -101,6 +103,9 @@ class Launch:
     command: str  # runs inside the eval-grade jail on the sealed snapshot
     minutes: int  # walltime ask (clamped)
     artifacts: tuple[str, ...] = ()  # repo-relative files to copy back
+    # a sweep: N jobs of this command, each told its index through SWEEP_INDEX;
+    # one launch against depth_k, N times the walltime against GPU-hours
+    array: int = 1
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,18 @@ class LaunchResult:
     stderr_tail: str
     delivered: tuple[str, ...]  # workspace-relative artifact paths delivered
     skipped: tuple[str, ...]  # declared artifacts not delivered (with reason)
+
+
+def launch_jobs(launch: Launch) -> tuple[tuple[str, dict[str, str]], ...]:
+    """The jobs one launch fans out to: (job name, extra env). A plain launch
+    is one job named after it; an array launch is N jobs `<name>.<i>`, each
+    told its index through SWEEP_INDEX — the Slurm-array idea without a
+    Slurm array, so every backend and the hedged lanes work unchanged. The
+    dot is outside the launch-name alphabet, so no plain launch can share a
+    job name (or its files) with an array member."""
+    if launch.array <= 1:
+        return ((launch.name, {}),)
+    return tuple((f"{launch.name}.{i}", {"SWEEP_INDEX": str(i)}) for i in range(launch.array))
 
 
 def _rel_path_ok(path: str) -> bool:
@@ -202,7 +219,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     for i, item in enumerate(raw_launches):
         if not isinstance(item, dict):
             raise SyscallError(f"launch #{i} must be an object")
-        bad = set(item) - {"name", "command", "minutes", "artifacts"}
+        bad = set(item) - {"name", "command", "minutes", "artifacts", "array"}
         if bad:
             raise SyscallError(f"launch #{i}: unknown keys {sorted(bad)}")
         name = item.get("name")
@@ -220,6 +237,10 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 1:
             raise SyscallError(f"launch {name}: minutes must be a positive integer")
         minutes = min(minutes, MAX_LAUNCH_MINUTES)
+        array = item.get("array", 1)
+        if not isinstance(array, int) or isinstance(array, bool) or array < 1:
+            raise SyscallError(f"launch {name}: array must be a positive integer")
+        array = min(array, MAX_LAUNCH_ARRAY)
         arts = item.get("artifacts", [])
         if not isinstance(arts, list) or len(arts) > MAX_ARTIFACTS_PER_LAUNCH:
             raise SyscallError(
@@ -231,7 +252,9 @@ def read_request(workspace: Path) -> SyscallRequest | None:
                 raise SyscallError(
                     f"launch {name}: artifact {a!r} must be a repo-relative file path"
                 )
-        launches.append(Launch(name=name, command=command, minutes=minutes, artifacts=tuple(arts)))
+        launches.append(
+            Launch(name=name, command=command, minutes=minutes, artifacts=tuple(arts), array=array)
+        )
     # a sleep with no launches is legitimate: checkpoint-and-reschedule
     # (research-loop.md, "the session clock is visible") — it still burns a
     # sleep count, which is what bounds living forever.
@@ -244,7 +267,7 @@ def launches_gpu_hours(request: SyscallRequest, *, gpus: int) -> float:
     """The GPU-hours of the request's launches alone (minutes x GPUs)."""
     if gpus <= 0:
         return 0.0
-    return sum(la.minutes for la in request.launches) * gpus / 60.0
+    return sum(la.minutes * max(la.array, 1) for la in request.launches) * gpus / 60.0
 
 
 def evals_gpu_hours(
@@ -529,33 +552,42 @@ def gather_results(
     size cap); `_deliver_artifacts` guards the destination side."""
     results: list[LaunchResult] = []
     for launch in launches:
-        ev = run_dir / f"eval-launch-{launch.name}"
-        try:
-            exit_code: int | None = int((ev / "exit-code").read_text().strip())
-        except (OSError, ValueError):
-            exit_code = None
-        stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
-        stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
-        skipped = tuple(ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip())
-
-        delivered, skips = _deliver_artifacts(ev / "artifacts", workspace, launch.name)
-        results.append(
-            LaunchResult(
-                name=launch.name,
-                exit_code=exit_code,
-                stdout_tail=stdout,
-                stderr_tail=stderr,
-                delivered=delivered,
-                skipped=skipped + skips,
+        # an array launch delivers one result per job, named `<launch>.<i>`,
+        # with artifacts under results/<launch>/<i>/
+        for i, (job_name, _env) in enumerate(launch_jobs(launch)):
+            ev = run_dir / f"eval-launch-{job_name}"
+            try:
+                exit_code: int | None = int((ev / "exit-code").read_text().strip())
+            except (OSError, ValueError):
+                exit_code = None
+            stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
+            stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
+            skipped = tuple(
+                ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip()
             )
-        )
+
+            delivered, skips = _deliver_artifacts(
+                ev / "artifacts", workspace, launch.name, index=i if launch.array > 1 else None
+            )
+            results.append(
+                LaunchResult(
+                    name=job_name,
+                    exit_code=exit_code,
+                    stdout_tail=stdout,
+                    stderr_tail=stderr,
+                    delivered=delivered,
+                    skipped=skipped + skips,
+                )
+            )
     return tuple(results)
 
 
 def _deliver_artifacts(
-    src: Path, workspace: Path, name: str
+    src: Path, workspace: Path, name: str, index: int | None = None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`.
+    """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`
+    (`results/<name>/<index>/` for one member of an array launch; the first
+    member clears the group so the tree is entirely kernel-created).
 
     The author controls `.autoresearch/` in its sandbox, so the DESTINATION is
     hostile too: a symlinked channel dir or output path would
@@ -567,8 +599,6 @@ def _deliver_artifacts(
     (realpath-contained, size-capped) when the job wrote them."""
     import shutil
 
-    if not src.is_dir():
-        return (), ()
     # a symlinked channel ancestor compromises every write under it — deliver
     # nothing rather than follow it (the author still sees exit code + output).
     channel = workspace / SYSCALL_DIR
@@ -576,11 +606,24 @@ def _deliver_artifacts(
     if channel.is_symlink() or results_root.is_symlink():
         return (), (f"artifacts not delivered: {SYSCALL_DIR} channel is a symlink (refused)",)
 
-    dest = results_root / name
-    if dest.is_symlink():
-        dest.unlink()
-    elif dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
+    # an earlier delivery under this name goes first, even when this job wrote
+    # nothing, so a re-used name never shows stale results beside fresh ones
+    def clear(path: Path) -> None:
+        # whatever the author left at the path: a symlink or a plain file is
+        # unlinked, a directory removed — so the delivery tree below is ours
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+    group = results_root / name
+    if index is None or index == 0:
+        clear(group)
+    rel_dest = Path(name) if index is None else Path(name) / str(index)
+    dest = results_root / rel_dest
+    clear(dest)
+    if not src.is_dir():
+        return (), ()
 
     delivered: list[str] = []
     skips: list[str] = []
@@ -593,7 +636,7 @@ def _deliver_artifacts(
             continue
         try:
             shutil.copy(f, out)
-            delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / name / rel))
+            delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / rel_dest / rel))
         except OSError as exc:
             skips.append(f"deliver failed: {rel} ({exc})")
     return tuple(delivered), tuple(skips)

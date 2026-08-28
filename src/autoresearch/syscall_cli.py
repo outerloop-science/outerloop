@@ -56,6 +56,7 @@ MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
 MAX_NOTE_CHARS = 2_000
 MAX_LAUNCH_MINUTES = 240
+MAX_LAUNCH_ARRAY = 16  # jobs one launch may fan out to (a sweep)
 # a submit's declared eval walltime (matches the kernel's backstop)
 MAX_EVAL_MINUTES = 1440
 # judge (finding/conclude) bounds
@@ -143,6 +144,10 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     if args.minutes < 1:
         raise ToolError("--minutes must be a positive integer")
     minutes = min(args.minutes, MAX_LAUNCH_MINUTES)
+    array = args.array
+    if array < 1:
+        raise ToolError("--array must be a positive integer")
+    array = min(array, MAX_LAUNCH_ARRAY)
     if len(args.artifact) > MAX_ARTIFACTS:
         raise ToolError(f"at most {MAX_ARTIFACTS} --artifact paths")
     for a in args.artifact:
@@ -154,11 +159,19 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     if len(staged["launches"]) >= MAX_LAUNCHES:
         raise ToolError(f"at most {MAX_LAUNCHES} launches per sleep")
     staged["launches"].append(
-        {"name": args.name, "command": command, "minutes": minutes, "artifacts": args.artifact}
+        {
+            "name": args.name,
+            "command": command,
+            "minutes": minutes,
+            "artifacts": args.artifact,
+            "array": array,
+        }
     )
     _save_staged(root, staged)
     return (
-        f"staged launch {args.name!r} ({minutes} min); {len(staged['launches'])} staged. "
+        f"staged launch {args.name!r} ({minutes} min"
+        + (f" x {array} jobs, SWEEP_INDEX 0..{array - 1}" if array > 1 else "")
+        + f"); {len(staged['launches'])} staged. "
         f"Add more, or `sleep` to run them. {_budget_line(root)}."
     )
 
@@ -287,7 +300,8 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
         lines.append(f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}.")
         for la in staged["launches"]:
             arts = (" -> " + ", ".join(la["artifacts"])) if la.get("artifacts") else ""
-            lines.append(f"  - {la['name']} ({la['minutes']} min): {la['command']}{arts}")
+            width = f" x{la['array']}" if int(la.get("array") or 1) > 1 else ""
+            lines.append(f"  - {la['name']} ({la['minutes']} min{width}): {la['command']}{arts}")
         if staged["submit"]:
             lines.append("  submit staged: `sleep` seals this tree for the gate + panel")
         if staged.get("note"):
@@ -312,6 +326,14 @@ def build_parser() -> argparse.ArgumentParser:
     la = sub.add_parser("launch", help="stage a job to run outside the sandbox")
     la.add_argument("--name", required=True, help="your handle for this job (a-z0-9-)")
     la.add_argument("--minutes", type=int, default=30, help="walltime ask (clamped to 240)")
+    la.add_argument(
+        "--array",
+        type=int,
+        default=1,
+        help="fan out to N jobs of this command, each with SWEEP_INDEX=0..N-1 "
+        "and its own results/<name>/<i>/ (a sweep; counts as one launch, "
+        "N times the GPU-hours)",
+    )
     la.add_argument(
         "--artifact",
         action="append",

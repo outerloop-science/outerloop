@@ -2014,6 +2014,46 @@ def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept
 
 
+def test_author_sleep_live_array_launch_submits_one_job_per_index(
+    tmp_path, target_repo_syscalls, monkeypatch
+) -> None:
+    """`array: 2` is one launch that submits two jailed jobs, `<name>.0` and
+    `<name>.1`, each told its index through SWEEP_INDEX; the park waits on
+    both and the stage carries the width for re-parks and the wake."""
+    import json as json_mod
+
+    outcome, _github = run_live(
+        tmp_path,
+        target_repo_syscalls,
+        edits={
+            "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
+            ".autoresearch/syscall.json": json_mod.dumps(
+                {
+                    "type": "sleep",
+                    "launches": [
+                        {"name": "sweep", "command": "uv run probe.py", "minutes": 45, "array": 2}
+                    ],
+                }
+            ),
+        },
+        values=[],
+        dispatch=_fake_dispatch(),
+    )
+    assert outcome.outcome == "parked"
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.stage["afterany"] == "afterany:1000:1001"
+    assert record.stage["syscall_launches"] == [
+        {"name": "sweep", "minutes": 45, "artifacts": [], "array": 2}
+    ]
+    assert record.stage["launches_used"] == 1
+    runs = tmp_path / "state" / "runs" / "tsp-1"
+    for i in (0, 1):
+        ev = runs / f"eval-launch-sweep.{i}"
+        assert (ev / "command.txt").read_text() == "uv run probe.py"
+        scripts = " ".join(p.read_text() for p in ev.iterdir() if p.is_file())
+        assert f"SWEEP_INDEX={i}" in scripts
+
+
 def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, monkeypatch):
     # terra #144 r3: a submitted candidate whose wake dispatches MORE measures
     # (the suite fans out) re-parks BEFORE any author wake — the new stage must
@@ -2027,7 +2067,9 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     )
     rec = load_record(state, run_id)
     rec.stage["submitted"] = True
-    rec.stage["syscall_launches"] = [{"name": "probe", "minutes": 240, "artifacts": ["out.txt"]}]
+    rec.stage["syscall_launches"] = [
+        {"name": "probe", "minutes": 240, "artifacts": ["out.txt"], "array": 3}
+    ]
     rec.stage["launches_used"] = 1
     rec.stage["sleeps_used"] = 1
     save_record(state, rec, 1_000_050.0)
@@ -2044,8 +2086,8 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     assert record.state == "waiting"
     assert record.stage.get("submitted") is True
     assert record.stage["syscall_launches"] == [
-        {"name": "probe", "minutes": 240, "artifacts": ["out.txt"]}
-    ]
+        {"name": "probe", "minutes": 240, "artifacts": ["out.txt"], "array": 3}
+    ]  # the sweep keeps its width across the re-park (terra #181)
     assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
     # the deadline floor still covers the longest sibling launch (240 min) —
     # an undershot floor would let the sweep cancel a healthy queued launch

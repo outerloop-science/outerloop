@@ -397,7 +397,12 @@ def _park_run(
             # longest launch — without them a rebuilt descriptor would
             # undershoot the floor and the sweep could cancel a healthy
             # queued sibling as "pending past deadline"
-            {"name": launch.name, "minutes": launch.minutes, "artifacts": list(launch.artifacts)}
+            {
+                "name": launch.name,
+                "minutes": launch.minutes,
+                "artifacts": list(launch.artifacts),
+                **({"array": launch.array} if launch.array > 1 else {}),
+            }
             for launch in parked.syscall.launches
         ]
         stage["syscall_note"] = redact(parked.syscall.note, secrets)
@@ -504,33 +509,38 @@ def _make_launcher(
 
     def launcher(sha: str, request: SyscallRequest) -> str:
         from autoresearch.dispatch import eval_job_spec, write_eval_job
+        from autoresearch.syscall import launch_jobs
 
         ids: list[str] = []
         try:
             for launch in request.launches:
-                script = write_eval_job(
-                    run_dir,
-                    f"launch-{launch.name}",
-                    repo_root=workspace,
-                    snapshot_sha=sha,
-                    command=launch.command,
-                    image=dispatch.image,
-                    artifacts=launch.artifacts,
-                    artifact_max_bytes=MAX_ARTIFACT_BYTES,
-                    gpus=gpus,
-                )
-                ids.append(
-                    dispatch.compute.submit(
-                        eval_job_spec(
-                            script,
-                            job_name=f"{run_id}-launch-{launch.name}",
-                            account=account,
-                            partition=partition,
-                            eval_minutes=launch.minutes,
-                            gpus=gpus,
+                # an array launch is N jobs of one command, each with its
+                # SWEEP_INDEX; one afterany wake covers them all
+                for job_name, extra_env in launch_jobs(launch):
+                    script = write_eval_job(
+                        run_dir,
+                        f"launch-{job_name}",
+                        repo_root=workspace,
+                        snapshot_sha=sha,
+                        command=launch.command,
+                        image=dispatch.image,
+                        extra_env=extra_env,
+                        artifacts=launch.artifacts,
+                        artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                        gpus=gpus,
+                    )
+                    ids.append(
+                        dispatch.compute.submit(
+                            eval_job_spec(
+                                script,
+                                job_name=f"{run_id}-launch-{job_name}",
+                                account=account,
+                                partition=partition,
+                                eval_minutes=launch.minutes,
+                                gpus=gpus,
+                            )
                         )
                     )
-                )
         except Exception:
             # a partial batch must not orphan: no park record was written yet,
             # so nothing would ever wake or cancel the jobs that DID submit —
@@ -653,6 +663,7 @@ def _wake_author_sleep(
             command="(ran)",
             minutes=int(item.get("minutes") or 1),
             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
+            array=int(item.get("array") or 1),
         )
         for item in _stage_launches(record)
     )
@@ -995,6 +1006,7 @@ def resume_run(
                             # floor still covers the longest launch
                             minutes=int(item.get("minutes") or 1),
                             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
+                            array=int(item.get("array") or 1),
                         )
                         for item in _stage_launches(record)
                     ),

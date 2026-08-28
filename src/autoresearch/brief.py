@@ -244,7 +244,7 @@ def render(brief: SessionBrief) -> str:
             "output and any artifacts delivered under .autoresearch/results/:",
             "",
             "    python .autoresearch/syscall launch --name <handle> "
-            "--minutes <N> --artifact <repo-relative file> -- <command>",
+            "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",
             "    python .autoresearch/syscall submit [--minutes <N>]",
             "    python .autoresearch/syscall sleep",
             "",
@@ -272,7 +272,11 @@ def render(brief: SessionBrief) -> str:
             "captured regardless). Bad arguments fail "
             "immediately — fix and retry before sleeping. You may launch "
             "several jobs before one sleep, and after a wake you can launch "
-            "more, revise, or finish. Budgets this run: "
+            "more, revise, or finish. `--array K` runs one command as K jobs "
+            "(a sweep): each job sees SWEEP_INDEX=0..K-1 in its environment and "
+            "returns its own result, with artifacts under "
+            ".autoresearch/results/<name>/<i>/; it counts as one launch. "
+            "Budgets this run: "
             f"{brief.launch_budget} experiment launches, {brief.sleep_budget} "
             "sleeps (a `sleep` with nothing staged is a checkpoint that "
             "refreshes your session clock and costs one sleep). Spend them as "
