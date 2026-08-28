@@ -2397,7 +2397,9 @@ def main() -> int:
     # file is tolerated only when Vertex (ADC) covers the claude backend.
     api_key = role_key(args.key_file, args.author_backend)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    run_id = f"{args.benchmark}-{stamp}"
+    # the agent id keeps concurrent same-benchmark slots (the width dial's
+    # portfolio case) from minting one run directory in the same second
+    run_id = f"{args.benchmark}-{stamp}-{args.agent_id}"
 
     # Disk preflight BEFORE any run state exists: a session started on a
     # full filesystem dies mid-flight in ways that lose its own evidence

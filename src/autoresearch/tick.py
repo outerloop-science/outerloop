@@ -1472,6 +1472,13 @@ def read_tombstones(root: Path, target: str, contract: Any, now: float) -> dict[
     return out
 
 
+# WIDTH slots are the only suffixed marker names; the pattern also fences
+# list_pendings against a longer target that shares this one's file-name
+# prefix (org/foo vs org/foobar — "/" encodes as "__", so glob alone is
+# ambiguous)
+_SLOT_AGENT_RE = re.compile(r"agent-\d+")
+
+
 def _pending_path(root: Path, target: str, agent: str = "") -> Path:
     # agent "" is the legacy single-slot name, still read for back-compat
     # with a marker written before the width dial deployed
@@ -1500,7 +1507,12 @@ def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:
         return out
     for path in sorted(pending_dir.glob(stem + "*.json")):
         name = path.stem
-        agent = name[len(stem) + 2 :] if name.startswith(stem + "__") else ""
+        if name == stem:
+            agent = ""
+        elif name.startswith(stem + "__") and _SLOT_AGENT_RE.fullmatch(name[len(stem) + 2 :]):
+            agent = name[len(stem) + 2 :]
+        else:
+            continue  # a longer target sharing this prefix (org/foo vs org/foobar)
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -1778,11 +1790,19 @@ def service_self_initiated(
         # WIDTH: every live pending marker occupies a slot; landed ones
         # clear; dead ones become per-benchmark tombstones and free theirs.
         occupied: set[str] = set()
+        nonslot_busy = False
         for agent, pending in list_pendings(root, spec.target):
             marker_agent = "" if not pending.get("agent_id") else agent
             submitted_at = float(pending["submitted_at"])
+            # A slotted marker lands only when ITS OWN record appears —
+            # matching on target+time alone would let a sibling slot's
+            # record clear a still-live marker (terra #173). A legacy
+            # marker names no slot, so it keeps the lax match.
             landed = any(
-                r.target == spec.target and r.created >= submitted_at - 60 for r in records
+                r.target == spec.target
+                and r.created >= submitted_at - 60
+                and (not marker_agent or r.agent_id == marker_agent)
+                for r in records
             )
             expired = now - submitted_at > PENDING_TTL_S
             if landed:
@@ -1795,6 +1815,10 @@ def service_self_initiated(
                 # marker's TTL — queue wait can exceed it — the TTL only
                 # breaks ties when Slurm can't say.
                 occupied.add(agent)
+                if not marker_agent:
+                    # a live un-slotted marker is another lane's submit
+                    # (steward/intake, or a pre-width deploy): serial
+                    nonslot_busy = True
             else:
                 # Died before writing a record: persist the crash memory as a
                 # PER-BENCHMARK tombstone (a sibling launch must not erase
@@ -1807,6 +1831,13 @@ def service_self_initiated(
                 if r.state == IMPLEMENTING and max(r.updated, r.created) <= stranded_cutoff:
                     continue  # stranded: pick ignores it, so must occupancy
                 occupied.add(r.agent_id)
+                if not _SLOT_AGENT_RE.fullmatch(r.agent_id):
+                    nonslot_busy = True
+        if nonslot_busy:
+            # steward and intake keep their pre-width one-run-per-target
+            # exclusivity: width applies AMONG self-initiated slots, it
+            # does not license launching beside another lane (terra #173)
+            return None
         if len(occupied) >= width:
             return None
         slot_agent = _free_agent_slot(occupied, width)
@@ -1932,16 +1963,22 @@ def service_steward(
         if any(r.target == target and r.state != ENDED for r in records):
             return None
         # The queue window (submit -> job writes its record) is bridged by
-        # the SAME per-target pending marker the self-initiated lane uses:
-        # while a submitted job is alive without a record, no lane launches.
-        pending = read_pending(root, target)
-        if pending is not None:
+        # the SAME per-target pending markers the self-initiated lane uses
+        # — ALL of them, slotted included: a width slot queued without a
+        # record yet must block a stewardship the same way an active run
+        # does. Liveness first, TTL only breaks unknown ties (queue wait
+        # can outlive the TTL).
+        for slot, pending in list_pendings(root, target):
+            marker_agent = "" if not pending.get("agent_id") else slot
             submitted_at = float(pending.get("submitted_at", 0.0))
-            landed = any(r.target == target and r.created >= submitted_at - 60 for r in records)
+            landed = any(
+                r.target == target
+                and r.created >= submitted_at - 60
+                and (not marker_agent or r.agent_id == marker_agent)
+                for r in records
+            )
             expired = now - submitted_at > PENDING_TTL_S
             alive = _holder_alive(compute, str(pending.get("job_id", "")))
-            # liveness first, TTL only breaks unknown ties — same rule as
-            # the self-initiated lane (queue wait can outlive the TTL)
             if not landed and (alive is True or (not expired and alive is not False)):
                 return None
         task = pick_steward_issue(github, target, contract, spec.bot_login)
