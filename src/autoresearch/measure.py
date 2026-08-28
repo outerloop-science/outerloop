@@ -149,11 +149,17 @@ def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path
 
 
 def read_baseline_cache(
-    cache_dir: Path, benchmark: str, base_sha: str, *, image: str = "", command: str = ""
+    cache_dir: Path,
+    benchmark: str,
+    base_sha: str,
+    *,
+    image: str = "",
+    command: str = "",
+    metric: str = "",
 ) -> dict[str, Any] | None:
     """The cached base-tree measurement for (benchmark, base sha), or None.
     The entry must have been measured under the SAME determinants the
-    candidate will be — eval image and contract command — or it is stale
+    candidate will be — eval image, contract command, metric key — or it is stale
     (terra #178): a comparison across images is not a comparison. A cache
     entry is only ever written from an orchestrator-measured value (below),
     never from anything an author produced."""
@@ -167,7 +173,11 @@ def read_baseline_cache(
         float(data["value"])
     except (TypeError, ValueError):
         return None
-    if data.get("image", "") != image or data.get("command", "") != command:
+    if (
+        data.get("image", "") != image
+        or data.get("command", "") != command
+        or data.get("metric", "") != metric
+    ):
         return None
     return data
 
@@ -182,6 +192,7 @@ def write_baseline_cache(
     run_tag: str,
     image: str = "",
     command: str = "",
+    metric: str = "",
 ) -> None:
     """Record an orchestrator-measured baseline for every later attempt on
     this base, with the determinants it was measured under. Atomic (a
@@ -203,6 +214,7 @@ def write_baseline_cache(
                 "base_sha": base_sha,
                 "image": image,
                 "command": command,
+                "metric": metric,
             },
             fh,
         )

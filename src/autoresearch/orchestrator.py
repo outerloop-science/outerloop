@@ -803,7 +803,14 @@ def measure_and_decide(
     cache_dir = getattr(measurer, "baseline_cache", None)
     image = str(getattr(measurer, "image", ""))
     cached = (
-        read_baseline_cache(cache_dir, bench.name, base_sha, image=image, command=bench.command)
+        read_baseline_cache(
+            cache_dir,
+            bench.name,
+            base_sha,
+            image=image,
+            command=bench.command,
+            metric=bench.metric,
+        )
         if bench.baseline == "cached" and cache_dir is not None
         else None
     )
@@ -842,6 +849,7 @@ def measure_and_decide(
                 run_tag=str(getattr(measurer, "run_tag", "")),
                 image=image,
                 command=bench.command,
+                metric=bench.metric,
             )
     candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
@@ -1336,6 +1344,7 @@ def attempt_once(
                     base_sha,
                     image=str(getattr(measurer, "image", "")),
                     command=bench.command,
+                    metric=bench.metric,
                 ):
                     main_evals = 1
             problem = syscall_budget_error(

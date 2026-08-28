@@ -385,7 +385,9 @@ def test_cached_baseline_measures_the_base_once_then_only_candidates(tmp_path):
     out = decide(first)
     assert isinstance(out, MeasureOK) and out.baseline == 0.50 and out.baseline_note == ""
     assert first.per_call == [["baseline", "candidate"]]
-    entry = read_baseline_cache(tmp_path / "baselines", "main", BASE, command="run main")
+    entry = read_baseline_cache(
+        tmp_path / "baselines", "main", BASE, command="run main", metric="score"
+    )
     assert entry and entry["value"] == 0.50 and entry["seed"] == 7 and entry["run"] == "run-1"
 
     second = FakeMeasurer({"candidate": 0.61})  # no baseline value: it must not be asked for
@@ -428,6 +430,9 @@ def test_cached_baseline_is_keyed_by_image_and_command(tmp_path):
     assert read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main")
     assert read_baseline_cache(d, "main", BASE, image="/b.sif", command="run main") is None
     assert read_baseline_cache(d, "main", BASE, image="/a.sif", command="run other") is None
+    assert (
+        read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main", metric="x") is None
+    )
     # two concurrent writers of the same entry: unique tmp files, last wins, no crash
     write_baseline_cache(
         d, "main", BASE, value=0.6, seed=4, run_tag="r", image="/a.sif", command="run main"
