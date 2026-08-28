@@ -2906,3 +2906,65 @@ roadmap: docs/roadmap.md
         "speedrun",
         "501",
     )
+
+
+def test_gpu_benchmark_is_not_stewarded(tmp_path: Path) -> None:
+    """A stewardship validates its rewrite in-job, inside the CPU work job:
+    a GPU benchmark cannot be stewarded yet, lane or no lane (terra #174 r2)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, effective_limits, service_steward
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: speedrun, command: c, metric: m, direction: min, gpus: 1, eval_minutes: 240}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [train.py]}
+steward: {allowed: [eval/]}
+roadmap: docs/roadmap.md
+""",
+        "org/speedrun",
+    )
+    limits = effective_limits(contract.budgets)
+
+    class G:
+        def __init__(self):
+            self.comments_posted = []
+
+        def list_open_issues(self, repo, max_pages: int = 3):
+            return [
+                {
+                    "number": 7,
+                    "title": "re-cut the val shard",
+                    "body": "",
+                    "user": {"login": "renmengye"},
+                    "author_association": "OWNER",
+                    "labels": [{"name": "autoresearch:steward"}],
+                }
+            ]
+
+        def list_comments(self, repo, number, max_pages: int = 20):
+            return []
+
+        def comment(self, repo, number, body):
+            self.comments_posted.append((number, body))
+
+    spec = FollowupSpec(
+        target="org/speedrun",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        steward_key_file="/k",
+        gpu_partition="h200",
+    )
+    submitted: list[list[str]] = []
+    compute = SlurmCompute(
+        runner=lambda argv, timeout_s: (submitted.append(list(argv)), CommandResult(0, "9\n", ""))[
+            1
+        ]
+    )
+    github = G()
+    assert service_steward(tmp_path, github, compute, spec, NOW, contract, limits) is None
+    assert submitted == [] and github.comments_posted == []

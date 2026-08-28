@@ -126,6 +126,21 @@ class Benchmark(_StrictModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def _gpu_benchmarks_dispatch(self) -> Benchmark:
+        # GPUs only exist on dispatched jobs: the in-job evaluator runs inside
+        # the CPU climb job with no allocation and no --nv, so a GPU benchmark
+        # under the in-job threshold would measure on a machine with no GPU
+        # (terra #174 r2). Make the contract say so up front.
+        from autoresearch.dispatch import should_dispatch
+
+        if self.gpus > 0 and not should_dispatch(self.eval_minutes):
+            raise ValueError(
+                f"benchmark {self.name!r} asks for {self.gpus} GPU(s) but its evals "
+                "would run in-job: set eval_minutes above the in-job threshold so they dispatch"
+            )
+        return self
+
     # Cross-seed noise floor. A comparison against the RECORDED best was
     # measured under a different seed, so a delta inside the floor is noise,
     # not progress; same-seed paired comparisons are exempt by construction.

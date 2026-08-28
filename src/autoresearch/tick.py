@@ -238,13 +238,17 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
         return home
 
 
+def _benchmark_gpus(contract: Any, benchmark: str) -> int:
+    bench = next((b for b in getattr(contract, "benchmarks", []) if b.name == benchmark), None)
+    return int(getattr(bench, "gpus", 0) or 0)
+
+
 def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
     """Why an attempt on `benchmark` cannot launch here, or "": a benchmark
     whose contract asks for GPUs needs this deployment to name a GPU lane —
     otherwise its evals and launches would queue into jobs that can never
     run (the climb would then park forever on a phantom eval)."""
-    bench = next((b for b in getattr(contract, "benchmarks", []) if b.name == benchmark), None)
-    gpus = int(getattr(bench, "gpus", 0) or 0)
+    gpus = _benchmark_gpus(contract, benchmark)
     if gpus > 0 and not spec.gpu_partition:
         return (
             f"contract asks for {gpus} GPU(s) per eval but no GPU lane is "
@@ -2028,10 +2032,16 @@ def service_steward(
         task = pick_steward_issue(github, target, contract, spec.bot_login)
         if task is None:
             return None
-        if lane_error := _gpu_lane_error(contract, task.benchmark, spec):
-            # the stewardship validates its rewrite with the benchmark's own
-            # evals, which need the same GPU lane as an attempt's
-            log.error("stewardship on %s not launched: %s", task.benchmark, lane_error)
+        if _benchmark_gpus(contract, task.benchmark) > 0:
+            # the stewardship validates its rewrite IN-JOB (SubprocessEvaluator
+            # inside the CPU work job — no GPUs, no --nv), so a GPU benchmark
+            # cannot be stewarded yet; refuse rather than launch a validation
+            # that can only fail (terra #174 r2)
+            log.error(
+                "stewardship on %s not launched: GPU benchmarks validate in-job "
+                "and the steward job has no GPU allocation",
+                task.benchmark,
+            )
             return None
         if dry_run:
             return (f"steward-issue-{task.number}", "dry-run")

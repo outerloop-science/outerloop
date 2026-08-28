@@ -69,8 +69,12 @@ containment changes. GPU jobs need their own lane, so the deployment names
 one — `AUTORESEARCH_GPU_PARTITION`, optionally `AUTORESEARCH_GPU_ACCOUNT`
 (default: the CPU account) — and a benchmark with `gpus > 0` on a deployment
 without a lane is REFUSED at launch (both attempt lanes), never queued into
-evals that can never run. The first target in this shape is the speedrun
-(`gpt-speedrun`: one H200 per eval, ~3.5h — hence the 300-minute ceiling).
+evals that can never run. GPUs exist only on DISPATCHED jobs: the contract
+rejects a GPU benchmark whose `eval_minutes` would keep its evals in-job
+(the climb job has no allocation), and the steward lane refuses GPU
+benchmarks outright for now — a stewardship validates its rewrite in-job.
+The first target in this shape is the speedrun (`gpt-speedrun`: one H200
+per eval, ~3.5h — hence the 300-minute ceiling).
 
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
 dispatched implementation that *stages* instead of blocking. `climb_once`'s

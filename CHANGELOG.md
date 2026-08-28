@@ -14,8 +14,10 @@ Versions follow [SemVer](https://semver.org).
   to a dedicated lane (`AUTORESEARCH_GPU_PARTITION`, optional
   `AUTORESEARCH_GPU_ACCOUNT`); a `gpus > 0` benchmark on a deployment with no
   lane is refused at launch rather than queued into evals that can never
-  run. The dispatched-eval ceiling rises from 240 to 300 minutes for the
-  ~3.5h single-GPU evals of the speedrun target.
+  run; GPU benchmarks must dispatch (the contract rejects an in-job
+  `eval_minutes`), and stewardships on them are refused for now (their
+  validation runs in-job). The dispatched-eval ceiling rises from 240 to
+  300 minutes for the ~3.5h single-GPU evals of the speedrun target.
 
 - THE WIDTH DIAL: `budgets.max_active_attempts` runs N self-initiated
   attempts abreast on one target (default 1 — today's serial behavior).

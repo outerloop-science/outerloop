@@ -333,8 +333,14 @@ scope: {allowed: [train.py]}
 roadmap: docs/roadmap.md
 """
     assert load_contract(base % "", "org/x").benchmarks[0].gpus == 0
-    assert load_contract(base % ", gpus: 1", "org/x").benchmarks[0].gpus == 1
+    assert load_contract(base % ", gpus: 1, eval_minutes: 240", "org/x").benchmarks[0].gpus == 1
     import pytest
 
     with pytest.raises(ValueError):
-        load_contract(base % ", gpus: 16", "org/x")
+        load_contract(base % ", gpus: 16, eval_minutes: 240", "org/x")
+    # GPUs exist only on dispatched jobs: a GPU benchmark whose evals would
+    # run in-job (no eval_minutes, or under the threshold) is a contract error
+    with pytest.raises(ValueError, match="dispatch"):
+        load_contract(base % ", gpus: 1", "org/x")
+    with pytest.raises(ValueError, match="dispatch"):
+        load_contract(base % ", gpus: 1, eval_minutes: 3", "org/x")
