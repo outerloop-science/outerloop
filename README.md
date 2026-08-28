@@ -29,7 +29,8 @@ Nothing reports back to us.
 - **Benchmark climbing** — given a contract (`.autoresearch.yaml`) declaring
   what "better" means and where the agent may write, authors propose changes
   and the orchestrator measures them itself: the base tree and the candidate
-  are evaluated on your cluster under one fresh seed, a calibrated
+  are evaluated on your cluster (under one fresh shared seed when the
+  benchmark declares `seed_env`), a calibrated
   significance floor decides whether the movement is real, a verify/review
   panel reads the claim, and only then does a PR open. Several authors can
   climb one benchmark abreast (the width dial); each author can run its own
@@ -73,7 +74,8 @@ The knobs that shape a climb, all optional:
 | `merge: manual \| auto` | Whether a gate-and-panel-clean PR waits for a human or merges itself |
 
 For GPU benchmarks `gpu_hours_per_run` is metered: an author's experiment
-launches and its candidate's evals draw on it, and the author declares how
+launches and its gate evals (baseline and candidate when paired) draw on
+it, and the author declares how
 long its final eval may run (`submit --minutes`) — compute is paid for by
 whoever chose to spend it, and never gated as the metric. CPU benchmarks
 meter nothing.
