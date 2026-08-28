@@ -80,7 +80,9 @@ material is unverifiable from the context, say so in one line in the notes
 instead of raising a finding.
 
 Do not report: style preferences, naming opinions, or restatements of what the
-diff does. If you find nothing, say so.
+diff does — the one exception is the `prose` lens, which reports plain-English
+problems in text people read, each with its rewrite. If you find nothing, say
+so.
 
 The summary is one short sentence naming the defect. The detail is ONE
 sentence: the evidence and the consequence. """
@@ -316,7 +318,9 @@ def build_summarizer_brief(opinions: list[dict], *, syscall_cmd: str = DEFAULT_S
         "'[credentials] ...' ('[credentials+deployment]' when lenses agree);\n"
         "- NEVER drop a finding silently: one you judge mistaken or "
         "duplicative is listed in your concluding notes as rejected, with "
-        "one sentence of reason.\n\n"
+        "one sentence of reason;\n"
+        "- a [prose] finding IS its rewrite: carry the plain rewrite into the "
+        "merged detail verbatim.\n\n"
         f"Record each merged finding with the tool, then conclude:\n"
         f"    {syscall_cmd} finding --file <path> [--line N] --confidence "
         "<low|medium|high> --summary <claim> --detail <evidence> [--blocking]\n"
