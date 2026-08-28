@@ -84,6 +84,44 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     assert r.stage["session_cost_usd"] == 1.0 and r.stage["session_turns"] == 5
 
 
+def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
+    """A gate negative the author answered by launching more work rides the
+    park, so the wake that ends on the same tree reuses it (review #182)."""
+    from autoresearch.attempt import _stage_judged
+    from autoresearch.orchestrator import AttemptResult
+    from autoresearch.syscall import Launch, SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    verdict = AttemptResult(
+        outcome="no-improvement", baseline=13.0, candidate=13.0, note="inside the floor"
+    )
+    parked = RunParked(
+        phase="author-sleep",
+        afterany="afterany:501",
+        base_sha="b" * 40,
+        seed=7,
+        suite_seed=9,
+        candidate_sha="c" * 40,
+        session=_session("s9"),
+        syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
+        judged=("d" * 40, verdict),
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
+    r = load_record(tmp_path, "tsp-3")
+    assert r.stage["judged"] == {
+        "sha": "d" * 40,
+        "outcome": "no-improvement",
+        "baseline": 13.0,
+        "candidate": 13.0,
+        "note": "inside the floor",
+    }
+    assert _stage_judged(r) == ("d" * 40, verdict)
+    bare = RunRecord(run_id="x", target="o/p", task_title="t", state="waiting")
+    assert _stage_judged(bare) is None
+
+
 def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_path) -> None:
     # Phase A (research-loop-buildout.md): an author-sleep park carries the
     # launch names/artifacts, note, session id, and budget counts the wake
@@ -2494,6 +2532,73 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
     ws = state / "runs" / run_id / "ws"
     kept = _git(ws, "for-each-ref", "--format=%(objectname)", "refs/dispatch/").split()
     assert str(rec.stage["candidate_sha"]) in kept and str(old) not in kept
+
+
+def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
+    tmp_path, monkeypatch
+) -> None:
+    """A submitted candidate fails the gate; the woken author concludes with an
+    honest negative and leaves the tree as it was. The attempt ends on that
+    verdict — the identical tree is NOT sealed and dispatched to the gate a
+    second time (the speedrun fleet paid a second 8 GPU-hour eval pair for a
+    byte-identical tree, 2026-08-28)."""
+    from dataclasses import dataclass
+
+    from autoresearch.measure import DispatchSettings
+    from autoresearch.orchestrator import author_spec
+    from autoresearch.syscall import ensure_excluded
+
+    @dataclass
+    class ConcedingHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            assert "did NOT clear the gate" in brief_text
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.2,
+                num_turns=2,
+                session_id="s1",
+                final_text="Negative result: the change did not help.",
+                transcript_path="",
+            )
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    rec = load_record(state, run_id)
+    rec.stage["submitted"] = True
+    save_record(state, rec, 1_000_050.0)
+    ensure_excluded(state / "runs" / run_id / "ws")
+    # the fixture's eval cruft is for the finish path; here the tree must be
+    # exactly the candidate's
+    (state / "runs" / run_id / "ws" / "eval-cache.tmp").unlink()
+
+    class _Once:
+        def __init__(self):
+            self.calls = 0
+
+        def results(self, measures):
+            self.calls += 1
+            assert self.calls == 1, "the same tree was measured twice"
+            return {"baseline": 13.0, "candidate": 13.0}
+
+    once = _Once()
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: once)
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        harness=ConcedingHarness(),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "no-improvement"
+    assert github.prs == []
+    assert once.calls == 1
+    assert load_record(state, run_id).state != "waiting"
 
 
 def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -> None:

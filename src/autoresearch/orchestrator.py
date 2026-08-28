@@ -121,8 +121,12 @@ class RunParked(Exception):
         submitted: bool = False,
         gpu_hours_used: float = 0.0,
         eval_minutes: int | None = None,
+        judged: tuple[str, AttemptResult] | None = None,
     ):
         self.phase = phase
+        # the gate's last negative and the tree it judged, carried across an
+        # author-sleep so a wake ending on that tree reuses the verdict
+        self.judged = judged
         self.afterany = afterany
         self.base_sha = base_sha
         self.seed = seed
@@ -1084,6 +1088,8 @@ def attempt_once(
     launches_used: int = 0,
     sleeps_used: int = 0,
     gpu_hours_used: float = 0.0,
+    tree_of: Callable[[str], str] | None = None,
+    judged: tuple[str, AttemptResult] | None = None,
 ) -> AttemptResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1264,6 +1270,12 @@ def attempt_once(
     baseline_note = ""
     measured: tuple[str, ...] = ()
     refused_once = False
+    # the gate's last negative and the sealed tree it judged: sealing the same
+    # content again (the author concluded, or resubmitted untouched) reuses
+    # that verdict rather than paying for a second, identical measurement
+    # (`judged` is the wake's: the parked candidate the gate turned down)
+    failed_gate: tuple[str, AttemptResult] | None = judged
+    tree = tree_of or (lambda sha: sha)
 
     def _resume(prompt: str) -> AttemptResult | None:
         """Resume the author session with `prompt`: None on success (session
@@ -1319,6 +1331,8 @@ def attempt_once(
     while True:
         # the syscall request the session's last leg left, if any
         submitted: SyscallRequest | None = None
+        evals_charge = 0.0  # GPU-hours this pass took for gate evals
+        presealed = ""  # a seal taken early to compare against the judged tree
         while launcher is not None:
             try:
                 request = read_syscall_request(workspace)
@@ -1353,6 +1367,15 @@ def attempt_once(
                     gpus=bench.gpus,
                 ):
                     main_evals = 1
+            if request.submit and failed_gate is not None:
+                # a resubmit of the tree the gate already turned down: nothing
+                # to budget or charge — the verdict is reused below (the sleep
+                # still counts, so unchanged resubmits stay bounded)
+                presealed = snapshot()
+                if tree(failed_gate[0]) == tree(presealed):
+                    submitted = request
+                    sleeps_used += 1
+                    break
             problem = syscall_budget_error(
                 request,
                 launches_used=launches_used,
@@ -1379,13 +1402,14 @@ def attempt_once(
                     # never inheriting a prior park's.
                     submitted = request
                     sleeps_used += 1
-                    gpu_hours_used += evals_gpu_hours(
+                    evals_charge = evals_gpu_hours(
                         request,
                         gpus=bench.gpus,
                         eval_minutes_default=bench.eval_minutes or 0,
                         suite_gpus=suite_gpus,
                         main_evals=main_evals,
                     )
+                    gpu_hours_used += evals_charge
                     if hasattr(measurer, "eval_minutes"):
                         measurer.eval_minutes = request.eval_minutes or bench.eval_minutes or 0
                     break
@@ -1411,6 +1435,7 @@ def attempt_once(
                 sha = snapshot()
                 raise RunParked(
                     phase="author-sleep",
+                    judged=failed_gate,
                     afterany=launcher(sha, request),
                     base_sha=base_sha,
                     seed=run_seed,
@@ -1428,6 +1453,7 @@ def attempt_once(
             # the refusal burns no count (nothing was launched, nothing woke a
             # job); the refused_once bound is what stops a refuse/re-ask loop.
             refused_once = True
+            presealed = ""  # the refused author may edit the tree again
             failed = _resume(
                 render_syscall_refusal(
                     problem,
@@ -1461,7 +1487,7 @@ def attempt_once(
         # could not be captured), not a climb crash — same as a candidate eval
         # that raises.
         try:
-            candidate_sha = snapshot()
+            candidate_sha = presealed or snapshot()
         except EvalError as exc:
             return AttemptResult(
                 outcome="eval-error",
@@ -1472,18 +1498,24 @@ def attempt_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
+        unchanged = failed_gate is not None and tree(failed_gate[0]) == tree(candidate_sha)
         try:
-            outcome = measure_and_decide(
-                contract,
-                bench,
-                base_sha=base_sha,
-                candidate_sha=candidate_sha,
-                seed=run_seed,
-                suite_seed=suite_seed,
-                measured_paths=measured,
-                measurer=measurer,
-                min_relative_improvement=config.min_relative_improvement,
-            )
+            if unchanged:
+                assert failed_gate is not None
+                gpu_hours_used -= evals_charge  # nothing ran
+                outcome: AttemptResult | MeasureOK = failed_gate[1]
+            else:
+                outcome = measure_and_decide(
+                    contract,
+                    bench,
+                    base_sha=base_sha,
+                    candidate_sha=candidate_sha,
+                    seed=run_seed,
+                    suite_seed=suite_seed,
+                    measured_paths=measured,
+                    measurer=measurer,
+                    min_relative_improvement=config.min_relative_improvement,
+                )
         except MeasurementPending as pending:
             # PARK 2 (dispatched candidate/suite, after the session): the wake
             # reads the cached results and decides — or, on a SUBMITTED park,
@@ -1519,16 +1551,28 @@ def attempt_once(
                 submitted is not None
                 and outcome.outcome in ("no-improvement", "suite-regression", "eval-error")
                 and _can_resume()
+                and not (unchanged and sleeps_used > bench.sleep_k)
             ):
                 # a submitted candidate that failed the gate — including an
                 # eval that errored — is FEEDBACK to the author: it revises and
                 # resubmits, or concludes honestly (buildout Phase B) — never a
                 # silent terminal. Rounds stay bounded by sleep_k.
-                failed = _resume(
-                    "Your `submit` did NOT clear the gate: "
+                if outcome.outcome != "eval-error":
+                    failed_gate = (candidate_sha, outcome)
+                verdict_text = (
                     f"{outcome.note or outcome.outcome} "
-                    f"(baseline {outcome.baseline}, candidate {outcome.candidate}). "
-                    f"{_not_run_note(submitted)}{_budgets_line()} "
+                    f"(baseline {outcome.baseline}, candidate {outcome.candidate})."
+                )
+                if unchanged:
+                    lead = (
+                        "Your `submit` sealed a tree identical to the candidate the gate "
+                        "already measured, so nothing was run or paid; that verdict "
+                        f"stands: {verdict_text} "
+                    )
+                else:
+                    lead = f"Your `submit` did NOT clear the gate: {verdict_text} "
+                failed = _resume(
+                    f"{lead}{_not_run_note(submitted)}{_budgets_line()} "
                     "Revise and submit again, run more "
                     "experiments, or finish with an honest negative report."
                 )

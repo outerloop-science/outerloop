@@ -406,6 +406,17 @@ def _park_run(
         stage["launches_used"] = parked.launches_used
         stage["sleeps_used"] = parked.sleeps_used
         stage["gpu_hours_used"] = parked.gpu_hours_used
+        if parked.judged is not None:
+            # the gate's last negative rides the park: a wake that ends on the
+            # same tree reuses it instead of measuring again
+            judged_sha, verdict = parked.judged
+            stage["judged"] = {
+                "sha": judged_sha,
+                "outcome": verdict.outcome,
+                "baseline": verdict.baseline,
+                "candidate": verdict.candidate,
+                "note": redact(verdict.note, secrets),
+            }
         if parked.eval_minutes:
             # the author's declared eval walltime rides the park: the wake's
             # measurer and deadline floor must use it, not the contract's
@@ -563,6 +574,7 @@ def _wake_author_sleep(
     issue_number: int,
     eval_minutes: int | None,
     extra_update: str = "",
+    judged: tuple[str, AttemptResult] | None = None,
 ) -> AttemptOutcome:
     """Wake a syscall park and resume the AUTHOR: deliver the launches' results
     into the sandbox, resume the SAME session through the climb's resume-entry
@@ -727,6 +739,8 @@ def _wake_author_sleep(
             resume_session_id=record.resume_session_id,
             improve_prompt=wake_text,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
+            tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
+            judged=judged or _stage_judged(record),
             launches_used=launches_used,
             sleeps_used=sleeps_used,
             gpu_hours_used=gpu_hours_used,
@@ -766,6 +780,26 @@ def _wake_author_sleep(
     # scope-violation, eval-error; a dispatched gate never returns improved
     # inline): end the run and release the sleep snapshot.
     return _end(result, drop_refs=[sleep_ref])
+
+
+def _stage_judged(record: RunRecord) -> tuple[str, AttemptResult] | None:
+    """The gate verdict a park carried (written by `_park_run`), or None."""
+    j = (record.stage or {}).get("judged")
+    if not isinstance(j, dict) or not j.get("sha"):
+        return None
+
+    def num(v: object) -> float | None:
+        return float(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+    return (
+        str(j["sha"]),
+        AttemptResult(
+            outcome=str(j.get("outcome") or "no-improvement"),
+            baseline=num(j.get("baseline")),
+            candidate=num(j.get("candidate")),
+            note=str(j.get("note") or ""),
+        ),
+    )
 
 
 def _stage_launches(record: RunRecord) -> list[dict]:
@@ -950,6 +984,7 @@ def resume_run(
             parked.sleeps_used = int(stage.get("sleeps_used", 0))  # type: ignore[call-overload]
             parked.gpu_hours_used = float(stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
             parked.eval_minutes = int(stage.get("eval_minutes", 0) or 0) or None  # type: ignore[call-overload]
+            parked.judged = parked.judged or _stage_judged(record)
             if parked.syscall is None:
                 parked.syscall = _SyscallRequest(
                     launches=tuple(
@@ -995,7 +1030,9 @@ def resume_run(
         and getattr(harness, "supports_resume", True)
     )
 
-    def _wake_author(extra_update: str) -> AttemptOutcome:
+    def _wake_author(
+        extra_update: str, judged: tuple[str, AttemptResult] | None = None
+    ) -> AttemptOutcome:
         # resume the submitted park's author with the gate/panel feedback
         # leading its wake text; the candidate ref is this park's held snapshot
         return _wake_author_sleep(
@@ -1023,6 +1060,7 @@ def resume_run(
             issue_number=issue_number,
             eval_minutes=eval_minutes,
             extra_update=extra_update,
+            judged=judged,
         )
 
     if (
@@ -1038,7 +1076,11 @@ def resume_run(
             f"{result.note or result.outcome} "
             f"(baseline {result.baseline}, candidate {result.candidate}). "
             "Revise and submit again, run more experiments, or finish with an "
-            "honest negative report."
+            "honest negative report.",
+            # the verdict rides the resume: the same tree, sealed again after
+            # the author concludes or resubmits untouched, is not measured
+            # twice (an errored eval is retried, so it is not carried)
+            judged=(candidate_sha, result) if result.outcome != "eval-error" else None,
         )
 
     if result.outcome == "improved":
@@ -1843,6 +1885,7 @@ def live_attempt(
                 panel_runner=panel_runner,
                 brief_baseline=prior_best.best if prior_best else None,
                 launcher=launcher,
+                tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )
         except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
