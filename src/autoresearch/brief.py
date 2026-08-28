@@ -268,8 +268,10 @@ def render(brief: SessionBrief) -> str:
             ),
             "`status` shows staged launches and remaining budget; `note ...` "
             "leaves a reminder echoed back to you on wake. `--artifact` must "
-            "name a file your command actually writes (stdout/stderr are "
-            "captured regardless). Bad arguments fail "
+            "name a file your command actually writes, anywhere under the repo "
+            "tree — the `.autoresearch/` channel does not exist in the job, so "
+            "never write there (stdout/stderr are captured regardless). Bad "
+            "arguments fail "
             "immediately — fix and retry before sleeping. You may launch "
             "several jobs before one sleep, and after a wake you can launch "
             "more, revise, or finish. `--array K` runs one command as K jobs "
