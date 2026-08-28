@@ -405,6 +405,11 @@ def _park_run(
         # resume_session_id, set below for every park — no stage duplicate)
         stage["launches_used"] = parked.launches_used
         stage["sleeps_used"] = parked.sleeps_used
+        stage["gpu_hours_used"] = parked.gpu_hours_used
+        if parked.eval_minutes:
+            # the author's declared eval walltime rides the park: the wake's
+            # measurer and deadline floor must use it, not the contract's
+            stage["eval_minutes"] = parked.eval_minutes
     # A single-job park records its one pollable id; a MULTI-job park records
     # none — the sweep falls back to polling every id in the stage's `afterany`
     # string and wakes only when ALL are done (tick._poll_targets).
@@ -412,7 +417,7 @@ def _park_run(
     # The deadline is a FLOOR: park time (`now` here is the park moment, passed
     # by the caller) + the eval walltime + a generous queue/grace slack, so a
     # healthy queued-then-running eval never trips the sweep's cancel-on-pending.
-    floor_minutes = effective_eval_minutes(eval_minutes)
+    floor_minutes = effective_eval_minutes(parked.eval_minutes or eval_minutes)
     if parked.phase == "author-sleep" and parked.syscall is not None:
         # an author launch's walltime is the LAUNCH's ask, not the benchmark's
         # eval hint — the floor must sit past the LONGEST launch, or the sweep
@@ -642,6 +647,7 @@ def _wake_author_sleep(
     results = gather_results(run_dir, workspace, launches)
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
+    gpu_hours_used = float(record.stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
     wake_text = render_wake(
         results,
         str(record.stage.get("syscall_note", "")),
@@ -649,6 +655,9 @@ def _wake_author_sleep(
         launch_budget=bench.depth_k,
         sleeps_used=sleeps_used,
         sleep_budget=bench.sleep_k,
+        gpu_hours_remaining=(
+            max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used) if bench.gpus else None
+        ),
     )
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
@@ -659,6 +668,11 @@ def _wake_author_sleep(
             workspace,
             launches_remaining=max(0, bench.depth_k - launches_used),
             sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
+            gpu_hours_remaining=(
+                max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used)
+                if bench.gpus
+                else None
+            ),
         ),
     )
 
@@ -715,6 +729,7 @@ def _wake_author_sleep(
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
             launches_used=launches_used,
             sleeps_used=sleeps_used,
+            gpu_hours_used=gpu_hours_used,
         )
     except RunParked as p:
         # slept again, or the gate dispatched its measures (a candidate park the
@@ -838,6 +853,11 @@ def resume_run(
     eval_minutes = next(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
+    # a submitted park carries the author's declared eval walltime: the
+    # wake's measurer (a re-dispatch) and deadline floor honor it
+    declared = int(record.stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
+    if declared:
+        eval_minutes = declared
     measurer = dispatch.measurer(
         run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
     )
@@ -928,6 +948,8 @@ def resume_run(
             parked.submitted = True
             parked.launches_used = int(stage.get("launches_used", 0))  # type: ignore[call-overload]
             parked.sleeps_used = int(stage.get("sleeps_used", 0))  # type: ignore[call-overload]
+            parked.gpu_hours_used = float(stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
+            parked.eval_minutes = int(stage.get("eval_minutes", 0) or 0) or None  # type: ignore[call-overload]
             if parked.syscall is None:
                 parked.syscall = _SyscallRequest(
                     launches=tuple(
@@ -1685,6 +1707,9 @@ def live_attempt(
                 workspace,
                 launches_remaining=_bench.depth_k,
                 sleeps_remaining=_bench.sleep_k,
+                gpu_hours_remaining=(
+                    float(contract.budgets.gpu_hours_per_run) if _bench.gpus else None
+                ),
             )
 
         def changed_paths() -> list[str]:

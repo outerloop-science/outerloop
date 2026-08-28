@@ -76,6 +76,10 @@ class SessionBrief:
     # for this run and the brief never mentions it.
     launch_budget: int = 0
     sleep_budget: int = 0
+    # GPU benchmarks: the run's GPU-hour budget (launches + gate evals draw
+    # on it) and the contract's default eval walltime; 0 = not metered
+    gpu_hour_budget: float = 0.0
+    eval_minutes_default: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
@@ -93,6 +97,8 @@ class SessionBrief:
             created=data["created"],
             launch_budget=data.get("launch_budget", 0),
             sleep_budget=data.get("sleep_budget", 0),
+            gpu_hour_budget=data.get("gpu_hour_budget", 0.0),
+            eval_minutes_default=data.get("eval_minutes_default", 0),
         )
 
 
@@ -108,6 +114,8 @@ class BriefInputs:
     budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 0))
     launch_budget: int = 0  # author-syscall budgets; 0 = feature off (no mention)
     sleep_budget: int = 0
+    gpu_hour_budget: float = 0.0  # GPU benchmarks only; 0 = not metered
+    eval_minutes_default: int = 0
 
 
 def _cap(text: str, limit: int) -> str:
@@ -141,6 +149,8 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
         created=created,
         launch_budget=inputs.launch_budget,
         sleep_budget=inputs.sleep_budget,
+        gpu_hour_budget=inputs.gpu_hour_budget,
+        eval_minutes_default=inputs.eval_minutes_default,
     )
 
 
@@ -235,9 +245,27 @@ def render(brief: SessionBrief) -> str:
             "",
             "    python .autoresearch/syscall launch --name <handle> "
             "--minutes <N> --artifact <repo-relative file> -- <command>",
-            "    python .autoresearch/syscall submit",
+            "    python .autoresearch/syscall submit [--minutes <N>]",
             "    python .autoresearch/syscall sleep",
             "",
+            *(
+                [
+                    "This benchmark evaluates on GPUs, so compute is metered: you have "
+                    f"{brief.gpu_hour_budget:g} GPU-hours this run, and every launch "
+                    "(minutes x GPUs) and every submit (2 paired evals x walltime x "
+                    "GPUs) draws on them. Walltime is a budget, not the metric — "
+                    "the gate scores only the contract's metric — but a candidate "
+                    "whose eval runs longer needs a longer walltime: declare it "
+                    "with `submit --minutes <N>` (default "
+                    f"{brief.eval_minutes_default} min per eval, the baseline's "
+                    "runtime with headroom); an eval that runs out of walltime is an "
+                    "eval error, not a result. Budget your experiments against the "
+                    "final eval you will need.",
+                    "",
+                ]
+                if brief.gpu_hour_budget > 0
+                else []
+            ),
             "`status` shows staged launches and remaining budget; `note ...` "
             "leaves a reminder echoed back to you on wake. `--artifact` must "
             "name a file your command actually writes (stdout/stderr are "

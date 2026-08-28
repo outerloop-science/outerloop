@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- THE AUTHOR DECLARES ITS EVAL WALLTIME, AND PAYS FOR IT: `submit --minutes
+  <N>` sizes the submit's paired gate evals (default: the contract's
+  `eval_minutes`), and `gpu_hours_per_run` is now METERED at the syscall for
+  GPU benchmarks — every launch (minutes x GPUs) and every submit (2 evals x
+  walltime x GPUs) draws on it, an over-budget request is refused with the
+  numbers, and `status`/wake text show GPU-hours remaining. The metric stays
+  steps; compute is priced by the researcher who chose to spend it, so a
+  slower-per-step candidate is no longer killed by a limit sized to the
+  baseline. The dispatcher's ceiling becomes a 24h backstop.
 - GPU BENCHMARKS: a per-benchmark contract field `gpus` (default 0) sizes
   every dispatched job of that benchmark — gate measures and author
   launches — with `--gpus-per-node=N` on the job (the per-job `--gpus` form
