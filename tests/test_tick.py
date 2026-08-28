@@ -2960,11 +2960,12 @@ roadmap: docs/roadmap.md
         gpu_partition="h200",
     )
     submitted: list[list[str]] = []
-    compute = SlurmCompute(
-        runner=lambda argv, timeout_s: (submitted.append(list(argv)), CommandResult(0, "9\n", ""))[
-            1
-        ]
-    )
+
+    def runner(argv, timeout_s):
+        submitted.append(list(argv))
+        return CommandResult(0, "9\n", "")
+
+    compute = SlurmCompute(runner=runner)
     github = G()
     assert service_steward(tmp_path, github, compute, spec, NOW, contract, limits) is None
     assert submitted == [] and github.comments_posted == []
