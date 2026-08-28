@@ -545,16 +545,25 @@ def test_gpu_hours_are_metered_against_the_run_budget() -> None:
     submit's two gate evals (at the declared, else default, walltime) draw on
     gpu_hours_per_run; an over-budget request is refused with the numbers.
     CPU benchmarks meter nothing."""
-    from autoresearch.syscall import gpu_hours_cost
+    from autoresearch.syscall import evals_gpu_hours, gpu_hours_cost, launches_gpu_hours
 
     launches = (_launch("a"), _launch("b"))  # 5 min each
     plain = SyscallRequest(launches=launches)
     assert gpu_hours_cost(plain, gpus=1, eval_minutes_default=240) == 10 / 60
     assert gpu_hours_cost(plain, gpus=0, eval_minutes_default=240) == 0.0
+    assert evals_gpu_hours(plain, gpus=1, eval_minutes_default=240) == 0.0  # not a submit
     sub_default = SyscallRequest(launches=(), submit=True)
     assert gpu_hours_cost(sub_default, gpus=1, eval_minutes_default=240) == 8.0
     sub_declared = SyscallRequest(launches=(), submit=True, eval_minutes=420)
     assert gpu_hours_cost(sub_declared, gpus=2, eval_minutes_default=240) == 28.0
+    # the two parts are charged where they happen: a submit's evals at
+    # acceptance, its sibling launches only when the gate parks (terra #177)
+    sub_with = SyscallRequest(launches=launches, submit=True)
+    assert launches_gpu_hours(sub_with, gpus=1) == 10 / 60
+    assert evals_gpu_hours(sub_with, gpus=1, eval_minutes_default=240) == 8.0
+    # suite siblings' paired evals are charged as if measured, each at its
+    # own GPU count (terra #177): 2 x 240 min x (1 + 1 + 0) GPUs
+    assert evals_gpu_hours(sub_default, gpus=1, eval_minutes_default=240, suite_gpus=(1, 0)) == 16.0
     # fits: 8 GPU-hours of evals into a 60-hour budget with 50 used
     ok = budget_error(
         sub_default,

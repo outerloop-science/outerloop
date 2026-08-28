@@ -240,17 +240,46 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     )
 
 
-def gpu_hours_cost(request: SyscallRequest, *, gpus: int, eval_minutes_default: int) -> float:
-    """What honoring `request` draws from the run's GPU-hour budget: every
-    launch's walltime, and — for a submit — the two paired gate evals at the
-    declared (else the contract's) walltime, each times the benchmark's GPUs.
-    A CPU benchmark (gpus 0) meters nothing."""
+def launches_gpu_hours(request: SyscallRequest, *, gpus: int) -> float:
+    """The GPU-hours of the request's launches alone (minutes x GPUs)."""
     if gpus <= 0:
         return 0.0
-    minutes = sum(la.minutes for la in request.launches)
-    if request.submit:
-        minutes += 2 * (request.eval_minutes or eval_minutes_default or 0)
-    return minutes * gpus / 60.0
+    return sum(la.minutes for la in request.launches) * gpus / 60.0
+
+
+def evals_gpu_hours(
+    request: SyscallRequest,
+    *,
+    gpus: int,
+    eval_minutes_default: int,
+    suite_gpus: tuple[int, ...] = (),
+) -> float:
+    """The GPU-hours of a submit's gate: two paired evals at the declared
+    (else the contract's) walltime times the benchmark's GPUs — plus the
+    same pair for every suite sibling (each at ITS GPU count), charged as
+    if measured: whether the suite phase runs is decided at measurement,
+    and a budget over-charges rather than under-charges. 0 when not a
+    submit."""
+    if not request.submit:
+        return 0.0
+    minutes = request.eval_minutes or eval_minutes_default or 0
+    return 2 * minutes * (max(gpus, 0) + sum(max(g, 0) for g in suite_gpus)) / 60.0
+
+
+def gpu_hours_cost(
+    request: SyscallRequest,
+    *,
+    gpus: int,
+    eval_minutes_default: int,
+    suite_gpus: tuple[int, ...] = (),
+) -> float:
+    """What honoring `request` would draw from the run's GPU-hour budget in
+    full: launches plus (for a submit) the gate. The budget check uses this
+    worst case; the orchestrator CHARGES the two parts where each actually
+    happens (evals at acceptance, sibling launches only when dispatched)."""
+    return launches_gpu_hours(request, gpus=gpus) + evals_gpu_hours(
+        request, gpus=gpus, eval_minutes_default=eval_minutes_default, suite_gpus=suite_gpus
+    )
 
 
 def read_verdict(workspace: Path) -> dict[str, Any] | None:
@@ -439,6 +468,7 @@ def budget_error(
     gpu_hour_budget: float | None = None,
     gpus: int = 0,
     eval_minutes_default: int = 0,
+    suite_gpus: tuple[int, ...] = (),
 ) -> str:
     """The budget check, arithmetic only ('' = within budget). The PROMPT
     carries warnings; this refuses only genuine exhaustion. The sleep being
@@ -455,8 +485,10 @@ def budget_error(
             f"launch budget would be exceeded: {launches_used} used + "
             f"{len(request.launches)} requested > {launch_budget} allowed"
         )
-    if gpu_hour_budget is not None and gpus > 0:
-        cost = gpu_hours_cost(request, gpus=gpus, eval_minutes_default=eval_minutes_default)
+    if gpu_hour_budget is not None and (gpus > 0 or any(g > 0 for g in suite_gpus)):
+        cost = gpu_hours_cost(
+            request, gpus=gpus, eval_minutes_default=eval_minutes_default, suite_gpus=suite_gpus
+        )
         if gpu_hours_used + cost > gpu_hour_budget:
             return (
                 f"GPU-hour budget would be exceeded: {gpu_hours_used:.1f} used + "
@@ -596,6 +628,7 @@ def render_wake(
     launch_budget: int,
     sleeps_used: int,
     sleep_budget: int,
+    gpu_hours_remaining: float | None = None,
 ) -> str:
     """The text a woken author sees: every job's results as fenced DATA, the
     author's own note echoed back, and the remaining budgets. Job output is
@@ -629,9 +662,10 @@ def render_wake(
     if note:
         fence = _fence(note)
         parts.append(f"Your note to yourself:\n{fence}\n{note}\n{fence}")
+    gpu = f", {gpu_hours_remaining:.1f} GPU-hours" if gpu_hours_remaining is not None else ""
     parts.append(
         f"Budgets: {launch_budget - launches_used} launches and "
-        f"{sleep_budget - sleeps_used} sleeps remaining."
+        f"{sleep_budget - sleeps_used} sleeps{gpu} remaining."
         + (
             " This was your LAST sleep — conclude this session with your best result."
             if sleeps_used >= sleep_budget

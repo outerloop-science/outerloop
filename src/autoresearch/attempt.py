@@ -655,6 +655,9 @@ def _wake_author_sleep(
         launch_budget=bench.depth_k,
         sleeps_used=sleeps_used,
         sleep_budget=bench.sleep_k,
+        gpu_hours_remaining=(
+            max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used) if bench.gpus else None
+        ),
     )
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
