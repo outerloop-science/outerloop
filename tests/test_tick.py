@@ -2969,3 +2969,36 @@ roadmap: docs/roadmap.md
     github = G()
     assert service_steward(tmp_path, github, compute, spec, NOW, contract, limits) is None
     assert submitted == [] and github.comments_posted == []
+
+
+def test_gpu_sibling_needs_the_lane_even_for_a_cpu_climb(tmp_path: Path) -> None:
+    """The suite gate measures siblings: a CPU benchmark's climb on a
+    contract with a GPU sibling still needs the GPU lane (terra #174 r3)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, _gpu_lane_error
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+  - {name: speedrun, command: s, metric: steps, direction: min, gpus: 1, eval_minutes: 240}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/mixed",
+    )
+
+    def spec(gpu_partition: str) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/mixed",
+            account="acct",
+            partition="cpu",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            gpu_partition=gpu_partition,
+        )
+
+    assert "speedrun" in _gpu_lane_error(contract, "tsp", spec(""))
+    assert _gpu_lane_error(contract, "tsp", spec("h200")) == ""

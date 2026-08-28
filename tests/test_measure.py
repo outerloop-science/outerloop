@@ -323,8 +323,8 @@ def test_dispatch_settings_place_gpu_jobs_on_the_gpu_lane(tmp_path):
         gpu_partition="h200",
     )
     assert with_lane.placement(1) == ("acct", "h200")
-    m = with_lane.measurer(tmp_path, repo_root=tmp_path, eval_minutes=240, run_tag="r", gpus=1)
-    assert (m.account, m.partition, m.gpus) == ("acct", "h200", 1)
+    m = with_lane.measurer(tmp_path, repo_root=tmp_path, eval_minutes=240, run_tag="r")
+    assert (m.account, m.partition, m.gpu_partition) == ("acct", "cpu", "h200")
     own_account = DispatchSettings(
         compute=cpu_only.compute,
         image="/i.sif",
@@ -334,3 +334,56 @@ def test_dispatch_settings_place_gpu_jobs_on_the_gpu_lane(tmp_path):
         gpu_account="gpu-acct",
     )
     assert own_account.placement(2) == ("gpu-acct", "h200")
+
+
+def test_mixed_suite_places_each_measure_on_its_own_lane(tmp_path):
+    """A suite gate measures siblings through the ONE measurer: a GPU
+    sibling of a CPU benchmark (or vice versa) must land on its own lane with
+    its own allocation — placement is per MEASURE, not per measurer (terra
+    #174 r3)."""
+    from autoresearch.measure import SiblingSpec, plan_measures
+
+    submitted: list[list[str]] = []
+
+    def runner(argv, timeout_s):
+        if argv and argv[0] == "sbatch":
+            submitted.append(list(argv))
+            return CommandResult(0, f"{100 + len(submitted)}\n", "")
+        if argv and argv[0] == "squeue":
+            return CommandResult(0, "", "")
+        return CommandResult(0, "PENDING\n", "")
+
+    (tmp_path / "repo").mkdir()
+    m = DispatchedMeasurer(
+        compute=SlurmCompute(runner=runner),
+        run_dir=tmp_path,
+        repo_root=tmp_path / "repo",
+        image="/img.sif",
+        account="acct",
+        partition="cpu",
+        eval_minutes=60,
+        run_tag="r1",
+        gpu_partition="h200",
+        gpu_account="gpu-acct",
+    )
+    plan = plan_measures(
+        "c", "m", "a" * 40, "b" * 40, siblings=(SiblingSpec("speedrun", "s", "steps", gpus=1),)
+    )
+    with pytest.raises(MeasurementPending):
+        m.results(plan)
+    by_job = {}
+    for argv in submitted:
+        name = next(a.split("=", 1)[1] for a in argv if a.startswith("--job-name="))
+        by_job[name] = argv
+    cpu_jobs = [a for n, a in by_job.items() if "-baseline-" in n or "-candidate-" in n]
+    gpu_jobs = [a for n, a in by_job.items() if "-sib-speedru" in n]
+    assert len(cpu_jobs) == 2 and len(gpu_jobs) == 2
+    for argv in cpu_jobs:
+        assert "--partition=cpu" in argv and "--account=acct" in argv
+        assert not any(a.startswith("--gpus=") for a in argv)
+    for argv in gpu_jobs:
+        assert "--partition=h200" in argv and "--account=gpu-acct" in argv and "--gpus=1" in argv
+    # the GPU measures' job scripts carry --nv; the CPU ones do not
+    scripts = {n: Path(a[-1]).read_text() for n, a in by_job.items()}
+    for n, text in scripts.items():
+        assert ("--nv" in text) == ("-sib-speedru" in n)

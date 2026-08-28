@@ -839,11 +839,7 @@ def resume_run(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
     measurer = dispatch.measurer(
-        run_dir,
-        repo_root=workspace,
-        eval_minutes=int(eval_minutes or 0),
-        run_tag=run_id,
-        gpus=bench.gpus,
+        run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
     )
     # measured_paths from the COMMITTED base..candidate diff — the sealed
     # candidate, never `changed_paths()` on a live tree that may have drifted.
@@ -1764,11 +1760,7 @@ def live_attempt(
         if dispatched:
             assert dispatch is not None and eval_minutes is not None  # should_dispatch(None) False
             measurer = dispatch.measurer(
-                run_dir,
-                repo_root=workspace,
-                eval_minutes=eval_minutes,
-                run_tag=run_id,
-                gpus=_bench.gpus if _bench is not None else 0,
+                run_dir, repo_root=workspace, eval_minutes=eval_minutes, run_tag=run_id
             )
         else:
             measurer = DispatchedMeasurer(

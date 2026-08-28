@@ -244,14 +244,19 @@ def _benchmark_gpus(contract: Any, benchmark: str) -> int:
 
 
 def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
-    """Why an attempt on `benchmark` cannot launch here, or "": a benchmark
-    whose contract asks for GPUs needs this deployment to name a GPU lane —
-    otherwise its evals and launches would queue into jobs that can never
-    run (the climb would then park forever on a phantom eval)."""
-    gpus = _benchmark_gpus(contract, benchmark)
-    if gpus > 0 and not spec.gpu_partition:
+    """Why an attempt on `benchmark` cannot launch here, or "": a contract
+    with GPU benchmarks needs this deployment to name a GPU lane — otherwise
+    evals would queue into jobs that can never run (the climb would then
+    park forever on a phantom eval). ANY GPU benchmark in the contract
+    counts, not just the climbed one: the suite gate measures siblings."""
+    if spec.gpu_partition:
+        return ""
+    gpu_benches = [
+        b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "gpus", 0) or 0)
+    ]
+    if gpu_benches:
         return (
-            f"contract asks for {gpus} GPU(s) per eval but no GPU lane is "
+            f"contract has GPU benchmarks ({', '.join(gpu_benches)}) but no GPU lane is "
             "configured (set AUTORESEARCH_GPU_PARTITION)"
         )
     return ""
