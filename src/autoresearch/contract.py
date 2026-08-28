@@ -99,6 +99,17 @@ class Benchmark(_StrictModel):
     # attempts on it rather than queue evals that can never run. Bounded at
     # one node's worth: multi-node evals are not a shape the jail supports.
     gpus: int = Field(default=0, ge=0, le=8)
+    # How the gate obtains the baseline number it compares a candidate to.
+    #   paired (default): re-measure the base tree next to every candidate,
+    #     both under one fresh seed (common random numbers) — the noise-
+    #     minimal comparison, at two evals per attempt.
+    #   cached: measure the base tree ONCE per (benchmark, base sha) into a
+    #     cache shared by every attempt on that base, then run only the
+    #     candidate at a fresh seed. Halves eval spend; the comparison is
+    #     unpaired, so the contract's min_delta must cover cross-seed noise
+    #     on its own (calibrate it). The ledger row says which baseline
+    #     measurement (and seed) a credited delta was taken against.
+    baseline: Literal["paired", "cached"] = "paired"
     # Depth budget (docs/design/research-loop.md, "one syscall, author-directed"):
     # how many external experiment jobs the author may LAUNCH within one attempt.
     # A generous meter on actions, not a loop the kernel drives — the author
@@ -138,6 +149,16 @@ class Benchmark(_StrictModel):
             raise ValueError(
                 f"benchmark {self.name!r} asks for {self.gpus} GPU(s) but its evals "
                 "would run in-job: set eval_minutes above the in-job threshold so they dispatch"
+            )
+        floor_set = (self.min_delta or 0) > 0 or (self.min_delta_rel or 0) > 0
+        if self.baseline == "cached" and not floor_set:
+            # an unpaired comparison has no built-in noise cancellation: the
+            # floor is the only thing standing between seed luck and a record
+            # — and benchmark_floor treats 0 as "no floor", so it must be > 0
+            raise ValueError(
+                f"benchmark {self.name!r} uses a cached baseline (unpaired comparison) "
+                "but declares no positive significance floor: set min_delta or "
+                "min_delta_rel (> 0) from a seed-variance calibration"
             )
         return self
 

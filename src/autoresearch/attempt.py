@@ -1799,6 +1799,8 @@ def live_attempt(
                 partition="",
                 eval_minutes=int(eval_minutes or 0),
                 run_tag=run_id,
+                # an inline gate shares the same target-wide baseline cache
+                baseline_cache=run_dir.parent / "baselines",
             )
         snapshots: list[Snapshot] = []
 

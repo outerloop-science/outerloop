@@ -4,6 +4,8 @@ session, no git, no cluster."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from autoresearch.contract import load_contract
@@ -65,6 +67,9 @@ class FakeMeasurer:
         self.seen: list[Measure] = []
         self.per_call: list[list[str]] = []  # measure names, one entry per call
         self.calls = 0
+        # the cached-baseline seam measure_and_decide reads off a measurer
+        self.baseline_cache: Path | None = None
+        self.run_tag = ""
 
     def results(self, measures: list[Measure]) -> dict[str, float]:
         self.calls += 1
@@ -334,3 +339,103 @@ def test_resume_eval_error_is_terminal():
     out = _resume(FakeMeasurer(raise_exc=EvalError("candidate: no readable r2")))
     assert out.outcome == "eval-error"
     assert "no readable r2" in out.note
+
+
+CACHED_CONTRACT = """
+benchmarks:
+  - name: main
+    command: run main
+    metric: score
+    direction: max
+    baseline: cached
+    min_delta: 0.02
+budgets: {gpu_hours_per_run: 1, runs_per_week: 5}
+scope:
+  allowed: [src/]
+roadmap: docs/roadmap.md
+"""
+
+
+def test_cached_baseline_measures_the_base_once_then_only_candidates(tmp_path):
+    """`baseline: cached`: the first attempt on a base measures both and
+    records the baseline; the next attempt on the same base measures ONLY its
+    candidate and compares against the cache, saying so on the credited
+    result. A different base misses the cache."""
+    from autoresearch.measure import read_baseline_cache
+
+    contract = load_contract(CACHED_CONTRACT, "x/y")
+    bench = _benchmark(contract, "main")
+
+    def decide(m, base=BASE, seed=7):
+        return measure_and_decide(
+            contract,
+            bench,
+            base_sha=base,
+            candidate_sha=CAND,
+            seed=seed,
+            suite_seed=0,
+            measured_paths=("src/model.py",),
+            measurer=m,
+            min_relative_improvement=0.005,
+        )
+
+    first = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
+    first.baseline_cache = tmp_path / "baselines"
+    first.run_tag = "run-1"
+    out = decide(first)
+    assert isinstance(out, MeasureOK) and out.baseline == 0.50 and out.baseline_note == ""
+    assert first.per_call == [["baseline", "candidate"]]
+    entry = read_baseline_cache(
+        tmp_path / "baselines", "main", BASE, command="run main", metric="score"
+    )
+    assert entry and entry["value"] == 0.50 and entry["seed"] == 7 and entry["run"] == "run-1"
+
+    second = FakeMeasurer({"candidate": 0.61})  # no baseline value: it must not be asked for
+    second.baseline_cache = tmp_path / "baselines"
+    second.run_tag = "run-2"
+    out2 = decide(second, seed=8)
+    assert isinstance(out2, MeasureOK) and out2.baseline == 0.50 and out2.candidate == 0.61
+    assert second.per_call == [["candidate"]]
+    assert "reused from the cache" in out2.baseline_note and "seed 7" in out2.baseline_note
+
+    other = FakeMeasurer({"baseline": 0.55, "candidate": 0.58})
+    other.baseline_cache = tmp_path / "baselines"
+    other.run_tag = "run-3"
+    decide(other, base="c" * 40)
+    assert other.per_call == [["baseline", "candidate"]]  # a new base: measured again
+
+
+def test_paired_default_never_touches_the_cache(tmp_path):
+    m = FakeMeasurer({"baseline": 0.50, "candidate": 0.60})
+    m.baseline_cache = tmp_path / "baselines"
+    out = _decide(m)
+    assert isinstance(out, MeasureOK) and out.baseline_note == ""
+    assert not (tmp_path / "baselines").exists()
+
+
+def test_cached_baseline_requires_a_floor():
+    with pytest.raises(ValueError, match="floor"):
+        load_contract(CACHED_CONTRACT.replace("    min_delta: 0.02\n", ""), "x/y")
+
+
+def test_cached_baseline_is_keyed_by_image_and_command(tmp_path):
+    """A cache entry measured under another eval image or contract command
+    is stale, not a baseline (terra #178): the gate misses and re-measures."""
+    from autoresearch.measure import read_baseline_cache, write_baseline_cache
+
+    d = tmp_path / "baselines"
+    write_baseline_cache(
+        d, "main", BASE, value=0.5, seed=3, run_tag="r", image="/a.sif", command="run main"
+    )
+    assert read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main")
+    assert read_baseline_cache(d, "main", BASE, image="/b.sif", command="run main") is None
+    assert read_baseline_cache(d, "main", BASE, image="/a.sif", command="run other") is None
+    assert (
+        read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main", metric="x") is None
+    )
+    # two concurrent writers of the same entry: unique tmp files, last wins, no crash
+    write_baseline_cache(
+        d, "main", BASE, value=0.6, seed=4, run_tag="r", image="/a.sif", command="run main"
+    )
+    got = read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main")
+    assert got and got["value"] == 0.6 and not list(d.glob("*.tmp"))

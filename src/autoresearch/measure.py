@@ -18,9 +18,11 @@ phase flows straight through to the decision.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from autoresearch.compute import Compute, JobSpec, is_terminal
 from autoresearch.dispatch import (
@@ -142,6 +144,94 @@ def plan_measures(
     return plan
 
 
+def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path:
+    return cache_dir / f"{benchmark}@{base_sha}.json"
+
+
+def read_baseline_cache(
+    cache_dir: Path,
+    benchmark: str,
+    base_sha: str,
+    *,
+    image: str = "",
+    command: str = "",
+    metric: str = "",
+    seed_env: str = "",
+    gpus: int = 0,
+) -> dict[str, Any] | None:
+    """The cached base-tree measurement for (benchmark, base sha), or None.
+    The entry must have been measured under the SAME determinants the
+    candidate will be — eval image, contract command, metric key, seed
+    variable, GPU count: everything the measurer's own eval identity
+    carries except the tree sha (the key) and the seed VALUE (fresh per
+    attempt by design) — or it is stale (terra #178): a comparison across
+    determinants is not a comparison. A cache
+    entry is only ever written from an orchestrator-measured value (below),
+    never from anything an author produced."""
+    try:
+        data = json.loads(_baseline_cache_path(cache_dir, benchmark, base_sha).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or "value" not in data:
+        return None
+    try:
+        float(data["value"])
+    except (TypeError, ValueError):
+        return None
+    if (
+        data.get("image", "") != image
+        or data.get("command", "") != command
+        or data.get("metric", "") != metric
+        or data.get("seed_env", "") != seed_env
+        or int(data.get("gpus", 0) or 0) != gpus
+    ):
+        return None
+    return data
+
+
+def write_baseline_cache(
+    cache_dir: Path,
+    benchmark: str,
+    base_sha: str,
+    *,
+    value: float,
+    seed: int,
+    run_tag: str,
+    image: str = "",
+    command: str = "",
+    metric: str = "",
+    seed_env: str = "",
+    gpus: int = 0,
+) -> None:
+    """Record an orchestrator-measured baseline for every later attempt on
+    this base, with the determinants it was measured under. Atomic (a
+    unique tmp per writer + replace): two width slots measuring the same
+    base concurrently both land a valid file; last writer wins, and both
+    values are real measurements."""
+    import os
+    import tempfile
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = _baseline_cache_path(cache_dir, benchmark, base_sha)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=cache_dir)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(
+            {
+                "value": value,
+                "seed": seed,
+                "run": run_tag,
+                "base_sha": base_sha,
+                "image": image,
+                "command": command,
+                "metric": metric,
+                "seed_env": seed_env,
+                "gpus": gpus,
+            },
+            fh,
+        )
+    Path(tmp_name).replace(path)
+
+
 @dataclass
 class DispatchedMeasurer:
     """Submits and reads a climb's measures as jobs on any `Compute` backend.
@@ -164,6 +254,9 @@ class DispatchedMeasurer:
     # benchmark), everything else on account/partition
     gpu_partition: str = ""
     gpu_account: str = ""
+    # where a `baseline: cached` benchmark's base-tree measurements live
+    # (target-wide); None = no cache, every gate measures its own baseline
+    baseline_cache: Path | None = None
 
     def _placement(self, m: Measure) -> tuple[str, str]:
         if m.gpus <= 0:
@@ -362,4 +455,7 @@ class DispatchSettings:
             run_tag=run_tag,
             gpu_partition=self.gpu_partition,
             gpu_account=self.gpu_account,
+            # target-wide, beside the run dirs: every attempt on one base
+            # shares its cached baseline measurement (Benchmark.baseline)
+            baseline_cache=run_dir.parent / "baselines",
         )
