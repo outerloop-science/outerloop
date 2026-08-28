@@ -385,7 +385,7 @@ def test_cached_baseline_measures_the_base_once_then_only_candidates(tmp_path):
     out = decide(first)
     assert isinstance(out, MeasureOK) and out.baseline == 0.50 and out.baseline_note == ""
     assert first.per_call == [["baseline", "candidate"]]
-    entry = read_baseline_cache(tmp_path / "baselines", "main", BASE)
+    entry = read_baseline_cache(tmp_path / "baselines", "main", BASE, command="run main")
     assert entry and entry["value"] == 0.50 and entry["seed"] == 7 and entry["run"] == "run-1"
 
     second = FakeMeasurer({"candidate": 0.61})  # no baseline value: it must not be asked for
@@ -414,3 +414,23 @@ def test_paired_default_never_touches_the_cache(tmp_path):
 def test_cached_baseline_requires_a_floor():
     with pytest.raises(ValueError, match="floor"):
         load_contract(CACHED_CONTRACT.replace("    min_delta: 0.02\n", ""), "x/y")
+
+
+def test_cached_baseline_is_keyed_by_image_and_command(tmp_path):
+    """A cache entry measured under another eval image or contract command
+    is stale, not a baseline (terra #178): the gate misses and re-measures."""
+    from autoresearch.measure import read_baseline_cache, write_baseline_cache
+
+    d = tmp_path / "baselines"
+    write_baseline_cache(
+        d, "main", BASE, value=0.5, seed=3, run_tag="r", image="/a.sif", command="run main"
+    )
+    assert read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main")
+    assert read_baseline_cache(d, "main", BASE, image="/b.sif", command="run main") is None
+    assert read_baseline_cache(d, "main", BASE, image="/a.sif", command="run other") is None
+    # two concurrent writers of the same entry: unique tmp files, last wins, no crash
+    write_baseline_cache(
+        d, "main", BASE, value=0.6, seed=4, run_tag="r", image="/a.sif", command="run main"
+    )
+    got = read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main")
+    assert got and got["value"] == 0.6 and not list(d.glob("*.tmp"))

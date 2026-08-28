@@ -604,3 +604,16 @@ def test_gpu_hours_are_metered_against_the_run_budget() -> None:
         )
         == ""
     )
+
+
+def test_cached_gate_is_charged_one_main_eval() -> None:
+    """A `baseline: cached` submit with a warm cache runs only the candidate:
+    the gate charges one main eval, not two (terra #178); siblings stay paired."""
+    from autoresearch.syscall import evals_gpu_hours
+
+    sub = SyscallRequest(launches=(), submit=True, eval_minutes=240)
+    assert evals_gpu_hours(sub, gpus=1, eval_minutes_default=0, main_evals=2) == 8.0
+    assert evals_gpu_hours(sub, gpus=1, eval_minutes_default=0, main_evals=1) == 4.0
+    assert (
+        evals_gpu_hours(sub, gpus=1, eval_minutes_default=0, main_evals=1, suite_gpus=(1,)) == 12.0
+    )

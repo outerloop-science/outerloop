@@ -801,8 +801,9 @@ def measure_and_decide(
     # cross-seed noise (the loader requires one). A miss measures both and
     # records the baseline for the next attempt.
     cache_dir = getattr(measurer, "baseline_cache", None)
+    image = str(getattr(measurer, "image", ""))
     cached = (
-        read_baseline_cache(cache_dir, bench.name, base_sha)
+        read_baseline_cache(cache_dir, bench.name, base_sha, image=image, command=bench.command)
         if bench.baseline == "cached" and cache_dir is not None
         else None
     )
@@ -839,6 +840,8 @@ def measure_and_decide(
                 value=baseline,
                 seed=seed,
                 run_tag=str(getattr(measurer, "run_tag", "")),
+                image=image,
+                command=bench.command,
             )
     candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
@@ -1319,6 +1322,21 @@ def attempt_once(
             # suite siblings' paired evals are charged as if measured (the
             # suite phase decides at measurement; a budget over-charges)
             suite_gpus = tuple(b.gpus for b in contract.benchmarks if b.name != bench.name)
+            # a `baseline: cached` gate with a warm cache runs ONE main eval
+            # (the candidate); charge what will actually run (terra #178)
+            main_evals = 2
+            if request.submit and bench.baseline == "cached":
+                from autoresearch.measure import read_baseline_cache
+
+                cache_dir = getattr(measurer, "baseline_cache", None)
+                if cache_dir is not None and read_baseline_cache(
+                    cache_dir,
+                    bench.name,
+                    base_sha,
+                    image=str(getattr(measurer, "image", "")),
+                    command=bench.command,
+                ):
+                    main_evals = 1
             problem = syscall_budget_error(
                 request,
                 launches_used=launches_used,
@@ -1330,6 +1348,7 @@ def attempt_once(
                 gpus=bench.gpus,
                 eval_minutes_default=bench.eval_minutes or 0,
                 suite_gpus=suite_gpus,
+                main_evals=main_evals,
             )
             if not problem:
                 if request.submit:
@@ -1349,6 +1368,7 @@ def attempt_once(
                         gpus=bench.gpus,
                         eval_minutes_default=bench.eval_minutes or 0,
                         suite_gpus=suite_gpus,
+                        main_evals=main_evals,
                     )
                     if hasattr(measurer, "eval_minutes"):
                         measurer.eval_minutes = request.eval_minutes or bench.eval_minutes or 0

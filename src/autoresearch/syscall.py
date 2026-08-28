@@ -253,17 +253,20 @@ def evals_gpu_hours(
     gpus: int,
     eval_minutes_default: int,
     suite_gpus: tuple[int, ...] = (),
+    main_evals: int = 2,
 ) -> float:
-    """The GPU-hours of a submit's gate: two paired evals at the declared
-    (else the contract's) walltime times the benchmark's GPUs — plus the
-    same pair for every suite sibling (each at ITS GPU count), charged as
-    if measured: whether the suite phase runs is decided at measurement,
-    and a budget over-charges rather than under-charges. 0 when not a
-    submit."""
+    """The GPU-hours of a submit's gate: `main_evals` evals of the climbed
+    benchmark at the declared (else the contract's) walltime times its GPUs
+    (two when paired; one when a cached baseline is warm) — plus a paired
+    pair for every suite sibling (each at ITS GPU count), charged as if
+    measured: whether the suite phase runs is decided at measurement, and a
+    budget over-charges rather than under-charges. 0 when not a submit."""
     if not request.submit:
         return 0.0
     minutes = request.eval_minutes or eval_minutes_default or 0
-    return 2 * minutes * (max(gpus, 0) + sum(max(g, 0) for g in suite_gpus)) / 60.0
+    main = max(main_evals, 0) * max(gpus, 0)
+    suite = 2 * sum(max(g, 0) for g in suite_gpus)
+    return minutes * (main + suite) / 60.0
 
 
 def gpu_hours_cost(
@@ -272,13 +275,18 @@ def gpu_hours_cost(
     gpus: int,
     eval_minutes_default: int,
     suite_gpus: tuple[int, ...] = (),
+    main_evals: int = 2,
 ) -> float:
     """What honoring `request` would draw from the run's GPU-hour budget in
     full: launches plus (for a submit) the gate. The budget check uses this
     worst case; the orchestrator CHARGES the two parts where each actually
     happens (evals at acceptance, sibling launches only when dispatched)."""
     return launches_gpu_hours(request, gpus=gpus) + evals_gpu_hours(
-        request, gpus=gpus, eval_minutes_default=eval_minutes_default, suite_gpus=suite_gpus
+        request,
+        gpus=gpus,
+        eval_minutes_default=eval_minutes_default,
+        suite_gpus=suite_gpus,
+        main_evals=main_evals,
     )
 
 
@@ -469,6 +477,7 @@ def budget_error(
     gpus: int = 0,
     eval_minutes_default: int = 0,
     suite_gpus: tuple[int, ...] = (),
+    main_evals: int = 2,
 ) -> str:
     """The budget check, arithmetic only ('' = within budget). The PROMPT
     carries warnings; this refuses only genuine exhaustion. The sleep being
@@ -487,7 +496,11 @@ def budget_error(
         )
     if gpu_hour_budget is not None and (gpus > 0 or any(g > 0 for g in suite_gpus)):
         cost = gpu_hours_cost(
-            request, gpus=gpus, eval_minutes_default=eval_minutes_default, suite_gpus=suite_gpus
+            request,
+            gpus=gpus,
+            eval_minutes_default=eval_minutes_default,
+            suite_gpus=suite_gpus,
+            main_evals=main_evals,
         )
         if gpu_hours_used + cost > gpu_hour_budget:
             return (

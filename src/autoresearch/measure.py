@@ -148,10 +148,15 @@ def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path
     return cache_dir / f"{benchmark}@{base_sha}.json"
 
 
-def read_baseline_cache(cache_dir: Path, benchmark: str, base_sha: str) -> dict[str, Any] | None:
+def read_baseline_cache(
+    cache_dir: Path, benchmark: str, base_sha: str, *, image: str = "", command: str = ""
+) -> dict[str, Any] | None:
     """The cached base-tree measurement for (benchmark, base sha), or None.
-    A cache entry is only ever written from an orchestrator-measured value
-    (below), never from anything an author produced."""
+    The entry must have been measured under the SAME determinants the
+    candidate will be — eval image and contract command — or it is stale
+    (terra #178): a comparison across images is not a comparison. A cache
+    entry is only ever written from an orchestrator-measured value (below),
+    never from anything an author produced."""
     try:
         data = json.loads(_baseline_cache_path(cache_dir, benchmark, base_sha).read_text())
     except (OSError, ValueError):
@@ -162,21 +167,46 @@ def read_baseline_cache(cache_dir: Path, benchmark: str, base_sha: str) -> dict[
         float(data["value"])
     except (TypeError, ValueError):
         return None
+    if data.get("image", "") != image or data.get("command", "") != command:
+        return None
     return data
 
 
 def write_baseline_cache(
-    cache_dir: Path, benchmark: str, base_sha: str, *, value: float, seed: int, run_tag: str
+    cache_dir: Path,
+    benchmark: str,
+    base_sha: str,
+    *,
+    value: float,
+    seed: int,
+    run_tag: str,
+    image: str = "",
+    command: str = "",
 ) -> None:
     """Record an orchestrator-measured baseline for every later attempt on
-    this base. Atomic (tmp + replace): two width slots measuring the same
-    base concurrently both write a valid file; last writer wins, and both
+    this base, with the determinants it was measured under. Atomic (a
+    unique tmp per writer + replace): two width slots measuring the same
+    base concurrently both land a valid file; last writer wins, and both
     values are real measurements."""
+    import os
+    import tempfile
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _baseline_cache_path(cache_dir, benchmark, base_sha)
-    tmp = path.with_suffix(f".{run_tag[:20] or 'tmp'}.tmp")
-    tmp.write_text(json.dumps({"value": value, "seed": seed, "run": run_tag, "base_sha": base_sha}))
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=cache_dir)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(
+            {
+                "value": value,
+                "seed": seed,
+                "run": run_tag,
+                "base_sha": base_sha,
+                "image": image,
+                "command": command,
+            },
+            fh,
+        )
+    Path(tmp_name).replace(path)
 
 
 @dataclass
