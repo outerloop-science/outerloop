@@ -148,6 +148,20 @@ def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path
     return cache_dir / f"{benchmark}@{base_sha}.json"
 
 
+def _no_result_note(job_id: str, state: str) -> str:
+    """The note for a job that ended with no result. A TIMEOUT is the walltime
+    the submit declared (or the contract's default), and the author must
+    hear that a slower run needs more minutes — not that measurement broke."""
+    if state.startswith("TIMEOUT"):
+        return (
+            f"job {job_id} hit its walltime (TIMEOUT) before producing a result; "
+            "a slower run needs more minutes than were declared for its eval"
+        )
+    if state and state != GONE and is_terminal(state):
+        return f"job {job_id} ended {state} without a result"
+    return "dispatched job vanished without a result"
+
+
 def read_baseline_cache(
     cache_dir: Path,
     benchmark: str,
@@ -316,23 +330,14 @@ class DispatchedMeasurer:
         return (self._ev(m) / "exit-code").exists()
 
     def _ended_without_result(self, m: Measure) -> str:
-        """Why a dispatched job left no result, as far as Slurm can say. A
-        TIMEOUT is the walltime the submit declared (or the contract's
-        default): the author reading the note must learn that a slower run
-        needs more minutes, not that the measurement broke."""
+        """Why a dispatched job produced no result; a TIMEOUT means the eval
+        needs more walltime."""
         job_id = self._marker(m)
         try:
             state = self.compute.status(job_id) if job_id.isdigit() else ""
         except Exception:
             state = ""
-        if state.startswith("TIMEOUT"):
-            return (
-                f"job {job_id} hit its walltime (TIMEOUT) before producing a result; "
-                "a slower run needs more minutes than were declared for its eval"
-            )
-        if state and state != GONE and is_terminal(state):
-            return f"job {job_id} ended {state} without a result"
-        return "dispatched job vanished without a result"
+        return _no_result_note(job_id, state)
 
     def _marker(self, m: Measure) -> str:
         f = self._ev(m) / "submitted"
@@ -416,7 +421,7 @@ class DispatchedMeasurer:
                 # the job already ENDED without writing a result (a local
                 # timeout, an instant cluster failure): parking would wait on
                 # a job that will never deliver — fail like a vanished job
-                raise EvalError(f"measure {m.name}: job {job_id} ended {state} without a result")
+                raise EvalError(f"measure {m.name}: {_no_result_note(job_id, state)}")
             pending.append(job_id)
         if pending or blind:
             raise MeasurementPending(tuple(pending))

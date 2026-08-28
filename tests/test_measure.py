@@ -140,6 +140,28 @@ def test_walltime_kill_is_named_in_the_error(tmp_path):
     assert submitted == []
 
 
+def test_walltime_kill_recorded_by_the_job_script_is_named_too(tmp_path):
+    """The job script traps SIGTERM and writes exit-code 143 before Slurm's
+    TIMEOUT lands: that path must carry the same walltime wording."""
+    m = _measurer(tmp_path, [])
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _land(m, cand, code="143")
+    with pytest.raises(EvalError, match=r"killed at its walltime \(exit 143, SIGTERM\)"):
+        m.results(_measures())
+
+
+def test_timeout_right_after_submit_is_named(tmp_path):
+    """A job that is already TIMEOUT when the post-submit status check runs
+    (a local compute's walltime) gets the walltime wording, not the generic
+    ended-state error."""
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, states={"101": "TIMEOUT"})
+    with pytest.raises(EvalError, match=r"hit its walltime \(TIMEOUT\).*more minutes"):
+        m.results(_measures())
+    assert len(submitted) == 1
+
+
 def test_nonzero_exit_raises(tmp_path):
     m = _measurer(tmp_path, [])
     base, cand = _measures()

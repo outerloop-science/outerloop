@@ -208,7 +208,7 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
         run_tag="t",
     )
     plan = plan_measures(command="true", metric="s", base_sha=base, candidate_sha=cand)
-    with pytest.raises(EvalError, match="without a result"):
+    with pytest.raises(EvalError, match=r"hit its walltime|without a result"):
         m.results(plan)
 
 
