@@ -2691,15 +2691,66 @@ roadmap: docs/roadmap.md
 def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
     """org/pilot's marker scan must not absorb org/pilotx's markers ("/"
     encodes as "__" so a bare glob is prefix-ambiguous), nor any suffixed
-    file that isn't a width-slot name (terra #173 r1)."""
-    from autoresearch.tick import list_pendings, write_pending
+    file that isn't a width-slot name (terra #173 r1), nor the LEGACY
+    marker of a repo literally named pilot__agent-01 — "_" is legal in
+    repo names, which is why the slot separator is "@" (terra #173 r2)."""
+    from autoresearch.tick import list_pendings, read_pending, write_pending
 
     write_pending(tmp_path, "org/pilot", "tsp", "1", NOW, agent="agent-01")
     write_pending(tmp_path, "org/pilotx", "tsp", "2", NOW)
     write_pending(tmp_path, "org/pilotx", "tsp", "3", NOW, agent="agent-01")
     write_pending(tmp_path, "org/pilot", "tsp", "4", NOW, agent="not-a-slot")
+    write_pending(tmp_path, "org/pilot__agent-01", "tsp", "5", NOW)
     got = [(agent, p["job_id"]) for agent, p in list_pendings(tmp_path, "org/pilot")]
     assert got == [("agent-01", "1")]
+    marker = read_pending(tmp_path, "org/pilot__agent-01")
+    assert marker is not None and marker["job_id"] == "5"
+
+
+def test_width_queued_slots_count_toward_weekly_budget(tmp_path: Path) -> None:
+    """With one run left in runs_per_week, a width-2 target must not submit
+    two attempts in the pre-record queue window (terra #173 r2)."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+budgets:
+  gpu_hours_per_run: 1
+  runs_per_week: 1
+  attempt_cooldown_minutes: 0
+  max_active_attempts: 2
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/pilot",
+    )
+    panel_key = tmp_path / "vkey"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="acct",
+        partition="part",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+        bot_login="bot",
+        panel_key_file=str(panel_key),
+    )
+    job_ids = iter(["101", "102"])
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            return CommandResult(0, next(job_ids) + "\n", "")
+        return CommandResult(0, "RUNNING\n", "")
+
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW) == ("tsp", "101")
+    # slot 2 is free, but the queued slot already spent the last weekly run
+    assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 60) is None
 
 
 def test_width_never_launches_beside_a_steward_run(tmp_path: Path) -> None:

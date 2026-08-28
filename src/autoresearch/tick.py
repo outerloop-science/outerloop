@@ -1376,6 +1376,7 @@ def pick_self_initiated(
     target: str,
     now: float,
     dead_attempts: dict[str, float] | None = None,
+    live_pendings: list[tuple[str, float]] | None = None,
 ) -> str | None:
     """The benchmark to climb next on `target`, or None.
 
@@ -1397,7 +1398,12 @@ def pick_self_initiated(
     if len(active) >= _attempt_width(contract):
         return None
     week_ago = now - 7 * 24 * 3600
-    if sum(1 for r in mine if r.created >= week_ago) >= contract.budgets.runs_per_week:
+    # queued slots count toward the weekly budget BEFORE their records
+    # exist, or a width-N target with one run left could submit N (terra
+    # #173 r2); when a marker lands, the service clears it before calling
+    # here, so a run is never counted twice
+    queued = sum(1 for _, submitted_at in live_pendings or [] if submitted_at >= week_ago)
+    if sum(1 for r in mine if r.created >= week_ago) + queued >= contract.budgets.runs_per_week:
         return None
     last_attempt: dict[str, float] = {}
     for r in mine:
@@ -1405,6 +1411,12 @@ def pick_self_initiated(
             last_attempt[r.benchmark] = max(last_attempt.get(r.benchmark, 0.0), r.created)
     for bench_name, submitted_at in (dead_attempts or {}).items():
         last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
+    for bench_name, submitted_at in live_pendings or []:
+        # a queued sibling starts its benchmark's cooldown clock too:
+        # width spreads across benchmarks first, and re-picking the same
+        # one needs the contract to have set cooldown to 0 (portfolio)
+        if bench_name:
+            last_attempt[bench_name] = max(last_attempt.get(bench_name, 0.0), submitted_at)
     cooldown_min = getattr(contract.budgets, "attempt_cooldown_minutes", None)
     cooldown_s = SELF_INITIATED_COOLDOWN_S if cooldown_min is None else cooldown_min * 60
     # A launch that died BEFORE writing a run record is invisible to the
@@ -1481,8 +1493,12 @@ _SLOT_AGENT_RE = re.compile(r"agent-\d+")
 
 def _pending_path(root: Path, target: str, agent: str = "") -> Path:
     # agent "" is the legacy single-slot name, still read for back-compat
-    # with a marker written before the width dial deployed
-    suffix = f"__{agent}" if agent else ""
+    # with a marker written before the width dial deployed. The slot
+    # separator is "@" because it CANNOT appear in a GitHub owner/repo
+    # name — any character legal in repo names ("_", ".", "-") would make
+    # org/pilot's slot file collide with some other target's legacy file
+    # (org/pilot__agent-01 is a valid repo).
+    suffix = f"@{agent}" if agent else ""
     return root / "pending" / (target.replace("/", "__") + suffix + ".json")
 
 
@@ -1509,8 +1525,8 @@ def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:
         name = path.stem
         if name == stem:
             agent = ""
-        elif name.startswith(stem + "__") and _SLOT_AGENT_RE.fullmatch(name[len(stem) + 2 :]):
-            agent = name[len(stem) + 2 :]
+        elif name.startswith(stem + "@") and _SLOT_AGENT_RE.fullmatch(name[len(stem) + 1 :]):
+            agent = name[len(stem) + 1 :]
         else:
             continue  # a longer target sharing this prefix (org/foo vs org/foobar)
         try:
@@ -1790,6 +1806,7 @@ def service_self_initiated(
         # WIDTH: every live pending marker occupies a slot; landed ones
         # clear; dead ones become per-benchmark tombstones and free theirs.
         occupied: set[str] = set()
+        live_pendings: list[tuple[str, float]] = []
         nonslot_busy = False
         for agent, pending in list_pendings(root, spec.target):
             marker_agent = "" if not pending.get("agent_id") else agent
@@ -1815,6 +1832,7 @@ def service_self_initiated(
                 # marker's TTL — queue wait can exceed it — the TTL only
                 # breaks ties when Slurm can't say.
                 occupied.add(agent)
+                live_pendings.append((str(pending.get("benchmark", "")), submitted_at))
                 if not marker_agent:
                     # a live un-slotted marker is another lane's submit
                     # (steward/intake, or a pre-width deploy): serial
@@ -1844,7 +1862,9 @@ def service_self_initiated(
         if slot_agent is None:
             return None
         dead_attempts = read_tombstones(root, spec.target, contract, now)
-        benchmark = pick_self_initiated(records, contract, spec.target, now, dead_attempts)
+        benchmark = pick_self_initiated(
+            records, contract, spec.target, now, dead_attempts, live_pendings
+        )
         if benchmark is None:
             return None
         if getattr(contract, "merge", "manual") == "auto" and not spec.panel:
