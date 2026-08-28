@@ -459,11 +459,15 @@ def _park_run(
     save_record(run_root, waiting, now)
 
 
-def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str):
+def _make_launcher(
+    dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str, gpus: int = 0
+):
     """The launch side of the author syscalls, shared by the first pass
     (live_attempt) and the author-sleep wake: each launch becomes a jailed job on
     the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
-    partially-submitted batch is reaped rather than orphaned."""
+    partially-submitted batch is reaped rather than orphaned. `gpus` is the
+    benchmark's: an author's experiments run on the same lane as its evals."""
+    account, partition = dispatch.placement(gpus)
 
     def launcher(sha: str, request: SyscallRequest) -> str:
         from autoresearch.dispatch import eval_job_spec, write_eval_job
@@ -480,15 +484,17 @@ def _make_launcher(dispatch: DispatchSettings, run_dir: Path, workspace: Path, r
                     image=dispatch.image,
                     artifacts=launch.artifacts,
                     artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                    gpus=gpus,
                 )
                 ids.append(
                     dispatch.compute.submit(
                         eval_job_spec(
                             script,
                             job_name=f"{run_id}-launch-{launch.name}",
-                            account=dispatch.account,
-                            partition=dispatch.partition,
+                            account=account,
+                            partition=partition,
                             eval_minutes=launch.minutes,
+                            gpus=gpus,
                         )
                     )
                 )
@@ -689,7 +695,7 @@ def _wake_author_sleep(
             panel_runner=panel_runner,
             resume_session_id=record.resume_session_id,
             improve_prompt=wake_text,
-            launcher=_make_launcher(dispatch, run_dir, workspace, run_id),
+            launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
             launches_used=launches_used,
             sleeps_used=sleeps_used,
         )
@@ -816,7 +822,11 @@ def resume_run(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
     measurer = dispatch.measurer(
-        run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
+        run_dir,
+        repo_root=workspace,
+        eval_minutes=int(eval_minutes or 0),
+        run_tag=run_id,
+        gpus=bench.gpus,
     )
     # measured_paths from the COMMITTED base..candidate diff — the sealed
     # candidate, never `changed_paths()` on a live tree that may have drifted.
@@ -1737,7 +1747,11 @@ def live_attempt(
         if dispatched:
             assert dispatch is not None and eval_minutes is not None  # should_dispatch(None) False
             measurer = dispatch.measurer(
-                run_dir, repo_root=workspace, eval_minutes=eval_minutes, run_tag=run_id
+                run_dir,
+                repo_root=workspace,
+                eval_minutes=eval_minutes,
+                run_tag=run_id,
+                gpus=_bench.gpus if _bench is not None else 0,
             )
         else:
             measurer = DispatchedMeasurer(
@@ -1767,7 +1781,9 @@ def live_attempt(
         launcher = None
         if author_syscalls:
             assert dispatch is not None  # folded into author_syscalls above
-            launcher = _make_launcher(dispatch, run_dir, workspace, run_id)
+            launcher = _make_launcher(
+                dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
+            )
 
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
@@ -2193,6 +2209,10 @@ def main() -> int:
     )
     parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
     parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
+    # the GPU lane for benchmarks with `gpus > 0` (evals + author launches);
+    # empty = this deployment cannot place GPU jobs
+    parser.add_argument("--gpu-partition", default=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""))
+    parser.add_argument("--gpu-account", default=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""))
     parser.add_argument(
         "--uncontained",
         action="store_true",
@@ -2454,6 +2474,8 @@ def main() -> int:
             image=args.image,
             account=args.account,
             partition=args.partition,
+            gpu_partition=args.gpu_partition,
+            gpu_account=args.gpu_account,
         )
     try:
         try:

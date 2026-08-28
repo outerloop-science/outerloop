@@ -318,3 +318,23 @@ roadmap: docs/roadmap.md
 
     with pytest.raises(Exception, match="merge"):
         load_contract(base % "merge: yolo", "o/r")
+
+
+def test_benchmark_gpus_field() -> None:
+    """`gpus` sizes the benchmark's dispatched jobs: default 0 (CPU),
+    bounded at one node's worth."""
+    from autoresearch.contract import load_contract
+
+    base = """
+benchmarks:
+  - {name: speedrun, command: c, metric: m, direction: min%s}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [train.py]}
+roadmap: docs/roadmap.md
+"""
+    assert load_contract(base % "", "org/x").benchmarks[0].gpus == 0
+    assert load_contract(base % ", gpus: 1", "org/x").benchmarks[0].gpus == 1
+    import pytest
+
+    with pytest.raises(ValueError):
+        load_contract(base % ", gpus: 16", "org/x")

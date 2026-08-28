@@ -298,3 +298,39 @@ def test_changed_contract_for_same_name_and_sha_is_not_aliased(tmp_path):
     _land(m, base, 0.42)
     with pytest.raises(MeasurementPending):
         m.results([new_cmd])
+
+
+def test_dispatch_settings_place_gpu_jobs_on_the_gpu_lane(tmp_path):
+    """`gpus > 0` routes measures to the GPU lane (its own account when
+    given, else the CPU account); no lane configured is a loud error, never
+    a CPU-partition job that can never run."""
+    from autoresearch.measure import DispatchSettings
+
+    cpu_only = DispatchSettings(
+        compute=SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "1\n", "")),
+        image="/i.sif",
+        account="acct",
+        partition="cpu",
+    )
+    assert cpu_only.placement(0) == ("acct", "cpu")
+    with pytest.raises(ValueError, match="AUTORESEARCH_GPU_PARTITION"):
+        cpu_only.placement(1)
+    with_lane = DispatchSettings(
+        compute=cpu_only.compute,
+        image="/i.sif",
+        account="acct",
+        partition="cpu",
+        gpu_partition="h200",
+    )
+    assert with_lane.placement(1) == ("acct", "h200")
+    m = with_lane.measurer(tmp_path, repo_root=tmp_path, eval_minutes=240, run_tag="r", gpus=1)
+    assert (m.account, m.partition, m.gpus) == ("acct", "h200", 1)
+    own_account = DispatchSettings(
+        compute=cpu_only.compute,
+        image="/i.sif",
+        account="acct",
+        partition="cpu",
+        gpu_partition="h200",
+        gpu_account="gpu-acct",
+    )
+    assert own_account.placement(2) == ("gpu-acct", "h200")

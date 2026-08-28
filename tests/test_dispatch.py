@@ -366,3 +366,31 @@ roadmap: docs/roadmap.md
 """,
             "org/x",
         )
+
+
+def test_gpu_jobs_get_nv_and_gpus(tmp_path):
+    """A benchmark with `gpus > 0`: the jail adds --nv (the allocation is
+    visible inside the container) and the job spec requests the GPUs;
+    CPU benchmarks are byte-for-byte unchanged."""
+    run_dir = tmp_path / "run"
+    cpu = write_eval_job(
+        run_dir, "cpu", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image="/i.sif"
+    ).read_text()
+    gpu = write_eval_job(
+        run_dir,
+        "gpu",
+        repo_root=tmp_path,
+        snapshot_sha="a" * 40,
+        command="true",
+        image="/i.sif",
+        gpus=1,
+    ).read_text()
+    assert "--nv" not in cpu
+    assert "exec --containall --cleanenv --nv --bind" in gpu
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/sh\n")
+    spec = eval_job_spec(
+        script, job_name="e", account="a", partition="h200", eval_minutes=240, gpus=1
+    )
+    assert spec.gpus == 1 and "--gpus=1" in spec.to_argv()
+    assert spec.time_minutes == 250  # a 4h GPU eval fits under the raised ceiling

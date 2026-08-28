@@ -143,6 +143,7 @@ class DispatchedMeasurer:
     partition: str
     eval_minutes: int
     run_tag: str = "run"  # disambiguates job names across runs on one account
+    gpus: int = 0  # the benchmark's contract field; account/partition are already the GPU lane
 
     def _det(self, m: Measure) -> str:
         # Everything a measure's RESULT depends on and that can vary across a
@@ -204,6 +205,7 @@ class DispatchedMeasurer:
             command=m.command,
             image=self.image,
             extra_env=m.env(),
+            gpus=self.gpus,
         )
         spec: JobSpec = eval_job_spec(
             script,
@@ -211,6 +213,7 @@ class DispatchedMeasurer:
             account=self.account,
             partition=self.partition,
             eval_minutes=self.eval_minutes,
+            gpus=self.gpus,
         )
         job_id = self.compute.submit(spec)
         (self._ev(m) / "submitted").write_text(job_id)
@@ -290,21 +293,41 @@ class DispatchSettings:
     image: str
     account: str
     partition: str
+    # the GPU lane: where jobs of a benchmark with `gpus > 0` go. Empty
+    # gpu_partition = this deployment cannot place GPU jobs (the tick refuses
+    # to launch such benchmarks); empty gpu_account = same account as CPU jobs.
+    gpu_partition: str = ""
+    gpu_account: str = ""
+
+    def placement(self, gpus: int) -> tuple[str, str]:
+        """(account, partition) for a job needing `gpus` GPUs. Raises when a
+        GPU job has no lane — a queue that can never run is worse than a
+        loud refusal."""
+        if gpus <= 0:
+            return self.account, self.partition
+        if not self.gpu_partition:
+            raise ValueError(
+                f"benchmark needs {gpus} GPU(s) but no GPU lane is configured "
+                "(set AUTORESEARCH_GPU_PARTITION)"
+            )
+        return self.gpu_account or self.account, self.gpu_partition
 
     def measurer(
-        self, run_dir: Path, repo_root: Path, eval_minutes: int, run_tag: str
+        self, run_dir: Path, repo_root: Path, eval_minutes: int, run_tag: str, gpus: int = 0
     ) -> DispatchedMeasurer:
         """Bind these coordinates to one run's dispatched measurer. `repo_root`
         is the workspace whose `refs/dispatch/*` snapshots the eval jobs check
-        out; `eval_minutes` is the benchmark's contract hint (clamped in the
-        job spec)."""
+        out; `eval_minutes` and `gpus` are the benchmark's contract fields
+        (minutes clamped in the job spec; GPUs choose the lane)."""
+        account, partition = self.placement(gpus)
         return DispatchedMeasurer(
             compute=self.compute,
             run_dir=run_dir,
             repo_root=repo_root,
             image=self.image,
-            account=self.account,
-            partition=self.partition,
+            account=account,
+            partition=partition,
             eval_minutes=eval_minutes,
             run_tag=run_tag,
+            gpus=gpus,
         )

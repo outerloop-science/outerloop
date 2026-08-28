@@ -92,6 +92,13 @@ class Benchmark(_StrictModel):
     # the first eval once measured durations exist. None = in-job (today's
     # behavior).
     eval_minutes: int | None = Field(default=None, ge=1)
+    # GPUs for every dispatched job of this benchmark — gate measures and
+    # author launches alike. 0 (default) = CPU. A GPU benchmark needs the
+    # deployment to name a GPU lane (AUTORESEARCH_GPU_PARTITION, optionally
+    # AUTORESEARCH_GPU_ACCOUNT); without one the tick refuses to launch
+    # attempts on it rather than queue evals that can never run. Bounded at
+    # one node's worth: multi-node evals are not a shape the jail supports.
+    gpus: int = Field(default=0, ge=0, le=8)
     # Depth budget (docs/design/research-loop.md, "one syscall, author-directed"):
     # how many external experiment jobs the author may LAUNCH within one attempt.
     # A generous meter on actions, not a loop the kernel drives — the author

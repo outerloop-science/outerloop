@@ -61,6 +61,17 @@ minutes each — EVAL_TIMEOUT_S stays what it is today, the in-job hard
 kill, not the dispatch line. The
 orchestrator chooses per eval site, not per repo.
 
+**GPU benchmarks.** A second per-benchmark contract field, `gpus` (default
+0), sizes every dispatched job of that benchmark — gate measures and author
+launches alike: the JobSpec requests `--gpus=N`, and the jail adds `--nv` so
+the allocation is visible inside the container; nothing else about the
+containment changes. GPU jobs need their own lane, so the deployment names
+one — `AUTORESEARCH_GPU_PARTITION`, optionally `AUTORESEARCH_GPU_ACCOUNT`
+(default: the CPU account) — and a benchmark with `gpus > 0` on a deployment
+without a lane is REFUSED at launch (both attempt lanes), never queued into
+evals that can never run. The first target in this shape is the speedrun
+(`gpt-speedrun`: one H200 per eval, ~3.5h — hence the 300-minute ceiling).
+
 **Interop.** The orchestrator keeps a single seam: `Evaluator` grows a
 dispatched implementation that *stages* instead of blocking. `climb_once`'s
 transaction (session -> measure -> gates -> panel -> publish) becomes

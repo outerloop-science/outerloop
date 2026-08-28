@@ -2852,3 +2852,57 @@ roadmap: docs/roadmap.md
     github = G()
     assert service_steward(tmp_path, github, compute, spec, NOW + 60, contract, limits) is None
     assert github.comments_posted == []
+
+
+def test_gpu_benchmark_refused_without_a_gpu_lane(tmp_path: Path) -> None:
+    """A contract asking for GPUs on a deployment with no GPU lane must not
+    launch: its evals would queue into jobs that can never run. With a lane,
+    the launch proceeds and the climb job carries the lane coordinates."""
+    from autoresearch.contract import load_contract
+    from autoresearch.tick import FollowupSpec, service_self_initiated
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: speedrun, command: c, metric: m, direction: min, gpus: 1, eval_minutes: 240}
+budgets:
+  gpu_hours_per_run: 60
+  runs_per_week: 40
+  attempt_cooldown_minutes: 0
+scope: {allowed: [train.py]}
+roadmap: docs/roadmap.md
+""",
+        "org/speedrun",
+    )
+    panel_key = tmp_path / "vkey"
+    panel_key.write_text("k")
+    panel_key.chmod(0o600)
+
+    def spec(gpu_partition: str) -> FollowupSpec:
+        return FollowupSpec(
+            target="org/speedrun",
+            account="acct",
+            partition="cpu",
+            run_root=tmp_path,
+            image="img.sif",
+            home=tmp_path,
+            bot_login="bot",
+            panel_key_file=str(panel_key),
+            gpu_partition=gpu_partition,
+        )
+
+    submitted: list[str] = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submitted.append(" ".join(argv))
+            return CommandResult(0, "501\n", "")
+        return CommandResult(0, "RUNNING\n", "")
+
+    compute = SlurmCompute(runner=runner)
+    assert service_self_initiated(tmp_path, compute, spec(""), contract, NOW) is None
+    assert submitted == []
+    assert service_self_initiated(tmp_path, compute, spec("h200"), contract, NOW) == (
+        "speedrun",
+        "501",
+    )
