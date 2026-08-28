@@ -69,11 +69,13 @@ standing instruction they supersede — a resumed agent honors stale constraints
       handoff + tick sweep + deadline floor (pending-cancel / gone-on-good-
       query / defer-on-query-failure) + `stuck` state. Session dispatch
       behind the `WakeDispatcher` seam (real dispatcher lands with phase 5)
-- [ ] Experiment/eval dispatch design: docs/design/dispatcher.md —
-      eval-as-a-job first, triggered by the 2026-08-16 steward eval-timeout
-      class. Its phase 1 supplies the first production `WakeDispatcher`
-      implementation (transaction re-entry wakes for waiting runs); session
-      -resume wakes ride the same seam in phase 2.
+- [x] Experiment/eval dispatch (docs/design/dispatcher.md): evals as their
+      own jobs with park/wake re-entry; author experiment launches and
+      sleeps (the depth dial, docs/design/research-loop.md); GPU benchmarks
+      (`gpus` + a GPU lane, per-GPU job sizing, `--gpus-per-node`); the
+      author declares its eval walltime and pays from a metered
+      `gpu_hours_per_run`; `baseline: cached` measures a base once per base
+      sha (2026-08-16 → 2026-08-28, #174–#178).
 
 - [x] The chain: `scripts/tick_chain.sbatch` — successor top-up to depth 2,
       `--dependency=singleton`, absolute `--begin` cadence grid, sbatch
@@ -132,6 +134,16 @@ the research repos' porting timelines; mistakes are free; adversarial testing
       fenced, scope/drift/re-measure on changes) → reply as bot. Tick wiring,
       issue intake, and workspace GC still pending
 - [ ] Staged injection tests against the pilot before any research target
+- [x] Autonomy and scale dials (2026-08-27/28): the gate enforces the
+      contract's calibrated floor (#169) and the panel's aggregation taste
+      (#167); `merge: manual|auto` (#171) with a repo-side runbook; pacing
+      (`attempt_cooldown_minutes`, crash tombstones, #172) and width
+      (`max_active_attempts`, per-slot identities, #173). Every attempt's
+      report — negatives included — lands on the target's `research-log`
+      branch with a pointer on a rolling issue (#170)
+- [x] First GPU target live (2026-08-28): gpt-speedrun (docs/design/headline.md)
+      — baseline reproduced on one H200 at the public log's crossing step,
+      9-run calibration → `min_delta: 256`, running at width 4 in auto mode
 
 Candidate second target (2026-08-06): a private toy-scale research repo —
 real research code, CPU-runnable, seeded, single-command evals. Two things
