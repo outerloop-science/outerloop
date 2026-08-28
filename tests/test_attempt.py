@@ -3018,3 +3018,27 @@ def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
         panel_ran=True,
     )
     assert gh.auto == [6]
+
+
+def test_dispatch_settings_read_once_for_fresh_and_wake() -> None:
+    """One constructor for the cluster coordinates: the wake path must carry
+    the GPU lane exactly like the fresh climb (terra #174 r1 — it dropped it)."""
+    import argparse
+
+    from autoresearch.attempt import _dispatch_settings
+
+    args = argparse.Namespace(
+        image="/i.sif",
+        account="acct",
+        partition="cpu",
+        gpu_partition="h200",
+        gpu_account="gpu-acct",
+    )
+    d = _dispatch_settings(args)
+    assert (d.account, d.partition, d.gpu_partition, d.gpu_account) == (
+        "acct",
+        "cpu",
+        "h200",
+        "gpu-acct",
+    )
+    assert d.placement(1) == ("gpu-acct", "h200")

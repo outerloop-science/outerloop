@@ -11,6 +11,7 @@ has ended; the session sees only its own capped API key inside its container.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
 import os
@@ -457,6 +458,22 @@ def _park_run(
         }
     )
     save_record(run_root, waiting, now)
+
+
+def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
+    """The cluster coordinates from the CLI, read in ONE place for both the
+    fresh climb and the wake (a second constructor drifted once — terra
+    #174: the wake dropped the GPU lane)."""
+    from autoresearch.compute import SlurmCompute
+
+    return DispatchSettings(
+        compute=SlurmCompute(),
+        image=args.image,
+        account=args.account,
+        partition=args.partition,
+        gpu_partition=getattr(args, "gpu_partition", ""),
+        gpu_account=getattr(args, "gpu_account", ""),
+    )
 
 
 def _make_launcher(
@@ -2316,7 +2333,6 @@ def main() -> int:
                 "--resume needs the cluster triple (--account/--partition/--image) "
                 "to rebuild the dispatched measurer"
             )
-        from autoresearch.compute import SlurmCompute
         from autoresearch.runstate import load_record, release_lease
 
         # Reproduce the PARKED run's author, not the current fleet default: the
@@ -2376,12 +2392,7 @@ def main() -> int:
             resumed = resume_run(
                 args.run_root,
                 args.resume,
-                dispatch=DispatchSettings(
-                    compute=SlurmCompute(),
-                    image=args.image,
-                    account=args.account,
-                    partition=args.partition,
-                ),
+                dispatch=_dispatch_settings(args),
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
@@ -2467,16 +2478,7 @@ def main() -> int:
     # sets these on the climb job's env, a bare CLI run leaves them empty).
     dispatch: DispatchSettings | None = None
     if args.account and args.partition and args.image and Path(args.image).is_file():
-        from autoresearch.compute import SlurmCompute
-
-        dispatch = DispatchSettings(
-            compute=SlurmCompute(),
-            image=args.image,
-            account=args.account,
-            partition=args.partition,
-            gpu_partition=args.gpu_partition,
-            gpu_account=args.gpu_account,
-        )
+        dispatch = _dispatch_settings(args)
     try:
         try:
             outcome = live_attempt(
