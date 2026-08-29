@@ -115,8 +115,12 @@ def build_harness(
     the ephemeral boundary (CI). The tokenless split keeps credentials out of
     the session either way."""
     if backend == "codex":
-        # the web: codex's native web_search tool, on when the spec grants it
-        web = ("--search",) if "WebSearch" in spec.tools else ()
+        # the web: codex's native web_search tool, on when the spec grants it.
+        # `--search` exists only on the interactive command — `codex exec`
+        # rejects it (it aborted every fleet attempt on 2026-08-29); the
+        # config override is the exec-compatible form, verified live on the
+        # deployed 0.130.0 (the session makes real web_search calls).
+        web = ("-c", "tools.web_search=true") if "WebSearch" in spec.tools else ()
         return CodexHarness(
             api_key=api_key,
             binary=binary or "codex",

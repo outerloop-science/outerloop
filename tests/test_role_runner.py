@@ -201,7 +201,10 @@ def test_build_harness_codex_is_uniform_for_all_roles() -> None:
     assert isinstance(judge, CodexHarness) and isinstance(editor, CodexHarness)
     assert judge.sandbox == editor.sandbox == "danger-full-access"
     assert judge.container_image == "" and editor.container_image == "img.sif"
-    assert "--search" in judge.extra_args and "--search" in editor.extra_args  # the web
+    # the web: the exec-compatible config override, never `--search` (which
+    # `codex exec` rejects — it killed every fleet attempt on 2026-08-29)
+    for h in (judge, editor):
+        assert "tools.web_search=true" in h.extra_args and "--search" not in h.extra_args
 
 
 def test_build_harness_hermes_toolsets_follow_the_spec(tmp_path: Path) -> None:
