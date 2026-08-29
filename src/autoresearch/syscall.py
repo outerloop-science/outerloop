@@ -35,6 +35,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -268,6 +269,25 @@ def launches_gpu_hours(request: SyscallRequest, *, gpus: int) -> float:
     if gpus <= 0:
         return 0.0
     return sum(la.minutes * max(la.array, 1) for la in request.launches) * gpus / 60.0
+
+
+def launch_hours_refund(
+    launches: Iterable[Launch], elapsed_seconds: Iterable[int | None], *, gpus: int
+) -> float:
+    """GPU-hours to hand back once a park's launch jobs are done: they were
+    charged at their declared walltime when dispatched, and a job that died
+    in its first minutes (a bad command, a missing path) must not cost the
+    author the four hours it asked for. The refund is the declared charge
+    minus what the jobs actually ran, never below zero, and zero when any
+    job's elapsed time is unknown (a refund is never guessed)."""
+    if gpus <= 0:
+        return 0.0
+    elapsed = list(elapsed_seconds)
+    if not elapsed or any(e is None for e in elapsed):
+        return 0.0
+    declared = sum(la.minutes * max(la.array, 1) for la in launches) * gpus / 60.0
+    actual = sum(int(e) for e in elapsed if e is not None) * gpus / 3600.0
+    return max(0.0, declared - actual)
 
 
 def evals_gpu_hours(

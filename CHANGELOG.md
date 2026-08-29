@@ -16,6 +16,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- GPU-hours for an author's launches are charged at the declared walltime when dispatched and reconciled when the wake gathers them: unused walltime is refunded (a sweep that dies in its first minutes no longer costs its full declared hours).
 - An author that concludes after an errored gate eval ends the attempt on that error; only a resubmit runs the eval again.
 - A tree the gate already turned down in this attempt is never measured again: when the woken author concludes (or resubmits untouched), that verdict stands and the attempt ends on it — no second eval pair, no GPU-hours. An errored eval is still retried.
 

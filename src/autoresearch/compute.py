@@ -176,6 +176,23 @@ class SlurmCompute:
         state = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
         return state if state else GONE
 
+    def elapsed_seconds(self, job_id: str) -> int | None:
+        """How long the job actually ran (sacct Elapsed), or None when sacct
+        has no record. Raises SlurmQueryError when the query itself fails."""
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        try:
+            result = self.runner(
+                ["sacct", "-j", job_id, "--parsable2", "--noheader", "-X", "-o", "Elapsed"],
+                self.command_timeout_s,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"sacct did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"sacct failed ({result.returncode}): {result.stderr.strip()}")
+        text = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
+        return parse_elapsed(text) if text else None
+
     def pending_reason(self, job_id: str) -> str:
         """Why a PENDING job is pending — Slurm's reason (`Dependency`,
         `DependencyNeverSatisfied`, `Priority`, ...), or "" when squeue no
@@ -329,6 +346,25 @@ class LocalCompute:
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
         # already terminal; cancelling a finished job is not an error
+
+
+def parse_elapsed(text: str) -> int | None:
+    """Seconds in a sacct Elapsed field: `MM:SS`, `HH:MM:SS` or `D-HH:MM:SS`.
+    None for anything else (an unknown field never becomes a refund)."""
+    days = 0
+    if "-" in text:
+        day_part, _, text = text.partition("-")
+        if not day_part.isdigit():
+            return None
+        days = int(day_part)
+    parts = text.split(":")
+    if not parts or not all(p.isdigit() for p in parts) or len(parts) > 3:
+        return None
+    nums = [int(p) for p in parts]
+    while len(nums) < 3:
+        nums.insert(0, 0)
+    hours, minutes, seconds = nums
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def is_terminal(state: str) -> bool:

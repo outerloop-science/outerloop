@@ -363,6 +363,7 @@ def _park_run(
         "seed": parked.seed,
         "suite_seed": parked.suite_seed,
         "afterany": parked.afterany,
+        "launch_afterany": parked.launch_afterany,
         # the branch the run targets, so a wake opens its PR against the SAME
         # branch a non-default `--base-branch` selected — the wake CLI otherwise
         # defaults to main and would mis-target.
@@ -720,7 +721,7 @@ def _wake_author_sleep(
     results = gather_results(run_dir, workspace, launches)
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
-    gpu_hours_used = float(record.stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
+    gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches)
     wake_text = render_wake(
         results,
         str(record.stage.get("syscall_note", "")),
@@ -862,6 +863,73 @@ def _stage_judged(record: RunRecord) -> tuple[str, AttemptResult] | None:
             note=str(j.get("note") or ""),
         ),
     )
+
+
+def _stage_syscall_launches(record: RunRecord) -> tuple:
+    """The park's launches as `Launch` values (command elided: they ran)."""
+    from autoresearch.syscall import Launch
+
+    return tuple(
+        Launch(
+            name=str(item.get("name", "")),
+            command="(ran)",
+            minutes=int(item.get("minutes") or 1),
+            artifacts=tuple(str(a) for a in item.get("artifacts", [])),
+            array=int(item.get("array") or 1),
+        )
+        for item in _stage_launches(record)
+    )
+
+
+def _stage_launch_job_ids(record: RunRecord) -> list[str]:
+    """The park's launch jobs: `launch_afterany` when the park recorded it;
+    for an older author-sleep park every waited job was a launch; for an
+    older candidate park the gate's evals are mixed in, so none."""
+    stage = record.stage or {}
+    if "launch_afterany" in stage:
+        return afterany_ids(str(stage.get("launch_afterany") or ""))
+    if stage.get("phase") == "author-sleep":
+        return afterany_ids(str(stage.get("afterany") or ""))
+    return []
+
+
+def _reconcile_launch_hours(
+    record: RunRecord, dispatch: DispatchSettings, gpus: int, launches: tuple
+) -> float:
+    """The run's GPU-hours after handing back the unused walltime of the
+    park's launch jobs — once: the stage remembers the refund, so a wake
+    that follows a gate decision on the same park does not refund twice.
+    Returns the (possibly corrected) `gpu_hours_used`."""
+    stage = record.stage or {}
+    used = float(stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
+    if not gpus or stage.get("launch_hours_refunded"):
+        return used
+    refund = _launch_refund(dispatch, launches, _stage_launch_job_ids(record), gpus)
+    if refund > 0:
+        log.info("%s: refunding %.2f GPU-hours of unused launch walltime", record.run_id, refund)
+        used = max(0.0, used - refund)
+        stage["gpu_hours_used"] = used
+    stage["launch_hours_refunded"] = True
+    return used
+
+
+def _launch_refund(
+    dispatch: DispatchSettings, launches: tuple, job_ids: list[str], gpus: int
+) -> float:
+    """The unused walltime of a park's launch jobs, in GPU-hours, or 0 when
+    the compute cannot say how long they ran (nothing is refunded on a
+    guess)."""
+    from autoresearch.syscall import launch_hours_refund
+
+    query = getattr(dispatch.compute, "elapsed_seconds", None)
+    if query is None or not job_ids:
+        return 0.0
+    try:
+        elapsed = [query(jid) for jid in job_ids]
+    except Exception as exc:
+        log.warning("launch walltime unknown (%s: %s); nothing refunded", type(exc).__name__, exc)
+        return 0.0
+    return launch_hours_refund(launches, elapsed, gpus=gpus)
 
 
 def _stage_launches(record: RunRecord) -> list[dict]:
@@ -1047,6 +1115,7 @@ def resume_run(
             parked.gpu_hours_used = float(stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
             parked.eval_minutes = int(stage.get("eval_minutes", 0) or 0) or None  # type: ignore[call-overload]
             parked.judged = parked.judged or _stage_judged(record)
+            parked.launch_afterany = parked.launch_afterany or str(stage.get("launch_afterany", ""))
             if parked.syscall is None:
                 parked.syscall = _SyscallRequest(
                     launches=tuple(
@@ -1093,6 +1162,11 @@ def resume_run(
         and bool(record.resume_session_id)
         and getattr(harness, "supports_resume", True)
     )
+
+    # the park's sibling launches are done too: settle their charge before
+    # any path — publish or hand back to the author — reads the budget
+    if _stage_launches(record):
+        _reconcile_launch_hours(record, dispatch, bench.gpus, _stage_syscall_launches(record))
 
     def _wake_author(
         extra_update: str, judged: tuple[str, AttemptResult] | None = None

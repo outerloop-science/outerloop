@@ -122,8 +122,12 @@ class RunParked(Exception):
         gpu_hours_used: float = 0.0,
         eval_minutes: int | None = None,
         judged: tuple[str, AttemptResult] | None = None,
+        launch_afterany: str = "",
     ):
         self.phase = phase
+        # the author's launch jobs alone (a candidate park's `afterany` also
+        # carries the gate's evals): the wake reconciles their charge
+        self.launch_afterany = launch_afterany
         # the gate's last negative and the tree it judged, carried across an
         # author-sleep so a wake ending on that tree reuses the verdict
         self.judged = judged
@@ -1468,10 +1472,12 @@ def attempt_once(
                         run_seed=run_seed,
                     )
                 sha = snapshot()
+                launch_afterany = launcher(sha, request)
                 raise RunParked(
                     phase="author-sleep",
                     judged=failed_gate,
-                    afterany=launcher(sha, request),
+                    afterany=launch_afterany,
+                    launch_afterany=launch_afterany,
                     base_sha=base_sha,
                     seed=run_seed,
                     suite_seed=suite_seed,
@@ -1576,6 +1582,7 @@ def attempt_once(
             raise RunParked(
                 phase="candidate",
                 afterany=_merge_afterany(pending.afterany(), launch_afterany),
+                launch_afterany=launch_afterany,
                 base_sha=base_sha,
                 seed=run_seed,
                 suite_seed=suite_seed,

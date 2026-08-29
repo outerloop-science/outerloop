@@ -157,6 +157,70 @@ def test_release_own_lease_keeps_a_lease_handed_to_the_armed_wake(tmp_path, monk
     assert read_lease(tmp_path, "r") is None
 
 
+def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, monkeypatch) -> None:
+    """A park remembers which of its jobs were the author's launches
+    (`launch_afterany`); the refund reads those jobs' elapsed time — never the
+    gate's evals mixed into a candidate park's `afterany` — and happens once
+    per park, however many wakes read the budget afterwards."""
+    from dataclasses import dataclass
+
+    from autoresearch.attempt import _reconcile_launch_hours, _stage_launch_job_ids
+    from autoresearch.syscall import Launch
+
+    @dataclass
+    class Elapsed:
+        seconds: dict
+
+        def elapsed_seconds(self, job_id: str) -> int | None:
+            return self.seconds.get(job_id)
+
+    @dataclass
+    class D:
+        compute: object
+
+    sweep = (Launch(name="sweep", command="x", minutes=240, array=2),)
+    # a candidate park: gate evals 601/602 waited on too, launches 701/702
+    rec = RunRecord(
+        run_id="r",
+        target="o/p",
+        task_title="t",
+        state="waiting",
+        stage={
+            "phase": "candidate",
+            "afterany": "afterany:601:602:701:702",
+            "launch_afterany": "afterany:701:702",
+            "syscall_launches": [{"name": "sweep", "minutes": 240, "array": 2}],
+            "gpu_hours_used": 16.0,
+        },
+    )
+    assert _stage_launch_job_ids(rec) == ["701", "702"]
+    d = D(Elapsed({"601": 12000, "602": 12000, "701": 300, "702": 300}))
+    used = _reconcile_launch_hours(rec, d, 1, sweep)  # type: ignore[arg-type]
+    assert abs(used - (16.0 - (8.0 - 600 / 3600))) < 1e-9
+    assert rec.stage["launch_hours_refunded"] is True
+    assert _reconcile_launch_hours(rec, d, 1, sweep) == used  # type: ignore[arg-type]
+    # older parks: an author-sleep park's jobs were all launches; a candidate
+    # park without the field has the gate mixed in, so nothing is refunded
+    old_sleep = RunRecord(
+        run_id="s",
+        target="o/p",
+        task_title="t",
+        state="waiting",
+        stage={"phase": "author-sleep", "afterany": "afterany:701:702"},
+    )
+    assert _stage_launch_job_ids(old_sleep) == ["701", "702"]
+    old_cand = RunRecord(
+        run_id="c",
+        target="o/p",
+        task_title="t",
+        state="waiting",
+        stage={"phase": "candidate", "afterany": "afterany:601:701"},
+    )
+    assert _stage_launch_job_ids(old_cand) == []
+    # no GPUs: nothing is metered, nothing refunded
+    assert _reconcile_launch_hours(old_sleep, d, 0, sweep) == 0.0  # type: ignore[arg-type]
+
+
 def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
     """A gate negative the author answered by launching more work rides the
     park, so the wake that ends on the same tree reuses it (review #182)."""
@@ -180,6 +244,7 @@ def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
         session=_session("s9"),
         syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
         judged=("d" * 40, verdict),
+        launch_afterany="afterany:501",
     )
     _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
     r = load_record(tmp_path, "tsp-3")
@@ -191,6 +256,7 @@ def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
         "note": "inside the floor",
     }
     assert _stage_judged(r) == ("d" * 40, verdict)
+    assert r.stage["launch_afterany"] == "afterany:501"
     bare = RunRecord(run_id="x", target="o/p", task_title="t", state="waiting")
     assert _stage_judged(bare) is None
 
