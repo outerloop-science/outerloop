@@ -185,6 +185,33 @@ def test_board_remembers_benchmarks_whose_local_records_are_gone(tmp_path: Path)
     assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max", "speedrun": "min"}
 
 
+def test_transient_json_read_failure_never_orphans_an_indexed_benchmark(tmp_path: Path) -> None:
+    """get_file_content returns None on a transient API failure too: an
+    indexed benchmark whose JSON could not be read this pass stays in the
+    index (its history is still on the branch), and the views render it
+    again once a later read succeeds."""
+    gh = _BoardGitHub()
+    gh.files["climb/index.json"] = json.dumps({"old-bench": "max"})
+    old_rows = json.dumps(
+        [{"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 0.5, "outcome": "improved"}]
+    )
+    gh.files["climb/old-bench.json"] = old_rows
+    real_get = gh.get_file_content
+    blackout = {"climb/old-bench.json"}
+
+    def flaky_get(repo, path, ref):
+        return None if path in blackout else real_get(repo, path, ref)
+
+    gh.get_file_content = flaky_get  # type: ignore[method-assign]
+    _terminal_run(tmp_path, "speedrun-1")
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert "## old-bench" not in gh.files["CLIMB.md"]  # skipped this pass...
+    assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max", "speedrun": "min"}
+    blackout.clear()  # ...and back in the views once the read works again
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert "## old-bench" in gh.files["CLIMB.md"]
+
+
 def test_failed_view_upload_is_retried_next_pass(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-1")
 

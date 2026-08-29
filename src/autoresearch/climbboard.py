@@ -280,7 +280,10 @@ def service_climb_board(
             boards[benchmark] = merge_rows(existing, [])
     if not boards:
         return changed
-    wanted = {b: directions.get(b, "min") for b in boards}
+    # the index keeps every benchmark it knows — a transient failed read of
+    # one benchmark's JSON must not orphan its history; the views simply
+    # render without it until a later pass reads it again
+    wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index))}
     for path, content in (
         ("climb/index.json", json.dumps(wanted, indent=1) + "\n"),
         ("CLIMB.md", render_md(target, boards, wanted)),
