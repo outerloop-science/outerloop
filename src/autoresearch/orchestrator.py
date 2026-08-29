@@ -1163,7 +1163,12 @@ def attempt_once(
         # same optional-attr idiom as the panel policy
         raise ValueError("resume_session_id given but the harness does not support resume")
     if resume_session_id and (
-        task_hypothesis or lessons or recent_reports or created or brief_baseline is not None
+        task_hypothesis
+        or lessons
+        or recent_reports
+        or report_archive
+        or created
+        or brief_baseline is not None
     ):
         # a resume skips build_brief entirely (the session already carries this
         # context from its first pass), so these brief-only inputs would be
@@ -1177,8 +1182,8 @@ def attempt_once(
         # is NOT brief-only — scope/gate use it either way.
         raise ValueError(
             "resume_session_id resumes an existing session (no fresh brief); the brief-only "
-            "inputs (task_hypothesis/lessons/recent_reports/created/brief_baseline) have no "
-            "effect on a resume — omit them"
+            "inputs (task_hypothesis/lessons/recent_reports/report_archive/created/"
+            "brief_baseline) have no effect on a resume — omit them"
         )
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
