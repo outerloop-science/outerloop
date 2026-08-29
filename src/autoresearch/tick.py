@@ -1452,9 +1452,9 @@ def tick(
         except Exception as exc:  # the ledger is advisory; the tick continues
             log.warning("research-log service failed: %s", exc)
         try:
-            from autoresearch.climbboard import service_climb_board
+            from autoresearch.climbboard import contract_directions, service_climb_board
 
-            service_climb_board(root, github, spec.target)
+            service_climb_board(root, github, spec.target, contract_directions(contract))
         except Exception as exc:  # the board is advisory; the tick continues
             log.warning("climb board service failed: %s", exc)
         intake_job = (

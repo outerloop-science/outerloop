@@ -7,6 +7,7 @@ from pathlib import Path
 from autoresearch.climbboard import (
     ClimbRow,
     collect_rows,
+    contract_directions,
     merge_rows,
     render_html,
     render_md,
@@ -99,6 +100,36 @@ def test_views_render_the_rows_and_respect_direction(tmp_path: Path) -> None:
     # carries the direction
     html = render_html("org/repo", boards, {"speedrun": "min"})
     assert "fetch(" not in html and '"boards"' in html and "38146" in html
+    # agent-written text cannot break out of the inline script: "<" is
+    # escaped inside the JSON, so a </script> payload stays data
+    hostile = {"b": [{"run_id": "x", "hypothesis": "</script><script>alert(1)</script>"}]}
+    page = render_html("org/repo", hostile, {"b": "min"})
+    assert page.count("</script>") == 2  # chart.js include + our own script, nothing injected
+    assert "\\u003c/script" in page
+
+
+def test_contract_directions_maps_benchmarks() -> None:
+    from autoresearch.contract import load_contract
+
+    contract = load_contract(
+        """
+benchmarks:
+  - name: tsp
+    command: uv run x --json
+    metric: m
+    direction: min
+  - name: acc
+    command: uv run y --json
+    metric: a
+    direction: max
+budgets: {gpu_hours_per_run: 1, runs_per_week: 1}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/repo",
+    )
+    assert contract_directions(contract) == {"tsp": "min", "acc": "max"}
+    assert contract_directions(None) == {}
 
 
 class _BoardGitHub:

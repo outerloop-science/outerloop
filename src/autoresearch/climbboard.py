@@ -183,7 +183,10 @@ def render_html(
     fetch() from a file:// page, and the direct-from-clone view must work),
     only chart.js arrives from its CDN — nothing bulky is committed to the
     target's branch."""
-    payload = json.dumps({"boards": boards, "directions": directions})
+    # "<" is escaped INSIDE the JSON (still valid JSON): a hypothesis line is
+    # agent-written text, and a literal </script> in it would close the inline
+    # script and run whatever follows in the published page
+    payload = json.dumps({"boards": boards, "directions": directions}).replace("<", "\\u003c")
     return (
         "<!doctype html>\n<html><head><meta charset='utf-8'>\n"
         f"<title>Climb — {target}</title>\n"
@@ -215,6 +218,13 @@ def render_html(
         "      (i) => measured[i.dataIndex].hypothesis}}}}});\n"
         "}\n</script></body></html>\n"
     )
+
+
+def contract_directions(contract: Any) -> dict[str, str]:
+    """{benchmark: direction} out of a loaded contract (None -> {})."""
+    if contract is None:
+        return {}
+    return {b.name: b.direction for b in contract.benchmarks}
 
 
 def _read_index(github: Any, target: str) -> dict[str, str]:
