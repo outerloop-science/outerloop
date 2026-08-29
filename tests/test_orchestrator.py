@@ -398,6 +398,90 @@ def test_identical_resubmit_is_told_so_without_a_second_gate(tmp_path: Path) -> 
     assert "identical to the candidate the gate already measured" in harness.prompts[2]
 
 
+def test_conceding_after_an_errored_eval_ends_without_another_gate(tmp_path: Path) -> None:
+    """The gate's eval errored; the author read the note and concluded
+    without touching the tree. The attempt ends on that error — the
+    identical tree is not evaluated again."""
+    from autoresearch.orchestrator import EvalError
+
+    harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
+    evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)")])  # type: ignore[list-item]
+    result = _gate_negative_attempt(tmp_path, harness, evaluator)
+    assert result.outcome == "eval-error"
+    assert "walltime" in result.note
+    assert harness.resumes == [None, "s1"]
+    assert len(evaluator.calls) == 2
+
+
+def test_resubmitting_after_an_errored_eval_runs_it_again(tmp_path: Path) -> None:
+    """After an errored eval a resubmit of the same tree is the retry (more
+    minutes declared, say): it is measured again, not answered from memory."""
+    from autoresearch.orchestrator import EvalError
+
+    harness = _SeqHarness(["the claim", "again", "conceded"], submit_on=(1, 2))
+    evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)"), 13.9])  # type: ignore[list-item]
+    result = _gate_negative_attempt(tmp_path, harness, evaluator)
+    assert result.outcome == "no-improvement"
+    assert harness.resumes == [None, "s1", "s2"]
+    assert len(evaluator.calls) == 3
+    assert "identical" not in harness.prompts[2]  # the retry ran; it was not refused
+
+
+def test_resubmit_after_a_gate_verdict_keeps_scope_and_snapshot_guards(tmp_path: Path) -> None:
+    """The early seal of a resubmit runs behind the same guards as the late
+    one: an out-of-scope edit is a scope violation before anything is
+    snapshotted, and a failed snapshot is the eval error it always was."""
+    from autoresearch.orchestrator import EvalError
+
+    harness = _SeqHarness(["the claim", "again"], submit_on=(1, 2))
+    evaluator = FakeEvaluator(values=[13.9, 13.9])
+    measurer, _snapshot = _wire(evaluator, tmp_path)
+    seals = {"n": 0}
+
+    def snapshot() -> str:
+        seals["n"] += 1
+        if seals["n"] > 1:
+            raise EvalError("git objects unwritable")
+        return f"cand{seals['n']}"
+
+    result = attempt_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        launcher=lambda sha, req: "",
+        tree_of=lambda sha: "same-tree",
+    )
+    assert result.outcome == "eval-error" and "snapshot" in result.note
+    assert seals["n"] == 2
+
+    harness = _SeqHarness(["the claim", "again"], submit_on=(1, 2))
+    evaluator = FakeEvaluator(values=[13.9, 13.9])
+    measurer, snapshot2 = _wire(evaluator, tmp_path)
+    paths = iter([["src/pilot/solvers/tsp.py"], ["src/pilot/solvers/tsp.py", "docs/roadmap.md"]])
+    result = attempt_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot2,
+        ruler="r",
+        changed_paths=lambda: next(paths),
+        created="t",
+        launcher=lambda sha, req: "",
+        tree_of=lambda sha: "same-tree",
+    )
+    assert result.outcome == "scope-violation" and "docs/roadmap.md" in result.note
+
+
 def test_identical_resubmit_past_the_sleep_budget_ends_on_the_verdict(tmp_path: Path) -> None:
     """The unchanged-tree reuse runs BEFORE the budget check, so an author out
     of sleeps (or GPU-hours) is not refused a gate it would never run; past
