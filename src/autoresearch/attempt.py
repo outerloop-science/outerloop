@@ -955,11 +955,17 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
         # report files are dated (reports/<YYYY-MM-DD>-<run_id>.md): the name
         # sorts by day; same-day order is arbitrary and does not matter
         out: list[tuple[str, str]] = []
-        for name in sorted(names, reverse=True)[:count]:
-            text = ws.git("show", f"FETCH_HEAD:{name}")
-            if len(text) > MAX_ARCHIVED_REPORT_CHARS:
-                text = text[:MAX_ARCHIVED_REPORT_CHARS] + "\n[truncated]\n"
-            out.append((Path(name).name, text))
+        for name in sorted(names, reverse=True):
+            if len(out) >= count:
+                break
+            # size BEFORE content: `git show` would load the whole blob, and
+            # the branch's content is remote-controlled
+            if int(ws.git("cat-file", "-s", f"FETCH_HEAD:{name}").strip()) > (
+                MAX_ARCHIVED_REPORT_CHARS
+            ):
+                log.info("research report %s exceeds the size cap; skipped", name)
+                continue
+            out.append((Path(name).name, ws.git("show", f"FETCH_HEAD:{name}")))
         return out
     except Exception as exc:
         log.info("research log unavailable (%s: %s); starting without it", type(exc).__name__, exc)

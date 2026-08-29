@@ -261,15 +261,15 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     assert "negative-result" in reports[0][1]  # never the nested shadow
     assert [n for n, _ in _fetch_research_reports(ws, 1)] == ["2026-08-29-run-b.md"]
 
-    # a huge report (branch content is remote-controlled) arrives truncated
+    # a huge report (branch content is remote-controlled) is skipped by its
+    # blob size BEFORE `git show` would load it; the next report fills the slot
     from autoresearch.attempt import MAX_ARCHIVED_REPORT_CHARS
 
     (seed / "reports" / "2026-08-30-run-c.md").write_text("x" * (MAX_ARCHIVED_REPORT_CHARS + 999))
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "big")
     _git(seed, "push", "-q", str(origin), "research-log")
-    big = _fetch_research_reports(ws, 1)[0][1]
-    assert len(big) <= MAX_ARCHIVED_REPORT_CHARS + 20 and big.endswith("[truncated]\n")
+    assert [n for n, _ in _fetch_research_reports(ws, 1)] == ["2026-08-29-run-b.md"]
 
     # production order: the tool installer recreates the channel dir it owns,
     # so the archive must be written AFTER it (review #191: writing before
