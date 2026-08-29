@@ -120,7 +120,7 @@ def summarizer_spec(
             "its `conclude` command and end your turn."
         ),
         key="reviewer",
-        tools=("Bash",),
+        tools=("Bash", *_WEB_TOOLS),
         execution=Execution(environment=environment, can_execute=True),
         budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
         skills=("plain-style", "review-rubric"),
