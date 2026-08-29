@@ -932,6 +932,58 @@ def _launch_refund(
     return launch_hours_refund(launches, elapsed, gpus=gpus)
 
 
+RESEARCH_LOG_BRANCH = "research-log"
+MAX_ARCHIVED_REPORTS = 30  # materialized for the session to read; newest first
+MAX_ARCHIVED_REPORT_CHARS = 100_000  # per report; branch content is remote-controlled
+
+
+def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
+    """The newest `count` reports from the target's research-log branch, as
+    (name, text), newest first — the shared memory of every attempt on this
+    target, wherever it ran. Fail-soft: a target with no research log yet
+    (or an unreachable remote) is an empty memory, never a dead attempt."""
+    try:
+        ws.git_network("fetch", "origin", RESEARCH_LOG_BRANCH)
+        listing = ws.git("ls-tree", "-r", "--name-only", "FETCH_HEAD", "reports/")
+        # only direct children (the publisher's layout): a nested path would
+        # flatten to a basename that overwrites another archived report
+        names = [
+            line.strip()
+            for line in listing.splitlines()
+            if line.strip().endswith(".md") and line.strip().count("/") == 1
+        ]
+        # report files are dated (reports/<YYYY-MM-DD>-<run_id>.md): the name
+        # sorts by day; same-day order is arbitrary and does not matter
+        out: list[tuple[str, str]] = []
+        for name in sorted(names, reverse=True):
+            if len(out) >= count:
+                break
+            # size BEFORE content: `git show` would load the whole blob, and
+            # the branch's content is remote-controlled
+            if int(ws.git("cat-file", "-s", f"FETCH_HEAD:{name}").strip()) > (
+                MAX_ARCHIVED_REPORT_CHARS
+            ):
+                log.info("research report %s exceeds the size cap; skipped", name)
+                continue
+            out.append((Path(name).name, ws.git("show", f"FETCH_HEAD:{name}")))
+        return out
+    except Exception as exc:
+        log.info("research log unavailable (%s: %s); starting without it", type(exc).__name__, exc)
+        return []
+
+
+def _install_report_archive(workspace: Path, reports: list[tuple[str, str]]) -> None:
+    """Materialize the fetched reports under the kernel-owned channel
+    (`.autoresearch/reports/`) so the session can read and search the full
+    texts with its own tools; the brief inlines only the newest few."""
+    dest = workspace / SYSCALL_DIR / "reports"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, text in reports:
+        if Path(name).name != name:  # branch content is remote-controlled
+            continue
+        (dest / name).write_text(text)
+
+
 def _stage_launches(record: RunRecord) -> list[dict]:
     """The persisted launch descriptors of an author-sleep stage (name +
     artifacts), tolerating a malformed entry by skipping it (the job dirs are
@@ -1876,6 +1928,7 @@ def live_attempt(
                 channel.is_symlink(),
             )
             author_syscalls = False
+        reports = _fetch_research_reports(ws, MAX_ARCHIVED_REPORTS)
         if author_syscalls:
             assert _bench is not None
             syscall_excluded(workspace)
@@ -1891,6 +1944,9 @@ def live_attempt(
                     float(contract.budgets.gpu_hours_per_run) if _bench.gpus else None
                 ),
             )
+            # AFTER install_tool: installing the tool recreates the channel
+            # dir it owns, which would delete an archive written earlier
+            _install_report_archive(workspace, reports)
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -2019,6 +2075,8 @@ def live_attempt(
                 changed_paths=changed_paths,
                 created=created,
                 task_hypothesis=task_hypothesis,
+                recent_reports=tuple(text for _name, text in reports),
+                report_archive=author_syscalls,
                 spec=spec,
                 panel_runner=panel_runner,
                 brief_baseline=prior_best.best if prior_best else None,

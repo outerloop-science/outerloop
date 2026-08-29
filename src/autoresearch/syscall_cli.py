@@ -370,9 +370,46 @@ def build_parser() -> argparse.ArgumentParser:
     co = sub.add_parser("conclude", help="commit the verdict; then end your turn")
     co.add_argument("--notes", default="", help="summary the reader sees")
     # shared verbs
+    rp = sub.add_parser(
+        "reports",
+        help="past attempts' research reports: no names = a summary list; "
+        "names = the full reports (several in one call)",
+    )
+    rp.add_argument("names", nargs="*", help="report file names from the summary list")
     sub.add_parser("status", help="show staged syscalls and remaining budget")
     sub.add_parser("cancel", help="discard the staged request")
     return p
+
+
+def cmd_reports(root: Path, args) -> str:
+    """The research-report archive the kernel fetched for this run. With no
+    names: one summary line per report, newest first. With names: those
+    reports in full, in the order asked."""
+    archive = root / "reports"
+    if not archive.is_dir():
+        return "no report archive in this run (a first attempt on the target, or fetch failed)"
+    if args.names:
+        parts = []
+        for name in args.names:
+            f = archive / name
+            if Path(name).name != name or not f.is_file():
+                raise ToolError(f"no such report: {name} (run `reports` for the list)")
+            parts.append(f"=== {name}\n{f.read_text()}")
+        return "\n\n".join(parts)
+    lines = []
+    for f in sorted(archive.glob("*.md"), reverse=True):
+        head = ""
+        for raw in f.read_text().splitlines():
+            text = raw.strip()
+            if text.startswith("Outcome:"):
+                head = text
+                break
+            if not head and text and not text.startswith("#"):
+                head = text
+        lines.append(f"{f.name}  {head[:120]}")
+    if not lines:
+        return "the report archive is empty"
+    return "\n".join(lines) + "\n(pass names to read full reports, several at once)"
 
 
 _HANDLERS = {
@@ -382,6 +419,7 @@ _HANDLERS = {
     "sleep": cmd_sleep,
     "finding": cmd_finding,
     "conclude": cmd_conclude,
+    "reports": cmd_reports,
     "status": cmd_status,
     "cancel": cmd_cancel,
 }

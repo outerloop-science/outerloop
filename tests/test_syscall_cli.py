@@ -362,3 +362,35 @@ def test_tool_command_is_absolute(tmp_path: Path) -> None:
     cmd = tool_command(tmp_path / "ws")
     assert cmd.startswith("python /")  # absolute, resolves from any cwd
     assert cmd.endswith("/ws/.autoresearch/syscall")
+
+
+def test_reports_summary_and_full_views(tmp_path: Path, capsys) -> None:
+    root = tmp_path / ".autoresearch"
+    archive = root / "reports"
+    archive.mkdir(parents=True)
+    (archive / "2026-08-28-speedrun-a.md").write_text(
+        "# Run report — org/repo / speedrun\nOutcome: **no-improvement**\nBaseline: 9472\n"
+    )
+    (archive / "2026-08-29-speedrun-b.md").write_text(
+        "# Run report — org/repo / speedrun\nOutcome: **negative-result**\nBaseline: 9472\n"
+    )
+    assert run(root, "reports", capsys=capsys) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("2026-08-29-speedrun-b.md") and "negative-result" in lines[0]
+    assert lines[1].startswith("2026-08-28-speedrun-a.md")
+    # several full reports in one call, in the order asked
+    both = ("2026-08-28-speedrun-a.md", "2026-08-29-speedrun-b.md")
+    assert run(root, "reports", *both, capsys=capsys) == 0
+    out = capsys.readouterr().out
+    assert out.index("=== 2026-08-28-speedrun-a.md") < out.index("=== 2026-08-29-speedrun-b.md")
+    assert "Outcome: **no-improvement**" in out
+    # a wrong name fails loudly with the remedy; a path is not a name
+    assert run(root, "reports", "nope.md", capsys=capsys) != 0
+    capsys.readouterr()
+    assert run(root, "reports", "../budget.json", capsys=capsys) != 0
+    capsys.readouterr()
+    # no archive yet: a plain explanation, not an error
+    bare = tmp_path / "bare" / ".autoresearch"
+    bare.mkdir(parents=True)
+    assert run(bare, "reports", capsys=capsys) == 0
+    assert "no report archive" in capsys.readouterr().out

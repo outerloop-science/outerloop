@@ -71,6 +71,7 @@ class SessionBrief:
     recent_reports: tuple[str, ...]  # newest first, already bounded
     budget: BudgetState
     created: str  # ISO timestamp, supplied by the caller (builder stays pure)
+    report_archive: bool = False  # the syscall tool + full archive are installed
     # Author-syscall budgets (research-loop.md, "one syscall"): >0 advertises the
     # launch/sleep tool to the author; 0 (the default) means the feature is off
     # for this run and the brief never mentions it.
@@ -93,6 +94,7 @@ class SessionBrief:
             ruler=data["ruler"],
             lessons=data["lessons"],
             recent_reports=tuple(data["recent_reports"]),
+            report_archive=bool(data.get("report_archive", False)),
             budget=BudgetState(**data["budget"]),
             created=data["created"],
             launch_budget=data.get("launch_budget", 0),
@@ -111,6 +113,7 @@ class BriefInputs:
     ruler: str
     lessons: str = ""
     recent_reports: tuple[str, ...] = field(default_factory=tuple)
+    report_archive: bool = False  # the syscall tool + full archive are installed
     budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 0))
     launch_budget: int = 0  # author-syscall budgets; 0 = feature off (no mention)
     sleep_budget: int = 0
@@ -145,6 +148,7 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
         ruler=_cap(inputs.ruler, MAX_RULER_CHARS),
         lessons=_cap(inputs.lessons, MAX_LESSONS_CHARS),
         recent_reports=reports,
+        report_archive=inputs.report_archive,
         budget=inputs.budget,
         created=created,
         launch_budget=inputs.launch_budget,
@@ -222,6 +226,23 @@ def render(brief: SessionBrief) -> str:
         ]
     if brief.recent_reports:
         parts += ["", "# Recent run reports (newest first, including failures)", _DATA_NOTE]
+        parts += [
+            "These are what past attempts on this benchmark tried and found — "
+            "negatives included. Read them critically: a negative settles "
+            "only what was actually run. One point in a parameter space, an "
+            "eval that hit its walltime, or an infrastructure failure does "
+            "not close an idea — vary what went untested, or rerun what "
+            "failed for reasons that were not the idea's. What it does "
+            "settle, do not repeat unchanged; build on it, or contradict it "
+            "with a reason."
+            + (
+                " The full archive: `python .autoresearch/syscall reports` "
+                "lists every report one line each; add names to read full "
+                "reports, several in one call."
+                if brief.report_archive
+                else ""
+            )
+        ]
         for i, report in enumerate(brief.recent_reports, 1):
             fence = _fence(report)
             parts += [f"\n## Report {i}", fence, report, fence]
