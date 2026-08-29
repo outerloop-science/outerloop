@@ -103,8 +103,13 @@ def test_render_tells_launches_where_artifacts_live() -> None:
 
 
 def test_render_points_reports_at_the_archive_views() -> None:
-    text = render(build_brief(make_inputs(recent_reports=("Outcome: negative",)), created="t"))
+    inputs = make_inputs(recent_reports=("Outcome: negative",), report_archive=True)
+    text = render(build_brief(inputs, created="t"))
     assert "syscall reports" in text and "several" in text
+    # without the tool installed the reports still inline, but no command is
+    # advertised that does not exist (review #191)
+    no_tool = render(build_brief(make_inputs(recent_reports=("Outcome: negative",)), created="t"))
+    assert "Outcome: negative" in no_tool and "syscall reports" not in no_tool
     off = render(build_brief(make_inputs(recent_reports=()), created="t"))
     assert "syscall reports" not in off
 

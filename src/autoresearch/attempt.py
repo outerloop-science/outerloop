@@ -934,6 +934,7 @@ def _launch_refund(
 
 RESEARCH_LOG_BRANCH = "research-log"
 MAX_ARCHIVED_REPORTS = 30  # materialized for the session to read; newest first
+MAX_ARCHIVED_REPORT_CHARS = 100_000  # per report; branch content is remote-controlled
 
 
 def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
@@ -949,7 +950,10 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
         # sorts by day; same-day order is arbitrary and does not matter
         out: list[tuple[str, str]] = []
         for name in sorted(names, reverse=True)[:count]:
-            out.append((Path(name).name, ws.git("show", f"FETCH_HEAD:{name}")))
+            text = ws.git("show", f"FETCH_HEAD:{name}")
+            if len(text) > MAX_ARCHIVED_REPORT_CHARS:
+                text = text[:MAX_ARCHIVED_REPORT_CHARS] + "\n[truncated]\n"
+            out.append((Path(name).name, text))
         return out
     except Exception as exc:
         log.info("research log unavailable (%s: %s); starting without it", type(exc).__name__, exc)
@@ -1916,7 +1920,6 @@ def live_attempt(
         if author_syscalls:
             assert _bench is not None
             syscall_excluded(workspace)
-            _install_report_archive(workspace, reports)
             # the author's interface is the TOOL (`python .autoresearch/syscall
             # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
             # install it plus the informational budget its `status` shows.
@@ -1929,6 +1932,9 @@ def live_attempt(
                     float(contract.budgets.gpu_hours_per_run) if _bench.gpus else None
                 ),
             )
+            # AFTER install_tool: installing the tool recreates the channel
+            # dir it owns, which would delete an archive written earlier
+            _install_report_archive(workspace, reports)
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
@@ -2058,6 +2064,7 @@ def live_attempt(
                 created=created,
                 task_hypothesis=task_hypothesis,
                 recent_reports=tuple(text for _name, text in reports),
+                report_archive=author_syscalls,
                 spec=spec,
                 panel_runner=panel_runner,
                 brief_baseline=prior_best.best if prior_best else None,

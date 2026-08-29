@@ -257,7 +257,25 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     assert "negative-result" in reports[0][1]
     assert [n for n, _ in _fetch_research_reports(ws, 1)] == ["2026-08-29-run-b.md"]
 
+    # a huge report (branch content is remote-controlled) arrives truncated
+    from autoresearch.attempt import MAX_ARCHIVED_REPORT_CHARS
+
+    (seed / "reports" / "2026-08-30-run-c.md").write_text("x" * (MAX_ARCHIVED_REPORT_CHARS + 999))
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "big")
+    _git(seed, "push", "-q", str(origin), "research-log")
+    big = _fetch_research_reports(ws, 1)[0][1]
+    assert len(big) <= MAX_ARCHIVED_REPORT_CHARS + 20 and big.endswith("[truncated]\n")
+
+    # production order: the tool installer recreates the channel dir it owns,
+    # so the archive must be written AFTER it (review #191: writing before
+    # deleted every archive)
+    from autoresearch.syscall import ensure_excluded, install_tool
+
+    ensure_excluded(ws_dir)
+    install_tool(ws_dir)
     _install_report_archive(ws_dir, [*reports, ("../escape.md", "nope")])
+    assert (ws_dir / ".autoresearch" / "syscall").exists()  # both survive
     archive = ws_dir / ".autoresearch" / "reports"
     assert sorted(f.name for f in archive.iterdir()) == [
         "2026-08-28-run-a.md",

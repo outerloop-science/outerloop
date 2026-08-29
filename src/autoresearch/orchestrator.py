@@ -1088,6 +1088,7 @@ def attempt_once(
     changed_paths: Callable[[], Sequence[str]],
     lessons: str = "",
     recent_reports: tuple[str, ...] = (),
+    report_archive: bool = False,
     created: str = "",
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
@@ -1219,6 +1220,7 @@ def attempt_once(
                 ruler=ruler,
                 lessons=lessons,
                 recent_reports=recent_reports,
+                report_archive=report_archive,
                 budget=config.budget,
                 # the launch/sleep tool is advertised ONLY when it is wired
                 # (never a tool the author cannot actually call)
