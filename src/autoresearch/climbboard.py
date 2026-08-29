@@ -227,14 +227,21 @@ def contract_directions(contract: Any) -> dict[str, str]:
     return {b.name: b.direction for b in contract.benchmarks}
 
 
-def _read_index(github: Any, target: str) -> dict[str, str]:
+def _read_index(github: Any, target: str) -> dict[str, str] | None:
     """climb/index.json: {benchmark: direction} for every benchmark ever
     published — the board's own memory, so a benchmark whose local records
     were cleaned up (or that left the contract) keeps its place in the
-    views."""
-    raw = github.get_file_content(target, "climb/index.json", BOARD_BRANCH)
-    if not raw:
-        return {}
+    views. {} means the board has no index yet (a 404); None means the read
+    FAILED — the caller must not rewrite the index it could not see, or a
+    transient outage would shrink it."""
+    try:
+        raw = github.get_file(target, "climb/index.json", BOARD_BRANCH)
+    except Exception as exc:
+        status = getattr(exc, "status", None)
+        if status == 404:
+            return {}
+        log.warning("climb index unreadable (%s); not rewriting it", exc)
+        return None
     try:
         data = json.loads(raw)
         return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
@@ -254,10 +261,10 @@ def service_climb_board(
     views never point at data that is not on the branch."""
     local = collect_rows(root, target)
     index = _read_index(github, target)
-    names = set(local) | set(index)
+    names = set(local) | set(index or {})
     if not names:
         return 0
-    directions = {**index, **(directions or {})}
+    directions = {**(index or {}), **(directions or {})}
     changed = 0
     boards: dict[str, list[dict[str, Any]]] = {}
     for benchmark in sorted(names):
@@ -282,13 +289,16 @@ def service_climb_board(
         return changed
     # the index keeps every benchmark it knows — a transient failed read of
     # one benchmark's JSON must not orphan its history; the views simply
-    # render without it until a later pass reads it again
-    wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index))}
-    for path, content in (
-        ("climb/index.json", json.dumps(wanted, indent=1) + "\n"),
+    # render without it until a later pass reads it again. An index that
+    # could not be READ at all (None) is never rewritten this pass.
+    wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index or {}))}
+    views: list[tuple[str, str]] = [
         ("CLIMB.md", render_md(target, boards, wanted)),
         ("climb.html", render_html(target, boards, wanted)),
-    ):
+    ]
+    if index is not None:
+        views.insert(0, ("climb/index.json", json.dumps(wanted, indent=1) + "\n"))
+    for path, content in views:
         if (
             content != github.get_file_content(target, path, BOARD_BRANCH)
             and github.ensure_branch(target, BOARD_BRANCH)

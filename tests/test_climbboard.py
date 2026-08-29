@@ -132,12 +132,27 @@ roadmap: docs/roadmap.md
     assert contract_directions(None) == {}
 
 
+class _GitHubError(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"{status}")
+        self.status = status
+
+
 class _BoardGitHub:
-    """get/put fake over an in-memory branch."""
+    """get/put fake over an in-memory branch, with the client's semantics:
+    get_file raises (404 when absent), get_file_content is tolerant."""
 
     def __init__(self) -> None:
         self.files: dict[str, str] = {}
         self.puts: list[str] = []
+        self.index_outage = False
+
+    def get_file(self, repo, path, ref):
+        if self.index_outage:
+            raise _GitHubError(500)
+        if path not in self.files:
+            raise _GitHubError(404)
+        return self.files[path]
 
     def get_file_content(self, repo, path, ref):
         return self.files.get(path)
@@ -210,6 +225,20 @@ def test_transient_json_read_failure_never_orphans_an_indexed_benchmark(tmp_path
     blackout.clear()  # ...and back in the views once the read works again
     service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
     assert "## old-bench" in gh.files["CLIMB.md"]
+
+
+def test_failed_index_read_never_rewrites_the_index(tmp_path: Path) -> None:
+    """A transient failure reading the index itself must not shrink it: the
+    pass publishes what it can but leaves climb/index.json untouched."""
+    gh = _BoardGitHub()
+    gh.files["climb/index.json"] = json.dumps({"old-bench": "max"})
+    _terminal_run(tmp_path, "speedrun-1")
+    gh.index_outage = True
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max"}  # untouched
+    gh.index_outage = False  # outage over: the union is restored
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max", "speedrun": "min"}
 
 
 def test_failed_view_upload_is_retried_next_pass(tmp_path: Path) -> None:
