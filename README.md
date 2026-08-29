@@ -43,6 +43,37 @@ Nothing reports back to us.
   a rolling issue; credited improvements update the target's ledger
   (`BENCHMARKS.md`, `results/leader.json`).
 
+## Where it runs
+
+It is built for your own compute, and the first-class home is a **Slurm
+cluster**:
+
+- **No daemon.** The whole system is a chain of short Slurm jobs (a tick
+  every 15 minutes, ~20 seconds of work each) that resubmits itself. Nothing
+  listens, nothing needs inbound SSH, and a cluster that requires 2FA is
+  fine.
+- **Every role is a job.** Author sessions, gate evals, experiment launches,
+  sweeps (`launch --array K`), verification panels, and wakes are each their
+  own job, placed where you say: CPU roles on your CPU partition, evals and
+  experiments on a GPU lane you name — a comma-separated partition list lets
+  Slurm start each job wherever it fits first, and GPUs are requested per node.
+- **Wakes ride Slurm dependencies.** A run that is waiting on jobs parks with
+  no process alive; its wake is submitted `afterany` those jobs and starts
+  seconds after they finish. Preemption and requeue are survived the same
+  way, and a lost job heals on the next tick.
+- **Jobs are jailed and metered.** Evals and launches run inside your
+  Apptainer image with only the checked-out tree bound, `/tmp` on node-local
+  scratch, and no credentials; GPU-hours are charged per attempt against the
+  contract's budget and reconciled with what the jobs actually ran.
+
+You do not need a cluster to start. Level 1 (advisory PR reviews) is one
+workflow file in your repo's CI. The climber's compute interface is small —
+submit a job, poll it — and the local backend runs the same job scripts as
+subprocesses on **one machine**, so a workstation with a GPU can climb a
+cheap benchmark before you point the loop at a cluster. Adding another
+backend (a cloud queue, a CI runner, a hardware rig) means implementing those
+two verbs.
+
 ## The contract
 
 One file in the target repo. The minimum:
