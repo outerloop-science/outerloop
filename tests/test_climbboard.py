@@ -85,14 +85,20 @@ def test_merge_is_idempotent_and_keeps_published_history(tmp_path: Path) -> None
     assert [r["run_id"] for r in merge_rows("not json", [row])] == ["r1"]
 
 
-def test_views_render_the_rows(tmp_path: Path) -> None:
+def test_views_render_the_rows_and_respect_direction(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-1")
     boards = {b: merge_rows(None, rows) for b, rows in collect_rows(tmp_path, "org/repo").items()}
-    md = render_md("org/repo", boards)
+    md = render_md("org/repo", boards, {"speedrun": "min"})
     assert "## speedrun" in md and "| 2026-" in md and "38146" in md
     assert "Attempts: **1**" in md
-    html = render_html("org/repo", list(boards))
-    assert "climb/${b}.json" in html and '"speedrun"' in html
+    # direction decides which candidate is "best" (contracts support max)
+    two = {"acc": [{"run_id": "a", "candidate": 0.3}, {"run_id": "b", "candidate": 0.7}]}
+    assert "best candidate: **0.7** (max)" in render_md("org/repo", two, {"acc": "max"})
+    assert "best candidate: **0.3** (min)" in render_md("org/repo", two, {"acc": "min"})
+    # the chart data is EMBEDDED (fetch() is blocked on a file:// page) and
+    # carries the direction
+    html = render_html("org/repo", boards, {"speedrun": "min"})
+    assert "fetch(" not in html and '"boards"' in html and "38146" in html
 
 
 class _BoardGitHub:
@@ -117,8 +123,8 @@ class _BoardGitHub:
 def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-1")
     gh = _BoardGitHub()
-    assert service_climb_board(tmp_path, gh, "org/repo") == 3
-    assert sorted(gh.puts) == ["CLIMB.md", "climb.html", "climb/speedrun.json"]
+    assert service_climb_board(tmp_path, gh, "org/repo") == 4
+    assert sorted(gh.puts) == ["CLIMB.md", "climb.html", "climb/index.json", "climb/speedrun.json"]
     # unchanged state: nothing is written again (no commit spam)
     gh.puts.clear()
     assert service_climb_board(tmp_path, gh, "org/repo") == 0
@@ -127,5 +133,68 @@ def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-2", state="in-review", ending="")
     assert service_climb_board(tmp_path, gh, "org/repo") >= 2
     assert json.loads(gh.files["climb/speedrun.json"])[-1]["run_id"] == "speedrun-2"
-    # no runs for the target at all: a quiet no-op
+    # no runs and no index at all: a quiet no-op
     assert service_climb_board(tmp_path / "empty", gh, "org/repo") == 0
+
+
+def test_board_remembers_benchmarks_whose_local_records_are_gone(tmp_path: Path) -> None:
+    """The index on the branch is the board's memory: a benchmark published
+    long ago (records reaped since) keeps its place in every view when a
+    different benchmark publishes."""
+    gh = _BoardGitHub()
+    gh.files["climb/index.json"] = json.dumps({"old-bench": "max"})
+    gh.files["climb/old-bench.json"] = json.dumps(
+        [{"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 0.5, "outcome": "improved"}]
+    )
+    _terminal_run(tmp_path, "speedrun-1")
+    assert service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"}) >= 3
+    md = gh.files["CLIMB.md"]
+    assert "## old-bench" in md and "## speedrun" in md
+    assert "best candidate: **0.5** (max)" in md
+    assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max", "speedrun": "min"}
+
+
+def test_failed_view_upload_is_retried_next_pass(tmp_path: Path) -> None:
+    _terminal_run(tmp_path, "speedrun-1")
+
+    gh = _BoardGitHub()
+    fail = {"CLIMB.md"}
+    real_put = gh.put_file
+
+    def flaky(repo, path, content, branch, message):
+        if path in fail:
+            return ""
+        return real_put(repo, path, content, branch, message)
+
+    gh.put_file = flaky  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert "CLIMB.md" not in gh.files
+    fail.clear()  # the outage ends; the next pass sees the view differ and retries
+    assert service_climb_board(tmp_path, gh, "org/repo") == 1
+    assert "## speedrun" in gh.files["CLIMB.md"]
+
+
+def test_failed_json_upload_renders_last_published_rows(tmp_path: Path) -> None:
+    """Views never point at data that is not on the branch: when a fresh
+    JSON cannot be uploaded, the benchmark renders from its last published
+    rows."""
+    gh = _BoardGitHub()
+    published = [
+        {"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 9472, "outcome": "improved"}
+    ]
+    gh.files["climb/index.json"] = json.dumps({"speedrun": "min"})
+    gh.files["climb/speedrun.json"] = json.dumps(published)
+    _terminal_run(tmp_path, "speedrun-1")  # fresh row that will fail to upload
+    fail = {"climb/speedrun.json"}
+    real_put = gh.put_file
+
+    def flaky(repo, path, content, branch, message):
+        if path in fail:
+            return ""
+        return real_put(repo, path, content, branch, message)
+
+    gh.put_file = flaky  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo")
+    md = gh.files["CLIMB.md"]
+    assert "old-1" not in md  # run ids never render; check by content:
+    assert "9472" in md and "38146" not in md  # published row only, not the failed fresh one

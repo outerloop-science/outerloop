@@ -132,7 +132,9 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
-def render_md(target: str, boards: dict[str, list[dict[str, Any]]]) -> str:
+def render_md(
+    target: str, boards: dict[str, list[dict[str, Any]]], directions: dict[str, str]
+) -> str:
     """CLIMB.md: per benchmark, the headline numbers and the attempts table
     (newest first). Plain markdown; the chart lives in climb.html."""
     lines = [
@@ -144,18 +146,20 @@ def render_md(target: str, boards: dict[str, list[dict[str, Any]]]) -> str:
     ]
     for benchmark in sorted(boards):
         rows = boards[benchmark]
+        direction = directions.get(benchmark, "min")
+        pick = max if direction == "max" else min
         measured = [r for r in rows if isinstance(r.get("candidate"), int | float)]
         improved = [r for r in rows if r.get("outcome") == "improved"]
         baselines = [r["baseline"] for r in rows if isinstance(r.get("baseline"), int | float)]
-        best = min((r["candidate"] for r in measured), default=None)
+        best = pick((r["candidate"] for r in measured), default=None)
         gpu = sum(float(r.get("gpu_hours") or 0.0) for r in rows)
         lines += [
             "",
             f"## {benchmark}",
             "",
             f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
-            f"**{_fmt(best)}** · latest baseline: **{_fmt(baselines[-1] if baselines else None)}**"
-            f" · GPU-hours: **{gpu:.1f}**",
+            f"**{_fmt(best)}** ({direction}) · latest baseline: "
+            f"**{_fmt(baselines[-1] if baselines else None)}** · GPU-hours: **{gpu:.1f}**",
             "",
             "| ended (UTC) | agent | hypothesis | outcome | candidate | GPU-h |",
             "| --- | --- | --- | --- | --- | --- |",
@@ -172,11 +176,14 @@ def render_md(target: str, boards: dict[str, list[dict[str, Any]]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_html(target: str, benchmarks: list[str]) -> str:
-    """One self-contained page charting every benchmark's JSON (same dir).
-    Chart.js arrives from its CDN — nothing bulky is committed to the
-    target's branch, and the page works anywhere with network."""
-    benches = json.dumps(sorted(benchmarks))
+def render_html(
+    target: str, boards: dict[str, list[dict[str, Any]]], directions: dict[str, str]
+) -> str:
+    """One self-contained page: the data is EMBEDDED (a browser blocks
+    fetch() from a file:// page, and the direct-from-clone view must work),
+    only chart.js arrives from its CDN — nothing bulky is committed to the
+    target's branch."""
+    payload = json.dumps({"boards": boards, "directions": directions})
     return (
         "<!doctype html>\n<html><head><meta charset='utf-8'>\n"
         f"<title>Climb — {target}</title>\n"
@@ -184,56 +191,95 @@ def render_html(target: str, benchmarks: list[str]) -> str:
         "<style>body{font-family:system-ui;margin:2rem;max-width:960px}"
         "canvas{margin-bottom:2rem}</style></head><body>\n"
         f"<h1>Climb — {target}</h1>\n<div id='charts'></div>\n<script>\n"
-        f"const benches = {benches};\n"
-        "async function draw() {\n"
-        "  for (const b of benches) {\n"
-        "    const rows = await (await fetch(`climb/${b}.json`)).json();\n"
-        "    const measured = rows.filter(r => typeof r.candidate === 'number');\n"
-        "    let best = Infinity;\n"
-        "    const bestSoFar = measured.map(r => best = Math.min(best, r.candidate));\n"
-        "    const h = document.createElement('h2'); h.textContent = b;\n"
-        "    const c = document.createElement('canvas');\n"
-        "    document.getElementById('charts').append(h, c);\n"
-        "    new Chart(c, {data: {labels: measured.map(r => r.ended),\n"
-        "      datasets: [\n"
-        "        {type: 'scatter', label: 'candidate', data: measured.map(r => r.candidate),\n"
-        "         pointBackgroundColor: measured.map(r =>\n"
-        "           r.outcome === 'improved' ? '#2a7' : '#999')},\n"
-        "        {type: 'line', label: 'best so far', data: bestSoFar, stepped: true,\n"
-        "         borderColor: '#26c', pointRadius: 0},\n"
-        "        {type: 'line', label: 'baseline', data: measured.map(r => r.baseline),\n"
-        "         borderColor: '#c33', borderDash: [6, 4], pointRadius: 0}]},\n"
-        "      options: {plugins: {tooltip: {callbacks: {afterLabel:\n"
-        "        (i) => measured[i.dataIndex].hypothesis}}}}});\n"
-        "  }\n"
-        "}\ndraw();\n</script></body></html>\n"
+        f"const data = {payload};\n"
+        "for (const b of Object.keys(data.boards).sort()) {\n"
+        "  const rows = data.boards[b];\n"
+        "  const pick = data.directions[b] === 'max' ? Math.max : Math.min;\n"
+        "  const measured = rows.filter(r => typeof r.candidate === 'number');\n"
+        "  let best;\n"
+        "  const bestSoFar = measured.map(r =>\n"
+        "    best = best === undefined ? r.candidate : pick(best, r.candidate));\n"
+        "  const h = document.createElement('h2'); h.textContent = b;\n"
+        "  const c = document.createElement('canvas');\n"
+        "  document.getElementById('charts').append(h, c);\n"
+        "  new Chart(c, {data: {labels: measured.map(r => r.ended),\n"
+        "    datasets: [\n"
+        "      {type: 'scatter', label: 'candidate', data: measured.map(r => r.candidate),\n"
+        "       pointBackgroundColor: measured.map(r =>\n"
+        "         r.outcome === 'improved' ? '#2a7' : '#999')},\n"
+        "      {type: 'line', label: 'best so far', data: bestSoFar, stepped: true,\n"
+        "       borderColor: '#26c', pointRadius: 0},\n"
+        "      {type: 'line', label: 'baseline', data: measured.map(r => r.baseline),\n"
+        "       borderColor: '#c33', borderDash: [6, 4], pointRadius: 0}]},\n"
+        "    options: {plugins: {tooltip: {callbacks: {afterLabel:\n"
+        "      (i) => measured[i.dataIndex].hypothesis}}}}});\n"
+        "}\n</script></body></html>\n"
     )
 
 
-def service_climb_board(root: Path, github: Any, target: str) -> int:
-    """Publish the board for `target`. Returns how many files changed."""
-    boards_local = collect_rows(root, target)
-    if not boards_local:
+def _read_index(github: Any, target: str) -> dict[str, str]:
+    """climb/index.json: {benchmark: direction} for every benchmark ever
+    published — the board's own memory, so a benchmark whose local records
+    were cleaned up (or that left the contract) keeps its place in the
+    views."""
+    raw = github.get_file_content(target, "climb/index.json", BOARD_BRANCH)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def service_climb_board(
+    root: Path, github: Any, target: str, directions: dict[str, str] | None = None
+) -> int:
+    """Publish the board for `target`. Returns how many files changed.
+
+    Every file is compared against the branch and written only when
+    different — which is also the retry: a view (or index) whose upload
+    failed last pass differs again next pass. A benchmark whose fresh JSON
+    could not be uploaded is rendered from its last PUBLISHED rows, so the
+    views never point at data that is not on the branch."""
+    local = collect_rows(root, target)
+    index = _read_index(github, target)
+    names = set(local) | set(index)
+    if not names:
         return 0
+    directions = {**index, **(directions or {})}
     changed = 0
-    merged: dict[str, list[dict[str, Any]]] = {}
-    for benchmark, fresh in sorted(boards_local.items()):
+    boards: dict[str, list[dict[str, Any]]] = {}
+    for benchmark in sorted(names):
         path = f"climb/{benchmark}.json"
         existing = github.get_file_content(target, path, BOARD_BRANCH)
-        rows = merge_rows(existing, fresh)
-        merged[benchmark] = rows
+        rows = merge_rows(existing, local.get(benchmark, []))
+        if not rows:
+            continue
         text = json.dumps(rows, indent=1) + "\n"
-        if text != existing:
-            if not github.ensure_branch(target, BOARD_BRANCH):
-                return changed
-            if github.put_file(target, path, text, BOARD_BRANCH, f"climb board: {benchmark}"):
-                changed += 1
-    if not changed:
-        return 0
-    md = render_md(target, merged)
-    if md != github.get_file_content(target, "CLIMB.md", BOARD_BRANCH):
-        changed += bool(github.put_file(target, "CLIMB.md", md, BOARD_BRANCH, "climb board"))
-    html = render_html(target, list(merged))
-    if html != github.get_file_content(target, "climb.html", BOARD_BRANCH):
-        changed += bool(github.put_file(target, "climb.html", html, BOARD_BRANCH, "climb chart"))
+        if text == existing:
+            boards[benchmark] = rows
+            continue
+        if github.ensure_branch(target, BOARD_BRANCH) and github.put_file(
+            target, path, text, BOARD_BRANCH, f"climb board: {benchmark}"
+        ):
+            changed += 1
+            boards[benchmark] = rows
+        elif existing:
+            # the branch still holds the previous rows: render those
+            boards[benchmark] = merge_rows(existing, [])
+    if not boards:
+        return changed
+    wanted = {b: directions.get(b, "min") for b in boards}
+    for path, content in (
+        ("climb/index.json", json.dumps(wanted, indent=1) + "\n"),
+        ("CLIMB.md", render_md(target, boards, wanted)),
+        ("climb.html", render_html(target, boards, wanted)),
+    ):
+        if (
+            content != github.get_file_content(target, path, BOARD_BRANCH)
+            and github.ensure_branch(target, BOARD_BRANCH)
+            and github.put_file(target, path, content, BOARD_BRANCH, "climb board")
+        ):
+            changed += 1
     return changed
