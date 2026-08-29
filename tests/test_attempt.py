@@ -247,6 +247,10 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     (seed / "reports").mkdir()
     (seed / "reports" / "2026-08-28-run-a.md").write_text("Outcome: **no-improvement**\n")
     (seed / "reports" / "2026-08-29-run-b.md").write_text("Outcome: **negative-result**\n")
+    # a nested path would flatten to a basename that overwrites another
+    # report (review #191 r2): only direct children are read
+    (seed / "reports" / "nested").mkdir()
+    (seed / "reports" / "nested" / "2026-08-29-run-b.md").write_text("shadow\n")
     _git(seed, "checkout", "-qb", "research-log")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "reports")
@@ -254,7 +258,7 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
 
     reports = _fetch_research_reports(ws, 5)
     assert [n for n, _ in reports] == ["2026-08-29-run-b.md", "2026-08-28-run-a.md"]
-    assert "negative-result" in reports[0][1]
+    assert "negative-result" in reports[0][1]  # never the nested shadow
     assert [n for n, _ in _fetch_research_reports(ws, 1)] == ["2026-08-29-run-b.md"]
 
     # a huge report (branch content is remote-controlled) arrives truncated

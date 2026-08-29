@@ -945,7 +945,13 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
     try:
         ws.git_network("fetch", "origin", RESEARCH_LOG_BRANCH)
         listing = ws.git("ls-tree", "-r", "--name-only", "FETCH_HEAD", "reports/")
-        names = [line.strip() for line in listing.splitlines() if line.strip().endswith(".md")]
+        # only direct children (the publisher's layout): a nested path would
+        # flatten to a basename that overwrites another archived report
+        names = [
+            line.strip()
+            for line in listing.splitlines()
+            if line.strip().endswith(".md") and line.strip().count("/") == 1
+        ]
         # report files are dated (reports/<YYYY-MM-DD>-<run_id>.md): the name
         # sorts by day; same-day order is arbitrary and does not matter
         out: list[tuple[str, str]] = []
