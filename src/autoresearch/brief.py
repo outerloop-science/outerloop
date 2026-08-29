@@ -222,6 +222,14 @@ def render(brief: SessionBrief) -> str:
         ]
     if brief.recent_reports:
         parts += ["", "# Recent run reports (newest first, including failures)", _DATA_NOTE]
+        parts += [
+            "These are what past attempts on this benchmark tried and found — "
+            "negatives included. Do not repeat an experiment a report already "
+            "settled; build on it or contradict it with a reason. The full "
+            "archive: `python .autoresearch/syscall reports` lists every "
+            "report one line each; add names to read full reports, several "
+            "in one call."
+        ]
         for i, report in enumerate(brief.recent_reports, 1):
             fence = _fence(report)
             parts += [f"\n## Report {i}", fence, report, fence]

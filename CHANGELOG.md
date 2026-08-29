@@ -8,6 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Attempts start with the target's research memory: the newest reports from the `research-log` branch are inlined in the brief, the full archive is materialized in the channel, and `syscall reports` lists it (one line each) or prints full reports, several per call. Works across clusters: any kernel climbing the target reads the same branch.
 - Every role can search and read the web (Claude: WebSearch/WebFetch; Codex: `--search`; hermes: the `web` and `search` toolsets) — literature and documentation are part of research.
 - A park now submits its own wake job, which waits on the park's jobs and
   starts the moment they finish (previously: the next sweep, a grace

@@ -221,6 +221,52 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
     assert _reconcile_launch_hours(old_sleep, d, 0, sweep) == 0.0  # type: ignore[arg-type]
 
 
+def test_research_reports_fetch_and_archive(tmp_path) -> None:
+    """A fresh attempt pulls the target's research-log reports: newest first
+    for the brief, full texts into the channel archive; a target without the
+    branch is an empty memory, never an error. Only plain file names reach
+    the archive (branch content is remote-controlled)."""
+    from autoresearch.attempt import _fetch_research_reports, _install_report_archive
+    from autoresearch.github import Workspace
+
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    (seed / "README.md").write_text("x")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    _git(seed, "push", "-q", str(origin), "main")
+    ws_dir = tmp_path / "ws"
+    _git(tmp_path, "clone", "-q", str(origin), str(ws_dir))
+    ws = Workspace(root=ws_dir)
+
+    assert _fetch_research_reports(ws, 5) == []  # no research-log branch yet
+
+    (seed / "reports").mkdir()
+    (seed / "reports" / "2026-08-28-run-a.md").write_text("Outcome: **no-improvement**\n")
+    (seed / "reports" / "2026-08-29-run-b.md").write_text("Outcome: **negative-result**\n")
+    _git(seed, "checkout", "-qb", "research-log")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "reports")
+    _git(seed, "push", "-q", str(origin), "research-log")
+
+    reports = _fetch_research_reports(ws, 5)
+    assert [n for n, _ in reports] == ["2026-08-29-run-b.md", "2026-08-28-run-a.md"]
+    assert "negative-result" in reports[0][1]
+    assert [n for n, _ in _fetch_research_reports(ws, 1)] == ["2026-08-29-run-b.md"]
+
+    _install_report_archive(ws_dir, [*reports, ("../escape.md", "nope")])
+    archive = ws_dir / ".autoresearch" / "reports"
+    assert sorted(f.name for f in archive.iterdir()) == [
+        "2026-08-28-run-a.md",
+        "2026-08-29-run-b.md",
+    ]
+    assert not (ws_dir / ".autoresearch" / "escape.md").exists()
+    assert not (ws_dir / "escape.md").exists()
+
+
 def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
     """A gate negative the author answered by launching more work rides the
     park, so the wake that ends on the same tree reuses it (review #182)."""

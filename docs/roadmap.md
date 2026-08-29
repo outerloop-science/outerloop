@@ -161,6 +161,25 @@ open-ended sweep space.
 - [ ] Periodic distillation pass: raw reports → bounded lessons/<target>.md
 - [ ] Weekly digest aggregates per-run reports; cost ledger; leaderboard history
 
+## Cross-cluster (dev plan, 2026-08-29)
+
+Research findings sync through GitHub; job state never leaves its cluster.
+
+- [x] Findings memory: every attempt fetches the target's `research-log`
+      branch — the brief inlines the newest reports, the full archive lands
+      in the channel, `syscall reports` gives a summary list and full views.
+      This is the cross-cluster findings sync too: a second cluster's kernel
+      reads the same branch.
+- [ ] Tier 1 (works now): one deployment per cluster, each with its own
+      state root and tick chain; different targets, coordination through
+      GitHub. First candidate: EmpireAI as a warm-keeper deployment.
+- [ ] Tier 2 (same target from several clusters): per-site agent-slot and
+      PR-branch namespacing; per-site pacing overrides so N kernels do not
+      multiply `max_active_attempts`/`runs_per_week`.
+- [ ] Non-goal: one kernel driving remote compute (tier 3) — it would need a
+      file-transport layer and cross-scheduler dependencies for little gain
+      over tier 2.
+
 ## Phase 7 — Research targets & scale-out
 
 - [x] Verification agent (scaling.md Part 2d): verifier on the review
