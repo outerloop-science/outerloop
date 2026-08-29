@@ -36,7 +36,9 @@ log = logging.getLogger(__name__)
 # Native Claude Code tool names a spec may grant. A spec's other tools
 # (pr-context-read, retriever) are harness-provided MCP tools, wired
 # separately — never passed as native CLI tools.
-_NATIVE_TOOLS = frozenset({"Read", "Grep", "Glob", "Write", "Edit", "Bash"})
+_NATIVE_TOOLS = frozenset(
+    {"Read", "Grep", "Glob", "Write", "Edit", "Bash", "WebSearch", "WebFetch"}
+)
 
 # hermes names capabilities as toolsets: `file` is the read/edit surface,
 # `terminal` the shell. Everything else stays disabled for parity with the
@@ -113,6 +115,8 @@ def build_harness(
     the ephemeral boundary (CI). The tokenless split keeps credentials out of
     the session either way."""
     if backend == "codex":
+        # the web: codex's native web_search tool, on when the spec grants it
+        web = ("--search",) if "WebSearch" in spec.tools else ()
         return CodexHarness(
             api_key=api_key,
             binary=binary or "codex",
@@ -120,7 +124,7 @@ def build_harness(
             sandbox="danger-full-access",
             timeout_s=spec.budget.walltime_s,
             container_image=container_image,
-            extra_args=codex_extra_args,
+            extra_args=(*codex_extra_args, *web),
         )
     if backend == "hermes":
         if hermes_repo is None:
@@ -133,6 +137,8 @@ def build_harness(
         # gives a role the same shell/no-shell whether or not those two ever
         # diverge for a future spec.
         enabled = ("file", "terminal") if "Bash" in spec.tools else ("file",)
+        if "WebSearch" in spec.tools:
+            enabled = (*enabled, "web", "search")
         return HermesHarness(
             api_key=api_key,
             key_env=key_env,

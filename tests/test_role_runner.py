@@ -185,7 +185,7 @@ def test_build_harness_claude_judge_gets_tools_and_bare() -> None:
     assert isinstance(h, ClaudeCodeHarness)
     # native tools from the spec: the read set plus the shell that runs the
     # syscall tool (MCP names like pr-context-read are wired separately)
-    assert set(h.allowed_tools) == {"Read", "Grep", "Glob", "Bash"}
+    assert set(h.allowed_tools) == {"Read", "Grep", "Glob", "Bash", "WebSearch", "WebFetch"}
     assert h.bare is True  # untrusted checkout: never load its instructions
     assert h.max_turns == 40 and h.timeout_s == 1800  # budget from the spec
 
@@ -201,6 +201,7 @@ def test_build_harness_codex_is_uniform_for_all_roles() -> None:
     assert isinstance(judge, CodexHarness) and isinstance(editor, CodexHarness)
     assert judge.sandbox == editor.sandbox == "danger-full-access"
     assert judge.container_image == "" and editor.container_image == "img.sif"
+    assert "--search" in judge.extra_args and "--search" in editor.extra_args  # the web
 
 
 def test_build_harness_hermes_toolsets_follow_the_spec(tmp_path: Path) -> None:
@@ -214,8 +215,9 @@ def test_build_harness_hermes_toolsets_follow_the_spec(tmp_path: Path) -> None:
     assert h.repo_dir == tmp_path
     assert h.provider == "openai-api" and h.key_env == "OPENAI_API_KEY"
     # an executing role has the shell; everything else stays off for parity
-    assert set(h.enabled_toolsets) == {"file", "terminal"}
-    assert "terminal" not in h.disabled_toolsets and "web" in h.disabled_toolsets
+    assert set(h.enabled_toolsets) == {"file", "terminal", "web", "search"}
+    assert "terminal" not in h.disabled_toolsets and "web" not in h.disabled_toolsets
+    assert "browser" in h.disabled_toolsets
 
 
 def test_build_harness_hermes_terminal_keys_on_the_bash_tool(tmp_path: Path) -> None:

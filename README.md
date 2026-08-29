@@ -102,6 +102,8 @@ account, a contract, and a Slurm cluster with Apptainer.
   data, never instructions. Authors run without credentials in their
   environment; evals run in a jail that sees only the checked-out tree.
   Budgets — launches, sleeps, GPU-hours, weekly runs — are enforced in code.
+  Every role can search and read the web (literature, documentation); what
+  it reads there is data too.
 - **Nothing is taken on trust.** The orchestrator measures every claim
   itself, on committed trees, and re-verifies credited candidates before a
   PR exists.

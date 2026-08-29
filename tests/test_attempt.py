@@ -1462,7 +1462,8 @@ def test_editor_harness_codex_backend_is_contained() -> None:
     assert harness.container_image == "img.sif"
     assert harness.model == "gpt-5.6-terra"
     assert harness.timeout_s == 300
-    assert harness.extra_args == ("-c", "use_legacy_landlock=true")  # host codex config
+    # host codex config, then the web (the author spec grants WebSearch)
+    assert harness.extra_args == ("-c", "use_legacy_landlock=true", "--search")
     assert harness.supports_resume is True  # codex exec resume, validated on 0.130.0
     with pytest.raises(ValueError, match="unknown backend"):
         build_harness("sk-o", spec, backend="bogus", container_image="img.sif")
