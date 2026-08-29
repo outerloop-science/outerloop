@@ -224,11 +224,15 @@ def render(brief: SessionBrief) -> str:
         parts += ["", "# Recent run reports (newest first, including failures)", _DATA_NOTE]
         parts += [
             "These are what past attempts on this benchmark tried and found — "
-            "negatives included. Do not repeat an experiment a report already "
-            "settled; build on it or contradict it with a reason. The full "
-            "archive: `python .autoresearch/syscall reports` lists every "
-            "report one line each; add names to read full reports, several "
-            "in one call."
+            "negatives included. Read them critically: a negative settles "
+            "only what was actually run. One point in a parameter space, an "
+            "eval that hit its walltime, or an infrastructure failure does "
+            "not close an idea — vary what went untested, or rerun what "
+            "failed for reasons that were not the idea's. What it does "
+            "settle, do not repeat unchanged; build on it, or contradict it "
+            "with a reason. The full archive: `python .autoresearch/syscall "
+            "reports` lists every report one line each; add names to read "
+            "full reports, several in one call."
         ]
         for i, report in enumerate(brief.recent_reports, 1):
             fence = _fence(report)
