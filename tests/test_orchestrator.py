@@ -398,6 +398,36 @@ def test_identical_resubmit_is_told_so_without_a_second_gate(tmp_path: Path) -> 
     assert "identical to the candidate the gate already measured" in harness.prompts[2]
 
 
+def test_conceding_after_an_errored_eval_ends_without_another_gate(tmp_path: Path) -> None:
+    """The gate's eval errored (a walltime kill, say); the author read the
+    note and concluded without touching the tree. The attempt ends on that
+    error — the identical tree is not sent to the gate a third time (the
+    speedrun fleet paid a third 8 GPU-hour pair this way, 2026-08-28)."""
+    from autoresearch.orchestrator import EvalError
+
+    harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
+    evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)")])  # type: ignore[list-item]
+    result = _gate_negative_attempt(tmp_path, harness, evaluator)
+    assert result.outcome == "eval-error"
+    assert "walltime" in result.note
+    assert harness.resumes == [None, "s1"]
+    assert len(evaluator.calls) == 2
+
+
+def test_resubmitting_after_an_errored_eval_runs_it_again(tmp_path: Path) -> None:
+    """After an errored eval a resubmit of the same tree is the retry (more
+    minutes declared, say): it is measured again, not answered from memory."""
+    from autoresearch.orchestrator import EvalError
+
+    harness = _SeqHarness(["the claim", "again", "conceded"], submit_on=(1, 2))
+    evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)"), 13.9])  # type: ignore[list-item]
+    result = _gate_negative_attempt(tmp_path, harness, evaluator)
+    assert result.outcome == "no-improvement"
+    assert harness.resumes == [None, "s1", "s2"]
+    assert len(evaluator.calls) == 3
+    assert "identical" not in harness.prompts[2]  # the retry ran; it was not refused
+
+
 def test_identical_resubmit_past_the_sleep_budget_ends_on_the_verdict(tmp_path: Path) -> None:
     """The unchanged-tree reuse runs BEFORE the budget check, so an author out
     of sleeps (or GPU-hours) is not refused a gate it would never run; past

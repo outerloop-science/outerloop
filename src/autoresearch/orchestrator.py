@@ -1370,9 +1370,13 @@ def attempt_once(
             if request.submit and failed_gate is not None:
                 # a resubmit of the tree the gate already turned down: nothing
                 # to budget or charge — the verdict is reused below (the sleep
-                # still counts, so unchanged resubmits stay bounded)
+                # still counts, so unchanged resubmits stay bounded). An eval
+                # that ERRORED is the exception: resubmitting is how the author
+                # retries it (with more minutes, say), so that one runs.
                 presealed = snapshot()
-                if tree(failed_gate[0]) == tree(presealed):
+                if failed_gate[1].outcome != "eval-error" and tree(failed_gate[0]) == tree(
+                    presealed
+                ):
                     submitted = request
                     sleeps_used += 1
                     break
@@ -1498,7 +1502,14 @@ def attempt_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-        unchanged = failed_gate is not None and tree(failed_gate[0]) == tree(candidate_sha)
+        # the tree the gate already judged, sealed again: the verdict stands
+        # when the author concluded, or resubmitted an unchanged tree after a
+        # real negative. After an ERRORED eval only a resubmit runs it again.
+        unchanged = (
+            failed_gate is not None
+            and tree(failed_gate[0]) == tree(candidate_sha)
+            and not (failed_gate[1].outcome == "eval-error" and submitted is not None)
+        )
         try:
             if unchanged:
                 assert failed_gate is not None
@@ -1557,8 +1568,7 @@ def attempt_once(
                 # eval that errored — is FEEDBACK to the author: it revises and
                 # resubmits, or concludes honestly (buildout Phase B) — never a
                 # silent terminal. Rounds stay bounded by sleep_k.
-                if outcome.outcome != "eval-error":
-                    failed_gate = (candidate_sha, outcome)
+                failed_gate = (candidate_sha, outcome)
                 verdict_text = (
                     f"{outcome.note or outcome.outcome} "
                     f"(baseline {outcome.baseline}, candidate {outcome.candidate})."

@@ -1144,7 +1144,7 @@ def resume_run(
             # the verdict rides the resume: the same tree, sealed again after
             # the author concludes or resubmits untouched, is not measured
             # twice (an errored eval is retried, so it is not carried)
-            judged=(candidate_sha, result) if result.outcome != "eval-error" else None,
+            judged=(candidate_sha, result),
         )
 
     if result.outcome == "improved":
