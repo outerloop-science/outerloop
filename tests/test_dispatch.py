@@ -443,3 +443,20 @@ def test_gpu_evals_are_sized_per_gpu(tmp_path):
             script, job_name="e", account="a", partition="p", eval_minutes=60, gpus=1, mem=mem
         )
         assert spec.mem == expect, mem
+
+
+def test_job_tmp_lives_on_node_local_scratch(tmp_path: Path) -> None:
+    """Inside the jail /tmp is apptainer's small tmpfs unless --workdir moves
+    it: an author's sweep that wrote compile caches to /tmp died on a
+    temp-disk limit (2026-08-29). Every job gets --workdir on $SCRATCH."""
+    script = write_eval_job(
+        tmp_path,
+        "tmp-check",
+        repo_root=tmp_path / "repo",
+        snapshot_sha="a" * 40,
+        command="python train.py",
+        image="/img.sif",
+    )
+    text = Path(script).read_text()
+    assert '--workdir "$SCRATCH/work"' in text
+    assert 'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$SCRATCH/work"' in text

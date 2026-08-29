@@ -316,7 +316,7 @@ def write_eval_job(
         # the wake needs only stdout/exit-code, which stay in $EV
         'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/dispatch-eval-$$"',
         'TREE="$SCRATCH/tree"',
-        'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$TREE"',
+        'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$SCRATCH/work" "$TREE"',
         # trap FIRST, before anything that can exit, so $SCRATCH never leaks.
         # prune reaps the stale worktree admin entry in $REPO/.git/worktrees
         # left when we deleted $TREE/.git (worktree remove can't run without it)
@@ -368,6 +368,11 @@ def write_eval_job(
             + ("--nv " if gpus > 0 else "")
             + '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
             '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
+            # /tmp and /var/tmp inside the jail live on node-local scratch,
+            # not apptainer's small tmpfs: a command that writes compile caches
+            # or checkpoints to /tmp (any training script that was not told
+            # otherwise) must not die on a temp-disk limit
+            '--workdir "$SCRATCH/work" '
             f"{shlex.quote(image)} "
             'sh -c "$(cat "$EV/command.txt")" '
             '> "$EV/stdout" 2> "$EV/stderr"',
