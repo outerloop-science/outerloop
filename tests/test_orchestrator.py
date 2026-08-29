@@ -963,6 +963,13 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path) -> None:
     # a real-disk home: apptainer's tmpfs home is size-capped and uv blows it
     assert "--home " in argv and "ws-eval-home-" in argv
     assert "/img/pilot.sif sh -c run-the-eval" in argv
+    # /tmp inside the jail is a per-evaluation directory under this eval's
+    # own cache dir — created for the run, removed with it (never a shared,
+    # surviving $TMPDIR/work)
+    tokens = argv.split()
+    workdir = Path(tokens[tokens.index("--workdir") + 1])
+    assert workdir.name == "work" and "uv-cache-" in workdir.parent.name
+    assert not workdir.exists()
 
 
 def test_pr_body_refuses_non_improved_results(tmp_path: Path) -> None:
