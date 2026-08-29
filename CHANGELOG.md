@@ -8,6 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Every role can search and read the web (Claude: WebSearch/WebFetch; Codex: `--search`; hermes: the `web` and `search` toolsets) — literature and documentation are part of research.
 - A park now submits its own wake job, which waits on the park's jobs and
   starts the moment they finish (previously: the next sweep, a grace
   window, and another sweep — about 30 minutes). The sweep remains the

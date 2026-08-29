@@ -22,11 +22,15 @@ from autoresearch.verifier import VERIFY_SCHEMA, verify_result_from_data
 # write-token split — the judge's session job holds at most a read-scoped token
 # (not worth lifting via /proc), and the write token lives in a separate post
 # job with no session next to it. Roles differ by prompt, not by tool posture.
-_JUDGE_TOOLS = ("Read", "Grep", "Glob", "Bash", "pr-context-read", "retriever")
+# Every role may read the web — literature, documentation, a paper's own
+# numbers. Each backend maps these two names to its native form.
+_WEB_TOOLS = ("WebSearch", "WebFetch")
+
+_JUDGE_TOOLS = ("Read", "Grep", "Glob", "Bash", "pr-context-read", "retriever", *_WEB_TOOLS)
 
 # The full editing set: the author implements, runs tests, and self-validates
 # inside its container. Execution is the role's job, not a leak.
-_AUTHOR_TOOLS = ("Read", "Grep", "Glob", "Write", "Edit", "Bash")
+_AUTHOR_TOOLS = ("Read", "Grep", "Glob", "Write", "Edit", "Bash", *_WEB_TOOLS)
 
 
 def author_spec(
@@ -116,7 +120,7 @@ def summarizer_spec(
             "its `conclude` command and end your turn."
         ),
         key="reviewer",
-        tools=("Bash",),
+        tools=("Bash", *_WEB_TOOLS),
         execution=Execution(environment=environment, can_execute=True),
         budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
         skills=("plain-style", "review-rubric"),
