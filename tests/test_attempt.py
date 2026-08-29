@@ -2717,6 +2717,67 @@ def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
     assert load_record(state, run_id).state != "waiting"
 
 
+def test_errored_gate_wake_with_a_conceding_author_ends_without_a_retry(
+    tmp_path, monkeypatch
+) -> None:
+    """A submitted candidate's gate eval errored (a walltime kill); the woken
+    author concludes with the tree untouched. The attempt ends on that error
+    — nothing is dispatched again (only a resubmit is a retry)."""
+    from dataclasses import dataclass
+
+    from autoresearch.measure import DispatchSettings
+    from autoresearch.orchestrator import EvalError, author_spec
+    from autoresearch.syscall import ensure_excluded
+
+    @dataclass
+    class ConcedingHarness:
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            assert "did NOT clear the gate" in brief_text and "walltime" in brief_text
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.2,
+                num_turns=2,
+                session_id="s1",
+                final_text="Negative result: the run could not be measured in its walltime.",
+                transcript_path="",
+            )
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch, values={"baseline": 13.0})
+    rec = load_record(state, run_id)
+    rec.stage["submitted"] = True
+    save_record(state, rec, 1_000_050.0)
+    ensure_excluded(state / "runs" / run_id / "ws")
+    (state / "runs" / run_id / "ws" / "eval-cache.tmp").unlink()
+
+    class _Once:
+        def __init__(self):
+            self.calls = 0
+
+        def results(self, measures):
+            self.calls += 1
+            assert self.calls == 1, "the same tree was sent to the gate again"
+            raise EvalError("job 102 hit its walltime (TIMEOUT) before producing a result")
+
+    once = _Once()
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: once)
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+        harness=ConcedingHarness(),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "eval-error"
+    assert github.prs == []
+    assert once.calls == 1
+    assert load_record(state, run_id).state != "waiting"
+
+
 def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -> None:
     # a candidate park WITHOUT a submit gets no author loop: blocking findings
     # DRAFT the PR for a human (the policy-driven revision loop is retired —

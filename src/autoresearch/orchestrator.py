@@ -1372,8 +1372,32 @@ def attempt_once(
                 # to budget or charge — the verdict is reused below (the sleep
                 # still counts, so unchanged resubmits stay bounded). An eval
                 # that ERRORED is the exception: resubmitting is how the author
-                # retries it (with more minutes, say), so that one runs.
-                presealed = snapshot()
+                # retries it (with more minutes, say), so that one runs. The
+                # early seal keeps the later seal's guards: scope first, and a
+                # failed snapshot is the eval error it always was.
+                violations = out_of_scope(list(changed_paths()), contract)
+                if violations:
+                    return AttemptResult(
+                        outcome="scope-violation",
+                        baseline=baseline,
+                        session=session,
+                        note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                        run_seed=run_seed,
+                        panel_transcript="\n\n".join(panel_sections),
+                        panel_rounds=panel_reads,
+                    )
+                try:
+                    presealed = snapshot()
+                except EvalError as exc:
+                    return AttemptResult(
+                        outcome="eval-error",
+                        baseline=baseline,
+                        session=session,
+                        note=f"snapshot: {exc}",
+                        run_seed=run_seed,
+                        panel_transcript="\n\n".join(panel_sections),
+                        panel_rounds=panel_reads,
+                    )
                 if failed_gate[1].outcome != "eval-error" and tree(failed_gate[0]) == tree(
                     presealed
                 ):
