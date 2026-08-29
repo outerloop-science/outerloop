@@ -721,6 +721,15 @@ def _wake_author_sleep(
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
     gpu_hours_used = float(record.stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
+    if bench.gpus:
+        # the launches were charged at their declared walltime; now that they
+        # have run, hand back what they did not use
+        refund = _launch_refund(
+            dispatch, launches, afterany_ids(str(record.stage.get("afterany", ""))), bench.gpus
+        )
+        if refund > 0:
+            log.info("%s: refunding %.2f GPU-hours of unused launch walltime", run_id, refund)
+            gpu_hours_used = max(0.0, gpu_hours_used - refund)
     wake_text = render_wake(
         results,
         str(record.stage.get("syscall_note", "")),
@@ -862,6 +871,25 @@ def _stage_judged(record: RunRecord) -> tuple[str, AttemptResult] | None:
             note=str(j.get("note") or ""),
         ),
     )
+
+
+def _launch_refund(
+    dispatch: DispatchSettings, launches: tuple, job_ids: list[str], gpus: int
+) -> float:
+    """The unused walltime of a park's launch jobs, in GPU-hours, or 0 when
+    the compute cannot say how long they ran (nothing is refunded on a
+    guess)."""
+    from autoresearch.syscall import launch_hours_refund
+
+    query = getattr(dispatch.compute, "elapsed_seconds", None)
+    if query is None or not job_ids:
+        return 0.0
+    try:
+        elapsed = [query(jid) for jid in job_ids]
+    except Exception as exc:
+        log.warning("launch walltime unknown (%s: %s); nothing refunded", type(exc).__name__, exc)
+        return 0.0
+    return launch_hours_refund(launches, elapsed, gpus=gpus)
 
 
 def _stage_launches(record: RunRecord) -> list[dict]:

@@ -680,3 +680,31 @@ def test_array_launch_fans_out_and_gathers_per_index(tmp_path: Path) -> None:
     again = gather_results(run_dir, ws, (Launch(name="sweep", command="x", minutes=10, array=2),))
     assert again[0].delivered == (".autoresearch/results/sweep/0/out/curve.json",)
     assert first.read_text() == "[0]"
+
+
+def test_launch_hours_refund_hands_back_unused_declared_walltime() -> None:
+    """A sweep charged 8 x 240 min at dispatch that died after 5 minutes per
+    job is refunded almost all of it; a job that ran its full walltime is
+    refunded nothing; an unknown elapsed time refunds nothing at all."""
+    from autoresearch.syscall import Launch, launch_hours_refund
+
+    sweep = (Launch(name="sweep", command="x", minutes=240, array=8),)
+    assert launch_hours_refund(sweep, [300] * 8, gpus=1) == 32.0 - 8 * 300 / 3600
+    assert launch_hours_refund(sweep, [240 * 60] * 8, gpus=1) == 0.0
+    assert launch_hours_refund(sweep, [250 * 60] * 8, gpus=1) == 0.0  # overran: never negative
+    assert launch_hours_refund(sweep, [300] * 7 + [None], gpus=1) == 0.0
+    assert launch_hours_refund(sweep, [], gpus=1) == 0.0
+    assert launch_hours_refund(sweep, [300] * 8, gpus=0) == 0.0
+    two = (Launch(name="a", command="x", minutes=60), Launch(name="b", command="x", minutes=30))
+    assert launch_hours_refund(two, [1800, 1800], gpus=2) == (90 * 2 / 60) - (3600 * 2 / 3600)
+
+
+def test_parse_elapsed_reads_sacct_fields() -> None:
+    from autoresearch.compute import parse_elapsed
+
+    assert parse_elapsed("00:05:00") == 300
+    assert parse_elapsed("04:10:05") == 4 * 3600 + 605
+    assert parse_elapsed("1-02:00:00") == 86400 + 7200
+    assert parse_elapsed("05:00") == 300
+    assert parse_elapsed("") is None and parse_elapsed("INVALID") is None
+    assert parse_elapsed("x-01:00:00") is None
