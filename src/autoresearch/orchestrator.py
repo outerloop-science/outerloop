@@ -245,6 +245,8 @@ class SubprocessEvaluator:
         import signal
 
         if self.container_image:
+            workdir = cache_dir.parent / "work"
+            workdir.mkdir(parents=True, exist_ok=True)
             argv = [
                 self.apptainer_binary,
                 "exec",
@@ -260,6 +262,10 @@ class SubprocessEvaluator:
                 f"{cache_dir}:{cache_dir}",
                 "--pwd",
                 str(workspace),
+                # /tmp on the same scratch as the cache, not apptainer's tmpfs
+                # (the dispatched job script does the same with --workdir)
+                "--workdir",
+                str(workdir),
                 self.container_image,
                 "sh",
                 "-c",
