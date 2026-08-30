@@ -108,6 +108,24 @@ def test_views_render_the_rows_and_respect_direction(tmp_path: Path) -> None:
     assert "\\u003c/script" in page
 
 
+def test_row_cap_is_loud_not_silent() -> None:
+    import json as _json
+
+    from autoresearch.climbboard import MAX_ROWS_PER_BENCHMARK
+
+    rows = [{"run_id": f"r{i}", "ended": f"2026-01-01 {i:02d}:00"} for i in range(40)]
+    many = [
+        {"run_id": f"m{i}", "ended": f"2026-{1 + i // 10000:02d}-01 00:{i % 60:02d}"}
+        for i in range(MAX_ROWS_PER_BENCHMARK + 50)
+    ]
+    capped = merge_rows(_json.dumps(many), [])
+    assert len(capped) <= MAX_ROWS_PER_BENCHMARK
+    md = render_md("org/repo", {"b": capped}, {"b": "min"})
+    assert f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts" in md
+    small = render_md("org/repo", {"b": rows}, {"b": "min"})
+    assert "Only the newest" not in small
+
+
 def test_contract_directions_maps_benchmarks() -> None:
     from autoresearch.contract import load_contract
 

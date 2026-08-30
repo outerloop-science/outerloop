@@ -121,6 +121,9 @@ def merge_rows(existing_json: str | None, fresh: list[ClimbRow]) -> list[dict[st
             rows.append(asdict(row))
             seen.add(row.run_id)
     rows.sort(key=lambda r: str(r.get("ended", "")))
+    # the board is a bounded VIEW (the contents API caps file sizes); the
+    # full history stays in reports/ on this same branch, and the trim is
+    # said out loud in CLIMB.md, never silent
     return rows[-MAX_ROWS_PER_BENCHMARK:]
 
 
@@ -160,6 +163,14 @@ def render_md(
             f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
             f"**{_fmt(best)}** ({direction}) · latest baseline: "
             f"**{_fmt(baselines[-1] if baselines else None)}** · GPU-hours: **{gpu:.1f}**",
+        ]
+        if len(rows) >= MAX_ROWS_PER_BENCHMARK:
+            lines += [
+                "",
+                f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts are on the board; "
+                "every report stays in `reports/` on this branch.",
+            ]
+        lines += [
             "",
             "| ended (UTC) | agent | hypothesis | outcome | candidate | GPU-h |",
             "| --- | --- | --- | --- | --- | --- |",
