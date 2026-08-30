@@ -689,16 +689,22 @@ def service_status(root: Path, github: Any, target: str, now: float, contract: A
             # spend belongs in the shape: a same-phase re-park after new
             # launches moves gpu_hours_used and the strip must not go stale
             # exp_done/launches_used move when an experiment finishes or a
-            # re-park launches more — real transitions the strip must show
+            # re-park launches more; the contract caps move when the owner
+            # edits the contract — all real transitions the strip must show
             keys = (
                 "run_id",
                 "state",
                 "phase",
                 "gpu_hours_used",
+                "gpu_hours_budget",
                 "direction",
                 "exp_done",
                 "exp_total",
+                "exp_minutes",
+                "eval_minutes",
                 "launches_used",
+                "depth_k",
+                "sleep_k",
             )
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
             if (
