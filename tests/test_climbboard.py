@@ -602,8 +602,20 @@ def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
         "step 5 val loss 1e999\n"
         "step 3 val loss 4.3\n"
         "step 4 val loss 3.2e0\n"
+        "step 5 val loss 3.1"  # no trailing newline: the point still counts
     )
-    assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3], [4, 3.2]]
+    assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3], [4, 3.2], [5, 3.1]]
+
+
+def test_cap_truncation_never_publishes_a_partial_number(tmp_path: Path, monkeypatch) -> None:
+    import autoresearch.climbboard as cb
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    (ev / "stdout").write_text("step 1 val loss 4.5\nstep 2 val loss 4.4444\n")
+    monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 40)  # cuts inside 4.4444
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
 
 
 def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -> None:

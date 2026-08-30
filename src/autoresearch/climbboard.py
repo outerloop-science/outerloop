@@ -93,7 +93,7 @@ _CURVE_LINE = re.compile(
     # digit bounds in the pattern: int() never sees more digits than fit a
     # JS-safe integer, float() never sees a 400-nines mantissa (a longer
     # number simply fails the match and the line sits out)
-    r"^step (\d{1,15}) val loss (\d{1,10}(?:\.\d{1,12})?(?:[eE][+-]?\d{1,3})?)(?=\s)",
+    r"^step (\d{1,15}) val loss (\d{1,10}(?:\.\d{1,12})?(?:[eE][+-]?\d{1,3})?)(?=\s|$)",
     re.M,
 )
 # a verbose eval must not exhaust the tick: stdout is scanned line by
@@ -122,9 +122,13 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
         with (evals[-1] / "stdout").open(errors="replace") as fh:
             # a bounded read caps memory whatever the line structure — a
             # newline-free multi-GB stdout arrives as at most this many chars
-            text = fh.read(MAX_CURVE_STDOUT_BYTES)
+            text = fh.read(MAX_CURVE_STDOUT_BYTES + 1)
     except OSError:
         return []
+    if len(text) > MAX_CURVE_STDOUT_BYTES:
+        # truncated: drop the partial tail line so the EOF-tolerant pattern
+        # can never publish a number the cap cut in half
+        text = text[:MAX_CURVE_STDOUT_BYTES].rsplit("\n", 1)[0]
     points = []
     for m in _CURVE_LINE.finditer(text):
         val = float(m.group(2))
