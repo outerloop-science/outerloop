@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import logging
 import re
 from dataclasses import asdict, dataclass
@@ -730,7 +731,10 @@ def _valid_curve(curve: Any) -> bool:
     return isinstance(curve, list) and all(
         isinstance(p, list)
         and len(p) == 2
-        and all(isinstance(x, int | float) and not isinstance(x, bool) for x in p)
+        and all(
+            isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x)
+            for x in p
+        )
         for p in curve
     )
 

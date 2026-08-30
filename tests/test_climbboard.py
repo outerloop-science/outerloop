@@ -618,6 +618,9 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
     gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, "2"]]})
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    # json.loads accepts NaN; the chart must never receive it
+    gh.files["climb/curves/b.json"] = '{"good": [[1, NaN]]}'
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
 
 
 def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
