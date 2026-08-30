@@ -57,9 +57,15 @@ def test_collect_rows_reads_terminal_records_and_reports(tmp_path: Path) -> None
         RunRecord(run_id="w", target="org/repo", task_title="t", state="waiting"),
         1.0,
     )
+    # the ledger's marker gates the report link: archived -> linked,
+    # adopted-unpublished -> no link
+    (run_dir(tmp_path, "speedrun-1") / "ledger-published").write_text("done")
+    (run_dir(tmp_path, "speedrun-2") / "ledger-published").write_text("adopted-unpublished")
     boards = collect_rows(tmp_path, "org/repo")
     rows = boards["speedrun"]
     assert [r.run_id for r in rows] == ["speedrun-1", "speedrun-2"]
+    assert rows[0].report.startswith("reports/") and rows[0].report.endswith("speedrun-1.md")
+    assert rows[1].report == ""
     row = rows[0]
     assert row.baseline == 9472.0 and row.candidate == 38146.0
     assert row.hypothesis.startswith("the warmdown starts too early")
@@ -243,9 +249,9 @@ def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     assert service_climb_board(tmp_path, gh, "org/repo") == 4
     assert sorted(gh.puts) == [
         "CLIMB.md",
-        "climb.html",
         "climb/data/speedrun.json",
         "climb/index.json",
+        "index.html",
     ]
     # unchanged state: nothing is written again (no commit spam)
     gh.puts.clear()
@@ -424,8 +430,9 @@ def test_failed_json_upload_renders_last_published_rows(tmp_path: Path) -> None:
     gh.put_file = flaky  # type: ignore[method-assign]
     service_climb_board(tmp_path, gh, "org/repo")
     md = gh.files["CLIMB.md"]
-    assert "old-1" not in md  # run ids never render; check by content:
-    assert "9472" in md and "38146" not in md  # published row only, not the failed fresh one
+    # the published row renders (its report link carries the run id); the
+    # failed fresh row must not
+    assert "9472" in md and "38146" not in md
 
 
 def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
@@ -499,7 +506,7 @@ def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_pa
     )
     save_record(tmp_path, record, 100.0)
     service_boards(tmp_path, gh, "org/repo", None, 200.0)
-    assert "climb.html" in gh.files  # the page exists from the first tick
+    assert "index.html" in gh.files  # the page exists from the first tick
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "live-1"
     # a broken github client is advisory: no exception escapes
     service_boards(tmp_path, object(), "org/repo", None, 300.0)
@@ -549,3 +556,391 @@ def test_status_outage_is_not_a_missing_file(tmp_path: Path) -> None:
     save_record(tmp_path, _live, 1.0)
     assert service_status(tmp_path, gh, "org/repo", 2.0) is True
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "r"
+
+
+STDOUT_WITH_CURVE = (
+    "speedrun eval: seed 7\n"
+    + "\n".join(
+        f"step {s} val loss {4.5 - s / 10000:.6f} (bf16 screen)" for s in range(128, 9345, 128)
+    )
+    + "\nstep 9344 val loss 3.276098 (fp32)\n"
+)
+
+
+def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
+    from autoresearch.climbboard import MAX_CURVE_POINTS, collect_curves
+
+    _terminal_run(tmp_path, "speedrun-1")
+    ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc-def"
+    ev.mkdir()
+    (ev / "stdout").write_text(STDOUT_WITH_CURVE)
+    # eval output is job output: a malformed number must not abort collection
+    with open(ev / "stdout", "a") as fh:
+        fh.write("step 9999 val loss 1.2.3 (fp32)\n")
+    curves = collect_curves(tmp_path, "org/repo")["speedrun"]
+    pts = curves["speedrun-1"]
+    assert 2 < len(pts) <= MAX_CURVE_POINTS
+    assert pts[0][0] == 128 and pts[-1] == [9344, 3.276098]
+    # a run with no parsable eval simply has no curve
+    _terminal_run(tmp_path, "speedrun-2", ending="merged")
+    assert "speedrun-2" not in collect_curves(tmp_path, "org/repo")["speedrun"]
+
+
+def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
+    """A 400-nines 'loss' parses as float inf and a 400-digit step exceeds
+    JS-safe integers; both skip the point, not the curve."""
+    from autoresearch.climbboard import _curve_from_eval
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    ev.joinpath("stdout").write_text(
+        "step 1 val loss 4.5\n"
+        f"step 2 val loss {'9' * 400}\n"
+        f"step {'9' * 400} val loss 4.4\n"
+        f"step {'9' * 5000} val loss 4.4\n"
+        "step 5 val loss 1e999\n"
+        "step 3 val loss 4.3\n"
+        "step 4 val loss 3.2e0\n"
+        "step 5 val loss 3.1"  # no trailing newline: the point still counts
+    )
+    assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3], [4, 3.2], [5, 3.1]]
+
+
+def test_cap_truncation_never_publishes_a_partial_number(tmp_path: Path, monkeypatch) -> None:
+    import autoresearch.climbboard as cb
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    (ev / "stdout").write_text("step 1 val loss 4.5\nstep 2 val loss 4.4444\n")
+    monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 40)  # cuts inside 4.4444
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
+    # the cap is bytes, not characters: 4-byte emoji count 4x
+    (ev / "stdout").write_bytes(b"step 1 val loss 4.5\n" + "🚀".encode() * 100)
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
+
+
+def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -> None:
+    """One giant line without newlines must not buffer past the cap."""
+    import autoresearch.climbboard as cb
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    (ev / "stdout").write_text("step 1 val loss 4.5\n" + "x" * 100_000)
+    monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 64)
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
+
+
+def test_collect_curves_scans_only_the_publishable_tail(tmp_path: Path, monkeypatch) -> None:
+    """Only the newest MAX_CURVE_RUNS attempts per benchmark are read —
+    older stdouts cannot publish and must not cost I/O."""
+    import autoresearch.climbboard as cb
+
+    for i, rid in enumerate(["old-1", "mid-2", "new-3"]):
+        record = RunRecord(
+            run_id=rid,
+            target="org/repo",
+            task_title="t",
+            state="ended",
+            ending="negative-result",
+            benchmark="speedrun",
+            created=1.0,
+            updated=float(i + 1),
+        )
+        save_record(tmp_path, record, float(i + 1))
+        ev = run_dir(tmp_path, rid) / "eval-candidate-x"
+        ev.mkdir(parents=True)
+        (ev / "stdout").write_text(f"step {i + 1} val loss 4.{i}\n")
+    monkeypatch.setattr(cb, "MAX_CURVE_RUNS", 2)
+    curves = cb.collect_curves(tmp_path, "org/repo")["speedrun"]
+    assert set(curves) == {"mid-2", "new-3"}
+
+
+def test_fresh_curve_abandons_oversized_stdout(tmp_path: Path, monkeypatch) -> None:
+    """A verbose eval must not exhaust the tick: scanning stops at the
+    byte cap, keeping the points already parsed."""
+    import autoresearch.climbboard as cb
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    ev.joinpath("stdout").write_text(
+        "step 1 val loss 4.5\n" + "noise\n" * 50 + "step 2 val loss 4.1\n"
+    )
+    monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 40)
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
+
+
+def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
+    from autoresearch.climbboard import _merge_curves
+
+    gh = _BoardGitHub()
+    rows = [
+        {"run_id": f"r{i}", "ended": f"2026-01-{1 + i // 24:02d} {i % 24:02d}:00"}
+        for i in range(200)
+    ]
+    published = {"r199": [[1, 4.0]]}
+    gh.files["climb/curves/b.json"] = json.dumps(published)
+    fresh = {"r199": [[1, 9.9]], "r198": [[2, 3.5]]}
+    merged = _merge_curves(gh, "org/repo", "b", rows, fresh)
+    assert merged is not None and merged["changed"] is True
+    assert merged["data"]["r199"] == [[1, 4.0]]  # published wins; never rewritten
+    assert merged["data"]["r198"] == [[2, 3.5]]
+    # a published EMPTY curve entry neither crashes nor blocks the fresh one
+    gh.files["climb/curves/b.json"] = json.dumps({"r199": []})
+    merged = _merge_curves(gh, "org/repo", "b", rows, fresh)
+    assert merged is not None and merged["data"]["r199"] == [[1, 9.9]]
+    # outage, malformed, or PARTLY malformed: sit the pass out
+    gh.index_outage = True
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    gh.index_outage = False
+    gh.files["climb/curves/b.json"] = json.dumps(["nope"])
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, 2]], "old": "bad"})
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    # one null POINT is malformed too — it would throw in the chart code
+    gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, 2], None]})
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, "2"]]})
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    # json.loads accepts NaN; the chart must never receive it
+    gh.files["climb/curves/b.json"] = '{"good": [[1, NaN]]}'
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    # a 400-digit int is valid JSON but not a chart point (and must not
+    # crash isfinite with OverflowError)
+    gh.files["climb/curves/b.json"] = '{"good": [[' + "9" * 400 + ", 3.0]]}"
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+
+
+def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
+    """A failed curves upload must not leak fresh points into index.html
+    (the page embeds branch truth only), and a curve-file OUTAGE skips the
+    page rewrite entirely instead of publishing a curveless page."""
+    _terminal_run(tmp_path, "speedrun-1")
+    gh = _BoardGitHub()
+    ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc"
+    ev.mkdir(parents=True)
+    (ev / "stdout").write_text("step 1 val loss 4.5\nstep 2 val loss 4.1\n")
+
+    real_put = gh.put_file
+
+    def flaky_put(repo, path, content, branch, message):
+        if path.startswith("climb/curves/"):
+            return None
+        return real_put(repo, path, content, branch, message)
+
+    gh.put_file = flaky_put  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert "climb/curves/speedrun.json" not in gh.files
+    assert "4.5" not in gh.files["index.html"]  # not on the branch, not on the page
+
+    # upload heals: the curve lands on the branch and then on the page
+    gh.put_file = real_put  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert "climb/curves/speedrun.json" in gh.files
+    assert "4.5" in gh.files["index.html"]
+
+    # curve-file outage: CLIMB.md may still refresh, index.html sits out
+    html_before = gh.files["index.html"]
+    real_get = gh.get_file
+
+    def flaky_get(repo, path, ref):
+        if path.startswith("climb/curves/"):
+            raise _GitHubError(500)
+        return real_get(repo, path, ref)
+
+    gh.get_file = flaky_get  # type: ignore[method-assign]
+    _terminal_run(tmp_path, "speedrun-2")
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert gh.files["index.html"] == html_before
+    assert "speedrun-2" in gh.files["climb/data/speedrun.json"]
+    assert gh.files["CLIMB.md"].count("negative-result") == 2
+
+
+def test_curve_survives_a_vanishing_eval_dir(tmp_path: Path, monkeypatch) -> None:
+    """The mtime sort must not abort the pass when an eval dir disappears
+    between glob and stat."""
+    from autoresearch.climbboard import _curve_from_eval
+
+    rd = tmp_path / "r"
+    for name in ("eval-candidate-a", "eval-candidate-b"):
+        d = rd / name
+        d.mkdir(parents=True)
+        (d / "stdout").write_text("step 1 val loss 3.0\n")
+    orig = Path.stat
+
+    def vanishing(self, **kw):
+        if self.name == "eval-candidate-a":
+            raise FileNotFoundError(self)
+        return orig(self, **kw)
+
+    monkeypatch.setattr(Path, "stat", vanishing)
+    assert _curve_from_eval(rd) == [[1, 3.0]]
+
+
+def test_summarize_first_sentence_and_cap() -> None:
+    from autoresearch.climbboard import summarize
+
+    text = "The warmdown starts too early. Moving it later should preserve late learning rate."
+    assert summarize(text) == "The warmdown starts too early."
+    ramble = "a" * 200
+    out = summarize(ramble)
+    assert len(out) <= 91 and out.endswith("…")
+    assert summarize("short line") == "short line"
+
+
+def test_rows_carry_the_gates_verdict_note(tmp_path: Path) -> None:
+    """'negative-result 9344' says nothing; the gate's own sentence ("real
+    movement, not creditable") rides the row into the table and tooltip."""
+    record = RunRecord(
+        run_id="near-1",
+        target="org/repo",
+        task_title="t",
+        state="ended",
+        ending="negative-result",
+        ending_note="delta +128 is inside the contract's significance floor (256): real movement",
+        benchmark="speedrun",
+        created=1.0,
+        updated=2.0,
+    )
+    save_record(tmp_path, record, 2.0)
+    (run_dir(tmp_path, "near-1") / "report.md").write_text(REPORT)
+    rows = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert rows[0].note.startswith("delta +128")
+    from dataclasses import asdict
+
+    md = render_md("org/repo", {"speedrun": [asdict(rows[0])]}, {"speedrun": "min"})
+    assert "negative-result — delta +128" in md
+    # a multi-line note must not split the table row
+    row = asdict(rows[0]) | {"note": "line one\nline two | pipe"}
+    md = render_md("org/repo", {"speedrun": [row]}, {"speedrun": "min"})
+    (line,) = [ln for ln in md.splitlines() if "line one" in ln]
+    assert "line two \\| pipe" in line
+
+
+def test_report_link_uses_the_markers_own_path(tmp_path: Path) -> None:
+    """An in-review archive keeps its date after the ENDED transition
+    re-stamps `updated`: the marker's second line wins over a re-derived
+    date (which could 404 across a UTC midnight)."""
+    _terminal_run(tmp_path, "speedrun-9")
+    (run_dir(tmp_path, "speedrun-9") / "ledger-published").write_text(
+        "done\nreports/2026-08-19-speedrun-9.md"
+    )
+    (row,) = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert row.report == "reports/2026-08-19-speedrun-9.md"
+    # legacy marker without a path line: the derived date remains the fallback
+    (run_dir(tmp_path, "speedrun-9") / "ledger-published").write_text("done")
+    (row,) = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert row.report.startswith("reports/2026-08-") and row.report.endswith("-speedrun-9.md")
+
+
+def test_md_summarizes_and_links_reports() -> None:
+    rows = [
+        {
+            "run_id": "speedrun-20260830-x-agent-01",
+            "ended": "2026-08-30 10:00:00",
+            "agent": "agent-01",
+            "outcome": "negative-result",
+            "candidate": 38146.0,
+            "gpu_hours": 4.0,
+            "hypothesis": (
+                "First sentence here. Second sentence that should not appear in the cell."
+            ),
+        }
+    ]
+    rows[0]["report"] = "reports/2026-08-30-speedrun-20260830-x-agent-01.md"
+    md = render_md("org/repo", {"speedrun": rows}, {"speedrun": "min"})
+    assert "First sentence here." in md and "Second sentence" not in md
+    assert "[report](reports/2026-08-30-speedrun-20260830-x-agent-01.md)" in md
+    # a row whose report was never archived (adopted history, deferred
+    # archive) renders WITHOUT a link — no 404s on the board
+    rows[0]["report"] = ""
+    assert "[report]" not in render_md("org/repo", {"speedrun": rows}, {"speedrun": "min"})
+
+
+def test_html_carries_curves_and_direction_and_log_toggle() -> None:
+    html = render_html(
+        "org/repo",
+        {"b": [{"run_id": "r1", "ended": "2026-01-01 00:00:00", "candidate": 5.0}]},
+        {"b": "min"},
+        {"b": {"r1": [[128, 4.5], [256, 4.4]]}},
+    )
+    assert "training curves" in html and '"curves"' in html
+    assert "[[128, 4.5], [256, 4.4]]" in html
+    assert "logarithmic" in html and "r.direction" in html
+
+
+def test_status_carries_the_working_direction(tmp_path: Path) -> None:
+    from autoresearch.climbboard import collect_status
+
+    record = RunRecord(
+        run_id="live-9",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-03",
+        created=1.0,
+        updated=2.0,
+        stage={
+            "phase": "author-sleep",
+            "syscall_note": (
+                "Hypothesis: very long warmdowns preserve late LR. Sweeping 6 lengths now."
+            ),
+        },
+    )
+    save_record(tmp_path, record, 2.0)
+    runs = collect_status(tmp_path, "org/repo", 3.0)["runs"]
+    assert runs[0]["direction"].startswith("very long warmdowns preserve late LR")
+    assert "Sweeping 6 lengths" not in runs[0]["direction"]
+
+
+def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
+    """The strip's live picture: finished/launched experiment jobs counted
+    from exit-code files, depth budgets from the contract, the gate's
+    walltime cap, and a direction cut to its first clause."""
+    from types import SimpleNamespace
+
+    from autoresearch.climbboard import collect_status
+    from autoresearch.runstate import run_dir
+
+    record = RunRecord(
+        run_id="live-10",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-01",
+        created=1.0,
+        updated=2.0,
+        stage={
+            "phase": "author-sleep",
+            "launches_used": 3,
+            "eval_minutes": 240,
+            "syscall_launches": [
+                {"name": "warmdown-length", "array": 3, "minutes": 180},
+                {"name": "probe", "minutes": 30},
+            ],
+            "syscall_note": "Hypothesis: longer warmdown helps: sweeping 3 lengths plus a probe.",
+        },
+    )
+    save_record(tmp_path, record, 2.0)
+    rd = run_dir(tmp_path, "live-10")
+    for name in ("warmdown-length.0", "warmdown-length.2", "probe"):
+        d = rd / f"eval-launch-{name}"
+        d.mkdir(parents=True)
+        (d / "exit-code").write_text("0")
+    contract = SimpleNamespace(
+        benchmarks=(SimpleNamespace(name="speedrun", depth_k=16, sleep_k=20),),
+        budgets=SimpleNamespace(gpu_hours_per_run=400.0),
+    )
+    (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
+    assert (r["exp_done"], r["exp_total"]) == (3, 4)
+    assert (r["depth_k"], r["sleep_k"]) == (16, 20)
+    assert r["eval_minutes"] == 240
+    assert r["exp_minutes"] == 180
+    assert r["gpu_hours_budget"] == 400.0
+    # the first clause only — the strip is a glance, not a paragraph
+    assert r["direction"] == "longer warmdown helps"

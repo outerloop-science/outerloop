@@ -983,16 +983,25 @@ def _publish_ledger_entry(
     incident, never an unbounded stream."""
     from datetime import UTC, datetime
 
+    date = datetime.fromtimestamp(record.updated or record.created, tz=UTC).strftime("%Y-%m-%d")
+    path = f"reports/{date}-{record.run_id}.md"
+    # an earlier pass may have archived under an earlier date (an in-review
+    # archive whose record re-stamped `updated` at ENDED): the marker's own
+    # second line is the authoritative path for retries and pointers
+    prior = state.splitlines()
+    if len(prior) > 1 and prior[1].startswith("reports/") and prior[1].endswith(".md"):
+        path = prior[1]
+
     def _mark(value: str) -> bool:
         try:
-            marker.write_text(value)
+            # the path rides the marker so readers (the board) never have to
+            # re-derive the date from a timestamp that may have moved on
+            marker.write_text(value + "\n" + path)
             return True
         except OSError as exc:
             log.warning("ledger marker write failed for %s: %s", record.run_id, exc)
             return False
 
-    date = datetime.fromtimestamp(record.updated or record.created, tz=UTC).strftime("%Y-%m-%d")
-    path = f"reports/{date}-{record.run_id}.md"
     try:
         if not state.startswith(("archived", "pointer-pending")):
             if not github.ensure_branch(target, RESEARCH_LOG_BRANCH):
@@ -1511,7 +1520,7 @@ def service_boards(root: Path, github: Any, target: str, contract: Any, now: flo
     try:
         from autoresearch.climbboard import service_status
 
-        service_status(root, github, target, now)
+        service_status(root, github, target, now, contract)
     except Exception as exc:  # each is advisory ALONE: one failing never mutes the other
         log.warning("status strip service failed: %s", exc)
 
