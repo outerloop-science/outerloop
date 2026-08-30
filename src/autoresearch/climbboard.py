@@ -185,8 +185,14 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
         report = ""
         try:
             marker = (run_dir(root, record.run_id) / "ledger-published").read_text()
-            if marker.startswith(("archived", "pointer-pending", "done")):
-                report = f"reports/{ended.strftime('%Y-%m-%d')}-{record.run_id}.md"
+            lines = marker.splitlines()
+            if lines and lines[0].startswith(("archived", "pointer-pending", "done")):
+                if len(lines) > 1 and lines[1].startswith("reports/") and lines[1].endswith(".md"):
+                    # the ledger's own path: an in-review archive keeps its
+                    # date even after the ENDED transition re-stamps updated
+                    report = lines[1]
+                else:  # legacy marker without a path line
+                    report = f"reports/{ended.strftime('%Y-%m-%d')}-{record.run_id}.md"
         except OSError:
             pass
         out.setdefault(record.benchmark or "benchmark", []).append(

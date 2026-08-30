@@ -820,6 +820,22 @@ def test_rows_carry_the_gates_verdict_note(tmp_path: Path) -> None:
     assert "line two \\| pipe" in line
 
 
+def test_report_link_uses_the_markers_own_path(tmp_path: Path) -> None:
+    """An in-review archive keeps its date after the ENDED transition
+    re-stamps `updated`: the marker's second line wins over a re-derived
+    date (which could 404 across a UTC midnight)."""
+    _terminal_run(tmp_path, "speedrun-9")
+    (run_dir(tmp_path, "speedrun-9") / "ledger-published").write_text(
+        "done\nreports/2026-08-19-speedrun-9.md"
+    )
+    (row,) = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert row.report == "reports/2026-08-19-speedrun-9.md"
+    # legacy marker without a path line: the derived date remains the fallback
+    (run_dir(tmp_path, "speedrun-9") / "ledger-published").write_text("done")
+    (row,) = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert row.report.startswith("reports/2026-08-") and row.report.endswith("-speedrun-9.md")
+
+
 def test_md_summarizes_and_links_reports() -> None:
     rows = [
         {

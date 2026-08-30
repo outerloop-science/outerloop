@@ -2425,11 +2425,11 @@ def test_research_log_pointer_failure_retries_pointer_only(tmp_path: Path) -> No
 
     gh.comment = flaky_comment  # type: ignore[method-assign]
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
-    assert _ledger_marker(tmp_path, "r-6").read_text() == "pointer-pending"
+    assert _ledger_marker(tmp_path, "r-6").read_text().splitlines()[0] == "pointer-pending"
     assert len(gh.files) == 1 and gh.comments == []
     boom["on"] = False
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
-    assert _ledger_marker(tmp_path, "r-6").read_text() == "done"
+    assert _ledger_marker(tmp_path, "r-6").read_text().splitlines()[0] == "done"
     assert len(gh.files) == 1  # archive NOT re-put
     assert len(gh.comments) == 1  # the pointer arrived exactly once
 
@@ -2446,7 +2446,7 @@ def test_research_log_lost_marker_duplicates_at_most_once(tmp_path: Path) -> Non
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
     _ledger_marker(tmp_path, "r-7").unlink()
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 1
-    assert _ledger_marker(tmp_path, "r-7").read_text() == "done"  # settled
+    assert _ledger_marker(tmp_path, "r-7").read_text().splitlines()[0] == "done"  # settled
     assert len(gh.comments) == 2  # one bounded duplicate, then stable
     assert service_research_log(tmp_path, gh, _spec(), NOW) == 0
 
