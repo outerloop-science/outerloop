@@ -119,16 +119,17 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     if not evals:
         return []
     try:
-        with (evals[-1] / "stdout").open(errors="replace") as fh:
-            # a bounded read caps memory whatever the line structure — a
-            # newline-free multi-GB stdout arrives as at most this many chars
-            text = fh.read(MAX_CURVE_STDOUT_BYTES + 1)
+        with (evals[-1] / "stdout").open("rb") as fh:
+            # a byte-mode bounded read caps memory whatever the content — a
+            # text-mode read counts characters and 4-byte UTF-8 overshoots 4x
+            raw = fh.read(MAX_CURVE_STDOUT_BYTES + 1)
     except OSError:
         return []
-    if len(text) > MAX_CURVE_STDOUT_BYTES:
+    if len(raw) > MAX_CURVE_STDOUT_BYTES:
         # truncated: drop the partial tail line so the EOF-tolerant pattern
         # can never publish a number the cap cut in half
-        text = text[:MAX_CURVE_STDOUT_BYTES].rsplit("\n", 1)[0]
+        raw = raw[:MAX_CURVE_STDOUT_BYTES].rsplit(b"\n", 1)[0]
+    text = raw.decode("utf-8", errors="replace")
     points = []
     for m in _CURVE_LINE.finditer(text):
         val = float(m.group(2))

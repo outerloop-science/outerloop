@@ -616,6 +616,9 @@ def test_cap_truncation_never_publishes_a_partial_number(tmp_path: Path, monkeyp
     (ev / "stdout").write_text("step 1 val loss 4.5\nstep 2 val loss 4.4444\n")
     monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 40)  # cuts inside 4.4444
     assert cb._curve_from_eval(rd) == [[1, 4.5]]
+    # the cap is bytes, not characters: 4-byte emoji count 4x
+    (ev / "stdout").write_bytes(b"step 1 val loss 4.5\n" + "🚀".encode() * 100)
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
 
 
 def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -> None:
