@@ -24,6 +24,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Board v2: training curves behind every attempt (parsed from the gate eval's output, overlaid for the newest attempts, log-scale toggle), hypotheses summarized to a sentence with a link to each full report, and the live strip shows each agent's own working direction.
 - The climb board: `CLIMB.md` (numbers + attempts table), `climb/<benchmark>.json` (the data), and `climb.html` (a chart of the JSON) on the target's `research-log` branch, kernel-published as runs end. Idempotent: rows merge by run id, files are written only on change.
 - SWEEPS: `launch --array K` fans one command out to K jobs, each with
   `SWEEP_INDEX=0..K-1` in its environment, delivered back as K results

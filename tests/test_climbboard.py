@@ -424,8 +424,9 @@ def test_failed_json_upload_renders_last_published_rows(tmp_path: Path) -> None:
     gh.put_file = flaky  # type: ignore[method-assign]
     service_climb_board(tmp_path, gh, "org/repo")
     md = gh.files["CLIMB.md"]
-    assert "old-1" not in md  # run ids never render; check by content:
-    assert "9472" in md and "38146" not in md  # published row only, not the failed fresh one
+    # the published row renders (its report link carries the run id); the
+    # failed fresh row must not
+    assert "9472" in md and "38146" not in md
 
 
 def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
@@ -549,3 +550,118 @@ def test_status_outage_is_not_a_missing_file(tmp_path: Path) -> None:
     save_record(tmp_path, _live, 1.0)
     assert service_status(tmp_path, gh, "org/repo", 2.0) is True
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "r"
+
+
+STDOUT_WITH_CURVE = (
+    "speedrun eval: seed 7\n"
+    + "\n".join(
+        f"step {s} val loss {4.5 - s / 10000:.6f} (bf16 screen)" for s in range(128, 9345, 128)
+    )
+    + "\nstep 9344 val loss 3.276098 (fp32)\n"
+)
+
+
+def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
+    from autoresearch.climbboard import MAX_CURVE_POINTS, collect_curves
+
+    _terminal_run(tmp_path, "speedrun-1")
+    ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc-def"
+    ev.mkdir()
+    (ev / "stdout").write_text(STDOUT_WITH_CURVE)
+    curves = collect_curves(tmp_path, "org/repo")["speedrun"]
+    pts = curves["speedrun-1"]
+    assert 2 < len(pts) <= MAX_CURVE_POINTS
+    assert pts[0][0] == 128 and pts[-1] == [9344, 3.276098]
+    # a run with no parsable eval simply has no curve
+    _terminal_run(tmp_path, "speedrun-2", ending="merged")
+    assert "speedrun-2" not in collect_curves(tmp_path, "org/repo")["speedrun"]
+
+
+def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
+    from autoresearch.climbboard import _merge_curves
+
+    gh = _BoardGitHub()
+    rows = [
+        {"run_id": f"r{i}", "ended": f"2026-01-{1 + i // 24:02d} {i % 24:02d}:00"}
+        for i in range(200)
+    ]
+    published = {"r199": [[1, 4.0]]}
+    gh.files["climb/data/b-curves.json"] = json.dumps(published)
+    fresh = {"r199": [[1, 9.9]], "r198": [[2, 3.5]]}
+    merged = _merge_curves(gh, "org/repo", "b", rows, fresh)
+    assert merged is not None and merged["changed"] is True
+    assert merged["data"]["r199"] == [[1, 4.0]]  # published wins; never rewritten
+    assert merged["data"]["r198"] == [[2, 3.5]]
+    # outage or malformed: sit the pass out
+    gh.index_outage = True
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    gh.index_outage = False
+    gh.files["climb/data/b-curves.json"] = json.dumps(["nope"])
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+
+
+def test_summarize_first_sentence_and_cap() -> None:
+    from autoresearch.climbboard import summarize
+
+    text = "The warmdown starts too early. Moving it later should preserve late learning rate."
+    assert summarize(text) == "The warmdown starts too early."
+    ramble = "a" * 200
+    out = summarize(ramble)
+    assert len(out) <= 91 and out.endswith("…")
+    assert summarize("short line") == "short line"
+
+
+def test_md_summarizes_and_links_reports() -> None:
+    rows = [
+        {
+            "run_id": "speedrun-20260830-x-agent-01",
+            "ended": "2026-08-30 10:00:00",
+            "agent": "agent-01",
+            "outcome": "negative-result",
+            "candidate": 38146.0,
+            "gpu_hours": 4.0,
+            "hypothesis": (
+                "First sentence here. Second sentence that should not appear in the cell."
+            ),
+        }
+    ]
+    md = render_md("org/repo", {"speedrun": rows}, {"speedrun": "min"})
+    assert "First sentence here." in md and "Second sentence" not in md
+    assert "[report](reports/2026-08-30-speedrun-20260830-x-agent-01.md)" in md
+
+
+def test_html_carries_curves_and_direction_and_log_toggle() -> None:
+    html = render_html(
+        "org/repo",
+        {"b": [{"run_id": "r1", "ended": "2026-01-01 00:00:00", "candidate": 5.0}]},
+        {"b": "min"},
+        {"b": {"r1": [[128, 4.5], [256, 4.4]]}},
+    )
+    assert "training curves" in html and '"curves"' in html
+    assert "[[128, 4.5], [256, 4.4]]" in html
+    assert "logarithmic" in html and "r.direction" in html
+
+
+def test_status_carries_the_working_direction(tmp_path: Path) -> None:
+    from autoresearch.climbboard import collect_status
+
+    record = RunRecord(
+        run_id="live-9",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-03",
+        created=1.0,
+        updated=2.0,
+        stage={
+            "phase": "author-sleep",
+            "syscall_note": (
+                "Hypothesis: very long warmdowns preserve late LR. Sweeping 6 lengths now."
+            ),
+        },
+    )
+    save_record(tmp_path, record, 2.0)
+    runs = collect_status(tmp_path, "org/repo", 3.0)["runs"]
+    assert runs[0]["direction"].startswith("very long warmdowns preserve late LR")
+    assert "Sweeping 6 lengths" not in runs[0]["direction"]

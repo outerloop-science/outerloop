@@ -32,6 +32,9 @@ log = logging.getLogger("autoresearch.climbboard")
 
 BOARD_BRANCH = "research-log"
 MAX_HYPOTHESIS_CHARS = 160
+MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
+MAX_CURVE_POINTS = 160
+MAX_CURVE_RUNS = 150  # curves are heavy; the newest runs keep theirs
 MAX_ROWS_PER_BENCHMARK = 2000
 
 
@@ -70,6 +73,52 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
         hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", m.group(1))
         hyp = hyp.strip().rstrip("-").strip()[:MAX_HYPOTHESIS_CHARS]
     return baseline, candidate, hyp
+
+
+def summarize(text: str, cap: int = MAX_SUMMARY_CHARS) -> str:
+    """The first sentence, capped — a table cell, not a paragraph."""
+    text = text.strip()
+    for stop in (". ", "; "):
+        i = text.find(stop)
+        if 0 < i < cap:
+            return text[: i + 1]
+    return text if len(text) <= cap else text[: cap - 1].rsplit(" ", 1)[0] + "…"
+
+
+_CURVE_LINE = re.compile(r"^step (\d+) val loss ([0-9.]+)", re.M)
+
+
+def _curve_from_eval(run_directory: Path) -> list[list[float]]:
+    """(step, val loss) points parsed from the newest candidate eval's
+    stdout, downsampled — the training curve behind the row's number.
+    steps.jsonl dies with the job's scratch; stdout is what survives."""
+    evals = sorted(
+        (d for d in run_directory.glob("eval-candidate-*") if (d / "stdout").is_file()),
+        key=lambda d: d.stat().st_mtime,
+    )
+    if not evals:
+        return []
+    try:
+        text = (evals[-1] / "stdout").read_text(errors="replace")
+    except OSError:
+        return []
+    points = [[int(s), float(v)] for s, v in _CURVE_LINE.findall(text)]
+    if len(points) > MAX_CURVE_POINTS:
+        stride = len(points) / (MAX_CURVE_POINTS - 1)
+        points = [points[int(i * stride)] for i in range(MAX_CURVE_POINTS - 1)] + [points[-1]]
+    return points
+
+
+def collect_curves(root: Path, target: str) -> dict[str, dict[str, list[list[float]]]]:
+    """{benchmark: {run_id: curve}} for terminal runs with a parsable eval."""
+    out: dict[str, dict[str, list[list[float]]]] = {}
+    for record in list_runs(root):
+        if record.target != target or record.state != ENDED:
+            continue
+        curve = _curve_from_eval(run_dir(root, record.run_id))
+        if curve:
+            out.setdefault(record.benchmark or "benchmark", {})[record.run_id] = curve
+    return out
 
 
 def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
@@ -176,23 +225,28 @@ def render_md(
             ]
         lines += [
             "",
-            "| ended (UTC) | agent | hypothesis | outcome | candidate | GPU-h |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| ended (UTC) | agent | hypothesis | outcome | candidate | GPU-h | full |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
         for r in reversed(rows):
             outcome = str(r.get("outcome", ""))
             if r.get("pr_url"):
                 outcome = f"[{outcome}]({r['pr_url']})"
-            hyp = str(r.get("hypothesis") or "").replace("|", "\\|")
+            hyp = summarize(str(r.get("hypothesis") or "")).replace("|", "\\|")
+            ended = str(r.get("ended", ""))
+            report = f"[report](reports/{ended[:10]}-{r.get('run_id', '')}.md)" if ended else ""
             lines.append(
-                f"| {r.get('ended', '')} | {r.get('agent', '')} | {hyp} | {outcome} "
-                f"| {_fmt(r.get('candidate'))} | {_fmt(r.get('gpu_hours'))} |"
+                f"| {ended} | {r.get('agent', '')} | {hyp} | {outcome} "
+                f"| {_fmt(r.get('candidate'))} | {_fmt(r.get('gpu_hours'))} | {report} |"
             )
     return "\n".join(lines) + "\n"
 
 
 def render_html(
-    target: str, boards: dict[str, list[dict[str, Any]]], directions: dict[str, str]
+    target: str,
+    boards: dict[str, list[dict[str, Any]]],
+    directions: dict[str, str],
+    curves: dict[str, dict[str, list[list[float]]]] | None = None,
 ) -> str:
     """One self-contained page: the data is EMBEDDED (a browser blocks
     fetch() from a file:// page, and the direct-from-clone view must work),
@@ -201,7 +255,9 @@ def render_html(
     # "<" is escaped INSIDE the JSON (still valid JSON): a hypothesis line is
     # agent-written text, and a literal </script> in it would close the inline
     # script and run whatever follows in the published page
-    payload = json.dumps({"boards": boards, "directions": directions}).replace("<", "\\u003c")
+    payload = json.dumps(
+        {"boards": boards, "directions": directions, "curves": curves or {}}
+    ).replace("<", "\\u003c")
     return (
         "<!doctype html>\n<html><head><meta charset='utf-8'>\n"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>\n"
@@ -257,6 +313,10 @@ def render_html(
         "  chip('GPU-hours', gpu.toFixed(1)); el.append(chips);\n"
         "  const card = document.createElement('div'); card.className = 'card';\n"
         "  const c = document.createElement('canvas'); card.append(c); el.append(card);\n"
+        "  const logBox = document.createElement('label');\n"
+        "  logBox.style.cssText = 'font-size:.8rem;color:var(--muted)';\n"
+        "  const cb = document.createElement('input'); cb.type = 'checkbox';\n"
+        "  logBox.append(cb, ' log scale'); card.append(logBox);\n"
         "  new Chart(c, {type: 'line', data: {labels: measured.map(r => r.ended),\n"
         "    datasets: [\n"
         "      {label: 'candidate', data: measured.map(r => r.candidate),\n"
@@ -275,6 +335,33 @@ def render_html(
         "      plugins: {legend: {labels: {color: css('--muted')}},\n"
         "        tooltip: {callbacks: {afterLabel:\n"
         "          (i) => measured[i.dataIndex].hypothesis}}}}});\n"
+        "  const chart = Chart.getChart(c);\n"
+        "  cb.onchange = () => {\n"
+        "    chart.options.scales.y.type = cb.checked ? 'logarithmic' : 'linear';\n"
+        "    chart.update();\n"
+        "  };\n"
+        "  // the training curves behind the numbers: newest attempts overlaid\n"
+        "  const bcurves = data.curves[b] || {};\n"
+        "  const withCurve = rows.filter(r => bcurves[r.run_id]).slice(-8);\n"
+        "  if (withCurve.length) {\n"
+        "    const h3 = document.createElement('h2');\n"
+        "    h3.textContent = b + ' — training curves (newest attempts)';\n"
+        "    const card2 = document.createElement('div'); card2.className = 'card';\n"
+        "    const c2 = document.createElement('canvas'); card2.append(c2);\n"
+        "    el.append(h3, card2);\n"
+        "    const hues = [212, 152, 22, 282, 342, 62, 122, 242];\n"
+        "    new Chart(c2, {type: 'line', data: {datasets: withCurve.map((r, i) => ({\n"
+        "      label: r.agent + ' ' + (r.ended || '').slice(5, 16),\n"
+        "      data: bcurves[r.run_id].map(p => ({x: p[0], y: p[1]})),\n"
+        "      borderColor: `hsl(${hues[i % 8]} 60% 50%)`,\n"
+        "      borderWidth: 1.5, pointRadius: 0}))},\n"
+        "      options: {color: css('--muted'), parsing: false,\n"
+        "        scales: {x: {type: 'linear', ticks: {color: css('--muted')},\n"
+        "                     grid: {color: css('--line')}},\n"
+        "                 y: {ticks: {color: css('--muted')}, grid: {color: css('--line')}}},\n"
+        "        plugins: {legend: {labels: {color: css('--muted')}},\n"
+        "          tooltip: {callbacks: {afterTitle: () => ''}}}}});\n"
+        "  }\n"
         "}\n"
         "// the live strip: status.json is pushed on fleet state changes; the\n"
         "// elapsed time ticks locally. fetch() fails on a file:// page — the\n"
@@ -299,7 +386,8 @@ def render_html(
         "      b.textContent = r.agent + ' ' + r.state + (r.phase ? '/' + r.phase : '');\n"
         "      const gpu = r.gpu_hours_used ? ' · ' + Number(r.gpu_hours_used).toFixed(1)\n"
         "        + ' GPU-h' : '';\n"
-        "      c.append(b, ' ' + t + gpu);\n"
+        "      const dir = r.direction ? ' — ' + r.direction : '';\n"
+        "      c.append(b, ' ' + t + gpu + dir);\n"
         "      if (r.pr_url) {\n"
         "        const a = document.createElement('a'); a.href = r.pr_url;\n"
         "        a.textContent = ' PR'; c.append(a);\n"
@@ -330,6 +418,8 @@ def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
         if record.target != target or record.state not in _LIVE_STATES:
             continue
         stage = record.stage or {}
+        note = str(stage.get("syscall_note") or stage.get("report") or "")
+        _b, _c, hyp = _report_fields(note)
         runs.append(
             {
                 "run_id": record.run_id,
@@ -337,6 +427,8 @@ def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
                 "benchmark": record.benchmark,
                 "state": record.state,
                 "phase": stage.get("phase", ""),
+                # the agent's own headline: what it says it is working on
+                "direction": summarize(hyp or note.replace("\n", " ")),
                 "since": record.updated or record.created,
                 "launches_used": stage.get("launches_used"),
                 "sleeps_used": stage.get("sleeps_used"),
@@ -387,6 +479,42 @@ def service_status(root: Path, github: Any, target: str, now: float) -> bool:
     )
 
 
+def _merge_curves(
+    github: Any, target: str, benchmark: str, rows: list[dict[str, Any]], fresh: dict
+) -> dict[str, Any] | None:
+    """Published curves plus new ones, kept only for the newest rows (curves
+    are heavy; the cap is by recency of the attempt, and published curves
+    are never rewritten). None when the published file cannot be read — the
+    same sit-the-pass-out stance as everything else on the branch."""
+    path = f"climb/data/{benchmark}-curves.json"
+    try:
+        raw: str | None = github.get_file(target, path, BOARD_BRANCH)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            log.warning("board curves unreadable for %s (%s); skipped", benchmark, exc)
+            return None
+        raw = None
+    published: dict[str, list[list[float]]] = {}
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                published = {str(k): v for k, v in data.items() if isinstance(v, list)}
+            else:
+                log.warning("board curves malformed for %s; skipped", benchmark)
+                return None
+        except ValueError:
+            log.warning("board curves malformed for %s; skipped", benchmark)
+            return None
+    keep = [str(r.get("run_id")) for r in rows[-MAX_CURVE_RUNS:]]
+    merged = {
+        run_id: published.get(run_id) or fresh[run_id]
+        for run_id in keep
+        if run_id in published or run_id in fresh
+    }
+    return {"data": merged, "changed": merged != published}
+
+
 def contract_directions(contract: Any) -> dict[str, str]:
     """{benchmark: direction} out of a loaded contract (None -> {})."""
     if contract is None:
@@ -428,6 +556,7 @@ def service_climb_board(
     could not be uploaded is rendered from its last PUBLISHED rows, so the
     views never point at data that is not on the branch."""
     local = collect_rows(root, target)
+    local_curves = collect_curves(root, target)
     index = _read_index(github, target)
     names = set(local) | set(index or {})
     directions = {**(index or {}), **(directions or {})}
@@ -469,6 +598,23 @@ def service_climb_board(
         elif existing:
             # the branch still holds the previous rows: render those
             boards[benchmark] = merge_rows(existing, [])
+    curves: dict[str, dict[str, list[list[float]]]] = {}
+    for benchmark, rows in boards.items():
+        merged_curves = _merge_curves(
+            github, target, benchmark, rows, local_curves.get(benchmark, {})
+        )
+        if merged_curves is not None:
+            curves[benchmark] = merged_curves["data"]
+            if merged_curves["changed"] and github.ensure_branch(target, BOARD_BRANCH):
+                changed += bool(
+                    github.put_file(
+                        target,
+                        f"climb/data/{benchmark}-curves.json",
+                        json.dumps(merged_curves["data"], indent=1) + "\n",
+                        BOARD_BRANCH,
+                        f"climb curves: {benchmark}",
+                    )
+                )
     if not boards and names:
         return changed  # every benchmark sat the pass out: leave the views alone
     # the index keeps every benchmark it knows — a transient failed read of
@@ -478,7 +624,7 @@ def service_climb_board(
     wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index or {}))}
     views: list[tuple[str, str]] = [
         ("CLIMB.md", render_md(target, boards, wanted)),
-        ("climb.html", render_html(target, boards, wanted)),
+        ("climb.html", render_html(target, boards, wanted, curves)),
     ]
     if index is not None:
         views.insert(0, ("climb/index.json", json.dumps(wanted, indent=1) + "\n"))
