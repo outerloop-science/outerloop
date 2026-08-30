@@ -472,7 +472,10 @@ def test_html_carries_the_live_strip() -> None:
     from autoresearch.climbboard import render_html
 
     html = render_html("org/repo", {"b": []}, {"b": "min"})
-    assert "climb/status.json" in html and "setInterval" in html
+    assert "climb/status.json" in html
+    # the strip re-fetches (an open page shows runs that appear or leave) and
+    # re-renders elapsed time locally between fetches
+    assert "setInterval(refresh, 180000)" in html and "setInterval(render, 30000)" in html
 
 
 def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_path: Path) -> None:
