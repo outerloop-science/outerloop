@@ -626,6 +626,30 @@ def test_summarize_first_sentence_and_cap() -> None:
     assert summarize("short line") == "short line"
 
 
+def test_rows_carry_the_gates_verdict_note(tmp_path: Path) -> None:
+    """'negative-result 9344' says nothing; the gate's own sentence ("real
+    movement, not creditable") rides the row into the table and tooltip."""
+    record = RunRecord(
+        run_id="near-1",
+        target="org/repo",
+        task_title="t",
+        state="ended",
+        ending="negative-result",
+        ending_note="delta +128 is inside the contract's significance floor (256): real movement",
+        benchmark="speedrun",
+        created=1.0,
+        updated=2.0,
+    )
+    save_record(tmp_path, record, 2.0)
+    (run_dir(tmp_path, "near-1") / "report.md").write_text(REPORT)
+    rows = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert rows[0].note.startswith("delta +128")
+    from dataclasses import asdict
+
+    md = render_md("org/repo", {"speedrun": [asdict(rows[0])]}, {"speedrun": "min"})
+    assert "negative-result — delta +128" in md
+
+
 def test_md_summarizes_and_links_reports() -> None:
     rows = [
         {

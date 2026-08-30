@@ -50,6 +50,7 @@ class ClimbRow:
     hypothesis: str
     pr_url: str
     report: str = ""  # reports/<file>.md when the ledger has archived it
+    note: str = ""  # the gate's own verdict sentence, when it recorded one
 
 
 _NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
@@ -162,6 +163,7 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
                 hypothesis=hyp,
                 pr_url=record.pr_url,
                 report=report,
+                note=summarize(record.ending_note or "", 120),
             )
         )
     return out
@@ -244,6 +246,10 @@ def render_md(
             outcome = str(r.get("outcome", ""))
             if r.get("pr_url"):
                 outcome = f"[{outcome}]({r['pr_url']})"
+            if r.get("note"):
+                # the gate's reason makes a near miss legible ("real
+                # movement, not creditable" reads differently from a DNF)
+                outcome += " — " + summarize(str(r["note"]), 80).replace("|", "\\|")
             hyp = summarize(str(r.get("hypothesis") or "")).replace("|", "\\|")
             ended = str(r.get("ended", ""))
             report = f"[report]({r['report']})" if r.get("report") else ""
@@ -326,6 +332,8 @@ def render_html(
         "  const dir = data.directions[b] === 'max' ? 'max' : 'min';\n"
         "  const pick = dir === 'max' ? Math.max : Math.min;\n"
         "  const won = new Set(['merged', 'improved']);\n"
+        "  const beats = r => typeof r.baseline === 'number' && (dir === 'max'\n"
+        "    ? r.candidate > r.baseline : r.candidate < r.baseline);\n"
         "  const measured = rows.filter(r => typeof r.candidate === 'number');\n"
         "  const baselines = measured.map(r => r.baseline).filter(v => typeof v === 'number');\n"
         "  // off-scale attempts (a DNF scored as the whole budget) squash the\n"
@@ -372,7 +380,8 @@ def render_html(
         "         showLine: false, pointRadius: 4,\n"
         "         borderColor: css('--lose'),\n"
         "         pointBackgroundColor: view.map(r =>\n"
-        "           won.has(r.outcome) ? css('--win') : css('--lose'))},\n"
+        "           won.has(r.outcome) ? css('--win')\n"
+        "           : beats(r) ? 'hsl(38 70% 48%)' : css('--lose'))},\n"
         "        {label: 'best so far', data: viewBest, stepped: true,\n"
         "         borderColor: css('--accent'), borderWidth: 2, pointRadius: 0},\n"
         "        {label: 'baseline', data: view.map(r => r.baseline),\n"
@@ -382,8 +391,9 @@ def render_html(
         "        scales: {x: {...axis(), ticks: {color: css('--muted'), maxTicksLimit: 8}},\n"
         "                 y: {...axis(), type: cb.checked ? 'logarithmic' : 'linear'}},\n"
         "        plugins: {legend: boxLegend,\n"
-        "          tooltip: {callbacks: {afterLabel:\n"
-        "            (i) => view[i.dataIndex].hypothesis}}}}});\n"
+        "          tooltip: {callbacks: {afterLabel: (i) =>\n"
+        "            [view[i.dataIndex].hypothesis, view[i.dataIndex].note]\n"
+        "              .filter(Boolean).join('\\n')}}}}});\n"
         "  };\n"
         "  cb.onchange = draw; ob.onchange = draw; draw();\n"
         "  // the training curves behind the numbers: newest attempts overlaid\n"
