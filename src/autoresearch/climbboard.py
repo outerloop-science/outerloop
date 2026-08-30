@@ -89,7 +89,13 @@ def summarize(text: str, cap: int = MAX_SUMMARY_CHARS) -> str:
     return text if len(text) <= cap else text[: cap - 1].rsplit(" ", 1)[0] + "…"
 
 
-_CURVE_LINE = re.compile(r"^step (\d+) val loss (\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=\s)")
+_CURVE_LINE = re.compile(
+    # digit bounds in the pattern: int() never sees more digits than fit a
+    # JS-safe integer, float() never sees a 400-nines mantissa (a longer
+    # number simply fails the match and the line sits out)
+    r"^step (\d{1,15}) val loss (\d{1,10}(?:\.\d{1,12})?(?:[eE][+-]?\d{1,3})?)(?=\s)",
+    re.M,
+)
 # a verbose eval must not exhaust the tick: stdout is scanned line by
 # line and abandoned past this many bytes (curves are diagnostics)
 MAX_CURVE_STDOUT_BYTES = 32 * 1024 * 1024
@@ -112,25 +118,19 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     )
     if not evals:
         return []
-    points = []
-    scanned = 0
     try:
         with (evals[-1] / "stdout").open(errors="replace") as fh:
-            for line in fh:
-                scanned += len(line)
-                if scanned > MAX_CURVE_STDOUT_BYTES:
-                    break
-                m = _CURVE_LINE.match(line)
-                if not m:
-                    continue
-                step, val = int(m.group(1)), float(m.group(2))
-                # a garbage line (a 400-digit "loss" parses as inf) skips
-                # the point, not the curve; steps stay within JS-safe ints
-                if step > 2**53 or not math.isfinite(val):
-                    continue
-                points.append([step, val])
+            # a bounded read caps memory whatever the line structure — a
+            # newline-free multi-GB stdout arrives as at most this many chars
+            text = fh.read(MAX_CURVE_STDOUT_BYTES)
     except OSError:
         return []
+    points = []
+    for m in _CURVE_LINE.finditer(text):
+        val = float(m.group(2))
+        if not math.isfinite(val):  # e-notation can still overflow (1e999)
+            continue
+        points.append([int(m.group(1)), val])
     if len(points) > MAX_CURVE_POINTS:
         stride = len(points) / (MAX_CURVE_POINTS - 1)
         points = [points[int(i * stride)] for i in range(MAX_CURVE_POINTS - 1)] + [points[-1]]
@@ -138,14 +138,21 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
 
 
 def collect_curves(root: Path, target: str) -> dict[str, dict[str, list[list[float]]]]:
-    """{benchmark: {run_id: curve}} for terminal runs with a parsable eval."""
+    """{benchmark: {run_id: curve}} for terminal runs with a parsable eval.
+    Only the newest MAX_CURVE_RUNS per benchmark are scanned — the merge
+    keeps exactly that tail, so older stdouts cannot publish anyway."""
     out: dict[str, dict[str, list[list[float]]]] = {}
-    for record in list_runs(root):
-        if record.target != target or record.state != ENDED:
+    ended = [r for r in list_runs(root) if r.target == target and r.state == ENDED]
+    ended.sort(key=lambda r: r.updated or r.created, reverse=True)
+    scanned: dict[str, int] = {}
+    for record in ended:
+        bench = record.benchmark or "benchmark"
+        if scanned.get(bench, 0) >= MAX_CURVE_RUNS:
             continue
+        scanned[bench] = scanned.get(bench, 0) + 1
         curve = _curve_from_eval(run_dir(root, record.run_id))
         if curve:
-            out.setdefault(record.benchmark or "benchmark", {})[record.run_id] = curve
+            out.setdefault(bench, {})[record.run_id] = curve
     return out
 
 
@@ -395,10 +402,11 @@ def render_html(
         "new MutationObserver(() => { redraws.forEach(f => f()); onTheme(); })\n"
         "  .observe(document.documentElement,\n"
         "    {attributes: true, attributeFilter: ['data-theme']});\n"
-        "matchMedia('(prefers-color-scheme: dark)')\n"
-        "  .addEventListener('change', () => {\n"
-        "    redraws.forEach(f => f()); onTheme();\n"
-        "  });\n"
+        "const mq = matchMedia('(prefers-color-scheme: dark)');\n"
+        "const onMq = () => { redraws.forEach(f => f()); onTheme(); };\n"
+        "// older iOS Safari has addListener only\n"
+        "if (mq.addEventListener) mq.addEventListener('change', onMq);\n"
+        "else if (mq.addListener) mq.addListener(onMq);\n"
         "// legend: solid box = shown, hollow box = hidden (no strikethrough)\n"
         "const boxLegend = {labels: {generateLabels: (chart) =>\n"
         "  chart.data.datasets.map((ds, i) => {\n"

@@ -598,10 +598,49 @@ def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
         "step 1 val loss 4.5\n"
         f"step 2 val loss {'9' * 400}\n"
         f"step {'9' * 400} val loss 4.4\n"
+        f"step {'9' * 5000} val loss 4.4\n"
+        "step 5 val loss 1e999\n"
         "step 3 val loss 4.3\n"
         "step 4 val loss 3.2e0\n"
     )
     assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3], [4, 3.2]]
+
+
+def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -> None:
+    """One giant line without newlines must not buffer past the cap."""
+    import autoresearch.climbboard as cb
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    (ev / "stdout").write_text("step 1 val loss 4.5\n" + "x" * 100_000)
+    monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 64)
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
+
+
+def test_collect_curves_scans_only_the_publishable_tail(tmp_path: Path, monkeypatch) -> None:
+    """Only the newest MAX_CURVE_RUNS attempts per benchmark are read —
+    older stdouts cannot publish and must not cost I/O."""
+    import autoresearch.climbboard as cb
+
+    for i, rid in enumerate(["old-1", "mid-2", "new-3"]):
+        record = RunRecord(
+            run_id=rid,
+            target="org/repo",
+            task_title="t",
+            state="ended",
+            ending="negative-result",
+            benchmark="speedrun",
+            created=1.0,
+            updated=float(i + 1),
+        )
+        save_record(tmp_path, record, float(i + 1))
+        ev = run_dir(tmp_path, rid) / "eval-candidate-x"
+        ev.mkdir(parents=True)
+        (ev / "stdout").write_text(f"step {i + 1} val loss 4.{i}\n")
+    monkeypatch.setattr(cb, "MAX_CURVE_RUNS", 2)
+    curves = cb.collect_curves(tmp_path, "org/repo")["speedrun"]
+    assert set(curves) == {"mid-2", "new-3"}
 
 
 def test_fresh_curve_abandons_oversized_stdout(tmp_path: Path, monkeypatch) -> None:
