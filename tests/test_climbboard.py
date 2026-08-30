@@ -709,3 +709,49 @@ def test_status_carries_the_working_direction(tmp_path: Path) -> None:
     runs = collect_status(tmp_path, "org/repo", 3.0)["runs"]
     assert runs[0]["direction"].startswith("very long warmdowns preserve late LR")
     assert "Sweeping 6 lengths" not in runs[0]["direction"]
+
+
+def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
+    """The strip's live picture: finished/launched experiment jobs counted
+    from exit-code files, depth budgets from the contract, the gate's
+    walltime cap, and a direction cut to its first clause."""
+    from types import SimpleNamespace
+
+    from autoresearch.climbboard import collect_status
+    from autoresearch.runstate import run_dir
+
+    record = RunRecord(
+        run_id="live-10",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-01",
+        created=1.0,
+        updated=2.0,
+        stage={
+            "phase": "author-sleep",
+            "launches_used": 3,
+            "eval_minutes": 240,
+            "syscall_launches": [
+                {"name": "warmdown-length", "array": 3},
+                {"name": "probe"},
+            ],
+            "syscall_note": "Hypothesis: longer warmdown helps: sweeping 3 lengths plus a probe.",
+        },
+    )
+    save_record(tmp_path, record, 2.0)
+    rd = run_dir(tmp_path, "live-10")
+    for name in ("warmdown-length.0", "warmdown-length.2", "probe"):
+        d = rd / f"eval-launch-{name}"
+        d.mkdir(parents=True)
+        (d / "exit-code").write_text("0")
+    contract = SimpleNamespace(
+        benchmarks=(SimpleNamespace(name="speedrun", depth_k=16, sleep_k=20),)
+    )
+    (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
+    assert (r["exp_done"], r["exp_total"]) == (3, 4)
+    assert (r["depth_k"], r["sleep_k"]) == (16, 20)
+    assert r["eval_minutes"] == 240
+    # the first clause only — the strip is a glance, not a paragraph
+    assert r["direction"] == "longer warmdown helps"

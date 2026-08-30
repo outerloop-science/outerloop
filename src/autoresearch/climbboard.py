@@ -303,6 +303,9 @@ def render_html(
         ".run .top{display:flex;align-items:center;gap:.5rem}\n"
         ".run b{color:var(--ink)}\n"
         ".run .dir{margin-top:.15rem;font-size:.8rem}\n"
+        ".run .bar{display:block;height:3px;margin-top:.3rem;border-radius:2px;\n"
+        "  background:var(--line);overflow:hidden}\n"
+        ".run .bar span{display:block;height:100%}\n"
         ".pill{border-radius:.6rem;padding:.05rem .55rem;font-size:.72rem;\n"
         "font-weight:600;color:#fff}\n"
         ".card{background:var(--card);border:1px solid var(--line);border-radius:.5rem;\n"
@@ -443,6 +446,12 @@ def render_html(
         "const stateHue = r => r.state === 'in-review' ? '150 55% 38%'\n"
         "  : r.state === 'implementing' ? '262 45% 52%'\n"
         "  : r.phase === 'author-sleep' ? '212 55% 46%' : '38 65% 42%';\n"
+        "// kernel phase names, translated for the page: 'in gate' = the\n"
+        "// kernel is measuring a submitted candidate; 'experiments' = the\n"
+        "// author launched its own jobs and sleeps until they finish\n"
+        "const stateName = r => r.state !== 'waiting' ? r.state.replace('-', ' ')\n"
+        "  : r.phase === 'author-sleep' ? 'experiments'\n"
+        "  : r.phase === 'candidate' ? 'in gate' : 'waiting';\n"
         "const render = () => {\n"
         "  if (!strip) return;\n"
         "  now.textContent = '';\n"
@@ -451,13 +460,17 @@ def render_html(
         "    const top = document.createElement('span'); top.className = 'top';\n"
         "    const pill = document.createElement('span'); pill.className = 'pill';\n"
         "    pill.style.background = `hsl(${stateHue(r)})`;\n"
-        "    pill.textContent = r.state + (r.phase ? '/' + r.phase : '');\n"
+        "    pill.textContent = stateName(r);\n"
         "    const who = document.createElement('b'); who.textContent = r.agent;\n"
         "    const mins = Math.max(0, (Date.now() / 1000 - r.since) / 60);\n"
         "    const t = mins >= 90 ? (mins / 60).toFixed(1) + ' h' : Math.round(mins) + ' min';\n"
         "    const gpu = r.gpu_hours_used\n"
         "      ? ' · ' + Number(r.gpu_hours_used).toFixed(1) + ' GPU-h' : '';\n"
-        "    top.append(who, pill, document.createTextNode(t + gpu));\n"
+        "    const exp = r.exp_total\n"
+        "      ? ' · exps ' + r.exp_done + '/' + r.exp_total : '';\n"
+        "    const depth = r.depth_k && r.launches_used != null\n"
+        "      ? ' · depth ' + r.launches_used + '/' + r.depth_k : '';\n"
+        "    top.append(who, pill, document.createTextNode(t + gpu + exp + depth));\n"
         "    if (r.pr_url) {\n"
         "      const a = document.createElement('a'); a.href = r.pr_url;\n"
         "      a.textContent = 'PR'; top.append(a);\n"
@@ -467,6 +480,20 @@ def render_html(
         "      const d = document.createElement('span'); d.className = 'dir';\n"
         "      d.textContent = r.direction; d.style.display = 'block';\n"
         "      card.append(d);\n"
+        "    }\n"
+        "    // progress: experiment jobs finished, or gate elapsed vs its cap\n"
+        "    const frac = r.exp_total ? r.exp_done / r.exp_total\n"
+        "      : r.phase === 'candidate' && r.eval_minutes\n"
+        "      ? Math.min(1, (Date.now() / 1000 - r.since) / (r.eval_minutes * 60))\n"
+        "      : null;\n"
+        "    if (frac != null) {\n"
+        "      const bar = document.createElement('span'); bar.className = 'bar';\n"
+        "      const fill = document.createElement('span');\n"
+        "      fill.style.width = Math.round(frac * 100) + '%';\n"
+        "      fill.style.background = `hsl(${stateHue(r)})`;\n"
+        "      bar.title = r.exp_total ? 'experiment jobs finished'\n"
+        "        : 'gate eval: elapsed vs its walltime cap';\n"
+        "      bar.append(fill); card.append(bar);\n"
         "    }\n"
         "    now.append(card);\n"
         "  }\n"
@@ -484,10 +511,42 @@ STATUS_PATH = "climb/status.json"
 _LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
 
 
-def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
+def _phrase(text: str, cap: int = 64) -> str:
+    """A strip-sized phrase: the first clause of the first sentence."""
+    first = summarize(text, 200)
+    for sep in (": ", " — ", " -- "):
+        first = first.split(sep, 1)[0]
+    return summarize(first, cap)
+
+
+def _experiment_progress(root: Path, record: Any) -> tuple[int, int]:
+    """(finished, launched) across the current park's experiment jobs,
+    counted by the exit-code files the job wrappers leave — filesystem
+    only, no Slurm calls on the board path."""
+    stage = record.stage or {}
+    raw = stage.get("syscall_launches", [])
+    if not isinstance(raw, list):
+        return (0, 0)
+    names: list[str] = []
+    for item in raw:
+        if not (isinstance(item, dict) and item.get("name")):
+            continue
+        try:
+            array = int(item.get("array") or 1)
+        except (TypeError, ValueError):
+            array = 1
+        name = str(item["name"])
+        names += [f"{name}.{i}" for i in range(array)] if array > 1 else [name]
+    rd = run_dir(root, record.run_id)
+    done = sum(1 for n in names if (rd / f"eval-launch-{n}" / "exit-code").exists())
+    return (done, len(names))
+
+
+def collect_status(root: Path, target: str, now: float, contract: Any = None) -> dict[str, Any]:
     """The fleet's live picture for `target`: one entry per non-terminal run.
     Timestamps, not durations — the page computes elapsed time client-side,
     so the strip feels live between pushes."""
+    budgets = {b.name: (b.depth_k, b.sleep_k) for b in getattr(contract, "benchmarks", ())}
     runs = []
     for record in list_runs(root):
         if record.target != target or record.state not in _LIVE_STATES:
@@ -495,6 +554,8 @@ def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
         stage = record.stage or {}
         note = str(stage.get("syscall_note") or stage.get("report") or "")
         _b, _c, hyp = _report_fields(note)
+        exp_done, exp_total = _experiment_progress(root, record)
+        depth_k, sleep_k = budgets.get(record.benchmark, (None, None))
         runs.append(
             {
                 "run_id": record.run_id,
@@ -503,10 +564,17 @@ def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
                 "state": record.state,
                 "phase": stage.get("phase", ""),
                 # the agent's own headline: what it says it is working on
-                "direction": summarize(hyp or note.replace("\n", " ")),
+                "direction": _phrase(hyp or note.replace("\n", " ")),
                 "since": record.updated or record.created,
                 "launches_used": stage.get("launches_used"),
                 "sleeps_used": stage.get("sleeps_used"),
+                "depth_k": depth_k,
+                "sleep_k": sleep_k,
+                # experiment fan-out of the current park, and the gate eval's
+                # walltime cap — the page turns these into progress bars
+                "exp_done": exp_done,
+                "exp_total": exp_total,
+                "eval_minutes": int(stage.get("eval_minutes", 0) or 0),  # type: ignore[call-overload]
                 "gpu_hours_used": stage.get("gpu_hours_used"),
                 "pr_url": record.pr_url,
             }
@@ -515,12 +583,12 @@ def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
     return {"target": target, "published": now, "runs": runs}
 
 
-def service_status(root: Path, github: Any, target: str, now: float) -> bool:
+def service_status(root: Path, github: Any, target: str, now: float, contract: Any = None) -> bool:
     """Publish the strip when the fleet's SHAPE changed — a run appearing,
     leaving, or changing state/phase — never on every tick: the page shows
     elapsed time client-side, so timestamp-only drift is not worth a commit.
     Advisory like the board; True when a write happened."""
-    status = collect_status(root, target, now)
+    status = collect_status(root, target, now, contract)
     try:
         existing_raw: str | None = github.get_file(target, STATUS_PATH, BOARD_BRANCH)
     except Exception as exc:
@@ -535,7 +603,18 @@ def service_status(root: Path, github: Any, target: str, now: float) -> bool:
             existing = json.loads(existing_raw)
             # spend belongs in the shape: a same-phase re-park after new
             # launches moves gpu_hours_used and the strip must not go stale
-            keys = ("run_id", "state", "phase", "gpu_hours_used", "direction")
+            # exp_done/launches_used move when an experiment finishes or a
+            # re-park launches more — real transitions the strip must show
+            keys = (
+                "run_id",
+                "state",
+                "phase",
+                "gpu_hours_used",
+                "direction",
+                "exp_done",
+                "exp_total",
+                "launches_used",
+            )
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
             if (
                 isinstance(existing, dict)

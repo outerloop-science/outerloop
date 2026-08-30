@@ -1511,7 +1511,7 @@ def service_boards(root: Path, github: Any, target: str, contract: Any, now: flo
     try:
         from autoresearch.climbboard import service_status
 
-        service_status(root, github, target, now)
+        service_status(root, github, target, now, contract)
     except Exception as exc:  # each is advisory ALONE: one failing never mutes the other
         log.warning("status strip service failed: %s", exc)
 
