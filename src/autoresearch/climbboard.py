@@ -152,7 +152,7 @@ def render_md(
         direction = directions.get(benchmark, "min")
         pick = max if direction == "max" else min
         measured = [r for r in rows if isinstance(r.get("candidate"), int | float)]
-        improved = [r for r in rows if r.get("outcome") == "improved"]
+        improved = [r for r in rows if r.get("outcome") in ("merged", "improved")]
         baselines = [r["baseline"] for r in rows if isinstance(r.get("baseline"), int | float)]
         best = pick((r["candidate"] for r in measured), default=None)
         gpu = sum(float(r.get("gpu_hours") or 0.0) for r in rows)
@@ -209,6 +209,7 @@ def render_html(
         "for (const b of Object.keys(data.boards).sort()) {\n"
         "  const rows = data.boards[b];\n"
         "  const pick = data.directions[b] === 'max' ? Math.max : Math.min;\n"
+        "  const won = new Set(['merged', 'improved']);\n"
         "  const measured = rows.filter(r => typeof r.candidate === 'number');\n"
         "  let best;\n"
         "  const bestSoFar = measured.map(r =>\n"
@@ -220,7 +221,7 @@ def render_html(
         "    datasets: [\n"
         "      {type: 'scatter', label: 'candidate', data: measured.map(r => r.candidate),\n"
         "       pointBackgroundColor: measured.map(r =>\n"
-        "         r.outcome === 'improved' ? '#2a7' : '#999')},\n"
+        "         won.has(r.outcome) ? '#2a7' : '#999')},\n"
         "      {type: 'line', label: 'best so far', data: bestSoFar, stepped: true,\n"
         "       borderColor: '#26c', pointRadius: 0},\n"
         "      {type: 'line', label: 'baseline', data: measured.map(r => r.baseline),\n"
