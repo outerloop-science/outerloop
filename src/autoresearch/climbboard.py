@@ -230,6 +230,7 @@ def render_html(
         f"<header><h1>{target} <span>· climb</span></h1>\n"
         "<p>Written by the kernel when runs end. Full reports live in "
         "<code>reports/</code> on this branch.</p></header>\n"
+        "<div id='now' class='chips'></div>\n"
         "<div id='charts'></div>\n<script>\n"
         f"const data = {payload};\n"
         "const css = n => getComputedStyle(document.body).getPropertyValue(n);\n"
@@ -274,7 +275,86 @@ def render_html(
         "      plugins: {legend: {labels: {color: css('--muted')}},\n"
         "        tooltip: {callbacks: {afterLabel:\n"
         "          (i) => measured[i.dataIndex].hypothesis}}}}});\n"
-        "}\n</script></main></body></html>\n"
+        "}\n"
+        "// the live strip: status.json is pushed on fleet state changes; the\n"
+        "// elapsed time ticks locally. fetch() fails on a file:// page — the\n"
+        "// strip just stays absent there.\n"
+        "fetch('climb/status.json').then(r => r.json()).then(s => {\n"
+        "  const now = document.getElementById('now');\n"
+        "  const render = () => {\n"
+        "    now.textContent = '';\n"
+        "    for (const r of s.runs) {\n"
+        "      const c = document.createElement('span'); c.className = 'chip';\n"
+        "      const mins = Math.max(0, (Date.now() / 1000 - r.since) / 60);\n"
+        "      const t = mins >= 90 ? (mins / 60).toFixed(1) + ' h' : Math.round(mins) + ' min';\n"
+        "      const b = document.createElement('b');\n"
+        "      b.textContent = r.agent + ' ' + r.state + (r.phase ? '/' + r.phase : '');\n"
+        "      c.append(b, ' ' + t);\n"
+        "      now.append(c);\n"
+        "    }\n"
+        "    if (!s.runs.length) now.textContent = 'no active runs';\n"
+        "  };\n"
+        "  render(); setInterval(render, 30000);\n"
+        "}).catch(() => {});\n"
+        "</script></main></body></html>\n"
+    )
+
+
+STATUS_PATH = "climb/status.json"
+_LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
+
+
+def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
+    """The fleet's live picture for `target`: one entry per non-terminal run.
+    Timestamps, not durations — the page computes elapsed time client-side,
+    so the strip feels live between pushes."""
+    runs = []
+    for record in list_runs(root):
+        if record.target != target or record.state not in _LIVE_STATES:
+            continue
+        stage = record.stage or {}
+        runs.append(
+            {
+                "run_id": record.run_id,
+                "agent": record.agent_id,
+                "benchmark": record.benchmark,
+                "state": record.state,
+                "phase": stage.get("phase", ""),
+                "since": record.updated or record.created,
+                "launches_used": stage.get("launches_used"),
+                "sleeps_used": stage.get("sleeps_used"),
+                "gpu_hours_used": stage.get("gpu_hours_used"),
+                "pr_url": record.pr_url,
+            }
+        )
+    runs.sort(key=lambda r: str(r.get("run_id")))
+    return {"target": target, "published": now, "runs": runs}
+
+
+def service_status(root: Path, github: Any, target: str, now: float) -> bool:
+    """Publish the strip when the fleet's SHAPE changed — a run appearing,
+    leaving, or changing state/phase — never on every tick: the page shows
+    elapsed time client-side, so timestamp-only drift is not worth a commit.
+    Advisory like the board; True when a write happened."""
+    status = collect_status(root, target, now)
+    existing_raw = github.get_file_content(target, STATUS_PATH, BOARD_BRANCH)
+    if existing_raw:
+        try:
+            existing = json.loads(existing_raw)
+            same = [
+                {k: r.get(k) for k in ("run_id", "state", "phase")}
+                for r in existing.get("runs", [])
+            ] == [{k: r.get(k) for k in ("run_id", "state", "phase")} for r in status["runs"]]
+            if same:
+                return False
+        except ValueError:
+            pass  # unreadable: write a fresh one (the strip is derived, not history)
+    if not github.ensure_branch(target, BOARD_BRANCH):
+        return False
+    return bool(
+        github.put_file(
+            target, STATUS_PATH, json.dumps(status, indent=1) + "\n", BOARD_BRANCH, "fleet status"
+        )
     )
 
 

@@ -102,7 +102,10 @@ def test_views_render_the_rows_and_respect_direction(tmp_path: Path) -> None:
     # the chart data is EMBEDDED (fetch() is blocked on a file:// page) and
     # carries the direction
     html = render_html("org/repo", boards, {"speedrun": "min"})
-    assert "fetch(" not in html and '"boards"' in html and "38146" in html
+    # the CHART data is embedded (fetch is blocked on a file:// page); the one
+    # fetch in the page is the optional live strip, which fails silently there
+    assert '"boards"' in html and "38146" in html
+    assert html.count("fetch('") == 1 and "climb/status.json" in html
     # agent-written text cannot break out of the inline script: "<" is
     # escaped inside the JSON, so a </script> payload stays data
     hostile = {"b": [{"run_id": "x", "hypothesis": "</script><script>alert(1)</script>"}]}
@@ -422,3 +425,44 @@ def test_failed_json_upload_renders_last_published_rows(tmp_path: Path) -> None:
     md = gh.files["CLIMB.md"]
     assert "old-1" not in md  # run ids never render; check by content:
     assert "9472" in md and "38146" not in md  # published row only, not the failed fresh one
+
+
+def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
+    """The strip is pushed when a run appears, leaves, or changes
+    state/phase — never for timestamp drift (that would be a commit per
+    tick; the page computes elapsed time itself)."""
+    from autoresearch.climbboard import collect_status, service_status
+
+    gh = _BoardGitHub()
+    record = RunRecord(
+        run_id="live-1",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-02",
+        created=100.0,
+        updated=200.0,
+        stage={"phase": "candidate", "launches_used": 2, "gpu_hours_used": 8.0},
+    )
+    save_record(tmp_path, record, 200.0)
+    assert service_status(tmp_path, gh, "org/repo", 300.0) is True
+    body = json.loads(gh.files["climb/status.json"])
+    assert body["runs"][0]["agent"] == "agent-02"
+    assert body["runs"][0]["state"] == "waiting" and body["runs"][0]["since"] == 200.0
+    # same shape, later timestamp: no write
+    assert service_status(tmp_path, gh, "org/repo", 999.0) is False
+    # a state change writes again; a terminal run leaves the strip
+    save_record(tmp_path, dc_replace(record, state="ended", ending="negative-result"), 400.0)
+    assert service_status(tmp_path, gh, "org/repo", 500.0) is True
+    assert json.loads(gh.files["climb/status.json"])["runs"] == []
+    # ended-only fleets keep an (empty) strip current; a fresh root writes once
+    assert service_status(tmp_path, gh, "org/repo", 600.0) is False
+    assert collect_status(tmp_path, "org/repo", 1.0)["runs"] == []
+
+
+def test_html_carries_the_live_strip() -> None:
+    from autoresearch.climbboard import render_html
+
+    html = render_html("org/repo", {"b": []}, {"b": "min"})
+    assert "climb/status.json" in html and "setInterval" in html
