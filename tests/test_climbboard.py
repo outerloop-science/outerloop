@@ -2,6 +2,7 @@
 three published views."""
 
 import json
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from autoresearch.climbboard import (
@@ -126,6 +127,52 @@ def test_row_cap_is_loud_not_silent() -> None:
     assert "Only the newest" not in small
 
 
+def test_a_benchmark_named_index_cannot_collide_with_the_index(tmp_path: Path) -> None:
+    """Contract names allow `index`; its data lives under climb/data/, so the
+    direction index is never overwritten by a benchmark's rows."""
+    gh = _BoardGitHub()
+    record = RunRecord(
+        run_id="idx-1",
+        target="org/repo",
+        task_title="t",
+        state="ended",
+        ending="negative-result",
+        benchmark="index",
+        created=1.0,
+        updated=2.0,
+    )
+    save_record(tmp_path, record, 2.0)
+    (run_dir(tmp_path, "idx-1") / "report.md").write_text(REPORT)
+    service_climb_board(tmp_path, gh, "org/repo", {"index": "min"})
+    assert json.loads(gh.files["climb/data/index.json"])[0]["run_id"] == "idx-1"
+    assert json.loads(gh.files["climb/index.json"]) == {"index": "min"}
+
+
+def test_terminal_transition_keeps_the_spend_for_the_board(tmp_path: Path) -> None:
+    """_clear_stage wipes the waiting bookkeeping but keeps gpu_hours_used —
+    the production transition the board reads after (review #193 r6: rows
+    published zero GPU-hours because the collector ran on a wiped stage)."""
+    from autoresearch.attempt import _clear_stage
+
+    record = RunRecord(
+        run_id="r",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        stage={"phase": "candidate", "afterany": "afterany:1", "gpu_hours_used": 36.0},
+        wake_attempts=2,
+        deadline=9.0,
+    )
+    cleared = _clear_stage(record)
+    assert cleared.stage == {"gpu_hours_used": 36.0}
+    assert cleared.wake_attempts == 0 and cleared.deadline == 0.0
+    save_record(tmp_path, dc_replace(cleared, state="ended", ending="negative-result"), 2.0)
+    (run_dir(tmp_path, "r") / "report.md").write_text(REPORT)
+    rows = collect_rows(tmp_path, "org/repo")["speedrun"]
+    assert rows[0].gpu_hours == 36.0
+
+
 def test_contract_directions_maps_benchmarks() -> None:
     from autoresearch.contract import load_contract
 
@@ -188,7 +235,12 @@ def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-1")
     gh = _BoardGitHub()
     assert service_climb_board(tmp_path, gh, "org/repo") == 4
-    assert sorted(gh.puts) == ["CLIMB.md", "climb.html", "climb/index.json", "climb/speedrun.json"]
+    assert sorted(gh.puts) == [
+        "CLIMB.md",
+        "climb.html",
+        "climb/data/speedrun.json",
+        "climb/index.json",
+    ]
     # unchanged state: nothing is written again (no commit spam)
     gh.puts.clear()
     assert service_climb_board(tmp_path, gh, "org/repo") == 0
@@ -196,7 +248,7 @@ def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     # a new terminal run publishes exactly the changed files
     _terminal_run(tmp_path, "speedrun-2", state="in-review", ending="")
     assert service_climb_board(tmp_path, gh, "org/repo") >= 2
-    assert json.loads(gh.files["climb/speedrun.json"])[-1]["run_id"] == "speedrun-2"
+    assert json.loads(gh.files["climb/data/speedrun.json"])[-1]["run_id"] == "speedrun-2"
     # no runs and no index at all: a quiet no-op
     assert service_climb_board(tmp_path / "empty", gh, "org/repo") == 0
 
@@ -207,7 +259,7 @@ def test_board_remembers_benchmarks_whose_local_records_are_gone(tmp_path: Path)
     different benchmark publishes."""
     gh = _BoardGitHub()
     gh.files["climb/index.json"] = json.dumps({"old-bench": "max"})
-    gh.files["climb/old-bench.json"] = json.dumps(
+    gh.files["climb/data/old-bench.json"] = json.dumps(
         [{"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 0.5, "outcome": "improved"}]
     )
     _terminal_run(tmp_path, "speedrun-1")
@@ -228,9 +280,9 @@ def test_transient_json_read_failure_never_orphans_an_indexed_benchmark(tmp_path
     old_rows = json.dumps(
         [{"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 0.5, "outcome": "improved"}]
     )
-    gh.files["climb/old-bench.json"] = old_rows
+    gh.files["climb/data/old-bench.json"] = old_rows
     real_get = gh.get_file_content
-    blackout = {"climb/old-bench.json"}
+    blackout = {"climb/data/old-bench.json"}
 
     def flaky_get(repo, path, ref):
         return None if path in blackout else real_get(repo, path, ref)
@@ -288,9 +340,9 @@ def test_failed_json_upload_renders_last_published_rows(tmp_path: Path) -> None:
         {"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 9472, "outcome": "improved"}
     ]
     gh.files["climb/index.json"] = json.dumps({"speedrun": "min"})
-    gh.files["climb/speedrun.json"] = json.dumps(published)
+    gh.files["climb/data/speedrun.json"] = json.dumps(published)
     _terminal_run(tmp_path, "speedrun-1")  # fresh row that will fail to upload
-    fail = {"climb/speedrun.json"}
+    fail = {"climb/data/speedrun.json"}
     real_put = gh.put_file
 
     def flaky(repo, path, content, branch, message):

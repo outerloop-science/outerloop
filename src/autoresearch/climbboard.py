@@ -2,7 +2,9 @@
 of it, published to the target's `research-log` branch as data plus two
 views whenever runs end.
 
-- `climb/<benchmark>.json` — one row per terminal attempt, dedup by run id;
+- `climb/data/<benchmark>.json` — one row per terminal attempt, dedup by run
+  id (its own directory: benchmark names are contract-controlled, and a
+  benchmark named `index` must not collide with `climb/index.json`);
   the contract everything else derives from (and what an external dashboard
   reads after the public flip).
 - `CLIMB.md` — the numbers and the attempts table, rendered by GitHub.
@@ -144,7 +146,7 @@ def render_md(
         "<!-- autoresearch:climb-board -->",
         f"# Climb — {target}",
         "",
-        "Written by the kernel when runs end. Data: `climb/<benchmark>.json`;",
+        "Written by the kernel when runs end. Data: `climb/data/<benchmark>.json`;",
         "chart: open `climb.html` from a clone of this branch.",
     ]
     for benchmark in sorted(boards):
@@ -280,7 +282,7 @@ def service_climb_board(
     changed = 0
     boards: dict[str, list[dict[str, Any]]] = {}
     for benchmark in sorted(names):
-        path = f"climb/{benchmark}.json"
+        path = f"climb/data/{benchmark}.json"
         existing = github.get_file_content(target, path, BOARD_BRANCH)
         rows = merge_rows(existing, local.get(benchmark, []))
         if not rows:
