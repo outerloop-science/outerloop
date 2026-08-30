@@ -799,6 +799,8 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
     """The fleet's live picture for `target`: one entry per non-terminal run.
     Timestamps, not durations — the page computes elapsed time client-side,
     so the strip feels live between pushes."""
+    from autoresearch.dispatch import effective_eval_minutes
+
     budgets = {
         b.name: (b.depth_k, b.sleep_k, getattr(b, "eval_minutes", 0) or 0)
         for b in getattr(contract, "benchmarks", ())
@@ -834,10 +836,14 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
                 "exp_done": exp_done,
                 "exp_total": exp_total,
                 "exp_minutes": exp_minutes,
-                # submit without --minutes stores nothing: the contract's
-                # cap is what the gate actually runs under
-                "eval_minutes": int(stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
-                or bench_minutes,
+                # submit without --minutes stores nothing: fall back to the
+                # contract cap, CLAMPED like the dispatched job itself is —
+                # the meter must show the limit the gate actually runs under
+                "eval_minutes": (
+                    effective_eval_minutes(m)
+                    if (m := int(stage.get("eval_minutes", 0) or 0) or bench_minutes)  # type: ignore[call-overload]
+                    else 0
+                ),
                 "gpu_hours_used": float(stage.get("gpu_hours_used") or 0.0),  # type: ignore[arg-type]
                 "gpu_hours_budget": gpu_budget,
                 "pr_url": record.pr_url,

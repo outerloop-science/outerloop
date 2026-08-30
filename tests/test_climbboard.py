@@ -924,6 +924,12 @@ def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
     assert (r["launches_used"], r["sleeps_used"]) == (0, 0)
     assert r["gpu_hours_used"] == 0.0
     assert r["eval_minutes"] == 240  # the contract cap the gate runs under
+    # an oversized contract value is clamped exactly like the dispatched job
+    from autoresearch.dispatch import effective_eval_minutes
+
+    contract.benchmarks[0].eval_minutes = 100_000
+    (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
+    assert r["eval_minutes"] == effective_eval_minutes(100_000)
     assert r["direction"] == "Bold claim"  # markdown emphasis stripped
 
 
