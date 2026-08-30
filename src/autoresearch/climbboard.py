@@ -289,7 +289,13 @@ def render_html(
         "      const t = mins >= 90 ? (mins / 60).toFixed(1) + ' h' : Math.round(mins) + ' min';\n"
         "      const b = document.createElement('b');\n"
         "      b.textContent = r.agent + ' ' + r.state + (r.phase ? '/' + r.phase : '');\n"
-        "      c.append(b, ' ' + t);\n"
+        "      const gpu = r.gpu_hours_used ? ' · ' + Number(r.gpu_hours_used).toFixed(1)\n"
+        "        + ' GPU-h' : '';\n"
+        "      c.append(b, ' ' + t + gpu);\n"
+        "      if (r.pr_url) {\n"
+        "        const a = document.createElement('a'); a.href = r.pr_url;\n"
+        "        a.textContent = ' PR'; c.append(a);\n"
+        "      }\n"
         "      now.append(c);\n"
         "    }\n"
         "    if (!s.runs.length) now.textContent = 'no active runs';\n"
@@ -337,18 +343,25 @@ def service_status(root: Path, github: Any, target: str, now: float) -> bool:
     elapsed time client-side, so timestamp-only drift is not worth a commit.
     Advisory like the board; True when a write happened."""
     status = collect_status(root, target, now)
-    existing_raw = github.get_file_content(target, STATUS_PATH, BOARD_BRANCH)
+    try:
+        existing_raw: str | None = github.get_file(target, STATUS_PATH, BOARD_BRANCH)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            # an outage must not look like a missing file: a rewrite here
+            # would commit a new timestamp on every affected tick
+            log.warning("status unreadable (%s); not rewritten", exc)
+            return False
+        existing_raw = None
     if existing_raw:
         try:
             existing = json.loads(existing_raw)
-            same = [
-                {k: r.get(k) for k in ("run_id", "state", "phase")}
-                for r in existing.get("runs", [])
-            ] == [{k: r.get(k) for k in ("run_id", "state", "phase")} for r in status["runs"]]
-            if same:
+            shape = lambda runs: [{k: r.get(k) for k in ("run_id", "state", "phase")} for r in runs]
+            if isinstance(existing, dict) and shape(existing.get("runs", [])) == shape(
+                status["runs"]
+            ):
                 return False
-        except ValueError:
-            pass  # unreadable: write a fresh one (the strip is derived, not history)
+        except (ValueError, TypeError, AttributeError):
+            pass  # malformed: the strip is derived, not history — rewrite it
     if not github.ensure_branch(target, BOARD_BRANCH):
         return False
     return bool(
@@ -401,8 +414,6 @@ def service_climb_board(
     local = collect_rows(root, target)
     index = _read_index(github, target)
     names = set(local) | set(index or {})
-    if not names:
-        return 0
     directions = {**(index or {}), **(directions or {})}
     changed = 0
     boards: dict[str, list[dict[str, Any]]] = {}
@@ -442,8 +453,8 @@ def service_climb_board(
         elif existing:
             # the branch still holds the previous rows: render those
             boards[benchmark] = merge_rows(existing, [])
-    if not boards:
-        return changed
+    if not boards and names:
+        return changed  # every benchmark sat the pass out: leave the views alone
     # the index keeps every benchmark it knows — a transient failed read of
     # one benchmark's JSON must not orphan its history; the views simply
     # render without it until a later pass reads it again. An index that

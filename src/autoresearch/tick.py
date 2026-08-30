@@ -1451,17 +1451,6 @@ def tick(
             service_research_log(root, github, spec, now)
         except Exception as exc:  # the ledger is advisory; the tick continues
             log.warning("research-log service failed: %s", exc)
-        try:
-            from autoresearch.climbboard import (
-                contract_directions,
-                service_climb_board,
-                service_status,
-            )
-
-            service_climb_board(root, github, spec.target, contract_directions(contract))
-            service_status(root, github, spec.target, now)
-        except Exception as exc:  # the board is advisory; the tick continues
-            log.warning("climb board service failed: %s", exc)
         intake_job = (
             service_intake(
                 root, github, compute, spec, now, contract, limits, dry_run=followup_dry_run
@@ -1490,6 +1479,9 @@ def tick(
                 )
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
+        # AFTER the launch block: a run started this tick is on the strip
+        # this tick, not the next one
+        service_boards(root, github, spec.target, contract, now)
         report = replace_report(
             report,
             ended,
@@ -1504,6 +1496,23 @@ def tick(
     # main / mark_tick_complete) — not here with the start-of-tick `now`, which
     # a tick longer than the window would leave stale.
     return report
+
+
+def service_boards(root: Path, github: Any, target: str, contract: Any, now: float) -> None:
+    """The climb board and the live strip, together and advisory: the views
+    publish from the first tick (before any run ends), and a failure never
+    stops the tick."""
+    try:
+        from autoresearch.climbboard import (
+            contract_directions,
+            service_climb_board,
+            service_status,
+        )
+
+        service_climb_board(root, github, target, contract_directions(contract))
+        service_status(root, github, target, now)
+    except Exception as exc:
+        log.warning("climb board service failed: %s", exc)
 
 
 def replace_report(

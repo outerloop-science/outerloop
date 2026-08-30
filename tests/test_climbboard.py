@@ -13,6 +13,7 @@ from autoresearch.climbboard import (
     render_html,
     render_md,
     service_climb_board,
+    service_status,
 )
 from autoresearch.runstate import RunRecord, run_dir, save_record
 
@@ -466,3 +467,42 @@ def test_html_carries_the_live_strip() -> None:
 
     html = render_html("org/repo", {"b": []}, {"b": "min"})
     assert "climb/status.json" in html and "setInterval" in html
+
+
+def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_path: Path) -> None:
+    """The tick's one entry point (tick.service_boards) publishes both the
+    views (so a fleet with only live runs still has a page that fetches the
+    strip) and the strip itself — removing either call breaks this test."""
+    from autoresearch.tick import service_boards
+
+    gh = _BoardGitHub()
+    record = RunRecord(
+        run_id="live-1",
+        target="org/repo",
+        task_title="t",
+        state="implementing",
+        benchmark="speedrun",
+        agent_id="agent-01",
+        created=100.0,
+        updated=100.0,
+    )
+    save_record(tmp_path, record, 100.0)
+    service_boards(tmp_path, gh, "org/repo", None, 200.0)
+    assert "climb.html" in gh.files  # the page exists from the first tick
+    assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "live-1"
+    # a broken github client is advisory: no exception escapes
+    service_boards(tmp_path, object(), "org/repo", None, 300.0)
+
+
+def test_status_outage_is_not_a_missing_file(tmp_path: Path) -> None:
+    gh = _BoardGitHub()
+    gh.files["climb/status.json"] = json.dumps({"runs": []})
+    gh.index_outage = True  # the fake raises 500 on every get_file
+    assert service_status(tmp_path, gh, "org/repo", 1.0) is False
+    # malformed status is derived data: rewritten fresh, not preserved
+    gh.index_outage = False
+    gh.files["climb/status.json"] = json.dumps(["not", "a", "dict"])
+    _live = RunRecord(run_id="r", target="org/repo", task_title="t", state="waiting", benchmark="b")
+    save_record(tmp_path, _live, 1.0)
+    assert service_status(tmp_path, gh, "org/repo", 2.0) is True
+    assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "r"
