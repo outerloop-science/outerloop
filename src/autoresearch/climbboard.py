@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import logging
+import math
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -732,8 +732,7 @@ def _valid_curve(curve: Any) -> bool:
         isinstance(p, list)
         and len(p) == 2
         and all(
-            isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x)
-            for x in p
+            isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x) for x in p
         )
         for p in curve
     )
