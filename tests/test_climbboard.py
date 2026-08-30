@@ -599,8 +599,24 @@ def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
         f"step 2 val loss {'9' * 400}\n"
         f"step {'9' * 400} val loss 4.4\n"
         "step 3 val loss 4.3\n"
+        "step 4 val loss 3.2e0\n"
     )
-    assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3]]
+    assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3], [4, 3.2]]
+
+
+def test_fresh_curve_abandons_oversized_stdout(tmp_path: Path, monkeypatch) -> None:
+    """A verbose eval must not exhaust the tick: scanning stops at the
+    byte cap, keeping the points already parsed."""
+    import autoresearch.climbboard as cb
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    ev.joinpath("stdout").write_text(
+        "step 1 val loss 4.5\n" + "noise\n" * 50 + "step 2 val loss 4.1\n"
+    )
+    monkeypatch.setattr(cb, "MAX_CURVE_STDOUT_BYTES", 40)
+    assert cb._curve_from_eval(rd) == [[1, 4.5]]
 
 
 def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:

@@ -89,7 +89,10 @@ def summarize(text: str, cap: int = MAX_SUMMARY_CHARS) -> str:
     return text if len(text) <= cap else text[: cap - 1].rsplit(" ", 1)[0] + "…"
 
 
-_CURVE_LINE = re.compile(r"^step (\d+) val loss (\d+(?:\.\d+)?)(?=\s)", re.M)
+_CURVE_LINE = re.compile(r"^step (\d+) val loss (\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=\s)")
+# a verbose eval must not exhaust the tick: stdout is scanned line by
+# line and abandoned past this many bytes (curves are diagnostics)
+MAX_CURVE_STDOUT_BYTES = 32 * 1024 * 1024
 
 
 def _curve_from_eval(run_directory: Path) -> list[list[float]]:
@@ -109,18 +112,25 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     )
     if not evals:
         return []
+    points = []
+    scanned = 0
     try:
-        text = (evals[-1] / "stdout").read_text(errors="replace")
+        with (evals[-1] / "stdout").open(errors="replace") as fh:
+            for line in fh:
+                scanned += len(line)
+                if scanned > MAX_CURVE_STDOUT_BYTES:
+                    break
+                m = _CURVE_LINE.match(line)
+                if not m:
+                    continue
+                step, val = int(m.group(1)), float(m.group(2))
+                # a garbage line (a 400-digit "loss" parses as inf) skips
+                # the point, not the curve; steps stay within JS-safe ints
+                if step > 2**53 or not math.isfinite(val):
+                    continue
+                points.append([step, val])
     except OSError:
         return []
-    points = []
-    for step_s, val_s in _CURVE_LINE.findall(text):
-        step, val = int(step_s), float(val_s)
-        # a garbage line (a 400-digit "loss" parses as inf) skips the
-        # point, not the curve; steps stay within JS-safe integers
-        if step > 2**53 or not math.isfinite(val):
-            continue
-        points.append([step, val])
     if len(points) > MAX_CURVE_POINTS:
         stride = len(points) / (MAX_CURVE_POINTS - 1)
         points = [points[int(i * stride)] for i in range(MAX_CURVE_POINTS - 1)] + [points[-1]]
