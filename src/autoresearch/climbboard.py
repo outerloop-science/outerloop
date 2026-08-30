@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from autoresearch.runstate import ENDED, IN_REVIEW, list_runs, run_dir
+from autoresearch.runstate import ENDED, list_runs, run_dir
 
 log = logging.getLogger("autoresearch.climbboard")
 
@@ -78,7 +78,9 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
 
     out: dict[str, list[ClimbRow]] = {}
     for record in list_runs(root):
-        if record.target != target or record.state not in (ENDED, IN_REVIEW):
+        # only ENDED runs: an in-review run's outcome is not known yet (its
+        # PR may be rejected), and a published row is never rewritten
+        if record.target != target or record.state != ENDED:
             continue
         try:
             report = (run_dir(root, record.run_id) / "report.md").read_text()
@@ -87,7 +89,7 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
         baseline, candidate, hyp = _report_fields(report)
         stage = record.stage or {}
         ended = datetime.fromtimestamp(record.updated or record.created, tz=UTC)
-        outcome = record.ending or ("improved" if record.state == IN_REVIEW else "ended")
+        outcome = record.ending or "ended"
         out.setdefault(record.benchmark or "benchmark", []).append(
             ClimbRow(
                 run_id=record.run_id,
@@ -324,7 +326,16 @@ def service_climb_board(
     boards: dict[str, list[dict[str, Any]]] = {}
     for benchmark in sorted(names):
         path = f"climb/data/{benchmark}.json"
-        existing = github.get_file_content(target, path, BOARD_BRANCH)
+        try:
+            existing: str | None = github.get_file(target, path, BOARD_BRANCH)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                # an outage is not an empty board: overwriting would replace
+                # this benchmark's published history — sit the pass out (its
+                # index entry survives)
+                log.warning("board JSON unreadable for %s (%s); skipped", benchmark, exc)
+                continue
+            existing = None
         rows = merge_rows(existing, local.get(benchmark, []))
         if not rows:
             continue

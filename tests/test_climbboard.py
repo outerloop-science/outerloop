@@ -36,7 +36,7 @@ def _terminal_run(root: Path, run_id: str, *, state="ended", ending="negative-re
         ending=ending,
         benchmark="speedrun",
         agent_id="agent-03",
-        pr_url="https://github.com/org/repo/pull/9" if state == "in-review" else "",
+        pr_url="https://github.com/org/repo/pull/9" if ending == "merged" else "",
         created=1_787_900_000.0,
         updated=1_787_950_000.0,
         stage={"gpu_hours_used": 12.5},
@@ -47,8 +47,10 @@ def _terminal_run(root: Path, run_id: str, *, state="ended", ending="negative-re
 
 def test_collect_rows_reads_terminal_records_and_reports(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-1")
-    _terminal_run(tmp_path, "speedrun-2", state="in-review", ending="")
-    # non-terminal and reportless runs stay off the board
+    _terminal_run(tmp_path, "speedrun-2", ending="merged")
+    # non-terminal runs stay off the board: an in-review run's outcome is not
+    # known yet (its PR may be rejected), and a waiting run is mid-flight
+    _terminal_run(tmp_path, "speedrun-3", state="in-review", ending="")
     save_record(
         tmp_path,
         RunRecord(run_id="w", target="org/repo", task_title="t", state="waiting"),
@@ -61,7 +63,7 @@ def test_collect_rows_reads_terminal_records_and_reports(tmp_path: Path) -> None
     assert row.baseline == 9472.0 and row.candidate == 38146.0
     assert row.hypothesis.startswith("the warmdown starts too early")
     assert row.gpu_hours == 12.5 and row.agent == "agent-03"
-    assert rows[1].outcome == "improved" and rows[1].pr_url.endswith("/pull/9")
+    assert rows[1].outcome == "merged" and rows[1].pr_url.endswith("/pull/9")
 
 
 def test_merge_is_idempotent_and_keeps_published_history(tmp_path: Path) -> None:
@@ -246,7 +248,7 @@ def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     assert service_climb_board(tmp_path, gh, "org/repo") == 0
     assert gh.puts == []
     # a new terminal run publishes exactly the changed files
-    _terminal_run(tmp_path, "speedrun-2", state="in-review", ending="")
+    _terminal_run(tmp_path, "speedrun-2", ending="merged")
     assert service_climb_board(tmp_path, gh, "org/repo") >= 2
     assert json.loads(gh.files["climb/data/speedrun.json"])[-1]["run_id"] == "speedrun-2"
     # no runs and no index at all: a quiet no-op
@@ -281,13 +283,15 @@ def test_transient_json_read_failure_never_orphans_an_indexed_benchmark(tmp_path
         [{"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 0.5, "outcome": "improved"}]
     )
     gh.files["climb/data/old-bench.json"] = old_rows
-    real_get = gh.get_file_content
+    real_get = gh.get_file
     blackout = {"climb/data/old-bench.json"}
 
     def flaky_get(repo, path, ref):
-        return None if path in blackout else real_get(repo, path, ref)
+        if path in blackout:
+            raise _GitHubError(500)
+        return real_get(repo, path, ref)
 
-    gh.get_file_content = flaky_get  # type: ignore[method-assign]
+    gh.get_file = flaky_get  # type: ignore[method-assign]
     _terminal_run(tmp_path, "speedrun-1")
     service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
     assert "## old-bench" not in gh.files["CLIMB.md"]  # skipped this pass...
@@ -295,6 +299,34 @@ def test_transient_json_read_failure_never_orphans_an_indexed_benchmark(tmp_path
     blackout.clear()  # ...and back in the views once the read works again
     service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
     assert "## old-bench" in gh.files["CLIMB.md"]
+
+
+def test_unreadable_board_json_is_never_overwritten(tmp_path: Path) -> None:
+    """An outage reading one benchmark's JSON must not let a fresh merge
+    replace its published history: that benchmark sits the pass out and its
+    index entry survives."""
+    gh = _BoardGitHub()
+    gh.files["climb/index.json"] = json.dumps({"speedrun": "min"})
+    gh.files["climb/data/speedrun.json"] = json.dumps(
+        [{"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 9472}]
+    )
+    _terminal_run(tmp_path, "speedrun-1")
+    real_get = gh.get_file
+    blackout = {"climb/data/speedrun.json"}
+
+    def flaky(repo, path, ref):
+        if path in blackout:
+            raise _GitHubError(500)
+        return real_get(repo, path, ref)
+
+    gh.get_file = flaky  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert json.loads(gh.files["climb/data/speedrun.json"])[0]["run_id"] == "old-1"  # untouched
+    assert json.loads(gh.files["climb/index.json"]) == {"speedrun": "min"}
+    blackout.clear()
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    ids = [r["run_id"] for r in json.loads(gh.files["climb/data/speedrun.json"])]
+    assert ids == ["old-1", "speedrun-1"]  # history + the fresh row, after the outage
 
 
 def test_failed_index_read_never_rewrites_the_index(tmp_path: Path) -> None:
