@@ -502,6 +502,33 @@ def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_pa
     # a broken github client is advisory: no exception escapes
     service_boards(tmp_path, object(), "org/repo", None, 300.0)
 
+    # and the two publishers fail independently: a board-view failure must
+    # not mute a live state change
+    class _BoardBroken(_BoardGitHub):
+        def get_file(self, repo, path, ref):
+            if path.startswith("climb/data/") or path == "climb/index.json":
+                raise RuntimeError("board storage down")
+            return super().get_file(repo, path, ref)
+
+    gh2 = _BoardBroken()
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="live-2",
+            target="org/repo",
+            task_title="t",
+            state="waiting",
+            benchmark="speedrun",
+            agent_id="agent-02",
+            created=100.0,
+            updated=100.0,
+        ),
+        100.0,
+    )
+    service_boards(tmp_path, gh2, "org/repo", None, 400.0)
+    runs = json.loads(gh2.files["climb/status.json"])["runs"]
+    assert [r["run_id"] for r in runs] == ["live-1", "live-2"]
+
 
 def test_status_outage_is_not_a_missing_file(tmp_path: Path) -> None:
     gh = _BoardGitHub()

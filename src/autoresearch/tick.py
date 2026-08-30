@@ -1503,16 +1503,17 @@ def service_boards(root: Path, github: Any, target: str, contract: Any, now: flo
     publish from the first tick (before any run ends), and a failure never
     stops the tick."""
     try:
-        from autoresearch.climbboard import (
-            contract_directions,
-            service_climb_board,
-            service_status,
-        )
+        from autoresearch.climbboard import contract_directions, service_climb_board
 
         service_climb_board(root, github, target, contract_directions(contract))
-        service_status(root, github, target, now)
     except Exception as exc:
         log.warning("climb board service failed: %s", exc)
+    try:
+        from autoresearch.climbboard import service_status
+
+        service_status(root, github, target, now)
+    except Exception as exc:  # each is advisory ALONE: one failing never mutes the other
+        log.warning("status strip service failed: %s", exc)
 
 
 def replace_report(
