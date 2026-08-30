@@ -762,7 +762,8 @@ _LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
 
 def _phrase(text: str, cap: int = 64) -> str:
     """A strip-sized phrase: the first clause of the first sentence."""
-    first = summarize(text, 200)
+    # markdown emphasis reads as literal asterisks on the strip
+    first = summarize(text.replace("**", "").replace("__", ""), 200)
     for sep in (": ", " — ", " -- "):
         first = first.split(sep, 1)[0]
     return summarize(first, cap)
@@ -798,7 +799,10 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
     """The fleet's live picture for `target`: one entry per non-terminal run.
     Timestamps, not durations — the page computes elapsed time client-side,
     so the strip feels live between pushes."""
-    budgets = {b.name: (b.depth_k, b.sleep_k) for b in getattr(contract, "benchmarks", ())}
+    budgets = {
+        b.name: (b.depth_k, b.sleep_k, getattr(b, "eval_minutes", 0) or 0)
+        for b in getattr(contract, "benchmarks", ())
+    }
     gpu_budget = getattr(getattr(contract, "budgets", None), "gpu_hours_per_run", None)
     runs = []
     for record in list_runs(root):
@@ -808,7 +812,7 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
         note = str(stage.get("syscall_note") or stage.get("report") or "")
         _b, _c, hyp = _report_fields(note)
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
-        depth_k, sleep_k = budgets.get(record.benchmark, (None, None))
+        depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))
         runs.append(
             {
                 "run_id": record.run_id,
@@ -819,8 +823,10 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
                 # the agent's own headline: what it says it is working on
                 "direction": _phrase(hyp or note.replace("\n", " ")),
                 "since": record.updated or record.created,
-                "launches_used": stage.get("launches_used"),
-                "sleeps_used": stage.get("sleeps_used"),
+                # a run that never launched HAS used zero — absent keys must
+                # not blank the card's meters (a plain submit writes none)
+                "launches_used": int(stage.get("launches_used") or 0),  # type: ignore[call-overload]
+                "sleeps_used": int(stage.get("sleeps_used") or 0),  # type: ignore[call-overload]
                 "depth_k": depth_k,
                 "sleep_k": sleep_k,
                 # experiment fan-out of the current park, and the gate eval's
@@ -828,8 +834,11 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
                 "exp_done": exp_done,
                 "exp_total": exp_total,
                 "exp_minutes": exp_minutes,
-                "eval_minutes": int(stage.get("eval_minutes", 0) or 0),  # type: ignore[call-overload]
-                "gpu_hours_used": stage.get("gpu_hours_used"),
+                # submit without --minutes stores nothing: the contract's
+                # cap is what the gate actually runs under
+                "eval_minutes": int(stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
+                or bench_minutes,
+                "gpu_hours_used": float(stage.get("gpu_hours_used") or 0.0),  # type: ignore[arg-type]
                 "gpu_hours_budget": gpu_budget,
                 "pr_url": record.pr_url,
             }

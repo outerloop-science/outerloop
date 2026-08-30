@@ -897,6 +897,36 @@ def test_status_carries_the_working_direction(tmp_path: Path) -> None:
     assert "Sweeping 6 lengths" not in runs[0]["direction"]
 
 
+def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
+    """A run that submitted without launching and without --minutes must
+    still render meters: zero launches/spend, the contract's eval cap."""
+    from types import SimpleNamespace
+
+    from autoresearch.climbboard import collect_status
+
+    record = RunRecord(
+        run_id="bare-1",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-04",
+        created=1.0,
+        updated=2.0,
+        stage={"phase": "candidate", "syscall_note": "**Bold** claim: details later."},
+    )
+    save_record(tmp_path, record, 2.0)
+    contract = SimpleNamespace(
+        benchmarks=(SimpleNamespace(name="speedrun", depth_k=16, sleep_k=20, eval_minutes=240),),
+        budgets=SimpleNamespace(gpu_hours_per_run=400.0),
+    )
+    (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
+    assert (r["launches_used"], r["sleeps_used"]) == (0, 0)
+    assert r["gpu_hours_used"] == 0.0
+    assert r["eval_minutes"] == 240  # the contract cap the gate runs under
+    assert r["direction"] == "Bold claim"  # markdown emphasis stripped
+
+
 def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
     """The strip's live picture: finished/launched experiment jobs counted
     from exit-code files, depth budgets from the contract, the gate's
