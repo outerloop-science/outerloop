@@ -279,9 +279,12 @@ def _clear_stage(record: RunRecord) -> RunRecord:
     especially `wake_attempts` ride into `in-review`, where in-review follow-up
     servicing reuses `wake_attempts` as its OWN retry cap — so a run that woke
     once would reach review with a shrunk follow-up budget."""
+    # the run's spend survives the wipe: terminal reporting (the climb
+    # board) reads it after the transition
+    kept = {k: record.stage[k] for k in ("gpu_hours_used",) if record.stage and k in record.stage}
     return dc_replace(
         record,
-        stage={},
+        stage=kept,
         experiment_job_id="",
         deadline=0.0,
         terminal_seen=0.0,
