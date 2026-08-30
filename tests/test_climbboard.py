@@ -613,6 +613,77 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
     gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, 2]], "old": "bad"})
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    # one null POINT is malformed too — it would throw in the chart code
+    gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, 2], None]})
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, "2"]]})
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+
+
+def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
+    """A failed curves upload must not leak fresh points into climb.html
+    (the page embeds branch truth only), and a curve-file OUTAGE skips the
+    page rewrite entirely instead of publishing a curveless page."""
+    _terminal_run(tmp_path, "speedrun-1")
+    gh = _BoardGitHub()
+    ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc"
+    ev.mkdir(parents=True)
+    (ev / "stdout").write_text("step 1 val loss 4.5\nstep 2 val loss 4.1\n")
+
+    real_put = gh.put_file
+
+    def flaky_put(repo, path, content, branch, message):
+        if path.startswith("climb/curves/"):
+            return None
+        return real_put(repo, path, content, branch, message)
+
+    gh.put_file = flaky_put  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert "climb/curves/speedrun.json" not in gh.files
+    assert "4.5" not in gh.files["climb.html"]  # not on the branch, not on the page
+
+    # upload heals: the curve lands on the branch and then on the page
+    gh.put_file = real_put  # type: ignore[method-assign]
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert "climb/curves/speedrun.json" in gh.files
+    assert "4.5" in gh.files["climb.html"]
+
+    # curve-file outage: CLIMB.md may still refresh, climb.html sits out
+    html_before = gh.files["climb.html"]
+    real_get = gh.get_file
+
+    def flaky_get(repo, path, ref):
+        if path.startswith("climb/curves/"):
+            raise _GitHubError(500)
+        return real_get(repo, path, ref)
+
+    gh.get_file = flaky_get  # type: ignore[method-assign]
+    _terminal_run(tmp_path, "speedrun-2")
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert gh.files["climb.html"] == html_before
+    assert "speedrun-2" in gh.files["climb/data/speedrun.json"]
+    assert gh.files["CLIMB.md"].count("negative-result") == 2
+
+
+def test_curve_survives_a_vanishing_eval_dir(tmp_path: Path, monkeypatch) -> None:
+    """The mtime sort must not abort the pass when an eval dir disappears
+    between glob and stat."""
+    from autoresearch.climbboard import _curve_from_eval
+
+    rd = tmp_path / "r"
+    for name in ("eval-candidate-a", "eval-candidate-b"):
+        d = rd / name
+        d.mkdir(parents=True)
+        (d / "stdout").write_text("step 1 val loss 3.0\n")
+    orig = Path.stat
+
+    def vanishing(self, **kw):
+        if self.name == "eval-candidate-a":
+            raise FileNotFoundError(self)
+        return orig(self, **kw)
+
+    monkeypatch.setattr(Path, "stat", vanishing)
+    assert _curve_from_eval(rd) == [[1, 3.0]]
 
 
 def test_summarize_first_sentence_and_cap() -> None:

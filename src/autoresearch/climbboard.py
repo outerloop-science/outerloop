@@ -95,9 +95,16 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     """(step, val loss) points parsed from the newest candidate eval's
     stdout, downsampled — the training curve behind the row's number.
     steps.jsonl dies with the job's scratch; stdout is what survives."""
+
+    def mtime(d: Path) -> float:
+        try:
+            return d.stat().st_mtime
+        except OSError:
+            return 0.0  # vanished between glob and sort: sorts oldest, still readable-guarded
+
     evals = sorted(
         (d for d in run_directory.glob("eval-candidate-*") if (d / "stdout").is_file()),
-        key=lambda d: d.stat().st_mtime,
+        key=mtime,
     )
     if not evals:
         return []
@@ -677,6 +684,17 @@ def service_status(root: Path, github: Any, target: str, now: float, contract: A
     )
 
 
+def _valid_curve(curve: Any) -> bool:
+    """A publishable curve: [step, value] pairs, numbers only — one null
+    point in a published file would throw in the page's chart code."""
+    return isinstance(curve, list) and all(
+        isinstance(p, list)
+        and len(p) == 2
+        and all(isinstance(x, int | float) and not isinstance(x, bool) for x in p)
+        for p in curve
+    )
+
+
 def _merge_curves(
     github: Any, target: str, benchmark: str, rows: list[dict[str, Any]], fresh: dict
 ) -> dict[str, Any] | None:
@@ -698,7 +716,7 @@ def _merge_curves(
             data = json.loads(raw)
         except ValueError:
             data = None
-        if not isinstance(data, dict) or not all(isinstance(v, list) for v in data.values()):
+        if not isinstance(data, dict) or not all(_valid_curve(v) for v in data.values()):
             # PARTLY malformed is malformed: dropping the bad values and
             # rewriting would lose published curves
             log.warning("board curves malformed for %s; skipped", benchmark)
@@ -710,7 +728,8 @@ def _merge_curves(
         curve = published.get(run_id) or fresh.get(run_id)
         if curve:
             merged[run_id] = curve
-    return {"data": merged, "changed": merged != published}
+    kept_published = {r: published[r] for r in keep if published.get(r)}
+    return {"data": merged, "published": kept_published, "changed": merged != published}
 
 
 def contract_directions(contract: Any) -> dict[str, str]:
@@ -797,22 +816,31 @@ def service_climb_board(
             # the branch still holds the previous rows: render those
             boards[benchmark] = merge_rows(existing, [])
     curves: dict[str, dict[str, list[list[float]]]] = {}
+    curves_ok = True
     for benchmark, rows in boards.items():
         merged_curves = _merge_curves(
             github, target, benchmark, rows, local_curves.get(benchmark, {})
         )
-        if merged_curves is not None:
-            curves[benchmark] = merged_curves["data"]
-            if merged_curves["changed"] and github.ensure_branch(target, BOARD_BRANCH):
-                changed += bool(
-                    github.put_file(
-                        target,
-                        f"climb/curves/{benchmark}.json",
-                        json.dumps(merged_curves["data"], indent=1) + "\n",
-                        BOARD_BRANCH,
-                        f"climb curves: {benchmark}",
-                    )
-                )
+        if merged_curves is None:
+            # an unreadable curve file must not republish the page without
+            # its curves — the html rewrite sits this pass out
+            curves_ok = False
+            continue
+        data = merged_curves["data"]
+        if merged_curves["changed"]:
+            uploaded = github.ensure_branch(target, BOARD_BRANCH) and github.put_file(
+                target,
+                f"climb/curves/{benchmark}.json",
+                json.dumps(data, indent=1) + "\n",
+                BOARD_BRANCH,
+                f"climb curves: {benchmark}",
+            )
+            changed += bool(uploaded)
+            if not uploaded:
+                # the page embeds only what the branch holds; fresh points
+                # return next pass, when their upload can be retried
+                data = merged_curves["published"]
+        curves[benchmark] = data
     if not boards and names:
         return changed  # every benchmark sat the pass out: leave the views alone
     # the index keeps every benchmark it knows — a transient failed read of
@@ -820,10 +848,9 @@ def service_climb_board(
     # render without it until a later pass reads it again. An index that
     # could not be READ at all (None) is never rewritten this pass.
     wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index or {}))}
-    views: list[tuple[str, str]] = [
-        ("CLIMB.md", render_md(target, boards, wanted)),
-        ("climb.html", render_html(target, boards, wanted, curves)),
-    ]
+    views: list[tuple[str, str]] = [("CLIMB.md", render_md(target, boards, wanted))]
+    if curves_ok:
+        views.append(("climb.html", render_html(target, boards, wanted, curves)))
     if index is not None:
         views.insert(0, ("climb/index.json", json.dumps(wanted, indent=1) + "\n"))
     for path, content in views:
