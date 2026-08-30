@@ -302,9 +302,10 @@ def _read_index(github: Any, target: str) -> dict[str, str] | None:
         return None
     try:
         data = json.loads(raw)
-        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
     except ValueError:
-        return {}
+        log.warning("climb index malformed; not rewriting it")
+        return None  # same stance as an outage: never rewrite what we cannot see
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else None
 
 
 def service_climb_board(

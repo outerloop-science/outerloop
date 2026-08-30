@@ -333,8 +333,11 @@ def test_failed_index_read_never_rewrites_the_index(tmp_path: Path) -> None:
     """A transient failure reading the index itself must not shrink it: the
     pass publishes what it can but leaves climb/index.json untouched."""
     gh = _BoardGitHub()
-    gh.files["climb/index.json"] = json.dumps({"old-bench": "max"})
+    gh.files["climb/index.json"] = "not json {"
     _terminal_run(tmp_path, "speedrun-1")
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert gh.files["climb/index.json"] == "not json {"  # malformed: untouched
+    gh.files["climb/index.json"] = json.dumps({"old-bench": "max"})
     gh.index_outage = True
     service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
     assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max"}  # untouched
