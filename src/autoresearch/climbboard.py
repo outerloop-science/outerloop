@@ -8,7 +8,7 @@ views whenever runs end.
   the contract everything else derives from (and what an external dashboard
   reads after the public flip).
 - `CLIMB.md` — the numbers and the attempts table, rendered by GitHub.
-- `climb.html` — a self-contained page that charts the JSON next to it
+- `index.html` — a self-contained page that charts the JSON next to it
   (open it from a clone; a Pages site can serve it as-is later).
 
 Publishing is idempotent by construction: rows merge by run id and files
@@ -214,13 +214,13 @@ def render_md(
     target: str, boards: dict[str, list[dict[str, Any]]], directions: dict[str, str]
 ) -> str:
     """CLIMB.md: per benchmark, the headline numbers and the attempts table
-    (newest first). Plain markdown; the chart lives in climb.html."""
+    (newest first). Plain markdown; the chart lives in index.html."""
     lines = [
         "<!-- autoresearch:climb-board -->",
         f"# Climb — {target}",
         "",
         "Written by the kernel when runs end. Data: `climb/data/<benchmark>.json`;",
-        "chart: open `climb.html` from a clone of this branch.",
+        "chart: open `index.html` from a clone of this branch.",
     ]
     for benchmark in sorted(boards):
         rows = boards[benchmark]

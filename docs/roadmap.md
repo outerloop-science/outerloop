@@ -161,7 +161,7 @@ open-ended sweep space.
 - [ ] Periodic distillation pass: raw reports → bounded lessons/<target>.md
 - [ ] Weekly digest aggregates per-run reports; cost ledger; leaderboard history
 - [x] Climb board on the research-log branch: `climb/<benchmark>.json` +
-      `CLIMB.md` + `climb.html`; a Pages site can serve the same files at the
+      `CLIMB.md` + `index.html`; a Pages site can serve the same files at the
       public flip
 - [ ] Local-inference roles (big item, 2026-08-29): open-weight author/judge
       models served on cluster GPUs (vLLM/SGLang behind the hermes provider
