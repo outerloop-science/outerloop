@@ -223,6 +223,7 @@ class _BoardGitHub:
         self.files: dict[str, str] = {}
         self.puts: list[str] = []
         self.index_outage = False
+        self.batch_fail = False
 
     def get_file(self, repo, path, ref):
         if self.index_outage:
@@ -241,6 +242,14 @@ class _BoardGitHub:
         self.files[path] = content
         self.puts.append(path)
         return "created"
+
+    def put_files(self, repo, files, branch, message):
+        if self.batch_fail:
+            return False
+        for path, content in files.items():
+            self.files[path] = content
+            self.puts.append(path)
+        return True
 
 
 def test_service_publishes_once_per_change(tmp_path: Path) -> None:
@@ -386,53 +395,6 @@ def test_failed_index_read_never_rewrites_the_index(tmp_path: Path) -> None:
     gh.index_outage = False  # outage over: the union is restored
     service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
     assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max", "speedrun": "min"}
-
-
-def test_failed_view_upload_is_retried_next_pass(tmp_path: Path) -> None:
-    _terminal_run(tmp_path, "speedrun-1")
-
-    gh = _BoardGitHub()
-    fail = {"CLIMB.md"}
-    real_put = gh.put_file
-
-    def flaky(repo, path, content, branch, message):
-        if path in fail:
-            return ""
-        return real_put(repo, path, content, branch, message)
-
-    gh.put_file = flaky  # type: ignore[method-assign]
-    service_climb_board(tmp_path, gh, "org/repo")
-    assert "CLIMB.md" not in gh.files
-    fail.clear()  # the outage ends; the next pass sees the view differ and retries
-    assert service_climb_board(tmp_path, gh, "org/repo") == 1
-    assert "## speedrun" in gh.files["CLIMB.md"]
-
-
-def test_failed_json_upload_renders_last_published_rows(tmp_path: Path) -> None:
-    """Views never point at data that is not on the branch: when a fresh
-    JSON cannot be uploaded, the benchmark renders from its last published
-    rows."""
-    gh = _BoardGitHub()
-    published = [
-        {"run_id": "old-1", "ended": "2026-01-01 00:00", "candidate": 9472, "outcome": "improved"}
-    ]
-    gh.files["climb/index.json"] = json.dumps({"speedrun": "min"})
-    gh.files["climb/data/speedrun.json"] = json.dumps(published)
-    _terminal_run(tmp_path, "speedrun-1")  # fresh row that will fail to upload
-    fail = {"climb/data/speedrun.json"}
-    real_put = gh.put_file
-
-    def flaky(repo, path, content, branch, message):
-        if path in fail:
-            return ""
-        return real_put(repo, path, content, branch, message)
-
-    gh.put_file = flaky  # type: ignore[method-assign]
-    service_climb_board(tmp_path, gh, "org/repo")
-    md = gh.files["CLIMB.md"]
-    # the published row renders (its report link carries the run id); the
-    # failed fresh row must not
-    assert "9472" in md and "38146" not in md
 
 
 def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
@@ -714,31 +676,24 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
 
 
-def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
-    """A failed curves upload must not leak fresh points into index.html
-    (the page embeds branch truth only), and a curve-file OUTAGE skips the
-    page rewrite entirely instead of publishing a curveless page."""
+def test_board_publish_is_one_atomic_batch(tmp_path: Path) -> None:
+    """Data, curves, and views land as ONE commit: a failed batch changes
+    NOTHING (the page can never point at data missing from the branch),
+    and the whole pass retries next time. A curve-file OUTAGE still skips
+    the page rewrite instead of publishing a curveless page."""
     _terminal_run(tmp_path, "speedrun-1")
     gh = _BoardGitHub()
     ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc"
     ev.mkdir(parents=True)
     (ev / "stdout").write_text("step 1 val loss 4.5\nstep 2 val loss 4.1\n")
 
-    real_put = gh.put_file
+    gh.batch_fail = True
+    assert service_climb_board(tmp_path, gh, "org/repo") == 0
+    assert gh.files == {}  # all-or-nothing: nothing landed
 
-    def flaky_put(repo, path, content, branch, message):
-        if path.startswith("climb/curves/"):
-            return None
-        return real_put(repo, path, content, branch, message)
-
-    gh.put_file = flaky_put  # type: ignore[method-assign]
-    service_climb_board(tmp_path, gh, "org/repo")
-    assert "climb/curves/speedrun.json" not in gh.files
-    assert "4.5" not in gh.files["index.html"]  # not on the branch, not on the page
-
-    # upload heals: the curve lands on the branch and then on the page
-    gh.put_file = real_put  # type: ignore[method-assign]
-    service_climb_board(tmp_path, gh, "org/repo")
+    # the batch heals: everything lands together, curve on branch AND page
+    gh.batch_fail = False
+    assert service_climb_board(tmp_path, gh, "org/repo") == 5
     assert "climb/curves/speedrun.json" in gh.files
     assert "4.5" in gh.files["index.html"]
 
