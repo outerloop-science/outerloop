@@ -762,8 +762,9 @@ _LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
 
 def _phrase(text: str, cap: int = 64) -> str:
     """A strip-sized phrase: the first clause of the first sentence."""
-    # markdown emphasis reads as literal asterisks on the strip
-    first = summarize(text.replace("**", "").replace("__", ""), 200)
+    # markdown bold reads as literal asterisks on the strip (underscores
+    # stay: __init__.py is a filename far more often than __bold__)
+    first = summarize(text.replace("**", ""), 200)
     for sep in (": ", " — ", " -- "):
         first = first.split(sep, 1)[0]
     return summarize(first, cap)
