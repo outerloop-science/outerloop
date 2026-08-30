@@ -621,7 +621,7 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
 
 
 def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
-    """A failed curves upload must not leak fresh points into climb.html
+    """A failed curves upload must not leak fresh points into index.html
     (the page embeds branch truth only), and a curve-file OUTAGE skips the
     page rewrite entirely instead of publishing a curveless page."""
     _terminal_run(tmp_path, "speedrun-1")
@@ -648,7 +648,7 @@ def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
     assert "climb/curves/speedrun.json" in gh.files
     assert "4.5" in gh.files["index.html"]
 
-    # curve-file outage: CLIMB.md may still refresh, climb.html sits out
+    # curve-file outage: CLIMB.md may still refresh, index.html sits out
     html_before = gh.files["index.html"]
     real_get = gh.get_file
 
