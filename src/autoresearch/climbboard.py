@@ -355,7 +355,10 @@ def service_status(root: Path, github: Any, target: str, now: float) -> bool:
     if existing_raw:
         try:
             existing = json.loads(existing_raw)
-            shape = lambda runs: [{k: r.get(k) for k in ("run_id", "state", "phase")} for r in runs]
+            # spend belongs in the shape: a same-phase re-park after new
+            # launches moves gpu_hours_used and the strip must not go stale
+            keys = ("run_id", "state", "phase", "gpu_hours_used")
+            shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
             if isinstance(existing, dict) and shape(existing.get("runs", [])) == shape(
                 status["runs"]
             ):

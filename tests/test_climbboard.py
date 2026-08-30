@@ -453,6 +453,12 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
     assert body["runs"][0]["state"] == "waiting" and body["runs"][0]["since"] == 200.0
     # same shape, later timestamp: no write
     assert service_status(tmp_path, gh, "org/repo", 999.0) is False
+    # spend moving with no state/phase change (a same-phase re-park after new
+    # launches) IS a fleet event: the strip must not show stale GPU-hours
+    moved = dc_replace(record, stage={**record.stage, "gpu_hours_used": 40.0})
+    save_record(tmp_path, moved, 250.0)
+    assert service_status(tmp_path, gh, "org/repo", 260.0) is True
+    assert json.loads(gh.files["climb/status.json"])["runs"][0]["gpu_hours_used"] == 40.0
     # a state change writes again; a terminal run leaves the strip
     save_record(tmp_path, dc_replace(record, state="ended", ending="negative-result"), 400.0)
     assert service_status(tmp_path, gh, "org/repo", 500.0) is True
