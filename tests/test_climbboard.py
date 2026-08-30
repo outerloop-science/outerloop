@@ -329,6 +329,38 @@ def test_unreadable_board_json_is_never_overwritten(tmp_path: Path) -> None:
     assert ids == ["old-1", "speedrun-1"]  # history + the fresh row, after the outage
 
 
+def test_non_list_board_json_is_never_overwritten(tmp_path: Path) -> None:
+    """A data file that decodes to something other than a row list is as
+    opaque as an outage: the benchmark sits the pass out untouched."""
+    gh = _BoardGitHub()
+    gh.files["climb/index.json"] = json.dumps({"speedrun": "min"})
+    gh.files["climb/data/speedrun.json"] = json.dumps({"rows": "elsewhere"})
+    _terminal_run(tmp_path, "speedrun-1")
+    service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
+    assert json.loads(gh.files["climb/data/speedrun.json"]) == {"rows": "elsewhere"}
+
+
+def test_same_minute_attempts_order_by_end_time(tmp_path: Path) -> None:
+    """`ended` carries seconds: it is the merge sort key, and two attempts
+    in one minute must not fall back to directory order."""
+    _terminal_run(tmp_path, "speedrun-b")  # updated=1_787_950_000
+    record = RunRecord(
+        run_id="speedrun-a",
+        target="org/repo",
+        task_title="t",
+        state="ended",
+        ending="negative-result",
+        benchmark="speedrun",
+        created=1_787_900_000.0,
+        updated=1_787_950_030.0,  # same minute, 30 s later
+    )
+    save_record(tmp_path, record, record.updated)
+    (run_dir(tmp_path, "speedrun-a") / "report.md").write_text(REPORT)
+    rows = merge_rows(None, collect_rows(tmp_path, "org/repo")["speedrun"])
+    assert [r["run_id"] for r in rows] == ["speedrun-b", "speedrun-a"]
+    assert rows[0]["ended"].count(":") == 2  # seconds present
+
+
 def test_failed_index_read_never_rewrites_the_index(tmp_path: Path) -> None:
     """A transient failure reading the index itself must not shrink it: the
     pass publishes what it can but leaves climb/index.json untouched."""

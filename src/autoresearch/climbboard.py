@@ -94,7 +94,7 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
             ClimbRow(
                 run_id=record.run_id,
                 agent=record.agent_id,
-                ended=ended.strftime("%Y-%m-%d %H:%M"),
+                ended=ended.strftime("%Y-%m-%d %H:%M:%S"),
                 outcome=outcome,
                 baseline=baseline,
                 candidate=candidate,
@@ -330,6 +330,15 @@ def service_climb_board(
         path = f"climb/data/{benchmark}.json"
         try:
             existing: str | None = github.get_file(target, path, BOARD_BRANCH)
+            if existing is not None:
+                parsed = json.loads(existing)
+                if not isinstance(parsed, list):
+                    raise ValueError("board data is not a list")
+        except (ValueError, TypeError) as exc:
+            # readable but not a row list: same stance as an outage — never
+            # let a fresh merge overwrite what we cannot interpret
+            log.warning("board JSON malformed for %s (%s); skipped", benchmark, exc)
+            continue
         except Exception as exc:
             if getattr(exc, "status", None) != 404:
                 # an outage is not an empty board: overwriting would replace
