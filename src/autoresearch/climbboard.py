@@ -370,8 +370,10 @@ def service_status(root: Path, github: Any, target: str, now: float) -> bool:
             # launches moves gpu_hours_used and the strip must not go stale
             keys = ("run_id", "state", "phase", "gpu_hours_used")
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
-            if isinstance(existing, dict) and shape(existing.get("runs", [])) == shape(
-                status["runs"]
+            if (
+                isinstance(existing, dict)
+                and isinstance(existing.get("runs"), list)
+                and shape(existing["runs"]) == shape(status["runs"])
             ):
                 return False
         except (ValueError, TypeError, AttributeError):

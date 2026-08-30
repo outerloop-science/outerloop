@@ -539,6 +539,11 @@ def test_status_outage_is_not_a_missing_file(tmp_path: Path) -> None:
     assert service_status(tmp_path, gh, "org/repo", 1.0) is False
     # malformed status is derived data: rewritten fresh, not preserved
     gh.index_outage = False
+    # a dict WITHOUT runs must also be repaired, even when the fleet is empty
+    # (an empty shape would otherwise compare equal and never rewrite)
+    gh.files["climb/status.json"] = json.dumps({"published": 1.0})
+    assert service_status(tmp_path / "no-runs", gh, "org/repo", 1.5) is True
+    assert json.loads(gh.files["climb/status.json"])["runs"] == []
     gh.files["climb/status.json"] = json.dumps(["not", "a", "dict"])
     _live = RunRecord(run_id="r", target="org/repo", task_title="t", state="waiting", benchmark="b")
     save_record(tmp_path, _live, 1.0)
