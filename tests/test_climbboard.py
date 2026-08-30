@@ -719,6 +719,11 @@ def test_rows_carry_the_gates_verdict_note(tmp_path: Path) -> None:
 
     md = render_md("org/repo", {"speedrun": [asdict(rows[0])]}, {"speedrun": "min"})
     assert "negative-result — delta +128" in md
+    # a multi-line note must not split the table row
+    row = asdict(rows[0]) | {"note": "line one\nline two | pipe"}
+    md = render_md("org/repo", {"speedrun": [row]}, {"speedrun": "min"})
+    (line,) = [ln for ln in md.splitlines() if "line one" in ln]
+    assert "line two \\| pipe" in line
 
 
 def test_md_summarizes_and_links_reports() -> None:

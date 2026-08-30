@@ -257,7 +257,9 @@ def render_md(
             if r.get("note"):
                 # the gate's reason makes a near miss legible ("real
                 # movement, not creditable" reads differently from a DNF)
-                outcome += " — " + summarize(str(r["note"]), 80).replace("|", "\\|")
+                # flattened: a newline inside a cell would split the table row
+                flat = " ".join(str(r["note"]).split())
+                outcome += " — " + summarize(flat, 80).replace("|", "\\|")
             hyp = summarize(str(r.get("hypothesis") or "")).replace("|", "\\|")
             ended = str(r.get("ended", ""))
             report = f"[report]({r['report']})" if r.get("report") else ""
