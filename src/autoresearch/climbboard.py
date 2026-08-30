@@ -49,6 +49,7 @@ class ClimbRow:
     gpu_hours: float
     hypothesis: str
     pr_url: str
+    report: str = ""  # reports/<file>.md when the ledger has archived it
 
 
 _NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
@@ -139,6 +140,16 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
         stage = record.stage or {}
         ended = datetime.fromtimestamp(record.updated or record.created, tz=UTC)
         outcome = record.ending or "ended"
+        # link the report only when the ledger's own marker says it is on the
+        # branch (adopted-unpublished history and not-yet-archived runs would
+        # otherwise render dead links)
+        report = ""
+        try:
+            marker = (run_dir(root, record.run_id) / "ledger-published").read_text()
+            if marker.startswith(("archived", "pointer-pending", "done")):
+                report = f"reports/{ended.strftime('%Y-%m-%d')}-{record.run_id}.md"
+        except OSError:
+            pass
         out.setdefault(record.benchmark or "benchmark", []).append(
             ClimbRow(
                 run_id=record.run_id,
@@ -150,6 +161,7 @@ def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
                 gpu_hours=round(float(stage.get("gpu_hours_used") or 0.0), 2),  # type: ignore[arg-type]
                 hypothesis=hyp,
                 pr_url=record.pr_url,
+                report=report,
             )
         )
     return out
@@ -234,7 +246,7 @@ def render_md(
                 outcome = f"[{outcome}]({r['pr_url']})"
             hyp = summarize(str(r.get("hypothesis") or "")).replace("|", "\\|")
             ended = str(r.get("ended", ""))
-            report = f"[report](reports/{ended[:10]}-{r.get('run_id', '')}.md)" if ended else ""
+            report = f"[report]({r['report']})" if r.get("report") else ""
             lines.append(
                 f"| {ended} | {r.get('agent', '')} | {hyp} | {outcome} "
                 f"| {_fmt(r.get('candidate'))} | {_fmt(r.get('gpu_hours'))} | {report} |"
@@ -460,7 +472,7 @@ def service_status(root: Path, github: Any, target: str, now: float) -> bool:
             existing = json.loads(existing_raw)
             # spend belongs in the shape: a same-phase re-park after new
             # launches moves gpu_hours_used and the strip must not go stale
-            keys = ("run_id", "state", "phase", "gpu_hours_used")
+            keys = ("run_id", "state", "phase", "gpu_hours_used", "direction")
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
             if (
                 isinstance(existing, dict)
@@ -486,7 +498,7 @@ def _merge_curves(
     are heavy; the cap is by recency of the attempt, and published curves
     are never rewritten). None when the published file cannot be read — the
     same sit-the-pass-out stance as everything else on the branch."""
-    path = f"climb/data/{benchmark}-curves.json"
+    path = f"climb/curves/{benchmark}.json"
     try:
         raw: str | None = github.get_file(target, path, BOARD_BRANCH)
     except Exception as exc:
@@ -498,20 +510,20 @@ def _merge_curves(
     if raw:
         try:
             data = json.loads(raw)
-            if isinstance(data, dict):
-                published = {str(k): v for k, v in data.items() if isinstance(v, list)}
-            else:
-                log.warning("board curves malformed for %s; skipped", benchmark)
-                return None
         except ValueError:
+            data = None
+        if not isinstance(data, dict) or not all(isinstance(v, list) for v in data.values()):
+            # PARTLY malformed is malformed: dropping the bad values and
+            # rewriting would lose published curves
             log.warning("board curves malformed for %s; skipped", benchmark)
             return None
+        published = {str(k): v for k, v in data.items()}
     keep = [str(r.get("run_id")) for r in rows[-MAX_CURVE_RUNS:]]
-    merged = {
-        run_id: published.get(run_id) or fresh[run_id]
-        for run_id in keep
-        if run_id in published or run_id in fresh
-    }
+    merged: dict[str, list[list[float]]] = {}
+    for run_id in keep:
+        curve = published.get(run_id) or fresh.get(run_id)
+        if curve:
+            merged[run_id] = curve
     return {"data": merged, "changed": merged != published}
 
 
@@ -609,7 +621,7 @@ def service_climb_board(
                 changed += bool(
                     github.put_file(
                         target,
-                        f"climb/data/{benchmark}-curves.json",
+                        f"climb/curves/{benchmark}.json",
                         json.dumps(merged_curves["data"], indent=1) + "\n",
                         BOARD_BRANCH,
                         f"climb curves: {benchmark}",

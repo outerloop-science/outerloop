@@ -57,9 +57,15 @@ def test_collect_rows_reads_terminal_records_and_reports(tmp_path: Path) -> None
         RunRecord(run_id="w", target="org/repo", task_title="t", state="waiting"),
         1.0,
     )
+    # the ledger's marker gates the report link: archived -> linked,
+    # adopted-unpublished -> no link
+    (run_dir(tmp_path, "speedrun-1") / "ledger-published").write_text("done")
+    (run_dir(tmp_path, "speedrun-2") / "ledger-published").write_text("adopted-unpublished")
     boards = collect_rows(tmp_path, "org/repo")
     rows = boards["speedrun"]
     assert [r.run_id for r in rows] == ["speedrun-1", "speedrun-2"]
+    assert rows[0].report.startswith("reports/") and rows[0].report.endswith("speedrun-1.md")
+    assert rows[1].report == ""
     row = rows[0]
     assert row.baseline == 9472.0 and row.candidate == 38146.0
     assert row.hypothesis.startswith("the warmdown starts too early")
@@ -586,17 +592,23 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
         for i in range(200)
     ]
     published = {"r199": [[1, 4.0]]}
-    gh.files["climb/data/b-curves.json"] = json.dumps(published)
+    gh.files["climb/curves/b.json"] = json.dumps(published)
     fresh = {"r199": [[1, 9.9]], "r198": [[2, 3.5]]}
     merged = _merge_curves(gh, "org/repo", "b", rows, fresh)
     assert merged is not None and merged["changed"] is True
     assert merged["data"]["r199"] == [[1, 4.0]]  # published wins; never rewritten
     assert merged["data"]["r198"] == [[2, 3.5]]
-    # outage or malformed: sit the pass out
+    # a published EMPTY curve entry neither crashes nor blocks the fresh one
+    gh.files["climb/curves/b.json"] = json.dumps({"r199": []})
+    merged = _merge_curves(gh, "org/repo", "b", rows, fresh)
+    assert merged is not None and merged["data"]["r199"] == [[1, 9.9]]
+    # outage, malformed, or PARTLY malformed: sit the pass out
     gh.index_outage = True
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
     gh.index_outage = False
-    gh.files["climb/data/b-curves.json"] = json.dumps(["nope"])
+    gh.files["climb/curves/b.json"] = json.dumps(["nope"])
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    gh.files["climb/curves/b.json"] = json.dumps({"good": [[1, 2]], "old": "bad"})
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
 
 
@@ -625,9 +637,14 @@ def test_md_summarizes_and_links_reports() -> None:
             ),
         }
     ]
+    rows[0]["report"] = "reports/2026-08-30-speedrun-20260830-x-agent-01.md"
     md = render_md("org/repo", {"speedrun": rows}, {"speedrun": "min"})
     assert "First sentence here." in md and "Second sentence" not in md
     assert "[report](reports/2026-08-30-speedrun-20260830-x-agent-01.md)" in md
+    # a row whose report was never archived (adopted history, deferred
+    # archive) renders WITHOUT a link — no 404s on the board
+    rows[0]["report"] = ""
+    assert "[report]" not in render_md("org/repo", {"speedrun": rows}, {"speedrun": "min"})
 
 
 def test_html_carries_curves_and_direction_and_log_toggle() -> None:
