@@ -249,9 +249,9 @@ def test_service_publishes_once_per_change(tmp_path: Path) -> None:
     assert service_climb_board(tmp_path, gh, "org/repo") == 4
     assert sorted(gh.puts) == [
         "CLIMB.md",
-        "climb.html",
         "climb/data/speedrun.json",
         "climb/index.json",
+        "index.html",
     ]
     # unchanged state: nothing is written again (no commit spam)
     gh.puts.clear()
@@ -506,7 +506,7 @@ def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_pa
     )
     save_record(tmp_path, record, 100.0)
     service_boards(tmp_path, gh, "org/repo", None, 200.0)
-    assert "climb.html" in gh.files  # the page exists from the first tick
+    assert "index.html" in gh.files  # the page exists from the first tick
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "live-1"
     # a broken github client is advisory: no exception escapes
     service_boards(tmp_path, object(), "org/repo", None, 300.0)
@@ -640,16 +640,16 @@ def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
     gh.put_file = flaky_put  # type: ignore[method-assign]
     service_climb_board(tmp_path, gh, "org/repo")
     assert "climb/curves/speedrun.json" not in gh.files
-    assert "4.5" not in gh.files["climb.html"]  # not on the branch, not on the page
+    assert "4.5" not in gh.files["index.html"]  # not on the branch, not on the page
 
     # upload heals: the curve lands on the branch and then on the page
     gh.put_file = real_put  # type: ignore[method-assign]
     service_climb_board(tmp_path, gh, "org/repo")
     assert "climb/curves/speedrun.json" in gh.files
-    assert "4.5" in gh.files["climb.html"]
+    assert "4.5" in gh.files["index.html"]
 
     # curve-file outage: CLIMB.md may still refresh, climb.html sits out
-    html_before = gh.files["climb.html"]
+    html_before = gh.files["index.html"]
     real_get = gh.get_file
 
     def flaky_get(repo, path, ref):
@@ -660,7 +660,7 @@ def test_page_embeds_only_branch_truth_for_curves(tmp_path: Path) -> None:
     gh.get_file = flaky_get  # type: ignore[method-assign]
     _terminal_run(tmp_path, "speedrun-2")
     service_climb_board(tmp_path, gh, "org/repo")
-    assert gh.files["climb.html"] == html_before
+    assert gh.files["index.html"] == html_before
     assert "speedrun-2" in gh.files["climb/data/speedrun.json"]
     assert gh.files["CLIMB.md"].count("negative-result") == 2
 
