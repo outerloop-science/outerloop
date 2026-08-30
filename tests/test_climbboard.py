@@ -574,6 +574,9 @@ def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
     ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc-def"
     ev.mkdir()
     (ev / "stdout").write_text(STDOUT_WITH_CURVE)
+    # eval output is job output: a malformed number must not abort collection
+    with open(ev / "stdout", "a") as fh:
+        fh.write("step 9999 val loss 1.2.3 (fp32)\n")
     curves = collect_curves(tmp_path, "org/repo")["speedrun"]
     pts = curves["speedrun-1"]
     assert 2 < len(pts) <= MAX_CURVE_POINTS
