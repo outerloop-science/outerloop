@@ -113,7 +113,14 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
         text = (evals[-1] / "stdout").read_text(errors="replace")
     except OSError:
         return []
-    points = [[int(s), float(v)] for s, v in _CURVE_LINE.findall(text)]
+    points = []
+    for step_s, val_s in _CURVE_LINE.findall(text):
+        step, val = int(step_s), float(val_s)
+        # a garbage line (a 400-digit "loss" parses as inf) skips the
+        # point, not the curve; steps stay within JS-safe integers
+        if step > 2**53 or not math.isfinite(val):
+            continue
+        points.append([step, val])
     if len(points) > MAX_CURVE_POINTS:
         stride = len(points) / (MAX_CURVE_POINTS - 1)
         points = [points[int(i * stride)] for i in range(MAX_CURVE_POINTS - 1)] + [points[-1]]
@@ -295,9 +302,17 @@ def render_html(
         "<style>\n"
         ":root{--bg:#fafaf8;--card:#ffffff;--ink:#1a1d21;--muted:#6b7280;\n"
         "--line:#e3e4e0;--accent:#2456c8;--win:#1e8f5a;--lose:#9aa1a9;--base:#c23d3d}\n"
-        "@media (prefers-color-scheme: dark){:root{--bg:#14161a;--card:#1c1f24;\n"
-        "--ink:#e8eaed;--muted:#8b93a1;--line:#2a2e35;--accent:#5b8def;\n"
-        "--win:#3fbf85;--lose:#6b7280;--base:#e06c5f}}\n"
+        "@media (prefers-color-scheme: dark){:root:not([data-theme=light]){\n"
+        "--bg:#14161a;--card:#1c1f24;--ink:#e8eaed;--muted:#8b93a1;\n"
+        "--line:#2a2e35;--accent:#5b8def;--win:#3fbf85;--lose:#6b7280;\n"
+        "--base:#e06c5f}}\n"
+        ":root[data-theme=dark]{--bg:#14161a;--card:#1c1f24;--ink:#e8eaed;\n"
+        "--muted:#8b93a1;--line:#2a2e35;--accent:#5b8def;--win:#3fbf85;\n"
+        "--lose:#6b7280;--base:#e06c5f}\n"
+        "header{display:flex;align-items:center;justify-content:space-between}\n"
+        "#theme{background:var(--card);border:1px solid var(--line);\n"
+        "color:var(--muted);border-radius:.4rem;padding:.2rem .6rem;\n"
+        "font-size:.75rem;cursor:pointer}\n"
         "body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);\n"
         "color:var(--ink);margin:0;padding:2.5rem 1.5rem;line-height:1.5}\n"
         "main{max-width:920px;margin:0 auto}\n"
@@ -328,11 +343,34 @@ def render_html(
         "padding:1rem}\n"
         ".card label{font-size:.8rem;color:var(--muted);margin-right:1rem}\n"
         "</style></head><body><main>\n"
-        f"<header><h1>{target} <span>· climb</span></h1></header>\n"
+        f"<header><h1>{target} <span>· climb</span></h1>\n"
+        "<button id='theme' title='theme: auto / light / dark'>auto</button>\n"
+        "</header>\n"
         "<div id='now' class='chips'></div>\n"
         "<div id='charts'></div>\n<script>\n"
         f"const data = {payload};\n"
         "const css = n => getComputedStyle(document.body).getPropertyValue(n);\n"
+        "// theme: auto follows the OS; the button cycles auto/light/dark and\n"
+        "// the charts redraw so their computed colors follow\n"
+        "const themeBtn = document.getElementById('theme');\n"
+        "const applyTheme = t => {\n"
+        "  if (t === 'light' || t === 'dark')\n"
+        "    document.documentElement.dataset.theme = t;\n"
+        "  else delete document.documentElement.dataset.theme;\n"
+        "  themeBtn.textContent = t;\n"
+        "};\n"
+        "let theme = 'auto';\n"
+        "try { theme = localStorage.getItem('climb-theme') || 'auto'; }\n"
+        "catch (e) {}\n"
+        "applyTheme(theme);\n"
+        "themeBtn.onclick = () => {\n"
+        "  theme = theme === 'auto' ? 'light' : theme === 'light' ? 'dark' : 'auto';\n"
+        "  try { localStorage.setItem('climb-theme', theme); } catch (e) {}\n"
+        "  applyTheme(theme);\n"
+        "  redraws.forEach(f => f());\n"
+        "};\n"
+        "matchMedia('(prefers-color-scheme: dark)')\n"
+        "  .addEventListener('change', () => redraws.forEach(f => f()));\n"
         "// legend: solid box = shown, hollow box = hidden (no strikethrough)\n"
         "const boxLegend = {labels: {generateLabels: (chart) =>\n"
         "  chart.data.datasets.map((ds, i) => {\n"
@@ -359,13 +397,19 @@ def render_html(
         "  return s;\n"
         "};\n"
         "const hues = [212, 152, 22, 282, 342, 62, 122, 242];\n"
+        "// identity color from the agent id itself, so the tooltip, the\n"
+        "// curves chart, and the strip agree even across benchmarks\n"
+        "const agentHue = a => {\n"
+        "  const m = /(\\d+)$/.exec(a || '');\n"
+        "  const i = m ? parseInt(m[1], 10) - 1\n"
+        "    : [...String(a || '')].reduce((h, c) => h + c.charCodeAt(0), 0);\n"
+        "  return hues[((i % 8) + 8) % 8];\n"
+        "};\n"
+        "const agentColor = a => `hsl(${agentHue(a)} 60% 50%)`;\n"
+        "const redraws = [];\n"
         "for (const b of Object.keys(data.boards).sort()) {\n"
         "  const rows = data.boards[b];\n"
         "  const dir = data.directions[b] === 'max' ? 'max' : 'min';\n"
-        "  // one color per agent, shared by this plot's tooltip and the\n"
-        "  // curves chart below, so an agent reads as one identity\n"
-        "  const agents = [...new Set(rows.map(x => x.agent))].sort();\n"
-        "  const agentColor = a => `hsl(${hues[agents.indexOf(a) % 8]} 60% 50%)`;\n"
         "  const pick = dir === 'max' ? Math.max : Math.min;\n"
         "  const won = new Set(['merged', 'improved']);\n"
         "  const beats = r => typeof r.baseline === 'number' && (dir === 'max'\n"
@@ -442,7 +486,7 @@ def render_html(
         "              [phrase(view[i.dataIndex].hypothesis), view[i.dataIndex].note]\n"
         "                .filter(Boolean).join('\\n')}}}}});\n"
         "  };\n"
-        "  cb.onchange = draw; ob.onchange = draw; draw();\n"
+        "  cb.onchange = draw; ob.onchange = draw; draw(); redraws.push(draw);\n"
         "  // the training curves behind the numbers: newest attempts overlaid\n"
         "  const bcurves = data.curves[b] || {};\n"
         "  const withCurve = rows.filter(r => bcurves[r.run_id]).slice(-8);\n"
@@ -469,7 +513,7 @@ def render_html(
         "          label: r.agent + ' ' + (r.ended || '').slice(5, 16),\n"
         "          data: bcurves[r.run_id].map(p => ({x: p[0], y: p[1]})),\n"
         "          borderColor:\n"
-        "            `hsl(${hues[agents.indexOf(r.agent) % 8]} 60% ${38 + (i % 3) * 12}%)`,\n"
+        "            `hsl(${agentHue(r.agent)} 60% ${38 + (i % 3) * 12}%)`,\n"
         "          hidden: hidden[i] || false,\n"
         "          borderWidth: 1.5, pointRadius: 0}))},\n"
         "        options: {color: css('--muted'), parsing: false,\n"
@@ -478,6 +522,7 @@ def render_html(
         "          plugins: {legend: boxLegend}}});\n"
         "    };\n"
         "    lxb.onchange = draw2; lyb.onchange = draw2; draw2();\n"
+        "    redraws.push(draw2);\n"
         "  }\n"
         "}\n"
         "const now = document.getElementById('now');\n"
@@ -506,6 +551,7 @@ def render_html(
         "    pill.style.background = `hsl(${stateHue(r)})`;\n"
         "    pill.textContent = stateName(r);\n"
         "    const who = document.createElement('b'); who.textContent = r.agent;\n"
+        "    who.style.color = agentColor(r.agent);\n"
         "    const mins = Math.max(0, (Date.now() / 1000 - r.since) / 60);\n"
         "    const t = mins >= 90 ? (mins / 60).toFixed(1) + ' h' : Math.round(mins) + ' min';\n"
         "    const meta = document.createElement('span');\n"
@@ -548,7 +594,7 @@ def render_html(
         "      const m = cell('meter');\n"
         "      for (let i = 0; i < segs; i++) {\n"
         "        const seg = document.createElement('i');\n"
-        "        if (i < filled) seg.style.background = `hsl(${stateHue(r)})`;\n"
+        "        if (i < filled) seg.style.background = agentColor(r.agent);\n"
         "        m.append(seg);\n"
         "      }\n"
         "      return m;\n"
@@ -556,14 +602,15 @@ def render_html(
         "    if (r.exp_total) {\n"
         "      const bar = cell('bar');\n"
         "      if (r.exp_minutes)\n"
-        "        bar.append(layer(timeFrac(r.exp_minutes), `hsl(${stateHue(r)} / .3)`));\n"
-        "      bar.append(layer(r.exp_done / r.exp_total, `hsl(${stateHue(r)})`));\n"
+        "        bar.append(\n"
+        "          layer(timeFrac(r.exp_minutes), `hsl(${agentHue(r.agent)} 60% 50% / .3)`));\n"
+        "      bar.append(layer(r.exp_done / r.exp_total, agentColor(r.agent)));\n"
         "      addRow('exps', bar, r.exp_done + '/' + r.exp_total + ' done',\n"
         "        'experiment jobs: solid = finished, '\n"
         "        + 'faint = elapsed vs the longest walltime cap');\n"
         "    } else if (r.phase === 'candidate' && r.eval_minutes) {\n"
         "      const bar = cell('bar');\n"
-        "      bar.append(layer(timeFrac(r.eval_minutes), `hsl(${stateHue(r)})`));\n"
+        "      bar.append(layer(timeFrac(r.eval_minutes), agentColor(r.agent)));\n"
         "      addRow('gate', bar,\n"
         "        ((Date.now() / 1000 - r.since) / 3600).toFixed(1)\n"
         "        + '/' + (r.eval_minutes / 60).toFixed(1) + ' h',\n"
@@ -733,12 +780,17 @@ def service_status(root: Path, github: Any, target: str, now: float, contract: A
 def _valid_curve(curve: Any) -> bool:
     """A publishable curve: [step, value] pairs, numbers only — one null
     point in a published file would throw in the page's chart code."""
+
+    def finite(x: Any) -> bool:
+        try:
+            return math.isfinite(x)
+        except OverflowError:  # an int too large for float is not a chart point
+            return False
+
     return isinstance(curve, list) and all(
         isinstance(p, list)
         and len(p) == 2
-        and all(
-            isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x) for x in p
-        )
+        and all(isinstance(x, int | float) and not isinstance(x, bool) and finite(x) for x in p)
         for p in curve
     )
 

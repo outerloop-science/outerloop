@@ -586,6 +586,23 @@ def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
     assert "speedrun-2" not in collect_curves(tmp_path, "org/repo")["speedrun"]
 
 
+def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
+    """A 400-nines 'loss' parses as float inf and a 400-digit step exceeds
+    JS-safe integers; both skip the point, not the curve."""
+    from autoresearch.climbboard import _curve_from_eval
+
+    rd = tmp_path / "r"
+    ev = rd / "eval-candidate-x"
+    ev.mkdir(parents=True)
+    ev.joinpath("stdout").write_text(
+        "step 1 val loss 4.5\n"
+        f"step 2 val loss {'9' * 400}\n"
+        f"step {'9' * 400} val loss 4.4\n"
+        "step 3 val loss 4.3\n"
+    )
+    assert _curve_from_eval(rd) == [[1, 4.5], [3, 4.3]]
+
+
 def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
     from autoresearch.climbboard import _merge_curves
 
@@ -620,6 +637,10 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
     # json.loads accepts NaN; the chart must never receive it
     gh.files["climb/curves/b.json"] = '{"good": [[1, NaN]]}'
+    assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
+    # a 400-digit int is valid JSON but not a chart point (and must not
+    # crash isfinite with OverflowError)
+    gh.files["climb/curves/b.json"] = '{"good": [[' + "9" * 400 + ", 3.0]]}"
     assert _merge_curves(gh, "org/repo", "b", rows, fresh) is None
 
 
