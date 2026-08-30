@@ -230,6 +230,7 @@ def render_html(
         f"<header><h1>{target} <span>· climb</span></h1>\n"
         "<p>Written by the kernel when runs end. Full reports live in "
         "<code>reports/</code> on this branch.</p></header>\n"
+        "<div id='now' class='chips'></div>\n"
         "<div id='charts'></div>\n<script>\n"
         f"const data = {payload};\n"
         "const css = n => getComputedStyle(document.body).getPropertyValue(n);\n"
@@ -274,7 +275,115 @@ def render_html(
         "      plugins: {legend: {labels: {color: css('--muted')}},\n"
         "        tooltip: {callbacks: {afterLabel:\n"
         "          (i) => measured[i.dataIndex].hypothesis}}}}});\n"
-        "}\n</script></main></body></html>\n"
+        "}\n"
+        "// the live strip: status.json is pushed on fleet state changes; the\n"
+        "// elapsed time ticks locally. fetch() fails on a file:// page — the\n"
+        "// strip just stays absent there.\n"
+        "const now = document.getElementById('now');\n"
+        "let strip = null;\n"
+        "const refresh = () =>\n"
+        "  fetch('climb/status.json', {cache: 'no-cache'})\n"
+        "    .then(r => r.ok ? r.json() : null)\n"
+        "    .then(s => { if (s && Array.isArray(s.runs)) { strip = s; render(); } })\n"
+        "    .catch(() => {});\n"
+        "const render = () => {\n"
+        "  if (!strip) return;\n"
+        "  {\n"
+        "    const s = strip;\n"
+        "    now.textContent = '';\n"
+        "    for (const r of s.runs) {\n"
+        "      const c = document.createElement('span'); c.className = 'chip';\n"
+        "      const mins = Math.max(0, (Date.now() / 1000 - r.since) / 60);\n"
+        "      const t = mins >= 90 ? (mins / 60).toFixed(1) + ' h' : Math.round(mins) + ' min';\n"
+        "      const b = document.createElement('b');\n"
+        "      b.textContent = r.agent + ' ' + r.state + (r.phase ? '/' + r.phase : '');\n"
+        "      const gpu = r.gpu_hours_used ? ' · ' + Number(r.gpu_hours_used).toFixed(1)\n"
+        "        + ' GPU-h' : '';\n"
+        "      c.append(b, ' ' + t + gpu);\n"
+        "      if (r.pr_url) {\n"
+        "        const a = document.createElement('a'); a.href = r.pr_url;\n"
+        "        a.textContent = ' PR'; c.append(a);\n"
+        "      }\n"
+        "      now.append(c);\n"
+        "    }\n"
+        "    if (!s.runs.length) now.textContent = 'no active runs';\n"
+        "  }\n"
+        "};\n"
+        "refresh();\n"
+        "// the strip re-FETCHES every few minutes (new/left/changed runs) and\n"
+        "// re-renders the elapsed time locally between fetches\n"
+        "setInterval(refresh, 180000); setInterval(render, 30000);\n"
+        "</script></main></body></html>\n"
+    )
+
+
+STATUS_PATH = "climb/status.json"
+_LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
+
+
+def collect_status(root: Path, target: str, now: float) -> dict[str, Any]:
+    """The fleet's live picture for `target`: one entry per non-terminal run.
+    Timestamps, not durations — the page computes elapsed time client-side,
+    so the strip feels live between pushes."""
+    runs = []
+    for record in list_runs(root):
+        if record.target != target or record.state not in _LIVE_STATES:
+            continue
+        stage = record.stage or {}
+        runs.append(
+            {
+                "run_id": record.run_id,
+                "agent": record.agent_id,
+                "benchmark": record.benchmark,
+                "state": record.state,
+                "phase": stage.get("phase", ""),
+                "since": record.updated or record.created,
+                "launches_used": stage.get("launches_used"),
+                "sleeps_used": stage.get("sleeps_used"),
+                "gpu_hours_used": stage.get("gpu_hours_used"),
+                "pr_url": record.pr_url,
+            }
+        )
+    runs.sort(key=lambda r: str(r.get("run_id")))
+    return {"target": target, "published": now, "runs": runs}
+
+
+def service_status(root: Path, github: Any, target: str, now: float) -> bool:
+    """Publish the strip when the fleet's SHAPE changed — a run appearing,
+    leaving, or changing state/phase — never on every tick: the page shows
+    elapsed time client-side, so timestamp-only drift is not worth a commit.
+    Advisory like the board; True when a write happened."""
+    status = collect_status(root, target, now)
+    try:
+        existing_raw: str | None = github.get_file(target, STATUS_PATH, BOARD_BRANCH)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            # an outage must not look like a missing file: a rewrite here
+            # would commit a new timestamp on every affected tick
+            log.warning("status unreadable (%s); not rewritten", exc)
+            return False
+        existing_raw = None
+    if existing_raw:
+        try:
+            existing = json.loads(existing_raw)
+            # spend belongs in the shape: a same-phase re-park after new
+            # launches moves gpu_hours_used and the strip must not go stale
+            keys = ("run_id", "state", "phase", "gpu_hours_used")
+            shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
+            if (
+                isinstance(existing, dict)
+                and isinstance(existing.get("runs"), list)
+                and shape(existing["runs"]) == shape(status["runs"])
+            ):
+                return False
+        except (ValueError, TypeError, AttributeError):
+            pass  # malformed: the strip is derived, not history — rewrite it
+    if not github.ensure_branch(target, BOARD_BRANCH):
+        return False
+    return bool(
+        github.put_file(
+            target, STATUS_PATH, json.dumps(status, indent=1) + "\n", BOARD_BRANCH, "fleet status"
+        )
     )
 
 
@@ -321,8 +430,6 @@ def service_climb_board(
     local = collect_rows(root, target)
     index = _read_index(github, target)
     names = set(local) | set(index or {})
-    if not names:
-        return 0
     directions = {**(index or {}), **(directions or {})}
     changed = 0
     boards: dict[str, list[dict[str, Any]]] = {}
@@ -362,8 +469,8 @@ def service_climb_board(
         elif existing:
             # the branch still holds the previous rows: render those
             boards[benchmark] = merge_rows(existing, [])
-    if not boards:
-        return changed
+    if not boards and names:
+        return changed  # every benchmark sat the pass out: leave the views alone
     # the index keeps every benchmark it knows — a transient failed read of
     # one benchmark's JSON must not orphan its history; the views simply
     # render without it until a later pass reads it again. An index that
