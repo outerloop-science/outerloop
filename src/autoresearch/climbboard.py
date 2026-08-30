@@ -170,7 +170,7 @@ def render_md(
             lines += [
                 "",
                 f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts are on the board; "
-                "every report stays in `reports/` on this branch.",
+                "archived reports stay in `reports/` on this branch.",
             ]
         lines += [
             "",
