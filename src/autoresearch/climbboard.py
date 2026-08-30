@@ -19,6 +19,7 @@ advisory — a failure never stops the tick.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -303,9 +304,12 @@ def render_html(
         ".run .top{display:flex;align-items:center;gap:.5rem}\n"
         ".run b{color:var(--ink)}\n"
         ".run .dir{margin-top:.15rem;font-size:.8rem}\n"
-        ".run .bar{display:block;height:3px;margin-top:.3rem;border-radius:2px;\n"
+        ".run .prog{display:flex;align-items:center;gap:.45rem;margin-top:.3rem}\n"
+        ".run .bar{position:relative;flex:1;height:3px;border-radius:2px;\n"
         "  background:var(--line);overflow:hidden}\n"
-        ".run .bar span{display:block;height:100%}\n"
+        ".run .bar span{position:absolute;left:0;top:0;height:100%}\n"
+        ".run .meter{display:flex;gap:2px;width:72px}\n"
+        ".run .meter i{flex:1;height:3px;border-radius:1px;background:var(--line)}\n"
         ".pill{border-radius:.6rem;padding:.05rem .55rem;font-size:.72rem;\n"
         "font-weight:600;color:#fff}\n"
         ".card{background:var(--card);border:1px solid var(--line);border-radius:.5rem;\n"
@@ -465,12 +469,12 @@ def render_html(
         "    const mins = Math.max(0, (Date.now() / 1000 - r.since) / 60);\n"
         "    const t = mins >= 90 ? (mins / 60).toFixed(1) + ' h' : Math.round(mins) + ' min';\n"
         "    const gpu = r.gpu_hours_used\n"
-        "      ? ' · ' + Number(r.gpu_hours_used).toFixed(1) + ' GPU-h' : '';\n"
+        "      ? ' · ' + Number(r.gpu_hours_used).toFixed(1)\n"
+        "        + (r.gpu_hours_budget ? '/' + Number(r.gpu_hours_budget) : '')\n"
+        "        + ' GPU-h' : '';\n"
         "    const exp = r.exp_total\n"
         "      ? ' · exps ' + r.exp_done + '/' + r.exp_total : '';\n"
-        "    const depth = r.depth_k && r.launches_used != null\n"
-        "      ? ' · depth ' + r.launches_used + '/' + r.depth_k : '';\n"
-        "    top.append(who, pill, document.createTextNode(t + gpu + exp + depth));\n"
+        "    top.append(who, pill, document.createTextNode(t + gpu + exp));\n"
         "    if (r.pr_url) {\n"
         "      const a = document.createElement('a'); a.href = r.pr_url;\n"
         "      a.textContent = 'PR'; top.append(a);\n"
@@ -481,20 +485,44 @@ def render_html(
         "      d.textContent = r.direction; d.style.display = 'block';\n"
         "      card.append(d);\n"
         "    }\n"
-        "    // progress: experiment jobs finished, or gate elapsed vs its cap\n"
-        "    const frac = r.exp_total ? r.exp_done / r.exp_total\n"
-        "      : r.phase === 'candidate' && r.eval_minutes\n"
-        "      ? Math.min(1, (Date.now() / 1000 - r.since) / (r.eval_minutes * 60))\n"
-        "      : null;\n"
-        "    if (frac != null) {\n"
+        "    // progress row: a layered bar (experiments: solid = jobs\n"
+        "    // finished, faint = elapsed vs the longest walltime cap; gate:\n"
+        "    // elapsed vs its cap) beside a depth dash meter\n"
+        "    const row = document.createElement('span'); row.className = 'prog';\n"
+        "    const timeFrac = m =>\n"
+        "      Math.min(1, (Date.now() / 1000 - r.since) / (m * 60));\n"
+        "    const layer = (w, color) => {\n"
+        "      const f = document.createElement('span');\n"
+        "      f.style.width = Math.round(w * 100) + '%';\n"
+        "      f.style.background = color; return f;\n"
+        "    };\n"
+        "    if (r.exp_total) {\n"
         "      const bar = document.createElement('span'); bar.className = 'bar';\n"
-        "      const fill = document.createElement('span');\n"
-        "      fill.style.width = Math.round(frac * 100) + '%';\n"
-        "      fill.style.background = `hsl(${stateHue(r)})`;\n"
-        "      bar.title = r.exp_total ? 'experiment jobs finished'\n"
-        "        : 'gate eval: elapsed vs its walltime cap';\n"
-        "      bar.append(fill); card.append(bar);\n"
+        "      bar.title = 'experiments: solid = jobs finished, '\n"
+        "        + 'faint = elapsed vs the longest walltime cap';\n"
+        "      if (r.exp_minutes)\n"
+        "        bar.append(layer(timeFrac(r.exp_minutes), `hsl(${stateHue(r)} / .3)`));\n"
+        "      bar.append(layer(r.exp_done / r.exp_total, `hsl(${stateHue(r)})`));\n"
+        "      row.append(bar);\n"
+        "    } else if (r.phase === 'candidate' && r.eval_minutes) {\n"
+        "      const bar = document.createElement('span'); bar.className = 'bar';\n"
+        "      bar.title = 'gate eval: elapsed vs its walltime cap';\n"
+        "      bar.append(layer(timeFrac(r.eval_minutes), `hsl(${stateHue(r)})`));\n"
+        "      row.append(bar);\n"
         "    }\n"
+        "    if (r.depth_k && r.launches_used != null) {\n"
+        "      const m = document.createElement('span'); m.className = 'meter';\n"
+        "      m.title = 'depth: ' + r.launches_used + ' of ' + r.depth_k\n"
+        "        + ' experiment launches used';\n"
+        "      for (let i = 0; i < r.depth_k; i++) {\n"
+        "        const seg = document.createElement('i');\n"
+        "        if (i < r.launches_used)\n"
+        "          seg.style.background = `hsl(${stateHue(r)})`;\n"
+        "        m.append(seg);\n"
+        "      }\n"
+        "      row.append(m);\n"
+        "    }\n"
+        "    if (row.childNodes.length) card.append(row);\n"
         "    now.append(card);\n"
         "  }\n"
         "  if (!strip.runs.length) now.textContent = 'no active runs';\n"
@@ -519,15 +547,16 @@ def _phrase(text: str, cap: int = 64) -> str:
     return summarize(first, cap)
 
 
-def _experiment_progress(root: Path, record: Any) -> tuple[int, int]:
-    """(finished, launched) across the current park's experiment jobs,
-    counted by the exit-code files the job wrappers leave — filesystem
-    only, no Slurm calls on the board path."""
+def _experiment_progress(root: Path, record: Any) -> tuple[int, int, int]:
+    """(finished, launched, longest walltime minutes) across the current
+    park's experiment jobs, counted by the exit-code files the job wrappers
+    leave — filesystem only, no Slurm calls on the board path."""
     stage = record.stage or {}
     raw = stage.get("syscall_launches", [])
     if not isinstance(raw, list):
-        return (0, 0)
+        return (0, 0, 0)
     names: list[str] = []
+    minutes = 0
     for item in raw:
         if not (isinstance(item, dict) and item.get("name")):
             continue
@@ -535,11 +564,13 @@ def _experiment_progress(root: Path, record: Any) -> tuple[int, int]:
             array = int(item.get("array") or 1)
         except (TypeError, ValueError):
             array = 1
+        with contextlib.suppress(TypeError, ValueError):
+            minutes = max(minutes, int(item.get("minutes") or 0))
         name = str(item["name"])
         names += [f"{name}.{i}" for i in range(array)] if array > 1 else [name]
     rd = run_dir(root, record.run_id)
     done = sum(1 for n in names if (rd / f"eval-launch-{n}" / "exit-code").exists())
-    return (done, len(names))
+    return (done, len(names), minutes)
 
 
 def collect_status(root: Path, target: str, now: float, contract: Any = None) -> dict[str, Any]:
@@ -547,6 +578,7 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
     Timestamps, not durations — the page computes elapsed time client-side,
     so the strip feels live between pushes."""
     budgets = {b.name: (b.depth_k, b.sleep_k) for b in getattr(contract, "benchmarks", ())}
+    gpu_budget = getattr(getattr(contract, "budgets", None), "gpu_hours_per_run", None)
     runs = []
     for record in list_runs(root):
         if record.target != target or record.state not in _LIVE_STATES:
@@ -554,7 +586,7 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
         stage = record.stage or {}
         note = str(stage.get("syscall_note") or stage.get("report") or "")
         _b, _c, hyp = _report_fields(note)
-        exp_done, exp_total = _experiment_progress(root, record)
+        exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k = budgets.get(record.benchmark, (None, None))
         runs.append(
             {
@@ -574,8 +606,10 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
                 # walltime cap — the page turns these into progress bars
                 "exp_done": exp_done,
                 "exp_total": exp_total,
+                "exp_minutes": exp_minutes,
                 "eval_minutes": int(stage.get("eval_minutes", 0) or 0),  # type: ignore[call-overload]
                 "gpu_hours_used": stage.get("gpu_hours_used"),
+                "gpu_hours_budget": gpu_budget,
                 "pr_url": record.pr_url,
             }
         )

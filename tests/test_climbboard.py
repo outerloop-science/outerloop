@@ -734,8 +734,8 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
             "launches_used": 3,
             "eval_minutes": 240,
             "syscall_launches": [
-                {"name": "warmdown-length", "array": 3},
-                {"name": "probe"},
+                {"name": "warmdown-length", "array": 3, "minutes": 180},
+                {"name": "probe", "minutes": 30},
             ],
             "syscall_note": "Hypothesis: longer warmdown helps: sweeping 3 lengths plus a probe.",
         },
@@ -747,11 +747,14 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
         d.mkdir(parents=True)
         (d / "exit-code").write_text("0")
     contract = SimpleNamespace(
-        benchmarks=(SimpleNamespace(name="speedrun", depth_k=16, sleep_k=20),)
+        benchmarks=(SimpleNamespace(name="speedrun", depth_k=16, sleep_k=20),),
+        budgets=SimpleNamespace(gpu_hours_per_run=400.0),
     )
     (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
     assert (r["exp_done"], r["exp_total"]) == (3, 4)
     assert (r["depth_k"], r["sleep_k"]) == (16, 20)
     assert r["eval_minutes"] == 240
+    assert r["exp_minutes"] == 180
+    assert r["gpu_hours_budget"] == 400.0
     # the first clause only — the strip is a glance, not a paragraph
     assert r["direction"] == "longer warmdown helps"
