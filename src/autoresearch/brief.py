@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 
 from autoresearch.style import PLAIN_STYLE
@@ -23,6 +24,40 @@ from autoresearch.style import PLAIN_STYLE
 # Bounds are part of the brief's contract: a brief that grows without limit
 # stops being an experiment variable and starts being noise.
 MAX_LESSONS_CHARS = 8_000
+
+_REPORT_FIELD = re.compile(r"\*\*(Outcome|Takeaway)[^:]*:\*\* *(.+)")
+_REPORT_META = re.compile(r"^(\d{4}-\d{2}-\d{2}).*?(agent-\d+)")
+
+
+def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
+    """One line per archived report (newest first): date, agent, outcome,
+    takeaway — the cross-attempt facts every author should start with,
+    extracted mechanically from the reports' own structured fields. A
+    report without a Takeaway contributes nothing. Bounded by the brief's
+    MAX_LESSONS_CHARS cap (re-capped there)."""
+    lines: list[str] = []
+    total = 0
+    for name, text in reports:
+        fields = {k: v.strip() for k, v in _REPORT_FIELD.findall(text)}
+        takeaway = fields.get("Takeaway", "")
+        if not takeaway:
+            continue
+        meta = _REPORT_META.match(name)
+        date, agent = (meta.group(1), meta.group(2)) if meta else ("", "")
+        outcome = fields.get("Outcome", "")
+        line = (
+            "- "
+            + " ".join(p for p in (date, agent) if p)
+            + (f" [{outcome[:90]}]" if outcome else "")
+            + f": {takeaway[:220]}"
+        )
+        if total + len(line) > MAX_LESSONS_CHARS:
+            break
+        lines.append(line)
+        total += len(line) + 1
+    return "\n".join(lines)
+
+
 MAX_REPORTS = 5
 MAX_REPORT_CHARS = 4_000
 MAX_TASK_CHARS = 4_000

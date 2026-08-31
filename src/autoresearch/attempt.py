@@ -23,6 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from autoresearch.brief import distill_lessons
 from autoresearch.compute import LocalCompute
 from autoresearch.contract import Benchmark, Contract, load_contract
 from autoresearch.dispatch import (
@@ -2079,6 +2080,7 @@ def live_attempt(
                 created=created,
                 task_hypothesis=task_hypothesis,
                 recent_reports=tuple(text for _name, text in reports),
+                lessons=distill_lessons(reports),
                 report_archive=author_syscalls,
                 spec=spec,
                 panel_runner=panel_runner,
