@@ -152,10 +152,15 @@ def test_distill_lessons_extracts_takeaways_newest_first() -> None:
             "- **Takeaway:** Shorter warmdown is harmful below 2048.\n",
         ),
     ]
+    # the kernel's header form is the authoritative outcome when present
+    reports[0] = (
+        reports[0][0],
+        "Outcome: **negative-result**\n" + reports[0][1],
+    )
     text = distill_lessons(reports)
     lines = text.splitlines()
     assert len(lines) == 2  # the field-less report contributes nothing
-    assert lines[0].startswith("- 2026-08-31 agent-03 [Baseline")
+    assert lines[0].startswith("- 2026-08-31 agent-03 [negative-result]")
     assert "one val-interval short" in lines[0]
     assert lines[1] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
     # bounded: a flood of reports cannot exceed the cap

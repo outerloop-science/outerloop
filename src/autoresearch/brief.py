@@ -26,6 +26,9 @@ from autoresearch.style import PLAIN_STYLE
 MAX_LESSONS_CHARS = 8_000
 
 _REPORT_FIELD = re.compile(r"\*\*(Outcome|Takeaway)[^:]*:\*\* *(.+)")
+# the kernel's own header form ("Outcome: **negative-result**") — the gate's
+# verdict, preferred over the author's prose outcome when both appear
+_KERNEL_OUTCOME = re.compile(r"^Outcome: \*\*(.+?)\*\*", re.M)
 _REPORT_META = re.compile(r"^(\d{4}-\d{2}-\d{2}).*?(agent-\d+)")
 
 
@@ -44,7 +47,8 @@ def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
             continue
         meta = _REPORT_META.match(name)
         date, agent = (meta.group(1), meta.group(2)) if meta else ("", "")
-        outcome = fields.get("Outcome", "")
+        kernel = _KERNEL_OUTCOME.search(text)
+        outcome = kernel.group(1) if kernel else fields.get("Outcome", "")
         line = (
             "- "
             + " ".join(p for p in (date, agent) if p)
