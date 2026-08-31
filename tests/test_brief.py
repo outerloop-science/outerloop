@@ -137,6 +137,15 @@ def test_brief_demands_measured_evidence_before_submit() -> None:
     assert "costs only the sleep" not in text
 
 
+def test_metered_brief_states_the_submit_refusal() -> None:
+    text = render(
+        build_brief(
+            make_inputs(launch_budget=3, sleep_budget=2, gpu_hour_budget=400.0), created="t"
+        )
+    )
+    assert "a submit is REFUSED until at least one launch" in text
+
+
 def test_memory_sections_are_fenced_as_data() -> None:
     """Lessons/reports are written by prior agent sessions (notebook
     auto-merges prose) — they must render as data, not authority."""
