@@ -30,10 +30,13 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   first honest task — that is real research life, and it keeps divergence
   debt visible and continuously paid down.
 - **Run end** (any terminal state): push the session's final tree to the
-  branch — specifically the terminal SNAPSHOT commit the orchestrator
-  already produces (`snapshot()` seals the working tree to a sha on every
-  terminal path, submit or not), so a dirty session tree and AGENT_MEMORY.md
-  edits are committed before the push, never lost. Progress pushes are the
+  branch as a SNAPSHOT commit. Today `snapshot()` seals the tree only on the
+  measured/submit/no-improvement paths — session-error, session-budget, and
+  session-outage endings return before sealing, and the wake path can drop a
+  saved snapshot. Phase 1 therefore EXTENDS sealing to every terminal path
+  (best-effort on error endings — a crashed session's tree is still notebook-
+  worthy) and the push publishes that sealed sha; the push itself never
+  invents a commit. Progress pushes are the
   agent's lab notebook: ungated, panel may skim cheaply later. One slot
   never runs twice concurrently, so pushes are fast-forwards.
 - **Selfness memory rides the branch**: `AGENT_MEMORY.md` at the branch
@@ -42,7 +45,10 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   as one lineage — and cross clusters for free, since the branch lives on
   the shared repo.
 - **Selective integration is git**: harvesting a sibling's technique or
-  main's progress = merge/cherry-pick, not bespoke machinery.
+  main's progress = merge/cherry-pick, not bespoke machinery. One carve-out:
+  `AGENT_MEMORY.md` is slot-private — any merge into a line keeps the
+  RECEIVER's copy (kernel-side merge resolves that path as `ours`), so a
+  sibling's memory never overwrites or conflicts with the receiving slot's.
 
 Why branches over a kept-ref (sealed-sha) pool: continuity and integration
 come from git itself; the lineage is reviewable history; the public repo
@@ -52,8 +58,14 @@ v1).
 
 ## Credit semantics: unchanged, and main stays clean (owner decision)
 
-- The gate measures sealed trees absolutely; credit requires beating the
-  CURRENT main baseline by the floor — no grandfathering for old lines.
+- Lines change NOTHING about credit semantics — the credit model is
+  research-loop.md's portfolio rule, restated: a claim is either a SOTA win
+  against the benchmark's current best (what the speedrun gate implements
+  today) or a composable win against its OWN declared baseline, and every
+  claim is legible about which baseline it was measured against.
+  Transparency, not a freshest-main requirement, is the anti-gaming defense.
+  A line needs no new baseline infrastructure either way: the metric is
+  absolute and each claim names its baseline pair.
 - **A PR to main is ONE clean, ablated contribution**: the agent extracts
   the winning change from its branch, re-applies it onto main, measures THAT
   candidate, and submits the minimal diff. Never a wholesale branch merge of
@@ -66,10 +78,11 @@ v1).
 ## Clarifications from design review
 
 - **Credit baseline with a divergent line**: the metric is absolute, so a
-  line-based candidate gets a real number regardless of its base; credit
-  compares that number against CURRENT main's measured baseline plus the
-  floor. The gate never needs a "line baseline" — a line that cannot beat
-  today's main is simply not creditable, by construction.
+  line-based candidate gets a real number regardless of its base. Credit
+  follows research-loop.md's portfolio rule (SOTA vs current best, or a
+  composable win vs the claim's own declared baseline, always legible) —
+  see "Credit semantics" above; lines add no third rule and no per-line
+  baseline infrastructure.
 - **Branch resets**: an agent may deliberately reset its line to main; the
   kernel performs it as `--force-with-lease` on the agent's OWN branch only
   (the only non-fast-forward ever allowed), recorded in the run report.
