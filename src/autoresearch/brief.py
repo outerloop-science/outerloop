@@ -32,7 +32,6 @@ _REPORT_FIELD = re.compile(r"^[\-#*> ]*\**(Outcome|Takeaway)s?\**\s*:\**\s*(.+)"
 # the kernel's own header form ("Outcome: **negative-result**") — the gate's
 # verdict, preferred over the author's prose outcome when both appear
 _KERNEL_OUTCOME = re.compile(r"^Outcome: \*\*(.+?)\*\*", re.M)
-_REPORT_META = re.compile(r"^(\d{4}-\d{2}-\d{2}).*?(agent-\d+)")
 
 
 def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
@@ -59,8 +58,11 @@ def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
         takeaway = fields.get("Takeaway", "")
         if not takeaway:
             continue
-        meta = _REPORT_META.match(name)
-        date, agent = (meta.group(1), meta.group(2)) if meta else ("", "")
+        day = re.search(r"\d{4}-\d{2}-\d{2}", name)
+        who = re.search(r"agent-\d+", name)
+        date = day.group(0) if day else ""
+        # steward runs carry no agent id; label them for what they are
+        agent = who.group(0) if who else ("steward" if "steward" in name else "")
         kernel = _KERNEL_OUTCOME.search(text)
         outcome = kernel.group(1) if kernel else fields.get("Outcome", "")
         line = (

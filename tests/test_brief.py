@@ -168,6 +168,12 @@ def test_distill_lessons_extracts_takeaways_newest_first() -> None:
     assert "one val-interval short" in lines[0]
     assert lines[1] == "- 2026-08-30 agent-04 [aborted]: plain-label forms parse too."
     assert lines[2] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
+    # steward reports carry no agent id: the date survives and the line is
+    # labeled for what it is
+    steward = distill_lessons(
+        [("2026-08-27-steward-20260827-010101.md", "- **Takeaway:** ruler tidied.\n")]
+    )
+    assert steward.startswith("- 2026-08-27 steward: ruler tidied.")
     # same-day ties break on the run id's embedded timestamp, not on the
     # benchmark name (zbench earlier in the day must sort after abench later)
     same_day = [
