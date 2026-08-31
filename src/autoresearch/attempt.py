@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -79,6 +80,7 @@ from autoresearch.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SyscallRequest
 from autoresearch.syscall import ensure_excluded as syscall_excluded
 from autoresearch.syscall import install_tool as syscall_install_tool
 from autoresearch.syscall import write_budget as syscall_write_budget
+from autoresearch.syscall import write_siblings as syscall_write_siblings
 from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
@@ -1951,6 +1953,27 @@ def live_attempt(
             # AFTER install_tool: installing the tool recreates the channel
             # dir it owns, which would delete an archive written earlier
             _install_report_archive(workspace, reports)
+            # the fleet snapshot the `siblings` command shows — read from the
+            # research-log's status.json (the SAME branch the reports came
+            # from, so it works across clusters) and best-effort throughout:
+            # a missing or malformed snapshot just means no siblings known
+            try:
+                fleet = json.loads(ws.git("show", "FETCH_HEAD:climb/status.json"))
+                syscall_write_siblings(
+                    workspace,
+                    [
+                        {
+                            "agent": r.get("agent"),
+                            "state": r.get("state"),
+                            "phase": r.get("phase"),
+                            "direction": r.get("direction"),
+                        }
+                        for r in fleet.get("runs", [])
+                        if isinstance(r, dict) and r.get("agent") != config.agent_id
+                    ],
+                )
+            except Exception as exc:
+                log.info("no sibling snapshot for this session (%s)", exc)
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")

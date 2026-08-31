@@ -149,6 +149,35 @@ def test_minutes_are_clamped_to_the_ceiling(tmp_path: Path) -> None:
     assert req is not None and req.launches[0].minutes == 240
 
 
+def test_siblings_command_reads_the_fleet_snapshot(tmp_path: Path) -> None:
+    """`siblings` is author-PULLED: the kernel writes the snapshot at session
+    start and the command renders it; absent or malformed means none known."""
+    from autoresearch.syscall import write_siblings
+    from autoresearch.syscall_cli import main as cli_main
+
+    assert cli_main(["siblings"], root=tmp_path) == 0  # missing file: no crash
+    write_siblings(
+        tmp_path,
+        [
+            {
+                "agent": "agent-02",
+                "state": "waiting",
+                "phase": "candidate",
+                "direction": "compose embedding decay with earlier warmdown",
+            },
+            {"agent": "agent-03", "state": "implementing", "phase": "", "direction": ""},
+        ],
+    )
+    from autoresearch.syscall_cli import cmd_siblings
+
+    out = cmd_siblings(tmp_path, None)
+    assert "agent-02 (waiting/candidate): compose embedding decay" in out
+    assert "agent-03 (implementing)" in out
+    assert "prefer a direction no sibling" in out
+    (tmp_path / ".autoresearch" / "siblings.json").write_text("not json")
+    assert cmd_siblings(tmp_path, None) == "no sibling activity known."
+
+
 def test_budget_arithmetic() -> None:
     req = SyscallRequest(launches=(_launch("a"), _launch("b")))
     ok = budget_error(req, launches_used=0, launch_budget=4, sleeps_used=0, sleep_budget=2)

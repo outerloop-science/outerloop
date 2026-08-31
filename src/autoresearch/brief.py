@@ -294,7 +294,10 @@ def render(brief: SessionBrief) -> str:
             + (
                 " The full archive: `python .autoresearch/syscall reports` "
                 "lists every report one line each; add names to read full "
-                "reports, several in one call."
+                "reports, several in one call. `python .autoresearch/syscall "
+                "siblings` shows what the other agents were working on as of "
+                "your session start — prefer a direction no sibling is "
+                "actively on, unless you have a distinct angle."
                 if brief.report_archive
                 else ""
             )
