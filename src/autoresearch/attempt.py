@@ -1940,6 +1940,29 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
     return tuple(lenses), tuple(dict.fromkeys(secrets))
 
 
+def _panel_claim_body(
+    benchmark: str, baseline: float, candidate: float, report: str, *, lines: bool
+) -> str:
+    """The synthetic claim the panel judges. On a research-lines target the
+    one-contribution mandate is part of the claim itself: the panel is the
+    backstop against a line's accumulated tweaks reaching main as one PR
+    (docs/design/research-lines.md)."""
+    mandate = (
+        "\n\nThis target runs research lines: a PR to main must be ONE "
+        "clean contribution, extracted onto the base branch. A diff that "
+        "bundles unrelated or unablated changes is a BLOCKING finding — "
+        "name the pieces that should be separated."
+        if lines
+        else ""
+    )
+    return (
+        f"Automated improvement claim (pre-PR): {benchmark} "
+        f"{baseline} -> {candidate}, measured by the orchestrator.{mandate}\n\n"
+        f"## Research report\n\n*Session prose, written before "
+        f"the orchestrator measured.*\n\n{report[:MAX_CLAIM_CHARS]}"
+    )
+
+
 def build_panel_runner(
     ws: Workspace,
     run_dir: Path,
@@ -2010,12 +2033,7 @@ def build_panel_runner(
                 repo=target,
                 number=0,
                 title=f"[agent] {benchmark}: {_title_pair(baseline, candidate)}",
-                body=(
-                    f"Automated improvement claim (pre-PR): {benchmark} "
-                    f"{baseline} -> {candidate}, measured by the orchestrator.\n\n"
-                    f"## Research report\n\n*Session prose, written before "
-                    f"the orchestrator measured.*\n\n{report[:MAX_CLAIM_CHARS]}"
-                ),
+                body=_panel_claim_body(benchmark, baseline, candidate, report, lines=bool(exclude)),
                 # base..snapshot, never base..worktree: the snapshot commit
                 # includes newly ADDED files, which a working-tree diff omits
                 diff=ws.git("diff", f"{base_sha}..{snapshot}"),
@@ -2146,6 +2164,7 @@ def live_attempt(
                 _best_effort("line merge abort", lambda: ws.git("merge", "--abort"))
                 ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         line_memory = ""
+        line_divergence = ""
         if line_ref:
             salvage.update(ws=ws, line_ref=line_ref)
             try:
@@ -2159,6 +2178,15 @@ def live_attempt(
                         line_memory = fh.read(65_536).decode("utf-8", errors="replace")
             except OSError as exc:
                 log.warning("could not read AGENT_MEMORY.md: %s", exc)
+            try:
+                # divergence debt, made visible each session (a conflicted
+                # merge skips it — the diff is not meaningful mid-merge)
+                if not ws.git("diff", "--name-only", "--diff-filter=U").strip():
+                    line_divergence = ws.git(
+                        "diff", "--shortstat", f"origin/{base_branch}", "HEAD"
+                    ).strip()
+            except Exception:
+                line_divergence = ""
         author_syscalls = (
             dispatch is not None
             and getattr(harness, "supports_resume", True)
@@ -2344,6 +2372,7 @@ def live_attempt(
                 brief_baseline=prior_best.best if prior_best else None,
                 line_ref=line_ref,
                 line_memory=line_memory,
+                line_divergence=line_divergence,
                 launcher=launcher,
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )
