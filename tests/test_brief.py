@@ -308,3 +308,22 @@ def test_memory_index_is_capped_and_round_trips() -> None:
     )
     assert len(brief.memory) == MAX_MEMORY_CHARS
     assert SessionBrief.from_json(brief.to_json()).memory == brief.memory
+
+
+def test_brief_renders_the_divergence_stat() -> None:
+    on = render(
+        build_brief(
+            make_inputs(
+                line_ref="agents/agent-07",
+                line_divergence="3 files changed, 40 insertions(+), 2 deletions(-)",
+            ),
+            created="t",
+        )
+    )
+    assert "differs from the base branch by: 3 files changed" in on
+    off = render(build_brief(make_inputs(line_ref="agents/agent-07"), created="t"))
+    assert "differs from the base branch" not in off
+    brief = build_brief(
+        make_inputs(line_ref="agents/agent-07", line_divergence="1 file changed"), created="t"
+    )
+    assert SessionBrief.from_json(brief.to_json()).line_divergence == "1 file changed"

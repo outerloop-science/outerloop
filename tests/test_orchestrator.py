@@ -209,8 +209,9 @@ def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
         {"created": "2026-08-06T00:00:00Z"},
         {"line_ref": "agents/agent-07"},
         {"line_memory": "- depth pays"},
+        {"line_divergence": "1 file changed"},
         {"brief_baseline": 13.876},
-    ):  # every one of the eight guarded brief-only inputs, so dropping any regresses
+    ):  # every one of the nine guarded brief-only inputs, so dropping any regresses
         with pytest.raises(ValueError, match="no effect on a resume"):
             run_climb(
                 tmp_path,

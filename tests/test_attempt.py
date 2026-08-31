@@ -3905,3 +3905,38 @@ def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_
     assert "# Your memory (AGENT_MEMORY.md" in brief
     assert "- depth pays, width unclear" in brief
     assert "Maintain the memory before you finish" in brief
+
+
+def test_panel_claim_carries_the_one_contribution_mandate() -> None:
+    from autoresearch.attempt import _panel_claim_body
+
+    lines = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=True)
+    assert "ONE clean contribution" in lines and "BLOCKING finding" in lines
+    plain = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=False)
+    assert "ONE clean contribution" not in plain
+    assert "measured by the orchestrator" in plain
+
+
+def test_line_divergence_reaches_the_brief(tmp_path: Path, target_repo_lines) -> None:
+    _push_line(tmp_path, target_repo_lines, {"docs/line-note.md": "belief\n"})
+
+    class BriefCapture2(ScriptedHarness):
+        seen: ClassVar[dict] = {}
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            BriefCapture2.seen["brief"] = brief_text
+            return super().run(brief_text, workspace, resume_session_id)
+
+    with _queued_local([13.876, 14.5]):
+        live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-div-1",
+            harness=BriefCapture2(edits={}),
+            github=FakeGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    brief = str(BriefCapture2.seen["brief"])
+    assert "differs from the base branch by: 1 file changed" in brief

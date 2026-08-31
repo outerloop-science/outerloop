@@ -147,6 +147,9 @@ class SessionBrief:
     # The line's AGENT_MEMORY.md content — the agent's own memory index,
     # rendered data-fenced; "" = no memory yet (or the feature is off).
     memory: str = ""
+    # git shortstat of line vs base at run start — divergence debt, visible
+    # every session; "" = none (or the feature is off).
+    line_divergence: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
@@ -169,6 +172,7 @@ class SessionBrief:
             eval_minutes_default=data.get("eval_minutes_default", 0),
             line_ref=data.get("line_ref", ""),
             memory=data.get("memory", ""),
+            line_divergence=data.get("line_divergence", ""),
         )
 
 
@@ -189,6 +193,7 @@ class BriefInputs:
     eval_minutes_default: int = 0
     line_ref: str = ""  # research lines: the agent's own branch; "" = off
     memory: str = ""  # the line's AGENT_MEMORY.md, raw; build_brief caps it
+    line_divergence: str = ""  # shortstat of line vs base at run start
 
 
 def _cap(text: str, limit: int) -> str:
@@ -227,6 +232,7 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
         eval_minutes_default=inputs.eval_minutes_default,
         line_ref=inputs.line_ref,
         memory=_cap(inputs.memory, MAX_MEMORY_CHARS),
+        line_divergence=_cap(inputs.line_divergence, 200),
     )
 
 
@@ -301,6 +307,13 @@ def render(brief: SessionBrief) -> str:
             "it is excluded from measured trees and can never carry "
             "anything a run depends on.",
         ]
+        if brief.line_divergence:
+            parts += [
+                f"Your line currently differs from the base branch by: "
+                f"{brief.line_divergence}. Each merge and extraction is "
+                "harder when this difference is large, so keep only changes "
+                "you still need.",
+            ]
         if brief.memory:
             fence = _fence(brief.memory)
             parts += [
