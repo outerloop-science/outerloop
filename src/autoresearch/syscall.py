@@ -532,6 +532,23 @@ def budget_error(
             f"sleep budget exhausted ({sleeps_used}/{sleep_budget} used): "
             "conclude with what you have"
         )
+    if (
+        request.submit
+        and launch_budget > 0
+        and gpus > 0
+        and (gpu_hour_budget or 0) > 0
+        and launches_used == 0
+    ):
+        # the gate confirms evidence, it does not generate it: on a METERED
+        # benchmark (the gate costs real GPU-hours) a run that never launched
+        # has measured nothing. Launches staged ALONGSIDE this submit do not
+        # count — their results are unseen. Exempt: launches disabled
+        # (depth_k 0) and CPU benchmarks (an in-job gate costs seconds).
+        return (
+            "submit refused: this run has not measured anything yet. Launch "
+            "first and sleep for the results, then submit once your own "
+            "numbers strictly clear the gate's bar."
+        )
     if launches_used + len(request.launches) > launch_budget:
         return (
             f"launch budget would be exceeded: {launches_used} used + "

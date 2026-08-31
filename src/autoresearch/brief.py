@@ -281,7 +281,9 @@ def render(brief: SessionBrief) -> str:
                     f"{brief.eval_minutes_default} min per eval, the baseline's "
                     "runtime with headroom); an eval that runs out of walltime is an "
                     "eval error, not a result. Budget your experiments against the "
-                    "final eval you will need.",
+                    "final eval you will need. On this benchmark a submit is "
+                    "REFUSED until at least one launch has returned results "
+                    "this run.",
                     "",
                 ]
                 if brief.gpu_hour_budget > 0

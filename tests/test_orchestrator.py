@@ -331,6 +331,63 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     assert sha == "cand1" and request.launches[0].name == "probe"
 
 
+def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> None:
+    """The refuse-twice bypass: after two bare submits are refused, the
+    dropped request must not be measured at finish — a metered run with no
+    returned launches ends as an unmeasured negative (panel only), never a
+    gate eval."""
+    metered = CONTRACT.replace(
+        "    metric: mean_tour_length\n",
+        "    metric: mean_tour_length\n    gpus: 1\n    eval_minutes: 240\n",
+    ).replace("gpu_hours_per_run: 1", "gpu_hours_per_run: 10")
+    harness = _SeqHarness(["first try", "second try"], submit_on=(1, 2))
+    m = ParkingMeasurer(park_on_call=1)  # any measurement would PARK loudly
+    result = attempt_once(
+        CONFIG,
+        metered,
+        tmp_path,
+        harness,
+        m,
+        "base",
+        _bare_snapshot(),
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        launcher=_fake_launcher([]),
+    )
+    assert result.outcome == "negative-result"
+    assert "unmeasured finish" in result.note
+
+
+def test_feature_off_metered_runs_still_measure_at_finish(tmp_path: Path) -> None:
+    """With syscalls disabled (launcher None) zero launches is structural,
+    not a choice: the terminal gate is the run's ONLY measurement and must
+    run."""
+    from autoresearch.orchestrator import RunParked
+
+    metered = CONTRACT.replace(
+        "    metric: mean_tour_length\n",
+        "    metric: mean_tour_length\n    gpus: 1\n    eval_minutes: 240\n",
+    ).replace("gpu_hours_per_run: 1", "gpu_hours_per_run: 10")
+    harness = FakeHarness(result=ok_session())
+    m = ParkingMeasurer(park_on_call=1)
+    with pytest.raises(RunParked) as exc:  # the gate parked = it RAN
+        attempt_once(
+            CONFIG,
+            metered,
+            tmp_path,
+            harness,
+            m,
+            "base",
+            _bare_snapshot(),
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            created="t",
+            launcher=None,
+        )
+    assert exc.value.phase == "candidate"
+
+
 def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
     # an inline gate that rejects a submitted candidate resumes the AUTHOR with
     # the result (it decides what happens next) — never a silent terminal; the

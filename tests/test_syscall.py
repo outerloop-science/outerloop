@@ -159,6 +159,54 @@ def test_budget_arithmetic() -> None:
     assert "sleep budget exhausted" in spent
 
 
+def test_submit_requires_a_prior_launch() -> None:
+    """On a METERED benchmark the gate confirms evidence, it does not
+    generate it: a submit is refused until at least one launch has
+    RETURNED results this run — launches staged alongside the submit do
+    not count (results unseen). Exempt: launches disabled (depth_k 0)
+    and CPU benchmarks (an in-job gate costs seconds)."""
+
+    def check(request, launches_used: int, launch_budget: int = 4) -> str:
+        return budget_error(
+            request,
+            launches_used=launches_used,
+            launch_budget=launch_budget,
+            sleeps_used=0,
+            sleep_budget=8,
+            gpus=8,
+            gpu_hour_budget=400.0,
+        )
+
+    bare = SyscallRequest(launches=(), submit=True)
+    refused = check(bare, launches_used=0)
+    assert "submit refused" in refused and "not measured anything" in refused
+    # staging launches WITH the submit does not lift the refusal
+    with_launch = SyscallRequest(launches=(_launch("a"),), submit=True)
+    assert "submit refused" in check(with_launch, launches_used=0)
+    # one completed launch from a prior park: submit freely, as often as
+    # sleeps allow (revise-and-resubmit is unaffected)
+    assert check(bare, launches_used=1) == ""
+    # launches disabled (depth_k 0): the rule cannot apply
+    assert check(bare, launches_used=0, launch_budget=0) == ""
+    # GPU benchmark with a ZERO gpu-hour budget is not metered: the brief's
+    # metered paragraph (which discloses the rule) is absent there, so the
+    # rule must not silently apply
+    assert (
+        budget_error(
+            bare,
+            launches_used=0,
+            launch_budget=4,
+            sleeps_used=0,
+            sleep_budget=8,
+            gpus=8,
+            gpu_hour_budget=0.0,
+        )
+        == ""
+    )
+    # CPU benchmark (in-job gate costs seconds): submit-to-measure stays legal
+    assert budget_error(bare, launches_used=0, launch_budget=4, sleeps_used=0, sleep_budget=8) == ""
+
+
 def _launch(name: str):
     from autoresearch.syscall import Launch
 
@@ -567,7 +615,7 @@ def test_gpu_hours_are_metered_against_the_run_budget() -> None:
     # fits: 8 GPU-hours of evals into a 60-hour budget with 50 used
     ok = budget_error(
         sub_default,
-        launches_used=0,
+        launches_used=1,
         launch_budget=4,
         sleeps_used=0,
         sleep_budget=4,
@@ -580,7 +628,7 @@ def test_gpu_hours_are_metered_against_the_run_budget() -> None:
     # does not fit: a 14-hour eval pair on top of 50 used
     over = budget_error(
         sub_declared,
-        launches_used=0,
+        launches_used=1,
         launch_budget=4,
         sleeps_used=0,
         sleep_budget=4,
