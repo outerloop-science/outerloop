@@ -310,9 +310,9 @@ def render(brief: SessionBrief) -> str:
         if brief.line_divergence:
             parts += [
                 f"Your line currently differs from the base branch by: "
-                f"{brief.line_divergence}. That distance is debt you pay at "
-                "every merge and every extraction — keep what earns its "
-                "keep, retire what does not.",
+                f"{brief.line_divergence}. Each merge and extraction is "
+                "harder when this difference is large, so keep only changes "
+                "you still need.",
             ]
         if brief.memory:
             fence = _fence(brief.memory)
