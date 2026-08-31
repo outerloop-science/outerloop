@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from autoresearch.brief import distill_lessons
 from autoresearch.compute import LocalCompute
@@ -660,7 +660,11 @@ def _wake_author_sleep(
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         # a terminal from the resumed climb: report, ending record, issue note —
-        # the same ending shape every other terminal takes.
+        # the same ending shape every other terminal takes. The line notebook
+        # records it first, while the tree is still the session's final tree.
+        _push_line_snapshot(
+            ws, _line_ref_for(bench, config.agent_id), run_id, result.outcome, secrets
+        )
         for ref in drop_refs:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         report_path = run_dir / "report.md"
@@ -1001,6 +1005,63 @@ def _reset_instruction_files(ws: Workspace, workspace: Path, base_ref: str) -> N
     ]
     if base_paths:
         ws.git("checkout", base_ref, "--", *base_paths)
+
+
+def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
+    """The agent's line branch when the benchmark opted in, or the empty
+    string when the feature is off. Wake paths recompute this from the
+    record — a malformed agent id could never have created a line at run
+    start, so empty (not an error) is right there too."""
+    if bench is None or not bench.lines or not agent_id:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_id):
+        return ""
+    return f"agents/{agent_id}"
+
+
+def _push_line_snapshot(
+    ws: Workspace, line_ref: str, run_id: str, outcome: str, secrets: tuple[str, ...] = ()
+) -> None:
+    """Publish the session's final tree to the agent's line as a sealed
+    snapshot commit — every terminal path, any outcome
+    (docs/design/research-lines.md). The seal parents on the LOCAL line ref
+    and advances it, so sequential terminals within one run chain as
+    fast-forwards; one slot never runs twice concurrently, so the remote
+    cannot have moved under us. Best-effort throughout: the notebook never
+    changes a run's outcome. An unchanged tree is not pushed (the run-start
+    push already holds it)."""
+    if not line_ref:
+        return
+
+    def _seal_and_push() -> None:
+        # raises if the ref is absent (e.g. a park that predates the line
+        # feature) — _best_effort turns that into a logged skip
+        parent = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
+        snap = snapshot_tree(ws, parent)
+        try:
+            # seal only when the tree moved past the local ref; the PUSH runs
+            # either way — a session that COMMITTED its work advanced the
+            # local ref without dirtying the tree, and that commit must still
+            # reach the remote (an already-current ref push is a no-op).
+            if snap.tree != ws.git("rev-parse", f"{parent}^{{tree}}").strip():
+                sealed = ws.git(
+                    "-c",
+                    "user.name=autoresearch",
+                    "-c",
+                    "user.email=autoresearch@localhost",
+                    "commit-tree",
+                    snap.tree,
+                    "-p",
+                    parent,
+                    "-m",
+                    f"line snapshot: {run_id} ({outcome})",
+                ).strip()
+                ws.git("update-ref", f"refs/heads/{line_ref}", sealed)
+            ws.push(line_ref)
+        finally:
+            drop_snapshot(ws, snap)
+
+    _best_effort(f"line push ({outcome})", _seal_and_push, secrets)
 
 
 def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: str) -> str:
@@ -1388,6 +1449,12 @@ def resume_run(
             judged=(candidate_sha, result),
         )
 
+    def _notebook(outcome: str) -> None:
+        # Research lines: record the tree AS OF THIS DECIDED TERMINAL — never
+        # earlier, because a blocking panel verdict can still resume the
+        # author (a continuation, not a terminal).
+        _push_line_snapshot(ws, _line_ref_for(bench, config.agent_id), run_id, outcome, secrets)
+
     if result.outcome == "improved":
         # Publish: branch the SEALED candidate sha, fold in the ledger, push,
         # open the PR. No moved-base merge (research-loop.md) — a stale PR is a
@@ -1408,6 +1475,7 @@ def resume_run(
                 RunRecord(**{**record.__dict__, "state": ENDED, "ending": NEGATIVE_RESULT})
             )
             _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+            _notebook("no-improvement")
             return AttemptOutcome(run_id=run_id, outcome="no-improvement")
 
         from datetime import UTC as _UTC
@@ -1434,6 +1502,7 @@ def resume_run(
         if existing:
             pr_url = str(existing.get("html_url", ""))
             log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
+            _notebook("improved")
             # put the workspace on the branch (a later follow-up expects it) and
             # finish the steps the prior wake may have died before completing.
             _best_effort(
@@ -1646,10 +1715,12 @@ def resume_run(
             )
             if _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets):
                 drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+            _notebook("publish-error")
             return AttemptOutcome(run_id=run_id, outcome="publish-error")
         # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
         # fails, the record stays `waiting` with the snapshot intact, so the run
         # is recoverable rather than an ABORTED record over a live PR.
+        _notebook("improved")
         report_path = run_dir / "report.md"
         _best_effort(
             "run report",
@@ -1691,6 +1762,7 @@ def resume_run(
     # BEFORE dropping (same ordering as the improved path): if the save fails,
     # the run stays WAITING with its snapshot intact, so a re-wake can still
     # reconstruct — never WAITING with the snapshot already gone.
+    _notebook(result.outcome)
     report_path = run_dir / "report.md"
     _best_effort(
         "run report",
@@ -2005,6 +2077,9 @@ def live_attempt(
             )
         return AttemptOutcome(run_id=run_id, outcome="attempt-error")
 
+    # what the attempt-error handler needs to salvage the line notebook: the
+    # exception path cannot rely on names bound inside the try
+    salvage: dict[str, object] = {}
     try:
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # Build ON the requested PR base: the clone checks out the remote
@@ -2041,6 +2116,8 @@ def live_attempt(
                 )
                 _best_effort("line merge abort", lambda: ws.git("merge", "--abort"))
                 ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
+        if line_ref:
+            salvage.update(ws=ws, line_ref=line_ref)
         author_syscalls = (
             dispatch is not None
             and getattr(harness, "supports_resume", True)
@@ -2277,6 +2354,15 @@ def live_attempt(
         exc_name = type(exc).__name__
         note = redact(f"{exc_name}: {exc}", secrets)[:500]
         log.warning("climb failed for %s: %s", run_id, note)
+        if salvage:
+            # a crashed attempt's tree is still notebook-worthy (best-effort)
+            _push_line_snapshot(
+                cast(Workspace, salvage["ws"]),
+                str(salvage["line_ref"]),
+                run_id,
+                "attempt-error",
+                secrets,
+            )
         failed = RunRecord(
             **{
                 **record.__dict__,
@@ -2499,6 +2585,11 @@ def live_attempt(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
+    # Research lines: the notebook records EVERY terminal, AFTER the publish
+    # settles — the snapshot then names the final outcome (a publish failure
+    # is publish-error, not improved), and an improved tree is the published
+    # candidate plus its ledger commit.
+    _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets)
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return AttemptOutcome(
         run_id=run_id,
