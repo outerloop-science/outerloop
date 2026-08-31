@@ -1817,13 +1817,13 @@ def pr_body(
             "## Research report",
             "",
             (
-                "*Carried forward from the previous session in this line — no "
-                "new agent session ran this attempt. Written before the "
-                "orchestrator measured the numbers above; the table is the "
-                "ledger.*"
-                if result.session and result.session.num_turns == 0
-                else "*Session prose, written before the orchestrator measured "
-                "the numbers above; the table is the ledger.*"
+                "*This report came from the previous session in this line — no "
+                "agent session ran for this attempt. It was written before the "
+                "orchestrator measured; the table above contains the measured "
+                "results.*"
+                if result.session and result.session.stop_reason == "resumed"
+                else "*Session prose, written before the orchestrator measured; "
+                "the table above contains the measured results.*"
             ),
             "",
             (

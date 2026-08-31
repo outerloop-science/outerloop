@@ -400,9 +400,9 @@ def render(brief: SessionBrief) -> str:
         "When done (or blocked), write a short research report: hypothesis, "
         "what you did, outcome with numbers, takeaways, and the most "
         "promising next step. A negative result reported clearly is a "
-        "success. The report is published verbatim in the PR; state budget "
-        "and measurement facts only as the syscall CLI prints them, never "
-        "from memory.",
+        "success. The report is published in the PR (redacted and "
+        "length-capped); state budget and measurement facts only as the "
+        "syscall CLI prints them, never from memory.",
         "",
         "# How to write",
         PLAIN_STYLE,
