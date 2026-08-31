@@ -558,7 +558,7 @@ STDOUT_WITH_CURVE = (
 
 
 def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
-    from autoresearch.climbboard import MAX_CURVE_POINTS, collect_curves
+    from autoresearch.climbboard import MAX_CURVE_POINTS, _curve_from_eval
 
     _terminal_run(tmp_path, "speedrun-1")
     ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc-def"
@@ -567,13 +567,12 @@ def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
     # eval output is job output: a malformed number must not abort collection
     with open(ev / "stdout", "a") as fh:
         fh.write("step 9999 val loss 1.2.3 (fp32)\n")
-    curves = collect_curves(tmp_path, "org/repo")["speedrun"]
-    pts = curves["speedrun-1"]
+    pts = _curve_from_eval(run_dir(tmp_path, "speedrun-1"))
     assert 2 < len(pts) <= MAX_CURVE_POINTS
     assert pts[0][0] == 128 and pts[-1] == [9344, 3.276098]
     # a run with no parsable eval simply has no curve
     _terminal_run(tmp_path, "speedrun-2", ending="merged")
-    assert "speedrun-2" not in collect_curves(tmp_path, "org/repo")["speedrun"]
+    assert _curve_from_eval(run_dir(tmp_path, "speedrun-2")) == []
 
 
 def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
@@ -623,29 +622,24 @@ def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -
     assert cb._curve_from_eval(rd) == [[1, 4.5]]
 
 
-def test_collect_curves_scans_only_the_publishable_tail(tmp_path: Path, monkeypatch) -> None:
-    """Only the newest MAX_CURVE_RUNS attempts per benchmark are read —
-    older stdouts cannot publish and must not cost I/O."""
-    import autoresearch.climbboard as cb
+def test_published_curves_cost_no_stdout_scan(tmp_path: Path) -> None:
+    """A run whose curve is already on the branch is never re-read from
+    disk: only unpublished runs invoke the fresh supplier."""
+    from autoresearch.climbboard import _merge_curves
 
-    for i, rid in enumerate(["old-1", "mid-2", "new-3"]):
-        record = RunRecord(
-            run_id=rid,
-            target="org/repo",
-            task_title="t",
-            state="ended",
-            ending="negative-result",
-            benchmark="speedrun",
-            created=1.0,
-            updated=float(i + 1),
-        )
-        save_record(tmp_path, record, float(i + 1))
-        ev = run_dir(tmp_path, rid) / "eval-candidate-x"
-        ev.mkdir(parents=True)
-        (ev / "stdout").write_text(f"step {i + 1} val loss 4.{i}\n")
-    monkeypatch.setattr(cb, "MAX_CURVE_RUNS", 2)
-    curves = cb.collect_curves(tmp_path, "org/repo")["speedrun"]
-    assert set(curves) == {"mid-2", "new-3"}
+    gh = _BoardGitHub()
+    gh.files["climb/curves/b.json"] = json.dumps({"r1": [[1, 4.0]]})
+    rows = [{"run_id": "r1"}, {"run_id": "r2"}]
+    asked: list[str] = []
+
+    def fresh_for(rid):
+        asked.append(rid)
+        return [[2, 3.5]]
+
+    merged = _merge_curves(gh, "org/repo", "b", rows, fresh_for)
+    assert merged is not None
+    assert asked == ["r2"]  # r1 is published: no scan
+    assert merged["data"] == {"r1": [[1, 4.0]], "r2": [[2, 3.5]]}
 
 
 def test_fresh_curve_abandons_oversized_stdout(tmp_path: Path, monkeypatch) -> None:
@@ -673,7 +667,11 @@ def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
     ]
     published = {"r199": [[1, 4.0]]}
     gh.files["climb/curves/b.json"] = json.dumps(published)
-    fresh = {"r199": [[1, 9.9]], "r198": [[2, 3.5]]}
+    fresh_map = {"r199": [[1, 9.9]], "r198": [[2, 3.5]]}
+
+    def fresh(rid):
+        return fresh_map.get(rid)
+
     merged = _merge_curves(gh, "org/repo", "b", rows, fresh)
     assert merged is not None and merged["changed"] is True
     assert merged["data"]["r199"] == [[1, 4.0]]  # published wins; never rewritten

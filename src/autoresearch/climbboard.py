@@ -142,25 +142,6 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     return points
 
 
-def collect_curves(root: Path, target: str) -> dict[str, dict[str, list[list[float]]]]:
-    """{benchmark: {run_id: curve}} for terminal runs with a parsable eval.
-    Only the newest MAX_CURVE_RUNS per benchmark are scanned — the merge
-    keeps exactly that tail, so older stdouts cannot publish anyway."""
-    out: dict[str, dict[str, list[list[float]]]] = {}
-    ended = [r for r in list_runs(root) if r.target == target and r.state == ENDED]
-    ended.sort(key=lambda r: r.updated or r.created, reverse=True)
-    scanned: dict[str, int] = {}
-    for record in ended:
-        bench = record.benchmark or "benchmark"
-        if scanned.get(bench, 0) >= MAX_CURVE_RUNS:
-            continue
-        scanned[bench] = scanned.get(bench, 0) + 1
-        curve = _curve_from_eval(run_dir(root, record.run_id))
-        if curve:
-            out.setdefault(bench, {})[record.run_id] = curve
-    return out
-
-
 def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
     """Terminal attempts of `target` with a report, grouped by benchmark."""
     from datetime import UTC, datetime
@@ -929,12 +910,18 @@ def _valid_curve(curve: Any) -> bool:
 
 
 def _merge_curves(
-    github: Any, target: str, benchmark: str, rows: list[dict[str, Any]], fresh: dict
+    github: Any,
+    target: str,
+    benchmark: str,
+    rows: list[dict[str, Any]],
+    fresh_for: Any,
 ) -> dict[str, Any] | None:
     """Published curves plus new ones, kept only for the newest rows (curves
     are heavy; the cap is by recency of the attempt, and published curves
-    are never rewritten). None when the published file cannot be read — the
-    same sit-the-pass-out stance as everything else on the branch."""
+    are never rewritten). `fresh_for(run_id)` parses a run's eval stdout ON
+    DEMAND — a run with a published curve costs no I/O at all. None when
+    the published file cannot be read — the same sit-the-pass-out stance
+    as everything else on the branch."""
     path = f"climb/curves/{benchmark}.json"
     try:
         raw: str | None = github.get_file(target, path, BOARD_BRANCH)
@@ -958,7 +945,7 @@ def _merge_curves(
     keep = [str(r.get("run_id")) for r in rows[-MAX_CURVE_RUNS:]]
     merged: dict[str, list[list[float]]] = {}
     for run_id in keep:
-        curve = published.get(run_id) or fresh.get(run_id)
+        curve = published.get(run_id) or fresh_for(run_id)
         if curve:
             merged[run_id] = curve
     return {"data": merged, "changed": merged != published}
@@ -1005,7 +992,6 @@ def service_climb_board(
     board pass costs at most one commit of research-log history. A failed
     batch changes nothing; the whole pass retries next tick."""
     local = collect_rows(root, target)
-    local_curves = collect_curves(root, target)
     # snapshot BEFORE any branch read: put_files refuses if the head moves
     # mid-pass, so a concurrent write is never buried under stale content.
     # "" = branch missing (nothing to protect); None = outage — writing
@@ -1050,7 +1036,7 @@ def service_climb_board(
         if text != existing:
             pending[path] = text
         merged_curves = _merge_curves(
-            github, target, benchmark, rows, local_curves.get(benchmark, {})
+            github, target, benchmark, rows, lambda rid: _curve_from_eval(run_dir(root, rid))
         )
         if merged_curves is None:
             # an unreadable curve file must not republish the page without
