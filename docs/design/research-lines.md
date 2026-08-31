@@ -60,9 +60,12 @@ v1).
 
 - Lines change NOTHING about credit semantics — the credit model is
   research-loop.md's portfolio rule, restated: a claim beats its OWN
-  declared baseline (the gate's paired base/candidate evals already
-  implement exactly this), and SOTA is a tracked property of main, not a
-  separate gate. Every claim is legible about which baseline it was
+  declared baseline, and SOTA is a tracked property of main, not a separate
+  gate. The gate's paired evals already have this SHAPE, but today the base
+  of the pair is always the run's main-derived base_sha — letting a line
+  declare its own base (a sha the kernel already knows from run-init) is
+  the declared-comparison work research-loop.md names, scheduled in the
+  phases below. Every claim is legible about which baseline it was
   measured against.
   Transparency, not a freshest-main requirement, is the anti-gaming defense.
   A line needs no new baseline infrastructure either way: the metric is
@@ -82,7 +85,8 @@ v1).
   line-based candidate gets a real number regardless of its base. Credit
   follows research-loop.md's portfolio rule (beat the claim's own declared
   baseline, always legible; SOTA tracked on main) — see "Credit semantics"
-  above; lines add no third rule and no per-line baseline infrastructure.
+  above, including the one gate change it needs (pair against a declared
+  base instead of always main's base_sha); lines add no third rule.
 - **Branch resets**: an agent may deliberately reset its line to main; the
   kernel performs it as `--force-with-lease` on the agent's OWN branch only
   (the only non-fast-forward ever allowed), recorded in the run report.
@@ -116,11 +120,15 @@ v1).
 
 1. **Branches** (kernel): run-init checkout+merge-main WITH the
    instruction-file isolation above (the author clone path has no
-   sanitize step today, so this phase adds one: harness-instruction files
-   in a line checkout — CLAUDE.md, AGENTS.md, .claude/ — are reset to
-   main's reviewed versions; the line's self-notes live in the data-fenced
+   sanitize step today, so this phase adds one: the file set the existing
+   sanitizer classifies as instruction-bearing — CLAUDE.md, AGENTS.md,
+   .claude/, .mcp.json, and whatever it grows to cover; that classifier
+   stays the single owner of the list — is reset to main's reviewed
+   versions on line checkout; the line's self-notes live in the data-fenced
    AGENT_MEMORY.md instead); terminal push, sealing extended to every
-   terminal path; per-target contract opt-in (`lines: true`). ~2–3 PRs.
+   terminal path; per-target contract opt-in (`lines: true`); gate pairing
+   against a line's declared base sha (today it is always main's base_sha).
+   ~2–3 PRs.
 2. **Selfness memory**: AGENT_MEMORY.md render into the brief + author
    instruction to maintain it. 1 PR.
 3. **Hygiene**: brief extraction workflow + panel mandate + diff-stat
