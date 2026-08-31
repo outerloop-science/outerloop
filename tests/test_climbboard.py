@@ -420,6 +420,9 @@ def test_batch_refuses_when_the_head_moved_mid_pass(tmp_path: Path) -> None:
     assert gh.files == {}
     gh.branch_head = real_head  # type: ignore[method-assign]
     assert service_climb_board(tmp_path, gh, "org/repo") == 4  # no curves here
+    # a head-read OUTAGE must not disable the guard: the pass sits out
+    gh.branch_head = lambda repo, branch: None  # type: ignore[method-assign]
+    assert service_climb_board(tmp_path, gh, "org/repo") == 0
 
 
 def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:

@@ -746,16 +746,20 @@ class GitHubClient:
             log.warning("could not put %s on %s@%s: %s", path, repo, branch, exc)
             return ""
 
-    def branch_head(self, repo: str, branch: str) -> str:
-        """The branch's current commit sha, or "" (missing branch, outage)."""
+    def branch_head(self, repo: str, branch: str) -> str | None:
+        """The branch's current commit sha; "" when the branch does not
+        exist (nothing to protect), None on an outage or malformed reply
+        (the caller must not write unguarded)."""
         quoted = urllib.parse.quote(repo)
         try:
             ref = self._request(
                 "GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(branch)}"
             )
             return str(ref["object"]["sha"])
-        except (GitHubError, KeyError, TypeError):
-            return ""
+        except GitHubError as exc:
+            return "" if getattr(exc, "status", None) == 404 else None
+        except (KeyError, TypeError):
+            return None
 
     def put_files(
         self,

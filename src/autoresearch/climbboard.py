@@ -1007,8 +1007,13 @@ def service_climb_board(
     local = collect_rows(root, target)
     local_curves = collect_curves(root, target)
     # snapshot BEFORE any branch read: put_files refuses if the head moves
-    # mid-pass, so a concurrent write is never buried under stale content
-    head = getattr(github, "branch_head", lambda *a: "")(target, BOARD_BRANCH)
+    # mid-pass, so a concurrent write is never buried under stale content.
+    # "" = branch missing (nothing to protect); None = outage — writing
+    # unguarded could bury a mid-pass write, so the pass sits out
+    head = github.branch_head(target, BOARD_BRANCH)
+    if head is None:
+        log.warning("board head unreadable for %s; pass sits out", target)
+        return 0
     index = _read_index(github, target)
     names = set(local) | set(index or {})
     directions = {**(index or {}), **(directions or {})}
