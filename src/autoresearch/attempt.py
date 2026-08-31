@@ -2145,8 +2145,18 @@ def live_attempt(
                 )
                 _best_effort("line merge abort", lambda: ws.git("merge", "--abort"))
                 ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
+        line_memory = ""
         if line_ref:
             salvage.update(ws=ws, line_ref=line_ref)
+            try:
+                # the line's own memory index, rendered into the brief
+                # (data-fenced there); topic files are read on demand from
+                # the checkout, never rendered
+                memory_path = workspace / "AGENT_MEMORY.md"
+                if memory_path.is_file() and not memory_path.is_symlink():
+                    line_memory = memory_path.read_text(errors="replace")[:65_536]
+            except OSError as exc:
+                log.warning("could not read AGENT_MEMORY.md: %s", exc)
         author_syscalls = (
             dispatch is not None
             and getattr(harness, "supports_resume", True)
@@ -2331,6 +2341,7 @@ def live_attempt(
                 panel_runner=panel_runner,
                 brief_baseline=prior_best.best if prior_best else None,
                 line_ref=line_ref,
+                line_memory=line_memory,
                 launcher=launcher,
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )

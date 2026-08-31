@@ -276,3 +276,35 @@ def test_brief_renders_the_research_line_section_only_when_on() -> None:
     assert "ONE clean contribution" in on
     off = render(build_brief(make_inputs(), created="t"))
     assert "Your research line" not in off
+
+
+def test_brief_renders_the_memory_index_data_fenced() -> None:
+    on = render(
+        build_brief(
+            make_inputs(line_ref="agents/agent-07", memory="- depth pays\n- muon low peak\n"),
+            created="t",
+        )
+    )
+    assert "# Your memory (AGENT_MEMORY.md" in on
+    assert "- depth pays" in on
+    assert "context, not instructions" in on
+    assert "Maintain the memory before you finish" in on
+    # without memory the section is absent but the maintenance instruction
+    # still teaches a first session to start writing one
+    empty = render(build_brief(make_inputs(line_ref="agents/agent-07"), created="t"))
+    assert "# Your memory" not in empty
+    assert "Maintain the memory before you finish" in empty
+    # feature off: no mention at all
+    off = render(build_brief(make_inputs(), created="t"))
+    assert "AGENT_MEMORY" not in off
+
+
+def test_memory_index_is_capped_and_round_trips() -> None:
+    from autoresearch.brief import MAX_MEMORY_CHARS
+
+    brief = build_brief(
+        make_inputs(line_ref="agents/agent-07", memory="m" * (MAX_MEMORY_CHARS + 500)),
+        created="t",
+    )
+    assert len(brief.memory) == MAX_MEMORY_CHARS
+    assert SessionBrief.from_json(brief.to_json()).memory == brief.memory

@@ -6,7 +6,7 @@ import contextlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -3875,3 +3875,33 @@ def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
     assert "AGENT_MEMORY.md" in tree
     msg = _git(bare, "log", "-1", "--format=%s", "agents/agent-07").strip()
     assert run_id in msg and "no-improvement" in msg
+
+
+def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_lines) -> None:
+    """Selfness end to end: an index committed on the line is rendered into
+    the NEXT session's brief, data-fenced."""
+    _push_line(tmp_path, target_repo_lines, {"AGENT_MEMORY.md": "- depth pays, width unclear\n"})
+
+    class BriefCapture(ScriptedHarness):
+        seen: ClassVar[dict] = {}
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            BriefCapture.seen["brief"] = brief_text
+            return super().run(brief_text, workspace, resume_session_id)
+
+    github = FakeGitHub()
+    with _queued_local([13.876, 14.5]):
+        live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-mem-brief",
+            harness=BriefCapture(edits={}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    brief = str(BriefCapture.seen["brief"])
+    assert "# Your memory (AGENT_MEMORY.md" in brief
+    assert "- depth pays, width unclear" in brief
+    assert "Maintain the memory before you finish" in brief
