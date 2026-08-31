@@ -59,10 +59,11 @@ v1).
 ## Credit semantics: unchanged, and main stays clean (owner decision)
 
 - Lines change NOTHING about credit semantics — the credit model is
-  research-loop.md's portfolio rule, restated: a claim is either a SOTA win
-  against the benchmark's current best (what the speedrun gate implements
-  today) or a composable win against its OWN declared baseline, and every
-  claim is legible about which baseline it was measured against.
+  research-loop.md's portfolio rule, restated: a claim beats its OWN
+  declared baseline (the gate's paired base/candidate evals already
+  implement exactly this), and SOTA is a tracked property of main, not a
+  separate gate. Every claim is legible about which baseline it was
+  measured against.
   Transparency, not a freshest-main requirement, is the anti-gaming defense.
   A line needs no new baseline infrastructure either way: the metric is
   absolute and each claim names its baseline pair.
@@ -79,10 +80,9 @@ v1).
 
 - **Credit baseline with a divergent line**: the metric is absolute, so a
   line-based candidate gets a real number regardless of its base. Credit
-  follows research-loop.md's portfolio rule (SOTA vs current best, or a
-  composable win vs the claim's own declared baseline, always legible) —
-  see "Credit semantics" above; lines add no third rule and no per-line
-  baseline infrastructure.
+  follows research-loop.md's portfolio rule (beat the claim's own declared
+  baseline, always legible; SOTA tracked on main) — see "Credit semantics"
+  above; lines add no third rule and no per-line baseline infrastructure.
 - **Branch resets**: an agent may deliberately reset its line to main; the
   kernel performs it as `--force-with-lease` on the agent's OWN branch only
   (the only non-fast-forward ever allowed), recorded in the run report.
@@ -114,8 +114,13 @@ v1).
 
 ## Phases
 
-1. **Branches** (kernel): run-init checkout+merge-main; terminal push;
-   per-target contract opt-in (`lines: true`). ~2–3 PRs.
+1. **Branches** (kernel): run-init checkout+merge-main WITH the
+   instruction-file isolation above (the author clone path has no
+   sanitize step today, so this phase adds one: harness-instruction files
+   in a line checkout — CLAUDE.md, AGENTS.md, .claude/ — are reset to
+   main's reviewed versions; the line's self-notes live in the data-fenced
+   AGENT_MEMORY.md instead); terminal push, sealing extended to every
+   terminal path; per-target contract opt-in (`lines: true`). ~2–3 PRs.
 2. **Selfness memory**: AGENT_MEMORY.md render into the brief + author
    instruction to maintain it. 1 PR.
 3. **Hygiene**: brief extraction workflow + panel mandate + diff-stat
