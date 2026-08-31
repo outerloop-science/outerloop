@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -79,6 +80,7 @@ from autoresearch.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SyscallRequest
 from autoresearch.syscall import ensure_excluded as syscall_excluded
 from autoresearch.syscall import install_tool as syscall_install_tool
 from autoresearch.syscall import write_budget as syscall_write_budget
+from autoresearch.syscall import write_siblings as syscall_write_siblings
 from autoresearch.verifier import MAX_CLAIM_CHARS
 
 log = logging.getLogger(__name__)
@@ -973,6 +975,32 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
         return out
     except Exception as exc:
         log.info("research log unavailable (%s: %s); starting without it", type(exc).__name__, exc)
+        return []
+
+
+def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
+    """The other agents' live directions from the research-log's
+    status.json (already fetched: the SAME FETCH_HEAD the reports came
+    from). Size-checked BEFORE show like the report blobs, entries and
+    fields bounded — the branch is bot-written but never trusted with
+    unbounded memory. Any failure means no siblings known, never a crash."""
+    try:
+        blob = "FETCH_HEAD:climb/status.json"
+        if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
+            raise ValueError("status snapshot oversized; skipped")
+        fleet = json.loads(ws.git("show", blob))
+        return [
+            {
+                "agent": str(r.get("agent", ""))[:64],
+                "state": str(r.get("state", ""))[:32],
+                "phase": str(r.get("phase", ""))[:32],
+                "direction": str(r.get("direction", ""))[:160],
+            }
+            for r in fleet.get("runs", [])[:64]
+            if isinstance(r, dict) and r.get("agent") != self_agent
+        ]
+    except Exception as exc:
+        log.info("no sibling snapshot for this session (%s)", exc)
         return []
 
 
@@ -1951,6 +1979,11 @@ def live_attempt(
             # AFTER install_tool: installing the tool recreates the channel
             # dir it owns, which would delete an archive written earlier
             _install_report_archive(workspace, reports)
+            # the fleet snapshot the `siblings` command shows — read from the
+            # research-log's status.json (the SAME branch the reports came
+            # from, so it works across clusters) and best-effort throughout:
+            # a missing or malformed snapshot just means no siblings known
+            syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id))
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")

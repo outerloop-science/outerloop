@@ -377,8 +377,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rp.add_argument("names", nargs="*", help="report file names from the summary list")
     sub.add_parser("status", help="show staged syscalls and remaining budget")
+    sub.add_parser(
+        "siblings",
+        help="what the other agents were working on as of this session's start",
+    )
     sub.add_parser("cancel", help="discard the staged request")
     return p
+
+
+def cmd_siblings(root: Path, _args) -> str:
+    """The fleet snapshot the kernel wrote at session start (informational;
+    other agents may have moved on since)."""
+    try:
+        entries = json.loads((root / DIR / "siblings.json").read_text())
+    except (OSError, ValueError):
+        entries = []
+    if not isinstance(entries, list) or not entries:
+        return "no sibling activity known."
+    lines = ["as of this session's start:"]
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        who = str(e.get("agent", "?"))[:64]
+        state = str(e.get("state", ""))[:32]
+        phase = str(e.get("phase", ""))[:32]
+        direction = str(e.get("direction", ""))[:160]
+        label = f"{state}/{phase}" if phase else state
+        lines.append(f"  - {who} ({label}): {direction}" if direction else f"  - {who} ({label})")
+    lines.append("prefer a direction no sibling is actively on, unless you have a distinct angle.")
+    return "\n".join(lines)
 
 
 def cmd_reports(root: Path, args) -> str:
@@ -420,6 +447,7 @@ _HANDLERS = {
     "finding": cmd_finding,
     "conclude": cmd_conclude,
     "reports": cmd_reports,
+    "siblings": cmd_siblings,
     "status": cmd_status,
     "cancel": cmd_cancel,
 }
