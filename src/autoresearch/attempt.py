@@ -2154,7 +2154,9 @@ def live_attempt(
                 # the checkout, never rendered
                 memory_path = workspace / "AGENT_MEMORY.md"
                 if memory_path.is_file() and not memory_path.is_symlink():
-                    line_memory = memory_path.read_text(errors="replace")[:65_536]
+                    # byte-mode bounded read: never load an oversized file
+                    with memory_path.open("rb") as fh:
+                        line_memory = fh.read(65_536).decode("utf-8", errors="replace")
             except OSError as exc:
                 log.warning("could not read AGENT_MEMORY.md: %s", exc)
         author_syscalls = (

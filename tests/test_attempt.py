@@ -3878,8 +3878,8 @@ def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
 
 
 def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_lines) -> None:
-    """Selfness end to end: an index committed on the line is rendered into
-    the NEXT session's brief, data-fenced."""
+    """End to end: an index committed on the line is rendered into the next
+    session's brief, data-fenced."""
     _push_line(tmp_path, target_repo_lines, {"AGENT_MEMORY.md": "- depth pays, width unclear\n"})
 
     class BriefCapture(ScriptedHarness):
