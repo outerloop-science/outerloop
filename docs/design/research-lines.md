@@ -47,12 +47,12 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   what no longer fits moves to a topic file instead of being deleted.
   Only the memory index is added to the brief. Memory, code, and beliefs travel
   as one lineage — and cross clusters for free, since the branch lives on
-  the shared repo. It NEVER reaches main, and can never
-  carry anything a run depends on: every MEASURABLE seal (gate candidates,
-  launches) excludes AGENT_MEMORY.md and agent_memory/ at snapshot time,
-  so the measured tree equals the published tree and memory-stashed
-  content can never influence a credited number; only the notebook seal
-  keeps them (panel grab-bag mandate as backstop).
+  the shared repo. Memory stays on the line branch.
+  Candidate and launch snapshots omit AGENT_MEMORY.md and agent_memory/,
+  so measured trees, main PRs, and panel claims never include them — and
+  memory-stashed content can never influence a credited number. The
+  notebook snapshot keeps them, even when the target's .gitignore matches
+  them.
 - **Selective integration is git**: harvesting a sibling's technique or
   main's progress = merge/cherry-pick, not bespoke machinery. One carve-out:
   `AGENT_MEMORY.md` is slot-private — any merge into a line keeps the

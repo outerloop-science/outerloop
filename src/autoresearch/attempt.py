@@ -792,6 +792,7 @@ def _wake_author_sleep(
             config.benchmark,
             config.bot_login,
             _utc_date(now),
+            exclude=LINE_MEMORY_PATHS if wake_line else (),
         )
         if panel_lenses
         else None
@@ -1052,7 +1053,8 @@ def _push_line_snapshot(
         # raises if the ref is absent (e.g. a park that predates the line
         # feature) — _best_effort turns that into a logged skip
         parent = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
-        snap = snapshot_tree(ws, parent)
+        memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
+        snap = snapshot_tree(ws, parent, force=memory)
         try:
             # seal only when the tree moved past the local ref; the PUSH runs
             # either way — a session that COMMITTED its work advanced the
@@ -1611,6 +1613,9 @@ def resume_run(
                         config.benchmark,
                         config.bot_login,
                         _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
+                        exclude=(
+                            LINE_MEMORY_PATHS if _line_ref_for(bench, config.agent_id) else ()
+                        ),
                     )(baseline, candidate, str(stage.get("report", "")))
                 except Exception as exc:
                     log.warning(
@@ -1946,6 +1951,7 @@ def build_panel_runner(
     bot_login: str,
     today: str,
     start_round: int = 0,
+    exclude: tuple[str, ...] = (),
 ) -> Callable[[float, float, str], PanelVerdict]:
     """The git half of the pre-PR panel: prepare the two read-only checkouts
     and the synthetic claim, then hand off to `run_panel` (which owns no git).
@@ -1965,6 +1971,10 @@ def build_panel_runner(
         shutil.rmtree(panel_ws, ignore_errors=True)
         panel_ws.mkdir(parents=True, exist_ok=True)
         ws.git("add", "-A")
+        if exclude:
+            # the panel judges the CLAIM — the same tree the gate measured,
+            # which excludes line memory (docs/design/research-lines.md)
+            ws.git("rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", *exclude)
         tree = ws.git("write-tree").strip()
         ws.git("reset")
         snapshot = ws.git(
@@ -2122,8 +2132,9 @@ def live_attempt(
         # line must not shape its own budgets), and the syscall-channel check
         # below must see the line's tree. A failed checkout falls back to the
         # base branch: a run is never lost to its notebook.
+        lines_active = _bench is not None and _bench.lines and bool(config.agent_id)
         line_ref = ""
-        if _bench is not None and _bench.lines and config.agent_id:
+        if lines_active:
             try:
                 line_ref = _checkout_line(ws, workspace, config.agent_id, base_branch)
             except Exception as exc:
@@ -2185,7 +2196,7 @@ def live_attempt(
             ws.git("add", "-A")
             paths = ws.staged_paths()
             ws.git("reset")
-            if line_ref:
+            if lines_active:
                 paths = [p for p in paths if not _is_line_memory(p)]
             return paths
 
@@ -2239,6 +2250,7 @@ def live_attempt(
                 config.benchmark,
                 config.bot_login,
                 created[:10],
+                exclude=LINE_MEMORY_PATHS if lines_active else (),
             )
             if panel_lenses
             else None
@@ -2276,7 +2288,9 @@ def live_attempt(
         snapshots: list[Snapshot] = []
 
         def snapshot() -> str:
-            snap = snapshot_tree(ws, pre_session_sha, exclude=LINE_MEMORY_PATHS if line_ref else ())
+            snap = snapshot_tree(
+                ws, pre_session_sha, exclude=LINE_MEMORY_PATHS if lines_active else ()
+            )
             snapshots.append(snap)
             return snap.commit
 

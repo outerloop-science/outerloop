@@ -2149,6 +2149,8 @@ def _write_parked_candidate(
     run_id="tsp-1",
     base_branch="main",
     issue_number=0,
+    contract=None,
+    agent_id="",
 ):
     """A candidate-parked run on disk in the REAL park state: HEAD is still the
     pre-session commit, the session's edits are UNCOMMITTED in the working tree,
@@ -2163,7 +2165,7 @@ def _write_parked_candidate(
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
     (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
-    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_DISPATCH)
+    (wsroot / ".autoresearch.yaml").write_text(contract or CONTRACT_DISPATCH)
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     _git(wsroot, "init", "-q", "-b", "main")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -2185,6 +2187,9 @@ def _write_parked_candidate(
     _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
     _git(wsroot, "remote", "add", "origin", str(bare))
 
+    if agent_id:
+        # a lines run parked here: the local line ref exists from run start
+        _git(wsroot, "branch", f"agents/{agent_id}", base_sha)
     record = RunRecord(
         run_id=run_id,
         target="org/pilot",
@@ -2193,6 +2198,7 @@ def _write_parked_candidate(
         state="waiting",
         resume_session_id="s1",
         issue_number=issue_number,
+        agent_id=agent_id,
         stage={
             "phase": "candidate",
             "base_sha": base_sha,
@@ -3790,3 +3796,82 @@ def test_memory_only_session_measures_nothing(tmp_path, target_repo_lines) -> No
         _git(target_repo_lines, "show", "agents/agent-07:AGENT_MEMORY.md")
         == "- muon low peak seems real\n"
     )
+
+
+def test_notebook_keeps_memory_the_target_gitignores(tmp_path: Path, target_repo) -> None:
+    """A target .gitignore matching the memory paths must not silently
+    discard session memory from the notebook seal."""
+    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / ".gitignore").write_text("AGENT_MEMORY.md\nagent_memory/\n")
+    (ws.root / "AGENT_MEMORY.md").write_text("survives the ignore\n")
+    (ws.root / "agent_memory").mkdir()
+    (ws.root / "agent_memory" / "muon.md").write_text("notes\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    tree = _git(target_repo, "ls-tree", "-r", "--name-only", "agents/agent-07")
+    assert "AGENT_MEMORY.md" in tree and "agent_memory/muon.md" in tree
+
+
+def test_fallback_run_still_excludes_memory_from_the_seal(
+    tmp_path, target_repo_lines, monkeypatch
+) -> None:
+    """A failed line checkout falls back to the base branch, but the memory
+    boundary keys on the CONTRACT: the sealed candidate must still exclude
+    memory paths (else scope config is the only thing keeping them off main)."""
+
+    def broken_checkout(*a, **k):
+        raise RuntimeError("simulated checkout failure")
+
+    monkeypatch.setattr(climb_mod, "_checkout_line", broken_checkout)
+    github = FakeGitHub()
+    with _queued_local([13.876, 13.1]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-fallback-1",
+            harness=ScriptedHarness(
+                edits={
+                    "src/pilot/solvers/tsp.py": "def solve(): return 4\n",
+                    "AGENT_MEMORY.md": "- notes\n",
+                }
+            ),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    assert outcome.outcome == "improved" and len(github.prs) == 1
+    published = _git(target_repo_lines, "ls-tree", "-r", "--name-only", str(github.prs[0]["head"]))
+    assert "src/pilot/solvers/tsp.py" in published and "AGENT_MEMORY.md" not in published
+
+
+def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
+    """A negative candidate wake on a lines run lands the session's final
+    tree — memory included — on the agent's branch."""
+    state, run_id = _write_parked_candidate(
+        tmp_path,
+        monkeypatch,
+        values={"baseline": 13.0, "candidate": 13.0},
+        contract=CONTRACT_DISPATCH.replace(
+            "    direction: min\n", "    direction: min\n    lines: true\n"
+        ),
+        agent_id="agent-07",
+    )
+    wsroot = state / "runs" / run_id / "ws"
+    (wsroot / "AGENT_MEMORY.md").write_text("- candidate was flat\n")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "no-improvement"
+    bare = tmp_path / f"origin-{run_id}.git"
+    tree = _git(bare, "ls-tree", "-r", "--name-only", "agents/agent-07")
+    assert "AGENT_MEMORY.md" in tree
+    msg = _git(bare, "log", "-1", "--format=%s", "agents/agent-07").strip()
+    assert run_id in msg and "no-improvement" in msg
