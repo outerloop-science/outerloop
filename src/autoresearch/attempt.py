@@ -766,9 +766,10 @@ def _wake_author_sleep(
     # and park the run as a CANDIDATE); snapshots parent on base (same as the
     # first pass: the clone was at base).
     snapshots: list[Snapshot] = []
+    wake_line = _line_ref_for(bench, config.agent_id)
 
     def snapshot() -> str:
-        snap = snapshot_tree(ws, base_sha)
+        snap = snapshot_tree(ws, base_sha, exclude=LINE_MEMORY_PATHS if wake_line else ())
         snapshots.append(snap)
         return snap.commit
 
@@ -776,6 +777,8 @@ def _wake_author_sleep(
         ws.git("add", "-A")
         paths = ws.staged_paths()
         ws.git("reset")
+        if wake_line:
+            paths = [p for p in paths if not _is_line_memory(p)]
         return paths
 
     panel_runner = (
@@ -789,6 +792,7 @@ def _wake_author_sleep(
             config.benchmark,
             config.bot_login,
             _utc_date(now),
+            exclude=LINE_MEMORY_PATHS if wake_line else (),
         )
         if panel_lenses
         else None
@@ -1007,6 +1011,18 @@ def _reset_instruction_files(ws: Workspace, workspace: Path, base_ref: str) -> N
         ws.git("checkout", base_ref, "--", *base_paths)
 
 
+# The agent's memory on its line (docs/design/research-lines.md): the bounded
+# index at the branch root plus the topic-file folder. They ride the NOTEBOOK
+# seal (the line branch is exactly where they live) and are excluded from
+# every MEASURABLE seal and from changed-path accounting — never a scope
+# violation, never claimable work, never part of a main-PR candidate.
+LINE_MEMORY_PATHS = ("AGENT_MEMORY.md", "agent_memory")
+
+
+def _is_line_memory(path: str) -> bool:
+    return path in LINE_MEMORY_PATHS or path.startswith("agent_memory/")
+
+
 def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
     """The agent's line branch when the benchmark opted in, or the empty
     string when the feature is off. Wake paths recompute this from the
@@ -1037,7 +1053,8 @@ def _push_line_snapshot(
         # raises if the ref is absent (e.g. a park that predates the line
         # feature) — _best_effort turns that into a logged skip
         parent = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
-        snap = snapshot_tree(ws, parent)
+        memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
+        snap = snapshot_tree(ws, parent, force=memory)
         try:
             # seal only when the tree moved past the local ref; the PUSH runs
             # either way — a session that COMMITTED its work advanced the
@@ -1481,6 +1498,11 @@ def resume_run(
         from datetime import UTC as _UTC
         from datetime import datetime as _dt
 
+        # seal the notebook before any checkout mutates the persisted session
+        # tree (the memory files are excluded from the sealed candidate and
+        # would not survive the force-checkout + clean below)
+        _notebook("improved")
+
         branch = f"{config.branch_prefix}/{run_id}"
 
         # IDEMPOTENCY: a prior wake may have opened the PR but died before
@@ -1502,7 +1524,6 @@ def resume_run(
         if existing:
             pr_url = str(existing.get("html_url", ""))
             log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
-            _notebook("improved")
             # put the workspace on the branch (a later follow-up expects it) and
             # finish the steps the prior wake may have died before completing.
             _best_effort(
@@ -1592,6 +1613,9 @@ def resume_run(
                         config.benchmark,
                         config.bot_login,
                         _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
+                        exclude=(
+                            LINE_MEMORY_PATHS if _line_ref_for(bench, config.agent_id) else ()
+                        ),
                     )(baseline, candidate, str(stage.get("report", "")))
                 except Exception as exc:
                     log.warning(
@@ -1720,7 +1744,6 @@ def resume_run(
         # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
         # fails, the record stays `waiting` with the snapshot intact, so the run
         # is recoverable rather than an ABORTED record over a live PR.
-        _notebook("improved")
         report_path = run_dir / "report.md"
         _best_effort(
             "run report",
@@ -1928,6 +1951,7 @@ def build_panel_runner(
     bot_login: str,
     today: str,
     start_round: int = 0,
+    exclude: tuple[str, ...] = (),
 ) -> Callable[[float, float, str], PanelVerdict]:
     """The git half of the pre-PR panel: prepare the two read-only checkouts
     and the synthetic claim, then hand off to `run_panel` (which owns no git).
@@ -1947,6 +1971,10 @@ def build_panel_runner(
         shutil.rmtree(panel_ws, ignore_errors=True)
         panel_ws.mkdir(parents=True, exist_ok=True)
         ws.git("add", "-A")
+        if exclude:
+            # the panel judges the CLAIM — the same tree the gate measured,
+            # which excludes line memory (docs/design/research-lines.md)
+            ws.git("rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", *exclude)
         tree = ws.git("write-tree").strip()
         ws.git("reset")
         snapshot = ws.git(
@@ -2104,8 +2132,9 @@ def live_attempt(
         # line must not shape its own budgets), and the syscall-channel check
         # below must see the line's tree. A failed checkout falls back to the
         # base branch: a run is never lost to its notebook.
+        lines_active = _bench is not None and _bench.lines and bool(config.agent_id)
         line_ref = ""
-        if _bench is not None and _bench.lines and config.agent_id:
+        if lines_active:
             try:
                 line_ref = _checkout_line(ws, workspace, config.agent_id, base_branch)
             except Exception as exc:
@@ -2167,6 +2196,8 @@ def live_attempt(
             ws.git("add", "-A")
             paths = ws.staged_paths()
             ws.git("reset")
+            if lines_active:
+                paths = [p for p in paths if not _is_line_memory(p)]
             return paths
 
         if issue_number:
@@ -2219,6 +2250,7 @@ def live_attempt(
                 config.benchmark,
                 config.bot_login,
                 created[:10],
+                exclude=LINE_MEMORY_PATHS if lines_active else (),
             )
             if panel_lenses
             else None
@@ -2256,7 +2288,9 @@ def live_attempt(
         snapshots: list[Snapshot] = []
 
         def snapshot() -> str:
-            snap = snapshot_tree(ws, pre_session_sha)
+            snap = snapshot_tree(
+                ws, pre_session_sha, exclude=LINE_MEMORY_PATHS if lines_active else ()
+            )
             snapshots.append(snap)
             return snap.commit
 
@@ -2412,6 +2446,14 @@ def live_attempt(
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
     wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
+
+    # Research lines: seal the notebook NOW, while the tree is still the
+    # session's final tree — the publish below force-checkouts the sealed
+    # candidate and cleans untracked files, which would drop the agent's
+    # memory (it is excluded from measurable seals by design). The label is
+    # the GATE outcome, correct at this moment; a publish failure appends a
+    # publish-error snapshot at the tail.
+    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets)
 
     pr_url = ""
     outcome_name = result.outcome
@@ -2585,11 +2627,11 @@ def live_attempt(
             redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
             secrets,
         )
-    # Research lines: the notebook records EVERY terminal, AFTER the publish
-    # settles — the snapshot then names the final outcome (a publish failure
-    # is publish-error, not improved), and an improved tree is the published
-    # candidate plus its ledger commit.
-    _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets)
+    if outcome_name != result.outcome:
+        # the publish failed after the gate credited the tree: the improved
+        # snapshot above stands (the measurement was real); append the
+        # publish-error marker so the notebook records how the run ended
+        _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets)
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return AttemptOutcome(
         run_id=run_id,

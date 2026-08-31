@@ -286,7 +286,10 @@ def render(brief: SessionBrief) -> str:
             "task (your divergence debt coming due). A PR to main is cut only "
             "from a credited win and must be ONE clean contribution: check "
             "out the base branch, re-apply the minimal winning change onto "
-            "it, and finish on that tree — never the whole line.",
+            "it, and finish on that tree — never the whole line. Your memory "
+            "(AGENT_MEMORY.md and agent_memory/) lives on this branch alone: "
+            "it is excluded from measured trees and can never carry "
+            "anything a run depends on.",
         ]
     if brief.lessons:
         fence = _fence(brief.lessons)

@@ -93,10 +93,19 @@ class Snapshot:
     ref: str
 
 
-def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
+def snapshot_tree(
+    ws: Workspace, base_sha: str, exclude: tuple[str, ...] = (), force: tuple[str, ...] = ()
+) -> Snapshot:
     """Snapshot the workspace's current CONTENT as a commit parented on
     `base_sha`, without touching the working index, and retain it under a
     unique ref so gc cannot prune it before a queued job materializes it.
+    `exclude` drops those paths (files or whole directories) from the sealed
+    tree — research lines use it to keep the agent's memory out of every
+    MEASURABLE seal (gate candidates, launches) while the notebook seal
+    keeps it (docs/design/research-lines.md). `force` adds those paths even
+    when the target's ignore rules match them — the notebook seal uses it so
+    a .gitignore entry cannot silently discard session memory; callers pass
+    only paths that exist.
     """
     # Unique per snapshot: two snapshots against the SAME base run
     # concurrently (the design's paired baseline/candidate fan-out) and must
@@ -137,6 +146,10 @@ def snapshot_tree(ws: Workspace, base_sha: str) -> Snapshot:
         # index (a fresh empty index would drop tracked-but-ignored files)
         run([*git, "read-tree", base_sha], 60)
         run([*git, "add", "-A"], 120)
+        if force:
+            run([*git, "add", "-f", "--", *force], 60)
+        if exclude:
+            run([*git, "rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", *exclude], 60)
         # .gitattributes are KEPT: the job materializes the tree by CHECKOUT
         # (git worktree), which reproduces content faithfully — including
         # .gitattributes — and does NOT apply export-ignore/export-subst

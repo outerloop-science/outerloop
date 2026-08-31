@@ -460,3 +460,22 @@ def test_job_tmp_lives_on_node_local_scratch(tmp_path: Path) -> None:
     text = Path(script).read_text()
     assert '--workdir "$SCRATCH/work"' in text
     assert 'mkdir -p "$SCRATCH/cache" "$SCRATCH/home" "$SCRATCH/work"' in text
+
+
+def test_snapshot_exclude_drops_files_and_directories(tmp_path):
+    root = _repo(tmp_path)
+    ws = _WS(root)
+    base = ws.git("rev-parse", "HEAD")
+    (root / "kept.py").write_text("x = 2\n")
+    (root / "AGENT_MEMORY.md").write_text("beliefs\n")
+    (root / "agent_memory").mkdir()
+    (root / "agent_memory" / "muon.md").write_text("notes\n")
+    snap = snapshot_tree(ws, base, exclude=("AGENT_MEMORY.md", "agent_memory"))  # type: ignore[arg-type]
+    files = ws.git("ls-tree", "-r", "--name-only", snap.commit).splitlines()
+    assert "kept.py" in files
+    assert not any(f == "AGENT_MEMORY.md" or f.startswith("agent_memory/") for f in files)
+    # the exclusion touches only the seal: the working tree keeps the files
+    assert (root / "AGENT_MEMORY.md").exists() and (root / "agent_memory" / "muon.md").exists()
+    # and an empty exclude still seals them
+    full = snapshot_tree(ws, base)  # type: ignore[arg-type]
+    assert "AGENT_MEMORY.md" in ws.git("ls-tree", "-r", "--name-only", full.commit).splitlines()
