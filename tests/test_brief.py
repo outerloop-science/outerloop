@@ -168,6 +168,11 @@ def test_distill_lessons_extracts_takeaways_newest_first() -> None:
     assert "one val-interval short" in lines[0]
     assert lines[1] == "- 2026-08-30 agent-04 [aborted]: plain-label forms parse too."
     assert lines[2] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
+    # a benchmark slug containing "agent-N" must not steal the label
+    tricky = distill_lessons(
+        [("2026-08-27-agent-7-sim-20260827-010101-agent-02.md", "- **Takeaway:** t.\n")]
+    )
+    assert tricky.startswith("- 2026-08-27 agent-02:")
     # steward reports carry no agent id: the date survives and the line is
     # labeled for what it is
     steward = distill_lessons(

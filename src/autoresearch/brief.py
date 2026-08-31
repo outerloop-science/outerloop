@@ -59,10 +59,11 @@ def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
         if not takeaway:
             continue
         day = re.search(r"\d{4}-\d{2}-\d{2}", name)
-        who = re.search(r"agent-\d+", name)
+        # the run's agent id is the LAST match — a benchmark slug may itself
+        # contain "agent-N"; steward runs carry none and are labeled as such
+        who = re.findall(r"agent-\d+", name)
         date = day.group(0) if day else ""
-        # steward runs carry no agent id; label them for what they are
-        agent = who.group(0) if who else ("steward" if "steward" in name else "")
+        agent = who[-1] if who else ("steward" if "steward" in name else "")
         kernel = _KERNEL_OUTCOME.search(text)
         outcome = kernel.group(1) if kernel else fields.get("Outcome", "")
         line = (
