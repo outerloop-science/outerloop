@@ -41,9 +41,18 @@ def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
     extracted mechanically from the reports' own structured fields. A
     report without a Takeaway contributes nothing. Bounded by the brief's
     MAX_LESSONS_CHARS cap (re-capped there)."""
+
+    def _when(name: str) -> str:
+        # the date prefix sorts days; the run id embeds the full timestamp
+        # (bench-YYYYMMDD-HHMMSS-agent-NN) and breaks same-day ties — the
+        # fetcher's own order is arbitrary within a day
+        day = re.search(r"\d{4}-\d{2}-\d{2}", name)
+        ts = re.search(r"\d{8}-\d{6}", name)
+        return (day.group(0) if day else "") + "|" + (ts.group(0) if ts else "")
+
     lines: list[str] = []
     total = 0
-    for name, text in reports:
+    for name, text in sorted(reports, key=lambda r: _when(r[0]), reverse=True):
         fields = {
             k.capitalize(): v.strip().strip("*").strip() for k, v in _REPORT_FIELD.findall(text)
         }

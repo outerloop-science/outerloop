@@ -168,6 +168,20 @@ def test_distill_lessons_extracts_takeaways_newest_first() -> None:
     assert "one val-interval short" in lines[0]
     assert lines[1] == "- 2026-08-30 agent-04 [aborted]: plain-label forms parse too."
     assert lines[2] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
+    # same-day ties break on the run id's embedded timestamp, not on the
+    # benchmark name (zbench earlier in the day must sort after abench later)
+    same_day = [
+        (
+            "2026-08-31-zbench-20260831-010000-agent-01.md",
+            "- **Takeaway:** earlier.\n",
+        ),
+        (
+            "2026-08-31-abench-20260831-090000-agent-02.md",
+            "- **Takeaway:** later.\n",
+        ),
+    ]
+    ordered = distill_lessons(same_day).splitlines()
+    assert "later." in ordered[0] and "earlier." in ordered[1]
     # bounded: a flood of reports cannot exceed the cap
     flood = [("2026-01-01-a-agent-01.md", "- **Takeaway:** " + "x" * 300 + "\n")] * 200
     assert len(distill_lessons(flood)) <= MAX_LESSONS_CHARS
