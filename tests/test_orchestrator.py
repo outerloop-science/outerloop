@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -1090,6 +1090,28 @@ def test_pr_body_carries_table_and_redacts(tmp_path: Path) -> None:
     assert "sk-secret-1" not in body
     assert "[redacted]" in body
     assert "measured by the orchestrator" in body
+    assert "written before the orchestrator measured" in body
+
+
+def test_pr_body_marks_inherited_prose_from_a_resumed_session(tmp_path: Path) -> None:
+    """A candidate-wake publish reruns no session; the PR must say so."""
+    session = ok_session(text="predecessor's report, carried forward")
+    session = replace(session, stop_reason="resumed")
+    result, _, _ = run_climb(tmp_path, [13.876, 13.1], session=session)
+    body = pr_body(result, CONFIG, redact_secrets=())
+    assert "came from the previous session in this line" in body
+    assert "no agent session ran for this attempt" in body
+
+
+def test_pr_body_does_not_mark_zero_turn_backends_as_carried_forward(tmp_path: Path) -> None:
+    """Codex reports num_turns=0 on every completed session; only the
+    resumed stop_reason means the prose was carried forward."""
+    session = ok_session(text="fresh codex report")
+    session = replace(session, num_turns=0, stop_reason="completed")
+    result, _, _ = run_climb(tmp_path, [13.876, 13.1], session=session)
+    body = pr_body(result, CONFIG, redact_secrets=())
+    assert "came from the previous session" not in body
+    assert "Session prose, written before the orchestrator measured" in body
 
 
 def test_report_covers_failure_outcomes(tmp_path: Path) -> None:

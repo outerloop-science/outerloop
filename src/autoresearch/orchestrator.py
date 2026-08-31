@@ -1817,6 +1817,16 @@ def pr_body(
             "## Research report",
             "",
             (
+                "*This report came from the previous session in this line — no "
+                "agent session ran for this attempt. It was written before the "
+                "orchestrator measured; the table above contains the measured "
+                "results.*"
+                if result.session and result.session.stop_reason == "resumed"
+                else "*Session prose, written before the orchestrator measured; "
+                "the table above contains the measured results.*"
+            ),
+            "",
+            (
                 redact(result.session.final_text, redact_secrets)[:MAX_REPORT_BODY]
                 if result.session
                 else ""
