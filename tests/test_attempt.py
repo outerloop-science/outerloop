@@ -3712,9 +3712,9 @@ def test_push_line_snapshot_publishes_session_commits(tmp_path: Path, target_rep
 
 
 def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_repo_lines) -> None:
-    """The notebook snapshot lands AFTER the publish settles: an improved
-    run's line tip carries the published candidate plus its ledger commit,
-    and the message names the final outcome."""
+    """An improved run's notebook seals BEFORE the publish mutates the tree
+    (memory survives) and the message names the gate outcome; the ledger
+    stays on main and reaches the line at the next run-start merge."""
     github = FakeGitHub()
     queue = [13.876, 13.1]  # improvement: PR + ledger
     with _queued_local(queue):
@@ -3732,4 +3732,61 @@ def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_rep
     msg = _git(target_repo_lines, "log", "-1", "--format=%s", "agents/agent-07").strip()
     assert "tsp-lines-2" in msg and "improved" in msg
     tree = _git(target_repo_lines, "ls-tree", "-r", "--name-only", "agents/agent-07")
-    assert "results/leader.json" in tree  # the ledger commit rode the notebook
+    assert "src/pilot/solvers/tsp.py" in tree  # the session's final tree
+    assert "results/leader.json" not in tree  # the ledger lives on main
+
+
+def test_line_memory_never_reaches_a_measurable_seal(tmp_path, target_repo_lines) -> None:
+    """The memory boundary end to end: memory edits are neither scope
+    violations nor part of the sealed candidate the PR publishes — but the
+    notebook keeps them."""
+    github = FakeGitHub()
+    queue = [13.876, 13.1]  # improvement
+    with _queued_local(queue):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-mem-1",
+            harness=ScriptedHarness(
+                edits={
+                    "src/pilot/solvers/tsp.py": "def solve(): return 3\n",
+                    "AGENT_MEMORY.md": "- depth pays\n",
+                    "agent_memory/muon.md": "peak lr notes\n",
+                }
+            ),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    # memory at the repo root is OUTSIDE scope.allowed — with the boundary it
+    # is not a violation, and the improvement publishes
+    assert outcome.outcome == "improved" and len(github.prs) == 1
+    published = _git(target_repo_lines, "ls-tree", "-r", "--name-only", str(github.prs[0]["head"]))
+    assert "src/pilot/solvers/tsp.py" in published
+    assert "AGENT_MEMORY.md" not in published and "agent_memory/muon.md" not in published
+    notebook = _git(target_repo_lines, "ls-tree", "-r", "--name-only", "agents/agent-07")
+    assert "AGENT_MEMORY.md" in notebook and "agent_memory/muon.md" in notebook
+
+
+def test_memory_only_session_measures_nothing(tmp_path, target_repo_lines) -> None:
+    """A session that only wrote memory claims nothing: the unmeasured lane
+    ends it, and the notebook still preserves the memory."""
+    github = FakeGitHub()
+    with _queued_local([13.876]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-mem-2",
+            harness=ScriptedHarness(edits={"AGENT_MEMORY.md": "- muon low peak seems real\n"}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    assert outcome.outcome == "no-improvement"
+    assert github.prs == []
+    assert (
+        _git(target_repo_lines, "show", "agents/agent-07:AGENT_MEMORY.md")
+        == "- muon low peak seems real\n"
+    )
