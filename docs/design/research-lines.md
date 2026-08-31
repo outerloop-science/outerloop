@@ -43,7 +43,10 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   root, author-owned, bounded, updated each session, rendered into the brief
   as the agent's own memory (data-fenced). Memory, code, and beliefs travel
   as one lineage — and cross clusters for free, since the branch lives on
-  the shared repo.
+  the shared repo. It NEVER reaches main: the main-PR extraction re-applies
+  the winning change onto a main base, and the kernel mechanically rejects
+  AGENT_MEMORY.md in any main-PR candidate (panel grab-bag mandate as
+  backstop).
 - **Selective integration is git**: harvesting a sibling's technique or
   main's progress = merge/cherry-pick, not bespoke machinery. One carve-out:
   `AGENT_MEMORY.md` is slot-private — any merge into a line keeps the
