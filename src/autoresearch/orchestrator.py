@@ -1559,26 +1559,40 @@ def attempt_once(
                 assert failed_gate is not None
                 gpu_hours_used -= evals_charge  # nothing ran
                 outcome: AttemptResult | MeasureOK = failed_gate[1]
+            elif submitted is None and tree(candidate_sha) == tree(base_sha):
+                # nothing to measure: the final tree IS the base tree —
+                # measuring it would compare base against itself (any
+                # benchmark, metered or not)
+                outcome = AttemptResult(
+                    outcome="no-improvement",
+                    baseline=baseline,
+                    session=session,
+                    note="unmeasured finish: the final tree is unchanged from base",
+                    run_seed=run_seed,
+                    panel_transcript="\n\n".join(panel_sections),
+                    panel_rounds=panel_reads,
+                )
             elif (
                 submitted is None
                 and launcher is not None  # feature off = the gate IS the measurement
-                and launches_used == 0
                 and bench.depth_k > 0
                 and bench.gpus > 0
                 and float(contract.budgets.gpu_hours_per_run or 0) > 0
             ):
-                # the submit refusal's other half: a METERED finish with no
-                # returned launches measured nothing, so the gate does not
-                # run (the panel above still reviewed). This also closes the
-                # refuse-twice bypass — dropping a repeated bare submit must
-                # not buy the very measurement the refusal denied.
+                # a METERED finish without a submit is panel-only, launches or
+                # not: the author chose not to claim, and a human scientist
+                # does not spend the full experimental budget re-verifying
+                # their own negative before writing it in the notebook. (With
+                # zero launches this also closes the refuse-twice bypass —
+                # dropping a repeated bare submit must not buy the very
+                # measurement the refusal denied.)
                 outcome = AttemptResult(
-                    outcome="negative-result",
+                    outcome="no-improvement",
                     baseline=baseline,
                     session=session,
                     note=(
-                        "unmeasured finish: no experiment launches returned this "
-                        "run, so the metered gate did not run (panel only)"
+                        "unmeasured finish: no submit was made, so the metered "
+                        "gate did not run (panel only)"
                     ),
                     run_seed=run_seed,
                     panel_transcript="\n\n".join(panel_sections),

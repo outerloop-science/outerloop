@@ -355,8 +355,32 @@ def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> N
         created="t",
         launcher=_fake_launcher([]),
     )
-    assert result.outcome == "negative-result"
+    assert result.outcome == "no-improvement"  # maps to the negative-result ending
     assert "unmeasured finish" in result.note
+
+
+def test_unchanged_tree_finish_is_never_measured(tmp_path: Path) -> None:
+    """A finish whose final tree equals base has nothing to measure — the
+    gate would compare base against itself (metered or not)."""
+    harness = FakeHarness(result=ok_session())
+    evaluator = FakeEvaluator(values=[13.9])
+    measurer, snapshot = _wire(evaluator, tmp_path)
+    result = attempt_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        created="t",
+        tree_of=lambda sha: "same-tree",
+    )
+    assert result.outcome == "no-improvement"  # maps to the negative-result ending
+    assert "unchanged from base" in result.note
+    assert evaluator.calls == []  # nothing was measured
 
 
 def test_feature_off_metered_runs_still_measure_at_finish(tmp_path: Path) -> None:
