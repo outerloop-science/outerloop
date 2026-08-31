@@ -294,10 +294,7 @@ def render(brief: SessionBrief) -> str:
             + (
                 " The full archive: `python .autoresearch/syscall reports` "
                 "lists every report one line each; add names to read full "
-                "reports, several in one call. `python .autoresearch/syscall "
-                "siblings` shows what the other agents were working on as of "
-                "your session start — prefer a direction no sibling is "
-                "actively on, unless you have a distinct angle."
+                "reports, several in one call."
                 if brief.report_archive
                 else ""
             )
@@ -326,6 +323,7 @@ def render(brief: SessionBrief) -> str:
             "    python .autoresearch/syscall launch --name <handle> "
             "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",
             "    python .autoresearch/syscall submit [--minutes <N>]",
+            "    python .autoresearch/syscall siblings",
             "    python .autoresearch/syscall sleep",
             "",
             *(
@@ -364,7 +362,10 @@ def render(brief: SessionBrief) -> str:
             f"{brief.launch_budget} experiment launches, {brief.sleep_budget} "
             "sleeps (a `sleep` with nothing staged is a checkpoint that "
             "refreshes your session clock and costs one sleep). Spend them as "
-            "your judgment says; they are generous, not a target to exhaust.",
+            "your judgment says; they are generous, not a target to exhaust. "
+            "`siblings` shows what the other agents were working on as of "
+            "your session start — prefer a direction no sibling is actively "
+            "on, unless you have a distinct angle.",
             "",
             "READY means MEASURED: submit only when your own launch results "
             "already show the candidate STRICTLY clearing the gate's "

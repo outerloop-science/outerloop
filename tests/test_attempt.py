@@ -271,6 +271,35 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     _git(seed, "push", "-q", str(origin), "research-log")
     assert [n for n, _ in _fetch_research_reports(ws, 1)] == ["2026-08-29-run-b.md"]
 
+    # the sibling snapshot rides the SAME fetch: status.json on the branch
+    # yields the other agents' entries, self excluded, bounded fields; a
+    # branch without it means no siblings known
+    import json as _json
+
+    from autoresearch.attempt import _sibling_entries
+
+    assert _sibling_entries(ws, "agent-01") == []  # no status.json yet
+    status = {
+        "runs": [
+            {"agent": "agent-01", "state": "waiting", "phase": "candidate", "direction": "me"},
+            {
+                "agent": "agent-02",
+                "state": "waiting",
+                "phase": "author-sleep",
+                "direction": "d" * 500,
+            },
+        ]
+    }
+    (seed / "climb").mkdir()
+    (seed / "climb" / "status.json").write_text(_json.dumps(status))
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "status")
+    _git(seed, "push", "-q", str(origin), "research-log")
+    _fetch_research_reports(ws, 5)  # refresh FETCH_HEAD
+    entries = _sibling_entries(ws, "agent-01")
+    assert [e["agent"] for e in entries] == ["agent-02"]  # self excluded
+    assert len(entries[0]["direction"]) == 160  # bounded
+
     # production order: the tool installer recreates the channel dir it owns,
     # so the archive must be written AFTER it (review #191: writing before
     # deleted every archive)

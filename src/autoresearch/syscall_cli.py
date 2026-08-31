@@ -398,10 +398,10 @@ def cmd_siblings(root: Path, _args) -> str:
     for e in entries:
         if not isinstance(e, dict):
             continue
-        who = str(e.get("agent", "?"))
-        state = str(e.get("state", ""))
-        phase = str(e.get("phase", ""))
-        direction = str(e.get("direction", ""))
+        who = str(e.get("agent", "?"))[:64]
+        state = str(e.get("state", ""))[:32]
+        phase = str(e.get("phase", ""))[:32]
+        direction = str(e.get("direction", ""))[:160]
         label = f"{state}/{phase}" if phase else state
         lines.append(f"  - {who} ({label}): {direction}" if direction else f"  - {who} ({label})")
     lines.append("prefer a direction no sibling is actively on, unless you have a distinct angle.")

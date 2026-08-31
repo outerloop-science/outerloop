@@ -978,6 +978,32 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
         return []
 
 
+def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
+    """The other agents' live directions from the research-log's
+    status.json (already fetched: the SAME FETCH_HEAD the reports came
+    from). Size-checked BEFORE show like the report blobs, entries and
+    fields bounded — the branch is bot-written but never trusted with
+    unbounded memory. Any failure means no siblings known, never a crash."""
+    try:
+        blob = "FETCH_HEAD:climb/status.json"
+        if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
+            raise ValueError("status snapshot oversized; skipped")
+        fleet = json.loads(ws.git("show", blob))
+        return [
+            {
+                "agent": str(r.get("agent", ""))[:64],
+                "state": str(r.get("state", ""))[:32],
+                "phase": str(r.get("phase", ""))[:32],
+                "direction": str(r.get("direction", ""))[:160],
+            }
+            for r in fleet.get("runs", [])[:64]
+            if isinstance(r, dict) and r.get("agent") != self_agent
+        ]
+    except Exception as exc:
+        log.info("no sibling snapshot for this session (%s)", exc)
+        return []
+
+
 def _install_report_archive(workspace: Path, reports: list[tuple[str, str]]) -> None:
     """Materialize the fetched reports under the kernel-owned channel
     (`.autoresearch/reports/`) so the session can read and search the full
@@ -1957,28 +1983,7 @@ def live_attempt(
             # research-log's status.json (the SAME branch the reports came
             # from, so it works across clusters) and best-effort throughout:
             # a missing or malformed snapshot just means no siblings known
-            try:
-                # size-checked BEFORE show, like the report blobs: the branch
-                # is bot-written but never trusted with unbounded memory
-                blob = f"FETCH_HEAD:{'climb/status.json'}"
-                if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
-                    raise ValueError("status snapshot oversized; skipped")
-                fleet = json.loads(ws.git("show", blob))
-                syscall_write_siblings(
-                    workspace,
-                    [
-                        {
-                            "agent": str(r.get("agent", ""))[:64],
-                            "state": str(r.get("state", ""))[:32],
-                            "phase": str(r.get("phase", ""))[:32],
-                            "direction": str(r.get("direction", ""))[:160],
-                        }
-                        for r in fleet.get("runs", [])[:64]
-                        if isinstance(r, dict) and r.get("agent") != config.agent_id
-                    ],
-                )
-            except Exception as exc:
-                log.info("no sibling snapshot for this session (%s)", exc)
+            syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id))
 
         def changed_paths() -> list[str]:
             ws.git("add", "-A")
