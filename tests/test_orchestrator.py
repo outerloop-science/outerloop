@@ -360,8 +360,8 @@ def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> N
 
 
 def test_unchanged_tree_finish_is_never_measured(tmp_path: Path) -> None:
-    """A finish whose final tree equals base has nothing to measure — the
-    gate would compare base against itself (metered or not)."""
+    """A finish with no changed paths has nothing to measure — the gate
+    would compare base against itself (metered or not)."""
     harness = FakeHarness(result=ok_session())
     evaluator = FakeEvaluator(values=[13.9])
     measurer, snapshot = _wire(evaluator, tmp_path)
@@ -374,13 +374,35 @@ def test_unchanged_tree_finish_is_never_measured(tmp_path: Path) -> None:
         "base",
         snapshot,
         ruler="r",
-        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        changed_paths=lambda: [],
         created="t",
-        tree_of=lambda sha: "same-tree",
     )
     assert result.outcome == "no-improvement"  # maps to the negative-result ending
     assert "unchanged from base" in result.note
     assert evaluator.calls == []  # nothing was measured
+
+
+def test_submitted_unchanged_tree_is_fed_back_without_a_gate(tmp_path: Path) -> None:
+    """A submit sealing an unchanged tree runs no base-vs-base gate: the
+    author gets the feedback (and the eval charge back); conceding then
+    ends the run honestly."""
+    harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
+    evaluator = FakeEvaluator(values=[13.9])
+    measurer, snapshot = _wire(evaluator, tmp_path)
+    result = attempt_once(
+        CONFIG,
+        CONTRACT,
+        tmp_path,
+        harness,
+        measurer,
+        "base",
+        snapshot,
+        ruler="r",
+        changed_paths=lambda: [],
+        created="t",
+    )
+    assert result.outcome == "no-improvement"
+    assert evaluator.calls == []  # base-vs-base was never run
 
 
 def test_feature_off_metered_runs_still_measure_at_finish(tmp_path: Path) -> None:
