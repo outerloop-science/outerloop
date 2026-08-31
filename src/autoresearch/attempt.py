@@ -1830,7 +1830,8 @@ def build_panel_runner(
                 body=(
                     f"Automated improvement claim (pre-PR): {benchmark} "
                     f"{baseline} -> {candidate}, measured by the orchestrator.\n\n"
-                    f"## Research report\n\n{report[:MAX_CLAIM_CHARS]}"
+                    f"## Research report\n\n*Session prose, written before "
+                    f"the orchestrator measured.*\n\n{report[:MAX_CLAIM_CHARS]}"
                 ),
                 # base..snapshot, never base..worktree: the snapshot commit
                 # includes newly ADDED files, which a working-tree diff omits

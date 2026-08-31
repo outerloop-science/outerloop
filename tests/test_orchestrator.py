@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -1090,6 +1090,17 @@ def test_pr_body_carries_table_and_redacts(tmp_path: Path) -> None:
     assert "sk-secret-1" not in body
     assert "[redacted]" in body
     assert "measured by the orchestrator" in body
+    assert "written before the orchestrator measured" in body
+
+
+def test_pr_body_marks_inherited_prose_from_a_zero_turn_resume(tmp_path: Path) -> None:
+    """A resume-entry publish runs no new session; the PR must say so."""
+    session = ok_session(text="predecessor's report, carried forward")
+    session = replace(session, num_turns=0)
+    result, _, _ = run_climb(tmp_path, [13.876, 13.1], session=session)
+    body = pr_body(result, CONFIG, redact_secrets=())
+    assert "Carried forward from the previous session in this line" in body
+    assert "no new agent session ran this attempt" in body
 
 
 def test_report_covers_failure_outcomes(tmp_path: Path) -> None:

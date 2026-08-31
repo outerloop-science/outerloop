@@ -1817,6 +1817,16 @@ def pr_body(
             "## Research report",
             "",
             (
+                "*Carried forward from the previous session in this line — no "
+                "new agent session ran this attempt. Written before the "
+                "orchestrator measured the numbers above; the table is the "
+                "ledger.*"
+                if result.session and result.session.num_turns == 0
+                else "*Session prose, written before the orchestrator measured "
+                "the numbers above; the table is the ledger.*"
+            ),
+            "",
+            (
                 redact(result.session.final_text, redact_secrets)[:MAX_REPORT_BODY]
                 if result.session
                 else ""
