@@ -1561,6 +1561,7 @@ def attempt_once(
                 outcome: AttemptResult | MeasureOK = failed_gate[1]
             elif (
                 submitted is None
+                and launcher is not None  # feature off = the gate IS the measurement
                 and launches_used == 0
                 and bench.depth_k > 0
                 and bench.gpus > 0
