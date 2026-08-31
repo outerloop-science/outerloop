@@ -160,6 +160,7 @@ class SessionBrief:
             sleep_budget=data.get("sleep_budget", 0),
             gpu_hour_budget=data.get("gpu_hour_budget", 0.0),
             eval_minutes_default=data.get("eval_minutes_default", 0),
+            line_ref=data.get("line_ref", ""),
         )
 
 

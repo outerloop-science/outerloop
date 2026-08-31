@@ -43,9 +43,9 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   decision). `AGENT_MEMORY.md` at the branch root is the bounded INDEX —
   the only memory rendered into the brief (data-fenced); `agent_memory/`
   beside it holds topic files the session reads from its own checkout on
-  demand, never auto-rendered. Curation without destruction: the index
-  stays within its budget, overflow moves to topic files instead of being
-  deleted. The kernel's only seam is "render the index". Memory, code, and beliefs travel
+  demand, never auto-rendered. The index stays within its size budget;
+  what no longer fits moves to a topic file instead of being deleted.
+  Only the memory index is added to the brief. Memory, code, and beliefs travel
   as one lineage — and cross clusters for free, since the branch lives on
   the shared repo. It NEVER reaches main: the main-PR extraction re-applies
   the winning change onto a main base, and the kernel mechanically rejects

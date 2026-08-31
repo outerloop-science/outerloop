@@ -3538,6 +3538,8 @@ def test_checkout_line_creates_the_branch_from_base(tmp_path: Path, target_repo)
     assert ref == "agents/agent-07"
     assert ws.git("rev-parse", "--abbrev-ref", "HEAD").strip() == ref
     assert ws.git("rev-parse", "HEAD").strip() == ws.git("rev-parse", "origin/main").strip()
+    # run-start persistence: the branch exists on the remote from its first run
+    assert _git(target_repo, "rev-parse", ref).strip() == ws.git("rev-parse", "HEAD").strip()
 
 
 def test_checkout_line_merges_main_into_an_existing_line(tmp_path: Path, target_repo) -> None:
@@ -3559,9 +3561,12 @@ def test_checkout_line_leaves_a_conflict_for_the_session(tmp_path: Path, target_
     _push_line(tmp_path, target_repo, {"docs/roadmap.md": "# line view\n"})
     _advance_main(tmp_path, target_repo, {"docs/roadmap.md": "# main view\n"})
     ws = _line_ws(tmp_path, target_repo)
+    line_tip_before = _git(target_repo, "rev-parse", "agents/agent-07").strip()
     _checkout_line(ws, ws.root, "agent-07", "main")
     unmerged = ws.git("diff", "--name-only", "--diff-filter=U")
     assert "docs/roadmap.md" in unmerged  # the session's first task
+    # a conflicted merge is session work, not line state: nothing was pushed
+    assert _git(target_repo, "rev-parse", "agents/agent-07").strip() == line_tip_before
 
 
 def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_repo) -> None:
@@ -3584,6 +3589,11 @@ def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_r
     assert not (ws.root / ".claude").exists()
     assert (ws.root / "docs" / "line-note.md").exists()  # real work survives
     assert ws.git("status", "--porcelain").strip() == ""  # hygiene committed
+    # the hygiene state persists: the remote line moved to this tip
+    assert (
+        _git(target_repo, "rev-parse", "agents/agent-07").strip()
+        == ws.git("rev-parse", "HEAD").strip()
+    )
 
 
 def test_checkout_line_rejects_a_ref_shaping_agent_id(tmp_path: Path, target_repo) -> None:

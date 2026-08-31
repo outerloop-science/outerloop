@@ -1017,6 +1017,7 @@ def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: s
     base_ref = f"origin/{base_branch}"
     if not ws.git("branch", "--list", "-r", f"origin/{line}").strip():
         ws.git("checkout", "-q", "-B", line, base_ref)
+        ws.push(line)  # the line is durable from its first run
         return line
     ws.git("checkout", "-q", "-B", line, f"origin/{line}")
     conflicted = False
@@ -1049,6 +1050,14 @@ def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: s
                 "-m",
                 f"line hygiene: instruction files reset to {base_branch}",
             )
+        # Run-START persistence: the branch exists on the remote from its
+        # first run, and the merge-main + hygiene state survives a crashed
+        # run. One slot never runs twice concurrently, so this is a fast-
+        # forward. The run-END push of the sealed session tree is the next
+        # phase PR (it requires all-terminal sealing; the push must publish
+        # a sealed sha, never invent a commit). A conflicted merge is not
+        # pushed: the conflict is session work, not line state.
+        ws.push(line)
     return line
 
 
