@@ -63,6 +63,28 @@ v1).
   the gate is a tripwire, not a blocker. The suite no-regression gate prices
   a stale line reverting others' wins.
 
+## Clarifications from design review
+
+- **Credit baseline with a divergent line**: the metric is absolute, so a
+  line-based candidate gets a real number regardless of its base; credit
+  compares that number against CURRENT main's measured baseline plus the
+  floor. The gate never needs a "line baseline" — a line that cannot beat
+  today's main is simply not creditable, by construction.
+- **Branch resets**: an agent may deliberately reset its line to main; the
+  kernel performs it as `--force-with-lease` on the agent's OWN branch only
+  (the only non-fast-forward ever allowed), recorded in the run report.
+  Nothing may force-push any other ref.
+- **Instruction-file isolation**: an agent branch is an AUTHOR-WRITTEN tree.
+  Checking one out inherits the same sanitization as any untrusted tree
+  (the CLAUDE.md/hooks instruction-smuggling class): harness-instruction
+  files are neutralized in the working copy exactly as the reviewer's
+  --bare/sanitize path does, so a line cannot inject instructions into its
+  successor sessions — or a sibling's.
+- **Multi-fleet naming**: `agents/<fleet>/agent-NN` when more than one
+  cluster climbs the same target (fleet id from the kernel config; single-
+  fleet targets may omit the segment). Prevents two clusters' agent-01
+  colliding on one branch.
+
 ## Risks and answers
 
 - **Divergence debt**: merge-main-at-run-start keeps it continuously paid;
