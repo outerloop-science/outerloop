@@ -305,13 +305,20 @@ def render(brief: SessionBrief) -> str:
             "refreshes your session clock and costs one sleep). Spend them as "
             "your judgment says; they are generous, not a target to exhaust.",
             "",
+            "READY means MEASURED: submit only when your own launch results "
+            "already show the candidate beating the baseline by at least the "
+            "contract's significance floor. The gate confirms evidence you "
+            "have — it is not your first experiment; an unvalidated submit "
+            "wastes gate compute and ends your run on a guess.",
+            "",
             "When your candidate is READY, stage `submit` and then `sleep`: "
             "your tree is sealed, measured against the baseline, and read by "
             "the review panel. A clean pass is published as a PR directly; "
             "otherwise you wake with the gate result or the panel's findings "
             "and decide — revise and submit again, run more experiments, or "
-            "finish with an honest negative report. A submit costs only the "
-            "sleep it rides on. Finishing WITHOUT a submit still runs the "
+            "finish with an honest negative report. A submit consumes no "
+            "launch from your budget, but its gate evals draw real GPU-hours "
+            "from this run — measure first. Finishing WITHOUT a submit still runs the "
             "same gate and panel, but blocking findings then open a draft PR "
             "for a human instead of coming back to you.",
         ]
