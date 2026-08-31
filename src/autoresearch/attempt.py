@@ -16,6 +16,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -976,6 +977,88 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
     except Exception as exc:
         log.info("research log unavailable (%s: %s); starting without it", type(exc).__name__, exc)
         return []
+
+
+def _reset_instruction_files(ws: Workspace, workspace: Path, base_ref: str) -> None:
+    """Make the checkout's instruction-bearing files EQUAL the base branch's
+    reviewed versions (review_agent.INSTRUCTION_FILES owns the list): a line
+    is an author-written tree, and must never instruct its own successor
+    sessions — or a sibling's (docs/design/research-lines.md)."""
+    from autoresearch.review_agent import INSTRUCTION_FILES
+
+    # bottom-up so a removed directory doesn't orphan paths found beneath it
+    for path in sorted(workspace.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if ".git" in path.parts or path.name not in INSTRUCTION_FILES:
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+    base_paths = [
+        p
+        for p in ws.git("ls-tree", "-r", "--name-only", base_ref).splitlines()
+        if any(part in INSTRUCTION_FILES for part in Path(p).parts)
+    ]
+    if base_paths:
+        ws.git("checkout", base_ref, "--", *base_paths)
+
+
+def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: str) -> str:
+    """Check out the agent's research line: the persistent branch
+    `agents/<agent-id>`, created from the base branch when absent, with the
+    base branch merged in when it exists — a conflicted merge is left in the
+    tree as the session's first task. Instruction-bearing files are reset to
+    the base branch's reviewed versions and the hygiene is committed (never
+    left to masquerade as agent edits). Returns the line ref name; raises on
+    anything unrecoverable (the caller falls back to the base branch)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_id):
+        raise ValueError(f"agent id {agent_id!r} cannot shape a line ref")
+    line = f"agents/{agent_id}"
+    base_ref = f"origin/{base_branch}"
+    if not ws.git("branch", "--list", "-r", f"origin/{line}").strip():
+        ws.git("checkout", "-q", "-B", line, base_ref)
+        ws.push(line)  # the line is durable from its first run
+        return line
+    ws.git("checkout", "-q", "-B", line, f"origin/{line}")
+    conflicted = False
+    try:
+        ws.git(
+            "-c",
+            "user.name=autoresearch",
+            "-c",
+            "user.email=autoresearch@localhost",
+            "merge",
+            "--no-edit",
+            base_ref,
+        )
+    except Exception:
+        conflicted = True
+        log.info(
+            "line %s: merging %s conflicts; left as the session's first task", line, base_branch
+        )
+    _reset_instruction_files(ws, workspace, base_ref)
+    if not conflicted:
+        ws.git("add", "-A")
+        if ws.git("status", "--porcelain").strip():
+            ws.git(
+                "-c",
+                "user.name=autoresearch",
+                "-c",
+                "user.email=autoresearch@localhost",
+                "commit",
+                "-q",
+                "-m",
+                f"line hygiene: instruction files reset to {base_branch}",
+            )
+        # Run-START persistence: the branch exists on the remote from its
+        # first run, and the merge-main + hygiene state survives a crashed
+        # run. One slot never runs twice concurrently, so this is a fast-
+        # forward. The run-END push of the sealed session tree is the next
+        # phase PR (it requires all-terminal sealing; the push must publish
+        # a sealed sha, never invent a commit). A conflicted merge is not
+        # pushed: the conflict is session work, not line state.
+        ws.push(line)
+    return line
 
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
@@ -1941,6 +2024,23 @@ def live_attempt(
         # other agent edit, not silently hidden by a magic dir name (the off
         # state stays byte-identical).
         _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
+        # Research lines: move HEAD to the agent's own branch BEFORE anything
+        # reads the tree — the contract above came from the base branch (a
+        # line must not shape its own budgets), and the syscall-channel check
+        # below must see the line's tree. A failed checkout falls back to the
+        # base branch: a run is never lost to its notebook.
+        line_ref = ""
+        if _bench is not None and _bench.lines and config.agent_id:
+            try:
+                line_ref = _checkout_line(ws, workspace, config.agent_id, base_branch)
+            except Exception as exc:
+                log.warning(
+                    "line checkout failed (%s); running on %s",
+                    redact(f"{type(exc).__name__}: {exc}", secrets),
+                    base_branch,
+                )
+                _best_effort("line merge abort", lambda: ws.git("merge", "--abort"))
+                ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         author_syscalls = (
             dispatch is not None
             and getattr(harness, "supports_resume", True)
@@ -2119,6 +2219,7 @@ def live_attempt(
                 spec=spec,
                 panel_runner=panel_runner,
                 brief_baseline=prior_best.best if prior_best else None,
+                line_ref=line_ref,
                 launcher=launcher,
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )

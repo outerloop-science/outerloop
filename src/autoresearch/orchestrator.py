@@ -1094,6 +1094,7 @@ def attempt_once(
     spec: RoleSpec | None = None,
     panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
     brief_baseline: float | None = None,
+    line_ref: str = "",
     resume_session_id: str = "",
     improve_prompt: str = "",
     launcher: Callable[[str, SyscallRequest], str] | None = None,
@@ -1168,6 +1169,7 @@ def attempt_once(
         or recent_reports
         or report_archive
         or created
+        or line_ref
         or brief_baseline is not None
     ):
         # a resume skips build_brief entirely (the session already carries this
@@ -1183,7 +1185,7 @@ def attempt_once(
         raise ValueError(
             "resume_session_id resumes an existing session (no fresh brief); the brief-only "
             "inputs (task_hypothesis/lessons/recent_reports/report_archive/created/"
-            "brief_baseline) have no effect on a resume — omit them"
+            "line_ref/brief_baseline) have no effect on a resume — omit them"
         )
 
     # deferred like measure_and_decide's import (measure -> dispatch ->
@@ -1238,6 +1240,7 @@ def attempt_once(
                     else 0.0
                 ),
                 eval_minutes_default=bench.eval_minutes or 0,
+                line_ref=line_ref,
             ),
             created=created,
         )

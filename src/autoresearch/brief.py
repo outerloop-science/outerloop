@@ -137,6 +137,9 @@ class SessionBrief:
     # on it) and the contract's default eval walltime; 0 = not metered
     gpu_hour_budget: float = 0.0
     eval_minutes_default: int = 0
+    # Research lines: the agent's own branch when the contract opts in
+    # (docs/design/research-lines.md); "" = the feature is off, no mention.
+    line_ref: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
@@ -157,6 +160,7 @@ class SessionBrief:
             sleep_budget=data.get("sleep_budget", 0),
             gpu_hour_budget=data.get("gpu_hour_budget", 0.0),
             eval_minutes_default=data.get("eval_minutes_default", 0),
+            line_ref=data.get("line_ref", ""),
         )
 
 
@@ -175,6 +179,7 @@ class BriefInputs:
     sleep_budget: int = 0
     gpu_hour_budget: float = 0.0  # GPU benchmarks only; 0 = not metered
     eval_minutes_default: int = 0
+    line_ref: str = ""  # research lines: the agent's own branch; "" = off
 
 
 def _cap(text: str, limit: int) -> str:
@@ -211,6 +216,7 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
         sleep_budget=inputs.sleep_budget,
         gpu_hour_budget=inputs.gpu_hour_budget,
         eval_minutes_default=inputs.eval_minutes_default,
+        line_ref=inputs.line_ref,
     )
 
 
@@ -270,6 +276,18 @@ def render(brief: SessionBrief) -> str:
         "# Ruler (how the metric is computed and how your claim gets re-verified)",
         brief.ruler,
     ]
+    if brief.line_ref:
+        parts += [
+            "",
+            "# Your research line",
+            f"You are on your own persistent branch `{brief.line_ref}` — your "
+            "lab notebook, not the main ledger. The base branch is already "
+            "merged in; if that merge conflicted, resolving it is your first "
+            "task (your divergence debt coming due). A PR to main is cut only "
+            "from a credited win and must be ONE clean contribution: check "
+            "out the base branch, re-apply the minimal winning change onto "
+            "it, and finish on that tree — never the whole line.",
+        ]
     if brief.lessons:
         fence = _fence(brief.lessons)
         parts += [

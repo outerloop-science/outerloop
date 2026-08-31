@@ -39,14 +39,18 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   invents a commit. Progress pushes are the
   agent's lab notebook: ungated, panel may skim cheaply later. One slot
   never runs twice concurrently, so pushes are fast-forwards.
-- **Selfness memory rides the branch**: `AGENT_MEMORY.md` at the branch
-  root, author-owned, bounded, updated each session, rendered into the brief
-  as the agent's own memory (data-fenced). Memory, code, and beliefs travel
+- **Selfness memory rides the branch**: an index plus a folder (owner
+  decision). `AGENT_MEMORY.md` at the branch root is the bounded INDEX —
+  the only memory rendered into the brief (data-fenced); `agent_memory/`
+  beside it holds topic files the session reads from its own checkout on
+  demand, never auto-rendered. The index stays within its size budget;
+  what no longer fits moves to a topic file instead of being deleted.
+  Only the memory index is added to the brief. Memory, code, and beliefs travel
   as one lineage — and cross clusters for free, since the branch lives on
   the shared repo. It NEVER reaches main: the main-PR extraction re-applies
   the winning change onto a main base, and the kernel mechanically rejects
-  AGENT_MEMORY.md in any main-PR candidate (panel grab-bag mandate as
-  backstop).
+  AGENT_MEMORY.md and agent_memory/ in any main-PR candidate (panel
+  grab-bag mandate as backstop).
 - **Selective integration is git**: harvesting a sibling's technique or
   main's progress = merge/cherry-pick, not bespoke machinery. One carve-out:
   `AGENT_MEMORY.md` is slot-private — any merge into a line keeps the
@@ -132,8 +136,9 @@ v1).
    terminal path; per-target contract opt-in (`lines: true`); gate pairing
    against a line's declared base sha (today it is always main's base_sha).
    ~2–3 PRs.
-2. **Selfness memory**: AGENT_MEMORY.md render into the brief + author
-   instruction to maintain it. 1 PR.
+2. **Selfness memory**: render the AGENT_MEMORY.md index into the brief
+   (data-fenced) + author instruction to maintain index and agent_memory/
+   topic files. 1 PR.
 3. **Hygiene**: brief extraction workflow + panel mandate + diff-stat
    advisory. 1 PR.
 4. **Board**: strip shows the line each agent continues; later a lines view.
