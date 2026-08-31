@@ -224,6 +224,7 @@ class _BoardGitHub:
         self.puts: list[str] = []
         self.index_outage = False
         self.batch_fail = False
+        self.head = "h0"
 
     def get_file(self, repo, path, ref):
         if self.index_outage:
@@ -243,9 +244,15 @@ class _BoardGitHub:
         self.puts.append(path)
         return "created"
 
-    def put_files(self, repo, files, branch, message):
+    def branch_head(self, repo, branch):
+        return self.head
+
+    def put_files(self, repo, files, branch, message, expected_head=None):
         if self.batch_fail:
             return False
+        if expected_head and expected_head != self.head:
+            return False
+        self.head += "+"
         for path, content in files.items():
             self.files[path] = content
             self.puts.append(path)
@@ -395,6 +402,24 @@ def test_failed_index_read_never_rewrites_the_index(tmp_path: Path) -> None:
     gh.index_outage = False  # outage over: the union is restored
     service_climb_board(tmp_path, gh, "org/repo", {"speedrun": "min"})
     assert json.loads(gh.files["climb/index.json"]) == {"old-bench": "max", "speedrun": "min"}
+
+
+def test_batch_refuses_when_the_head_moved_mid_pass(tmp_path: Path) -> None:
+    """A concurrent write between the pass's reads and its commit must not
+    be buried: the batch refuses and the whole pass retries next tick."""
+    _terminal_run(tmp_path, "speedrun-1")
+    gh = _BoardGitHub()
+    real_head = gh.branch_head
+
+    def moving_head(repo, branch):
+        gh.head = "h-moved"  # someone commits right after our snapshot
+        return "h0"
+
+    gh.branch_head = moving_head  # type: ignore[method-assign]
+    assert service_climb_board(tmp_path, gh, "org/repo") == 0
+    assert gh.files == {}
+    gh.branch_head = real_head  # type: ignore[method-assign]
+    assert service_climb_board(tmp_path, gh, "org/repo") == 4  # no curves here
 
 
 def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:

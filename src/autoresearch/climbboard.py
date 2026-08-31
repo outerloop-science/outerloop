@@ -1006,6 +1006,9 @@ def service_climb_board(
     batch changes nothing; the whole pass retries next tick."""
     local = collect_rows(root, target)
     local_curves = collect_curves(root, target)
+    # snapshot BEFORE any branch read: put_files refuses if the head moves
+    # mid-pass, so a concurrent write is never buried under stale content
+    head = getattr(github, "branch_head", lambda *a: "")(target, BOARD_BRANCH)
     index = _read_index(github, target)
     names = set(local) | set(index or {})
     directions = {**(index or {}), **(directions or {})}
@@ -1073,6 +1076,8 @@ def service_climb_board(
         return 0
     if not github.ensure_branch(target, BOARD_BRANCH):
         return 0
-    if not github.put_files(target, pending, BOARD_BRANCH, "climb board"):
+    if not github.put_files(
+        target, pending, BOARD_BRANCH, "climb board", expected_head=head or None
+    ):
         return 0
     return len(pending)

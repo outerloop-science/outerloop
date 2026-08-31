@@ -746,12 +746,36 @@ class GitHubClient:
             log.warning("could not put %s on %s@%s: %s", path, repo, branch, exc)
             return ""
 
-    def put_files(self, repo: str, files: dict[str, str], branch: str, message: str) -> bool:
+    def branch_head(self, repo: str, branch: str) -> str:
+        """The branch's current commit sha, or "" (missing branch, outage)."""
+        quoted = urllib.parse.quote(repo)
+        try:
+            ref = self._request(
+                "GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(branch)}"
+            )
+            return str(ref["object"]["sha"])
+        except (GitHubError, KeyError, TypeError):
+            return ""
+
+    def put_files(
+        self,
+        repo: str,
+        files: dict[str, str],
+        branch: str,
+        message: str,
+        expected_head: str | None = None,
+    ) -> bool:
         """Create or update SEVERAL files on `branch` as ONE commit (git data
         API: blobs -> tree -> commit -> ref). All-or-nothing: True only when
         the ref moved; on failure nothing changed and the caller retries the
-        whole batch next pass. The ref update is not forced, so a concurrent
-        writer makes this batch fail instead of being clobbered."""
+        whole batch next pass.
+
+        Concurrency: pass `expected_head` (the head the caller SNAPSHOTTED
+        before reading the files it compared against) and the batch refuses
+        when the branch has moved since — a write that landed mid-pass is
+        never buried under stale content. A write landing after this check
+        still cannot be clobbered: the unforced ref update rejects any
+        non-fast-forward."""
         if not files:
             return True
         if self.dry_run:
@@ -764,6 +788,15 @@ class GitHubClient:
                 "GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(branch)}"
             )
             base_sha = ref["object"]["sha"]
+            if expected_head and base_sha != expected_head:
+                log.warning(
+                    "batch on %s@%s refused: head moved %s -> %s (retry next pass)",
+                    repo,
+                    branch,
+                    expected_head[:9],
+                    str(base_sha)[:9],
+                )
+                return False
             base_tree = self._request("GET", f"/repos/{quoted}/git/commits/{base_sha}")["tree"][
                 "sha"
             ]
