@@ -262,3 +262,12 @@ def test_render_uses_orientation_labels_not_directives() -> None:
     assert "Finishing: You decide" in text
     # the retired directive labels are gone
     assert "Expected effect:" not in text and "Done when:" not in text
+
+
+def test_brief_renders_the_research_line_section_only_when_on() -> None:
+    on = render(build_brief(make_inputs(line_ref="agents/agent-07"), created="t"))
+    assert "# Your research line" in on
+    assert "`agents/agent-07`" in on
+    assert "ONE clean contribution" in on
+    off = render(build_brief(make_inputs(), created="t"))
+    assert "Your research line" not in off

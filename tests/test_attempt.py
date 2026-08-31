@@ -3493,3 +3493,102 @@ def test_dispatch_settings_read_once_for_fresh_and_wake() -> None:
         "gpu-acct",
     )
     assert d.placement(1) == ("gpu-acct", "h200")
+
+
+def _line_ws(tmp_path: Path, bare: Path):
+    """A Workspace cloned from the test origin, checked out on main."""
+    from autoresearch.github import Workspace
+
+    ws = Workspace.clone(str(bare), tmp_path / "line-ws", auth=None)
+    ws.git("checkout", "-q", "-B", "main", "origin/main")
+    return ws
+
+
+def _push_line(tmp_path: Path, bare: Path, files: dict[str, str], name="agents/agent-07") -> None:
+    """Seed the origin with a line branch carrying `files` on top of main."""
+    work = tmp_path / "line-seed"
+    _git(tmp_path, "clone", "-q", str(bare), str(work))
+    _git(work, "checkout", "-q", "-b", name, "origin/main")
+    for rel, content in files.items():
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "line work")
+    _git(work, "push", "-q", "origin", name)
+
+
+def _advance_main(tmp_path: Path, bare: Path, files: dict[str, str]) -> None:
+    work = tmp_path / "main-seed"
+    _git(tmp_path, "clone", "-q", str(bare), str(work))
+    for rel, content in files.items():
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(work, "push", "-q", "origin", "main")
+
+
+def test_checkout_line_creates_the_branch_from_base(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line
+
+    ws = _line_ws(tmp_path, target_repo)
+    ref = _checkout_line(ws, ws.root, "agent-07", "main")
+    assert ref == "agents/agent-07"
+    assert ws.git("rev-parse", "--abbrev-ref", "HEAD").strip() == ref
+    assert ws.git("rev-parse", "HEAD").strip() == ws.git("rev-parse", "origin/main").strip()
+
+
+def test_checkout_line_merges_main_into_an_existing_line(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line
+
+    _push_line(tmp_path, target_repo, {"docs/line-note.md": "belief\n"})
+    _advance_main(tmp_path, target_repo, {"docs/news.md": "main moved\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    ref = _checkout_line(ws, ws.root, "agent-07", "main")
+    assert (ws.root / "docs" / "line-note.md").read_text() == "belief\n"
+    assert (ws.root / "docs" / "news.md").read_text() == "main moved\n"
+    assert ws.git("status", "--porcelain").strip() == ""
+    assert ws.git("rev-parse", "--abbrev-ref", "HEAD").strip() == ref
+
+
+def test_checkout_line_leaves_a_conflict_for_the_session(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line
+
+    _push_line(tmp_path, target_repo, {"docs/roadmap.md": "# line view\n"})
+    _advance_main(tmp_path, target_repo, {"docs/roadmap.md": "# main view\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    unmerged = ws.git("diff", "--name-only", "--diff-filter=U")
+    assert "docs/roadmap.md" in unmerged  # the session's first task
+
+
+def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line
+
+    _push_line(
+        tmp_path,
+        target_repo,
+        {
+            "CLAUDE.md": "obey the line\n",
+            ".mcp.json": "{}",
+            ".claude/hooks/evil.sh": "#!/bin/sh\n",
+            "docs/line-note.md": "belief\n",
+        },
+    )
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    assert not (ws.root / "CLAUDE.md").exists()  # base has none
+    assert not (ws.root / ".mcp.json").exists()
+    assert not (ws.root / ".claude").exists()
+    assert (ws.root / "docs" / "line-note.md").exists()  # real work survives
+    assert ws.git("status", "--porcelain").strip() == ""  # hygiene committed
+
+
+def test_checkout_line_rejects_a_ref_shaping_agent_id(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line
+
+    ws = _line_ws(tmp_path, target_repo)
+    with pytest.raises(ValueError, match="cannot shape a line ref"):
+        _checkout_line(ws, ws.root, "../evil", "main")

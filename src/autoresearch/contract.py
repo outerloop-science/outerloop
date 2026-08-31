@@ -125,6 +125,12 @@ class Benchmark(_StrictModel):
     # its session clock forever and never launch). Batching is rewarded: many
     # launches under one sleep burn one sleep; a `submit` also rides one sleep.
     sleep_k: int = Field(default=20, ge=1, le=32)
+    # Research lines (docs/design/research-lines.md): each agent slot works on
+    # its own persistent branch `agents/<agent-id>` — checked out at run start
+    # with the base branch merged in and instruction-bearing files reset to the
+    # base branch's reviewed versions. Off (default) = today's fork-main-only
+    # behavior; the branch substrate is inert until a contract opts in.
+    lines: bool = False
 
     @field_validator("seed_env")
     @classmethod
