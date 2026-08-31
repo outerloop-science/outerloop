@@ -30,9 +30,12 @@ Each agent slot owns `agents/agent-NN` on the target repo.
   first honest task — that is real research life, and it keeps divergence
   debt visible and continuously paid down.
 - **Run end** (any terminal state): push the session's final tree to the
-  branch. Progress pushes are the agent's lab notebook: ungated, panel may
-  skim cheaply later. One slot never runs twice concurrently, so pushes are
-  fast-forwards.
+  branch — specifically the terminal SNAPSHOT commit the orchestrator
+  already produces (`snapshot()` seals the working tree to a sha on every
+  terminal path, submit or not), so a dirty session tree and AGENT_MEMORY.md
+  edits are committed before the push, never lost. Progress pushes are the
+  agent's lab notebook: ungated, panel may skim cheaply later. One slot
+  never runs twice concurrently, so pushes are fast-forwards.
 - **Selfness memory rides the branch**: `AGENT_MEMORY.md` at the branch
   root, author-owned, bounded, updated each session, rendered into the brief
   as the agent's own memory (data-fenced). Memory, code, and beliefs travel
