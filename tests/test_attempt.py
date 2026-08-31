@@ -3690,3 +3690,46 @@ def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_re
     )
     msg = _git(target_repo_lines, "log", "-1", "--format=%s", "agents/agent-07").strip()
     assert "tsp-lines-1" in msg and "no-improvement" in msg
+
+
+def test_push_line_snapshot_publishes_session_commits(tmp_path: Path, target_repo) -> None:
+    """A session that COMMITTED its work advanced the local ref without
+    dirtying the tree — the push must still publish that commit."""
+    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "docs" / "belief.md").write_text("committed by the session\n")
+    ws.git("add", "-A")
+    ws.git("-c", "user.name=s", "-c", "user.email=s@s", "commit", "-qm", "agent commit")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    assert (
+        _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "committed by the session\n"
+    )
+    assert _git(target_repo, "log", "-1", "--format=%s", "agents/agent-07").strip() == (
+        "agent commit"
+    )
+
+
+def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_repo_lines) -> None:
+    """The notebook snapshot lands AFTER the publish settles: an improved
+    run's line tip carries the published candidate plus its ledger commit,
+    and the message names the final outcome."""
+    github = FakeGitHub()
+    queue = [13.876, 13.1]  # improvement: PR + ledger
+    with _queued_local(queue):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-lines-2",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 2\n"}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    assert outcome.outcome == "improved" and len(github.prs) == 1
+    msg = _git(target_repo_lines, "log", "-1", "--format=%s", "agents/agent-07").strip()
+    assert "tsp-lines-2" in msg and "improved" in msg
+    tree = _git(target_repo_lines, "ls-tree", "-r", "--name-only", "agents/agent-07")
+    assert "results/leader.json" in tree  # the ledger commit rode the notebook
