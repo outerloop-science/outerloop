@@ -307,9 +307,9 @@ def render(brief: SessionBrief) -> str:
             "",
             "READY means MEASURED: submit only when your own launch results "
             "already show the candidate STRICTLY clearing the gate's "
-            "improvement threshold — better than the baseline by more than "
-            "the contract's significance floor, or by more than the default "
-            "relative margin when no floor is declared. The gate confirms "
+            "improvement bar — better than the baseline by more than BOTH "
+            "the gate's default relative margin AND the contract's "
+            "significance floor when one is declared. The gate confirms "
             "evidence you have — it is not your first experiment; an "
             "unvalidated submit wastes gate compute and spends a sleep on a "
             "guess.",
