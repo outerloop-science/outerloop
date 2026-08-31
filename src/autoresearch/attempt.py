@@ -1958,17 +1958,22 @@ def live_attempt(
             # from, so it works across clusters) and best-effort throughout:
             # a missing or malformed snapshot just means no siblings known
             try:
-                fleet = json.loads(ws.git("show", "FETCH_HEAD:climb/status.json"))
+                # size-checked BEFORE show, like the report blobs: the branch
+                # is bot-written but never trusted with unbounded memory
+                blob = f"FETCH_HEAD:{'climb/status.json'}"
+                if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
+                    raise ValueError("status snapshot oversized; skipped")
+                fleet = json.loads(ws.git("show", blob))
                 syscall_write_siblings(
                     workspace,
                     [
                         {
-                            "agent": r.get("agent"),
-                            "state": r.get("state"),
-                            "phase": r.get("phase"),
-                            "direction": r.get("direction"),
+                            "agent": str(r.get("agent", ""))[:64],
+                            "state": str(r.get("state", ""))[:32],
+                            "phase": str(r.get("phase", ""))[:32],
+                            "direction": str(r.get("direction", ""))[:160],
                         }
-                        for r in fleet.get("runs", [])
+                        for r in fleet.get("runs", [])[:64]
                         if isinstance(r, dict) and r.get("agent") != config.agent_id
                     ],
                 )
