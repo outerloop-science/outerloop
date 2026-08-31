@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from autoresearch.brief import distill_lessons
 from autoresearch.compute import LocalCompute
@@ -660,7 +660,11 @@ def _wake_author_sleep(
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         # a terminal from the resumed climb: report, ending record, issue note —
-        # the same ending shape every other terminal takes.
+        # the same ending shape every other terminal takes. The line notebook
+        # records it first, while the tree is still the session's final tree.
+        _push_line_snapshot(
+            ws, _line_ref_for(bench, config.agent_id), run_id, result.outcome, secrets
+        )
         for ref in drop_refs:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         report_path = run_dir / "report.md"
@@ -1001,6 +1005,59 @@ def _reset_instruction_files(ws: Workspace, workspace: Path, base_ref: str) -> N
     ]
     if base_paths:
         ws.git("checkout", base_ref, "--", *base_paths)
+
+
+def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
+    """The agent's line branch when the benchmark opted in; "" otherwise.
+    Wake paths recompute this from the record — a malformed agent id could
+    never have created a line at run start, so "" (not an error) is right."""
+    if bench is None or not bench.lines or not agent_id:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_id):
+        return ""
+    return f"agents/{agent_id}"
+
+
+def _push_line_snapshot(
+    ws: Workspace, line_ref: str, run_id: str, outcome: str, secrets: tuple[str, ...] = ()
+) -> None:
+    """Publish the session's final tree to the agent's line as a sealed
+    snapshot commit — every terminal path, any outcome
+    (docs/design/research-lines.md). The seal parents on the LOCAL line ref
+    and advances it, so sequential terminals within one run chain as
+    fast-forwards; one slot never runs twice concurrently, so the remote
+    cannot have moved under us. Best-effort throughout: the notebook never
+    changes a run's outcome. An unchanged tree is not pushed (the run-start
+    push already holds it)."""
+    if not line_ref:
+        return
+
+    def _seal_and_push() -> None:
+        # raises if the ref is absent (e.g. a park that predates the line
+        # feature) — _best_effort turns that into a logged skip
+        parent = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
+        snap = snapshot_tree(ws, parent)
+        try:
+            if snap.tree == ws.git("rev-parse", f"{parent}^{{tree}}").strip():
+                return
+            sealed = ws.git(
+                "-c",
+                "user.name=autoresearch",
+                "-c",
+                "user.email=autoresearch@localhost",
+                "commit-tree",
+                snap.tree,
+                "-p",
+                parent,
+                "-m",
+                f"line snapshot: {run_id} ({outcome})",
+            ).strip()
+            ws.git("update-ref", f"refs/heads/{line_ref}", sealed)
+            ws.push(line_ref)
+        finally:
+            drop_snapshot(ws, snap)
+
+    _best_effort(f"line push ({outcome})", _seal_and_push, secrets)
 
 
 def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: str) -> str:
@@ -1387,6 +1444,10 @@ def resume_run(
             # resubmit runs an errored eval again
             judged=(candidate_sha, result),
         )
+
+    # Research lines: every path from here is terminal (publish or negative)
+    # and the publish force-checkouts the tree — seal the notebook first.
+    _push_line_snapshot(ws, _line_ref_for(bench, config.agent_id), run_id, result.outcome, secrets)
 
     if result.outcome == "improved":
         # Publish: branch the SEALED candidate sha, fold in the ledger, push,
@@ -2005,6 +2066,9 @@ def live_attempt(
             )
         return AttemptOutcome(run_id=run_id, outcome="attempt-error")
 
+    # what the attempt-error handler needs to salvage the line notebook: the
+    # exception path cannot rely on names bound inside the try
+    salvage: dict[str, object] = {}
     try:
         ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
         # Build ON the requested PR base: the clone checks out the remote
@@ -2041,6 +2105,8 @@ def live_attempt(
                 )
                 _best_effort("line merge abort", lambda: ws.git("merge", "--abort"))
                 ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
+        if line_ref:
+            salvage.update(ws=ws, line_ref=line_ref)
         author_syscalls = (
             dispatch is not None
             and getattr(harness, "supports_resume", True)
@@ -2277,6 +2343,15 @@ def live_attempt(
         exc_name = type(exc).__name__
         note = redact(f"{exc_name}: {exc}", secrets)[:500]
         log.warning("climb failed for %s: %s", run_id, note)
+        if salvage:
+            # a crashed attempt's tree is still notebook-worthy (best-effort)
+            _push_line_snapshot(
+                cast(Workspace, salvage["ws"]),
+                str(salvage["line_ref"]),
+                run_id,
+                "attempt-error",
+                secrets,
+            )
         failed = RunRecord(
             **{
                 **record.__dict__,
@@ -2326,6 +2401,10 @@ def live_attempt(
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
     wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
+
+    # Research lines: the notebook records EVERY terminal, sealed before the
+    # publish block below mutates the working tree (checkout -f).
+    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets)
 
     pr_url = ""
     outcome_name = result.outcome

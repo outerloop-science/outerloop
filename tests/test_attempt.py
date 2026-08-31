@@ -34,6 +34,9 @@ CONTRACT_DISPATCH = CONTRACT.replace(
     "    direction: min\n", "    direction: min\n    eval_minutes: 30\n"
 )
 
+# Same contract with research lines on (docs/design/research-lines.md).
+CONTRACT_LINES = CONTRACT.replace("    direction: min\n", "    direction: min\n    lines: true\n")
+
 
 def _session(sid: str = "s1") -> SessionResult:
     return SessionResult(
@@ -3602,3 +3605,88 @@ def test_checkout_line_rejects_a_ref_shaping_agent_id(tmp_path: Path, target_rep
     ws = _line_ws(tmp_path, target_repo)
     with pytest.raises(ValueError, match="cannot shape a line ref"):
         _checkout_line(ws, ws.root, "../evil", "main")
+
+
+@pytest.fixture
+def target_repo_lines(tmp_path: Path, monkeypatch) -> Path:
+    return _seed_target(tmp_path, monkeypatch, CONTRACT_LINES)
+
+
+def test_push_line_snapshot_publishes_the_terminal_tree(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "docs" / "belief.md").write_text("depth pays\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "depth pays\n"
+    msg = _git(target_repo, "log", "-1", "--format=%s", "agents/agent-07").strip()
+    assert "tsp-9" in msg and "no-improvement" in msg
+    # the local ref advanced with the remote: a later terminal chains on it
+    assert (
+        ws.git("rev-parse", "refs/heads/agents/agent-07").strip()
+        == _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    )
+
+
+def test_push_line_snapshot_skips_an_unchanged_tree(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    before = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    assert _git(target_repo, "rev-parse", "agents/agent-07").strip() == before
+
+
+def test_push_line_snapshot_chains_sequential_terminals(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "docs" / "belief.md").write_text("first\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    first = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    (ws.root / "docs" / "belief.md").write_text("second\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "eval-error")
+    tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    assert _git(target_repo, "rev-parse", f"{tip}^").strip() == first  # fast-forward chain
+    assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "second\n"
+
+
+def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
+    from autoresearch.attempt import _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _push_line_snapshot(ws, "", "tsp-9", "no-improvement")  # feature off: no-op
+    _push_line_snapshot(
+        ws, "agents/agent-99", "tsp-9", "no-improvement"
+    )  # no such ref: logged skip
+    with pytest.raises(subprocess.CalledProcessError):
+        _git(target_repo, "rev-parse", "agents/agent-99")
+
+
+def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_repo_lines) -> None:
+    """End to end on the lines contract: a no-improvement run still lands the
+    session's final tree on the agent's branch, message naming run + outcome."""
+    github = FakeGitHub()
+    queue = [13.876, 14.5]  # candidate worse: negative terminal, no PR
+    with _queued_local(queue):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="tsp-lines-1",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    assert outcome.outcome == "no-improvement"
+    assert github.prs == []
+    assert (
+        _git(target_repo_lines, "show", "agents/agent-07:src/pilot/solvers/tsp.py")
+        == "def solve(): return 1\n"
+    )
+    msg = _git(target_repo_lines, "log", "-1", "--format=%s", "agents/agent-07").strip()
+    assert "tsp-lines-1" in msg and "no-improvement" in msg
