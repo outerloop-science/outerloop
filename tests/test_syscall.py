@@ -188,6 +188,21 @@ def test_submit_requires_a_prior_launch() -> None:
     assert check(bare, launches_used=1) == ""
     # launches disabled (depth_k 0): the rule cannot apply
     assert check(bare, launches_used=0, launch_budget=0) == ""
+    # GPU benchmark with a ZERO gpu-hour budget is not metered: the brief's
+    # metered paragraph (which discloses the rule) is absent there, so the
+    # rule must not silently apply
+    assert (
+        budget_error(
+            bare,
+            launches_used=0,
+            launch_budget=4,
+            sleeps_used=0,
+            sleep_budget=8,
+            gpus=8,
+            gpu_hour_budget=0.0,
+        )
+        == ""
+    )
     # CPU benchmark (in-job gate costs seconds): submit-to-measure stays legal
     assert budget_error(bare, launches_used=0, launch_budget=4, sleeps_used=0, sleep_budget=8) == ""
 
