@@ -126,6 +126,17 @@ def test_ground_rules_ask_for_a_report() -> None:
     assert "negative result" in text.casefold()
 
 
+def test_brief_demands_measured_evidence_before_submit() -> None:
+    """The gate confirms evidence, it does not generate it: the brief says
+    READY means MEASURED and never calls a submit cheap (its gate evals
+    draw real GPU-hours)."""
+    text = render(build_brief(make_inputs(launch_budget=3, sleep_budget=2), created="t"))
+    assert "READY means MEASURED" in text
+    assert "STRICTLY clearing the gate's improvement bar" in text
+    assert "BOTH the gate's default relative margin AND" in text
+    assert "costs only the sleep" not in text
+
+
 def test_memory_sections_are_fenced_as_data() -> None:
     """Lessons/reports are written by prior agent sessions (notebook
     auto-merges prose) — they must render as data, not authority."""
