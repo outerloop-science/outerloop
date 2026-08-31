@@ -961,8 +961,7 @@ def _merge_curves(
         curve = published.get(run_id) or fresh.get(run_id)
         if curve:
             merged[run_id] = curve
-    kept_published = {r: published[r] for r in keep if published.get(r)}
-    return {"data": merged, "published": kept_published, "changed": merged != published}
+    return {"data": merged, "changed": merged != published}
 
 
 def contract_directions(contract: Any) -> dict[str, str]:
@@ -1000,18 +999,28 @@ def service_climb_board(
 ) -> int:
     """Publish the board for `target`. Returns how many files changed.
 
-    Every file is compared against the branch and written only when
-    different — which is also the retry: a view (or index) whose upload
-    failed last pass differs again next pass. A benchmark whose fresh JSON
-    could not be uploaded is rendered from its last PUBLISHED rows, so the
-    views never point at data that is not on the branch."""
+    Every file is compared against the branch, and all changed files land
+    as ONE commit (`put_files`) — data, curves, and the views are atomic,
+    so the page can never point at data that is not on the branch, and a
+    board pass costs at most one commit of research-log history. A failed
+    batch changes nothing; the whole pass retries next tick."""
     local = collect_rows(root, target)
     local_curves = collect_curves(root, target)
+    # snapshot BEFORE any branch read: put_files refuses if the head moves
+    # mid-pass, so a concurrent write is never buried under stale content.
+    # "" = branch missing (nothing to protect); None = outage — writing
+    # unguarded could bury a mid-pass write, so the pass sits out
+    head = github.branch_head(target, BOARD_BRANCH)
+    if head is None:
+        log.warning("board head unreadable for %s; pass sits out", target)
+        return 0
     index = _read_index(github, target)
     names = set(local) | set(index or {})
     directions = {**(index or {}), **(directions or {})}
-    changed = 0
+    pending: dict[str, str] = {}
     boards: dict[str, list[dict[str, Any]]] = {}
+    curves: dict[str, dict[str, list[list[float]]]] = {}
+    curves_ok = True
     for benchmark in sorted(names):
         path = f"climb/data/{benchmark}.json"
         try:
@@ -1036,21 +1045,10 @@ def service_climb_board(
         rows = merge_rows(existing, local.get(benchmark, []))
         if not rows:
             continue
+        boards[benchmark] = rows
         text = json.dumps(rows, indent=1) + "\n"
-        if text == existing:
-            boards[benchmark] = rows
-            continue
-        if github.ensure_branch(target, BOARD_BRANCH) and github.put_file(
-            target, path, text, BOARD_BRANCH, f"climb board: {benchmark}"
-        ):
-            changed += 1
-            boards[benchmark] = rows
-        elif existing:
-            # the branch still holds the previous rows: render those
-            boards[benchmark] = merge_rows(existing, [])
-    curves: dict[str, dict[str, list[list[float]]]] = {}
-    curves_ok = True
-    for benchmark, rows in boards.items():
+        if text != existing:
+            pending[path] = text
         merged_curves = _merge_curves(
             github, target, benchmark, rows, local_curves.get(benchmark, {})
         )
@@ -1059,23 +1057,13 @@ def service_climb_board(
             # its curves — the html rewrite sits this pass out
             curves_ok = False
             continue
-        data = merged_curves["data"]
+        curves[benchmark] = merged_curves["data"]
         if merged_curves["changed"]:
-            uploaded = github.ensure_branch(target, BOARD_BRANCH) and github.put_file(
-                target,
-                f"climb/curves/{benchmark}.json",
-                json.dumps(data, indent=1) + "\n",
-                BOARD_BRANCH,
-                f"climb curves: {benchmark}",
+            pending[f"climb/curves/{benchmark}.json"] = (
+                json.dumps(merged_curves["data"], indent=1) + "\n"
             )
-            changed += bool(uploaded)
-            if not uploaded:
-                # the page embeds only what the branch holds; fresh points
-                # return next pass, when their upload can be retried
-                data = merged_curves["published"]
-        curves[benchmark] = data
     if not boards and names:
-        return changed  # every benchmark sat the pass out: leave the views alone
+        return 0  # every benchmark sat the pass out: leave the views alone
     # the index keeps every benchmark it knows — a transient failed read of
     # one benchmark's JSON must not orphan its history; the views simply
     # render without it until a later pass reads it again. An index that
@@ -1087,10 +1075,14 @@ def service_climb_board(
     if index is not None:
         views.insert(0, ("climb/index.json", json.dumps(wanted, indent=1) + "\n"))
     for path, content in views:
-        if (
-            content != github.get_file_content(target, path, BOARD_BRANCH)
-            and github.ensure_branch(target, BOARD_BRANCH)
-            and github.put_file(target, path, content, BOARD_BRANCH, "climb board")
-        ):
-            changed += 1
-    return changed
+        if content != github.get_file_content(target, path, BOARD_BRANCH):
+            pending[path] = content
+    if not pending:
+        return 0
+    if not github.ensure_branch(target, BOARD_BRANCH):
+        return 0
+    if not github.put_files(
+        target, pending, BOARD_BRANCH, "climb board", expected_head=head or None
+    ):
+        return 0
+    return len(pending)

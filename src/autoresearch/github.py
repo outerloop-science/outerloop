@@ -746,6 +746,91 @@ class GitHubClient:
             log.warning("could not put %s on %s@%s: %s", path, repo, branch, exc)
             return ""
 
+    def branch_head(self, repo: str, branch: str) -> str | None:
+        """The branch's current commit sha; "" when the branch does not
+        exist (nothing to protect), None on an outage or malformed reply
+        (the caller must not write unguarded)."""
+        quoted = urllib.parse.quote(repo)
+        try:
+            ref = self._request(
+                "GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(branch)}"
+            )
+            return str(ref["object"]["sha"])
+        except GitHubError as exc:
+            return "" if getattr(exc, "status", None) == 404 else None
+        except (KeyError, TypeError):
+            return None
+
+    def put_files(
+        self,
+        repo: str,
+        files: dict[str, str],
+        branch: str,
+        message: str,
+        expected_head: str | None = None,
+    ) -> bool:
+        """Create or update SEVERAL files on `branch` as ONE commit (git data
+        API: blobs -> tree -> commit -> ref). All-or-nothing: True only when
+        the ref moved; on failure nothing changed and the caller retries the
+        whole batch next pass.
+
+        Concurrency: pass `expected_head` (the head the caller SNAPSHOTTED
+        before reading the files it compared against) and the batch refuses
+        when the branch has moved since — a write that landed mid-pass is
+        never buried under stale content. A write landing after this check
+        still cannot be clobbered: the unforced ref update rejects any
+        non-fast-forward."""
+        if not files:
+            return True
+        if self.dry_run:
+            log.info("[dry-run] batch put %d file(s) on %s@%s", len(files), repo, branch)
+            return True
+        quoted = urllib.parse.quote(repo)
+        ref_path = f"/repos/{quoted}/git/refs/heads/{urllib.parse.quote(branch)}"
+        try:
+            ref = self._request(
+                "GET", f"/repos/{quoted}/git/ref/heads/{urllib.parse.quote(branch)}"
+            )
+            base_sha = ref["object"]["sha"]
+            if expected_head and base_sha != expected_head:
+                log.warning(
+                    "batch on %s@%s refused: head moved %s -> %s (retry next pass)",
+                    repo,
+                    branch,
+                    expected_head[:9],
+                    str(base_sha)[:9],
+                )
+                return False
+            base_tree = self._request("GET", f"/repos/{quoted}/git/commits/{base_sha}")["tree"][
+                "sha"
+            ]
+            entries = []
+            for path, content in sorted(files.items()):
+                blob = self._request(
+                    "POST",
+                    f"/repos/{quoted}/git/blobs",
+                    {
+                        "content": base64.b64encode(content.encode()).decode(),
+                        "encoding": "base64",
+                    },
+                )
+                entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+            tree = self._request(
+                "POST", f"/repos/{quoted}/git/trees", {"base_tree": base_tree, "tree": entries}
+            )
+            commit = self._request(
+                "POST",
+                f"/repos/{quoted}/git/commits",
+                {"message": message, "tree": tree["sha"], "parents": [base_sha]},
+            )
+            self._request("PATCH", ref_path, {"sha": commit["sha"]})
+            return True
+        except (GitHubError, KeyError, TypeError) as exc:
+            log.warning(
+                "batched put of %d file(s) on %s@%s failed: %s", len(files), repo, branch, exc
+            )
+            return False
+
     def comment(self, repo: str, issue_number: int, body: str) -> None:
         if self.dry_run:
             log.info("[dry-run] comment on %s#%s (%d chars)", repo, issue_number, len(body))
