@@ -137,6 +137,67 @@ def test_brief_demands_measured_evidence_before_submit() -> None:
     assert "costs only the sleep" not in text
 
 
+def test_distill_lessons_extracts_takeaways_newest_first() -> None:
+    from autoresearch.brief import MAX_LESSONS_CHARS, distill_lessons
+
+    reports = [
+        (
+            "2026-08-31-speedrun-20260831-x-agent-03.md",
+            "# Run report\n- **Outcome:** Baseline `9472`; candidate `9088`/`9216` split.\n"
+            "- **Takeaway:** Very long warmdowns are real but one val-interval short.\n",
+        ),
+        ("2026-08-30-speedrun-y-agent-02.md", "# Run report\nno structured fields\n"),
+        (
+            "2026-08-30-speedrun-w-agent-04.md",
+            "Outcome: **aborted**\nTakeaways: plain-label forms parse too.\n",
+        ),
+        (
+            "2026-08-29-speedrun-z-agent-01.md",
+            "- **Takeaway:** Shorter warmdown is harmful below 2048.\n",
+        ),
+    ]
+    # the kernel's header form is the authoritative outcome when present
+    reports[0] = (
+        reports[0][0],
+        "Outcome: **negative-result**\n" + reports[0][1],
+    )
+    text = distill_lessons(reports)
+    lines = text.splitlines()
+    assert len(lines) == 3  # the field-less report contributes nothing
+    assert lines[0].startswith("- 2026-08-31 agent-03 [negative-result]")
+    assert "one val-interval short" in lines[0]
+    assert lines[1] == "- 2026-08-30 agent-04 [aborted]: plain-label forms parse too."
+    assert lines[2] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
+    # a benchmark slug containing "agent-N" must not steal the label
+    tricky = distill_lessons(
+        [("2026-08-27-agent-7-sim-20260827-010101-agent-02.md", "- **Takeaway:** t.\n")]
+    )
+    assert tricky.startswith("- 2026-08-27 agent-02:")
+    # steward reports carry no agent id: the date survives and the line is
+    # labeled for what it is
+    steward = distill_lessons(
+        [("2026-08-27-steward-20260827-010101.md", "- **Takeaway:** ruler tidied.\n")]
+    )
+    assert steward.startswith("- 2026-08-27 steward: ruler tidied.")
+    # same-day ties break on the run id's embedded timestamp, not on the
+    # benchmark name (zbench earlier in the day must sort after abench later)
+    same_day = [
+        (
+            "2026-08-31-zbench-20260831-010000-agent-01.md",
+            "- **Takeaway:** earlier.\n",
+        ),
+        (
+            "2026-08-31-abench-20260831-090000-agent-02.md",
+            "- **Takeaway:** later.\n",
+        ),
+    ]
+    ordered = distill_lessons(same_day).splitlines()
+    assert "later." in ordered[0] and "earlier." in ordered[1]
+    # bounded: a flood of reports cannot exceed the cap
+    flood = [("2026-01-01-a-agent-01.md", "- **Takeaway:** " + "x" * 300 + "\n")] * 200
+    assert len(distill_lessons(flood)) <= MAX_LESSONS_CHARS
+
+
 def test_metered_brief_states_the_submit_refusal() -> None:
     text = render(
         build_brief(

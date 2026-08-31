@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 
 from autoresearch.style import PLAIN_STYLE
@@ -23,6 +24,61 @@ from autoresearch.style import PLAIN_STYLE
 # Bounds are part of the brief's contract: a brief that grows without limit
 # stops being an experiment variable and starts being noise.
 MAX_LESSONS_CHARS = 8_000
+
+# any label-colon form on its own line: "- **Takeaway:** x", "Takeaway: x",
+# "**Outcome**: x", plural "Takeaways:" — the report format is a convention,
+# not a schema, so the extractor meets authors where they write
+_REPORT_FIELD = re.compile(r"^[\-#*> ]*\**(Outcome|Takeaway)s?\**\s*:\**\s*(.+)", re.M | re.I)
+# the kernel's own header form ("Outcome: **negative-result**") — the gate's
+# verdict, preferred over the author's prose outcome when both appear
+_KERNEL_OUTCOME = re.compile(r"^Outcome: \*\*(.+?)\*\*", re.M)
+
+
+def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
+    """One line per archived report (newest first): date, agent, outcome,
+    takeaway — the cross-attempt facts every author should start with,
+    extracted mechanically from the reports' own structured fields. A
+    report without a Takeaway contributes nothing. Bounded by the brief's
+    MAX_LESSONS_CHARS cap (re-capped there)."""
+
+    def _when(name: str) -> str:
+        # the date prefix sorts days; the run id embeds the full timestamp
+        # (bench-YYYYMMDD-HHMMSS-agent-NN) and breaks same-day ties — the
+        # fetcher's own order is arbitrary within a day
+        day = re.search(r"\d{4}-\d{2}-\d{2}", name)
+        ts = re.search(r"\d{8}-\d{6}", name)
+        return (day.group(0) if day else "") + "|" + (ts.group(0) if ts else "")
+
+    lines: list[str] = []
+    total = 0
+    for name, text in sorted(reports, key=lambda r: _when(r[0]), reverse=True):
+        fields = {
+            k.capitalize(): v.strip().strip("*").strip() for k, v in _REPORT_FIELD.findall(text)
+        }
+        takeaway = fields.get("Takeaway", "")
+        if not takeaway:
+            continue
+        day = re.search(r"\d{4}-\d{2}-\d{2}", name)
+        # the run's agent id is the LAST match — a benchmark slug may itself
+        # contain "agent-N"; steward runs carry none and are labeled as such
+        who = re.findall(r"agent-\d+", name)
+        date = day.group(0) if day else ""
+        agent = who[-1] if who else ("steward" if "steward" in name else "")
+        kernel = _KERNEL_OUTCOME.search(text)
+        outcome = kernel.group(1) if kernel else fields.get("Outcome", "")
+        line = (
+            "- "
+            + " ".join(p for p in (date, agent) if p)
+            + (f" [{outcome[:90]}]" if outcome else "")
+            + f": {takeaway[:220]}"
+        )
+        if total + len(line) > MAX_LESSONS_CHARS:
+            break
+        lines.append(line)
+        total += len(line) + 1
+    return "\n".join(lines)
+
+
 MAX_REPORTS = 5
 MAX_REPORT_CHARS = 4_000
 MAX_TASK_CHARS = 4_000
