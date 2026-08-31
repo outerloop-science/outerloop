@@ -25,7 +25,12 @@ from autoresearch.style import PLAIN_STYLE
 # stops being an experiment variable and starts being noise.
 MAX_LESSONS_CHARS = 8_000
 
-_REPORT_FIELD = re.compile(r"\*\*(Outcome|Takeaway)[^:]*:\*\* *(.+)")
+# any label-colon form on its own line: "- **Takeaway:** x", "Takeaway: x",
+# "**Outcome**: x", plural "Takeaways:" — the report format is a convention,
+# not a schema, so the extractor meets authors where they write
+_REPORT_FIELD = re.compile(
+    r"^[\-#*> ]*\**(Outcome|Takeaway)s?\**\s*:\**\s*(.+)", re.M | re.I
+)
 # the kernel's own header form ("Outcome: **negative-result**") — the gate's
 # verdict, preferred over the author's prose outcome when both appear
 _KERNEL_OUTCOME = re.compile(r"^Outcome: \*\*(.+?)\*\*", re.M)
@@ -41,7 +46,10 @@ def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
     lines: list[str] = []
     total = 0
     for name, text in reports:
-        fields = {k: v.strip() for k, v in _REPORT_FIELD.findall(text)}
+        fields = {
+            k.capitalize(): v.strip().strip("*").strip()
+            for k, v in _REPORT_FIELD.findall(text)
+        }
         takeaway = fields.get("Takeaway", "")
         if not takeaway:
             continue

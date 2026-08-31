@@ -148,6 +148,10 @@ def test_distill_lessons_extracts_takeaways_newest_first() -> None:
         ),
         ("2026-08-30-speedrun-y-agent-02.md", "# Run report\nno structured fields\n"),
         (
+            "2026-08-30-speedrun-w-agent-04.md",
+            "Outcome: **aborted**\nTakeaways: plain-label forms parse too.\n",
+        ),
+        (
             "2026-08-29-speedrun-z-agent-01.md",
             "- **Takeaway:** Shorter warmdown is harmful below 2048.\n",
         ),
@@ -159,10 +163,11 @@ def test_distill_lessons_extracts_takeaways_newest_first() -> None:
     )
     text = distill_lessons(reports)
     lines = text.splitlines()
-    assert len(lines) == 2  # the field-less report contributes nothing
+    assert len(lines) == 3  # the field-less report contributes nothing
     assert lines[0].startswith("- 2026-08-31 agent-03 [negative-result]")
     assert "one val-interval short" in lines[0]
-    assert lines[1] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
+    assert lines[1] == "- 2026-08-30 agent-04 [aborted]: plain-label forms parse too."
+    assert lines[2] == "- 2026-08-29 agent-01: Shorter warmdown is harmful below 2048."
     # bounded: a flood of reports cannot exceed the cap
     flood = [("2026-01-01-a-agent-01.md", "- **Takeaway:** " + "x" * 300 + "\n")] * 200
     assert len(distill_lessons(flood)) <= MAX_LESSONS_CHARS
