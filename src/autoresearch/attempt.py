@@ -2140,7 +2140,7 @@ def live_attempt(
         # not supply it (the dataclass default rendered "0.0 GPU-hours" and
         # honest agents refused to launch). Same weekly counting rule as the
         # tick's cap: records plus live pending markers, minus this run's own.
-        from autoresearch.tick import list_pendings
+        from autoresearch.tick import PENDING_TTL_S, list_pendings
 
         week_ago = now - 7 * 24 * 3600
         recent = [
@@ -2152,7 +2152,10 @@ def live_attempt(
         used_week = len(recent) + sum(
             1
             for _agent, marker in list_pendings(run_root, config.target)
-            if float(marker.get("submitted_at", 0) or 0) >= week_ago
+            # same liveness rule as the tick: a marker past its TTL is a
+            # dead launch, not a queued attempt
+            if now - float(marker.get("submitted_at", 0) or 0) <= PENDING_TTL_S
+            and float(marker.get("submitted_at", 0) or 0) >= week_ago
             and str(marker.get("job_id", "")) not in recorded_jobs
         )
         _budget_bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
