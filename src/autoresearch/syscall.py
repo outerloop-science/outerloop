@@ -799,34 +799,66 @@ SYNC_REQUEST = "sync-request"
 SYNC_DONE = "sync-done"
 
 
-def sync_requested(workspace: Path) -> float | None:
-    """The pending request's mtime, or None. The caller passes it back to
-    mark_synced so the done stamp acknowledges exactly the request that was
-    serviced — a request arriving mid-fetch stays newer and re-fires."""
-    req = workspace / SYSCALL_DIR / SYNC_REQUEST
-    done = workspace / SYSCALL_DIR / SYNC_DONE
+def _channel_fd(workspace: Path) -> int:
+    """A dir fd for the syscall channel, opened O_NOFOLLOW so a session that
+    replaced .autoresearch with a symlink cannot escape the workspace — all
+    marker IO is then relative to this fd, never a re-resolved path."""
+    return os.open(workspace / SYSCALL_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _read_done(dirfd: int) -> float:
+    """The mtime the kernel last acknowledged (stored as marker CONTENT, so
+    no mtime games: hard-linking the marker cannot change another file's
+    times, because the kernel never calls utime)."""
     try:
-        req_m = req.stat().st_mtime
+        fd = os.open(SYNC_DONE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
+    except OSError:
+        return 0.0
+    try:
+        return float(os.read(fd, 64).decode() or 0)
+    except (OSError, ValueError):
+        return 0.0
+    finally:
+        os.close(fd)
+
+
+def sync_requested(workspace: Path) -> float | None:
+    """The pending request's mtime, or None. Passed back to mark_synced so
+    the done marker acknowledges exactly the serviced request — one arriving
+    mid-fetch stays newer and re-fires. A symlinked channel or request is
+    refused (returns None), never followed."""
+    try:
+        dirfd = _channel_fd(workspace)
     except OSError:
         return None
     try:
-        return req_m if req_m > done.stat().st_mtime else None
-    except OSError:
-        return req_m
+        try:
+            st = os.stat(SYNC_REQUEST, dir_fd=dirfd, follow_symlinks=False)
+        except OSError:
+            return None
+        req_m = st.st_mtime
+        return req_m if req_m > _read_done(dirfd) else None
+    finally:
+        os.close(dirfd)
 
 
 def mark_synced(workspace: Path, at: float) -> None:
-    """Stamp the done marker AT the serviced request's mtime. The marker
-    lives in a session-writable dir: never follow a planted symlink (the
-    kernel would write through it), replace it."""
-    done = workspace / SYSCALL_DIR / SYNC_DONE
-    if done.is_symlink():
-        done.unlink()
-    # O_NOFOLLOW refuses a planted symlink; then stamp the mtime THROUGH the
-    # fd, never re-resolving the path — a symlink swapped in after open
-    # cannot redirect the utime (the fd is bound to the inode we created)
-    fd = os.open(done, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
+    """Record the serviced request's mtime as the done marker's CONTENT,
+    written to a fresh temp inode and renamed into place — all relative to a
+    O_NOFOLLOW channel fd. No utime (so a hard-linked marker cannot touch
+    another file), no write through a planted symlink (O_NOFOLLOW create),
+    no parent-symlink escape (the channel fd was opened O_NOFOLLOW), and the
+    rename is atomic."""
+    dirfd = _channel_fd(workspace)
     try:
-        os.utime(fd, (at, at))
+        tmp = f".{SYNC_DONE}.{os.getpid()}"
+        fd = os.open(
+            tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=dirfd
+        )
+        try:
+            os.write(fd, f"{at!r}".encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, SYNC_DONE, src_dir_fd=dirfd, dst_dir_fd=dirfd)
     finally:
-        os.close(fd)
+        os.close(dirfd)

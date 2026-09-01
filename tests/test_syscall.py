@@ -842,7 +842,8 @@ def test_sync_request_tracking(tmp_path) -> None:
     later = at + 5
     os.utime(ws / SYSCALL_DIR / "sync-request", (later, later))
     assert sync_requested(ws) == later
-    # and a planted symlink is replaced, never written through
+    # a planted symlink at the done marker is replaced, never written
+    # through: the victim is untouched
     done = ws / SYSCALL_DIR / "sync-done"
     victim = ws / "victim"
     done.unlink()
@@ -850,3 +851,37 @@ def test_sync_request_tracking(tmp_path) -> None:
     mark_synced(ws, later)
     assert not done.is_symlink() and not victim.exists()
     assert sync_requested(ws) is None
+
+
+def test_mark_synced_never_touches_a_hardlinked_marker(tmp_path) -> None:
+    import os
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+
+    ws = tmp_path
+    (ws / SYSCALL_DIR).mkdir()
+    (ws / SYSCALL_DIR / "sync-request").touch()
+    victim = ws / "victim"
+    victim.write_text("precious")
+    victim_mtime = victim.stat().st_mtime
+    # a session hard-links the marker name to the victim inode
+    os.link(victim, ws / SYSCALL_DIR / "sync-done")
+    mark_synced(ws, 12345.0)
+    # the victim's content and mtime are unchanged: no utime, fresh inode
+    assert victim.read_text() == "precious"
+    assert victim.stat().st_mtime == victim_mtime
+
+
+def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
+    from autoresearch.syscall import mark_synced, sync_requested
+
+    ws = tmp_path
+    outside = ws / "outside"
+    outside.mkdir()
+    (ws / ".autoresearch").symlink_to(outside)  # channel is a symlink
+    assert sync_requested(ws) is None
+    try:
+        mark_synced(ws, 1.0)
+    except OSError:
+        pass  # refused
+    assert not (outside / "sync-done").exists()  # nothing written outside

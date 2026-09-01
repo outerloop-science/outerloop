@@ -412,17 +412,23 @@ def cmd_sync(root: Path, args) -> str:
     started = request.stat().st_mtime
     minutes = getattr(args, "minutes", None)
     deadline = time.time() + 60 * int(35 if minutes is None else minutes)
+
+    def acknowledged() -> bool:
+        # the kernel writes the serviced request's mtime as the marker's
+        # content; ours is acknowledged once that is >= our request time
+        try:
+            return float(done.read_text() or 0) >= started
+        except (OSError, ValueError):
+            return False
+
     while True:
         # check FIRST: an already-stamped completion (or --minutes 0 as a
         # pure probe) must be seen before any deadline math
-        try:
-            if done.stat().st_mtime >= started:
-                return (
-                    "origin/* refs refreshed — read the base branch and "
-                    "sibling branches from your local refs."
-                )
-        except OSError:
-            pass
+        if acknowledged():
+            return (
+                "origin/* refs refreshed — read the base branch and "
+                "sibling branches from your local refs."
+            )
         if time.time() >= deadline:
             return (
                 "sync timed out waiting for the kernel's next cycle; "
