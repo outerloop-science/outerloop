@@ -413,15 +413,29 @@ def _respond(
     )
     spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
 
+    # Every wake needs a CURRENT origin/<base>: the conflict wake tells the
+    # session to merge it, and the scope check's base-content exemption must
+    # never compare against a stale ref (old base content could smuggle).
+    # The session has no credentials, so the kernel fetches on its behalf.
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    base_fetched = False
+    try:
+        ws.git_network("fetch", "origin", base_ref)
+        base_fetched = True
+    except Exception as exc:
+        log.warning("base fetch failed for %s: %s", run_id, exc)
+    if conflict_wake and not base_fetched:
+        # never tell the session the base was fetched when it was not, and
+        # never spend the once-per-head cursor on a failed setup — the next
+        # tick retries the whole wake
+        conflict_wake = False
+        if not merged:
+            return FollowupOutcome(
+                run_id, "error", "conflict wake: base fetch failed; retrying next tick"
+            )
+
     prompt = render_review_wake([(author, body) for _, author, body in comments])
     if conflict_wake:
-        base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-        try:
-            # the session has no credentials; fetch on its behalf so
-            # origin/<base> is current in the workspace
-            ws.git_network("fetch", "origin", base_ref)
-        except Exception as exc:
-            log.warning("conflict-wake fetch failed for %s: %s", run_id, exc)
         prompt = (
             "# Your PR conflicts with its base\n"
             f"`{base_ref}` moved and this PR no longer merges cleanly. "
@@ -496,17 +510,26 @@ def _respond(
     measured_note = ""
     change_pushed = False
 
-    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-
     def _matches_base(path: str) -> bool:
         # content identical to origin/<base> is the base branch's own (a
-        # merge brings it in); it can neither smuggle nor exceed scope.
+        # merge brings it in); it can neither smuggle nor exceed scope. Only
+        # against a FRESHLY fetched ref — stale base content must not vouch.
         # Blob-hash comparison: `git diff <commit> -- path` would call an
         # UNTRACKED working file "deleted" instead of reading its content.
+        # A deletion matches when the base deleted the path too.
+        if not base_fetched:
+            return False
         try:
-            local = ws.git("hash-object", "--", path).strip()
-            base = ws.git("rev-parse", f"origin/{base_ref}:{path}").strip()
-            return bool(local) and local == base
+            base_blob = ws.git("rev-parse", f"origin/{base_ref}:{path}").strip()
+        except Exception:
+            base_blob = ""  # absent on base
+        local_path = Path(ws.root) / path
+        if not local_path.exists():
+            return not base_blob  # both absent: a base-side deletion merged in
+        if not base_blob:
+            return False
+        try:
+            return ws.git("hash-object", "--", path).strip() == base_blob
         except Exception:
             return False
 
