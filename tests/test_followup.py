@@ -927,3 +927,52 @@ def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
     files = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
     assert "v2 after merge" in files
     assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
+
+
+def test_deletions_converging_to_base_are_exempt(review_run) -> None:
+    """The exemption's invariant is FINAL STATE == origin/<base>: a path the
+    base also lacks (a base-side deletion merged in, or a branch-only file
+    removed) converges to the reviewed base state and cannot smuggle or
+    exceed scope. Deleting a file the base still HAS stays guarded."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    # a branch-only out-of-scope file from an earlier (reviewed) round
+    (ws / "docs" / "branch-only.md").write_text("old note\n")
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior round")
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
+    github = FakeGitHub(comments=[member(101, "tidy up")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"})
+
+    def deleting_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "branch-only.md").unlink()
+        return ResumingHarness.run(harness, brief_text, workspace, resume_session_id)
+
+    harness.run = deleting_run  # type: ignore[method-assign]
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    tree = _git(bare, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-r1")
+    assert "docs/branch-only.md" not in tree  # converged to base: allowed
+
+    # deleting a file the base still has is NOT exempt: roadmap.md is on main
+    def roadmap_deleter(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "roadmap.md").unlink()
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.1,
+            num_turns=2,
+            session_id="s2",
+            final_text="removed the roadmap",
+            transcript_path="",
+        )
+
+    class Deleter:
+        run = staticmethod(roadmap_deleter)
+
+    github2 = FakeGitHub(comments=[member(102, "again")])
+    outcome2 = respond(root, github2, Deleter(), QueueEvaluator(values=[10.2]))
+    assert outcome2.action == "replied"
+    assert "outside the contract" in github2.posted[0]  # reverted, not pushed
