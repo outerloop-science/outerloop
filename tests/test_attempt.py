@@ -4089,8 +4089,12 @@ def test_wake_fetch_survives_a_fifo_config(tmp_path, monkeypatch) -> None:
     bare = tmp_path / f"origin-{run_id}.git"
     _advance_main(tmp_path, bare, {"docs/news.md": "canonical\n"})
     cfg = ws / ".git" / "config"
-    cfg.unlink()
-    _os.mkfifo(cfg)  # the trap: no writer, a plain read blocks
+    # a REGULAR config that includes a FIFO: git would follow the include
+    # and block on the parse. The sanitizer strips the include first.
+    fifo = ws / ".git" / "evil.fifo"
+    _os.mkfifo(fifo)
+    with cfg.open("a") as fh:
+        fh.write(f"\n[include]\n\tpath = {fifo}\n")
     outcome = resume_run(
         state,
         run_id,
