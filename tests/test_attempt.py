@@ -3945,7 +3945,9 @@ def test_line_divergence_reaches_the_brief(tmp_path: Path, target_repo_lines) ->
 def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
     from autoresearch.attempt import main as climb_main
 
-    for bad in ("bad id", "bad..id", "-leading", "a/b"):
+    # "-leading" is not here: argparse consumes it as an option flag and
+    # rejects it on its own ("expected one argument")
+    for bad in ("bad id", "bad..id", "a/b", "_leading"):
         monkeypatch.setattr(
             "sys.argv", ["climb", "--target", "o/r", "--benchmark", "b", "--agent-id", bad]
         )
