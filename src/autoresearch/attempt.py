@@ -959,7 +959,7 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
     target, wherever it ran. Fail-soft: a target with no research log yet
     (or an unreachable remote) is an empty memory, never a dead attempt."""
     try:
-        ws.git_network("fetch", "origin", RESEARCH_LOG_BRANCH)
+        ws.fetch_branch(RESEARCH_LOG_BRANCH)
         listing = ws.git("ls-tree", "-r", "--name-only", "FETCH_HEAD", "reports/")
         # only direct children (the publisher's layout): a nested path would
         # flatten to a basename that overwrites another archived report
