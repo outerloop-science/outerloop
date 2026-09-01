@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import urllib.error
 import urllib.parse
@@ -840,6 +841,31 @@ class GitHubClient:
         self._request("POST", path, {"body": body})
 
 
+def _ensure_regular_config(root: Path | None) -> None:
+    """Refuse a non-regular .git/config before any git command reads it. A
+    session can replace the (session-writable) config with a FIFO — a plain
+    read, or git's own config parse, would BLOCK forever with no writer,
+    hanging the wake — or a symlink/device to mislead a read. Any such file
+    is hostile or broken (git cannot operate on it either), so it is replaced
+    with a minimal regular config; a regular config is left untouched (cheap
+    lstat, no write)."""
+    if root is None:
+        return
+    cfg = root / ".git" / "config"
+    try:
+        st = os.lstat(cfg)
+    except OSError:
+        return
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+        with contextlib.suppress(OSError):
+            cfg.unlink()
+            fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            try:
+                os.write(fd, b"[core]\n\trepositoryformatversion = 0\n")
+            finally:
+                os.close(fd)
+
+
 def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     """GIT_CONFIG pairs that neutralize every filter driver the REPO config
     defines (each overridden to a passthrough) plus attribute files. The
@@ -937,6 +963,7 @@ class Workspace:
     def git(self, *args: str) -> str:
         """Run a local git subcommand: no credential, no child-spawning config,
         repo-defined filter drivers neutralized."""
+        _ensure_regular_config(self.root)
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
@@ -955,20 +982,54 @@ class Workspace:
         config is restored after (only the kernel runs network ops, serially,
         so nothing else races this window)."""
         cfg = self.root / ".git" / "config"
-        if not cfg.exists():
-            yield  # a clone creating the repo has no local config yet
-            return
-        saved = cfg.read_bytes()
+        minimal = b"[core]\n\trepositoryformatversion = 0\n"
+
+        def _write(data: bytes) -> None:
+            # O_NOFOLLOW: never write THROUGH a symlink a session planted at
+            # the config path; truncate-and-write the regular file in place
+            fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+
+        # Read the current config through a fd opened O_NOFOLLOW | O_NONBLOCK:
+        # a session can replace .git/config with a symlink (NOFOLLOW refuses)
+        # or a FIFO (a plain read_bytes would BLOCK the wake forever with no
+        # writer — NONBLOCK + the regular-file check below refuse it).
         try:
-            cfg.write_bytes(b"[core]\n\trepositoryformatversion = 0\n")
+            fd = os.open(cfg, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            yield  # no config yet (fresh clone), or a symlink we refuse to follow
+            return
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+                # a non-regular (FIFO/socket/device) or absurdly large config
+                # is hostile or broken: replace it and do not restore — there
+                # is nothing legitimate to keep.
+                os.close(fd)
+                cfg.unlink()
+                _write(minimal)
+                yield
+                return
+            saved = b""
+            while chunk := os.read(fd, 65536):
+                saved += chunk
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        try:
+            _write(minimal)
             yield
         finally:
-            cfg.write_bytes(saved)
+            _write(saved)
 
     def git_network(self, *args: str) -> str:
         """Run a git subcommand that talks to the remote, with credentials."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
+        _ensure_regular_config(self.root)
         token = self.auth.token() if self.auth is not None else None
         argv = ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args]
         env = _git_env(token, self.root)
