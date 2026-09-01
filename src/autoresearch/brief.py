@@ -379,7 +379,10 @@ def render(brief: SessionBrief) -> str:
             "anything that will not finish inside this session) runs OUTSIDE "
             "it. To run something and get its result, use the tool, then END "
             "YOUR TURN — you will be woken in this same session with the "
-            "output and any artifacts delivered under .autoresearch/results/:",
+            "output and any artifacts delivered under .autoresearch/results/. "
+            "Your git remote refs (origin/*) are refreshed at every wake, so "
+            "after a sleep you can read the current state of the base branch "
+            "and sibling branches locally:",
             "",
             "    python .autoresearch/syscall launch --name <handle> "
             "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",

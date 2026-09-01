@@ -19,10 +19,12 @@ Credential rules enforced here:
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import urllib.error
 import urllib.parse
@@ -839,6 +841,67 @@ class GitHubClient:
         self._request("POST", path, {"body": body})
 
 
+_MINIMAL_GIT_CONFIG = b"[core]\n\trepositoryformatversion = 0\n"
+# config sections that can REDIRECT a git operation to attacker-chosen refs
+# or files: url.*.insteadOf rewrites, and include/includeIf that pull in more
+# config (possibly a FIFO that would block git's own parse forever). The
+# session-writable .git/config is the only config source under credential
+# (global/system are /dev/null), so stripping these here disarms the whole
+# class before any git subcommand — local or network — reads the file.
+_REDIRECT_SECTIONS = ("url", "include", "includeif")
+_SECTION_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9.-]+)")
+
+
+def _ensure_regular_config(root: Path | None) -> None:
+    """Sanitize .git/config before any git command reads it. A session can
+    (a) replace the file with a FIFO/symlink/device — git's own parse, or a
+    read, would BLOCK forever with no writer, hanging the wake — or (b) leave
+    a regular file that INCLUDES a FIFO or rewrites URLs. Non-regular files are
+    replaced with a minimal config; a regular file's redirect sections
+    (url/include/includeIf) are stripped in place. A clean config is left
+    untouched (a cheap lstat and, at most, one small read)."""
+    if root is None:
+        return
+    cfg = root / ".git" / "config"
+    try:
+        st = os.lstat(cfg)
+    except OSError:
+        return
+
+    def _write(data: bytes) -> None:
+        with contextlib.suppress(OSError):
+            if cfg.exists():
+                cfg.unlink()
+            fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+        _write(_MINIMAL_GIT_CONFIG)  # FIFO/symlink/device/oversize: hostile
+        return
+    # a regular file never blocks a read (reading does NOT follow includes),
+    # so this is safe; only the redirect sections are removed
+    try:
+        text = cfg.read_text(errors="replace")
+    except OSError:
+        return
+    kept: list[str] = []
+    dropping = False
+    changed = False
+    for line in text.splitlines(keepends=True):
+        m = _SECTION_RE.match(line)
+        if m is not None:  # a new section header decides the next block
+            dropping = m.group(1).split(".", 1)[0].casefold() in _REDIRECT_SECTIONS
+        if dropping:
+            changed = True
+            continue
+        kept.append(line)
+    if changed:
+        _write("".join(kept).encode())
+
+
 def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     """GIT_CONFIG pairs that neutralize every filter driver the REPO config
     defines (each overridden to a passthrough) plus attribute files. The
@@ -936,14 +999,19 @@ class Workspace:
     def git(self, *args: str) -> str:
         """Run a local git subcommand: no credential, no child-spawning config,
         repo-defined filter drivers neutralized."""
+        _ensure_regular_config(self.root)
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
 
     def git_network(self, *args: str) -> str:
-        """Run a git subcommand that talks to the remote, with credentials."""
+        """Run a git subcommand that talks to the remote, with credentials.
+        The config is sanitized first (redirect sections stripped), and the
+        fetch/push pass an explicit URL + refspec, so no session-controlled
+        remote or rewrite can steer a credentialed op."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
+        _ensure_regular_config(self.root)
         token = self.auth.token() if self.auth is not None else None
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token, self.root)
@@ -1004,6 +1072,26 @@ class Workspace:
             "-m",
             message,
         )
+
+    def fetch_origin(self) -> None:
+        """Refresh refs/remotes/origin/* from the URL captured at clone time —
+        never the "origin" remote, whose url and uploadpack live in
+        session-writable .git/config. The credential is host-scoped
+        (extraheader), so a rewritten URL could not receive it, but the
+        CONTENT must come from the canonical repo too: a poisoned fetch
+        source would forge what origin/<base> means to every downstream
+        comparison."""
+        if self.dry_run:
+            log.info("[dry-run] fetch into %s", self.root)
+            return
+        target = self.url or self.remote_url()
+        self.git_network("fetch", "--prune", target, "--", "+refs/heads/*:refs/remotes/origin/*")
+
+    def fetch_branch(self, branch: str) -> None:
+        """Fetch one branch into FETCH_HEAD from the canonical URL (resolved
+        before the clean-config window, never the mutable "origin" remote)."""
+        target = self.url or self.remote_url()
+        self.git_network("fetch", target, branch)
 
     def push(self, branch: str) -> None:
         if self.dry_run:

@@ -959,7 +959,7 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
     target, wherever it ran. Fail-soft: a target with no research log yet
     (or an unreachable remote) is an empty memory, never a dead attempt."""
     try:
-        ws.git_network("fetch", "origin", RESEARCH_LOG_BRANCH)
+        ws.fetch_branch(RESEARCH_LOG_BRANCH)
         listing = ws.git("ls-tree", "-r", "--name-only", "FETCH_HEAD", "reports/")
         # only direct children (the publisher's layout): a nested path would
         # flatten to a basename that overwrites another archived report
@@ -1235,6 +1235,16 @@ def resume_run(
     # to another remote. Passing `url` here means `Workspace.push` uses it
     # instead of reading `remote.origin.url`.
     ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
+    # Refresh origin refs on EVERY wake: the clone's refs froze at run
+    # start, and this is the one credential-free freshness point — the
+    # kernel fetches (from the canonical URL, never the session-writable
+    # remote config), the session only ever reads local refs. `sleep`
+    # thereby doubles as the author's sync primitive. Best-effort: a fetch
+    # outage must not cost the wake.
+    try:
+        ws.fetch_origin()
+    except Exception as exc:
+        log.warning("wake fetch failed for %s: %s", run_id, exc)
 
     # Two park kinds reach the wake: a CANDIDATE park (the gate's measures were
     # dispatched) and an AUTHOR-SLEEP park (the author launched work and slept —

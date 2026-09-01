@@ -4019,3 +4019,90 @@ def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
         with pytest.raises(SystemExit):
             climb_main()
         assert "cannot shape a git ref" in capsys.readouterr().err
+
+
+def test_wake_refreshes_origin_refs(tmp_path, monkeypatch) -> None:
+    """The clone's refs freeze at run start; a wake fetches origin so the
+    resumed session reads current base and sibling refs locally."""
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    bare = tmp_path / f"origin-{run_id}.git"
+    _advance_main(tmp_path, bare, {"docs/news.md": "landed while parked\n"})
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert _git(ws, "show", "origin/main:docs/news.md").strip() == "landed while parked"
+
+
+def test_wake_fetch_ignores_session_url_rewrites(tmp_path, monkeypatch) -> None:
+    """A session can write url.<x>.insteadOf into .git/config; the wake
+    fetch strips those rewrites so origin/* comes from the canonical repo,
+    not an attacker-redirected source."""
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    bare = tmp_path / f"origin-{run_id}.git"
+    _advance_main(tmp_path, bare, {"docs/news.md": "canonical\n"})
+    # a decoy repo the rewrite would point at, with DIFFERENT content
+    decoy = tmp_path / "decoy.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(bare), str(decoy))
+    work = tmp_path / "decoy-work"
+    _git(tmp_path, "clone", "-q", str(decoy), str(work))
+    (work / "docs" / "news.md").write_text("ATTACKER\n")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "poison")
+    _git(work, "push", "-q", "origin", "main")
+    # the session plants the rewrite via an INCLUDED file (a --local scan
+    # would miss it; the clean-config window neutralizes the whole class)
+    inc = ws / ".git" / "evil.inc"
+    inc.write_text(f'[url "{decoy}"]\n\tinsteadOf = {bare}\n')
+    _git(ws, "config", "--local", "include.path", "evil.inc")
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
+
+
+def test_wake_fetch_survives_a_fifo_config(tmp_path, monkeypatch) -> None:
+    """A session can replace .git/config with a FIFO; read_bytes would block
+    the wake forever. The hardened swap refuses a non-regular config and
+    proceeds instead of hanging."""
+    import os as _os
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    bare = tmp_path / f"origin-{run_id}.git"
+    _advance_main(tmp_path, bare, {"docs/news.md": "canonical\n"})
+    cfg = ws / ".git" / "config"
+    # a REGULAR config that includes a FIFO: git would follow the include
+    # and block on the parse. The sanitizer strips the include first.
+    fifo = ws / ".git" / "evil.fifo"
+    _os.mkfifo(fifo)
+    with cfg.open("a") as fh:
+        fh.write(f"\n[include]\n\tpath = {fifo}\n")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    # the run completed (did not hang) and origin/main is canonical
+    assert outcome.outcome == "no-improvement"
+    assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
