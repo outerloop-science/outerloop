@@ -1005,6 +1005,8 @@ def test_run_base_renders_as_markers_not_a_line() -> None:
         {"speedrun": "min"},
         {},
     )
-    assert "showLine: false" in html and "crossRot" in html
-    # the legend swatch still carries the base color
-    assert html.index("'run base'") < html.index("borderColor: css('--base')")
+    # anchored to the run-base dataset block, not the whole page — another
+    # dataset supplying showLine would otherwise mask a regression here
+    block = html[html.index("'run base'") :][:400]
+    assert "showLine: false" in block and "crossRot" in block
+    assert "borderColor: css('--base')" in block  # the legend swatch color
