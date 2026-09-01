@@ -310,7 +310,7 @@ def run_steward(tmp_path, edits, values=None, check_error="", run_id="steward-ts
         harness=EnvEditingHarness(edits=edits),
         evaluator=evaluator,
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_000.0,
         created="2026-08-09T00:00:00Z",
         issue_number=21,
@@ -381,7 +381,7 @@ def test_exhausted_session_is_a_budget_ending_not_an_error(tmp_path, steward_rep
         harness=DryHarness(),
         evaluator=CheckingEvaluator(values=[14.9]),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_000.0,
         created="2026-08-09T00:00:00Z",
         issue_number=21,
@@ -425,7 +425,7 @@ def test_api_outage_releases_claim_without_counting(tmp_path, steward_repo) -> N
         harness=RefusedHarness(),
         evaluator=CheckingEvaluator(values=[14.9]),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_000.0,
         created="2026-08-09T00:00:00Z",
         issue_number=21,

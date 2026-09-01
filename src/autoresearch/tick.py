@@ -167,6 +167,9 @@ class FollowupSpec:
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
     max_turns: int = DEFAULT_MAX_TURNS  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
+    # GitHub App config path; jobs inherit AUTORESEARCH_GITHUB_APP_FILE from
+    # the tick environment, so it is never threaded through argv
+    github_app_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
@@ -1527,8 +1530,9 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
     URL (never the workspace's mutable remote config) and only refs/remotes
     are written — safe next to the session's local git use. Best-effort per
     run; a failure leaves the request standing for the next cycle."""
+    from autoresearch.appauth import resolve_bot_auth
     from autoresearch.attempt import _target_clone_url
-    from autoresearch.github import FileTokenProvider, Workspace
+    from autoresearch.github import Workspace
     from autoresearch.syscall import mark_synced, sync_requested
 
     for record in list_runs(root):
@@ -1543,7 +1547,11 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
         try:
             ws = Workspace(
                 root=workspace,
-                auth=FileTokenProvider(spec.pat_file) if spec.pat_file else None,
+                auth=(
+                    resolve_bot_auth(spec.pat_file, spec.github_app_file)
+                    if (spec.pat_file or spec.github_app_file)
+                    else None
+                ),
                 url=_target_clone_url(record.target),
             )
             ws.fetch_origin()
@@ -2693,6 +2701,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     the environment is incomplete (the tick then runs without in-review
     servicing, and logs what is absent)."""
     pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
+    app_file = os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", "")
     account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
     partition = os.environ.get("AUTORESEARCH_PARTITION", "")
     image = os.environ.get(
@@ -2700,11 +2709,12 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
     )
     home = os.environ.get("AUTORESEARCH_HOME", "")
-    if pat_file and account and partition and home and Path(image).is_file():
-        from autoresearch.github import FileTokenProvider, GitHubClient
+    if (pat_file or app_file) and account and partition and home and Path(image).is_file():
+        from autoresearch.appauth import resolve_bot_auth
+        from autoresearch.github import GitHubClient
 
         try:
-            github = GitHubClient(auth=FileTokenProvider(Path(pat_file)))
+            github = GitHubClient(auth=resolve_bot_auth(pat_file, app_file))
             followup_spec = FollowupSpec(
                 account=account,
                 partition=partition,
@@ -2712,6 +2722,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 image=image,
                 home=Path(home),
                 pat_file=pat_file,
+                github_app_file=app_file,
                 target=os.environ.get(
                     "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
                 ),
@@ -2730,7 +2741,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     absent = [
         name
         for name, value in [
-            ("AUTORESEARCH_PAT_FILE", pat_file),
+            ("AUTORESEARCH_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
             ("AUTORESEARCH_ACCOUNT", account),
             ("AUTORESEARCH_PARTITION", partition),
             ("AUTORESEARCH_HOME", home),

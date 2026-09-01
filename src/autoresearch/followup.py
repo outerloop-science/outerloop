@@ -812,7 +812,7 @@ def main() -> int:
     import os
     import time
 
-    from autoresearch.github import FileTokenProvider
+    from autoresearch.appauth import resolve_bot_auth
     from autoresearch.harness import DEFAULT_MAX_TURNS
     from autoresearch.orchestrator import SubprocessEvaluator
 
@@ -855,6 +855,12 @@ def main() -> int:
     )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
+        "--github-app-file",
+        default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
+        help="GitHub App config (JSON: app_id, installation_id, private_key); "
+        "when set, installation tokens replace the PAT",
+    )
+    parser.add_argument(
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
@@ -894,7 +900,7 @@ def main() -> int:
     )
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
     api_key = role_key(args.key_file, author_backend)
-    bot_auth = FileTokenProvider(Path(args.pat_file))
+    bot_auth = resolve_bot_auth(args.pat_file, args.github_app_file)
 
     # Same self-deadline as the climb: Slurm never signals this process,
     # so walltime deaths must be our own clock's job. respond_once contains

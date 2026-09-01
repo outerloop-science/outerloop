@@ -25,6 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
+from autoresearch.appauth import resolve_bot_auth
 from autoresearch.brief import BudgetState, distill_lessons
 from autoresearch.compute import LocalCompute
 from autoresearch.contract import Benchmark, Contract, load_contract
@@ -36,8 +37,8 @@ from autoresearch.dispatch import (
     snapshot_tree,
 )
 from autoresearch.github import (
-    FileTokenProvider,
     GitHubClient,
+    TokenProvider,
     Workspace,
 )
 from autoresearch.harness import Harness, SessionResult, redact
@@ -1221,7 +1222,7 @@ def resume_run(
     *,
     dispatch: DispatchSettings,
     github: GitHubClient,
-    bot_auth: FileTokenProvider,
+    bot_auth: TokenProvider,
     now: float,
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
@@ -2094,7 +2095,7 @@ def live_attempt(
     run_id: str,
     harness: Harness,
     github: GitHubClient,
-    bot_auth: FileTokenProvider,
+    bot_auth: TokenProvider,
     now: float,
     created: str,
     secrets: tuple[str, ...] = (),
@@ -2953,6 +2954,12 @@ def main() -> int:
     )
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
+        "--github-app-file",
+        default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
+        help="GitHub App config (JSON: app_id, installation_id, private_key); "
+        "when set, installation tokens replace the PAT",
+    )
+    parser.add_argument(
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
@@ -2979,7 +2986,7 @@ def main() -> int:
     # each --codex-config KEY=VALUE becomes a `-c KEY=VALUE` pair for codex
     codex_extra = tuple(a for c in args.codex_config for a in ("-c", c))
 
-    bot_auth = FileTokenProvider(Path(args.pat_file))
+    bot_auth = resolve_bot_auth(args.pat_file, args.github_app_file)
 
     # --resume WAKES a parked dispatched run: rebuild the dispatched measurer
     # and re-enter the decision. The wake job the WakeDispatcher submits runs

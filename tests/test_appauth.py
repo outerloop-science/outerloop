@@ -132,3 +132,109 @@ def _iso(epoch: float) -> str:
     from datetime import UTC, datetime
 
     return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_resolve_bot_auth_defaults_to_the_pat(tmp_path) -> None:
+    from autoresearch.appauth import resolve_bot_auth
+    from autoresearch.github import FileTokenProvider
+
+    pat = tmp_path / "pat"
+    pat.write_text("github_pat_x\n")
+    pat.chmod(0o600)
+    provider = resolve_bot_auth(pat)
+    assert isinstance(provider, FileTokenProvider)
+    assert provider.token() == "github_pat_x"
+    # an empty app_file is the same as none
+    assert isinstance(resolve_bot_auth(pat, ""), FileTokenProvider)
+    assert isinstance(resolve_bot_auth(pat, "  "), FileTokenProvider)
+
+
+def _rsa_pem(path) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    path.chmod(0o600)
+
+
+def test_resolve_bot_auth_selects_the_app_provider(tmp_path) -> None:
+    from autoresearch.appauth import resolve_bot_auth
+
+    key = tmp_path / "app.pem"
+    _rsa_pem(key)
+    config = tmp_path / "github_app.json"
+    config.write_text(
+        json.dumps({"app_id": 4797847, "installation_id": 158334152, "private_key": str(key)})
+    )
+    provider = resolve_bot_auth(tmp_path / "pat-not-read", config)
+    assert isinstance(provider, AppInstallationTokenProvider)
+    assert provider.app_id == 4797847
+    assert provider.installation_id == 158334152
+    # the signer round-trips: the JWT signature verifies against the public key
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    from autoresearch.appauth import build_app_jwt, signer_from_private_key
+
+    jwt = build_app_jwt(4797847, 1_000_000.0, signer_from_private_key(key))
+    signing_input, _, sig_seg = jwt.rpartition(".")
+    signature = base64.urlsafe_b64decode(sig_seg + "=" * (-len(sig_seg) % 4))
+    private = serialization.load_pem_private_key(key.read_bytes(), password=None)
+    assert isinstance(private, rsa.RSAPrivateKey)
+    private.public_key().verify(
+        signature, signing_input.encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+
+
+def test_app_config_failures_are_loud(tmp_path) -> None:
+    from autoresearch.appauth import app_provider_from_file
+
+    with pytest.raises(ValueError, match="cannot read App config"):
+        app_provider_from_file(tmp_path / "absent.json")
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    with pytest.raises(ValueError, match="cannot read App config"):
+        app_provider_from_file(bad)
+    partial = tmp_path / "partial.json"
+    partial.write_text(json.dumps({"app_id": 1}))
+    with pytest.raises(ValueError, match="missing installation_id, private_key"):
+        app_provider_from_file(partial)
+    # the key file's custody rules apply through the config path too
+    key = tmp_path / "open.pem"
+    key.write_text("k")
+    key.chmod(0o644)
+    lax = tmp_path / "lax.json"
+    lax.write_text(json.dumps({"app_id": 1, "installation_id": 2, "private_key": str(key)}))
+    with pytest.raises(PermissionError, match="group/world accessible"):
+        app_provider_from_file(lax)
+
+
+def test_redact_covers_tokens_minted_after_the_snapshot(monkeypatch) -> None:
+    """The round-2 obligation: a secrets tuple captured at CLI start must not
+    miss an installation token minted by a later refresh."""
+    from autoresearch import appauth
+    from autoresearch.harness import redact
+
+    monkeypatch.setattr(appauth, "_ISSUED_TOKENS", [])
+    clock = {"t": 1_000.0}
+    serial = {"n": 0}
+
+    def transport(request):
+        serial["n"] += 1
+        return {"token": f"ghs_mint_{serial['n']}", "expires_at": _iso(clock["t"] + 3600)}
+
+    p = AppInstallationTokenProvider(
+        1, 2, sign=lambda m: b"s", transport=transport, now=lambda: clock["t"]
+    )
+    snapshot = ("api_key_x", p.token())  # what call sites capture today
+    clock["t"] += 3400  # into the refresh margin
+    p.token()  # the mid-run refresh the snapshot cannot know about
+    text = "a ghs_mint_1 b ghs_mint_2 c api_key_x"
+    assert redact(text, snapshot) == "a [redacted] b [redacted] c [redacted]"

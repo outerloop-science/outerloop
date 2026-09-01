@@ -706,7 +706,7 @@ def run_live(
             run_id=run_id,
             harness=ScriptedHarness(edits=edits),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
             secrets=("sk-live-key",),
@@ -940,7 +940,7 @@ def test_session_error_aborts_cleanly(tmp_path, target_repo) -> None:
             run_id="tsp-err",
             harness=DeadHarness(),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -974,7 +974,7 @@ def test_exhausted_live_attempt_ends_budget_exhausted(tmp_path, target_repo) -> 
             run_id="tsp-dry",
             harness=DryHarness(),
             github=FakeGitHub(),  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -1013,7 +1013,7 @@ def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> 
             run_id="tsp-orphan",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "q=4\n"}),
             github=FailingGitHub2(),  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -1109,7 +1109,7 @@ def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
             run_id="chess-2",
             harness=ScriptedHarness(edits={}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -1136,7 +1136,7 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
             run_id="tsp-iss",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "i=1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-07T00:00:00Z",
             issue_number=42,
@@ -1169,7 +1169,7 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
             run_id="tsp-clonefail",
             harness=ScriptedHarness(edits={}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
             issue_number=7,
@@ -1214,7 +1214,7 @@ def test_ending_steps_degrade_independently(tmp_path, target_repo, monkeypatch) 
             run_id="chess-disk",
             harness=ScriptedHarness(edits={}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
             issue_number=7,
@@ -1241,7 +1241,7 @@ def test_final_record_failure_does_not_lose_pr_or_issue_report(
             run_id="tsp-finaldisk",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "z=1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-07T00:00:00Z",
             issue_number=9,
@@ -1273,7 +1273,7 @@ def test_first_record_write_failure_is_contained(tmp_path, target_repo, monkeypa
             run_id="tsp-recfail",
             harness=ScriptedHarness(edits={}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
             issue_number=7,
@@ -1309,7 +1309,7 @@ def test_arming_failure_never_fails_the_publish(tmp_path, target_repo) -> None:
             run_id="tsp-noarm",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "na=2\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -1336,7 +1336,7 @@ def test_moved_base_publishes_the_sealed_candidate_without_merging(tmp_path, tar
             run_id="tsp-moved",
             harness=MovingHarness(edits={"src/pilot/solvers/tsp.py": "m=1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -1381,7 +1381,7 @@ def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, ta
             run_id="tsp-seal",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 7\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
         )
@@ -1430,7 +1430,7 @@ def test_non_default_base_branch_is_built_on_and_measured(tmp_path, target_repo)
             run_id="tsp-dev",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "d=1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
             base_branch="dev",
@@ -1475,7 +1475,7 @@ def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
             run_id="tsp-term",
             harness=KilledHarness(edits={}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="t",
             issue_number=7,
@@ -1701,7 +1701,7 @@ def test_panel_clean_read_lands_a_normal_pr_with_transcript(tmp_path, target_rep
             run_id="tsp-panel-ok",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-15T00:00:00Z",
             panel_lenses=(PanelLens("review", judge),),
@@ -1749,7 +1749,7 @@ def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_rep
             run_id="tsp-panel-draft",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=2\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-15T00:00:00Z",
             panel_lenses=(PanelLens("review", judge),),
@@ -2237,7 +2237,7 @@ def test_resume_negative_ends_run_and_drops_snapshot(tmp_path, monkeypatch) -> N
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "no-improvement"
@@ -2260,7 +2260,7 @@ def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "parked"
@@ -2335,7 +2335,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "parked"
@@ -2363,7 +2363,7 @@ def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "improved"
@@ -2410,7 +2410,7 @@ def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, m
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert load_record(state, run_id).wake_attempts == 2  # kept, cap still counts
@@ -2426,7 +2426,7 @@ def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, m
         rid2,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert load_record(state2, rid2).wake_attempts == 0  # reset on progress
@@ -2447,7 +2447,7 @@ def test_resume_reads_contract_from_base_not_the_dirty_tree(tmp_path, monkeypatc
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "improved"  # base's contract was used, not the corrupt tree
@@ -2475,7 +2475,7 @@ def test_resume_negative_keeps_snapshot_if_the_record_save_fails(tmp_path, monke
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     ws = state / "runs" / run_id / "ws"
@@ -2494,7 +2494,7 @@ def test_resume_opens_pr_against_the_runs_base_branch_from_the_stage(tmp_path, m
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         base_branch="main",  # the CLI default — must be OVERRIDDEN by the stage
     )
@@ -2564,7 +2564,7 @@ def test_resume_reports_terminal_back_to_the_requesting_issue(tmp_path, monkeypa
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "improved"
@@ -2593,7 +2593,7 @@ def test_resume_negative_releases_the_issue_claim(tmp_path, monkeypatch) -> None
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "no-improvement"
@@ -2622,7 +2622,7 @@ def test_resume_clean_panel_arms_and_records_transcript(tmp_path, monkeypatch) -
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         panel_lenses=_panel_lens(_json.dumps({"findings": [], "notes": "clean"})),
     )
@@ -2661,7 +2661,7 @@ def test_resume_blocking_panel_opens_a_draft_and_never_arms(tmp_path, monkeypatc
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         panel_lenses=_panel_lens(blocking),
     )
@@ -2705,7 +2705,7 @@ def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypat
         run_id,
         dispatch=_fake_dispatch(),
         github=FakeGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         panel_lenses=(PanelLens("review", judge),),
     )
@@ -2730,7 +2730,7 @@ def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) ->
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         panel_lenses=(PanelLens("review", object()),),  # type: ignore[arg-type]  # runner monkeypatched to raise
     )
@@ -2815,7 +2815,7 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
         harness=RevisingHarness(),
@@ -2890,7 +2890,7 @@ def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=ConcedingHarness(),
         spec=author_spec(),
@@ -2951,7 +2951,7 @@ def test_errored_gate_wake_with_a_conceding_author_ends_without_a_retry(
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=ConcedingHarness(),
         spec=author_spec(),
@@ -2995,7 +2995,7 @@ def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         panel_lenses=(PanelLens("review", _panel_judge([blocking])),),
         harness=object(),  # type: ignore[arg-type]
@@ -3018,7 +3018,7 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
         run_id,
         dispatch=_fake_dispatch(),
         github=github,  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/7")
@@ -3122,7 +3122,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=harness,
         spec=author_spec(),
@@ -3170,7 +3170,7 @@ def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=SleepyHarness(edits={}),
         spec=author_spec(),
@@ -3193,7 +3193,7 @@ def test_author_sleep_wake_without_harness_ends_loudly(tmp_path, monkeypatch) ->
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "session-error"
@@ -3690,7 +3690,7 @@ def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_re
             run_id="tsp-lines-1",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3736,7 +3736,7 @@ def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_rep
             run_id="tsp-lines-2",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 2\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3767,7 +3767,7 @@ def test_line_memory_never_reaches_a_measurable_seal(tmp_path, target_repo_lines
                 }
             ),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3792,7 +3792,7 @@ def test_memory_only_session_measures_nothing(tmp_path, target_repo_lines) -> No
             run_id="tsp-mem-2",
             harness=ScriptedHarness(edits={"AGENT_MEMORY.md": "- muon low peak seems real\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3844,7 +3844,7 @@ def test_fallback_run_still_excludes_memory_from_the_seal(
                 }
             ),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3872,7 +3872,7 @@ def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert outcome.outcome == "no-improvement"
@@ -3903,7 +3903,7 @@ def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_
             run_id="tsp-mem-brief",
             harness=BriefCapture(edits={}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3940,7 +3940,7 @@ def test_line_divergence_reaches_the_brief(tmp_path: Path, target_repo_lines) ->
             run_id="tsp-div-1",
             harness=BriefCapture2(edits={}),
             github=FakeGitHub(),  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -3969,7 +3969,7 @@ def test_brief_budget_comes_from_the_contract_not_the_caller(tmp_path, target_re
                 run_id=run_id,
                 harness=BriefCapture3(edits={}),
                 github=FakeGitHub(),  # type: ignore[arg-type]
-                bot_auth=NoAuth(),  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
                 now=1_000_000.0,
                 created="2026-08-06T00:00:00Z",
             )
@@ -4000,7 +4000,7 @@ def test_gpu_benchmark_brief_shows_the_per_run_pool(tmp_path, monkeypatch) -> No
             run_id="tsp-gpu-1",
             harness=BriefCapture4(edits={}),
             github=FakeGitHub(),  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -4035,7 +4035,7 @@ def test_wake_refreshes_origin_refs(tmp_path, monkeypatch) -> None:
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert _git(ws, "show", "origin/main:docs/news.md").strip() == "landed while parked"
@@ -4070,7 +4070,7 @@ def test_wake_fetch_ignores_session_url_rewrites(tmp_path, monkeypatch) -> None:
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
@@ -4100,7 +4100,7 @@ def test_wake_fetch_survives_a_fifo_config(tmp_path, monkeypatch) -> None:
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     # the run completed (did not hang) and origin/main is canonical
@@ -4132,7 +4132,7 @@ def test_wake_fetch_ignores_worktree_config_rewrite(tmp_path, monkeypatch) -> No
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
@@ -4155,7 +4155,7 @@ def test_merge_artifacts_do_not_trip_scope(tmp_path, target_repo) -> None:
                 }
             ),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
@@ -4197,7 +4197,7 @@ def test_wake_re_establishes_the_merge_artifact_exclude(tmp_path, monkeypatch) -
         run_id,
         dispatch=_fake_dispatch(),
         github=CommentingGitHub(),  # type: ignore[arg-type]
-        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
         now=1_000_100.0,
     )
     assert "*.orig" in exclude.read_text()  # re-established on the wake

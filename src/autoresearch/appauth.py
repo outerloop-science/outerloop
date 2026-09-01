@@ -1,15 +1,18 @@
 """GitHub App installation-token auth (docs/design/github-app-auth.md).
 
 `AppInstallationTokenProvider` satisfies the `TokenProvider` protocol used
-throughout `github.py`, so it replaces `FileTokenProvider` at the one
-constructor call without touching any caller. Each `token()` mints a
-short-lived JWT (RS256, signed by the App private key), exchanges it for a
-~1h installation token scoped to the installation's repos, and caches that
-token until a refresh margin before it expires.
+throughout `github.py`. Role CLIs construct bot auth through
+`resolve_bot_auth`, which selects this provider when an App config file is
+given (`--github-app-file` / `AUTORESEARCH_GITHUB_APP_FILE`) and falls back
+to the PAT file otherwise — the cutover flag, revertible by unsetting the
+env. Each `token()` mints a short-lived JWT (RS256, signed by the App
+private key), exchanges it for a ~1h installation token scoped to the
+installation's repos, and caches that token until a refresh margin before
+it expires.
 
 The RS256 signer and the HTTP transport are injected so the provider — and
-its tests — build and run without the `cryptography` dependency or a network;
-that dependency is added to the `app-auth` extra only at live cutover.
+its tests — build and run without the `cryptography` dependency or a
+network; the production signer lives behind the `app-auth` extra.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from autoresearch.github import AUTH_SAFE_OPENER
+from autoresearch.github import AUTH_SAFE_OPENER, FileTokenProvider, TokenProvider
 
 # RS256-sign the JWT signing input, returning the raw signature bytes.
 Signer = Callable[[bytes], bytes]
@@ -40,6 +43,17 @@ _JWT_BACKDATE_S = 60
 # Re-mint the installation token this long before it actually expires, so a
 # token is never handed out on the edge of expiry.
 _REFRESH_MARGIN_S = 5 * 60
+
+# Every installation token minted by this process, whichever provider
+# instance minted it. `redact` appends these to its snapshotted secrets
+# tuple at write time, so a token minted after a call site captured its
+# tuple still never reaches a report, record, or log.
+_ISSUED_TOKENS: list[str] = []
+
+
+def issued_tokens() -> tuple[str, ...]:
+    """All installation tokens minted this process, for write-time redaction."""
+    return tuple(_ISSUED_TOKENS)
 
 
 def _b64url(data: bytes) -> str:
@@ -128,6 +142,7 @@ class AppInstallationTokenProvider:
             raise ValueError("installation-token response missing a token")
         self._token = str(body["token"])
         self._issued.append(self._token)
+        _ISSUED_TOKENS.append(self._token)
         expires_at = body.get("expires_at")
         # a missing/garbled expiry is treated as immediate — safe: we simply
         # re-mint on every call rather than trust an unknown lifetime
@@ -154,7 +169,7 @@ def signer_from_private_key(pem_path: Path) -> Signer:
         raise PermissionError(f"{pem_path} is group/world accessible; chmod 600 it")
     try:
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
             "GitHub App auth needs the 'app-auth' extra (cryptography); "
@@ -162,8 +177,37 @@ def signer_from_private_key(pem_path: Path) -> Signer:
         ) from exc
 
     key = serialization.load_pem_private_key(pem_path.read_bytes(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError(f"{pem_path} is not an RSA key; GitHub App keys are RSA")
 
     def sign(message: bytes) -> bytes:
         return key.sign(message, padding.PKCS1v15(), hashes.SHA256())
 
     return sign
+
+
+def app_provider_from_file(app_file: Path) -> AppInstallationTokenProvider:
+    """Build the provider from the App config file: JSON with `app_id`,
+    `installation_id` (integers), and `private_key` (path to the PEM). The
+    ids are not secrets; the file exists so the whole App identity travels
+    as one path on the same rails the PAT path already rides."""
+    try:
+        config = json.loads(app_file.read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read App config {app_file}: {exc}") from None
+    missing = [k for k in ("app_id", "installation_id", "private_key") if not config.get(k)]
+    if missing:
+        raise ValueError(f"App config {app_file} is missing {', '.join(missing)}")
+    return AppInstallationTokenProvider(
+        int(config["app_id"]),
+        int(config["installation_id"]),
+        signer_from_private_key(Path(str(config["private_key"])).expanduser()),
+    )
+
+
+def resolve_bot_auth(pat_file: str | Path, app_file: str | Path = "") -> TokenProvider:
+    """The one seam every role CLI constructs bot auth through: the App
+    provider when an App config file is given, the PAT file otherwise."""
+    if str(app_file).strip():
+        return app_provider_from_file(Path(str(app_file)).expanduser())
+    return FileTokenProvider(Path(str(pat_file)).expanduser())
