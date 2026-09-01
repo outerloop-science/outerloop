@@ -29,7 +29,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -841,14 +841,25 @@ class GitHubClient:
         self._request("POST", path, {"body": body})
 
 
+_MINIMAL_GIT_CONFIG = b"[core]\n\trepositoryformatversion = 0\n"
+# config sections that can REDIRECT a git operation to attacker-chosen refs
+# or files: url.*.insteadOf rewrites, and include/includeIf that pull in more
+# config (possibly a FIFO that would block git's own parse forever). The
+# session-writable .git/config is the only config source under credential
+# (global/system are /dev/null), so stripping these here disarms the whole
+# class before any git subcommand — local or network — reads the file.
+_REDIRECT_SECTIONS = ("url", "include", "includeif")
+_SECTION_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9.-]+)")
+
+
 def _ensure_regular_config(root: Path | None) -> None:
-    """Refuse a non-regular .git/config before any git command reads it. A
-    session can replace the (session-writable) config with a FIFO — a plain
-    read, or git's own config parse, would BLOCK forever with no writer,
-    hanging the wake — or a symlink/device to mislead a read. Any such file
-    is hostile or broken (git cannot operate on it either), so it is replaced
-    with a minimal regular config; a regular config is left untouched (cheap
-    lstat, no write)."""
+    """Sanitize .git/config before any git command reads it. A session can
+    (a) replace the file with a FIFO/symlink/device — git's own parse, or a
+    read, would BLOCK forever with no writer, hanging the wake — or (b) leave
+    a regular file that INCLUDES a FIFO or rewrites URLs. Non-regular files are
+    replaced with a minimal config; a regular file's redirect sections
+    (url/include/includeIf) are stripped in place. A clean config is left
+    untouched (a cheap lstat and, at most, one small read)."""
     if root is None:
         return
     cfg = root / ".git" / "config"
@@ -856,14 +867,39 @@ def _ensure_regular_config(root: Path | None) -> None:
         st = os.lstat(cfg)
     except OSError:
         return
-    if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+
+    def _write(data: bytes) -> None:
         with contextlib.suppress(OSError):
-            cfg.unlink()
+            if cfg.exists():
+                cfg.unlink()
             fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             try:
-                os.write(fd, b"[core]\n\trepositoryformatversion = 0\n")
+                os.write(fd, data)
             finally:
                 os.close(fd)
+
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+        _write(_MINIMAL_GIT_CONFIG)  # FIFO/symlink/device/oversize: hostile
+        return
+    # a regular file never blocks a read (reading does NOT follow includes),
+    # so this is safe; only the redirect sections are removed
+    try:
+        text = cfg.read_text(errors="replace")
+    except OSError:
+        return
+    kept: list[str] = []
+    dropping = False
+    changed = False
+    for line in text.splitlines(keepends=True):
+        m = _SECTION_RE.match(line)
+        if m is not None:  # a new section header decides the next block
+            dropping = m.group(1).split(".", 1)[0].casefold() in _REDIRECT_SECTIONS
+        if dropping:
+            changed = True
+            continue
+        kept.append(line)
+    if changed:
+        _write("".join(kept).encode())
 
 
 def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
@@ -968,75 +1004,18 @@ class Workspace:
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
 
-    @contextlib.contextmanager
-    def _neutral_local_config(self) -> Iterator[None]:
-        """Run the body with the workspace's local .git/config swapped for a
-        MINIMAL one. The session-writable local config is the only config
-        source under credential (global/system are /dev/null), and git honors
-        url.*.insteadOf, include.path, includeIf, etc. even for an explicitly
-        passed URL — any of which could redirect a credentialed fetch/push at
-        attacker-controlled refs and poison what origin/<base> means to every
-        downstream comparison. Swapping the whole file neutralizes the entire
-        config-redirect class at once. The fetch/push pass an explicit URL and
-        refspec, so no remote.* config is needed for the op; the session's
-        config is restored after (only the kernel runs network ops, serially,
-        so nothing else races this window)."""
-        cfg = self.root / ".git" / "config"
-        minimal = b"[core]\n\trepositoryformatversion = 0\n"
-
-        def _write(data: bytes) -> None:
-            # O_NOFOLLOW: never write THROUGH a symlink a session planted at
-            # the config path; truncate-and-write the regular file in place
-            fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-            try:
-                os.write(fd, data)
-            finally:
-                os.close(fd)
-
-        # Read the current config through a fd opened O_NOFOLLOW | O_NONBLOCK:
-        # a session can replace .git/config with a symlink (NOFOLLOW refuses)
-        # or a FIFO (a plain read_bytes would BLOCK the wake forever with no
-        # writer — NONBLOCK + the regular-file check below refuse it).
-        try:
-            fd = os.open(cfg, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        except OSError:
-            yield  # no config yet (fresh clone), or a symlink we refuse to follow
-            return
-        try:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
-                # a non-regular (FIFO/socket/device) or absurdly large config
-                # is hostile or broken: replace it and do not restore — there
-                # is nothing legitimate to keep.
-                os.close(fd)
-                cfg.unlink()
-                _write(minimal)
-                yield
-                return
-            saved = b""
-            while chunk := os.read(fd, 65536):
-                saved += chunk
-        finally:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        try:
-            _write(minimal)
-            yield
-        finally:
-            _write(saved)
-
     def git_network(self, *args: str) -> str:
-        """Run a git subcommand that talks to the remote, with credentials."""
+        """Run a git subcommand that talks to the remote, with credentials.
+        The config is sanitized first (redirect sections stripped), and the
+        fetch/push pass an explicit URL + refspec, so no session-controlled
+        remote or rewrite can steer a credentialed op."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
         _ensure_regular_config(self.root)
         token = self.auth.token() if self.auth is not None else None
-        argv = ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args]
-        env = _git_env(token, self.root)
-        if args and args[0] == "clone":
-            return _run_git(argv, env)  # no local config to neutralize yet
-        with self._neutral_local_config():
-            return _run_git(argv, env)
+        return _run_git(
+            ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token, self.root)
+        )
 
     def remote_url(self) -> str:
         """The remote URL as recorded at clone time, read token-free."""
