@@ -965,3 +965,32 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
     assert r["gpu_hours_budget"] == 400.0
     # the first clause only — the strip is a glance, not a paragraph
     assert r["direction"] == "longer warmdown helps"
+
+
+def test_md_baseline_chip_is_the_ledger_starting_position() -> None:
+    from autoresearch.climbboard import render_md
+
+    rows = [
+        {"run_id": "r1", "baseline": 9472.0, "candidate": 9088.0, "outcome": "merged"},
+        {"run_id": "r2", "baseline": 9472.0, "candidate": 8960.0, "outcome": "rejected"},
+    ]
+    with_start = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"}, {"speedrun": 9472.0})
+    assert "baseline (start): **9472**" in with_start or "baseline (start): **9472.0**" in (
+        with_start
+    )
+    # no ledger -> the chip is simply absent; nothing per-run substitutes
+    without = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"})
+    assert "baseline" not in without
+
+
+def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path) -> None:
+    """The chip's value travels get_file_content -> starts -> CLIMB.md; a
+    NaN in the ledger is dropped instead of aborting the publish."""
+    _terminal_run(tmp_path, "speedrun-1")
+    gh = _BoardGitHub()
+    gh.files["results/leader.json"] = json.dumps(
+        {"speedrun": {"baseline": 9472.0}, "broken": {"baseline": float("nan")}},
+        allow_nan=True,
+    )
+    assert service_climb_board(tmp_path, gh, "org/repo") >= 1
+    assert "baseline (start): **9472**" in gh.files["CLIMB.md"]

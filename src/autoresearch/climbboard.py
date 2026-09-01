@@ -228,7 +228,10 @@ def _fmt(value: Any) -> str:
 
 
 def render_md(
-    target: str, boards: dict[str, list[dict[str, Any]]], directions: dict[str, str]
+    target: str,
+    boards: dict[str, list[dict[str, Any]]],
+    directions: dict[str, str],
+    starts: dict[str, float] | None = None,
 ) -> str:
     """CLIMB.md: per benchmark, the headline numbers and the attempts table
     (newest first). Plain markdown; the chart lives in index.html."""
@@ -245,22 +248,19 @@ def render_md(
         pick = max if direction == "max" else min
         measured = [r for r in rows if isinstance(r.get("candidate"), int | float)]
         improved = [r for r in rows if r.get("outcome") in ("merged", "improved")]
-        # from rows that measured a CANDIDATE: a session error can preserve
-        # a baseline without ever measuring, and must not speak for the chip
-        baselines = [r["baseline"] for r in measured if isinstance(r.get("baseline"), int | float)]
         best = pick((r["candidate"] for r in measured), default=None)
         gpu = sum(float(r.get("gpu_hours") or 0.0) for r in rows)
+        # baseline = the campaign's STARTING POSITION, one fixed ledger
+        # number (owner decision: per-run declared bases confused more than
+        # they informed as a headline)
+        start = (starts or {}).get(benchmark)
+        start_chip = f" · baseline (start): **{_fmt(start)}**" if start is not None else ""
         lines += [
             "",
             f"## {benchmark}",
             "",
-            # the value is the newest MEASURED run's declared base (rows
-            # without a numeric baseline never measured); "latest baseline"
-            # read as the ledger's and appeared to regress when a stale-base
-            # run landed after main moved
             f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
-            f"**{_fmt(best)}** ({direction}) · last measured run's base: "
-            f"**{_fmt(baselines[-1] if baselines else None)}** · GPU-hours: **{gpu:.1f}**",
+            f"**{_fmt(best)}** ({direction}){start_chip} · GPU-hours: **{gpu:.1f}**",
         ]
         if len(rows) >= MAX_ROWS_PER_BENCHMARK:
             lines += [
@@ -507,7 +507,7 @@ def render_html(
         "           : beats(r) ? css('--near') : css('--lose'))},\n"
         "        {label: 'best so far', data: viewBest, stepped: true,\n"
         "         borderColor: css('--accent'), borderWidth: 2, pointRadius: 0},\n"
-        "        {label: 'baseline', data: view.map(r => r.baseline),\n"
+        "        {label: 'run base', data: view.map(r => r.baseline),\n"
         "         borderColor: css('--base'), borderDash: [6, 4], borderWidth: 1.5,\n"
         "         pointRadius: 0}]},\n"
         "      options: {color: css('--muted'),\n"
@@ -1061,7 +1061,21 @@ def service_climb_board(
     # render without it until a later pass reads it again. An index that
     # could not be READ at all (None) is never rewritten this pass.
     wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index or {}))}
-    views: list[tuple[str, str]] = [("CLIMB.md", render_md(target, boards, wanted))]
+    # the starting positions come from the target's ledger on its default
+    # branch — best-effort: a missing or unreadable ledger just drops the chip
+    starts: dict[str, float] = {}
+    try:
+        # ref HEAD = the repo's default branch, whatever it is named
+        raw_leader = github.get_file_content(target, "results/leader.json", "HEAD")
+        if raw_leader:
+            for name, entry in json.loads(raw_leader).items():
+                value = entry.get("baseline") if isinstance(entry, dict) else None
+                # json.loads admits NaN/Infinity, which _fmt cannot render
+                if isinstance(value, int | float) and math.isfinite(value):
+                    starts[str(name)] = float(value)
+    except Exception:
+        starts = {}
+    views: list[tuple[str, str]] = [("CLIMB.md", render_md(target, boards, wanted, starts))]
     if curves_ok:
         views.append(("index.html", render_html(target, boards, wanted, curves)))
     if index is not None:
