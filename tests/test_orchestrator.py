@@ -1696,3 +1696,15 @@ def test_gate_rejects_an_exact_floor_delta(tmp_path: Path) -> None:
     # delta exactly at the floor is the noise the floor models (terra #169)
     result, _, _ = run_climb(tmp_path, [13.876, 13.376], contract=FLOOR_CONTRACT)
     assert result.outcome == "no-improvement"
+
+
+def test_branch_prefix_derives_from_the_agent_id() -> None:
+    assert RunConfig(target="o/r", benchmark="b", agent_id="agent-02").branch_prefix == (
+        "feat/auto/agent-02"
+    )
+    # a legacy record with no agent id — or a malformed one an old CLI let
+    # into a record — keeps the old spelling, never an invalid ref
+    for legacy in ("", "bad..id", "bad id", "a/b"):
+        assert RunConfig(target="o/r", benchmark="b", agent_id=legacy).branch_prefix == (
+            "feat/auto/agent-01"
+        )

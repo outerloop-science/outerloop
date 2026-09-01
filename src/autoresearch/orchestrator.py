@@ -408,7 +408,6 @@ def _metric_from_output(stdout: str, metric: str) -> float | None:
 class RunConfig:
     target: str  # owner/repo
     benchmark: str  # the ONE benchmark this loop works on
-    branch_prefix: str = "feat/auto/agent-01"
     agent_id: str = "agent-01"
     # Commits are AUTHORED as the bot account (a real GitHub identity):
     # a bare "agent-01" noreply address links to whoever owns that login.
@@ -418,6 +417,19 @@ class RunConfig:
     # configurable later; this is the loop-side floor)
     min_relative_improvement: float = 0.005
     budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 1))
+
+    @property
+    def branch_prefix(self) -> str:
+        # derived, never stored: every call site passed agent_id but left the
+        # old field at its default, so every PR branch said agent-01. An id
+        # that cannot shape a ref — empty, or a malformed value an old CLI
+        # accepted into a record — keeps the old spelling rather than
+        # handing git an invalid branch name at publish.
+        import re
+
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", self.agent_id or ""):
+            return f"feat/auto/{self.agent_id}"
+        return "feat/auto/agent-01"
 
 
 @dataclass(frozen=True)

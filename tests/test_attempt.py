@@ -3940,3 +3940,17 @@ def test_line_divergence_reaches_the_brief(tmp_path: Path, target_repo_lines) ->
         )
     brief = str(BriefCapture2.seen["brief"])
     assert "differs from the base branch by: 1 file changed" in brief
+
+
+def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
+    from autoresearch.attempt import main as climb_main
+
+    # "-leading" is not here: argparse consumes it as an option flag and
+    # rejects it on its own ("expected one argument")
+    for bad in ("bad id", "bad..id", "a/b", "_leading"):
+        monkeypatch.setattr(
+            "sys.argv", ["climb", "--target", "o/r", "--benchmark", "b", "--agent-id", bad]
+        )
+        with pytest.raises(SystemExit):
+            climb_main()
+        assert "cannot shape a git ref" in capsys.readouterr().err
