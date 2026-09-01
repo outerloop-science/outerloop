@@ -4005,3 +4005,17 @@ def test_gpu_benchmark_brief_shows_the_per_run_pool(tmp_path, monkeypatch) -> No
             created="2026-08-06T00:00:00Z",
         )
     assert "GPU-hours remaining: 1.0" in BriefCapture4.seen[0]
+
+
+def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
+    from autoresearch.attempt import main as climb_main
+
+    # "-leading" is not here: argparse consumes it as an option flag and
+    # rejects it on its own ("expected one argument")
+    for bad in ("bad id", "bad..id", "a/b", "_leading"):
+        monkeypatch.setattr(
+            "sys.argv", ["climb", "--target", "o/r", "--benchmark", "b", "--agent-id", bad]
+        )
+        with pytest.raises(SystemExit):
+            climb_main()
+        assert "cannot shape a git ref" in capsys.readouterr().err

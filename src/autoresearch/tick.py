@@ -487,7 +487,7 @@ def service_in_review(
     duplicate submission no-ops on the lease, and `followup_job_id` keeps the
     tick from queueing duplicates in the first place.
     """
-    from autoresearch.followup import close_if_done, has_new_comments
+    from autoresearch.followup import close_if_done, conflict_wake_action, has_new_comments
 
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
@@ -512,7 +512,15 @@ def service_in_review(
             if paused:
                 log.info("follow-up for %s paused (api outage: %s)", record.run_id, paused)
                 continue
-            if not has_new_comments(record, github, spec.bot_login):
+            wake_action = conflict_wake_action(record, github)
+            if wake_action == "clear":
+                # the PR is clean again: re-arm the wake for this head — the
+                # base can move and conflict the SAME head a second time
+                try:
+                    save_record(root, replace(record, dirty_wake_head=""), now)
+                except OSError as exc:
+                    log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
+            if not has_new_comments(record, github, spec.bot_login) and wake_action != "wake":
                 continue
             if record.followup_job_id:
                 try:

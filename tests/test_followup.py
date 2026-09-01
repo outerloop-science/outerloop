@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -855,3 +856,230 @@ def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
     assert client.disable_auto_merge("o/r", 1) is True  # nothing armed = safe
     client._graphql = types.MethodType(lambda self, q, v: hard_fail(), client)  # type: ignore[method-assign]
     assert client.disable_auto_merge("o/r", 1) is False  # unknown state = block
+
+
+def _dirty_pr(head="h" * 40) -> dict:
+    return {
+        "state": "open",
+        "merged": False,
+        "mergeable": False,
+        "mergeable_state": "dirty",
+        "head": {"sha": head},
+        "base": {"ref": "main"},
+    }
+
+
+def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
+    root, _bare = review_run
+    github = FakeGitHub(pr=_dirty_pr())
+    harness = ResumingHarness()
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
+    assert outcome.action == "replied"
+    prompt, resume_id = harness.calls[0]
+    assert "Your PR conflicts with its base" in prompt
+    assert "origin/main` has been fetched" in prompt
+    assert resume_id == "sess-original"  # same session lineage, full context
+    # once per head: the cursor is persisted, the next pass no-ops
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == "h" * 40
+    outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
+    assert outcome2.action == "no-op"
+
+
+def test_conflict_wake_action_lifecycle(review_run) -> None:
+    from autoresearch.followup import conflict_wake_action
+
+    root, _ = review_run
+    record = load_record(root, "tsp-r1")
+    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_dirty_pr()))) == "wake"
+    assert conflict_wake_action(record, cast(Any, FakeGitHub())) == ""  # clean, never woken
+    woken = replace(record, dirty_wake_head="h" * 40)
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr()))) == ""  # once/head
+    # a new head (author pushed, conflicted again) re-arms
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr(head="i" * 40)))) == (
+        "wake"
+    )
+    # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
+    clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=clean))) == "clear"
+
+
+def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
+    """A merge brings the base branch's own files into the diff; content
+    identical to origin/<base> must not be reverted as out-of-scope."""
+    root, bare = review_run
+    # main moves: an out-of-scope doc lands upstream
+    seed2 = root.parent / "seed2"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(comments=[member(101, "please update your branch")])
+    # the session merges main (simulated: the identical file appears) and
+    # keeps an in-scope edit of its own
+    harness = ResumingHarness(
+        edits={
+            "docs/news.md": "from main\n",
+            "src/pilot/solvers/tsp.py": "v2 after merge\n",
+        }
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    files = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
+    assert "v2 after merge" in files
+    assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
+
+
+def test_deletions_converging_to_base_are_exempt(review_run) -> None:
+    """The exemption's invariant is FINAL STATE == origin/<base>: a path the
+    base also lacks (a base-side deletion merged in, or a branch-only file
+    removed) converges to the reviewed base state and cannot smuggle or
+    exceed scope. Deleting a file the base still HAS stays guarded."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    # a branch-only out-of-scope file from an earlier (reviewed) round
+    (ws / "docs" / "branch-only.md").write_text("old note\n")
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior round")
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
+    github = FakeGitHub(comments=[member(101, "tidy up")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"})
+
+    def deleting_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "branch-only.md").unlink()
+        return ResumingHarness.run(harness, brief_text, workspace, resume_session_id)
+
+    harness.run = deleting_run  # type: ignore[method-assign]
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    tree = _git(bare, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-r1")
+    assert "docs/branch-only.md" not in tree  # converged to base: allowed
+
+    # deleting a file the base still has is NOT exempt: roadmap.md is on main
+    def roadmap_deleter(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "roadmap.md").unlink()
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.1,
+            num_turns=2,
+            session_id="s2",
+            final_text="removed the roadmap",
+            transcript_path="",
+        )
+
+    class Deleter:
+        run = staticmethod(roadmap_deleter)
+
+    github2 = FakeGitHub(comments=[member(102, "again")])
+    outcome2 = respond(root, github2, Deleter(), QueueEvaluator(values=[10.2]))
+    assert outcome2.action == "replied"
+    assert "outside the contract" in github2.posted[0]  # reverted, not pushed
+
+
+def test_committed_resolution_is_measured_and_pushed(review_run) -> None:
+    """A session that COMMITS its work (the normal shape of a resolved merge)
+    leaves the working tree clean; the follow-up must still measure and push
+    the committed head instead of leaving the PR conflicted."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")  # as publish did
+    github = FakeGitHub(comments=[member(101, "please resolve the conflict")])
+
+    def committing_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("v2 resolved\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "resolve merge")
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.2,
+            num_turns=3,
+            session_id="s3",
+            final_text="Merged main and resolved the conflict.",
+            transcript_path="",
+        )
+
+    class Committer:
+        run = staticmethod(committing_run)
+
+    outcome = respond(root, github, Committer(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    assert (
+        _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py") == "v2 resolved\n"
+    )
+
+
+def test_committed_out_of_scope_resolution_is_reset(review_run) -> None:
+    """Committed out-of-scope changes are reverted INCLUDING the commit —
+    the local branch resets to the pushed tip."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")  # as publish did
+    tip_before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    github = FakeGitHub(comments=[member(101, "tidy")])
+
+    def committing_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "rogue.md").write_text("out of scope\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "rogue")
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.2,
+            num_turns=3,
+            session_id="s4",
+            final_text="done",
+            transcript_path="",
+        )
+
+    class Committer:
+        run = staticmethod(committing_run)
+
+    outcome = respond(root, github, Committer(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "outside the contract" in github.posted[0]
+    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
+    assert _git(ws, "rev-parse", "HEAD").strip() == tip_before  # local commit gone
+
+
+def test_forged_base_ref_cannot_vouch(review_run) -> None:
+    """refs/remotes/origin/<base> is a plain file the session can rewrite;
+    the exemption must compare against the sha PINNED at fetch time, so a
+    forged ref pointing at the session's own commit vouches for nothing."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
+    tip_before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    github = FakeGitHub(comments=[member(101, "tidy")])
+
+    def forging_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "rogue.md").write_text("smuggled\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "forge")
+        sha = _git(ws, "rev-parse", "HEAD").strip()
+        _git(ws, "update-ref", "refs/remotes/origin/main", sha)  # the forgery
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.2,
+            num_turns=3,
+            session_id="s5",
+            final_text="done",
+            transcript_path="",
+        )
+
+    class Forger:
+        run = staticmethod(forging_run)
+
+    outcome = respond(root, github, Forger(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "outside the contract" in github.posted[0]  # forgery did not vouch
+    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
