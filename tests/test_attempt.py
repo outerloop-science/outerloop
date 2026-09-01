@@ -3940,3 +3940,37 @@ def test_line_divergence_reaches_the_brief(tmp_path: Path, target_repo_lines) ->
         )
     brief = str(BriefCapture2.seen["brief"])
     assert "differs from the base branch by: 1 file changed" in brief
+
+
+def test_brief_budget_comes_from_the_contract_not_the_caller(tmp_path, target_repo) -> None:
+    """The CLI cannot know the budget numbers; the dataclass default told
+    every session "GPU-hours remaining: 0.0" and honest agents refused to
+    launch. The brief now renders the contract's per-run pool and the real
+    weekly remainder."""
+
+    class BriefCapture3(ScriptedHarness):
+        seen: ClassVar[list] = []
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            BriefCapture3.seen.append(brief_text)
+            return super().run(brief_text, workspace, resume_session_id)
+
+    for run_id in ("tsp-bud-1", "tsp-bud-2"):
+        with _queued_local([13.876, 14.5]):
+            live_attempt(
+                config=RunConfig(target="org/pilot", benchmark="tsp"),
+                run_root=tmp_path / "state",
+                run_id=run_id,
+                harness=BriefCapture3(edits={}),
+                github=FakeGitHub(),  # type: ignore[arg-type]
+                bot_auth=NoAuth(),  # type: ignore[arg-type]
+                now=1_000_000.0,
+                created="2026-08-06T00:00:00Z",
+            )
+    first, second = BriefCapture3.seen
+    # CONTRACT: gpu_hours_per_run 1, runs_per_week 10; the run's own record
+    # exists before the brief renders, so the first run sees 9 left
+    assert "GPU-hours remaining: 1.0" in first
+    assert "Runs remaining this week: 9" in first
+    assert "Runs remaining this week: 8" in second
+    assert "GPU-hours remaining: 0.0" not in first

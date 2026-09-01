@@ -25,7 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
-from autoresearch.brief import distill_lessons
+from autoresearch.brief import BudgetState, distill_lessons
 from autoresearch.compute import LocalCompute
 from autoresearch.contract import Benchmark, Contract, load_contract
 from autoresearch.dispatch import (
@@ -73,6 +73,7 @@ from autoresearch.runstate import (
     STUCK,
     WAITING,
     RunRecord,
+    list_runs,
     load_record,
     save_record,
     stamp_outage,
@@ -2135,6 +2136,24 @@ def live_attempt(
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
+        # The brief's budget numbers come from GROUND TRUTH, never the
+        # caller: the CLI cannot know them, and the dataclass default told
+        # every session "GPU-hours remaining: 0.0" — an honest agent then
+        # refuses to launch and finishes unmeasured (the fleet's serial
+        # "no budget" reports were agents READING that rendered zero).
+        week_ago = now - 7 * 24 * 3600
+        mine = [r for r in list_runs(run_root) if r.target == config.target]
+        config = dc_replace(
+            config,
+            budget=BudgetState(
+                gpu_hours_remaining=float(contract.budgets.gpu_hours_per_run or 0.0),
+                runs_remaining_this_week=max(
+                    0,
+                    int(contract.budgets.runs_per_week)
+                    - sum(1 for r in mine if r.created >= week_ago),
+                ),
+            ),
+        )
         # Author syscalls (research-loop.md, "one syscall") are CONTRACT-DRIVEN:
         # armed whenever the deployment can deliver them — dispatch coords (the
         # launches and the gate run as Slurm jobs) and a resumable backend (the
