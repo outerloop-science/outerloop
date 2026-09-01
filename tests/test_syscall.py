@@ -880,8 +880,8 @@ def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
     outside.mkdir()
     (ws / ".autoresearch").symlink_to(outside)  # channel is a symlink
     assert sync_requested(ws) is None
-    try:
-        mark_synced(ws, 1.0)
-    except OSError:
-        pass  # refused
+    import contextlib
+
+    with contextlib.suppress(OSError):
+        mark_synced(ws, 1.0)  # refused
     assert not (outside / "sync-done").exists()  # nothing written outside
