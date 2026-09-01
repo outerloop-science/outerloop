@@ -4019,3 +4019,23 @@ def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
         with pytest.raises(SystemExit):
             climb_main()
         assert "cannot shape a git ref" in capsys.readouterr().err
+
+
+def test_wake_refreshes_origin_refs(tmp_path, monkeypatch) -> None:
+    """The clone's refs freeze at run start; a wake fetches origin so the
+    resumed session reads current base and sibling refs locally."""
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    bare = tmp_path / f"origin-{run_id}.git"
+    _advance_main(tmp_path, bare, {"docs/news.md": "landed while parked\n"})
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert _git(ws, "show", "origin/main:docs/news.md").strip() == "landed while parked"
