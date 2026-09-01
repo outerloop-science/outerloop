@@ -150,8 +150,13 @@ def vertex_from_env() -> VertexConfig | None:
 
 
 def redact(text: str, secrets: tuple[str, ...]) -> str:
-    """Strip known secrets from text before it is stored anywhere."""
-    for secret in secrets:
+    """Strip known secrets from text before it is stored anywhere. Installation
+    tokens minted after a call site snapshotted its tuple are covered too: the
+    App provider rotates ~hourly, so the process-wide issued set is consulted
+    at write time, not capture time."""
+    from autoresearch.appauth import issued_tokens
+
+    for secret in (*secrets, *issued_tokens()):
         if secret:
             text = text.replace(secret, "[redacted]")
     return text

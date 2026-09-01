@@ -26,6 +26,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from autoresearch.appauth import resolve_bot_auth
 from autoresearch.attempt import (
     AttemptOutcome,
     Terminated,
@@ -35,7 +36,7 @@ from autoresearch.attempt import (
     arm_sigterm_containment,
 )
 from autoresearch.contract import Contract, load_contract
-from autoresearch.github import FileTokenProvider, GitHubClient, Workspace
+from autoresearch.github import GitHubClient, TokenProvider, Workspace
 from autoresearch.harness import Harness, budget_exhausted, outage, redact
 from autoresearch.intake import (
     CLAIM_MARKER,
@@ -408,7 +409,7 @@ def live_steward(
     harness: Harness,
     evaluator: StewardEvaluator,
     github: GitHubClient,
-    bot_auth: FileTokenProvider,
+    bot_auth: TokenProvider,
     now: float,
     created: str,
     secrets: tuple[str, ...] = (),
@@ -768,6 +769,12 @@ def main() -> int:
     parser.add_argument("--deadline-margin-s", type=float, default=120.0)
     parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
     parser.add_argument(
+        "--github-app-file",
+        default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
+        help="GitHub App config (JSON: app_id, installation_id, private_key); "
+        "when set, installation tokens replace the PAT",
+    )
+    parser.add_argument(
         "--key-file",
         default=os.path.expanduser("~/.config/autoresearch/steward_key"),
         help="the STEWARD'S OWN key — never the solver harness key",
@@ -780,7 +787,7 @@ def main() -> int:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 
     api_key = role_key(args.key_file)  # steward runs the claude backend
-    bot_auth = FileTokenProvider(Path(args.pat_file))
+    bot_auth = resolve_bot_auth(args.pat_file, args.github_app_file)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = f"steward-{args.benchmark}-{stamp}"
 

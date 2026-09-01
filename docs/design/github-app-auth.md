@@ -96,12 +96,36 @@ bot's durable identity.
 Swapping the live fleet's identity mid-campaign is an ops event:
 
 1. **Build + unit-test** the provider (this note's scaffold) behind no live
-   wiring.
+   wiring. *Done.*
 2. **Validate on a throwaway repo**: point a provider instance at a scratch
    installation, confirm git push/fetch, a PR, a comment, and a
-   `workflow_dispatch` all succeed with a minted token.
-3. **Cut over in a quiet window**: a config flag selects the provider; keep the
+   `workflow_dispatch` all succeed with a minted token. *Done 2026-09-01
+   against `app-auth-scratch`: mint, scoped repo list, push (main + branch),
+   PR + comment as the App's bot login, dispatch — all green; a workflow-file
+   push was refused, confirming the withheld Workflows permission.*
+3. **Cut over in a quiet window**: the flag selects the provider; keep the
    PAT provider as a one-cycle fallback, then retire it.
+
+## The flag
+
+`AUTORESEARCH_GITHUB_APP_FILE` names a JSON config —
+
+```json
+{"app_id": 1234, "installation_id": 5678,
+ "private_key": "~/.config/autoresearch/outerloop-app.pem"}
+```
+
+— and rides the rails the PAT already rides: role CLIs default their
+`--github-app-file` from it (jobs inherit the tick's environment, the same
+way `AUTORESEARCH_AUTHOR_*` reaches them), and every bot-auth construction
+goes through one factory, `appauth.resolve_bot_auth(pat_file, app_file)`:
+App provider when the config is set, PAT otherwise. Revert = unset the env
+var. The ids are not secrets; the key path inside keeps PAT-file custody
+(600, never committed).
+
+Redaction is refresh-proof process-wide: every minted installation token
+lands in a module registry that `redact` consults at write time, so a
+secrets tuple captured at CLI start covers tokens minted hours later.
 
 ## Out of scope
 

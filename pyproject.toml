@@ -20,8 +20,14 @@ dependencies = [
 #   github   : PyGithub or gh-CLI wrappers
 #   compute  : (stdlib subprocess over sbatch/squeue; no dep expected)
 
+[project.optional-dependencies]
+# GitHub App auth: RS256 signing for App JWTs (docs/design/github-app-auth.md).
+# Install where AUTORESEARCH_GITHUB_APP_FILE is set; the PAT path needs nothing.
+app-auth = ["cryptography>=42"]
+
 [dependency-groups]
 dev = [
+    "cryptography>=42",  # the app-auth signer, so tests exercise real RS256
     "ruff>=0.8",
     "mypy>=1.13",
     "pytest>=8",

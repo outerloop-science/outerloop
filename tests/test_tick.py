@@ -3344,6 +3344,7 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
 
     class Spec:
         pat_file = ""
+        github_app_file = ""
 
     service_syncs(tmp_path, Spec(), 2.0)
     assert sync_requested(ws) is None  # done stamped

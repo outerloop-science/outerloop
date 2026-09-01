@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The kernel can authenticate as a GitHub App: set `AUTORESEARCH_GITHUB_APP_FILE`
+  to a JSON config (`app_id`, `installation_id`, `private_key` path) and every
+  role mints short-lived installation tokens instead of reading the bot PAT
+  (`docs/design/github-app-auth.md`). Unset, the PAT path is unchanged.
+  Redaction now also covers every installation token minted this process,
+  including refreshes after a secrets tuple was captured. The signer needs the
+  new `app-auth` extra (`cryptography`).
 - Attempts start with the target's research memory: the newest reports from the `research-log` branch are inlined in the brief, the full archive is materialized in the channel, and `syscall reports` lists it (one line each) or prints full reports, several per call. Works across clusters: any kernel climbing the target reads the same branch.
 - Every role can search and read the web (Claude: WebSearch/WebFetch; Codex: `--search`; hermes: the `web` and `search` toolsets) — literature and documentation are part of research.
 - A park now submits its own wake job, which waits on the park's jobs and
