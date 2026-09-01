@@ -245,7 +245,9 @@ def render_md(
         pick = max if direction == "max" else min
         measured = [r for r in rows if isinstance(r.get("candidate"), int | float)]
         improved = [r for r in rows if r.get("outcome") in ("merged", "improved")]
-        baselines = [r["baseline"] for r in rows if isinstance(r.get("baseline"), int | float)]
+        # from rows that measured a CANDIDATE: a session error can preserve
+        # a baseline without ever measuring, and must not speak for the chip
+        baselines = [r["baseline"] for r in measured if isinstance(r.get("baseline"), int | float)]
         best = pick((r["candidate"] for r in measured), default=None)
         gpu = sum(float(r.get("gpu_hours") or 0.0) for r in rows)
         lines += [
