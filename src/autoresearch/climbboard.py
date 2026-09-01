@@ -252,11 +252,12 @@ def render_md(
             "",
             f"## {benchmark}",
             "",
-            # "last run measured vs", not "latest baseline": the value is the
-            # most recent run's DECLARED base, which lags the ledger when a
-            # stale-base run lands after main moved (it read as a regression)
+            # the value is the newest MEASURED run's declared base (rows
+            # without a numeric baseline never measured); "latest baseline"
+            # read as the ledger's and appeared to regress when a stale-base
+            # run landed after main moved
             f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
-            f"**{_fmt(best)}** ({direction}) · last run measured vs: "
+            f"**{_fmt(best)}** ({direction}) · last measured run's base: "
             f"**{_fmt(baselines[-1] if baselines else None)}** · GPU-hours: **{gpu:.1f}**",
         ]
         if len(rows) >= MAX_ROWS_PER_BENCHMARK:
