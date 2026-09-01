@@ -20,7 +20,7 @@ from pathlib import Path
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
-from autoresearch.github import GitHubClient, Workspace
+from autoresearch.github import GitHubClient, NothingToCommit, Workspace
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
     Evaluator,
@@ -533,13 +533,33 @@ def _respond(
         except Exception:
             return False
 
-    changed = _changed_paths(ws)
+    branch = _current_branch(ws)
+    committed: list[str] = []
+    try:
+        # a session that COMMITTED its work (a resolved merge commit is the
+        # normal shape) leaves the working tree clean — the diff against the
+        # PR branch's pushed tip is where those changes show
+        committed = [
+            p
+            for p in ws.git("diff", "--name-only", f"origin/{branch}..HEAD").splitlines()
+            if p.strip()
+        ]
+    except Exception:
+        committed = []
+
+    def _revert_response() -> None:
+        # drop working-tree edits AND any local commits past the pushed tip
+        ws.git("checkout", "--", ".")
+        ws.git("clean", "-fdq")
+        if committed:
+            ws.git("reset", "--hard", f"origin/{branch}")
+
+    changed = sorted(set(_changed_paths(ws)) | set(committed))
     if changed:
         violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
-            ws.git("checkout", "--", ".")
-            ws.git("clean", "-fdq")
+            _revert_response()
             measured_note = (
                 "\n\n_(A code change was attempted but touched paths outside "
                 "the contract's scope and was not applied.)_"
@@ -562,8 +582,7 @@ def _respond(
                         workspace, bench.command, bench.metric, extra_env=seed_env
                     )
             except Exception as exc:
-                ws.git("checkout", "--", ".")
-                ws.git("clean", "-fdq")
+                _revert_response()
                 measured_note = (
                     "\n\n_(A code change was attempted but the eval failed on "
                     f"it, so it was not applied: {redact(str(exc), secrets)[:200]})_"
@@ -572,8 +591,7 @@ def _respond(
                 if _tree_hash(ws) != pre_eval_tree:
                     # same drift rule as the climb: the pushed tree must be
                     # exactly the measured tree
-                    ws.git("checkout", "--", ".")
-                    ws.git("clean", "-fdq")
+                    _revert_response()
                     measured_note = (
                         "\n\n_(A code change was attempted but the tree "
                         "changed during measurement, so it was not applied.)_"
@@ -672,27 +690,33 @@ def _respond(
                             disarmed = False
                             log.warning("auto-merge disarm errored: %s", exc)
                     if not disarmed:
-                        ws.git("checkout", "--", ".")
-                        ws.git("clean", "-fdq")
+                        _revert_response()
                         measured_note = (
                             "\n\n_(A code change was validated but WITHHELD: "
                             "auto-merge could not be confirmed disarmed on this "
                             "auto-mode PR; the follow-up will retry.)_"
                         )
                     else:
-                        branch = _current_branch(ws)
                         verb = "steward" if is_steward else "agent"
-                        ws.commit_all(
-                            f"{verb}: address review feedback "
-                            f"({bench.metric}={fmt_metric(candidate, bench.display_digits)})"
-                            f"\n\nAgent: {record.agent_id}",
-                            author=bot_login,
-                            forbidden=lambda p: (
-                                p not in PROGRESS_PATHS
-                                and bool(scope_check([p], contract))
-                                and not _matches_base(p)
-                            ),
-                        )
+                        # a session that committed its work (a resolved merge)
+                        # leaves nothing to stage; the committed diff was
+                        # already scope-checked above, so push what is there
+                        try:
+                            ws.commit_all(
+                                f"{verb}: address review feedback "
+                                f"({bench.metric}="
+                                f"{fmt_metric(candidate, bench.display_digits)})"
+                                f"\n\nAgent: {record.agent_id}",
+                                author=bot_login,
+                                forbidden=lambda p: (
+                                    p not in PROGRESS_PATHS
+                                    and bool(scope_check([p], contract))
+                                    and not _matches_base(p)
+                                ),
+                            )
+                        except NothingToCommit:
+                            if not committed:
+                                raise
                         ws.push(branch)
                         change_pushed = True
                         worse = prior is not None and not orch_improved(

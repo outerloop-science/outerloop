@@ -976,3 +976,70 @@ def test_deletions_converging_to_base_are_exempt(review_run) -> None:
     outcome2 = respond(root, github2, Deleter(), QueueEvaluator(values=[10.2]))
     assert outcome2.action == "replied"
     assert "outside the contract" in github2.posted[0]  # reverted, not pushed
+
+
+def test_committed_resolution_is_measured_and_pushed(review_run) -> None:
+    """A session that COMMITS its work (the normal shape of a resolved merge)
+    leaves the working tree clean; the follow-up must still measure and push
+    the committed head instead of leaving the PR conflicted."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")  # as publish did
+    github = FakeGitHub(comments=[member(101, "please resolve the conflict")])
+
+    def committing_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("v2 resolved\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "resolve merge")
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.2,
+            num_turns=3,
+            session_id="s3",
+            final_text="Merged main and resolved the conflict.",
+            transcript_path="",
+        )
+
+    class Committer:
+        run = staticmethod(committing_run)
+
+    outcome = respond(root, github, Committer(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    assert (
+        _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py") == "v2 resolved\n"
+    )
+
+
+def test_committed_out_of_scope_resolution_is_reset(review_run) -> None:
+    """Committed out-of-scope changes are reverted INCLUDING the commit —
+    the local branch resets to the pushed tip."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")  # as publish did
+    tip_before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    github = FakeGitHub(comments=[member(101, "tidy")])
+
+    def committing_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "rogue.md").write_text("out of scope\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "rogue")
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.2,
+            num_turns=3,
+            session_id="s4",
+            final_text="done",
+            transcript_path="",
+        )
+
+    class Committer:
+        run = staticmethod(committing_run)
+
+    outcome = respond(root, github, Committer(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "outside the contract" in github.posted[0]
+    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
+    assert _git(ws, "rev-parse", "HEAD").strip() == tip_before  # local commit gone
