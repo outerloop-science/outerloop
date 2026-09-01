@@ -487,7 +487,7 @@ def service_in_review(
     duplicate submission no-ops on the lease, and `followup_job_id` keeps the
     tick from queueing duplicates in the first place.
     """
-    from autoresearch.followup import close_if_done, has_new_comments
+    from autoresearch.followup import close_if_done, has_new_comments, needs_conflict_wake
 
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
@@ -512,7 +512,9 @@ def service_in_review(
             if paused:
                 log.info("follow-up for %s paused (api outage: %s)", record.run_id, paused)
                 continue
-            if not has_new_comments(record, github, spec.bot_login):
+            if not has_new_comments(record, github, spec.bot_login) and not needs_conflict_wake(
+                record, github
+            ):
                 continue
             if record.followup_job_id:
                 try:

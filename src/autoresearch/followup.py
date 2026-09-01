@@ -128,6 +128,28 @@ def context_comments(comments: list[dict], since_id: int) -> list[tuple[str, str
     return picked[-MAX_CONTEXT_COMMENTS:]
 
 
+def dirty_pr_head(pr: dict) -> str:
+    """The head sha when an OPEN PR conflicts with its base, else "".
+    GitHub computes mergeability lazily: mergeable None means unknown (not
+    dirty), so a fresh PR never false-positives — the next tick re-asks."""
+    if pr.get("state") != "open" or pr.get("merged"):
+        return ""
+    if pr.get("mergeable") is False or pr.get("mergeable_state") == "dirty":
+        return str((pr.get("head") or {}).get("sha", ""))
+    return ""
+
+
+def needs_conflict_wake(record: RunRecord, github: GitHubClient) -> bool:
+    """Tick-side gate (cheap, read-only): an in-review PR that conflicts
+    with its base and has not been woken for THIS head yet."""
+    try:
+        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+    except Exception:
+        return False
+    head = dirty_pr_head(pr)
+    return bool(head) and head != record.dirty_wake_head
+
+
 def qualifying_comments(
     comments: list[dict], bot_login: str, since_id: int
 ) -> list[tuple[int, str, str]]:
@@ -346,7 +368,9 @@ def _respond(
         for source, (items, _) in per_source.items()
         for cid, author, body in items
     ]
-    if not merged:
+    conflict_head = dirty_pr_head(pr)
+    conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
+    if not merged and not conflict_wake:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     # oldest first WITHIN each source (ids are monotonic per source); cap the
     # wake, and advance each cursor only to the max id actually processed
@@ -390,6 +414,25 @@ def _respond(
     spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
 
     prompt = render_review_wake([(author, body) for _, author, body in comments])
+    if conflict_wake:
+        base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+        try:
+            # the session has no credentials; fetch on its behalf so
+            # origin/<base> is current in the workspace
+            ws.git_network("fetch", "origin", base_ref)
+        except Exception as exc:
+            log.warning("conflict-wake fetch failed for %s: %s", run_id, exc)
+        prompt = (
+            "# Your PR conflicts with its base\n"
+            f"`{base_ref}` moved and this PR no longer merges cleanly. "
+            f"`origin/{base_ref}` has been fetched into your workspace. "
+            "Merge it into the PR branch and resolve the conflicts "
+            "honestly — the PR stays ONE clean contribution, so if the "
+            "conflict shows your change is superseded by what landed, say "
+            "so plainly instead of forcing it (a maintainer will close the "
+            "PR). Any change you keep is re-measured before it is pushed, "
+            "and auto-merge stays off — a human merges the updated PR.\n\n"
+        ) + prompt
     if is_steward:
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
 
@@ -453,9 +496,23 @@ def _respond(
     measured_note = ""
     change_pushed = False
 
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+
+    def _matches_base(path: str) -> bool:
+        # content identical to origin/<base> is the base branch's own (a
+        # merge brings it in); it can neither smuggle nor exceed scope.
+        # Blob-hash comparison: `git diff <commit> -- path` would call an
+        # UNTRACKED working file "deleted" instead of reading its content.
+        try:
+            local = ws.git("hash-object", "--", path).strip()
+            base = ws.git("rev-parse", f"origin/{base_ref}:{path}").strip()
+            return bool(local) and local == base
+        except Exception:
+            return False
+
     changed = _changed_paths(ws)
     if changed:
-        violations = scope_check(changed, contract)
+        violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
             ws.git("checkout", "--", ".")
@@ -608,7 +665,9 @@ def _respond(
                             f"\n\nAgent: {record.agent_id}",
                             author=bot_login,
                             forbidden=lambda p: (
-                                p not in PROGRESS_PATHS and bool(scope_check([p], contract))
+                                p not in PROGRESS_PATHS
+                                and bool(scope_check([p], contract))
+                                and not _matches_base(p)
                             ),
                         )
                         ws.push(branch)
@@ -660,6 +719,7 @@ def _respond(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
+            dirty_wake_head=conflict_head if conflict_wake else record.dirty_wake_head,
             resume_session_id=session.session_id or record.resume_session_id,
             wake_attempts=0,  # progress: the retry cap starts fresh
         ),

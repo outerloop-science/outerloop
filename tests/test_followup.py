@@ -855,3 +855,74 @@ def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
     assert client.disable_auto_merge("o/r", 1) is True  # nothing armed = safe
     client._graphql = types.MethodType(lambda self, q, v: hard_fail(), client)  # type: ignore[method-assign]
     assert client.disable_auto_merge("o/r", 1) is False  # unknown state = block
+
+
+def _dirty_pr(head="h" * 40) -> dict:
+    return {
+        "state": "open",
+        "merged": False,
+        "mergeable": False,
+        "mergeable_state": "dirty",
+        "head": {"sha": head},
+        "base": {"ref": "main"},
+    }
+
+
+def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
+    root, _bare = review_run
+    github = FakeGitHub(pr=_dirty_pr())
+    harness = ResumingHarness()
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
+    assert outcome.action == "replied"
+    prompt, resume_id = harness.calls[0]
+    assert "Your PR conflicts with its base" in prompt
+    assert "origin/main` has been fetched" in prompt
+    assert resume_id == "sess-original"  # same session lineage, full context
+    # once per head: the cursor is persisted, the next pass no-ops
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == "h" * 40
+    outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
+    assert outcome2.action == "no-op"
+
+
+def test_needs_conflict_wake_is_once_per_head(review_run) -> None:
+    from autoresearch.followup import needs_conflict_wake
+
+    root, _ = review_run
+    record = load_record(root, "tsp-r1")
+    assert needs_conflict_wake(record, FakeGitHub(pr=_dirty_pr()))
+    assert not needs_conflict_wake(record, FakeGitHub())  # clean PR
+    woken = replace(record, dirty_wake_head="h" * 40)
+    assert not needs_conflict_wake(woken, FakeGitHub(pr=_dirty_pr()))
+    # a new head (author pushed, conflicted again) re-arms
+    assert needs_conflict_wake(woken, FakeGitHub(pr=_dirty_pr(head="i" * 40)))
+
+
+def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
+    """A merge brings the base branch's own files into the diff; content
+    identical to origin/<base> must not be reverted as out-of-scope."""
+    root, bare = review_run
+    # main moves: an out-of-scope doc lands upstream
+    seed2 = root.parent / "seed2"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(comments=[member(101, "please update your branch")])
+    # the session merges main (simulated: the identical file appears) and
+    # keeps an in-scope edit of its own
+    harness = ResumingHarness(
+        edits={
+            "docs/news.md": "from main\n",
+            "src/pilot/solvers/tsp.py": "v2 after merge\n",
+        }
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    files = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
+    assert "v2 after merge" in files
+    assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
