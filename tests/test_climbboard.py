@@ -981,3 +981,16 @@ def test_md_baseline_chip_is_the_ledger_starting_position() -> None:
     # no ledger -> the chip is simply absent; nothing per-run substitutes
     without = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"})
     assert "baseline" not in without
+
+
+def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path) -> None:
+    """The chip's value travels get_file_content -> starts -> CLIMB.md; a
+    NaN in the ledger is dropped instead of aborting the publish."""
+    _terminal_run(tmp_path, "speedrun-1")
+    gh = _BoardGitHub()
+    gh.files["results/leader.json"] = json.dumps(
+        {"speedrun": {"baseline": 9472.0}, "broken": {"baseline": float("nan")}},
+        allow_nan=True,
+    )
+    assert service_climb_board(tmp_path, gh, "org/repo") >= 1
+    assert "baseline (start): **9472**" in gh.files["CLIMB.md"]

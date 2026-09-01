@@ -1065,11 +1065,14 @@ def service_climb_board(
     # branch — best-effort: a missing or unreadable ledger just drops the chip
     starts: dict[str, float] = {}
     try:
-        raw_leader = github.get_file_content(target, "results/leader.json", "main")
+        # ref HEAD = the repo's default branch, whatever it is named
+        raw_leader = github.get_file_content(target, "results/leader.json", "HEAD")
         if raw_leader:
             for name, entry in json.loads(raw_leader).items():
-                if isinstance(entry, dict) and isinstance(entry.get("baseline"), int | float):
-                    starts[str(name)] = float(entry["baseline"])
+                value = entry.get("baseline") if isinstance(entry, dict) else None
+                # json.loads admits NaN/Infinity, which _fmt cannot render
+                if isinstance(value, int | float) and math.isfinite(value):
+                    starts[str(name)] = float(value)
     except Exception:
         starts = {}
     views: list[tuple[str, str]] = [("CLIMB.md", render_md(target, boards, wanted, starts))]
