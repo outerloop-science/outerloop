@@ -119,7 +119,7 @@ permissions are requested.
 - **Name**: `Outerloop Autoresearch` → bot identity `outerloop-autoresearch[bot]`.
 - **Homepage**: `https://outerloop.science`.
 - **Description**: "Autonomous research agents working in an outer loop. Opens
-  pull requests, comments, and pushes branches as the Outerloop kernel on the
-  lab's repositories. Agents launch and evaluate their own training runs on
+  pull requests, comments, and pushes branches as the Outerloop kernel on
+  research repositories. Agents launch and evaluate their own training runs on
   compute clusters, iterating on their results without human dispatch.
   Developed by the Agentic Learning AI Lab at NYU."
