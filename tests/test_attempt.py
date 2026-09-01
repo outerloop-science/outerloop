@@ -4176,3 +4176,28 @@ def test_exclude_merge_artifacts_is_idempotent(tmp_path) -> None:
     body = (ws / ".git" / "info" / "exclude").read_text()
     assert body.count("*.orig") == 1 and body.count("*.rej") == 1
     assert "/existing/" in body  # prior content preserved
+
+
+def test_wake_re_establishes_the_merge_artifact_exclude(tmp_path, monkeypatch) -> None:
+    """A session could delete .git/info/exclude before parking; the wake
+    re-establishes it so a .orig does not trip the wake's changed_paths."""
+    from autoresearch.syscall import SYSCALL_DIR
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    # simulate a session that removed the exclude and left a .orig
+    exclude = ws / ".git" / "info" / "exclude"
+    if exclude.exists():
+        exclude.unlink()
+    (ws / SYSCALL_DIR).mkdir(exist_ok=True)
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert "*.orig" in exclude.read_text()  # re-established on the wake

@@ -989,12 +989,12 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
 
 
 def _exclude_merge_artifacts(workspace: Path) -> None:
-    """Keep git's merge/patch conflict backups (*.orig, *.rej) out of the
-    diff via .git/info/exclude — repo-local, never a tracked edit. A line
-    run merges main at start and the agent resolves conflicts as its first
-    task; a leftover train.py.orig would otherwise read as an out-of-scope
-    edit and abort the run at launch. Idempotent, and effective for the
-    `git add -A` that builds changed-paths and every seal."""
+    """Ignore *.orig and *.rej — git's merge/patch conflict backups, which
+    should never be committed — via .git/info/exclude (repo-local, never a
+    tracked edit). A line run merges main at start and the agent resolves
+    conflicts as its first task; a leftover train.py.orig would otherwise
+    read as an out-of-scope edit and abort the run at launch. Idempotent,
+    and effective for the `git add -A` behind changed-paths and every seal."""
     exclude = workspace / ".git" / "info" / "exclude"
     wanted = ["*.orig", "*.rej"]
     try:
@@ -1256,6 +1256,10 @@ def resume_run(
     # to another remote. Passing `url` here means `Workspace.push` uses it
     # instead of reading `remote.origin.url`.
     ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
+    # Re-establish the merge-artifact exclude on the wake too: the workspace
+    # persisted across the park, but a session could have removed the exclude,
+    # and this wake's changed_paths / seal run `git add -A`. Idempotent.
+    _exclude_merge_artifacts(workspace)
     # Refresh origin refs on EVERY wake: the clone's refs froze at run
     # start, and this is the one credential-free freshness point — the
     # kernel fetches (from the canonical URL, never the session-writable
