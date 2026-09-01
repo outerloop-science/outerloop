@@ -851,10 +851,12 @@ def mark_synced(workspace: Path, at: float) -> None:
     rename is atomic."""
     dirfd = _channel_fd(workspace)
     try:
-        tmp = f".{SYNC_DONE}.{os.getpid()}"
-        fd = os.open(
-            tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=dirfd
-        )
+        # O_EXCL + an unguessable name: never open (and O_TRUNC) an existing
+        # inode. A session that hard-links a victim file to the temp name
+        # would otherwise have it truncated — O_EXCL fails on any pre-existing
+        # name instead, and O_NOFOLLOW refuses a symlink.
+        tmp = f".{SYNC_DONE}.{os.urandom(8).hex()}"
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644, dir_fd=dirfd)
         try:
             os.write(fd, f"{at!r}".encode())
         finally:

@@ -872,6 +872,28 @@ def test_mark_synced_never_touches_a_hardlinked_marker(tmp_path) -> None:
     assert victim.stat().st_mtime == victim_mtime
 
 
+def test_mark_synced_refuses_a_hardlinked_temp(tmp_path, monkeypatch) -> None:
+    """The temp inode is O_EXCL: a hard link planted at the temp name is not
+    truncated (open fails); the victim survives."""
+    import os as _os
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+
+    ws = tmp_path
+    (ws / SYSCALL_DIR).mkdir()
+    (ws / SYSCALL_DIR / "sync-request").touch()
+    victim = ws / "victim"
+    victim.write_text("precious")
+    # force a predictable temp name and pre-plant a hard link to the victim
+    monkeypatch.setattr("os.urandom", lambda n: b"\x00" * n)
+    _os.link(victim, ws / SYSCALL_DIR / f".sync-done.{(b'\x00' * 8).hex()}")
+    try:
+        mark_synced(ws, 1.0)
+    except FileExistsError:
+        pass  # O_EXCL refused the planted link
+    assert victim.read_text() == "precious"  # never truncated
+
+
 def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
     from autoresearch.syscall import mark_synced, sync_requested
 
