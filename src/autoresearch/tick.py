@@ -1395,6 +1395,12 @@ def tick(
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
+    # Mid-leg sync is serviced regardless of follow-up/board servicing: it
+    # only needs the workspace and the PAT (a git fetch, no GitHub REST and
+    # no contract), and a live session waiting on `sync` must not depend on
+    # whether github/contract loaded this tick.
+    if followup_spec is not None:
+        service_syncs(root, followup_spec, now)
     if github is not None and followup_spec is not None:
         # expired flight snapshots die with their TTL, not with a human.
         # One home suffices: every lane's spec derives from followup_spec
@@ -1499,7 +1505,6 @@ def tick(
         # AFTER the launch block: a run started this tick is on the strip
         # this tick, not the next one
         service_boards(root, github, spec.target, contract, now)
-        service_syncs(root, spec, now)
         report = replace_report(
             report,
             ended,

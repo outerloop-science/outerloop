@@ -3265,6 +3265,36 @@ def test_service_in_review_wakes_a_conflicted_pr_without_comments(tmp_path: Path
     assert submitted == [("r-dirty", "4243")]  # the already-woken head is skipped
 
 
+def test_sync_is_serviced_even_without_followup_servicing(tmp_path: Path, monkeypatch) -> None:
+    """service_syncs runs from the tick when followup_spec is set, regardless
+    of github/contract — the gate the review flagged."""
+    import autoresearch.tick as tick_mod
+
+    calls = []
+    monkeypatch.setattr(
+        tick_mod, "service_syncs", lambda root, spec, now: calls.append((root, spec, now))
+    )
+    spec = tick_mod.FollowupSpec(
+        account="a",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img.sif",
+        home=Path("/home/x/autoresearch"),
+        target="org/pilot",
+        pat_file="/tmp/pat",
+    )
+    # github=None: follow-up/board servicing is OFF, but sync must still run
+    tick_mod.tick(
+        tmp_path,
+        FakeSlurm(states={}).compute(),
+        RecordingDispatcher(),
+        now=1000.0,
+        github=None,
+        followup_spec=spec,
+    )
+    assert calls and calls[0][1] is spec
+
+
 def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) -> None:
     """A live implementing run's sync request gets a pinned-URL fetch and a
     done stamp; ended runs and unrequested workspaces are untouched."""
