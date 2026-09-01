@@ -994,3 +994,17 @@ def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path) -> 
     )
     assert service_climb_board(tmp_path, gh, "org/repo") >= 1
     assert "baseline (start): **9472**" in gh.files["CLIMB.md"]
+
+
+def test_run_base_renders_as_markers_not_a_line() -> None:
+    from autoresearch.climbboard import render_html
+
+    html = render_html(
+        "o/r",
+        {"speedrun": [{"run_id": "r1", "baseline": 9472.0, "candidate": 9088.0}]},
+        {"speedrun": "min"},
+        {},
+    )
+    assert "showLine: false" in html and "crossRot" in html
+    # the legend swatch still carries the base color
+    assert html.index("'run base'") < html.index("borderColor: css('--base')")
