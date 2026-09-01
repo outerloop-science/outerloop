@@ -1047,6 +1047,12 @@ class Workspace:
         target = self.url or self.remote_url()
         self.git_network("fetch", "--prune", target, "--", "+refs/heads/*:refs/remotes/origin/*")
 
+    def fetch_branch(self, branch: str) -> None:
+        """Fetch one branch into FETCH_HEAD from the canonical URL (resolved
+        before the clean-config window, never the mutable "origin" remote)."""
+        target = self.url or self.remote_url()
+        self.git_network("fetch", target, branch)
+
     def push(self, branch: str) -> None:
         if self.dry_run:
             log.info("[dry-run] push %s from %s", branch, self.root)
