@@ -4039,3 +4039,35 @@ def test_wake_refreshes_origin_refs(tmp_path, monkeypatch) -> None:
         now=1_000_100.0,
     )
     assert _git(ws, "show", "origin/main:docs/news.md").strip() == "landed while parked"
+
+
+def test_wake_fetch_ignores_session_url_rewrites(tmp_path, monkeypatch) -> None:
+    """A session can write url.<x>.insteadOf into .git/config; the wake
+    fetch strips those rewrites so origin/* comes from the canonical repo,
+    not an attacker-redirected source."""
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    bare = tmp_path / f"origin-{run_id}.git"
+    _advance_main(tmp_path, bare, {"docs/news.md": "canonical\n"})
+    # a decoy repo the rewrite would point at, with DIFFERENT content
+    decoy = tmp_path / "decoy.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(bare), str(decoy))
+    work = tmp_path / "decoy-work"
+    _git(tmp_path, "clone", "-q", str(decoy), str(work))
+    (work / "docs" / "news.md").write_text("ATTACKER\n")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "poison")
+    _git(work, "push", "-q", "origin", "main")
+    # the session plants the rewrite: canonical bare -> decoy
+    _git(ws, "config", "--local", f"url.{decoy}.insteadOf", str(bare))
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
