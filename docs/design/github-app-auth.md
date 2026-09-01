@@ -104,3 +104,22 @@ RW (comments, labels), **Actions** RW (`workflow_dispatch` the review/verify
 workflows), **Commit statuses** R (merge-on-green gate), **Metadata** R
 (mandatory). Not granted: Workflows (agents are scope-gated to the solver
 path, never `.github/`), Administration, Members.
+
+## Registration metadata
+
+The values entered when the App is created (recorded so the App can be
+re-created identically). It authenticates server-to-server only, so the whole
+user-authorization/OAuth half of the form is off: no callback URL, no device
+flow, no user-authorization-on-install. The webhook is inactive — the kernel
+polls each tick rather than receiving events — so no webhook URL, secret, or
+event subscriptions. Installation is restricted to **only this account**
+(`agentic-learning-ai-lab`); no organization, account, or enterprise
+permissions are requested.
+
+- **Name**: `Outerloop Autoresearch` → bot identity `outerloop-autoresearch[bot]`.
+- **Homepage**: `https://outerloop.science`.
+- **Description**: "Autonomous research agents working in an outer loop. Opens
+  pull requests, comments, and pushes branches as the Outerloop kernel on the
+  lab's repositories. Agents launch and evaluate their own training runs on
+  compute clusters, iterating on their results without human dispatch.
+  Developed by the Agentic Learning AI Lab at NYU."
