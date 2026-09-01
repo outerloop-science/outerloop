@@ -405,7 +405,8 @@ def cmd_sync(root: Path, args) -> str:
     request = channel / SYNC_REQUEST
     request.touch()
     started = request.stat().st_mtime
-    deadline = time.time() + 60 * int(getattr(args, "minutes", None) or 18)
+    minutes = getattr(args, "minutes", None)
+    deadline = time.time() + 60 * int(18 if minutes is None else minutes)
     while time.time() < deadline:
         try:
             if done.stat().st_mtime >= started:

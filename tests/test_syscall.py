@@ -785,3 +785,59 @@ def test_parse_elapsed_reads_sacct_fields() -> None:
     assert parse_elapsed("05:00") == 300
     assert parse_elapsed("") is None and parse_elapsed("INVALID") is None
     assert parse_elapsed("x-01:00:00") is None
+
+
+def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
+    """The verb touches the request, then blocks until the kernel stamps
+    done — the wait is the session's own time, never a new leg."""
+    import threading
+    import time as _time
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+    from autoresearch.syscall_cli import cmd_sync
+
+    (tmp_path / SYSCALL_DIR).mkdir()
+
+    class A:
+        minutes = 1
+
+    def stamp_soon():
+        _time.sleep(0.3)
+        mark_synced(tmp_path)
+
+    threading.Thread(target=stamp_soon, daemon=True).start()
+    out = cmd_sync(tmp_path, A())
+    assert "refreshed" in out
+
+
+def test_sync_cli_times_out_gracefully(tmp_path, monkeypatch) -> None:
+    from autoresearch.syscall import SYSCALL_DIR
+    from autoresearch.syscall_cli import cmd_sync
+
+    (tmp_path / SYSCALL_DIR).mkdir()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    class A:
+        minutes = 0
+
+    out = cmd_sync(tmp_path, A())
+    assert "timed out" in out and "next wake" in out
+
+
+def test_sync_request_tracking(tmp_path) -> None:
+    import os
+    import time as _time
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced, sync_requested
+
+    ws = tmp_path
+    (ws / SYSCALL_DIR).mkdir()
+    assert not sync_requested(ws)
+    (ws / SYSCALL_DIR / "sync-request").touch()
+    assert sync_requested(ws)
+    mark_synced(ws)
+    assert not sync_requested(ws)
+    # a NEWER request re-arms
+    later = _time.time() + 5
+    os.utime(ws / SYSCALL_DIR / "sync-request", (later, later))
+    assert sync_requested(ws)
