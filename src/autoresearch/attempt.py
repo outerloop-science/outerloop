@@ -1237,11 +1237,12 @@ def resume_run(
     ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
     # Refresh origin refs on EVERY wake: the clone's refs froze at run
     # start, and this is the one credential-free freshness point — the
-    # kernel fetches, the session only ever reads local refs. `sleep`
+    # kernel fetches (from the canonical URL, never the session-writable
+    # remote config), the session only ever reads local refs. `sleep`
     # thereby doubles as the author's sync primitive. Best-effort: a fetch
     # outage must not cost the wake.
     try:
-        ws.git_network("fetch", "origin")
+        ws.fetch_origin()
     except Exception as exc:
         log.warning("wake fetch failed for %s: %s", run_id, exc)
 

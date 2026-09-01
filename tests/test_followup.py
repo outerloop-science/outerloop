@@ -125,8 +125,10 @@ class QueueEvaluator:
 
 
 @pytest.fixture
-def review_run(tmp_path: Path):
-    """A bare origin + an in-review run with a retained workspace on a branch."""
+def review_run(tmp_path: Path, monkeypatch):
+    """A bare origin + an in-review run with a retained workspace on a branch.
+    The canonical clone URL is patched to the bare: the follow-up pins its
+    fetch/push source to it, never the workspace's mutable remote config."""
     seed = tmp_path / "seed"
     (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
     (seed / "docs").mkdir()
@@ -156,6 +158,7 @@ def review_run(tmp_path: Path):
         last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
+    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
     return root, bare
 
 
@@ -577,7 +580,7 @@ roadmap: docs/roadmap.md
 
 
 @pytest.fixture
-def steward_review_run(tmp_path: Path):
+def steward_review_run(tmp_path: Path, monkeypatch):
     """An in-review STEWARD run with a retained workspace on a branch."""
     seed = tmp_path / "seed"
     (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
@@ -615,6 +618,7 @@ def steward_review_run(tmp_path: Path):
         last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
+    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
     return root, bare
 
 

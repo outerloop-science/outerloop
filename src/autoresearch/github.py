@@ -1005,6 +1005,20 @@ class Workspace:
             message,
         )
 
+    def fetch_origin(self) -> None:
+        """Refresh refs/remotes/origin/* from the URL captured at clone time —
+        never the "origin" remote, whose url and uploadpack live in
+        session-writable .git/config. The credential is host-scoped
+        (extraheader), so a rewritten URL could not receive it, but the
+        CONTENT must come from the canonical repo too: a poisoned fetch
+        source would forge what origin/<base> means to every downstream
+        comparison."""
+        if self.dry_run:
+            log.info("[dry-run] fetch into %s", self.root)
+            return
+        target = self.url or self.remote_url()
+        self.git_network("fetch", target, "--", "+refs/heads/*:refs/remotes/origin/*")
+
     def push(self, branch: str) -> None:
         if self.dry_run:
             log.info("[dry-run] push %s from %s", branch, self.root)
