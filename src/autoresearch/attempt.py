@@ -2143,14 +2143,17 @@ def live_attempt(
         from autoresearch.tick import list_pendings
 
         week_ago = now - 7 * 24 * 3600
-        used_week = sum(
-            1 for r in list_runs(run_root) if r.target == config.target and r.created >= week_ago
-        )
-        used_week += sum(
+        recent = [
+            r for r in list_runs(run_root) if r.target == config.target and r.created >= week_ago
+        ]
+        # a marker whose job already has a record (this run's included) is
+        # the same attempt, not a second one — count each job once
+        recorded_jobs = {r.run_job_id for r in recent if r.run_job_id} | {record.run_job_id}
+        used_week = len(recent) + sum(
             1
             for _agent, marker in list_pendings(run_root, config.target)
             if float(marker.get("submitted_at", 0) or 0) >= week_ago
-            and str(marker.get("job_id", "")) != record.run_job_id
+            and str(marker.get("job_id", "")) not in recorded_jobs
         )
         _budget_bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
         config = dc_replace(
