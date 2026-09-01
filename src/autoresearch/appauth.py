@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from autoresearch.github import AUTH_SAFE_OPENER
+
 # RS256-sign the JWT signing input, returning the raw signature bytes.
 Signer = Callable[[bytes], bytes]
 # Perform the token-exchange POST and return the parsed JSON body.
@@ -71,8 +73,9 @@ def _parse_expiry(expires_at: str) -> float:
 
 
 def _default_transport(request: urllib.request.Request) -> Any:
+    # the shared opener: a cross-host redirect must not forward the App JWT
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with AUTH_SAFE_OPENER.open(request, timeout=30) as response:
             payload = response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:500]

@@ -138,13 +138,15 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-_opener = urllib.request.build_opener(_NoAuthRedirect)
+# The one opener every API call shares — a redirect that changes host loses
+# the Authorization header instead of forwarding the credential.
+AUTH_SAFE_OPENER = urllib.request.build_opener(_NoAuthRedirect)
 
 
 def _raw_transport(request: urllib.request.Request) -> str:
     """Fetch a non-JSON body (the diff media type returns text/plain)."""
     try:
-        with _opener.open(request, timeout=30) as response:
+        with AUTH_SAFE_OPENER.open(request, timeout=30) as response:
             return str(response.read().decode(errors="replace"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:500]
@@ -157,7 +159,7 @@ def _raw_transport(request: urllib.request.Request) -> str:
 
 def _default_transport(request: urllib.request.Request) -> Any:
     try:
-        with _opener.open(request, timeout=30) as response:
+        with AUTH_SAFE_OPENER.open(request, timeout=30) as response:
             payload = response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:500]

@@ -94,6 +94,28 @@ def test_garbled_expiry_forces_a_re_mint_every_call() -> None:
     assert len(calls) == 2  # an unparsable expiry is treated as immediate
 
 
+def test_default_transport_routes_through_the_shared_opener(monkeypatch) -> None:
+    # the real exchange must go through github.py's auth-stripping opener, so
+    # a cross-host redirect can never forward the App JWT
+    import io
+
+    from autoresearch import appauth
+
+    seen = {}
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            seen["url"] = request.full_url
+            return io.BytesIO(b'{"token": "ghs_ok"}')
+
+    monkeypatch.setattr(appauth, "AUTH_SAFE_OPENER", FakeOpener())
+    import urllib.request
+
+    body = appauth._default_transport(urllib.request.Request("https://api.github.com/x"))
+    assert body == {"token": "ghs_ok"}
+    assert seen["url"] == "https://api.github.com/x"
+
+
 def test_signer_refuses_a_missing_or_open_key(tmp_path) -> None:
     with pytest.raises(ValueError, match="not a readable"):
         signer_from_private_key(tmp_path / "nope.pem")

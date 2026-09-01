@@ -45,7 +45,10 @@ or network (and so the crypto dependency stays out of the hot path):
 - a **signer** `Callable[[bytes], bytes]` (RS256 over the signing input) —
   production signer built lazily from the PEM via `cryptography`; tests inject
   a fake.
-- a **transport** for the token-exchange POST — same pattern as `GitHubClient`.
+- a **transport** for the token-exchange POST — same pattern as `GitHubClient`,
+  and the default rides the same auth-stripping opener (a redirect that changes
+  host loses the `Authorization` header, so the App JWT can never be forwarded
+  off `api.github.com`).
 
 ## Configuration
 
