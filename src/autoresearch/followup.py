@@ -395,7 +395,9 @@ def _respond(
     workspace = run_dir(run_root, run_id) / "ws"
     if not workspace.is_dir():
         return FollowupOutcome(run_id, "error", "workspace no longer exists (GC'd?)")
-    ws = Workspace(root=workspace, auth=github.auth, url=None)
+    from autoresearch.attempt import _target_clone_url
+
+    ws = Workspace(root=workspace, auth=github.auth, url=_target_clone_url(record.target))
     contract_text = (workspace / ".autoresearch.yaml").read_text()
     contract = load_contract(contract_text, record.target)
     bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
@@ -427,7 +429,7 @@ def _respond(
     base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
     base_sha_at_fetch = ""
     try:
-        ws.git_network("fetch", "origin", base_ref)
+        ws.fetch_origin()
         # pinned NOW, before the session runs: refs/remotes/* are plain
         # files a session can rewrite, so the scope exemption compares
         # against this sha, never the ref name
