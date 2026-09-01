@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -890,12 +891,12 @@ def test_needs_conflict_wake_is_once_per_head(review_run) -> None:
 
     root, _ = review_run
     record = load_record(root, "tsp-r1")
-    assert needs_conflict_wake(record, FakeGitHub(pr=_dirty_pr()))
-    assert not needs_conflict_wake(record, FakeGitHub())  # clean PR
+    assert needs_conflict_wake(record, cast(Any, FakeGitHub(pr=_dirty_pr())))
+    assert not needs_conflict_wake(record, cast(Any, FakeGitHub()))  # clean PR
     woken = replace(record, dirty_wake_head="h" * 40)
-    assert not needs_conflict_wake(woken, FakeGitHub(pr=_dirty_pr()))
+    assert not needs_conflict_wake(woken, cast(Any, FakeGitHub(pr=_dirty_pr())))
     # a new head (author pushed, conflicted again) re-arms
-    assert needs_conflict_wake(woken, FakeGitHub(pr=_dirty_pr(head="i" * 40)))
+    assert needs_conflict_wake(woken, cast(Any, FakeGitHub(pr=_dirty_pr(head="i" * 40))))
 
 
 def test_content_matching_base_is_not_out_of_scope(review_run) -> None:

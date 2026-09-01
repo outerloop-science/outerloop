@@ -3188,3 +3188,78 @@ def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch)
     (tmp_path / "DISPATCH_WAKE").unlink()
     monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
     assert dispatch_wake_armed(tmp_path)
+
+
+def test_service_in_review_wakes_a_conflicted_pr_without_comments(tmp_path: Path) -> None:
+    """A DIRTY PR is its own wake condition: no comments, job still submitted;
+    a record already woken for this head is skipped."""
+    from autoresearch.compute import CommandResult
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="r-dirty",
+            target="org/pilot",
+            task_title="improve tsp",
+            benchmark="tsp",
+            state=IN_REVIEW,
+            pr_url="https://github.com/org/pilot/pull/7",
+        ),
+        now=NOW,
+    )
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="r-dirty-woken",
+            target="org/pilot",
+            task_title="improve tsp",
+            benchmark="tsp",
+            state=IN_REVIEW,
+            pr_url="https://github.com/org/pilot/pull/8",
+            dirty_wake_head="h" * 40,
+        ),
+        now=NOW,
+    )
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {
+                "state": "open",
+                "merged": False,
+                "mergeable": False,
+                "mergeable_state": "dirty",
+                "head": {"sha": "h" * 40},
+                "base": {"ref": "main"},
+            }
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    submits = []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submits.append(list(argv))
+            return CommandResult(0, "4243\n", "")
+        if argv[0] == "sacct":
+            return CommandResult(0, "RUNNING\n", "")
+        raise AssertionError(argv)
+
+    compute = SlurmCompute(runner=runner)
+    spec = FollowupSpec(
+        account="acct",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=Path("/home/x/autoresearch"),
+    )
+    _ended, submitted = service_in_review(tmp_path, G(), compute, spec, NOW)
+    assert submitted == [("r-dirty", "4243")]  # the already-woken head is skipped
