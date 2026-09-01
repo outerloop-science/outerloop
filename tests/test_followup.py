@@ -886,17 +886,22 @@ def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     assert outcome2.action == "no-op"
 
 
-def test_needs_conflict_wake_is_once_per_head(review_run) -> None:
-    from autoresearch.followup import needs_conflict_wake
+def test_conflict_wake_action_lifecycle(review_run) -> None:
+    from autoresearch.followup import conflict_wake_action
 
     root, _ = review_run
     record = load_record(root, "tsp-r1")
-    assert needs_conflict_wake(record, cast(Any, FakeGitHub(pr=_dirty_pr())))
-    assert not needs_conflict_wake(record, cast(Any, FakeGitHub()))  # clean PR
+    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_dirty_pr()))) == "wake"
+    assert conflict_wake_action(record, cast(Any, FakeGitHub())) == ""  # clean, never woken
     woken = replace(record, dirty_wake_head="h" * 40)
-    assert not needs_conflict_wake(woken, cast(Any, FakeGitHub(pr=_dirty_pr())))
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr()))) == ""  # once/head
     # a new head (author pushed, conflicted again) re-arms
-    assert needs_conflict_wake(woken, cast(Any, FakeGitHub(pr=_dirty_pr(head="i" * 40))))
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr(head="i" * 40)))) == (
+        "wake"
+    )
+    # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
+    clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=clean))) == "clear"
 
 
 def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
@@ -1043,3 +1048,38 @@ def test_committed_out_of_scope_resolution_is_reset(review_run) -> None:
     assert "outside the contract" in github.posted[0]
     assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
     assert _git(ws, "rev-parse", "HEAD").strip() == tip_before  # local commit gone
+
+
+def test_forged_base_ref_cannot_vouch(review_run) -> None:
+    """refs/remotes/origin/<base> is a plain file the session can rewrite;
+    the exemption must compare against the sha PINNED at fetch time, so a
+    forged ref pointing at the session's own commit vouches for nothing."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
+    tip_before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    github = FakeGitHub(comments=[member(101, "tidy")])
+
+    def forging_run(brief_text, workspace, resume_session_id=None):
+        (workspace / "docs" / "rogue.md").write_text("smuggled\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "forge")
+        sha = _git(ws, "rev-parse", "HEAD").strip()
+        _git(ws, "update-ref", "refs/remotes/origin/main", sha)  # the forgery
+        return SessionResult(
+            stop_reason="end_turn",
+            is_error=False,
+            cost_usd=0.2,
+            num_turns=3,
+            session_id="s5",
+            final_text="done",
+            transcript_path="",
+        )
+
+    class Forger:
+        run = staticmethod(forging_run)
+
+    outcome = respond(root, github, Forger(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "outside the contract" in github.posted[0]  # forgery did not vouch
+    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before

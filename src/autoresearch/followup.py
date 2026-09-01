@@ -139,15 +139,22 @@ def dirty_pr_head(pr: dict) -> str:
     return ""
 
 
-def needs_conflict_wake(record: RunRecord, github: GitHubClient) -> bool:
-    """Tick-side gate (cheap, read-only): an in-review PR that conflicts
-    with its base and has not been woken for THIS head yet."""
+def conflict_wake_action(record: RunRecord, github: GitHubClient) -> str:
+    """Tick-side gate (cheap, read-only): "wake" for an in-review PR that
+    conflicts with its base and has not been woken for THIS head yet;
+    "clear" when a previously-woken PR is clean again (base moved back or
+    forward past the conflict — the same head can conflict AGAIN later and
+    must be able to re-wake); "" otherwise."""
     try:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
     except Exception:
-        return False
+        return ""
     head = dirty_pr_head(pr)
-    return bool(head) and head != record.dirty_wake_head
+    if head and head != record.dirty_wake_head:
+        return "wake"
+    if not head and record.dirty_wake_head and pr.get("mergeable") is True:
+        return "clear"
+    return ""
 
 
 def qualifying_comments(
@@ -418,12 +425,16 @@ def _respond(
     # never compare against a stale ref (old base content could smuggle).
     # The session has no credentials, so the kernel fetches on its behalf.
     base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-    base_fetched = False
+    base_sha_at_fetch = ""
     try:
         ws.git_network("fetch", "origin", base_ref)
-        base_fetched = True
+        # pinned NOW, before the session runs: refs/remotes/* are plain
+        # files a session can rewrite, so the scope exemption compares
+        # against this sha, never the ref name
+        base_sha_at_fetch = ws.git("rev-parse", f"origin/{base_ref}").strip()
     except Exception as exc:
         log.warning("base fetch failed for %s: %s", run_id, exc)
+    base_fetched = bool(base_sha_at_fetch)
     if conflict_wake and not base_fetched:
         # never tell the session the base was fetched when it was not, and
         # never spend the once-per-head cursor on a failed setup — the next
@@ -513,14 +524,15 @@ def _respond(
     def _matches_base(path: str) -> bool:
         # content identical to origin/<base> is the base branch's own (a
         # merge brings it in); it can neither smuggle nor exceed scope. Only
-        # against a FRESHLY fetched ref — stale base content must not vouch.
-        # Blob-hash comparison: `git diff <commit> -- path` would call an
-        # UNTRACKED working file "deleted" instead of reading its content.
-        # A deletion matches when the base deleted the path too.
+        # against the sha PINNED at fetch time — the ref itself is a plain
+        # file the session could have rewritten while it ran. Blob-hash
+        # comparison: `git diff <commit> -- path` would call an UNTRACKED
+        # working file "deleted" instead of reading its content. A deletion
+        # matches when the base deleted the path too.
         if not base_fetched:
             return False
         try:
-            base_blob = ws.git("rev-parse", f"origin/{base_ref}:{path}").strip()
+            base_blob = ws.git("rev-parse", f"{base_sha_at_fetch}:{path}").strip()
         except Exception:
             base_blob = ""  # absent on base
         local_path = Path(ws.root) / path
