@@ -4060,8 +4060,11 @@ def test_wake_fetch_ignores_session_url_rewrites(tmp_path, monkeypatch) -> None:
     _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "poison")
     _git(work, "push", "-q", "origin", "main")
-    # the session plants the rewrite: canonical bare -> decoy
-    _git(ws, "config", "--local", f"url.{decoy}.insteadOf", str(bare))
+    # the session plants the rewrite via an INCLUDED file (a --local scan
+    # would miss it; the clean-config window neutralizes the whole class)
+    inc = ws / ".git" / "evil.inc"
+    inc.write_text(f'[url "{decoy}"]\n\tinsteadOf = {bare}\n')
+    _git(ws, "config", "--local", "include.path", "evil.inc")
     resume_run(
         state,
         run_id,

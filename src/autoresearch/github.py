@@ -28,7 +28,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -912,11 +912,6 @@ def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     return env
 
 
-def _best_effort_git(argv: list[str], env: dict[str, str]) -> None:
-    with contextlib.suppress(Exception):
-        _run_git(argv, env)
-
-
 def _run_git(args: list[str], env: dict[str, str]) -> str:
     result = subprocess.run(args, capture_output=True, text=True, env=env, check=False)
     if result.returncode != 0:
@@ -946,59 +941,41 @@ class Workspace:
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
 
-    def _strip_url_rewrites(self) -> None:
-        """Remove session-written url.*.insteadOf / pushInsteadOf from the
-        local config. Git applies these rewrite rules even to an explicitly
-        passed URL, so without this a session could redirect a credentialed
-        fetch/push at attacker-controlled refs (poisoning what origin/<base>
-        means to every downstream comparison). The workspace .git/config is
-        session-writable and the ONLY config source here (global/system are
-        /dev/null), so this is the one place they can enter."""
-        if not (self.root / ".git").exists():
-            return  # a clone creating the repo has no local config yet
+    @contextlib.contextmanager
+    def _neutral_local_config(self) -> Iterator[None]:
+        """Run the body with the workspace's local .git/config swapped for a
+        MINIMAL one. The session-writable local config is the only config
+        source under credential (global/system are /dev/null), and git honors
+        url.*.insteadOf, include.path, includeIf, etc. even for an explicitly
+        passed URL — any of which could redirect a credentialed fetch/push at
+        attacker-controlled refs and poison what origin/<base> means to every
+        downstream comparison. Swapping the whole file neutralizes the entire
+        config-redirect class at once. The fetch/push pass an explicit URL and
+        refspec, so no remote.* config is needed for the op; the session's
+        config is restored after (only the kernel runs network ops, serially,
+        so nothing else races this window)."""
+        cfg = self.root / ".git" / "config"
+        if not cfg.exists():
+            yield  # a clone creating the repo has no local config yet
+            return
+        saved = cfg.read_bytes()
         try:
-            keys = _run_git(
-                [
-                    "git",
-                    "-C",
-                    str(self.root),
-                    *SAFE_GIT_FLAGS,
-                    "config",
-                    "--local",
-                    "--name-only",
-                    "--get-regexp",
-                    r"^url\..*\.(insteadof|pushinsteadof)$",
-                ],
-                _git_env(None, self.root),
-            )
-        except Exception:
-            return  # no matches -> git exits non-zero; nothing to strip
-        sections = {key.rsplit(".", 1)[0] for key in keys.split() if key.startswith("url.")}
-        for section in sections:
-            _best_effort_git(
-                [
-                    "git",
-                    "-C",
-                    str(self.root),
-                    *SAFE_GIT_FLAGS,
-                    "config",
-                    "--local",
-                    "--remove-section",
-                    section,
-                ],
-                _git_env(None, self.root),
-            )
+            cfg.write_bytes(b"[core]\n\trepositoryformatversion = 0\n")
+            yield
+        finally:
+            cfg.write_bytes(saved)
 
     def git_network(self, *args: str) -> str:
         """Run a git subcommand that talks to the remote, with credentials."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
-        if args and args[0] != "clone":
-            self._strip_url_rewrites()
         token = self.auth.token() if self.auth is not None else None
-        return _run_git(
-            ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token, self.root)
-        )
+        argv = ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args]
+        env = _git_env(token, self.root)
+        if args and args[0] == "clone":
+            return _run_git(argv, env)  # no local config to neutralize yet
+        with self._neutral_local_config():
+            return _run_git(argv, env)
 
     def remote_url(self) -> str:
         """The remote URL as recorded at clone time, read token-free."""
