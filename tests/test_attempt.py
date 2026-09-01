@@ -4136,3 +4136,43 @@ def test_wake_fetch_ignores_worktree_config_rewrite(tmp_path, monkeypatch) -> No
         now=1_000_100.0,
     )
     assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
+
+
+def test_merge_artifacts_do_not_trip_scope(tmp_path, target_repo) -> None:
+    """A *.orig left by a merge/mergetool is excluded, so a session that
+    edits only in-scope files (plus a stray train.py.orig) is not aborted as
+    out-of-scope and its seal omits the artifact."""
+    github = FakeGitHub()
+    with _queued_local([13.876, 13.1]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-orig",
+            harness=ScriptedHarness(
+                edits={
+                    "src/pilot/solvers/tsp.py": "def solve(): return 9\n",
+                    "src/pilot/solvers/tsp.py.orig": "conflict backup\n",
+                }
+            ),
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    assert outcome.outcome == "improved" and len(github.prs) == 1
+    published = _git(target_repo, "ls-tree", "-r", "--name-only", str(github.prs[0]["head"]))
+    assert "src/pilot/solvers/tsp.py" in published
+    assert "tsp.py.orig" not in published  # the artifact never entered the seal
+
+
+def test_exclude_merge_artifacts_is_idempotent(tmp_path) -> None:
+    from autoresearch.attempt import _exclude_merge_artifacts
+
+    ws = tmp_path
+    (ws / ".git" / "info").mkdir(parents=True)
+    (ws / ".git" / "info" / "exclude").write_text("/existing/\n")
+    _exclude_merge_artifacts(ws)
+    _exclude_merge_artifacts(ws)  # second call adds nothing
+    body = (ws / ".git" / "info" / "exclude").read_text()
+    assert body.count("*.orig") == 1 and body.count("*.rej") == 1
+    assert "/existing/" in body  # prior content preserved

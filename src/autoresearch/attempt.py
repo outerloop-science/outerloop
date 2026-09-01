@@ -988,6 +988,27 @@ def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
         return []
 
 
+def _exclude_merge_artifacts(workspace: Path) -> None:
+    """Keep git's merge/patch conflict backups (*.orig, *.rej) out of the
+    diff via .git/info/exclude — repo-local, never a tracked edit. A line
+    run merges main at start and the agent resolves conflicts as its first
+    task; a leftover train.py.orig would otherwise read as an out-of-scope
+    edit and abort the run at launch. Idempotent, and effective for the
+    `git add -A` that builds changed-paths and every seal."""
+    exclude = workspace / ".git" / "info" / "exclude"
+    wanted = ["*.orig", "*.rej"]
+    try:
+        existing = exclude.read_text()
+    except OSError:
+        existing = ""
+    lines = existing.splitlines()
+    missing = [p for p in wanted if p not in lines]
+    if missing:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        sep = "" if existing.endswith("\n") or not existing else "\n"
+        exclude.write_text(existing + sep + "\n".join(missing) + "\n")
+
+
 def _reset_instruction_files(ws: Workspace, workspace: Path, base_ref: str) -> None:
     """Make the checkout's instruction-bearing files EQUAL the base branch's
     reviewed versions (review_agent.INSTRUCTION_FILES owns the list): a line
@@ -2144,6 +2165,7 @@ def live_attempt(
         # edit, and the gate must measure, the tree the PR will land on.
         # A missing base branch fails loudly as attempt-error.
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
+        _exclude_merge_artifacts(workspace)
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
         # Load the brief budget from the contract and run state: callers do
