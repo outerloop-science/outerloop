@@ -887,10 +887,10 @@ def test_mark_synced_refuses_a_hardlinked_temp(tmp_path, monkeypatch) -> None:
     # force a predictable temp name and pre-plant a hard link to the victim
     monkeypatch.setattr("os.urandom", lambda n: b"\x00" * n)
     _os.link(victim, ws / SYSCALL_DIR / f".sync-done.{(b'\x00' * 8).hex()}")
-    try:
-        mark_synced(ws, 1.0)
-    except FileExistsError:
-        pass  # O_EXCL refused the planted link
+    import contextlib
+
+    with contextlib.suppress(FileExistsError):
+        mark_synced(ws, 1.0)  # O_EXCL refuses the planted link
     assert victim.read_text() == "precious"  # never truncated
 
 
