@@ -3968,9 +3968,10 @@ def test_brief_budget_comes_from_the_contract_not_the_caller(tmp_path, target_re
                 created="2026-08-06T00:00:00Z",
             )
     first, second = BriefCapture3.seen
-    # CONTRACT: gpu_hours_per_run 1, runs_per_week 10; the run's own record
-    # exists before the brief renders, so the first run sees 9 left
-    assert "GPU-hours remaining: 1.0" in first
+    # CONTRACT: runs_per_week 10; the run's own record exists before the
+    # brief renders, so the first run sees 9 left. tsp is a CPU benchmark
+    # (gpus 0), so its GPU pool honestly reads 0.0 — the per-run pool
+    # renders only for GPU benchmarks, same rule as the wake path.
     assert "Runs remaining this week: 9" in first
     assert "Runs remaining this week: 8" in second
-    assert "GPU-hours remaining: 0.0" not in first
+    assert "GPU-hours remaining: 0.0" in first

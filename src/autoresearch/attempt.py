@@ -2136,22 +2136,32 @@ def live_attempt(
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         contract_text = (workspace / ".autoresearch.yaml").read_text()
         contract = load_contract(contract_text, config.target)
-        # The brief's budget numbers come from GROUND TRUTH, never the
-        # caller: the CLI cannot know them, and the dataclass default told
-        # every session "GPU-hours remaining: 0.0" — an honest agent then
-        # refuses to launch and finishes unmeasured (the fleet's serial
-        # "no budget" reports were agents READING that rendered zero).
+        # Load the brief budget from the contract and run state: callers do
+        # not supply it (the dataclass default rendered "0.0 GPU-hours" and
+        # honest agents refused to launch). Same weekly counting rule as the
+        # tick's cap: records plus live pending markers, minus this run's own.
+        from autoresearch.tick import list_pendings
+
         week_ago = now - 7 * 24 * 3600
-        mine = [r for r in list_runs(run_root) if r.target == config.target]
+        used_week = sum(
+            1 for r in list_runs(run_root) if r.target == config.target and r.created >= week_ago
+        )
+        used_week += sum(
+            1
+            for _agent, marker in list_pendings(run_root, config.target)
+            if float(marker.get("submitted_at", 0) or 0) >= week_ago
+            and str(marker.get("job_id", "")) != record.run_job_id
+        )
+        _budget_bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
         config = dc_replace(
             config,
             budget=BudgetState(
-                gpu_hours_remaining=float(contract.budgets.gpu_hours_per_run or 0.0),
-                runs_remaining_this_week=max(
-                    0,
-                    int(contract.budgets.runs_per_week)
-                    - sum(1 for r in mine if r.created >= week_ago),
+                gpu_hours_remaining=(
+                    float(contract.budgets.gpu_hours_per_run or 0.0)
+                    if _budget_bench is not None and _budget_bench.gpus
+                    else 0.0
                 ),
+                runs_remaining_this_week=max(0, int(contract.budgets.runs_per_week) - used_week),
             ),
         )
         # Author syscalls (research-loop.md, "one syscall") are CONTRACT-DRIVEN:
