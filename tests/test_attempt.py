@@ -37,6 +37,12 @@ CONTRACT_DISPATCH = CONTRACT.replace(
 # Same contract with research lines on (docs/design/research-lines.md).
 CONTRACT_LINES = CONTRACT.replace("    direction: min\n", "    direction: min\n    lines: true\n")
 
+# Same contract on a GPU benchmark (the per-run GPU pool renders in briefs);
+# a GPU benchmark must dispatch its evals, so it needs the eval hint too.
+CONTRACT_GPU = CONTRACT.replace(
+    "    direction: min\n", "    direction: min\n    gpus: 1\n    eval_minutes: 30\n"
+)
+
 
 def _session(sid: str = "s1") -> SessionResult:
     return SessionResult(
@@ -3940,6 +3946,65 @@ def test_line_divergence_reaches_the_brief(tmp_path: Path, target_repo_lines) ->
         )
     brief = str(BriefCapture2.seen["brief"])
     assert "differs from the base branch by: 1 file changed" in brief
+
+
+def test_brief_budget_comes_from_the_contract_not_the_caller(tmp_path, target_repo) -> None:
+    """The CLI cannot know the budget numbers; the dataclass default told
+    every session "GPU-hours remaining: 0.0" and honest agents refused to
+    launch. The brief now renders the contract's per-run pool and the real
+    weekly remainder."""
+
+    class BriefCapture3(ScriptedHarness):
+        seen: ClassVar[list] = []
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            BriefCapture3.seen.append(brief_text)
+            return super().run(brief_text, workspace, resume_session_id)
+
+    for run_id in ("tsp-bud-1", "tsp-bud-2"):
+        with _queued_local([13.876, 14.5]):
+            live_attempt(
+                config=RunConfig(target="org/pilot", benchmark="tsp"),
+                run_root=tmp_path / "state",
+                run_id=run_id,
+                harness=BriefCapture3(edits={}),
+                github=FakeGitHub(),  # type: ignore[arg-type]
+                bot_auth=NoAuth(),  # type: ignore[arg-type]
+                now=1_000_000.0,
+                created="2026-08-06T00:00:00Z",
+            )
+    first, second = BriefCapture3.seen
+    # CONTRACT: runs_per_week 10; the run's own record exists before the
+    # brief renders, so the first run sees 9 left. tsp is a CPU benchmark
+    # (gpus 0), so its GPU pool honestly reads 0.0 — the per-run pool
+    # renders only for GPU benchmarks, same rule as the wake path.
+    assert "Runs remaining this week: 9" in first
+    assert "Runs remaining this week: 8" in second
+    assert "GPU-hours remaining: 0.0" in first
+
+
+def test_gpu_benchmark_brief_shows_the_per_run_pool(tmp_path, monkeypatch) -> None:
+    _seed_target(tmp_path, monkeypatch, CONTRACT_GPU)
+
+    class BriefCapture4(ScriptedHarness):
+        seen: ClassVar[list] = []
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            BriefCapture4.seen.append(brief_text)
+            return super().run(brief_text, workspace, resume_session_id)
+
+    with _queued_local([13.876, 14.5]):
+        live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-gpu-1",
+            harness=BriefCapture4(edits={}),
+            github=FakeGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),  # type: ignore[arg-type]
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+        )
+    assert "GPU-hours remaining: 1.0" in BriefCapture4.seen[0]
 
 
 def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
