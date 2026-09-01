@@ -36,9 +36,10 @@ BOARD_BRANCH = "research-log"
 MAX_HYPOTHESIS_CHARS = 160
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
-MAX_CURVE_RUNS = 150  # curves are heavy; the newest runs keep theirs
-MAX_CURVE_RUNS_PER_AGENT = 5  # ...but at most this many per agent, so one busy
-# agent cannot crowd the panel and every agent stays represented
+MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
+# busy agent cannot crowd the panel AND every active agent stays represented
+# (this per-agent cap is the whole bound — no global total ceiling, which
+# would drop the oldest agent once agents * 5 exceeded it)
 MAX_ROWS_PER_BENCHMARK = 2000
 
 
@@ -994,8 +995,6 @@ def _merge_curves(
     per_agent: dict[str, int] = {}
     merged: dict[str, list[list[float]]] = {}
     for r in reversed(rows):
-        if len(merged) >= MAX_CURVE_RUNS:
-            break  # total safety ceiling
         agent = str(r.get("agent") or "")
         if per_agent.get(agent, 0) >= MAX_CURVE_RUNS_PER_AGENT:
             continue

@@ -650,6 +650,28 @@ def test_quiet_agent_curve_survives_a_busy_agent(tmp_path: Path) -> None:
     assert "quiet" in merged["data"]  # not buried by 300 busy rows
 
 
+def test_every_agent_is_kept_beyond_any_total_ceiling(tmp_path: Path) -> None:
+    """No global total ceiling drops an agent: 40 agents * 5 curves = 200 are
+    all kept (the per-agent cap is the only bound)."""
+    from autoresearch.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)
+
+    rows = [
+        {"run_id": f"a{a}-r{i}", "agent": f"agent-{a:02d}"}
+        for a in range(40)
+        for i in range(6)  # six each; the cap keeps five
+    ]
+    curves = {r["run_id"]: [[1, 1.0]] for r in rows}
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: curves[rid])
+    assert merged is not None
+    agents_kept = {k.split("-r")[0] for k in merged["data"]}
+    assert len(agents_kept) == 40  # every agent represented
+    assert len(merged["data"]) == 40 * MAX_CURVE_RUNS_PER_AGENT
+
+
 def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
     """A 400-nines 'loss' parses as float inf and a 400-digit step exceeds
     JS-safe integers; both skip the point, not the curve."""
