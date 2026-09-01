@@ -965,3 +965,19 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
     assert r["gpu_hours_budget"] == 400.0
     # the first clause only — the strip is a glance, not a paragraph
     assert r["direction"] == "longer warmdown helps"
+
+
+def test_md_baseline_chip_is_the_ledger_starting_position() -> None:
+    from autoresearch.climbboard import render_md
+
+    rows = [
+        {"run_id": "r1", "baseline": 9472.0, "candidate": 9088.0, "outcome": "merged"},
+        {"run_id": "r2", "baseline": 9472.0, "candidate": 8960.0, "outcome": "rejected"},
+    ]
+    with_start = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"}, {"speedrun": 9472.0})
+    assert "baseline (start): **9472**" in with_start or "baseline (start): **9472.0**" in (
+        with_start
+    )
+    # no ledger -> the chip is simply absent; nothing per-run substitutes
+    without = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"})
+    assert "baseline" not in without
