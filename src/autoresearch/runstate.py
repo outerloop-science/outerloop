@@ -146,6 +146,9 @@ class RunRecord:
     last_comment_id: int = 0
     last_review_id: int = 0
     last_review_comment_id: int = 0
+    # head sha the last conflict wake was issued for: a dirty PR wakes the
+    # author ONCE per head — a new push (or new conflict) re-arms it
+    dirty_wake_head: str = ""
     followup_job_id: str = ""  # slurm job servicing this run's review comments
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0

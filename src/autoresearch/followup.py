@@ -20,7 +20,7 @@ from pathlib import Path
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
-from autoresearch.github import GitHubClient, Workspace
+from autoresearch.github import GitHubClient, NothingToCommit, Workspace
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
     Evaluator,
@@ -126,6 +126,35 @@ def context_comments(comments: list[dict], since_id: int) -> list[tuple[str, str
             body = body[:MAX_CONTEXT_COMMENT_CHARS] + "\n…[truncated]"
         picked.append((author, body))
     return picked[-MAX_CONTEXT_COMMENTS:]
+
+
+def dirty_pr_head(pr: dict) -> str:
+    """The head sha when an OPEN PR conflicts with its base, else "".
+    GitHub computes mergeability lazily: mergeable None means unknown (not
+    dirty), so a fresh PR never false-positives — the next tick re-asks."""
+    if pr.get("state") != "open" or pr.get("merged"):
+        return ""
+    if pr.get("mergeable") is False or pr.get("mergeable_state") == "dirty":
+        return str((pr.get("head") or {}).get("sha", ""))
+    return ""
+
+
+def conflict_wake_action(record: RunRecord, github: GitHubClient) -> str:
+    """Tick-side gate (cheap, read-only): "wake" for an in-review PR that
+    conflicts with its base and has not been woken for THIS head yet;
+    "clear" when a previously-woken PR is clean again (base moved back or
+    forward past the conflict — the same head can conflict AGAIN later and
+    must be able to re-wake); "" otherwise."""
+    try:
+        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+    except Exception:
+        return ""
+    head = dirty_pr_head(pr)
+    if head and head != record.dirty_wake_head:
+        return "wake"
+    if not head and record.dirty_wake_head and pr.get("mergeable") is True:
+        return "clear"
+    return ""
 
 
 def qualifying_comments(
@@ -346,7 +375,9 @@ def _respond(
         for source, (items, _) in per_source.items()
         for cid, author, body in items
     ]
-    if not merged:
+    conflict_head = dirty_pr_head(pr)
+    conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
+    if not merged and not conflict_wake:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     # oldest first WITHIN each source (ids are monotonic per source); cap the
     # wake, and advance each cursor only to the max id actually processed
@@ -389,7 +420,44 @@ def _respond(
     )
     spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
 
+    # Every wake needs a CURRENT origin/<base>: the conflict wake tells the
+    # session to merge it, and the scope check's base-content exemption must
+    # never compare against a stale ref (old base content could smuggle).
+    # The session has no credentials, so the kernel fetches on its behalf.
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    base_sha_at_fetch = ""
+    try:
+        ws.git_network("fetch", "origin", base_ref)
+        # pinned NOW, before the session runs: refs/remotes/* are plain
+        # files a session can rewrite, so the scope exemption compares
+        # against this sha, never the ref name
+        base_sha_at_fetch = ws.git("rev-parse", f"origin/{base_ref}").strip()
+    except Exception as exc:
+        log.warning("base fetch failed for %s: %s", run_id, exc)
+    base_fetched = bool(base_sha_at_fetch)
+    if conflict_wake and not base_fetched:
+        # never tell the session the base was fetched when it was not, and
+        # never spend the once-per-head cursor on a failed setup — the next
+        # tick retries the whole wake
+        conflict_wake = False
+        if not merged:
+            return FollowupOutcome(
+                run_id, "error", "conflict wake: base fetch failed; retrying next tick"
+            )
+
     prompt = render_review_wake([(author, body) for _, author, body in comments])
+    if conflict_wake:
+        prompt = (
+            "# Your PR conflicts with its base\n"
+            f"`{base_ref}` moved and this PR no longer merges cleanly. "
+            f"`origin/{base_ref}` has been fetched into your workspace. "
+            "Merge it into the PR branch and resolve the conflicts "
+            "honestly — the PR stays ONE clean contribution, so if the "
+            "conflict shows your change is superseded by what landed, say "
+            "so plainly instead of forcing it (a maintainer will close the "
+            "PR). Any change you keep is re-measured before it is pushed, "
+            "and auto-merge stays off — a human merges the updated PR.\n\n"
+        ) + prompt
     if is_steward:
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
 
@@ -453,13 +521,57 @@ def _respond(
     measured_note = ""
     change_pushed = False
 
-    changed = _changed_paths(ws)
+    def _matches_base(path: str) -> bool:
+        # content identical to origin/<base> is the base branch's own (a
+        # merge brings it in); it can neither smuggle nor exceed scope. Only
+        # against the sha PINNED at fetch time — the ref itself is a plain
+        # file the session could have rewritten while it ran. Blob-hash
+        # comparison: `git diff <commit> -- path` would call an UNTRACKED
+        # working file "deleted" instead of reading its content. A deletion
+        # matches when the base deleted the path too.
+        if not base_fetched:
+            return False
+        try:
+            base_blob = ws.git("rev-parse", f"{base_sha_at_fetch}:{path}").strip()
+        except Exception:
+            base_blob = ""  # absent on base
+        local_path = Path(ws.root) / path
+        if not local_path.exists():
+            return not base_blob  # both absent: a base-side deletion merged in
+        if not base_blob:
+            return False
+        try:
+            return ws.git("hash-object", "--", path).strip() == base_blob
+        except Exception:
+            return False
+
+    branch = _current_branch(ws)
+    committed: list[str] = []
+    try:
+        # a session that COMMITTED its work (a resolved merge commit is the
+        # normal shape) leaves the working tree clean — the diff against the
+        # PR branch's pushed tip is where those changes show
+        committed = [
+            p
+            for p in ws.git("diff", "--name-only", f"origin/{branch}..HEAD").splitlines()
+            if p.strip()
+        ]
+    except Exception:
+        committed = []
+
+    def _revert_response() -> None:
+        # drop working-tree edits AND any local commits past the pushed tip
+        ws.git("checkout", "--", ".")
+        ws.git("clean", "-fdq")
+        if committed:
+            ws.git("reset", "--hard", f"origin/{branch}")
+
+    changed = sorted(set(_changed_paths(ws)) | set(committed))
     if changed:
-        violations = scope_check(changed, contract)
+        violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
-            ws.git("checkout", "--", ".")
-            ws.git("clean", "-fdq")
+            _revert_response()
             measured_note = (
                 "\n\n_(A code change was attempted but touched paths outside "
                 "the contract's scope and was not applied.)_"
@@ -482,8 +594,7 @@ def _respond(
                         workspace, bench.command, bench.metric, extra_env=seed_env
                     )
             except Exception as exc:
-                ws.git("checkout", "--", ".")
-                ws.git("clean", "-fdq")
+                _revert_response()
                 measured_note = (
                     "\n\n_(A code change was attempted but the eval failed on "
                     f"it, so it was not applied: {redact(str(exc), secrets)[:200]})_"
@@ -492,8 +603,7 @@ def _respond(
                 if _tree_hash(ws) != pre_eval_tree:
                     # same drift rule as the climb: the pushed tree must be
                     # exactly the measured tree
-                    ws.git("checkout", "--", ".")
-                    ws.git("clean", "-fdq")
+                    _revert_response()
                     measured_note = (
                         "\n\n_(A code change was attempted but the tree "
                         "changed during measurement, so it was not applied.)_"
@@ -592,25 +702,33 @@ def _respond(
                             disarmed = False
                             log.warning("auto-merge disarm errored: %s", exc)
                     if not disarmed:
-                        ws.git("checkout", "--", ".")
-                        ws.git("clean", "-fdq")
+                        _revert_response()
                         measured_note = (
                             "\n\n_(A code change was validated but WITHHELD: "
                             "auto-merge could not be confirmed disarmed on this "
                             "auto-mode PR; the follow-up will retry.)_"
                         )
                     else:
-                        branch = _current_branch(ws)
                         verb = "steward" if is_steward else "agent"
-                        ws.commit_all(
-                            f"{verb}: address review feedback "
-                            f"({bench.metric}={fmt_metric(candidate, bench.display_digits)})"
-                            f"\n\nAgent: {record.agent_id}",
-                            author=bot_login,
-                            forbidden=lambda p: (
-                                p not in PROGRESS_PATHS and bool(scope_check([p], contract))
-                            ),
-                        )
+                        # a session that committed its work (a resolved merge)
+                        # leaves nothing to stage; the committed diff was
+                        # already scope-checked above, so push what is there
+                        try:
+                            ws.commit_all(
+                                f"{verb}: address review feedback "
+                                f"({bench.metric}="
+                                f"{fmt_metric(candidate, bench.display_digits)})"
+                                f"\n\nAgent: {record.agent_id}",
+                                author=bot_login,
+                                forbidden=lambda p: (
+                                    p not in PROGRESS_PATHS
+                                    and bool(scope_check([p], contract))
+                                    and not _matches_base(p)
+                                ),
+                            )
+                        except NothingToCommit:
+                            if not committed:
+                                raise
                         ws.push(branch)
                         change_pushed = True
                         worse = prior is not None and not orch_improved(
@@ -660,6 +778,7 @@ def _respond(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
+            dirty_wake_head=conflict_head if conflict_wake else record.dirty_wake_head,
             resume_session_id=session.session_id or record.resume_session_id,
             wake_attempts=0,  # progress: the retry cap starts fresh
         ),
