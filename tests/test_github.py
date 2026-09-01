@@ -430,3 +430,26 @@ def test_auto_mode_arming_merges_only_on_clean_status(monkeypatch) -> None:
     monkeypatch.setattr(client, "enable_auto_merge", not_allowed)
     assert client.arm_auto_merge_auto_mode("o/r", 8) is False
     assert merged == [7]  # no bulldozing a repo-owner control
+
+
+def test_redirect_off_host_loses_the_authorization_header() -> None:
+    # the shared opener forwards Authorization on a same-host redirect but
+    # strips it when the redirect changes host (or scheme)
+    from autoresearch.github import _NoAuthRedirect
+
+    handler = _NoAuthRedirect()
+    request = urllib.request.Request(
+        "https://api.github.com/app/installations/1/access_tokens",
+        headers={"Authorization": "Bearer jwt"},
+        method="POST",
+    )
+    hijacked = handler.redirect_request(
+        request, None, 302, "Found", {}, "https://attacker.example/steal"
+    )
+    assert hijacked is not None
+    assert "Authorization" not in hijacked.headers
+    same_host = handler.redirect_request(
+        request, None, 302, "Found", {}, "https://api.github.com/elsewhere"
+    )
+    assert same_host is not None
+    assert same_host.headers.get("Authorization") == "Bearer jwt"
