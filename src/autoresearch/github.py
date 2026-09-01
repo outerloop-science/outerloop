@@ -1017,7 +1017,7 @@ class Workspace:
             log.info("[dry-run] fetch into %s", self.root)
             return
         target = self.url or self.remote_url()
-        self.git_network("fetch", target, "--", "+refs/heads/*:refs/remotes/origin/*")
+        self.git_network("fetch", "--prune", target, "--", "+refs/heads/*:refs/remotes/origin/*")
 
     def push(self, branch: str) -> None:
         if self.dry_run:
