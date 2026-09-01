@@ -1702,7 +1702,9 @@ def test_branch_prefix_derives_from_the_agent_id() -> None:
     assert RunConfig(target="o/r", benchmark="b", agent_id="agent-02").branch_prefix == (
         "feat/auto/agent-02"
     )
-    # a legacy record with no agent id keeps the old spelling, never "//"
-    assert RunConfig(target="o/r", benchmark="b", agent_id="").branch_prefix == (
-        "feat/auto/agent-01"
-    )
+    # a legacy record with no agent id — or a malformed one an old CLI let
+    # into a record — keeps the old spelling, never an invalid ref
+    for legacy in ("", "bad..id", "bad id", "a/b"):
+        assert RunConfig(target="o/r", benchmark="b", agent_id=legacy).branch_prefix == (
+            "feat/auto/agent-01"
+        )

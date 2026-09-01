@@ -421,10 +421,15 @@ class RunConfig:
     @property
     def branch_prefix(self) -> str:
         # derived, never stored: every call site passed agent_id but left the
-        # old field at its default, so every PR branch said agent-01. An
-        # empty agent id (a legacy record) keeps the old spelling rather
-        # than minting "feat/auto//<run>".
-        return f"feat/auto/{self.agent_id or 'agent-01'}"
+        # old field at its default, so every PR branch said agent-01. An id
+        # that cannot shape a ref — empty, or a malformed value an old CLI
+        # accepted into a record — keeps the old spelling rather than
+        # handing git an invalid branch name at publish.
+        import re
+
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", self.agent_id or ""):
+            return f"feat/auto/{self.agent_id}"
+        return "feat/auto/agent-01"
 
 
 @dataclass(frozen=True)
