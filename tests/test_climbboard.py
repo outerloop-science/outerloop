@@ -570,9 +570,106 @@ def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
     pts = _curve_from_eval(run_dir(tmp_path, "speedrun-1"))
     assert 2 < len(pts) <= MAX_CURVE_POINTS
     assert pts[0][0] == 128 and pts[-1] == [9344, 3.276098]
-    # a run with no parsable eval simply has no curve
+    # a run with no eval dirs at all simply has no curve
     _terminal_run(tmp_path, "speedrun-2", ending="merged")
     assert _curve_from_eval(run_dir(tmp_path, "speedrun-2")) == []
+
+
+def test_curve_falls_back_to_the_best_launch(tmp_path: Path) -> None:
+    """A run that launched experiments but never submitted (no candidate
+    eval) shows its best launch's curve, so its agent stays on the panel."""
+    from autoresearch.climbboard import _curve_from_eval
+
+    _terminal_run(tmp_path, "speedrun-3")
+    rd = run_dir(tmp_path, "speedrun-3")
+    worse = rd / "eval-launch-wide"
+    worse.mkdir()
+    (worse / "stdout").write_text("step 128 val loss 5.0\nstep 256 val loss 4.8\n")
+    better = rd / "eval-launch-deep"
+    better.mkdir()
+    (better / "stdout").write_text("step 128 val loss 4.9\nstep 256 val loss 3.9\n")
+    # no candidate eval -> the best (lowest final) launch is used
+    assert _curve_from_eval(rd) == [[128, 4.9], [256, 3.9]]
+
+
+def test_merge_curves_caps_five_per_agent(tmp_path: Path) -> None:
+    from autoresearch.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)  # no published curves yet
+
+    rows = [{"run_id": f"a{i}", "agent": "agent-01"} for i in range(8)] + [
+        {"run_id": f"b{i}", "agent": "agent-02"} for i in range(3)
+    ]
+    curves = {r["run_id"]: [[1, 1.0]] for r in rows}
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: curves.get(rid, []))
+    assert merged is not None
+    kept = merged["data"]
+    a_kept = [k for k in kept if k.startswith("a")]
+    b_kept = [k for k in kept if k.startswith("b")]
+    assert len(a_kept) == MAX_CURVE_RUNS_PER_AGENT  # newest 5 of agent-01's 8
+    assert set(a_kept) == {"a3", "a4", "a5", "a6", "a7"}  # the newest
+    assert len(b_kept) == 3  # agent-02 had only 3
+
+
+def test_curveless_rows_do_not_consume_the_per_agent_quota(tmp_path: Path) -> None:
+    """An attempt with no curve must not spend one of an agent's five slots —
+    the fifth CURVE should still be kept even behind curveless newer rows."""
+    from autoresearch.climbboard import _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)
+
+    # newest four rows have no curve; the five older rows do
+    rows = [{"run_id": f"c{i}", "agent": "agent-01"} for i in range(5)] + [
+        {"run_id": f"n{i}", "agent": "agent-01"} for i in range(4)
+    ]
+    have = {f"c{i}": [[1, 1.0]] for i in range(5)}  # only the c-rows have curves
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: have.get(rid, []))
+    assert merged is not None
+    assert set(merged["data"]) == {"c0", "c1", "c2", "c3", "c4"}  # all five curves kept
+
+
+def test_quiet_agent_curve_survives_a_busy_agent(tmp_path: Path) -> None:
+    """A quiet agent whose only row sits far down the list still keeps its
+    curve — the per-agent cap is applied across ALL rows, not a global slice."""
+    from autoresearch.climbboard import _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)
+
+    rows = [{"run_id": "quiet", "agent": "agent-09"}] + [
+        {"run_id": f"busy{i}", "agent": "agent-01"} for i in range(300)
+    ]
+    curves = {r["run_id"]: [[1, 1.0]] for r in rows}
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: curves[rid])
+    assert merged is not None
+    assert "quiet" in merged["data"]  # not buried by 300 busy rows
+
+
+def test_every_agent_is_kept_beyond_any_total_ceiling(tmp_path: Path) -> None:
+    """No global total ceiling drops an agent: 40 agents * 5 curves = 200 are
+    all kept (the per-agent cap is the only bound)."""
+    from autoresearch.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)
+
+    rows = [
+        {"run_id": f"a{a}-r{i}", "agent": f"agent-{a:02d}"}
+        for a in range(40)
+        for i in range(6)  # six each; the cap keeps five
+    ]
+    curves = {r["run_id"]: [[1, 1.0]] for r in rows}
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: curves[rid])
+    assert merged is not None
+    agents_kept = {k.split("-r")[0] for k in merged["data"]}
+    assert len(agents_kept) == 40  # every agent represented
+    assert len(merged["data"]) == 40 * MAX_CURVE_RUNS_PER_AGENT
 
 
 def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:

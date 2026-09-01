@@ -36,7 +36,10 @@ BOARD_BRANCH = "research-log"
 MAX_HYPOTHESIS_CHARS = 160
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
-MAX_CURVE_RUNS = 150  # curves are heavy; the newest runs keep theirs
+MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
+# busy agent cannot crowd the panel AND every active agent stays represented
+# (this per-agent cap is the whole bound — no global total ceiling, which
+# would drop the oldest agent once agents * 5 exceeded it)
 MAX_ROWS_PER_BENCHMARK = 2000
 
 
@@ -101,25 +104,11 @@ _CURVE_LINE = re.compile(
 MAX_CURVE_STDOUT_BYTES = 32 * 1024 * 1024
 
 
-def _curve_from_eval(run_directory: Path) -> list[list[float]]:
-    """(step, val loss) points parsed from the newest candidate eval's
-    stdout, downsampled — the training curve behind the row's number.
+def _parse_curve_stdout(stdout_path: Path) -> list[list[float]]:
+    """(step, val loss) points parsed from an eval's stdout, downsampled.
     steps.jsonl dies with the job's scratch; stdout is what survives."""
-
-    def mtime(d: Path) -> float:
-        try:
-            return d.stat().st_mtime
-        except OSError:
-            return 0.0  # vanished between glob and sort: sorts oldest, still readable-guarded
-
-    evals = sorted(
-        (d for d in run_directory.glob("eval-candidate-*") if (d / "stdout").is_file()),
-        key=mtime,
-    )
-    if not evals:
-        return []
     try:
-        with (evals[-1] / "stdout").open("rb") as fh:
+        with stdout_path.open("rb") as fh:
             # a byte-mode bounded read caps memory whatever the content — a
             # text-mode read counts characters and 4-byte UTF-8 overshoots 4x
             raw = fh.read(MAX_CURVE_STDOUT_BYTES + 1)
@@ -140,6 +129,43 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
         stride = len(points) / (MAX_CURVE_POINTS - 1)
         points = [points[int(i * stride)] for i in range(MAX_CURVE_POINTS - 1)] + [points[-1]]
     return points
+
+
+def _curve_from_eval(run_directory: Path) -> list[list[float]]:
+    """The training curve behind a run's row: the newest CANDIDATE eval when
+    the run submitted, else the run's best LAUNCH experiment (lowest final
+    val loss). Without the launch fallback a run that tested experiments
+    but did not submit would show no curve, and its agent would vanish from
+    the panel."""
+
+    def mtime(d: Path) -> float:
+        try:
+            return d.stat().st_mtime
+        except OSError:
+            return 0.0  # vanished between glob and sort: sorts oldest, still readable-guarded
+
+    candidates = sorted(
+        (d for d in run_directory.glob("eval-candidate-*") if (d / "stdout").is_file()),
+        key=mtime,
+    )
+    if candidates:
+        points = _parse_curve_stdout(candidates[-1] / "stdout")
+        if points:
+            return points
+        # a candidate whose stdout has no parsable points falls through to
+        # the launch fallback rather than leaving the run curveless
+    # launch fallback: the experiment the agent did best on (lowest final val
+    # loss — a display heuristic for the min-oriented speedrun curve, not a
+    # credited measurement)
+    best: list[list[float]] = []
+    best_final: float | None = None
+    for d in run_directory.glob("eval-launch-*"):
+        if not (d / "stdout").is_file():
+            continue
+        points = _parse_curve_stdout(d / "stdout")
+        if points and (best_final is None or points[-1][1] < best_final):
+            best_final, best = points[-1][1], points
+    return best
 
 
 def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
@@ -537,7 +563,15 @@ def render_html(
         "  cb.onchange = draw; ob.onchange = draw; draw(); redraws.push(draw);\n"
         "  // the training curves behind the numbers: newest attempts overlaid\n"
         "  const bcurves = data.curves[b] || {};\n"
-        "  const withCurve = rows.filter(r => bcurves[r.run_id]).slice(-8);\n"
+        "  // newest curves, capped per agent so every agent stays on the panel\n"
+        "  // (rows are oldest-first; walk newest-first, keep <=5 per agent)\n"
+        "  const perAgent = {}; const picked = [];\n"
+        "  for (let i = rows.length - 1; i >= 0; i--) {\n"
+        "    const r = rows[i]; if (!bcurves[r.run_id]) continue;\n"
+        "    perAgent[r.agent] = (perAgent[r.agent] || 0) + 1;\n"
+        "    if (perAgent[r.agent] <= 5) picked.push(r);\n"
+        "  }\n"
+        "  const withCurve = picked.reverse();\n"
         "  if (withCurve.length) {\n"
         "    const h3 = document.createElement('h2');\n"
         "    h3.textContent = b + ' — training curves (newest attempts)';\n"
@@ -953,12 +987,23 @@ def _merge_curves(
             log.warning("board curves malformed for %s; skipped", benchmark)
             return None
         published = {str(k): v for k, v in data.items()}
-    keep = [str(r.get("run_id")) for r in rows[-MAX_CURVE_RUNS:]]
+    # keep the newest curves, at most MAX_CURVE_RUNS_PER_AGENT per agent so
+    # one busy agent cannot crowd out the others. Walk ALL rows newest-first
+    # (no global pre-slice — that could bury a quiet agent whose rows all sit
+    # past the cut), and count the quota only for rows that ACTUALLY have a
+    # curve (a curveless attempt must not spend an agent's five slots).
+    per_agent: dict[str, int] = {}
     merged: dict[str, list[list[float]]] = {}
-    for run_id in keep:
+    for r in reversed(rows):
+        agent = str(r.get("agent") or "")
+        if per_agent.get(agent, 0) >= MAX_CURVE_RUNS_PER_AGENT:
+            continue
+        run_id = str(r.get("run_id"))
         curve = published.get(run_id) or fresh_for(run_id)
-        if curve:
-            merged[run_id] = curve
+        if not curve:
+            continue
+        per_agent[agent] = per_agent.get(agent, 0) + 1
+        merged[run_id] = curve
     return {"data": merged, "changed": merged != published}
 
 
