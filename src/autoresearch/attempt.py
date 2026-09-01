@@ -2776,10 +2776,20 @@ def main() -> int:
     # on a --resume wake instead, so they are optional (validated below).
     parser.add_argument("--target", default="")
     parser.add_argument("--benchmark", default="")
+
     # WIDTH: the tick assigns each concurrent slot its own agent identity;
     # branches, ledger rows, and reports key on it. Resumed runs inherit
     # the identity from their record instead.
-    parser.add_argument("--agent-id", default="agent-01")
+    def _agent_id(value: str) -> str:
+        # the id shapes refs (feat/auto/<id>/<run>, agents/<id>): slug only —
+        # same rule the line checkout enforces
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value):
+            raise argparse.ArgumentTypeError(
+                f"agent id {value!r} cannot shape a git ref (want [A-Za-z0-9][A-Za-z0-9_-]*)"
+            )
+        return value
+
+    parser.add_argument("--agent-id", default="agent-01", type=_agent_id)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument(
         "--resume",
