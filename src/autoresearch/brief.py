@@ -382,12 +382,15 @@ def render(brief: SessionBrief) -> str:
             "output and any artifacts delivered under .autoresearch/results/. "
             "Your git remote refs (origin/*) are refreshed at every wake, so "
             "after a sleep you can read the current state of the base branch "
-            "and sibling branches locally:",
+            "and sibling branches locally; `sync` refreshes them mid-session "
+            "instead, waiting for the kernel's next cycle (up to ~35 min) "
+            "inside your own session time — it costs no budget:",
             "",
             "    python .autoresearch/syscall launch --name <handle> "
             "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",
             "    python .autoresearch/syscall submit [--minutes <N>]",
             "    python .autoresearch/syscall siblings",
+            "    python .autoresearch/syscall sync",
             "    python .autoresearch/syscall sleep",
             "",
             *(

@@ -3263,3 +3263,88 @@ def test_service_in_review_wakes_a_conflicted_pr_without_comments(tmp_path: Path
     )
     _ended, submitted = service_in_review(tmp_path, G(), compute, spec, NOW)
     assert submitted == [("r-dirty", "4243")]  # the already-woken head is skipped
+
+
+def test_sync_is_serviced_even_without_followup_servicing(tmp_path: Path, monkeypatch) -> None:
+    """service_syncs runs from the tick when followup_spec is set, regardless
+    of github/contract — the gate the review flagged."""
+    import autoresearch.tick as tick_mod
+
+    calls = []
+    monkeypatch.setattr(
+        tick_mod, "service_syncs", lambda root, spec, now: calls.append((root, spec, now))
+    )
+    spec = tick_mod.FollowupSpec(
+        account="a",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img.sif",
+        home=Path("/home/x/autoresearch"),
+        target="org/pilot",
+        pat_file="/tmp/pat",
+    )
+    # github=None: follow-up/board servicing is OFF, but sync must still run
+    tick_mod.tick(
+        tmp_path,
+        FakeSlurm(states={}).compute(),
+        RecordingDispatcher(),
+        now=1000.0,
+        github=None,
+        followup_spec=spec,
+    )
+    assert calls and calls[0][1] is spec
+
+
+def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) -> None:
+    """A live implementing run's sync request gets a pinned-URL fetch and a
+    done stamp; ended runs and unrequested workspaces are untouched."""
+    import subprocess
+
+    from autoresearch.runstate import RunRecord, run_dir, save_record
+    from autoresearch.syscall import SYSCALL_DIR, sync_requested
+    from autoresearch.tick import service_syncs
+
+    def _g(cwd, *args):
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+        ).stdout
+
+    seed = tmp_path / "seed"
+    (seed / "docs").mkdir(parents=True)
+    (seed / "docs" / "a.md").write_text("v1\n")
+    _g(tmp_path, "init", "-q", "-b", "main", str(seed))
+    _g(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _g(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed")
+    bare = tmp_path / "origin.git"
+    _g(tmp_path, "clone", "-q", "--bare", str(seed), str(bare))
+
+    record = RunRecord(
+        run_id="r-live",
+        target="org/pilot",
+        task_title="t",
+        state="implementing",
+        benchmark="tsp",
+    )
+    save_record(tmp_path, record, 1.0)
+    ws = run_dir(tmp_path, "r-live") / "ws"
+    ws.parent.mkdir(parents=True, exist_ok=True)
+    _g(tmp_path, "clone", "-q", str(bare), str(ws))
+    (ws / SYSCALL_DIR).mkdir()
+    (ws / SYSCALL_DIR / "sync-request").touch()
+
+    # main moves after the clone
+    mover = tmp_path / "mover"
+    _g(tmp_path, "clone", "-q", str(bare), str(mover))
+    (mover / "docs" / "b.md").write_text("new\n")
+    _g(mover, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _g(mover, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "moves")
+    _g(mover, "push", "-q", "origin", "main")
+
+    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda t: str(bare))
+
+    class Spec:
+        pat_file = ""
+
+    service_syncs(tmp_path, Spec(), 2.0)
+    assert sync_requested(ws) is None  # done stamped
+    assert _g(ws, "show", "origin/main:docs/b.md").strip() == "new"

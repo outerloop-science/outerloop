@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -786,3 +787,80 @@ def render_refusal(reason: str, *, launches_remaining: int, sleeps_remaining: in
         f"Budgets: {launches_remaining} launches and {sleeps_remaining} sleeps "
         "remaining. Adjust your plan and conclude honestly if the budget is gone."
     )
+
+
+# Mid-leg sync (owner design 2026-09-01): a session may ask for fresh
+# origin/* refs WITHOUT sleeping. The request is a marker file; the tick
+# fetches (canonical URL) and stamps the done marker; the session polls,
+# paying the wait from ITS OWN clock — no new session leg, so no budget
+# and no session-clock refresh (a free sync would otherwise be the
+# checkpoint-forever exploit sleep_k closes).
+SYNC_REQUEST = "sync-request"
+SYNC_DONE = "sync-done"
+
+
+def _channel_fd(workspace: Path) -> int:
+    """A dir fd for the syscall channel, opened O_NOFOLLOW so a session that
+    replaced .autoresearch with a symlink cannot escape the workspace — all
+    marker IO is then relative to this fd, never a re-resolved path."""
+    return os.open(workspace / SYSCALL_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _read_done(dirfd: int) -> float:
+    """The mtime the kernel last acknowledged (stored as marker CONTENT, so
+    no mtime games: hard-linking the marker cannot change another file's
+    times, because the kernel never calls utime)."""
+    try:
+        fd = os.open(SYNC_DONE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
+    except OSError:
+        return 0.0
+    try:
+        return float(os.read(fd, 64).decode() or 0)
+    except (OSError, ValueError):
+        return 0.0
+    finally:
+        os.close(fd)
+
+
+def sync_requested(workspace: Path) -> float | None:
+    """The pending request's mtime, or None. Passed back to mark_synced so
+    the done marker acknowledges exactly the serviced request — one arriving
+    mid-fetch stays newer and re-fires. A symlinked channel or request is
+    refused (returns None), never followed."""
+    try:
+        dirfd = _channel_fd(workspace)
+    except OSError:
+        return None
+    try:
+        try:
+            st = os.stat(SYNC_REQUEST, dir_fd=dirfd, follow_symlinks=False)
+        except OSError:
+            return None
+        req_m = st.st_mtime
+        return req_m if req_m > _read_done(dirfd) else None
+    finally:
+        os.close(dirfd)
+
+
+def mark_synced(workspace: Path, at: float) -> None:
+    """Record the serviced request's mtime as the done marker's CONTENT,
+    written to a fresh temp inode and renamed into place — all relative to a
+    O_NOFOLLOW channel fd. No utime (so a hard-linked marker cannot touch
+    another file), no write through a planted symlink (O_NOFOLLOW create),
+    no parent-symlink escape (the channel fd was opened O_NOFOLLOW), and the
+    rename is atomic."""
+    dirfd = _channel_fd(workspace)
+    try:
+        # O_EXCL + an unguessable name: never open (and O_TRUNC) an existing
+        # inode. A session that hard-links a victim file to the temp name
+        # would otherwise have it truncated — O_EXCL fails on any pre-existing
+        # name instead, and O_NOFOLLOW refuses a symlink.
+        tmp = f".{SYNC_DONE}.{os.urandom(8).hex()}"
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644, dir_fd=dirfd)
+        try:
+            os.write(fd, f"{at!r}".encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, SYNC_DONE, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+    finally:
+        os.close(dirfd)

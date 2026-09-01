@@ -381,8 +381,61 @@ def build_parser() -> argparse.ArgumentParser:
         "siblings",
         help="what the other agents were working on as of this session's start",
     )
+    sync_p = sub.add_parser(
+        "sync",
+        help="refresh origin/* refs now, waiting inside this session "
+        "(up to one kernel cycle; refs also refresh free at every wake)",
+    )
+    sync_p.add_argument(
+        "--minutes",
+        type=int,
+        default=35,
+        help="how long to wait before giving up (0 = probe and return)",
+    )
     sub.add_parser("cancel", help="discard the staged request")
     return p
+
+
+def cmd_sync(root: Path, args) -> str:
+    """Ask the kernel for fresh origin/* refs and wait, inside this session's
+    own clock. The kernel acts on its next cycle (cadence up to 30 minutes),
+    so the default wait covers one full cycle; a timeout is not an error —
+    the refs refresh at the next wake regardless. Stdlib only: this file is
+    copied into workspaces standalone, so the marker names are inlined
+    (kernel counterparts live in autoresearch.syscall)."""
+    import time
+
+    channel = root / ".autoresearch"
+    done = channel / "sync-done"
+    request = channel / "sync-request"
+    request.touch()
+    started = request.stat().st_mtime
+    minutes = getattr(args, "minutes", None)
+    deadline = time.time() + 60 * int(35 if minutes is None else minutes)
+
+    def acknowledged() -> bool:
+        # the kernel writes the serviced request's mtime as the marker's
+        # content; ours is acknowledged once that is >= our request time
+        try:
+            return float(done.read_text() or 0) >= started
+        except (OSError, ValueError):
+            return False
+
+    while True:
+        # check FIRST: an already-stamped completion (or --minutes 0 as a
+        # pure probe) must be seen before any deadline math
+        if acknowledged():
+            return (
+                "origin/* refs refreshed — read the base branch and "
+                "sibling branches from your local refs."
+            )
+        if time.time() >= deadline:
+            return (
+                "sync timed out waiting for the kernel's next cycle; "
+                "continuing with current refs (they refresh at your next "
+                "wake regardless)."
+            )
+        time.sleep(15)
 
 
 def cmd_siblings(root: Path, _args) -> str:
@@ -448,6 +501,7 @@ _HANDLERS = {
     "conclude": cmd_conclude,
     "reports": cmd_reports,
     "siblings": cmd_siblings,
+    "sync": cmd_sync,
     "status": cmd_status,
     "cancel": cmd_cancel,
 }

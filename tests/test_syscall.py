@@ -785,3 +785,125 @@ def test_parse_elapsed_reads_sacct_fields() -> None:
     assert parse_elapsed("05:00") == 300
     assert parse_elapsed("") is None and parse_elapsed("INVALID") is None
     assert parse_elapsed("x-01:00:00") is None
+
+
+def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
+    """The verb touches the request, then blocks until the kernel stamps
+    done — the wait is the session's own time, never a new leg."""
+    import threading
+    import time as _time
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+    from autoresearch.syscall_cli import cmd_sync
+
+    (tmp_path / SYSCALL_DIR).mkdir()
+
+    class A:
+        minutes = 1
+
+    def stamp_soon():
+        _time.sleep(0.3)
+        mark_synced(tmp_path, _time.time())
+
+    threading.Thread(target=stamp_soon, daemon=True).start()
+    out = cmd_sync(tmp_path, A())
+    assert "refreshed" in out
+
+
+def test_sync_cli_times_out_gracefully(tmp_path, monkeypatch) -> None:
+    from autoresearch.syscall import SYSCALL_DIR
+    from autoresearch.syscall_cli import cmd_sync
+
+    (tmp_path / SYSCALL_DIR).mkdir()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    class A:
+        minutes = 0
+
+    out = cmd_sync(tmp_path, A())
+    assert "timed out" in out and "next wake" in out
+
+
+def test_sync_request_tracking(tmp_path) -> None:
+    import os
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced, sync_requested
+
+    ws = tmp_path
+    (ws / SYSCALL_DIR).mkdir()
+    assert sync_requested(ws) is None
+    (ws / SYSCALL_DIR / "sync-request").touch()
+    at = sync_requested(ws)
+    assert at is not None
+    mark_synced(ws, at)
+    assert sync_requested(ws) is None
+    # a request arriving MID-FETCH stays newer: the done stamp acknowledges
+    # only the request it serviced
+    later = at + 5
+    os.utime(ws / SYSCALL_DIR / "sync-request", (later, later))
+    assert sync_requested(ws) == later
+    # a planted symlink at the done marker is replaced, never written
+    # through: the victim is untouched
+    done = ws / SYSCALL_DIR / "sync-done"
+    victim = ws / "victim"
+    done.unlink()
+    done.symlink_to(victim)
+    mark_synced(ws, later)
+    assert not done.is_symlink() and not victim.exists()
+    assert sync_requested(ws) is None
+
+
+def test_mark_synced_never_touches_a_hardlinked_marker(tmp_path) -> None:
+    import os
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+
+    ws = tmp_path
+    (ws / SYSCALL_DIR).mkdir()
+    (ws / SYSCALL_DIR / "sync-request").touch()
+    victim = ws / "victim"
+    victim.write_text("precious")
+    victim_mtime = victim.stat().st_mtime
+    # a session hard-links the marker name to the victim inode
+    os.link(victim, ws / SYSCALL_DIR / "sync-done")
+    mark_synced(ws, 12345.0)
+    # the victim's content and mtime are unchanged: no utime, fresh inode
+    assert victim.read_text() == "precious"
+    assert victim.stat().st_mtime == victim_mtime
+
+
+def test_mark_synced_refuses_a_hardlinked_temp(tmp_path, monkeypatch) -> None:
+    """The temp inode is O_EXCL: a hard link planted at the temp name is not
+    truncated (open fails); the victim survives."""
+    import os as _os
+
+    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+
+    ws = tmp_path
+    (ws / SYSCALL_DIR).mkdir()
+    (ws / SYSCALL_DIR / "sync-request").touch()
+    victim = ws / "victim"
+    victim.write_text("precious")
+    # force a predictable temp name and pre-plant a hard link to the victim
+    monkeypatch.setattr("os.urandom", lambda n: b"\x00" * n)
+    _os.link(victim, ws / SYSCALL_DIR / f".sync-done.{(b'\x00' * 8).hex()}")
+    import contextlib
+
+    with contextlib.suppress(FileExistsError):
+        mark_synced(ws, 1.0)  # O_EXCL refuses the planted link
+    assert victim.read_text() == "precious"  # never truncated
+
+
+def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
+    from autoresearch.syscall import mark_synced, sync_requested
+
+    ws = tmp_path
+    outside = ws / "outside"
+    outside.mkdir()
+    (ws / ".autoresearch").symlink_to(outside)  # channel is a symlink
+    assert sync_requested(ws) is None
+    import contextlib
+
+    with contextlib.suppress(OSError):
+        mark_synced(ws, 1.0)  # refused
+    assert not (outside / "sync-done").exists()  # nothing written outside
