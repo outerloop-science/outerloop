@@ -613,6 +613,43 @@ def test_merge_curves_caps_five_per_agent(tmp_path: Path) -> None:
     assert len(b_kept) == 3  # agent-02 had only 3
 
 
+def test_curveless_rows_do_not_consume_the_per_agent_quota(tmp_path: Path) -> None:
+    """An attempt with no curve must not spend one of an agent's five slots —
+    the fifth CURVE should still be kept even behind curveless newer rows."""
+    from autoresearch.climbboard import _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)
+
+    # newest four rows have no curve; the five older rows do
+    rows = [{"run_id": f"c{i}", "agent": "agent-01"} for i in range(5)] + [
+        {"run_id": f"n{i}", "agent": "agent-01"} for i in range(4)
+    ]
+    have = {f"c{i}": [[1, 1.0]] for i in range(5)}  # only the c-rows have curves
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: have.get(rid, []))
+    assert merged is not None
+    assert set(merged["data"]) == {"c0", "c1", "c2", "c3", "c4"}  # all five curves kept
+
+
+def test_quiet_agent_curve_survives_a_busy_agent(tmp_path: Path) -> None:
+    """A quiet agent whose only row sits far down the list still keeps its
+    curve — the per-agent cap is applied across ALL rows, not a global slice."""
+    from autoresearch.climbboard import _merge_curves
+
+    class _GH:
+        def get_file(self, repo, path, ref):
+            raise _GitHubError(404)
+
+    rows = [{"run_id": "quiet", "agent": "agent-09"}] + [
+        {"run_id": f"busy{i}", "agent": "agent-01"} for i in range(300)
+    ]
+    curves = {r["run_id"]: [[1, 1.0]] for r in rows}
+    merged = _merge_curves(_GH(), "o/r", "speedrun", rows, lambda rid: curves[rid])
+    assert merged is not None
+    assert "quiet" in merged["data"]  # not buried by 300 busy rows
+
+
 def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
     """A 400-nines 'loss' parses as float inf and a 400-digit step exceeds
     JS-safe integers; both skip the point, not the curve."""

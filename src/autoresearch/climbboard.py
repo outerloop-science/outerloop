@@ -133,9 +133,9 @@ def _parse_curve_stdout(stdout_path: Path) -> list[list[float]]:
 def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     """The training curve behind a run's row: the newest CANDIDATE eval when
     the run submitted, else the run's best LAUNCH experiment (lowest final
-    val loss). Without the launch fallback a run that measured experiments
-    but declined to submit — the common launch-first-then-negative case —
-    would show no curve, and its agent would vanish from the panel."""
+    val loss). Without the launch fallback a run that tested experiments
+    but did not submit would show no curve, and its agent would vanish from
+    the panel."""
 
     def mtime(d: Path) -> float:
         try:
@@ -148,7 +148,11 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
         key=mtime,
     )
     if candidates:
-        return _parse_curve_stdout(candidates[-1] / "stdout")
+        points = _parse_curve_stdout(candidates[-1] / "stdout")
+        if points:
+            return points
+        # a candidate whose stdout has no parsable points falls through to
+        # the launch fallback rather than leaving the run curveless
     # launch fallback: the experiment the agent did best on (lowest final val
     # loss — a display heuristic for the min-oriented speedrun curve, not a
     # credited measurement)
@@ -982,20 +986,25 @@ def _merge_curves(
             log.warning("board curves malformed for %s; skipped", benchmark)
             return None
         published = {str(k): v for k, v in data.items()}
-    # keep the newest curves, but at most MAX_CURVE_RUNS_PER_AGENT per agent
-    # so one busy agent cannot crowd out the others (rows are oldest-first)
+    # keep the newest curves, at most MAX_CURVE_RUNS_PER_AGENT per agent so
+    # one busy agent cannot crowd out the others. Walk ALL rows newest-first
+    # (no global pre-slice — that could bury a quiet agent whose rows all sit
+    # past the cut), and count the quota only for rows that ACTUALLY have a
+    # curve (a curveless attempt must not spend an agent's five slots).
     per_agent: dict[str, int] = {}
-    keep: list[str] = []
-    for r in reversed(rows[-MAX_CURVE_RUNS:]):
-        agent = str(r.get("agent") or "")
-        per_agent[agent] = per_agent.get(agent, 0) + 1
-        if per_agent[agent] <= MAX_CURVE_RUNS_PER_AGENT:
-            keep.append(str(r.get("run_id")))
     merged: dict[str, list[list[float]]] = {}
-    for run_id in keep:
+    for r in reversed(rows):
+        if len(merged) >= MAX_CURVE_RUNS:
+            break  # total safety ceiling
+        agent = str(r.get("agent") or "")
+        if per_agent.get(agent, 0) >= MAX_CURVE_RUNS_PER_AGENT:
+            continue
+        run_id = str(r.get("run_id"))
         curve = published.get(run_id) or fresh_for(run_id)
-        if curve:
-            merged[run_id] = curve
+        if not curve:
+            continue
+        per_agent[agent] = per_agent.get(agent, 0) + 1
+        merged[run_id] = curve
     return {"data": merged, "changed": merged != published}
 
 
