@@ -69,6 +69,8 @@ def test_token_mints_caches_and_refreshes() -> None:
     clock["t"] += 400  # now within 5 min of expiry
     assert p.token() == "ghs_2"
     assert len(calls) == 2
+    # both minted tokens are remembered for write-time redaction sets
+    assert p.issued() == ("ghs_1", "ghs_2")
 
 
 def test_token_rejects_a_bodyless_response() -> None:

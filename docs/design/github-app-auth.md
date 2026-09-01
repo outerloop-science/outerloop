@@ -76,6 +76,15 @@ tokens are short-lived, `git_network` already resolves the credential
 per-invocation (it calls `auth.token()` each time), so a token that expired
 between operations is simply re-minted on the next call. No git-path change.
 
+## Redaction across refreshes
+
+Call sites today build a fixed secrets tuple from one `bot_auth.token()`
+snapshot — safe with an immortal PAT, stale the moment the App provider mints
+a refresh mid-run. The provider therefore remembers every token it has ever
+issued (`issued()`), and **cutover must rebuild redaction sets from
+`issued()` at write time** (report publish, session output, best-effort
+logging), not from a value captured at construction.
+
 ## Identity
 
 Commits and comments shift from the `agentic-learning-bot` account to

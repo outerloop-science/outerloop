@@ -104,6 +104,10 @@ class AppInstallationTokenProvider:
         self._now = now
         self._token = ""
         self._expiry = 0.0
+        # every token ever minted this process — the PAT was one immortal
+        # string, but these rotate ~hourly, so a redaction set snapshotted at
+        # construction goes stale; redaction must pull issued() at write time
+        self._issued: list[str] = []
 
     def token(self) -> str:
         now = self._now()
@@ -123,6 +127,7 @@ class AppInstallationTokenProvider:
         if not isinstance(body, dict) or not body.get("token"):
             raise ValueError("installation-token response missing a token")
         self._token = str(body["token"])
+        self._issued.append(self._token)
         expires_at = body.get("expires_at")
         # a missing/garbled expiry is treated as immediate — safe: we simply
         # re-mint on every call rather than trust an unknown lifetime
@@ -131,6 +136,11 @@ class AppInstallationTokenProvider:
         except ValueError:
             self._expiry = now
         return self._token
+
+    def issued(self) -> tuple[str, ...]:
+        """Every token this provider has minted, for redaction sets built at
+        write time — a set snapshotted at construction misses refreshes."""
+        return tuple(self._issued)
 
 
 def signer_from_private_key(pem_path: Path) -> Signer:
