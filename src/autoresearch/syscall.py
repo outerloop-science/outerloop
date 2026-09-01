@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -798,19 +799,29 @@ SYNC_REQUEST = "sync-request"
 SYNC_DONE = "sync-done"
 
 
-def sync_requested(workspace: Path) -> bool:
-    """A sync request newer than the last done marker."""
+def sync_requested(workspace: Path) -> float | None:
+    """The pending request's mtime, or None. The caller passes it back to
+    mark_synced so the done stamp acknowledges exactly the request that was
+    serviced — a request arriving mid-fetch stays newer and re-fires."""
     req = workspace / SYSCALL_DIR / SYNC_REQUEST
     done = workspace / SYSCALL_DIR / SYNC_DONE
     try:
         req_m = req.stat().st_mtime
     except OSError:
-        return False
+        return None
     try:
-        return req_m > done.stat().st_mtime
+        return req_m if req_m > done.stat().st_mtime else None
     except OSError:
-        return True
+        return req_m
 
 
-def mark_synced(workspace: Path) -> None:
-    (workspace / SYSCALL_DIR / SYNC_DONE).touch()
+def mark_synced(workspace: Path, at: float) -> None:
+    """Stamp the done marker AT the serviced request's mtime. The marker
+    lives in a session-writable dir: never follow a planted symlink (the
+    kernel would write through it), replace it."""
+    done = workspace / SYSCALL_DIR / SYNC_DONE
+    if done.is_symlink():
+        done.unlink()
+    fd = os.open(done, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
+    os.close(fd)
+    os.utime(done, (at, at))

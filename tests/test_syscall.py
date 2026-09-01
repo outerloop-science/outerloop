@@ -803,7 +803,7 @@ def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
 
     def stamp_soon():
         _time.sleep(0.3)
-        mark_synced(tmp_path)
+        mark_synced(tmp_path, _time.time())
 
     threading.Thread(target=stamp_soon, daemon=True).start()
     out = cmd_sync(tmp_path, A())
@@ -826,18 +826,27 @@ def test_sync_cli_times_out_gracefully(tmp_path, monkeypatch) -> None:
 
 def test_sync_request_tracking(tmp_path) -> None:
     import os
-    import time as _time
 
     from autoresearch.syscall import SYSCALL_DIR, mark_synced, sync_requested
 
     ws = tmp_path
     (ws / SYSCALL_DIR).mkdir()
-    assert not sync_requested(ws)
+    assert sync_requested(ws) is None
     (ws / SYSCALL_DIR / "sync-request").touch()
-    assert sync_requested(ws)
-    mark_synced(ws)
-    assert not sync_requested(ws)
-    # a NEWER request re-arms
-    later = _time.time() + 5
+    at = sync_requested(ws)
+    assert at is not None
+    mark_synced(ws, at)
+    assert sync_requested(ws) is None
+    # a request arriving MID-FETCH stays newer: the done stamp acknowledges
+    # only the request it serviced
+    later = at + 5
     os.utime(ws / SYSCALL_DIR / "sync-request", (later, later))
-    assert sync_requested(ws)
+    assert sync_requested(ws) == later
+    # and a planted symlink is replaced, never written through
+    done = ws / SYSCALL_DIR / "sync-done"
+    victim = ws / "victim"
+    done.unlink()
+    done.symlink_to(victim)
+    mark_synced(ws, later)
+    assert not done.is_symlink() and not victim.exists()
+    assert sync_requested(ws) is None

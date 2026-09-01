@@ -1530,7 +1530,10 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
         if record.state != IMPLEMENTING:
             continue
         workspace = run_dir(root, record.run_id) / "ws"
-        if not workspace.is_dir() or not sync_requested(workspace):
+        if not workspace.is_dir():
+            continue
+        requested_at = sync_requested(workspace)
+        if requested_at is None:
             continue
         try:
             ws = Workspace(
@@ -1539,7 +1542,7 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
                 url=_target_clone_url(record.target),
             )
             ws.fetch_origin()
-            mark_synced(workspace)
+            mark_synced(workspace, requested_at)
             log.info("synced origin refs for %s", record.run_id)
         except Exception as exc:
             log.warning("sync failed for %s: %s", record.run_id, exc)

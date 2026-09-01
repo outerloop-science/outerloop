@@ -3316,5 +3316,5 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
         pat_file = ""
 
     service_syncs(tmp_path, Spec(), 2.0)
-    assert not sync_requested(ws)  # done stamped
+    assert sync_requested(ws) is None  # done stamped
     assert _g(ws, "show", "origin/main:docs/b.md").strip() == "new"

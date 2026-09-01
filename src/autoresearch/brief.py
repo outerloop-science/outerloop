@@ -383,7 +383,7 @@ def render(brief: SessionBrief) -> str:
             "Your git remote refs (origin/*) are refreshed at every wake, so "
             "after a sleep you can read the current state of the base branch "
             "and sibling branches locally; `sync` refreshes them mid-session "
-            "instead, waiting for the kernel's next cycle (up to ~15 min) "
+            "instead, waiting for the kernel's next cycle (up to ~35 min) "
             "inside your own session time — it costs no budget:",
             "",
             "    python .autoresearch/syscall launch --name <handle> "

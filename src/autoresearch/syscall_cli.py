@@ -384,30 +384,37 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p = sub.add_parser(
         "sync",
         help="refresh origin/* refs now, waiting inside this session "
-        "(up to ~15 min; refs also refresh free at every wake)",
+        "(up to one kernel cycle; refs also refresh free at every wake)",
     )
-    sync_p.add_argument("--minutes", type=int, default=18, help="how long to wait before giving up")
+    sync_p.add_argument(
+        "--minutes",
+        type=int,
+        default=35,
+        help="how long to wait before giving up (0 = probe and return)",
+    )
     sub.add_parser("cancel", help="discard the staged request")
     return p
 
 
 def cmd_sync(root: Path, args) -> str:
     """Ask the kernel for fresh origin/* refs and wait, inside this session's
-    own clock. The kernel acts on its next cycle, so this can take up to
-    ~15 minutes; a timeout is not an error — the refs refresh at the next
-    wake regardless."""
+    own clock. The kernel acts on its next cycle (cadence up to 30 minutes),
+    so the default wait covers one full cycle; a timeout is not an error —
+    the refs refresh at the next wake regardless. Stdlib only: this file is
+    copied into workspaces standalone, so the marker names are inlined
+    (kernel counterparts live in autoresearch.syscall)."""
     import time
 
-    from autoresearch.syscall import SYNC_DONE, SYNC_REQUEST, SYSCALL_DIR
-
-    channel = root / SYSCALL_DIR
-    done = channel / SYNC_DONE
-    request = channel / SYNC_REQUEST
+    channel = root / ".autoresearch"
+    done = channel / "sync-done"
+    request = channel / "sync-request"
     request.touch()
     started = request.stat().st_mtime
     minutes = getattr(args, "minutes", None)
-    deadline = time.time() + 60 * int(18 if minutes is None else minutes)
-    while time.time() < deadline:
+    deadline = time.time() + 60 * int(35 if minutes is None else minutes)
+    while True:
+        # check FIRST: an already-stamped completion (or --minutes 0 as a
+        # pure probe) must be seen before any deadline math
         try:
             if done.stat().st_mtime >= started:
                 return (
@@ -416,11 +423,13 @@ def cmd_sync(root: Path, args) -> str:
                 )
         except OSError:
             pass
+        if time.time() >= deadline:
+            return (
+                "sync timed out waiting for the kernel's next cycle; "
+                "continuing with current refs (they refresh at your next "
+                "wake regardless)."
+            )
         time.sleep(15)
-    return (
-        "sync timed out waiting for the kernel's next cycle; continuing "
-        "with current refs (they refresh at your next wake regardless)."
-    )
 
 
 def cmd_siblings(root: Path, _args) -> str:
