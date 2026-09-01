@@ -38,6 +38,9 @@ log = logging.getLogger(__name__)
 
 API = "https://api.github.com"
 NETWORK_GIT_COMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
+# a remote that accepts the connection but never finishes must not hang the
+# wake forever (the run would sit blocked until Slurm's walltime kill)
+NETWORK_GIT_TIMEOUT_S = 900
 # Settings a session could add to .git/config that make git spawn a child
 # process; neutralized on every credentialed invocation.
 SAFE_GIT_FLAGS = (
@@ -862,7 +865,14 @@ def _ensure_regular_config(root: Path | None) -> None:
     untouched (a cheap lstat and, at most, one small read)."""
     if root is None:
         return
-    cfg = root / ".git" / "config"
+    # every session-writable config file git reads under credential: the
+    # main local config and the per-worktree config (extensions.worktreeConfig).
+    # global/system are /dev/null via the env, so this list is exhaustive.
+    for cfg in (root / ".git" / "config", root / ".git" / "config.worktree"):
+        _sanitize_one_config(cfg)
+
+
+def _sanitize_one_config(cfg: Path) -> None:
     try:
         st = os.lstat(cfg)
     except OSError:
@@ -974,8 +984,13 @@ def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     return env
 
 
-def _run_git(args: list[str], env: dict[str, str]) -> str:
-    result = subprocess.run(args, capture_output=True, text=True, env=env, check=False)
+def _run_git(args: list[str], env: dict[str, str], timeout: float | None = None) -> str:
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, env=env, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git timed out after {timeout:.0f}s: {' '.join(args[3:5])}") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         skip = {"-C", "-c"}
@@ -1014,7 +1029,9 @@ class Workspace:
         _ensure_regular_config(self.root)
         token = self.auth.token() if self.auth is not None else None
         return _run_git(
-            ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(token, self.root)
+            ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args],
+            _git_env(token, self.root),
+            timeout=NETWORK_GIT_TIMEOUT_S,
         )
 
     def remote_url(self) -> str:

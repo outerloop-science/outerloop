@@ -4106,3 +4106,33 @@ def test_wake_fetch_survives_a_fifo_config(tmp_path, monkeypatch) -> None:
     # the run completed (did not hang) and origin/main is canonical
     assert outcome.outcome == "no-improvement"
     assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
+
+
+def test_wake_fetch_ignores_worktree_config_rewrite(tmp_path, monkeypatch) -> None:
+    """extensions.worktreeConfig moves url rewrites into .git/config.worktree;
+    the sanitizer strips redirect sections from THAT file too."""
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    ws = state / "runs" / run_id / "ws"
+    bare = tmp_path / f"origin-{run_id}.git"
+    _advance_main(tmp_path, bare, {"docs/news.md": "canonical\n"})
+    decoy = tmp_path / "decoy.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(bare), str(decoy))
+    dwork = tmp_path / "dwork"
+    _git(tmp_path, "clone", "-q", str(decoy), str(dwork))
+    (dwork / "docs" / "news.md").write_text("ATTACKER\n")
+    _git(dwork, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(dwork, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "poison")
+    _git(dwork, "push", "-q", "origin", "main")
+    _git(ws, "config", "--local", "extensions.worktreeConfig", "true")
+    (ws / ".git" / "config.worktree").write_text(f'[url "{decoy}"]\n\tinsteadOf = {bare}\n')
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),  # type: ignore[arg-type]
+        now=1_000_100.0,
+    )
+    assert _git(ws, "show", "origin/main:docs/news.md").strip() == "canonical"
