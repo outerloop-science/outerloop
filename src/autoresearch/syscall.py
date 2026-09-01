@@ -822,6 +822,11 @@ def mark_synced(workspace: Path, at: float) -> None:
     done = workspace / SYSCALL_DIR / SYNC_DONE
     if done.is_symlink():
         done.unlink()
+    # O_NOFOLLOW refuses a planted symlink; then stamp the mtime THROUGH the
+    # fd, never re-resolving the path — a symlink swapped in after open
+    # cannot redirect the utime (the fd is bound to the inode we created)
     fd = os.open(done, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
-    os.close(fd)
-    os.utime(done, (at, at))
+    try:
+        os.utime(fd, (at, at))
+    finally:
+        os.close(fd)
