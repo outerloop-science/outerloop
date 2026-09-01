@@ -1499,6 +1499,7 @@ def tick(
         # AFTER the launch block: a run started this tick is on the strip
         # this tick, not the next one
         service_boards(root, github, spec.target, contract, now)
+        service_syncs(root, spec, now)
         report = replace_report(
             report,
             ended,
@@ -1513,6 +1514,35 @@ def tick(
     # main / mark_tick_complete) — not here with the start-of-tick `now`, which
     # a tick longer than the window would leave stale.
     return report
+
+
+def service_syncs(root: Path, spec: Any, now: float) -> None:
+    """Honor mid-leg sync requests: a LIVE session asked for fresh origin/*
+    refs and is waiting inside its own clock. The fetch pins the canonical
+    URL (never the workspace's mutable remote config) and only refs/remotes
+    are written — safe next to the session's local git use. Best-effort per
+    run; a failure leaves the request standing for the next cycle."""
+    from autoresearch.attempt import _target_clone_url
+    from autoresearch.github import FileTokenProvider, Workspace
+    from autoresearch.syscall import mark_synced, sync_requested
+
+    for record in list_runs(root):
+        if record.state != IMPLEMENTING:
+            continue
+        workspace = run_dir(root, record.run_id) / "ws"
+        if not workspace.is_dir() or not sync_requested(workspace):
+            continue
+        try:
+            ws = Workspace(
+                root=workspace,
+                auth=FileTokenProvider(spec.pat_file) if spec.pat_file else None,
+                url=_target_clone_url(record.target),
+            )
+            ws.fetch_origin()
+            mark_synced(workspace)
+            log.info("synced origin refs for %s", record.run_id)
+        except Exception as exc:
+            log.warning("sync failed for %s: %s", record.run_id, exc)
 
 
 def service_boards(root: Path, github: Any, target: str, contract: Any, now: float) -> None:

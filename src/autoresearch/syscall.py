@@ -786,3 +786,31 @@ def render_refusal(reason: str, *, launches_remaining: int, sleeps_remaining: in
         f"Budgets: {launches_remaining} launches and {sleeps_remaining} sleeps "
         "remaining. Adjust your plan and conclude honestly if the budget is gone."
     )
+
+
+# Mid-leg sync (owner design 2026-09-01): a session may ask for fresh
+# origin/* refs WITHOUT sleeping. The request is a marker file; the tick
+# fetches (canonical URL) and stamps the done marker; the session polls,
+# paying the wait from ITS OWN clock — no new session leg, so no budget
+# and no session-clock refresh (a free sync would otherwise be the
+# checkpoint-forever exploit sleep_k closes).
+SYNC_REQUEST = "sync-request"
+SYNC_DONE = "sync-done"
+
+
+def sync_requested(workspace: Path) -> bool:
+    """A sync request newer than the last done marker."""
+    req = workspace / SYSCALL_DIR / SYNC_REQUEST
+    done = workspace / SYSCALL_DIR / SYNC_DONE
+    try:
+        req_m = req.stat().st_mtime
+    except OSError:
+        return False
+    try:
+        return req_m > done.stat().st_mtime
+    except OSError:
+        return True
+
+
+def mark_synced(workspace: Path) -> None:
+    (workspace / SYSCALL_DIR / SYNC_DONE).touch()
