@@ -124,3 +124,19 @@ def test_quote_command_shell_safety() -> None:
     quoted = quote_command(["python", "-c", "print('hi; rm -rf /')"])
     assert "'" in quoted
     assert quoted.startswith("python -c ")
+
+
+def test_compute_from_env_selects_the_backend(monkeypatch) -> None:
+    """AUTORESEARCH_COMPUTE=local is the monolith switch; anything else —
+    unset, empty, or a typo — stays Slurm (fail toward the real scheduler,
+    never silently toward subprocesses)."""
+    from autoresearch.compute import LocalCompute, SlurmCompute, compute_from_env, local_mode
+
+    monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
+    assert isinstance(compute_from_env(), SlurmCompute) and not local_mode()
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    assert isinstance(compute_from_env(), LocalCompute) and local_mode()
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", " Local ")
+    assert isinstance(compute_from_env(), LocalCompute)
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "lokal")
+    assert isinstance(compute_from_env(), SlurmCompute)

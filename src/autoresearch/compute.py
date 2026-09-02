@@ -136,9 +136,24 @@ class Compute(Protocol):
 
     def submit(self, spec: JobSpec) -> str: ...
     def status(self, job_id: str) -> str: ...
+    def pending_reason(self, job_id: str) -> str: ...
     def active_job_names(self) -> list[str]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
+
+
+def local_mode() -> bool:
+    """AUTORESEARCH_COMPUTE=local selects the monolith: every job a
+    synchronous subprocess of the caller (docs/design/onboarding.md) — the
+    zero-cluster on-ramp and the paper's serialized-baseline ablation. Any
+    other value (or none) is Slurm. This helper is the only reader of the
+    env var, so mode checks cannot drift."""
+    return os.environ.get("AUTORESEARCH_COMPUTE", "").strip().lower() == "local"
+
+
+def compute_from_env() -> SlurmCompute | LocalCompute:
+    """The deployment's compute backend, per `local_mode`."""
+    return LocalCompute() if local_mode() else SlurmCompute()
 
 
 @dataclass
@@ -335,6 +350,9 @@ class LocalCompute:
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
         return self._states.get(job_id, GONE)
+
+    def pending_reason(self, job_id: str) -> str:
+        return ""  # synchronous jobs are terminal at submit — never pending
 
     def active_job_names(self) -> list[str]:
         return []  # synchronous: nothing is ever pending or running

@@ -632,7 +632,7 @@ def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
         return real_tick(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run)
 
     monkeypatch.setattr(tick_mod, "tick", spy)
-    monkeypatch.setattr(tick_mod, "SlurmCompute", lambda: FakeSlurm(states={}).compute())
+    monkeypatch.setattr(tick_mod, "compute_from_env", lambda: FakeSlurm(states={}).compute())
     monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--grace-s", "1"])
     assert tick_mod.main() == 0
     assert captured["grace_s"] == 1.0
@@ -3349,3 +3349,29 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     service_syncs(tmp_path, Spec(), 2.0)
     assert sync_requested(ws) is None  # done stamped
     assert _g(ws, "show", "origin/main:docs/b.md").strip() == "new"
+
+
+def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -> None:
+    """Under AUTORESEARCH_COMPUTE=local the followup service comes up without
+    account/partition (subprocess jobs have no placement); Slurm mode still
+    requires them."""
+    from autoresearch.tick import _followup_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "AUTORESEARCH_IMAGE": str(image),
+        "AUTORESEARCH_HOME": str(tmp_path),
+    }
+    import autoresearch.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is None  # slurm mode: placement required
+    env["AUTORESEARCH_COMPUTE"] = "local"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None
+    assert spec.account == "" and spec.partition == ""

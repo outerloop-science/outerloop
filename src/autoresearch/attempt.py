@@ -545,10 +545,10 @@ def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
     """The cluster coordinates from the CLI, read in ONE place for both the
     fresh climb and the wake (a second constructor drifted once — terra
     #174: the wake dropped the GPU lane)."""
-    from autoresearch.compute import SlurmCompute
+    from autoresearch.compute import compute_from_env
 
     return DispatchSettings(
-        compute=SlurmCompute(),
+        compute=compute_from_env(),
         image=args.image,
         account=args.account,
         partition=args.partition,

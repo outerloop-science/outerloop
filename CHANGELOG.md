@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- `AUTORESEARCH_COMPUTE=local` runs the whole loop without a cluster: jobs
+  become synchronous subprocesses (`LocalCompute` at every seam), Slurm
+  placement env is not required, park-time wake arming yields to the sweep,
+  and `tick --loop` is the foreground chain. The zero-Slurm on-ramp and the
+  serialized-monolith ablation are the same switch (`docs/design/onboarding.md`).
 - The kernel can authenticate as a GitHub App: set `AUTORESEARCH_GITHUB_APP_FILE`
   to a JSON config (`app_id`, `installation_id`, `private_key` path) and every
   role mints short-lived installation tokens instead of reading the bot PAT
