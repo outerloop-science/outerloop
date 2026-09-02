@@ -1610,3 +1610,37 @@ def test_widened_merged_scope_publishes_its_allowed_edit(review_run) -> None:
     assert "Re-measured" in github.posted[0]
     pushed = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/extra/helper.py")
     assert "new-area edit" in pushed
+
+
+def test_workflow_dial_flip_inside_the_stanza_skips_the_remeasure(review_run) -> None:
+    """The LIVE gpt-speedrun#5 shape, exactly: the base flips `lines: true`
+    INSIDE the benchmark stanza. Whole-model equality refused the skip (the
+    dial lives on the Benchmark model); measurement signatures accept it —
+    the dial steers the loop, not what the measured number means."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2n"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        CONTRACT.replace(
+            "    direction: min\n",
+            "    direction: min\n    lines: true\n",
+        )
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "lines flip")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class FailingEvaluator:
+        def evaluate(self, *a, **k):
+            raise AssertionError("a dial flip must not re-measure")
+
+    outcome = respond(root, github, ResumingHarness(merge_base=True), FailingEvaluator())
+    assert outcome.action == "replied"
+    assert "the numbers above stand" in github.posted[0]
+    main_sha = _git(bare, "rev-parse", "main").strip()
+    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha

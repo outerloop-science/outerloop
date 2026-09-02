@@ -132,6 +132,16 @@ class Benchmark(_StrictModel):
     # behavior; the branch substrate is inert until a contract opts in.
     lines: bool = False
 
+    def measurement_signature(self) -> tuple:
+        """The fields that define WHAT this benchmark measures: running
+        `command` with `seed_env` on `gpus` and reading `metric`. Workflow
+        dials (lines, depth_k, sleep_k, cooldown) and crediting policy
+        (direction, floors, baseline mode, display) steer the loop and the
+        gate — they never change what a measured number MEANS, so a claim
+        measured under one set of dials still describes the same quantity
+        under another."""
+        return (self.name, self.command, self.metric, self.seed_env, self.gpus)
+
     @field_validator("seed_env")
     @classmethod
     def _seed_env_never_managed(cls, value: str | None) -> str | None:
