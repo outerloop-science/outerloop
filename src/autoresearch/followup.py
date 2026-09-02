@@ -560,8 +560,13 @@ def _respond(
         a markdown-inert charset (a name can carry backticks, newlines, a
         secret, or the approval phrase), bound each, then run the same secret
         redaction and self-approval scrub as every other reply line."""
+        # redact each RAW name before the length cut: a secret straddling
+        # the boundary would otherwise leak its prefix uncaught
         cleaned = ", ".join(
-            "`" + re.sub(r"[^A-Za-z0-9._/@+-]", "?", p)[:120] + "`" for p in paths[:12]
+            # brackets stay: they cannot close a code span, and the
+            # redaction marker must survive the strip intact
+            "`" + re.sub(r"[^A-Za-z0-9._/@+\[\]-]", "?", redact(p, secrets))[:120] + "`"
+            for p in paths[:12]
         ) + (" …" if len(paths) > 12 else "")
         return APPROVAL_PATTERN.sub(REDACTED, redact(cleaned, secrets))
 

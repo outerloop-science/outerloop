@@ -1699,10 +1699,12 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
     # neutralize the latter two
     hostile = "src/pilot/solvers/x`y\nz.py"
     keyed = "src/pilot/solvers/leak-sk-x-oops.py"  # carries the fixture secret
+    # the secret STRADDLES the 120-char cut: redact must run pre-truncation
+    straddle = "src/pilot/solvers/" + "a" * (120 - len("src/pilot/solvers/") - 2) + "sk-x.py"
     approving = "src/pilot/solvers/approved.py"  # matches APPROVAL_PATTERN
     harness = ResumingHarness(
         merge_base=True,
-        edits={hostile: "evil\n", keyed: "evil\n", approving: "evil\n"},
+        edits={p: "evil\n" for p in (hostile, keyed, approving, straddle)},
     )
     outcome = respond(root, github, harness, ErroringEvaluator())
     assert outcome.action == "replied"
