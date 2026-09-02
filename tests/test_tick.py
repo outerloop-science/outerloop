@@ -3579,6 +3579,23 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     service_in_review(tmp_path, OtherBaseG(), LocalCompute(), spec, NOW, contract=auto)
     assert G.arms == []
 
+    # pending reviewer feedback wins over arming (terra #228 r6): a clean,
+    # eligible PR with a NEW comment services the followup instead
+    class ChattyG(G):
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 990,
+                    "body": "please adjust",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+    rec("r-arm", panel=True)
+    service_in_review(tmp_path, ChattyG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []  # feedback pending: no self-merge
+
     # a DRAFT PR is not a merge candidate, clean or not (terra #228 r3)
     class DraftG(G):
         def get_pull_request(self, repo, number):

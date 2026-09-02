@@ -553,28 +553,6 @@ def service_in_review(
             # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
             # checks AND up-to-date with the CURRENT base — GitHub's own
             # freshness proof), the kernel-read contract STILL says auto, and
-            # the RECORD says the publish was auto-eligible (published under
-            # merge:auto with a panel round — #171's exact arming condition;
-            # a manual publish never consented to self-merging, and contracts
-            # alone cannot prove either fact after a dial flip), arming
-            # self-merges the PR. Running every tick survives any crash
-            # between a sync push and this step; the helper direct-merges
-            # when nothing is pending to arm against.
-            if (
-                not dry_run
-                and not is_steward
-                and record.auto_eligible
-                and contract is not None
-                and pr.get("state") == "open"
-                and not pr.get("merged")
-                and not pr.get("draft")
-                and pr.get("mergeable_state") == "clean"
-                and _base_dial(github, record.target, pr, contract) == "auto"
-            ):
-                try:
-                    github.arm_auto_merge_auto_mode(record.target, _pr_number(record.pr_url))
-                except Exception as exc:
-                    log.warning("auto-arm failed for %s: %s", record.run_id, exc)
             wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the
@@ -584,6 +562,33 @@ def service_in_review(
                 except OSError as exc:
                     log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
             if not has_new_comments(record, github, spec.bot_login) and wake_action != "wake":
+                # NOTHING awaits servicing — only a fully quiet PR may
+                # self-merge (pending reviewer feedback always wins over
+                # arming: a followup must service it first, and a pushed
+                # change would kill the blessing anyway). The RECORD says the
+                # publish was auto-eligible (published under merge:auto with
+                # a clean panel — #171's exact arming condition; a manual
+                # publish never consented, and contracts alone cannot prove
+                # either fact after a dial flip); GitHub's own CLEAN state is
+                # the freshness proof; the PR's base-branch contract is the
+                # governing dial. Running every tick survives any crash
+                # between a sync push and this step; the helper direct-merges
+                # when nothing is pending to arm against.
+                if (
+                    not dry_run
+                    and not is_steward
+                    and record.auto_eligible
+                    and contract is not None
+                    and pr.get("state") == "open"
+                    and not pr.get("merged")
+                    and not pr.get("draft")
+                    and pr.get("mergeable_state") == "clean"
+                    and _base_dial(github, record.target, pr, contract) == "auto"
+                ):
+                    try:
+                        github.arm_auto_merge_auto_mode(record.target, _pr_number(record.pr_url))
+                    except Exception as exc:
+                        log.warning("auto-arm failed for %s: %s", record.run_id, exc)
                 continue
             if record.followup_job_id:
                 try:
