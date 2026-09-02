@@ -308,6 +308,7 @@ class LocalCompute:
         if self._seq >= 1_000_000:
             raise SlurmError("local job id space exhausted for this process")
         job_id = str(_LOCAL_JOB_BASE + (os.getpid() % 10_000) * 1_000_000 + self._seq)
+
         # An explicit env allowlist:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
@@ -315,14 +316,18 @@ class LocalCompute:
         # AUTORESEARCH_* / REVIEW_HERMES_* pass through as a PREFIX rule:
         # Slurm jobs inherit the tick's whole environment, and local jobs
         # need the same config surface (compute mode, author backend, panel,
-        # key-file PATHS — never raw secrets, which are not env-borne under
-        # this prefix). Enumerating names here is how a mode flag dies
-        # silently (terra #222 and #223 both found exactly that).
+        # key-file PATHS). Enumerating allowed names is how a mode flag dies
+        # silently (terra #222/#223) — but VALUE-bearing secret names under
+        # the prefix (a *_PAT / *_TOKEN / *_KEY, as opposed to a *_KEY_FILE
+        # path) must never reach a job that runs untrusted evaluation code.
+        def _secret_name(name: str) -> bool:
+            return name.endswith(("_PAT", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY"))
+
         job_env = {
             k: v
             for k, v in os.environ.items()
             if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
-            or k.startswith(("AUTORESEARCH_", "REVIEW_HERMES_"))
+            or (k.startswith(("AUTORESEARCH_", "REVIEW_HERMES_")) and not _secret_name(k))
         }
         try:
             # the job runs in its OWN session (= process group), so the

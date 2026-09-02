@@ -3435,6 +3435,9 @@ def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> 
     monkeypatch.setenv("REVIEW_HERMES_REPO", "/x/hermes")
     monkeypatch.setenv("APPTAINERENV_EVIL", "1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-live")
+    monkeypatch.setenv("AUTORESEARCH_BOT_PAT", "github_pat_secret")
+    monkeypatch.setenv("AUTORESEARCH_PANEL_KEY", "sk-ant-secret")
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/keys/codex")
     out = tmp_path / "env.txt"
     from autoresearch.compute import JobSpec
 
@@ -3454,6 +3457,10 @@ def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> 
     assert "REVIEW_HERMES_REPO=/x/hermes" in dumped
     assert "APPTAINERENV_EVIL" not in dumped  # would cross --cleanenv
     assert "OPENROUTER_API_KEY" not in dumped  # raw secrets never pass
+    # secret-VALUED names under the prefix are excluded; path names survive
+    assert "AUTORESEARCH_BOT_PAT" not in dumped
+    assert "AUTORESEARCH_PANEL_KEY" not in dumped
+    assert "AUTORESEARCH_CODEX_KEY_FILE=/keys/codex" in dumped
 
 
 def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
