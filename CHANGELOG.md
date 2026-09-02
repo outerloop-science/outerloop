@@ -51,13 +51,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A dispatched wake on a research-lines target no longer reads the line's
-  memory files as out-of-scope deletions: the run's base is the line tip that
-  carries them and the sealed candidate excludes them by design, so the
-  base..candidate diff listed them as the run's change and aborted a run whose
-  paired eval had already finished (live: gpt-speedrun, 11 GPU-hours). The
-  wake now applies the climb's own line-memory rule, and the panel's claim diff
-  excludes those paths too.
+- Dispatched wakes on research lines no longer read the line's memory files
+  as out-of-scope deletions (the run's base is the line tip that carries them;
+  the sealed candidate excludes them); the panel's claim diff omits them too.
 - GPU-hours for an author's launches are charged at the declared walltime when dispatched and reconciled when the wake gathers them: unused walltime is refunded (a sweep that dies in its first minutes no longer costs its full declared hours).
 - An author that concludes after an errored gate eval ends the attempt on that error; only a resubmit runs the eval again.
 - A tree the gate already turned down in this attempt is never measured again: when the woken author concludes (or resubmits untouched), that verdict stands and the attempt ends on it — no second eval pair, no GPU-hours. An errored eval is still retried.
