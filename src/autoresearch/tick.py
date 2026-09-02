@@ -2772,6 +2772,13 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     return None, None
 
 
+def _loop_cadence_s(cadence_min: float) -> float:
+    """The --loop sleep, clamped to [60s, 24h]: argparse accepts inf (which
+    would OverflowError out of time.sleep) and sub-minute values would spin.
+    A non-positive argument defers to AUTORESEARCH_CADENCE_MIN."""
+    return min(24 * 3600.0, max(60.0, cadence_min * 60 if cadence_min > 0 else _cadence_s()))
+
+
 def main() -> int:
     import argparse
     import time
@@ -2877,12 +2884,7 @@ def main() -> int:
     # The local-mode chain: same stateless tick, a foreground loop instead of
     # sbatch successors. Records on disk carry all state, so killing and
     # restarting the loop resumes exactly like the Slurm chain would.
-    # clamp both ends: argparse accepts inf (time.sleep would OverflowError
-    # out of the loop after one tick) and garbage negatives fall to the env
-    cadence_s = min(
-        24 * 3600.0,
-        max(60.0, args.cadence_min * 60 if args.cadence_min > 0 else _cadence_s()),
-    )
+    cadence_s = _loop_cadence_s(args.cadence_min)
     while True:
         started = time.time()
         try:

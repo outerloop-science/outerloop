@@ -3458,11 +3458,15 @@ def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> 
 
 def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
     """--cadence-min inf must not OverflowError out of the loop after one
-    tick (terra #223): the loop clamps to [60s, 24h]."""
+    tick (terra #223): the PRODUCTION clamp bounds to [60s, 24h] and defers
+    non-positive values to the env knob."""
     import math
 
-    # the clamp expression itself, mirrored from main(): pin both ends
+    from autoresearch.tick import _loop_cadence_s
+
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "45")
     for raw, expect in ((math.inf, 24 * 3600.0), (0.0001, 60.0), (30.0, 1800.0)):
-        clamped = min(24 * 3600.0, max(60.0, raw * 60))
+        clamped = _loop_cadence_s(raw)
         assert clamped == expect
         assert math.isfinite(clamped)
+    assert _loop_cadence_s(0.0) == 45 * 60  # non-positive defers to the env

@@ -301,8 +301,13 @@ class LocalCompute:
             raise ValueError("exactly one of command/script must be set")
         argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
         self._seq += 1
-        # unique across processes: the tick and its attempts each count from 1
-        job_id = str(_LOCAL_JOB_BASE + (os.getpid() % 100_000) * 10_000 + self._seq)
+        # unique across processes: the tick and its attempts each count from 1.
+        # A million-wide slot per (pid mod 10k); exhausting it fails LOUD —
+        # a silent wraparound would let one process read another's terminal
+        # state under a reused id.
+        if self._seq >= 1_000_000:
+            raise SlurmError("local job id space exhausted for this process")
+        job_id = str(_LOCAL_JOB_BASE + (os.getpid() % 10_000) * 1_000_000 + self._seq)
         # An explicit env allowlist:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
