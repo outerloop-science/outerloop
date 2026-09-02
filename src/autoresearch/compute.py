@@ -21,8 +21,10 @@ import os
 import shlex
 import signal
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 log = logging.getLogger(__name__)
@@ -136,9 +138,24 @@ class Compute(Protocol):
 
     def submit(self, spec: JobSpec) -> str: ...
     def status(self, job_id: str) -> str: ...
+    def pending_reason(self, job_id: str) -> str: ...
     def active_job_names(self) -> list[str]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
+
+
+def local_mode() -> bool:
+    """AUTORESEARCH_COMPUTE=local selects the monolith: every job a
+    synchronous subprocess of the caller (docs/design/onboarding.md) — the
+    zero-cluster on-ramp and the paper's serialized-baseline ablation. Any
+    other value (or none) is Slurm. This helper is the only reader of the
+    env var, so mode checks cannot drift."""
+    return os.environ.get("AUTORESEARCH_COMPUTE", "").strip().lower() == "local"
+
+
+def compute_from_env() -> SlurmCompute | LocalCompute:
+    """The deployment's compute backend, per `local_mode`."""
+    return LocalCompute() if local_mode() else SlurmCompute()
 
 
 @dataclass
@@ -255,6 +272,15 @@ class SlurmCompute:
 _LOCAL_JOB_BASE = 9_000_000_000
 
 
+def _local_state_dir() -> Path | None:
+    """Where local job states persist across processes (the tick and the
+    attempts it spawns each hold their own LocalCompute): under the state
+    root when the deployment names one, else nowhere (memory-only — tests).
+    Local jobs are synchronous, so only TERMINAL states ever need sharing."""
+    root = os.environ.get("AUTORESEARCH_ROOT", "").strip()
+    return Path(root) / "local_jobs" if root else None
+
+
 @dataclass
 class LocalCompute:
     """The same verbs, run as subprocesses in THIS allocation — synchronously:
@@ -275,15 +301,33 @@ class LocalCompute:
             raise ValueError("exactly one of command/script must be set")
         argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
         self._seq += 1
-        job_id = str(_LOCAL_JOB_BASE + self._seq)
+        # unique across processes: the tick and its attempts each count from 1.
+        # A million-wide slot per (pid mod 10k); exhausting it fails LOUD —
+        # a silent wraparound would let one process read another's terminal
+        # state under a reused id.
+        if self._seq >= 1_000_000:
+            raise SlurmError("local job id space exhausted for this process")
+        job_id = str(_LOCAL_JOB_BASE + (os.getpid() % 10_000) * 1_000_000 + self._seq)
+
         # An explicit env allowlist:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
         # job script starts from a minimal environment and sets its own.
+        # AUTORESEARCH_* / REVIEW_HERMES_* pass through as a PREFIX rule:
+        # Slurm jobs inherit the tick's whole environment, and local jobs
+        # need the same config surface (compute mode, author backend, panel,
+        # key-file PATHS). Enumerating allowed names is how a mode flag dies
+        # silently (terra #222/#223) — but VALUE-bearing secret names under
+        # the prefix (a *_PAT / *_TOKEN / *_KEY, as opposed to a *_KEY_FILE
+        # path) must never reach a job that runs untrusted evaluation code.
+        def _secret_name(name: str) -> bool:
+            return name.endswith(("_PAT", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY"))
+
         job_env = {
             k: v
             for k, v in os.environ.items()
             if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
+            or (k.startswith(("AUTORESEARCH_", "REVIEW_HERMES_")) and not _secret_name(k))
         }
         try:
             # the job runs in its OWN session (= process group), so the
@@ -321,6 +365,25 @@ class LocalCompute:
                     "local job %s: an escaped child survived the walltime kill", spec.job_name
                 )
             state = "TIMEOUT"
+        state_dir = _local_state_dir()
+        if state_dir is not None:
+            try:
+                state_dir.mkdir(parents=True, exist_ok=True)
+                tmp = state_dir / f".{job_id}.{os.getpid()}.tmp"
+                tmp.write_text(state)
+                os.replace(tmp, state_dir / job_id)
+                # opportunistic prune: one entry per job would leak forever
+                # on a long-running loop; anything the sweep could still want
+                # is far younger than a day
+                cutoff = time.time() - 24 * 3600
+                for old in state_dir.iterdir():
+                    try:
+                        if old.stat().st_mtime < cutoff:
+                            old.unlink()
+                    except OSError:
+                        pass
+            except OSError as exc:
+                log.warning("local job %s: state persist failed: %s", spec.job_name, exc)
         if spec.output and spec.output != "/dev/null":
             try:
                 with open(spec.output, "w") as fh:
@@ -334,7 +397,21 @@ class LocalCompute:
     def status(self, job_id: str) -> str:
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
-        return self._states.get(job_id, GONE)
+        state = self._states.get(job_id, "")
+        if state:
+            return state
+        # another process's job (an attempt's launch, polled by the tick):
+        # synchronous jobs are terminal, so the persisted state is the truth
+        state_dir = _local_state_dir()
+        if state_dir is not None:
+            try:
+                return (state_dir / job_id).read_text().strip() or GONE
+            except OSError:
+                pass
+        return GONE
+
+    def pending_reason(self, job_id: str) -> str:
+        return ""  # synchronous jobs are terminal at submit — never pending
 
     def active_job_names(self) -> list[str]:
         return []  # synchronous: nothing is ever pending or running

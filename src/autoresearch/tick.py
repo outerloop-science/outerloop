@@ -29,12 +29,15 @@ from uuid import uuid4
 
 from autoresearch.compute import (
     GONE,
+    Compute,
     JobSpec,
-    SlurmCompute,
+    LocalCompute,
     SlurmError,
     SlurmQueryError,
+    compute_from_env,
     is_pending,
     is_terminal,
+    local_mode,
     quote_command,
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
@@ -252,8 +255,10 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
     with GPU benchmarks needs this deployment to name a GPU lane — otherwise
     evals would queue into jobs that can never run (the climb would then
     park forever on a phantom eval). ANY GPU benchmark in the contract
-    counts, not just the climbed one: the suite gate measures siblings."""
-    if spec.gpu_partition:
+    counts, not just the climbed one: the suite gate measures siblings.
+    Local compute has no lanes — jobs run on whatever GPUs the machine
+    has — so the check is waived there."""
+    if spec.gpu_partition or local_mode():
         return ""
     gpu_benches = [
         b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "gpus", 0) or 0)
@@ -473,7 +478,7 @@ def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: A
 def service_in_review(
     root: Path,
     github: Any,  # GitHubClient (Any keeps tick importable without github deps)
-    compute: SlurmCompute,
+    compute: Compute,
     spec: FollowupSpec,
     now: float,
     dry_run: bool = False,
@@ -664,7 +669,7 @@ def write_heartbeat(root: Path, now: float, disk: dict[str, object] | None = Non
         log.warning("heartbeat write failed: %s", exc)
 
 
-def _holder_alive(compute: SlurmCompute, lease_job_id: str) -> bool | None:
+def _holder_alive(compute: Compute, lease_job_id: str) -> bool | None:
     """True/False when Slurm answered; None when it could not (an outage
     must not look like a dead holder)."""
     if not lease_job_id:
@@ -705,11 +710,15 @@ def _wake(
         log.warning("wake dispatch failed for %s: %s: %s", record.run_id, type(exc).__name__, exc)
         release_lease(root, record.run_id)
         return False
-    if holder_job:
+    if holder_job and not local_mode():
         # An async wake job now owns the lease; it releases on completion,
         # and the TTL/holder-dead check reaps it if it dies.
         update_lease_holder(root, record.run_id, f"wake-job:{holder_job}", holder_job, now)
     else:
+        # No job to hand the lease to — or a LOCAL dispatch, which ran the
+        # whole wake synchronously: the attempt already finished and released
+        # its own lease, and recreating one under a terminal job id would
+        # make the next sweep reap a corpse instead of delivering.
         release_lease(root, record.run_id)
     return True
 
@@ -802,7 +811,7 @@ def arm_wake(
 
 def _armed_wake_lost(
     root: Path,
-    compute: SlurmCompute,
+    compute: Compute,
     record: RunRecord,
     lease: Lease,
     now: float,
@@ -849,7 +858,7 @@ def _armed_wake_lost(
 
 def sweep(
     root: Path,
-    compute: SlurmCompute,
+    compute: Compute,
     dispatcher: WakeDispatcher,
     now: float,
     grace_s: float = DEFAULT_GRACE_S,
@@ -1096,7 +1105,7 @@ def _kill_stamp(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / "attempt-terminal-seen"
 
 
-def _sweep_implementing(root: Path, compute: SlurmCompute, now: float, grace_s: float) -> list[str]:
+def _sweep_implementing(root: Path, compute: Compute, now: float, grace_s: float) -> list[str]:
     """End `implementing` records whose climb job died without a verdict.
 
     A climb that CRASHES contains its own ending (attempt.py); a climb that is
@@ -1220,7 +1229,7 @@ def _poll_targets(record: RunRecord) -> list[str]:
 
 def _sweep_one(
     root: Path,
-    compute: SlurmCompute,
+    compute: Compute,
     dispatcher: WakeDispatcher,
     now: float,
     grace_s: float,
@@ -1296,6 +1305,12 @@ def _sweep_one(
             # Layer 3, with real grace: time runs from when the sweep FIRST
             # saw every job terminal, not from submission — the afterany
             # job gets the full window to deliver before the backup steps in.
+            # Local compute has no afterany jobs to wait for (jobs are
+            # terminal at submit): the sweep IS the delivery, so grace would
+            # only cost a whole extra loop iteration.
+            if local_mode():
+                wake(record, f"experiment {state}", state)
+                return
             if record.terminal_seen <= 0:
                 if dry_run:
                     # no writes in dry-run: report the would-wake now so the
@@ -1338,7 +1353,7 @@ def _sweep_one(
 
 def tick(
     root: Path,
-    compute: SlurmCompute,
+    compute: Compute,
     dispatcher: WakeDispatcher,
     now: float,
     grace_s: float = DEFAULT_GRACE_S,
@@ -2031,7 +2046,7 @@ def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
 
 def service_self_initiated(
     root: Path,
-    compute: SlurmCompute,
+    compute: Compute,
     spec: FollowupSpec,
     contract: Any,
     now: float,
@@ -2200,7 +2215,7 @@ def service_self_initiated(
 def service_steward(
     root: Path,
     github: Any,
-    compute: SlurmCompute,
+    compute: Compute,
     spec: FollowupSpec,
     now: float,
     contract: Any,
@@ -2343,7 +2358,7 @@ def service_steward(
 def service_intake(
     root: Path,
     github: Any,
-    compute: SlurmCompute,
+    compute: Compute,
     spec: FollowupSpec,
     now: float,
     contract: Any = None,
@@ -2501,7 +2516,7 @@ class JobWakeDispatcher:
     never holds a GPU. Returns the wake job id (async: it owns the lease until
     it completes)."""
 
-    compute: SlurmCompute
+    compute: Compute
     spec: FollowupSpec
     now: float
     wake_minutes: int = 20
@@ -2590,7 +2605,7 @@ def _wake_panel_minutes(spec: FollowupSpec) -> int:
 
 
 def _wake_dispatcher_from_env(
-    compute: SlurmCompute, followup_spec: FollowupSpec | None, now: float, root: Path
+    compute: Compute, followup_spec: FollowupSpec | None, now: float, root: Path
 ) -> tuple[WakeDispatcher, bool]:
     """The wake delivery for this tick, behind an EXPLICIT on-switch so the
     dispatched-wake path lands DARK. Returns `(dispatcher, live)`:
@@ -2709,7 +2724,10 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
     )
     home = os.environ.get("AUTORESEARCH_HOME", "")
-    if (pat_file or app_file) and account and partition and home and Path(image).is_file():
+    # Local compute runs jobs as subprocesses: Slurm placement is meaningless
+    # there, so account/partition are only required when a cluster is in play.
+    placed = bool(account and partition) or local_mode()
+    if (pat_file or app_file) and placed and home and Path(image).is_file():
         from autoresearch.appauth import resolve_bot_auth
         from autoresearch.github import GitHubClient
 
@@ -2742,8 +2760,8 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         name
         for name, value in [
             ("AUTORESEARCH_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
-            ("AUTORESEARCH_ACCOUNT", account),
-            ("AUTORESEARCH_PARTITION", partition),
+            ("AUTORESEARCH_ACCOUNT", account or ("-" if local_mode() else "")),
+            ("AUTORESEARCH_PARTITION", partition or ("-" if local_mode() else "")),
             ("AUTORESEARCH_HOME", home),
         ]
         if not value
@@ -2752,6 +2770,13 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         absent.append(f"image:{image}")
     log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
     return None, None
+
+
+def _loop_cadence_s(cadence_min: float) -> float:
+    """The --loop sleep, clamped to [60s, 24h]: argparse accepts inf (which
+    would OverflowError out of time.sleep) and sub-minute values would spin.
+    A non-positive argument defers to AUTORESEARCH_CADENCE_MIN."""
+    return min(24 * 3600.0, max(60.0, cadence_min * 60 if cadence_min > 0 else _cadence_s()))
 
 
 def main() -> int:
@@ -2768,63 +2793,105 @@ def main() -> int:
         default=DEFAULT_MIN_FREE_BYTES / 1024**3,
         help="skip launching new work when the state filesystem has less free",
     )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="run a tick every cadence in the foreground — the local-mode "
+        "chain (Slurm deployments use tick_chain.sbatch instead)",
+    )
+    parser.add_argument(
+        "--cadence-min",
+        type=float,
+        default=0.0,
+        help="minutes between --loop ticks; unset defers to "
+        "AUTORESEARCH_CADENCE_MIN via the chain's own parser (default 30)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     args.root.mkdir(parents=True, exist_ok=True)
+    # The tick's --root is the authority; children (and this process's own
+    # LocalCompute) read AUTORESEARCH_ROOT, so a bare `tick --loop --root X`
+    # must not split-brain them: local job states would land nowhere and
+    # every finished job would read GONE until the park deadline.
+    # RESOLVED: local jobs cd into flight checkouts, so a relative root
+    # would scatter their state dirs across working directories
+    if os.environ.get("AUTORESEARCH_ROOT", "") != str(args.root.resolve()):
+        os.environ["AUTORESEARCH_ROOT"] = str(args.root.resolve())
     # In-review servicing is LIVE when credentials + image are available in the
     # chain environment. The waiting-run sweep delivers real wakes only when the
     # operator arms it — the AUTORESEARCH_DISPATCH_WAKE env var or a
     # <root>/DISPATCH_WAKE sentinel — and the env is complete; by default it
     # stays dry with the LoggingDispatcher — dispatched climbing lands DARK.
-    github, followup_spec = _followup_spec_from_env(args.root)
-    compute = SlurmCompute()
-    now = time.time()
-    dispatcher, wake_live = _wake_dispatcher_from_env(compute, followup_spec, now, args.root)
-    # parks arm their own wake from this recipe; without it the sweep delivers
-    if wake_live and followup_spec is not None:
-        write_wake_spec(args.root, followup_spec)
-    else:
-        remove_wake_spec(args.root)
+    # ONE compute for the process: LocalCompute remembers its jobs' states
+    # in memory, so a --loop deployment must not discard them between ticks.
+    compute = compute_from_env()
 
-    report = tick(
-        args.root,
-        compute,
-        dispatcher,
-        now=now,
-        grace_s=args.grace_s,
-        lease_ttl_s=args.lease_ttl_s,
-        dry_run=not wake_live,
-        github=github,
-        followup_spec=followup_spec,
-        followup_dry_run=False,
-        min_free_bytes=int(args.min_free_gb * 1024**3),
-        min_tick_s=_min_tick_s_from_env(),
-    )
-    # Stamp the coalesce marker at REAL completion time (a fresh time.time(),
-    # not the start-of-tick `now`), so a long tick does not leave a stale marker.
-    mark_tick_complete(args.root, report, time.time())
-    log.info(
-        "tick done: paused=%s coalesced=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
-        "impl_ended=%s review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s "
-        "disk=%s launch_blocked=%s",
-        report.paused,
-        report.coalesced,
-        report.swept,
-        len(report.woken),
-        len(report.deferred),
-        len(report.reaped_leases),
-        len(report.stuck),
-        report.implementing_ended or "-",
-        report.review_ended,
-        report.followups_submitted,
-        report.intake,
-        report.self_initiated,
-        report.steward,
-        report.disk or "ok",
-        report.launch_blocked,
-    )
-    return 0
+    def run_once() -> None:
+        github, followup_spec = _followup_spec_from_env(args.root)
+        now = time.time()
+        dispatcher, wake_live = _wake_dispatcher_from_env(compute, followup_spec, now, args.root)
+        # parks arm their own wake from this recipe; without it the sweep delivers.
+        # Local compute never arms: jobs are synchronous, so an afterany wake's
+        # dependencies are terminal before submit returns — the next loop
+        # iteration's sweep delivers every wake instead (wake latency = cadence).
+        if wake_live and followup_spec is not None and not isinstance(compute, LocalCompute):
+            write_wake_spec(args.root, followup_spec)
+        else:
+            remove_wake_spec(args.root)
+
+        report = tick(
+            args.root,
+            compute,
+            dispatcher,
+            now=now,
+            grace_s=args.grace_s,
+            lease_ttl_s=args.lease_ttl_s,
+            dry_run=not wake_live,
+            github=github,
+            followup_spec=followup_spec,
+            followup_dry_run=False,
+            min_free_bytes=int(args.min_free_gb * 1024**3),
+            min_tick_s=_min_tick_s_from_env(),
+        )
+        # Stamp the coalesce marker at REAL completion time (a fresh time.time(),
+        # not the start-of-tick `now`), so a long tick does not leave a stale marker.
+        mark_tick_complete(args.root, report, time.time())
+        log.info(
+            "tick done: paused=%s coalesced=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
+            "impl_ended=%s review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s "
+            "disk=%s launch_blocked=%s",
+            report.paused,
+            report.coalesced,
+            report.swept,
+            len(report.woken),
+            len(report.deferred),
+            len(report.reaped_leases),
+            len(report.stuck),
+            report.implementing_ended or "-",
+            report.review_ended,
+            report.followups_submitted,
+            report.intake,
+            report.self_initiated,
+            report.steward,
+            report.disk or "ok",
+            report.launch_blocked,
+        )
+
+    if not args.loop:
+        run_once()
+        return 0
+    # The local-mode chain: same stateless tick, a foreground loop instead of
+    # sbatch successors. Records on disk carry all state, so killing and
+    # restarting the loop resumes exactly like the Slurm chain would.
+    cadence_s = _loop_cadence_s(args.cadence_min)
+    while True:
+        started = time.time()
+        try:
+            run_once()
+        except Exception:
+            log.exception("tick failed; the loop continues")
+        time.sleep(max(0.0, cadence_s - (time.time() - started)))
 
 
 if __name__ == "__main__":

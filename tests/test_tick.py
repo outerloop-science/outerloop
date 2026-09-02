@@ -632,7 +632,7 @@ def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
         return real_tick(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run)
 
     monkeypatch.setattr(tick_mod, "tick", spy)
-    monkeypatch.setattr(tick_mod, "SlurmCompute", lambda: FakeSlurm(states={}).compute())
+    monkeypatch.setattr(tick_mod, "compute_from_env", lambda: FakeSlurm(states={}).compute())
     monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--grace-s", "1"])
     assert tick_mod.main() == 0
     assert captured["grace_s"] == 1.0
@@ -3349,3 +3349,131 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     service_syncs(tmp_path, Spec(), 2.0)
     assert sync_requested(ws) is None  # done stamped
     assert _g(ws, "show", "origin/main:docs/b.md").strip() == "new"
+
+
+def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -> None:
+    """Under AUTORESEARCH_COMPUTE=local the followup service comes up without
+    account/partition (subprocess jobs have no placement); Slurm mode still
+    requires them."""
+    from autoresearch.tick import _followup_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "AUTORESEARCH_IMAGE": str(image),
+        "AUTORESEARCH_HOME": str(tmp_path),
+    }
+    import autoresearch.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is None  # slurm mode: placement required
+    env["AUTORESEARCH_COMPUTE"] = "local"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None
+    assert spec.account == "" and spec.partition == ""
+
+
+def test_local_mode_waives_placement_at_the_attempt_gates(
+    monkeypatch: Any, tmp_path: Path, capsys: Any
+) -> None:
+    """The resume gate accepts empty account/partition under
+    AUTORESEARCH_COMPUTE=local (terra #223: locally dispatched wakes died at
+    the parser). Proof of admission: the CLI proceeds far enough to complain
+    about the missing parked run, not about the cluster triple — and without
+    local mode the same argv still trips the triple."""
+    import sys
+
+    import pytest
+
+    import autoresearch.attempt as attempt_mod
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    pat.chmod(0o600)
+    argv = [
+        "attempt",
+        "--resume",
+        "r-x",
+        "--run-root",
+        str(tmp_path),
+        "--image",
+        str(image),
+        "--pat-file",
+        str(pat),
+    ]
+    monkeypatch.delenv("AUTORESEARCH_ACCOUNT", raising=False)
+    monkeypatch.delenv("AUTORESEARCH_PARTITION", raising=False)
+    monkeypatch.setattr(sys, "argv", argv)
+
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    # past the placement gate, the resume proceeds to the record read and
+    # fails THERE (no parked run in this tmp root) — proof of admission
+    with pytest.raises(FileNotFoundError, match=r"state\.json"):
+        attempt_mod.main()
+    assert "cluster triple" not in capsys.readouterr().err
+
+    monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
+    with pytest.raises(SystemExit):
+        attempt_mod.main()
+    assert "cluster triple" in capsys.readouterr().err
+
+
+def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:
+    """LocalCompute's job-env scrub passes AUTORESEARCH_*/REVIEW_HERMES_*
+    through as a prefix rule — a locally submitted wake must arrive still in
+    local mode (terra #223), and enumerated names are how flags die."""
+    from autoresearch.compute import LocalCompute
+
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
+    monkeypatch.setenv("REVIEW_HERMES_REPO", "/x/hermes")
+    monkeypatch.setenv("APPTAINERENV_EVIL", "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-live")
+    monkeypatch.setenv("AUTORESEARCH_BOT_PAT", "github_pat_secret")
+    monkeypatch.setenv("AUTORESEARCH_PANEL_KEY", "sk-ant-secret")
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/keys/codex")
+    out = tmp_path / "env.txt"
+    from autoresearch.compute import JobSpec
+
+    LocalCompute().submit(
+        JobSpec(
+            job_name="envprobe",
+            account="",
+            partition="",
+            time_minutes=1,
+            command="env",
+            output=str(out),
+        )
+    )
+    dumped = out.read_text()
+    assert "AUTORESEARCH_COMPUTE=local" in dumped
+    assert "AUTORESEARCH_AUTHOR_BACKEND=codex" in dumped
+    assert "REVIEW_HERMES_REPO=/x/hermes" in dumped
+    assert "APPTAINERENV_EVIL" not in dumped  # would cross --cleanenv
+    assert "OPENROUTER_API_KEY" not in dumped  # raw secrets never pass
+    # secret-VALUED names under the prefix are excluded; path names survive
+    assert "AUTORESEARCH_BOT_PAT" not in dumped
+    assert "AUTORESEARCH_PANEL_KEY" not in dumped
+    assert "AUTORESEARCH_CODEX_KEY_FILE=/keys/codex" in dumped
+
+
+def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
+    """--cadence-min inf must not OverflowError out of the loop after one
+    tick (terra #223): the PRODUCTION clamp bounds to [60s, 24h] and defers
+    non-positive values to the env knob."""
+    import math
+
+    from autoresearch.tick import _loop_cadence_s
+
+    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "45")
+    for raw, expect in ((math.inf, 24 * 3600.0), (0.0001, 60.0), (30.0, 1800.0)):
+        clamped = _loop_cadence_s(raw)
+        assert clamped == expect
+        assert math.isfinite(clamped)
+    assert _loop_cadence_s(0.0) == 45 * 60  # non-positive defers to the env

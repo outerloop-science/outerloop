@@ -188,6 +188,9 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
         def status(self, job_id: str) -> str:
             return "TIMEOUT"
 
+        def pending_reason(self, job_id: str) -> str:
+            return ""
+
         def active_job_names(self) -> list:
             return []
 
@@ -240,3 +243,57 @@ def test_job_env_is_an_allowlist_not_the_submitter_env(tmp_path: Path) -> None:
     finally:
         del os.environ["APPTAINERENV_SECRET"]
     assert out.read_text().strip() == "xx"
+
+
+def test_terminal_states_survive_across_instances(tmp_path, monkeypatch) -> None:
+    """The tick and the attempts it spawns each hold their own LocalCompute;
+    a launch submitted by one must not read as GONE to another (terra #223:
+    the sweep would sit on the 12h park deadline instead of waking at the
+    next cadence). With a state root, terminal states persist; without one,
+    memory-only behavior is unchanged."""
+    from autoresearch.compute import GONE, JobSpec, LocalCompute
+
+    monkeypatch.setenv("AUTORESEARCH_ROOT", str(tmp_path))
+    submitter = LocalCompute()
+    job_id = submitter.submit(
+        JobSpec(job_name="probe", account="", partition="", time_minutes=1, command="true")
+    )
+    poller = LocalCompute()  # a different process in real life
+    assert poller.status(job_id) == "COMPLETED"
+    monkeypatch.delenv("AUTORESEARCH_ROOT")
+    assert poller.status(job_id) == GONE  # no root -> memory-only, as before
+
+
+def test_gpu_contracts_pass_the_lane_check_under_local_mode(monkeypatch) -> None:
+    """Local compute has no lanes: a contract with GPU benchmarks must not be
+    rejected for a missing AUTORESEARCH_GPU_PARTITION (terra #223)."""
+    from types import SimpleNamespace
+
+    from autoresearch.tick import FollowupSpec, _gpu_lane_error
+
+    spec = FollowupSpec(
+        account="", partition="", run_root=Path("/tmp/x"), image="", home=Path("/tmp/x")
+    )
+    contract = SimpleNamespace(benchmarks=[SimpleNamespace(name="speedrun", gpus=1)])
+    assert "no GPU lane" in _gpu_lane_error(contract, "speedrun", spec)
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    assert _gpu_lane_error(contract, "speedrun", spec) == ""
+
+
+def test_local_mode_places_gpu_measures_without_a_lane(monkeypatch) -> None:
+    """DispatchSettings.placement must not raise for a GPU measure under
+    local mode (terra #223 r7: the lane waiver admitted GPU contracts that
+    then failed at placement) — local jobs run on the machine's own GPUs."""
+    from autoresearch.compute import LocalCompute
+    from autoresearch.measure import DispatchSettings
+
+    settings = DispatchSettings(
+        compute=LocalCompute(), image="", account="", partition="", gpu_partition=""
+    )
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    assert settings.placement(1) == ("", "")
+    monkeypatch.delenv("AUTORESEARCH_COMPUTE")
+    import pytest
+
+    with pytest.raises(ValueError, match="no GPU lane"):
+        settings.placement(1)  # slurm mode still refuses loudly

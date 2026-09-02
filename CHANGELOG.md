@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- `AUTORESEARCH_COMPUTE=local` runs the whole loop without a cluster: jobs
+  become synchronous subprocesses (`LocalCompute` at every seam), Slurm
+  placement env is not required, park-time wake arming yields to the sweep,
+  and `tick --loop` is the foreground chain. The zero-Slurm on-ramp and the
+  serialized-monolith ablation are the same switch (`docs/design/onboarding.md`).
 - The base-sync skip compares benchmark MEASUREMENT SIGNATURES — all
   benchmark fields except the pure workflow dials (lines, depth_k, sleep_k,
   display_digits) — instead of whole-model equality: the dials steer the
