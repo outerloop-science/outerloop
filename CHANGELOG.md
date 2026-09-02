@@ -65,6 +65,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Jobs the site moves off their submitted partition no longer stall the kernel:
+  the tick chain cancels and requeues a moved successor (it starved on a
+  lower-tier partition and blocked its twin through `singleton`), and the
+  sweep treats an armed wake sitting on a foreign partition as lost and
+  redelivers it.
 - Before each deploy, the tick job removes git lock files older than ten
   minutes when no git process is working in the checkout.
 - Dispatched wakes on research lines no longer read the line's memory files

@@ -42,6 +42,7 @@ class FakeSlurm:
     states: dict[str, str] = field(default_factory=dict)
     cancelled: list[str] = field(default_factory=list)
     reasons: dict[str, str] = field(default_factory=dict)  # squeue %r by job id
+    partitions: dict[str, str] = field(default_factory=dict)  # squeue %P by job id
     cancel_sticks: bool = True  # scancel moves the job to CANCELLED, like Slurm
 
     def _runner(self, argv, timeout_s):
@@ -58,8 +59,10 @@ class FakeSlurm:
             return CommandResult(0, "", "")
         if argv[0] == "squeue":
             if "-j" in argv:
-                reason = self.reasons.get(argv[argv.index("-j") + 1], "")
-                return CommandResult(0, reason + "\n" if reason else "", "")
+                jid = argv[argv.index("-j") + 1]
+                table = self.partitions if "%P" in argv else self.reasons
+                value = table.get(jid, "")
+                return CommandResult(0, value + "\n" if value else "", "")
             return CommandResult(0, "", "")  # no live jobs
         raise AssertionError(f"unexpected command {argv}")
 
@@ -3846,3 +3849,39 @@ def test_a_pending_panel_wake_submits_a_followup_and_holds_off_the_arm(tmp_path:
     assert submitted == [("r-rev", "77")] and armed == []
     submitted2, _armed2 = run("b" * 40, "c" * 40)
     assert submitted2 == []
+
+
+def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_path: Path) -> None:
+    """Torch can shift a pending job to a lower-tier catch-all partition where
+    it starves (2026-09-02: wake 16787511 sat on `all` for hours). A holder
+    whose partition is not the recipe's is treated as lost: cancelled, lease
+    reaped, redelivered onto the right partition — in the same tick."""
+    from dataclasses import replace as dc_replace
+
+    from autoresearch.tick import write_wake_spec
+
+    waiting_run(tmp_path)
+    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
+    write_wake_spec(
+        tmp_path, dc_replace(_wake_spec(tmp_path), partition="cpu_short", job_partition="")
+    )
+    slurm = FakeSlurm(
+        states={"100": "COMPLETED", "55": "PENDING"},
+        reasons={"55": "Priority"},
+        partitions={"55": "all"},
+    )
+    report, dispatcher = run_tick(tmp_path, slurm)
+    assert slurm.cancelled == ["55"]
+    assert report.reaped_leases == ("r1",)
+    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+
+    # the same partition is not a move: the grace path stands (no cancel yet)
+    waiting_run(tmp_path, run_id="r2", terminal_seen=0.0, experiment_job_id="200")
+    acquire_lease(tmp_path, "r2", "wake-job:66", "66", now=NOW - 60)
+    slurm2 = FakeSlurm(
+        states={"200": "COMPLETED", "66": "PENDING"},
+        reasons={"66": "Dependency"},
+        partitions={"66": "cpu_short"},
+    )
+    _report2, dispatcher2 = run_tick(tmp_path, slurm2, now=NOW + 1, min_tick_s=0)
+    assert "66" not in slurm2.cancelled and dispatcher2.dispatched == []

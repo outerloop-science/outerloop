@@ -947,7 +947,13 @@ def _armed_wake_lost(
     """An armed wake that is still PENDING on its dependency after every job
     it waits on has been terminal for a full grace window is not coming
     (Slurm reports the dependency as never satisfiable, or the afterany was
-    lost). Cancel it so the sweep redelivers; the lease is then reaped."""
+    lost). Cancel it so the sweep redelivers; the lease is then reaped.
+
+    A wake the SITE moved off the partition it was submitted to is not
+    coming either — on Torch a pending job can be shifted to a lower-tier
+    catch-all partition and starve there for hours (2026-09-02, wake
+    16787511) — so a holder whose partition is not the one the wake recipe
+    asked for is cancelled the same way and redelivered onto the right one."""
     if not lease.holder_job_id:
         return False
     job_ids = _poll_targets(record)
@@ -961,7 +967,16 @@ def _armed_wake_lost(
         states = [compute.status(jid) for jid in job_ids]
     except SlurmQueryError:
         return False
-    if reason == "DependencyNeverSatisfied":
+    moved = _moved_off_partition(root, compute, lease.holder_job_id)
+    if moved:
+        log.warning(
+            "armed wake %s for %s was moved to partition %s (asked for %s); redelivering",
+            lease.holder_job_id,
+            record.run_id,
+            moved[0],
+            moved[1],
+        )
+    elif reason == "DependencyNeverSatisfied":
         pass
     elif reason != "Dependency" or not all(is_terminal(s) for s in states):
         return False
@@ -1339,6 +1354,26 @@ def _sweep_implementing(root: Path, compute: Compute, now: float, grace_s: float
         except Exception as exc:  # per-record isolation, like the waiting sweep
             log.warning("implementing-sweep failed on %s: %s", record.run_id, exc)
     return ended
+
+
+def _moved_off_partition(root: Path, compute: Compute, job_id: str) -> tuple[str, str] | None:
+    """(actual, wanted) when a queued kernel job no longer sits in the
+    partition the wake recipe asks for, else None. Unknown either way —
+    no recipe, a compute without partitions, a failed query — is None:
+    never cancel on doubt."""
+    spec = load_wake_spec(root)
+    if spec is None:
+        return None
+    wanted = spec.job_partition or spec.partition
+    if not wanted:
+        return None
+    try:
+        actual = compute.job_partition(job_id)
+    except (SlurmQueryError, ValueError, AttributeError):
+        return None
+    if not actual or actual == wanted:
+        return None
+    return actual, wanted
 
 
 def _poll_targets(record: RunRecord) -> list[str]:
