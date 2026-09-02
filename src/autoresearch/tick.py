@@ -255,8 +255,10 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
     with GPU benchmarks needs this deployment to name a GPU lane — otherwise
     evals would queue into jobs that can never run (the climb would then
     park forever on a phantom eval). ANY GPU benchmark in the contract
-    counts, not just the climbed one: the suite gate measures siblings."""
-    if spec.gpu_partition:
+    counts, not just the climbed one: the suite gate measures siblings.
+    Local compute has no lanes — jobs run on whatever GPUs the machine
+    has — so the check is waived there."""
+    if spec.gpu_partition or local_mode():
         return ""
     gpu_benches = [
         b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "gpus", 0) or 0)
@@ -2783,8 +2785,9 @@ def main() -> int:
     parser.add_argument(
         "--cadence-min",
         type=float,
-        default=float(os.environ.get("AUTORESEARCH_CADENCE_MIN", "30") or 30),
-        help="minutes between --loop ticks (AUTORESEARCH_CADENCE_MIN)",
+        default=0.0,
+        help="minutes between --loop ticks; unset defers to "
+        "AUTORESEARCH_CADENCE_MIN via the chain's own parser (default 30)",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -2856,7 +2859,7 @@ def main() -> int:
     # The local-mode chain: same stateless tick, a foreground loop instead of
     # sbatch successors. Records on disk carry all state, so killing and
     # restarting the loop resumes exactly like the Slurm chain would.
-    cadence_s = max(60.0, args.cadence_min * 60)
+    cadence_s = max(60.0, args.cadence_min * 60 if args.cadence_min > 0 else _cadence_s())
     while True:
         started = time.time()
         try:

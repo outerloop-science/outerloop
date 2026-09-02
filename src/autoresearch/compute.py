@@ -23,6 +23,7 @@ import signal
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 log = logging.getLogger(__name__)
@@ -270,6 +271,15 @@ class SlurmCompute:
 _LOCAL_JOB_BASE = 9_000_000_000
 
 
+def _local_state_dir() -> Path | None:
+    """Where local job states persist across processes (the tick and the
+    attempts it spawns each hold their own LocalCompute): under the state
+    root when the deployment names one, else nowhere (memory-only — tests).
+    Local jobs are synchronous, so only TERMINAL states ever need sharing."""
+    root = os.environ.get("AUTORESEARCH_ROOT", "").strip()
+    return Path(root) / "local_jobs" if root else None
+
+
 @dataclass
 class LocalCompute:
     """The same verbs, run as subprocesses in THIS allocation — synchronously:
@@ -290,7 +300,8 @@ class LocalCompute:
             raise ValueError("exactly one of command/script must be set")
         argv = ["sh", spec.script, *spec.script_args] if spec.script else ["sh", "-c", spec.command]
         self._seq += 1
-        job_id = str(_LOCAL_JOB_BASE + self._seq)
+        # unique across processes: the tick and its attempts each count from 1
+        job_id = str(_LOCAL_JOB_BASE + (os.getpid() % 100_000) * 10_000 + self._seq)
         # An explicit env allowlist:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
@@ -343,6 +354,15 @@ class LocalCompute:
                     "local job %s: an escaped child survived the walltime kill", spec.job_name
                 )
             state = "TIMEOUT"
+        state_dir = _local_state_dir()
+        if state_dir is not None:
+            try:
+                state_dir.mkdir(parents=True, exist_ok=True)
+                tmp = state_dir / f".{job_id}.{os.getpid()}.tmp"
+                tmp.write_text(state)
+                os.replace(tmp, state_dir / job_id)
+            except OSError as exc:
+                log.warning("local job %s: state persist failed: %s", spec.job_name, exc)
         if spec.output and spec.output != "/dev/null":
             try:
                 with open(spec.output, "w") as fh:
@@ -356,7 +376,18 @@ class LocalCompute:
     def status(self, job_id: str) -> str:
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
-        return self._states.get(job_id, GONE)
+        state = self._states.get(job_id, "")
+        if state:
+            return state
+        # another process's job (an attempt's launch, polled by the tick):
+        # synchronous jobs are terminal, so the persisted state is the truth
+        state_dir = _local_state_dir()
+        if state_dir is not None:
+            try:
+                return (state_dir / job_id).read_text().strip() or GONE
+            except OSError:
+                pass
+        return GONE
 
     def pending_reason(self, job_id: str) -> str:
         return ""  # synchronous jobs are terminal at submit — never pending
