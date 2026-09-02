@@ -1579,3 +1579,34 @@ def test_base_flip_to_auto_is_disarmed_before_the_sync_push(review_run) -> None:
     assert "withheld" in github.posted[0]
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == ""  # nothing pushed, head re-wakeable
+
+
+def test_widened_merged_scope_publishes_its_allowed_edit(review_run) -> None:
+    """A base sync that widens the scope must let an edit in the NEW area
+    publish: the commit-time forbidden check reads the merged contract, not
+    the pre-merge one (terra #225 r5: commit_all raised ForbiddenPathError
+    after a successful re-measure)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2m"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        CONTRACT.replace(
+            "scope: {allowed: [src/pilot/solvers/]}",
+            "scope: {allowed: [src/pilot/solvers/, src/pilot/extra/]}",
+        )
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "scope widens")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+    harness = ResumingHarness(
+        merge_base=True, edits={"src/pilot/extra/helper.py": "new-area edit\n"}
+    )
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    pushed = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/extra/helper.py")
+    assert "new-area edit" in pushed

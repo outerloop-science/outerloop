@@ -800,7 +800,7 @@ def _respond(
                         prior = None  # a re-base is not an improvement claim
                         rebase_leader_row(
                             workspace,
-                            contract,
+                            post_contract,
                             bench.name,
                             bench,
                             candidate,
@@ -912,7 +912,7 @@ def _respond(
                                 author=bot_login,
                                 forbidden=lambda p: (
                                     p not in PROGRESS_PATHS
-                                    and bool(scope_check([p], contract))
+                                    and bool(scope_check([p], post_contract))
                                     and not _matches_base(p)
                                 ),
                             )
