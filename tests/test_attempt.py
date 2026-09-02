@@ -4201,3 +4201,140 @@ def test_wake_re_establishes_the_merge_artifact_exclude(tmp_path, monkeypatch) -
         now=1_000_100.0,
     )
     assert "*.orig" in exclude.read_text()  # re-established on the wake
+
+
+# --- a line's memory is never the run's change (live incident 2026-09-02:
+# a dispatched wake on a lines target read the line tip's memory files as
+# out-of-scope deletions and aborted a run whose paired eval had finished)
+
+CONTRACT_LINES_DISPATCH = CONTRACT.replace(
+    "    direction: min\n", "    direction: min\n    lines: true\n    eval_minutes: 30\n"
+)
+
+
+def _write_parked_line_candidate(tmp_path, monkeypatch, *, values, run_id="tsp-line-1"):
+    """Like _write_parked_candidate, but the run's base is a LINE TIP that
+    carries memory files, and the candidate was sealed with the line-memory
+    exclude — exactly the park a lines run reaches."""
+    from autoresearch.attempt import LINE_MEMORY_PATHS
+    from autoresearch.dispatch import snapshot_tree
+    from autoresearch.github import Workspace
+    from autoresearch.measure import DispatchSettings
+
+    state = tmp_path / "state"
+    wsroot = state / "runs" / run_id / "ws"
+    (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
+    (wsroot / "agent_memory").mkdir()
+    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_LINES_DISPATCH)
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
+    (wsroot / "AGENT_MEMORY.md").write_text("# memory\n- [warmdown](agent_memory/warmdown.md)\n")
+    (wsroot / "agent_memory" / "warmdown.md").write_text("longer warmdown helped\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "line tip")
+    base_sha = _git(wsroot, "rev-parse", "HEAD").strip()
+    (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'better'\n")
+    ws = Workspace(root=wsroot)
+    snap = snapshot_tree(ws, base_sha, exclude=LINE_MEMORY_PATHS)
+    # the seal really dropped the memory: the base..candidate diff lists it as deleted
+    assert "AGENT_MEMORY.md" in _git(wsroot, "diff", "--name-only", base_sha, snap.commit)
+    bare = tmp_path / f"origin-{run_id}.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "branch", "agents/agent-02", base_sha)
+    record = RunRecord(
+        run_id=run_id,
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state="waiting",
+        resume_session_id="s1",
+        agent_id="agent-02",
+        stage={
+            "phase": "candidate",
+            "base_sha": base_sha,
+            "candidate_sha": snap.commit,
+            "candidate_ref": snap.ref,
+            "seed": 7,
+            "suite_seed": 9,
+            "afterany": "afterany:501",
+            "report": "longer warmdown",
+            "base_branch": "main",
+        },
+    )
+    save_record(state, record, 1_000_000.0)
+    fake = _FakeMeasurer(values=values)
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
+    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
+    return state, run_id
+
+
+def test_wake_on_a_line_never_reads_the_lines_memory_as_out_of_scope(tmp_path, monkeypatch):
+    """The base is the line tip (memory on it), the sealed candidate excludes
+    the memory: the wake's measured paths are the run's OWN change only, so
+    the gate decides on the numbers instead of aborting on phantom deletions."""
+    state, run_id = _write_parked_line_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "no-improvement", outcome
+    record = load_record(state, run_id)
+    assert record.ending == "negative-result" and "out-of-scope" not in record.ending_note
+
+
+def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
+    from autoresearch.attempt import _without_line_memory
+
+    paths = ["AGENT_MEMORY.md", "agent_memory/x.md", "train.py", "agent_memory"]
+    assert _without_line_memory(paths, "agents/agent-02") == ["train.py"]
+    assert _without_line_memory(paths, "") == paths  # no line: nothing is special
+
+
+def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> None:
+    """Judges read the claim's diff: against a line-tip base it must not show
+    the memory the seal dropped as deletions the author never made."""
+    from autoresearch.attempt import LINE_MEMORY_PATHS, build_panel_runner
+    from autoresearch.github import Workspace
+    from autoresearch.panel import PanelVerdict
+
+    wsroot = tmp_path / "ws"
+    (wsroot / "agent_memory").mkdir(parents=True)
+    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_LINES_DISPATCH)
+    (wsroot / "train.py").write_text("v1\n")
+    (wsroot / "AGENT_MEMORY.md").write_text("# memory\n")
+    (wsroot / "agent_memory" / "a.md").write_text("note\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "line tip")
+    base_sha = _git(wsroot, "rev-parse", "HEAD").strip()
+    (wsroot / "train.py").write_text("v2\n")
+    seen: dict = {}
+
+    def fake_run_panel(lenses, panel_ws, claim, contract_text, today, round_no):
+        seen["diff"] = claim.diff
+        return PanelVerdict(blocking=(), transcript="ok", wake_text="")
+
+    monkeypatch.setattr("autoresearch.attempt.run_panel", fake_run_panel)
+    monkeypatch.setattr("autoresearch.review_agent.sanitize_checkout", lambda p: (0, 0))
+    runner = build_panel_runner(
+        Workspace(root=wsroot),
+        tmp_path / "run",
+        base_sha,
+        (object(),),  # type: ignore[arg-type]
+        CONTRACT_LINES_DISPATCH,
+        "org/pilot",
+        "tsp",
+        "bot",
+        "2026-09-02",
+        exclude=LINE_MEMORY_PATHS,
+    )
+    runner(13.0, 12.0, "report")
+    assert "train.py" in seen["diff"]
+    assert "AGENT_MEMORY" not in seen["diff"] and "agent_memory" not in seen["diff"]
