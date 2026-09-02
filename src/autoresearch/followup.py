@@ -618,6 +618,22 @@ def _respond(
             ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
         except GitError:
             sync_failed = True
+    # A clean base merge can produce a commit whose TREE is unchanged (the
+    # branch already carried the base's content): committed/changed are both
+    # empty, but the merge commit IS the contribution — without pushing it
+    # the PR stays behind while the cursor is spent. Same measured tree, so
+    # no re-eval is owed; push the topology and say so.
+    if conflict_wake and not changed and base_sha_at_fetch:
+        try:
+            ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
+            ws.push(branch)
+            measured_note = (
+                f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
+                "unchanged, so the measured numbers above still describe "
+                "exactly this content — only the ancestry moved.)_"
+            )
+        except GitError:
+            pass  # no merge happened; an honest no-change reply stands
     if sync_failed:
         _revert_response()
         measured_note = (
@@ -844,7 +860,9 @@ def _respond(
                 conflict_head if (conflict_wake and not sync_failed) else record.dirty_wake_head
             ),
             resume_session_id=session.session_id or record.resume_session_id,
-            wake_attempts=(record.wake_attempts + 1) if sync_failed else 0,
+            # the tick already charged this submission; a failed sync keeps
+            # the count (retry stays capped), success resets it (progress)
+            wake_attempts=record.wake_attempts if sync_failed else 0,
         ),
         now,
     )

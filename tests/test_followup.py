@@ -1216,7 +1216,9 @@ def test_behind_wake_without_a_real_merge_is_withheld(review_run) -> None:
     assert not _pushed()  # the faked sync pushed nothing
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == ""  # cursor unspent: the wake retries
-    assert record.wake_attempts == 1  # bounded by MAX_WAKE_ATTEMPTS
+    # the tick charged the submission already; the failed sync must not bill
+    # a second attempt (terra r4) — it keeps the count instead of resetting
+    assert record.wake_attempts == 0
 
 
 def test_sync_needed_with_failed_fetch_services_nothing(review_run, monkeypatch) -> None:
@@ -1286,3 +1288,40 @@ def test_conflicted_sync_merge_is_aborted_on_revert(review_run) -> None:
     assert "does not include the fetched base" in github.posted[0]
     assert not (ws / ".git" / "MERGE_HEAD").exists()  # the merge was aborted
     assert _git(ws, "status", "--porcelain") == ""  # workspace fully clean
+
+
+def test_topology_only_base_merge_is_pushed(review_run) -> None:
+    """A clean base merge whose tree is unchanged (the branch already carried
+    the base's content) still pushes — the merge commit IS the contribution;
+    without it the PR stays behind while the cursor is spent (terra #224 r4).
+    No re-measure is owed: the pushed tree is exactly the measured one."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    git_id = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    # the branch commits a doc; main lands the IDENTICAL content -> merging
+    # main creates a merge commit with the same tree
+    (ws / "docs").mkdir(exist_ok=True)
+    (ws / "docs" / "news.md").write_text("same everywhere\n")
+    _git(ws, *git_id, "add", "-A")
+    _git(ws, *git_id, "commit", "-qm", "branch doc")
+    seed2 = root.parent / "seed2e"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs").mkdir(exist_ok=True)
+    (seed2 / "docs" / "news.md").write_text("same everywhere\n")
+    _git(seed2, *git_id, "add", "-A")
+    _git(seed2, *git_id, "commit", "-qm", "main doc")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr())
+    harness = ResumingHarness(merge_base=True)  # merge, no edits
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "only the ancestry moved" in github.posted[0]
+    # the merge commit reached the remote: the base tip is now an ancestor
+    # of the pushed PR branch
+    main_sha = _git(bare, "rev-parse", "main").strip()
+    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    merge_base = _git(bare, "merge-base", main_sha, branch_sha).strip()
+    assert merge_base == main_sha
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == "h" * 40  # cursor spent: sync done
