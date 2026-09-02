@@ -1387,15 +1387,17 @@ def main() -> int:
         panel_lenses, panel_secrets = _panel_lenses_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    if api_key and api_key in panel_secrets:
-        parser.error(
-            f"run {args.run_id}: a panel judge key is the run's author key "
-            "(role separation: the judge needs its own key)"
-        )
-    # The read's walltime is what the TICK could add under the partition cap
-    # (--panel-minutes); a read that does not fit is skipped and said so on
-    # the thread rather than starving the author or dying mid-read.
+    # A panel that cannot run in THIS job never costs the reply: the
+    # follow-up runs panel-free and the skip is posted on the thread (the
+    # PR stays human-merged). Two such cases: a judge key that is this run's
+    # author key — the tick preflights against the FLEET key, a run started
+    # under another key is only known here (terra #229 r2) — and a read the
+    # partition cap left no walltime for (--panel-minutes).
     panel_skip = ""
+    if api_key and api_key in panel_secrets:
+        panel_skip = "a panel judge key is this run's author key (role separation)"
+        log.warning("run %s: %s; the follow-up runs without the panel", args.run_id, panel_skip)
+        panel_lenses = ()
     if panel_lenses and args.panel_minutes < panel_read_minutes(args.panel):
         panel_skip = (
             f"the job's walltime cap left {args.panel_minutes} min for a read "
