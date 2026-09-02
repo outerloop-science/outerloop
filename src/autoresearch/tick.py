@@ -475,13 +475,16 @@ def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: A
     return spec
 
 
-def _base_dial(github: Any, target: str, pr: dict, main_contract: Any) -> str:
-    """The merge dial that governs THIS PR: its base branch's contract. The
-    tick's contract is read from main; a PR based elsewhere must be judged
-    by its own base's dial — unreadable or unparsable means "manual"
-    (never arm on doubt)."""
+def _base_dial(
+    github: Any, target: str, pr: dict, main_contract: Any, main_target: str = ""
+) -> str:
+    """The merge dial that governs THIS PR: its own target's base-branch
+    contract. The tick's contract is read from ITS configured target's main;
+    it applies only to a main-based PR of that same target — any other
+    target or base is fetched from the PR's own coordinates, and unreadable
+    or unparsable means "manual" (never arm on doubt)."""
     base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-    if base_ref == "main":
+    if base_ref == "main" and target == main_target:
         return str(getattr(main_contract, "merge", "manual"))
     try:
         from autoresearch.contract import load_contract
@@ -589,13 +592,14 @@ def service_in_review(
                     not dry_run
                     and not is_steward
                     and not followup_live
-                    and record.auto_eligible
+                    and record.auto_blessed_head
+                    and str((pr.get("head") or {}).get("sha", "")) == record.auto_blessed_head
                     and contract is not None
                     and pr.get("state") == "open"
                     and not pr.get("merged")
                     and not pr.get("draft")
                     and pr.get("mergeable_state") == "clean"
-                    and _base_dial(github, record.target, pr, contract) == "auto"
+                    and _base_dial(github, record.target, pr, contract, spec.target) == "auto"
                 ):
                     try:
                         github.arm_auto_merge_auto_mode(record.target, _pr_number(record.pr_url))

@@ -669,6 +669,7 @@ def _respond(
     # clean merge whose eval was withheld spent the cursor with the PR still
     # behind on GitHub.
     sync_pushed = False
+    blessed_head = record.auto_blessed_head
 
     def _sync_push(note: str) -> bool:
         """Push the synced head under the #171 rule: an armed auto-mode PR
@@ -703,6 +704,14 @@ def _respond(
         ws.push(branch)
         sync_pushed = True
         measured_note = note
+        # a signature-clean sync preserves the measured bytes: the blessing
+        # follows the head it now lives on (empty stays empty)
+        nonlocal blessed_head
+        if blessed_head:
+            try:
+                blessed_head = ws.git("rev-parse", "HEAD").strip()
+            except Exception:
+                blessed_head = ""
         return True
 
     # A clean base merge can produce a commit whose TREE is unchanged (the
@@ -1011,11 +1020,11 @@ def _respond(
                 else record.dirty_wake_head
             ),
             resume_session_id=session.session_id or record.resume_session_id,
-            # a pushed CODE CHANGE replaces the panel-blessed content, so the
-            # publish-time auto blessing dies with it (sync pushes preserve
-            # the measured content bit-for-bit and keep it) — the changed PR
-            # needs a human merge, panel or not (terra #228 r4)
-            auto_eligible=record.auto_eligible and not change_pushed,
+            # a pushed CODE CHANGE replaces the panel-blessed content: the
+            # blessing dies with it (sync pushes carried it to the new head);
+            # the tick arms only on an exact head match, so even a crash
+            # before this write can never bless the pushed code (#228 r4/r8)
+            auto_blessed_head="" if change_pushed else blessed_head,
             wake_attempts=(
                 record.wake_attempts
                 if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))

@@ -3483,7 +3483,7 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     """The idempotent auto-arm (terra #228's redesign): once GitHub reports
     the PR CLEAN (up-to-date with the CURRENT base + green — GitHub's own
     freshness proof), the kernel-read contract says auto, and the RECORD says
-    the publish was auto-eligible, the service arms/merges. auto_eligible=False,
+    the publish blessed THIS head, the service arms/merges. An empty blessing,
     a manual dial, or a non-clean PR must never arm. Running tick-side (not
     in the sync push) survives a crash between push and arm."""
     from types import SimpleNamespace
@@ -3493,7 +3493,12 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     from autoresearch.tick import FollowupSpec, service_in_review
 
     spec = FollowupSpec(
-        account="a", partition="p", run_root=tmp_path, image="/img/a.sif", home=Path("/h")
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=Path("/h"),
+        target="org/pilot",  # the tick's contract applies to ITS target only
     )
 
     from typing import ClassVar
@@ -3536,7 +3541,7 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
                 benchmark="tsp",
                 state=IN_REVIEW,
                 pr_url="https://github.com/org/pilot/pull/7",
-                auto_eligible=panel,
+                auto_blessed_head="h" * 40 if panel else "",
             ),
             now=NOW,
         )
@@ -3611,7 +3616,7 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
             benchmark="tsp",
             state=IN_REVIEW,
             pr_url="https://github.com/org/pilot/pull/7",
-            auto_eligible=True,
+            auto_blessed_head="h" * 40,
             followup_job_id="9000000042",
         ),
         now=NOW,
@@ -3619,6 +3624,36 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     service_in_review(tmp_path, G(), LiveFollowupCompute(), spec, NOW, contract=auto)
     assert G.arms == []
     rec("r-arm", panel=True)  # back to the plain eligible record
+
+    # the blessing is bound to an exact head (terra #228 r8): a PR whose
+    # head moved past the blessed sha — a crashed responder's push, say —
+    # never arms, whatever the record still says
+    class MovedHeadG(G):
+        def get_pull_request(self, repo, number):
+            return {**super().get_pull_request(repo, number), "head": {"sha": "m" * 40}}
+
+    rec("r-arm", panel=True)
+    service_in_review(tmp_path, MovedHeadG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
+    # a record from ANOTHER target is never judged by this tick's contract
+    # (terra #228 r8): its own contract is fetched; unreadable -> manual
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="r-arm",
+            target="org/other",
+            task_title="t",
+            benchmark="tsp",
+            state=IN_REVIEW,
+            pr_url="https://github.com/org/other/pull/7",
+            auto_blessed_head="h" * 40,
+        ),
+        now=NOW,
+    )
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []  # G has no get_file_content -> doubt -> manual
+    rec("r-arm", panel=True)
 
     # a DRAFT PR is not a merge candidate, clean or not (terra #228 r3)
     class DraftG(G):

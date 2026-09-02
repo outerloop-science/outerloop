@@ -171,6 +171,23 @@ def _target_clone_url(target: str) -> str:
     return f"https://github.com/{target}.git"
 
 
+def _blessed_head(ws: Workspace, result: Any, contract: Any) -> str:
+    """The pushed PR head the tick may later self-merge — only when this
+    publish was under merge:auto with a CLEAN panel (#171's arming
+    condition); "" otherwise. Best-effort: an unreadable HEAD blesses
+    nothing (never arm on doubt)."""
+    if not (
+        result.panel_rounds > 0
+        and not (result.panel_blocking_open or result.panel_degraded)
+        and getattr(contract, "merge", "manual") == "auto"
+    ):
+        return ""
+    try:
+        return ws.git("rev-parse", "HEAD").strip()
+    except Exception:
+        return ""
+
+
 def _arm_unless_base_moved(
     github: GitHubClient,
     ws: Workspace,
@@ -1591,9 +1608,7 @@ def resume_run(
                         **record.__dict__,
                         "state": IN_REVIEW,
                         "pr_url": pr_url,
-                        "auto_eligible": result.panel_rounds > 0
-                        and not (result.panel_blocking_open or result.panel_degraded)
-                        and getattr(contract, "merge", "manual") == "auto",
+                        "auto_blessed_head": _blessed_head(ws, result, contract),
                         "resume_session_id": result.session.session_id if result.session else "",
                         "ending_note": pr_url,
                     }
@@ -1796,9 +1811,7 @@ def resume_run(
                     **record.__dict__,
                     "state": IN_REVIEW,
                     "pr_url": pr_url,
-                    "auto_eligible": result.panel_rounds > 0
-                    and not (result.panel_blocking_open or result.panel_degraded)
-                    and getattr(contract, "merge", "manual") == "auto",
+                    "auto_blessed_head": _blessed_head(ws, result, contract),
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
                 }
@@ -2677,9 +2690,7 @@ def live_attempt(
                     **record.__dict__,
                     "state": IN_REVIEW,
                     "pr_url": pr_url,
-                    "auto_eligible": result.panel_rounds > 0
-                    and not (result.panel_blocking_open or result.panel_degraded)
-                    and getattr(contract, "merge", "manual") == "auto",
+                    "auto_blessed_head": _blessed_head(ws, result, contract),
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
                 }
