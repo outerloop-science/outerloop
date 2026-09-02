@@ -25,10 +25,15 @@ uid=$(id -u)
 # locks in the shared dir too, and must count as live for this sweep
 worktrees=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 [ -n "$worktrees" ] || worktrees="$checkout"
-# find truncates ages to whole minutes, so "+N" would skip a lock N minutes
-# and 30 seconds old; "+N-1" selects everything at least N minutes old
-[ "$min_age" -ge 1 ] 2>/dev/null || min_age=1
-age_arg=$((min_age - 1))
+# ages are compared exactly, in seconds: find's -mmin truncates on GNU and
+# rounds UP on BSD, so neither says "at least N minutes old" the same way
+[ "$min_age" -ge 0 ] 2>/dev/null || min_age=10
+min_age_s=$((min_age * 60))
+now=$(date +%s)
+
+mtime_of() {
+    stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null || echo "$now"
+}
 
 live_git() {
     # only REAL git processes of ours (comm == git — never this bash script,
@@ -63,8 +68,10 @@ if live_git; then
 fi
 for dir in "$gitdir" "$common"; do
     [ -d "$dir" ] || continue
-    find "$dir" -type f -name '*.lock' -mmin "+$age_arg" 2>/dev/null
+    find "$dir" -type f -name '*.lock' 2>/dev/null
 done | sort -u | while IFS= read -r lock; do
+    age=$(( now - $(mtime_of "$lock") ))
+    [ "$age" -ge "$min_age_s" ] || continue
     rm -f -- "$lock" && echo "deploy: swept stale git lock $lock"
 done
 exit 0
