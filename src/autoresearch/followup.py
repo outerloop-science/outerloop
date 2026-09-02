@@ -676,17 +676,21 @@ def _respond(
     def _sync_push(note: str) -> bool:
         """Push the synced head under the #171 rule: an armed auto-mode PR
         would merge the new head on green CI, so the push is gated on a
-        CONFIRMED disarm; a human merges the synced PR."""
+        CONFIRMED disarm. After a SIGNATURE-CLEAN push, auto-merge re-arms
+        when BOTH worlds say auto: auto at publish means the panel
+        necessarily ran (the publish gate enforces it), auto now means the
+        owner still wants self-merging — and the clean sync restored exactly
+        the freshness _arm_unless_base_moved was protecting. Any other
+        combination leaves the merge to a human. (Live motivation:
+        gpt-speedrun#5 sat CLEAN-but-unarmed until a human click.)"""
         nonlocal measured_note, sync_pushed
         disarm_ok = True
+        pre_mode = getattr(contract, "merge", "manual")
+        post_mode = getattr(post_contract, "merge", "manual")
         # EITHER contract can have armed auto-merge: the pre-merge one at
         # publish time, the merged one as the repo's current dial — a push
         # to a possibly-armed PR is never made without a confirmed disarm
-        merge_modes = {
-            getattr(contract, "merge", "manual"),
-            getattr(post_contract, "merge", "manual"),
-        }
-        if "auto" in merge_modes:
+        if "auto" in {pre_mode, post_mode}:
             try:
                 disarm_ok = github.disable_auto_merge(record.target, number)
             except Exception as exc:
@@ -700,7 +704,19 @@ def _respond(
             return False
         ws.push(branch)
         sync_pushed = True
-        measured_note = note
+        rearmed = False
+        if pre_mode == "auto" and post_mode == "auto":
+            try:
+                rearmed = bool(github.arm_auto_merge_auto_mode(record.target, number))
+            except Exception as exc:  # un-armed is just a normal PR
+                log.warning("auto-merge re-arm errored after sync push: %s", exc)
+        measured_note = note + (
+            "\n\n_(Auto-merge re-armed: the sync is signature-clean and the "
+            "contract's merge dial is `auto` in both the measured and merged "
+            "worlds.)_"
+            if rearmed
+            else ""
+        )
         return True
 
     # A clean base merge can produce a commit whose TREE is unchanged (the
@@ -711,8 +727,7 @@ def _respond(
         _sync_push(
             f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
             "unchanged, so the measured numbers above still describe "
-            "exactly this content — only the ancestry moved. A human "
-            "merges the synced PR.)_"
+            "exactly this content — only the ancestry moved.)_"
         )
     # The next rung, deliberately NARROW: the merge changed exactly one
     # path — the contract file, with the base's own content — and every
@@ -753,8 +768,7 @@ def _respond(
             f"\n\n_(Base sync: `origin/{base_ref}` merged; the only change "
             "is the contract file, whose measurement signatures and scope "
             "are identical — the eval surface and solver are bit-for-bit "
-            "what was measured, so the numbers above stand. A human merges "
-            "the synced PR.)_"
+            "what was measured, so the numbers above stand.)_"
         )
     if sync_failed:
         _revert_response()

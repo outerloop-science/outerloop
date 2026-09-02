@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A signature-clean base sync re-arms auto-merge when the merge dial is
+  `auto` in BOTH the measured and merged worlds (auto at publish means the
+  panel ran; auto now means the owner still wants it) — the clean sync
+  restores exactly the freshness that withheld arming at publish. Any other
+  combination still leaves the merge to a human.
 - `AUTORESEARCH_COMPUTE=local` runs the whole loop without a cluster: jobs
   become synchronous subprocesses (`LocalCompute` at every seam), Slurm
   placement env is not required, park-time wake arming yields to the sweep,
