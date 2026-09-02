@@ -61,6 +61,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Before each deploy, the tick job removes git lock files older than ten
+  minutes when no git process is working in the checkout.
 - Dispatched wakes on research lines no longer read the line's memory files
   as out-of-scope deletions (the run's base is the line tip that carries them;
   the sealed candidate excludes them); the panel's claim diff omits them too.

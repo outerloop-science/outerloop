@@ -82,6 +82,10 @@ fi
 echo "=== tick $(date -Is) on $(hostname -s) job=${SLURM_JOB_ID:-none}"
 
 # --- 2. deploy: pull main with the bot PAT, sync deps (best-effort) ---
+# A tick killed mid-fetch leaves .git/*.lock files that make every later
+# deploy fail and the chain run stale code; sweep locks older than a few
+# minutes (a live git op holds one for seconds) before touching the checkout.
+bash "$AUTORESEARCH_HOME/scripts/sweep_git_locks.sh" "$AUTORESEARCH_HOME" 10 || true
 # The PAT never appears in argv (argv is world-readable via /proc on shared
 # nodes): git asks for it through GIT_ASKPASS instead.
 if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
