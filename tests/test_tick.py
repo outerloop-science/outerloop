@@ -3596,6 +3596,30 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     service_in_review(tmp_path, ChattyG(), LocalCompute(), spec, NOW, contract=auto)
     assert G.arms == []  # feedback pending: no self-merge
 
+    # a LIVE follow-up job blocks arming (terra #228 r7): its code push may
+    # have landed while the record write clearing the blessing has not
+    class LiveFollowupCompute(LocalCompute):
+        def status(self, job_id):
+            return "RUNNING"
+
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="r-arm",
+            target="org/pilot",
+            task_title="t",
+            benchmark="tsp",
+            state=IN_REVIEW,
+            pr_url="https://github.com/org/pilot/pull/7",
+            auto_eligible=True,
+            followup_job_id="9000000042",
+        ),
+        now=NOW,
+    )
+    service_in_review(tmp_path, G(), LiveFollowupCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+    rec("r-arm", panel=True)  # back to the plain eligible record
+
     # a DRAFT PR is not a merge candidate, clean or not (terra #228 r3)
     class DraftG(G):
         def get_pull_request(self, repo, number):

@@ -574,9 +574,21 @@ def service_in_review(
                 # governing dial. Running every tick survives any crash
                 # between a sync push and this step; the helper direct-merges
                 # when nothing is pending to arm against.
+                # ...and no follow-up job may be LIVE: a running responder can
+                # have pushed a code change whose record write (clearing the
+                # blessing) has not landed yet — arming on that head would
+                # merge code the panel never saw (terra #228 r7)
+                followup_live = False
+                if record.followup_job_id:
+                    try:
+                        state = compute.status(record.followup_job_id)
+                        followup_live = not (is_terminal(state) or state == GONE)
+                    except SlurmQueryError:
+                        followup_live = True  # unknown = assume live, never arm
                 if (
                     not dry_run
                     and not is_steward
+                    and not followup_live
                     and record.auto_eligible
                     and contract is not None
                     and pr.get("state") == "open"
