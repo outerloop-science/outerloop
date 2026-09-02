@@ -13,6 +13,22 @@ Versions follow [SemVer](https://semver.org).
   placement env is not required, park-time wake arming yields to the sweep,
   and `tick --loop` is the foreground chain. The zero-Slurm on-ramp and the
   serialized-monolith ablation are the same switch (`docs/design/onboarding.md`).
+- The base-sync skip compares benchmark MEASUREMENT SIGNATURES — all
+  benchmark fields except the pure workflow dials (lines, depth_k, sleep_k,
+  display_digits) — instead of whole-model equality: the dials steer the
+  loop, never what a measured number means. Live motivation: the
+  `lines: true` flip sits inside the benchmark stanza, so the equality
+  check refused the exact sync it was built for.
+- A base sync whose merge changes only base-owned content pushes without a
+  re-measure — the solver and eval surface are bit-for-bit what was measured,
+  so the numbers stand (the topology rule, extended one rung). And the sync
+  cursor now spends only on REMOTE progress: a merge that exists solely in
+  the workspace (a withheld re-measure) leaves the head re-wakeable.
+- A PR left BEHIND by a base move now wakes its author the way a conflicted
+  one does: merge the base in (cleanly — no resolving), reconsider the
+  conclusion, and the result is re-measured before pushing. Publish already
+  declined to arm auto-merge on a stale claim; this closes the loop so the
+  claim can become fresh again instead of sitting until a human notices.
 - The kernel can authenticate as a GitHub App: set `AUTORESEARCH_GITHUB_APP_FILE`
   to a JSON config (`app_id`, `installation_id`, `private_key` path) and every
   role mints short-lived installation tokens instead of reading the bot PAT

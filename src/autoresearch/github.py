@@ -975,6 +975,12 @@ def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    # The session owns the clone and can write refs/replace/*, which git
+    # honors in ancestry checks (merge-base) and object lookups
+    # (rev-parse sha:path) — either would let a doctored object stand in
+    # for a real one during post-session verification. The kernel never
+    # uses replace refs; disable them on every invocation.
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     pairs = _filter_override_pairs(root)
     if token is not None:
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
