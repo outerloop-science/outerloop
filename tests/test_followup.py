@@ -1217,3 +1217,72 @@ def test_behind_wake_without_a_real_merge_is_withheld(review_run) -> None:
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == ""  # cursor unspent: the wake retries
     assert record.wake_attempts == 1  # bounded by MAX_WAKE_ATTEMPTS
+
+
+def test_sync_needed_with_failed_fetch_services_nothing(review_run, monkeypatch) -> None:
+    """A PR that needs a base sync but whose base fetch failed is not
+    serviced at all this pass — qualifying comments included (terra #224
+    r3: the comment path measured and pushed against no current base while
+    the PR stayed behind)."""
+    from autoresearch.github import Workspace
+
+    root, _bare = review_run
+
+    def boom(self) -> None:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(Workspace, "fetch_origin", boom)
+    github = FakeGitHub(pr=_behind_pr(), comments=[member(11, "please tweak the kick")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "comment-driven edit\n"})
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "error"
+    assert "base sync needed" in outcome.note
+    assert harness.calls == []  # no session ran; nothing measured or pushed
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # cursor unspent: retried next tick
+
+
+def test_conflicted_sync_merge_is_aborted_on_revert(review_run) -> None:
+    """A session that starts a base merge and leaves it conflicted must not
+    poison the workspace: the revert aborts the merge (terra #224 r3:
+    checkout+clean left MERGE_HEAD, so the NEXT wake started inside an
+    unfinished merge)."""
+    root, _bare = review_run
+    # main rewrites the solver the PR branch also changed -> guaranteed conflict
+    seed2 = root.parent / "seed2d"
+    _git(root.parent, "clone", "-q", str(_bare), str(seed2))
+    (seed2 / "src" / "pilot" / "solvers" / "tsp.py").write_text("conflicting main rewrite\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main rewrites")
+    _git(seed2, "push", "-q", "origin", "main")
+
+    class ConflictedMergeHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.calls.append((brief_text, resume_session_id))
+            git = ["git", "-C", str(workspace), "-c", "user.name=t", "-c", "user.email=t@t"]
+            # both sides rewrite the solver -> the merge MUST conflict
+            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("local rewrite\n")
+            subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+            subprocess.run([*git, "commit", "-qm", "local"], check=True, capture_output=True)
+            merged = subprocess.run(  # conflicts and leaves MERGE_HEAD, like a dying session
+                [*git, "merge", "--no-edit", "origin/main"], capture_output=True
+            )
+            assert merged.returncode != 0, "fixture expected a conflicted merge"
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.1,
+                num_turns=2,
+                session_id="sess-conflicted",
+                final_text="tried the merge",
+                transcript_path="",
+            )
+
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr())
+    outcome = respond(root, github, ConflictedMergeHarness(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "does not include the fetched base" in github.posted[0]
+    assert not (ws / ".git" / "MERGE_HEAD").exists()  # the merge was aborted
+    assert _git(ws, "status", "--porcelain") == ""  # workspace fully clean

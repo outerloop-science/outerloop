@@ -14,6 +14,7 @@ own comments and the advisory marker — is ignored.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -456,15 +457,14 @@ def _respond(
     except Exception as exc:
         log.warning("base fetch failed for %s: %s", run_id, exc)
     base_fetched = bool(base_sha_at_fetch)
-    if conflict_wake and not base_fetched:
-        # never tell the session the base was fetched when it was not, and
-        # never spend the once-per-head cursor on a failed setup — the next
-        # tick retries the whole wake
-        conflict_wake = False
-        if not merged:
-            return FollowupOutcome(
-                run_id, "error", "conflict wake: base fetch failed; retrying next tick"
-            )
+    if base_sync_head(pr) and not base_fetched:
+        # a PR that NEEDS a base sync cannot be serviced without a current
+        # base — comment-driven edits included: they would measure and push
+        # against no known base while the PR stays behind/conflicted. The
+        # cursor is unspent; the next tick retries the whole wake.
+        return FollowupOutcome(
+            run_id, "error", "base sync needed but the base fetch failed; retrying next tick"
+        )
 
     prompt = render_review_wake([(author, body) for _, author, body in comments])
     if conflict_wake and is_conflict:
@@ -595,7 +595,12 @@ def _respond(
         committed = []
 
     def _revert_response() -> None:
-        # drop working-tree edits AND any local commits past the pushed tip
+        # drop working-tree edits AND any local commits past the pushed tip;
+        # abort first — a conflicted, uncommitted merge leaves MERGE_HEAD and
+        # unmerged paths that checkout/clean do not clear, and the next wake
+        # must never start inside someone else's half-merge
+        with contextlib.suppress(GitError):
+            ws.git("merge", "--abort")
         ws.git("checkout", "--", ".")
         ws.git("clean", "-fdq")
         if committed:
