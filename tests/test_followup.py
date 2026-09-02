@@ -1325,3 +1325,65 @@ def test_topology_only_base_merge_is_pushed(review_run) -> None:
     assert merge_base == main_sha
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == "h" * 40  # cursor spent: sync done
+
+
+def test_replace_ref_cannot_forge_the_ancestry_check(review_run) -> None:
+    """The session owns the clone: a planted refs/replace/* must not let
+    merge-base call a fake merge an ancestor of the fetched base (terra
+    #224 r5) — GIT_NO_REPLACE_OBJECTS rides every kernel git invocation."""
+    root, bare = review_run
+    seed2 = root.parent / "seed2f"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+
+    class ForgingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.calls.append((brief_text, resume_session_id))
+            git = ["git", "-C", str(workspace), "-c", "user.name=t", "-c", "user.email=t@t"]
+            # the "session" edits without merging, then REPLACES the fetched
+            # base commit with an ancestor of HEAD so ancestry appears to hold
+            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("forged sync\n")
+            subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+            subprocess.run([*git, "commit", "-qm", "forged"], check=True, capture_output=True)
+            base_sha = subprocess.run(
+                [*git, "rev-parse", "origin/main"], check=True, capture_output=True, text=True
+            ).stdout.strip()
+            root_commit = (
+                subprocess.run(
+                    [*git, "rev-list", "--max-parents=0", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .splitlines()[0]
+            )
+            subprocess.run(
+                [*git, "update-ref", f"refs/replace/{base_sha}", root_commit],
+                check=True,
+                capture_output=True,
+            )
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.1,
+                num_turns=2,
+                session_id="sess-forger",
+                final_text="synced (not really)",
+                transcript_path="",
+            )
+
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    # production shape: the PR branch exists on the remote, so the kernel
+    # can diff origin/<branch>..HEAD and see the forger's commit
+    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
+    before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    github = FakeGitHub(pr=_behind_pr())
+    outcome = respond(root, github, ForgingHarness(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "does not include the fetched base" in github.posted[0]  # forgery refused
+    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == before  # no push
