@@ -184,3 +184,24 @@ def test_a_worktree_path_with_spaces_still_counts_as_live(tmp_path: Path) -> Non
         proc.wait(timeout=30)
     _sweep(repo)
     assert not common_lock.exists()
+
+
+def test_split_form_git_dir_and_work_tree_from_the_parent_count_as_live(tmp_path: Path) -> None:
+    """`--git-dir checkout/.git --work-tree checkout` (split form, relative,
+    from the parent) names the checkout only by basename tokens (r6)."""
+    repo = _repo(tmp_path, "app")
+    lock = _aged_lock(repo / ".git" / "index.lock")
+    proc = subprocess.Popen(
+        ["git", "--git-dir", "app/.git", "--work-tree", "app", "hash-object", "--stdin"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        cwd=tmp_path,
+    )
+    try:
+        time.sleep(0.3)
+        assert _sweep(repo).stdout == "" and lock.exists()
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=30)
+    assert "swept stale git lock" in _sweep(repo).stdout

@@ -60,13 +60,15 @@ live_git() {
         done <<EOF_WT
 $worktrees
 EOF_WT
-        # a RELATIVE -C / --git-dir / --work-tree naming the checkout by its
-        # basename (started from the parent directory): matched by name,
-        # conservatively — over-matching only delays the sweep a cadence
+        # a RELATIVE path naming the checkout by its basename (a git started
+        # from the parent directory), whatever option carries it — -C,
+        # --git-dir, --work-tree, split or '=' form: any argument token that
+        # is the bare name, ./-prefixed, or a path component before a '/'.
+        # Matched by name, conservatively — over-matching only delays the
+        # sweep a cadence; a sibling named with this one as a PREFIX does
+        # not match (the token must end at a space or a '/')
         case " $args " in
-            *" -C $base "*|*" -C ./$base "*|*" -C $base/"*|*" -C ./$base/"*) return 0 ;;
-            *"--git-dir=$base/"*|*"--git-dir=./$base/"*) return 0 ;;
-            *"--work-tree=$base"*|*"--work-tree=./$base"*) return 0 ;;
+            *" $base "*|*" $base/"*|*"=$base "*|*"=$base/"*|*"/$base "*|*"/$base/"*) return 0 ;;
         esac
         if [ -d /proc ]; then
             cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
