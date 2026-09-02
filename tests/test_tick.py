@@ -3477,3 +3477,189 @@ def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
         assert clamped == expect
         assert math.isfinite(clamped)
     assert _loop_cadence_s(0.0) == 45 * 60  # non-positive defers to the env
+
+
+def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
+    """The idempotent auto-arm (terra #228's redesign): once GitHub reports
+    the PR CLEAN (up-to-date with the CURRENT base + green — GitHub's own
+    freshness proof), the kernel-read contract says auto, and the RECORD says
+    the publish blessed THIS head, the service arms/merges. An empty blessing,
+    a manual dial, or a non-clean PR must never arm. Running tick-side (not
+    in the sync push) survives a crash between push and arm."""
+    from types import SimpleNamespace
+
+    from autoresearch.compute import LocalCompute
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    spec = FollowupSpec(
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=Path("/h"),
+        target="org/pilot",  # the tick's contract applies to ITS target only
+    )
+
+    from typing import ClassVar
+
+    class G:
+        arms: ClassVar[list[int]] = []
+
+        def __init__(self, state: str = "clean") -> None:
+            self._state = state
+
+        def get_pull_request(self, repo, number):
+            return {
+                "state": "open",
+                "merged": False,
+                "mergeable": True,
+                "mergeable_state": self._state,
+                "head": {"sha": "h" * 40},
+            }
+
+        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
+            assert expected_head == "h" * 40  # the mutation is bound to the blessed head
+            G.arms.append(number)
+            return True
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def rec(run_id: str, panel: bool) -> None:
+        save_record(
+            tmp_path,
+            RunRecord(
+                run_id=run_id,
+                target="org/pilot",
+                task_title="t",
+                benchmark="tsp",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/7",
+                auto_blessed_head="h" * 40 if panel else "",
+            ),
+            now=NOW,
+        )
+
+    auto = SimpleNamespace(merge="auto")
+    manual = SimpleNamespace(merge="manual")
+
+    rec("r-arm", panel=True)
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == [7]  # armed exactly once
+
+    G.arms.clear()
+    rec("r-arm", panel=False)  # no panel provenance: never arm
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
+    rec("r-arm", panel=True)  # manual dial: never arm
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=manual)
+    assert G.arms == []
+
+    # behind (not clean): never arm — freshness comes from GitHub's own check
+    service_in_review(tmp_path, G("behind"), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
+    # a non-main base is governed by ITS OWN contract dial (terra #228 r5):
+    # main says auto but the base branch's contract is manual -> never arm
+    class OtherBaseG(G):
+        def get_pull_request(self, repo, number):
+            return {**super().get_pull_request(repo, number), "base": {"ref": "release"}}
+
+        def get_file_content(self, repo, path, ref):
+            assert ref == "release"
+            return (
+                "benchmarks:\n  - name: tsp\n    command: x\n    metric: m\n"
+                "    direction: min\n"
+                "budgets: {gpu_hours_per_run: 1, runs_per_week: 1}\n"
+                "scope: {allowed: [src/]}\nroadmap: docs/roadmap.md\n"
+            )
+
+    service_in_review(tmp_path, OtherBaseG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
+    # pending reviewer feedback wins over arming (terra #228 r6): a clean,
+    # eligible PR with a NEW comment services the followup instead
+    class ChattyG(G):
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 990,
+                    "body": "please adjust",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+    rec("r-arm", panel=True)
+    service_in_review(tmp_path, ChattyG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []  # feedback pending: no self-merge
+
+    # a LIVE follow-up job blocks arming (terra #228 r7): its code push may
+    # have landed while the record write clearing the blessing has not
+    class LiveFollowupCompute(LocalCompute):
+        def status(self, job_id):
+            return "RUNNING"
+
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="r-arm",
+            target="org/pilot",
+            task_title="t",
+            benchmark="tsp",
+            state=IN_REVIEW,
+            pr_url="https://github.com/org/pilot/pull/7",
+            auto_blessed_head="h" * 40,
+            followup_job_id="9000000042",
+        ),
+        now=NOW,
+    )
+    service_in_review(tmp_path, G(), LiveFollowupCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+    rec("r-arm", panel=True)  # back to the plain eligible record
+
+    # the blessing is bound to an exact head (terra #228 r8): a PR whose
+    # head moved past the blessed sha — a crashed responder's push, say —
+    # never arms, whatever the record still says
+    class MovedHeadG(G):
+        def get_pull_request(self, repo, number):
+            return {**super().get_pull_request(repo, number), "head": {"sha": "m" * 40}}
+
+    rec("r-arm", panel=True)
+    service_in_review(tmp_path, MovedHeadG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
+    # a record from ANOTHER target is never judged by this tick's contract
+    # (terra #228 r8): its own contract is fetched; unreadable -> manual
+    save_record(
+        tmp_path,
+        RunRecord(
+            run_id="r-arm",
+            target="org/other",
+            task_title="t",
+            benchmark="tsp",
+            state=IN_REVIEW,
+            pr_url="https://github.com/org/other/pull/7",
+            auto_blessed_head="h" * 40,
+        ),
+        now=NOW,
+    )
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []  # G has no get_file_content -> doubt -> manual
+    rec("r-arm", panel=True)
+
+    # a DRAFT PR is not a merge candidate, clean or not (terra #228 r3)
+    class DraftG(G):
+        def get_pull_request(self, repo, number):
+            return {**super().get_pull_request(repo, number), "draft": True}
+
+    service_in_review(tmp_path, DraftG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []

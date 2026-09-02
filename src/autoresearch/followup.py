@@ -159,16 +159,13 @@ def base_sync_head(pr: dict) -> str:
     return dirty_pr_head(pr) or stale_pr_head(pr)
 
 
-def conflict_wake_action(record: RunRecord, github: GitHubClient) -> str:
-    """Tick-side gate (cheap, read-only): "wake" for an in-review PR whose
-    base moved out from under it — conflicted OR cleanly behind — and that
-    has not been woken for THIS head yet; "clear" when a previously-woken PR
-    is current again (the base can move and stale the SAME head a second
-    time, so the cursor must re-arm); "" otherwise."""
-    try:
-        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
-    except Exception:
-        return ""
+def conflict_wake_action(record: RunRecord, pr: dict) -> str:
+    """Tick-side gate (cheap, read-only, PURE — the caller fetched the PR):
+    "wake" for an in-review PR whose base moved out from under it —
+    conflicted OR cleanly behind — and that has not been woken for THIS
+    head yet; "clear" when a previously-woken PR is current again (the base
+    can move and stale the SAME head a second time, so the cursor must
+    re-arm); "" otherwise."""
     head = base_sync_head(pr)
     if head and head != record.dirty_wake_head:
         return "wake"
@@ -672,11 +669,17 @@ def _respond(
     # clean merge whose eval was withheld spent the cursor with the PR still
     # behind on GitHub.
     sync_pushed = False
+    blessed_head = record.auto_blessed_head
 
     def _sync_push(note: str) -> bool:
         """Push the synced head under the #171 rule: an armed auto-mode PR
         would merge the new head on green CI, so the push is gated on a
-        CONFIRMED disarm; a human merges the synced PR."""
+        CONFIRMED disarm. Arming is NOT this function's job: the tick's
+        in-review service re-arms idempotently once GitHub reports the PR
+        clean — panel provenance from the record, the dial from the
+        kernel-read contract, freshness from GitHub's own up-to-date check —
+        which survives crashes here and never trusts two contract dials as
+        proof a panel ran."""
         nonlocal measured_note, sync_pushed
         disarm_ok = True
         # EITHER contract can have armed auto-merge: the pre-merge one at
@@ -701,6 +704,14 @@ def _respond(
         ws.push(branch)
         sync_pushed = True
         measured_note = note
+        # a signature-clean sync preserves the measured bytes: the blessing
+        # follows the head it now lives on (empty stays empty)
+        nonlocal blessed_head
+        if blessed_head:
+            try:
+                blessed_head = ws.git("rev-parse", "HEAD").strip()
+            except Exception:
+                blessed_head = ""
         return True
 
     # A clean base merge can produce a commit whose TREE is unchanged (the
@@ -711,8 +722,7 @@ def _respond(
         _sync_push(
             f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
             "unchanged, so the measured numbers above still describe "
-            "exactly this content — only the ancestry moved. A human "
-            "merges the synced PR.)_"
+            "exactly this content — only the ancestry moved.)_"
         )
     # The next rung, deliberately NARROW: the merge changed exactly one
     # path — the contract file, with the base's own content — and every
@@ -753,8 +763,7 @@ def _respond(
             f"\n\n_(Base sync: `origin/{base_ref}` merged; the only change "
             "is the contract file, whose measurement signatures and scope "
             "are identical — the eval surface and solver are bit-for-bit "
-            "what was measured, so the numbers above stand. A human merges "
-            "the synced PR.)_"
+            "what was measured, so the numbers above stand.)_"
         )
     if sync_failed:
         _revert_response()
@@ -1011,6 +1020,11 @@ def _respond(
                 else record.dirty_wake_head
             ),
             resume_session_id=session.session_id or record.resume_session_id,
+            # a pushed CODE CHANGE replaces the panel-blessed content: the
+            # blessing dies with it (sync pushes carried it to the new head);
+            # the tick arms only on an exact head match, so even a crash
+            # before this write can never bless the pushed code (#228 r4/r8)
+            auto_blessed_head="" if change_pushed else blessed_head,
             wake_attempts=(
                 record.wake_attempts
                 if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))

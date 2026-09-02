@@ -383,8 +383,13 @@ class GitHubClient:
         ]
         return [m for m, key in order if settings.get(key)]
 
-    def enable_auto_merge(self, repo: str, number: int, method: str = "MERGE") -> None:
+    def enable_auto_merge(
+        self, repo: str, number: int, method: str = "MERGE", expected_head: str = ""
+    ) -> None:
         """Arm GitHub's auto-merge on a PR (a GraphQL-only capability).
+        `expected_head` binds the arm to that head oid: GitHub refuses when
+        the PR head has moved, so a push racing the caller's check can never
+        be the thing that merges.
 
         Arming does not merge anything: it hands the merge to whatever
         branch protection still requires. Callers that must preserve the
@@ -400,12 +405,21 @@ class GitHubClient:
         node_id = self.get_pull_request(repo, number).get("node_id")
         if not node_id:
             raise GitHubError(0, pr_path, "no node_id in PR payload")
-        mutation = (
-            "mutation($pr: ID!, $method: PullRequestMergeMethod!) {"
-            " enablePullRequestAutoMerge(input: {pullRequestId: $pr, mergeMethod: $method})"
-            " { pullRequest { number } } }"
-        )
-        self._graphql(mutation, {"pr": str(node_id), "method": method})
+        variables: dict[str, Any] = {"pr": str(node_id), "method": method}
+        if expected_head:
+            mutation = (
+                "mutation($pr: ID!, $method: PullRequestMergeMethod!, $head: GitObjectID!) {"
+                " enablePullRequestAutoMerge(input: {pullRequestId: $pr, mergeMethod: $method,"
+                " expectedHeadOid: $head}) { pullRequest { number } } }"
+            )
+            variables["head"] = expected_head
+        else:
+            mutation = (
+                "mutation($pr: ID!, $method: PullRequestMergeMethod!) {"
+                " enablePullRequestAutoMerge(input: {pullRequestId: $pr, mergeMethod: $method})"
+                " { pullRequest { number } } }"
+            )
+        self._graphql(mutation, variables)
 
     def arm_auto_merge_when_review_required(self, repo: str, number: int) -> bool:
         """Arm auto-merge ONLY when branch protection makes a human review
@@ -457,24 +471,31 @@ class GitHubClient:
             log.warning("auto-merge disarm on %s#%s failed: %s", repo, number, exc)
             return False
 
-    def merge_pull(self, repo: str, number: int, method: str = "merge") -> bool:
+    def merge_pull(
+        self, repo: str, number: int, method: str = "merge", expected_head: str = ""
+    ) -> bool:
         """Directly merge a pull request (REST). Used only by AUTO merge mode
-        when nothing is pending for auto-merge to arm against."""
+        when nothing is pending for auto-merge to arm against. `expected_head`
+        rides the API's `sha` guard: GitHub refuses (409) when the head moved
+        since the caller checked it."""
         if self.dry_run:
             log.info("[dry-run] merge %s#%s", repo, number)
             return True
+        body: dict[str, Any] = {"merge_method": method}
+        if expected_head:
+            body["sha"] = expected_head
         try:
             self._request(
                 "PUT",
                 f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/merge",
-                {"merge_method": method},
+                body,
             )
             return True
         except GitHubError as exc:
             log.warning("direct merge of %s#%s failed: %s", repo, number, exc)
             return False
 
-    def arm_auto_merge_auto_mode(self, repo: str, number: int) -> bool:
+    def arm_auto_merge_auto_mode(self, repo: str, number: int, expected_head: str = "") -> bool:
         """AUTO merge mode (the contract's `merge: auto` dial): arm
         auto-merge so the PR merges when its required checks pass; when
         GitHub declines ONLY because nothing is pending (clean status),
@@ -486,7 +507,7 @@ class GitHubClient:
         opted this repo in, and the gate/panel bound before publish."""
         methods = self.allowed_merge_methods(repo) or ["MERGE"]
         try:
-            self.enable_auto_merge(repo, number, method=methods[0])
+            self.enable_auto_merge(repo, number, method=methods[0], expected_head=expected_head)
             return True
         except GitHubError as exc:
             if "clean status" not in str(exc).casefold():
@@ -503,7 +524,7 @@ class GitHubClient:
                 repo,
                 number,
             )
-        return self.merge_pull(repo, number, method=methods[0].lower())
+        return self.merge_pull(repo, number, method=methods[0].lower(), expected_head=expected_head)
 
     def get_pull_request_diff(self, repo: str, number: int) -> str:
         """Fetch a PR's unified diff (uses the diff media type)."""

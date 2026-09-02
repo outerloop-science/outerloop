@@ -475,6 +475,29 @@ def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: A
     return spec
 
 
+def _base_dial(
+    github: Any, target: str, pr: dict, main_contract: Any, main_target: str = ""
+) -> str:
+    """The merge dial that governs THIS PR: its own target's base-branch
+    contract. The tick's contract is read from ITS configured target's main;
+    it applies only to a main-based PR of that same target — any other
+    target or base is fetched from the PR's own coordinates, and unreadable
+    or unparsable means "manual" (never arm on doubt)."""
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    if base_ref == "main" and target == main_target:
+        return str(getattr(main_contract, "merge", "manual"))
+    try:
+        from autoresearch.contract import load_contract
+
+        raw = github.get_file_content(target, ".autoresearch.yaml", base_ref)
+        if raw is None:
+            return "manual"
+        return str(getattr(load_contract(raw, target), "merge", "manual"))
+    except Exception as exc:
+        log.warning("base-contract read failed for %s@%s: %s", target, base_ref, exc)
+        return "manual"
+
+
 def service_in_review(
     root: Path,
     github: Any,  # GitHubClient (Any keeps tick importable without github deps)
@@ -483,6 +506,7 @@ def service_in_review(
     now: float,
     dry_run: bool = False,
     allow_submit: bool = True,
+    contract: Any = None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """PR-state transitions + follow-up job submission for in-review runs.
 
@@ -495,7 +519,12 @@ def service_in_review(
     duplicate submission no-ops on the lease, and `followup_job_id` keeps the
     tick from queueing duplicates in the first place.
     """
-    from autoresearch.followup import close_if_done, conflict_wake_action, has_new_comments
+    from autoresearch.followup import (
+        _pr_number,
+        close_if_done,
+        conflict_wake_action,
+        has_new_comments,
+    )
 
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
@@ -520,7 +549,14 @@ def service_in_review(
             if paused:
                 log.info("follow-up for %s paused (api outage: %s)", record.run_id, paused)
                 continue
-            wake_action = conflict_wake_action(record, github)
+            try:
+                pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+            except Exception:
+                continue  # unreadable PR: nothing to decide this tick
+            # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
+            # checks AND up-to-date with the CURRENT base — GitHub's own
+            # freshness proof), the kernel-read contract STILL says auto, and
+            wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the
                 # base can move and conflict the SAME head a second time
@@ -529,6 +565,53 @@ def service_in_review(
                 except OSError as exc:
                     log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
             if not has_new_comments(record, github, spec.bot_login) and wake_action != "wake":
+                # NOTHING awaits servicing — only a fully quiet PR may
+                # self-merge (pending reviewer feedback always wins over
+                # arming: a followup must service it first, and a pushed
+                # change would kill the blessing anyway). The RECORD says the
+                # publish was auto-eligible (published under merge:auto with
+                # a clean panel — #171's exact arming condition; a manual
+                # publish never consented, and contracts alone cannot prove
+                # either fact after a dial flip); GitHub's own CLEAN state is
+                # the freshness proof; the PR's base-branch contract is the
+                # governing dial. Running every tick survives any crash
+                # between a sync push and this step; the helper direct-merges
+                # when nothing is pending to arm against.
+                # ...and no follow-up job may be LIVE: a running responder can
+                # have pushed a code change whose record write (clearing the
+                # blessing) has not landed yet — arming on that head would
+                # merge code the panel never saw (terra #228 r7)
+                followup_live = False
+                if record.followup_job_id:
+                    try:
+                        state = compute.status(record.followup_job_id)
+                        followup_live = not (is_terminal(state) or state == GONE)
+                    except SlurmQueryError:
+                        followup_live = True  # unknown = assume live, never arm
+                if (
+                    not dry_run
+                    and not is_steward
+                    and not followup_live
+                    and record.auto_blessed_head
+                    and str((pr.get("head") or {}).get("sha", "")) == record.auto_blessed_head
+                    and contract is not None
+                    and pr.get("state") == "open"
+                    and not pr.get("merged")
+                    and not pr.get("draft")
+                    and pr.get("mergeable_state") == "clean"
+                    and _base_dial(github, record.target, pr, contract, spec.target) == "auto"
+                ):
+                    try:
+                        # the mutation itself is bound to the blessed head: a
+                        # push racing this check is refused by GitHub, not
+                        # merged (terra #228 r9)
+                        github.arm_auto_merge_auto_mode(
+                            record.target,
+                            _pr_number(record.pr_url),
+                            expected_head=record.auto_blessed_head,
+                        )
+                    except Exception as exc:
+                        log.warning("auto-arm failed for %s: %s", record.run_id, exc)
                 continue
             if record.followup_job_id:
                 try:
@@ -1487,6 +1570,7 @@ def tick(
             now,
             dry_run=followup_dry_run,
             allow_submit=launch_ok,
+            contract=contract,
         )
         try:
             service_research_log(root, github, spec, now)

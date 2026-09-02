@@ -411,20 +411,20 @@ def test_auto_mode_arming_merges_only_on_clean_status(monkeypatch) -> None:
     merged: list = []
     monkeypatch.setattr(client, "allowed_merge_methods", lambda repo: ["MERGE"])
 
-    def _fake_merge(repo, n, method):
+    def _fake_merge(repo, n, method, expected_head=""):
         merged.append(n)
         return True
 
     monkeypatch.setattr(client, "merge_pull", _fake_merge)
 
-    def clean_status(repo, n, method="MERGE"):
+    def clean_status(repo, n, method="MERGE", expected_head=""):
         raise GitHubError(0, "/x", "Pull request is in clean status")
 
     monkeypatch.setattr(client, "enable_auto_merge", clean_status)
     assert client.arm_auto_merge_auto_mode("o/r", 7) is True
     assert merged == [7]
 
-    def not_allowed(repo, n, method="MERGE"):
+    def not_allowed(repo, n, method="MERGE", expected_head=""):
         raise GitHubError(0, "/x", "Auto merge is not allowed for this repository")
 
     monkeypatch.setattr(client, "enable_auto_merge", not_allowed)
@@ -453,3 +453,42 @@ def test_redirect_off_host_loses_the_authorization_header() -> None:
     )
     assert same_host is not None
     assert same_host.headers.get("Authorization") == "Bearer jwt"
+
+
+def test_auto_mode_arming_binds_to_the_expected_head(provider: FileTokenProvider) -> None:
+    """arm_auto_merge_auto_mode threads the blessed head into BOTH paths: the
+    GraphQL arm carries expectedHeadOid, and the clean-status direct merge
+    carries the REST `sha` guard — so a push racing the caller's check is
+    refused by GitHub rather than merged (terra #228 r9)."""
+    import json as _json
+
+    seen: list = []
+
+    class T:
+        def __init__(self, decline_arm: bool) -> None:
+            self.decline_arm = decline_arm
+
+        def __call__(self, request):
+            body = _json.loads(request.data) if request.data else {}
+            seen.append((request.get_method(), request.full_url, body))
+            if request.full_url.endswith("/graphql"):
+                if self.decline_arm:
+                    return {"errors": [{"message": "Pull request is in clean status"}]}
+                return {"data": {"enablePullRequestAutoMerge": {"pullRequest": {"number": 1}}}}
+            if "/pulls/1/merge" in request.full_url:
+                return {"merged": True}
+            if request.full_url.endswith("/pulls/1"):
+                return {"node_id": "PR_x", "number": 1}
+            return {"allow_merge_commit": True}
+
+    client = GitHubClient(auth=provider, transport=T(decline_arm=False))
+    assert client.arm_auto_merge_auto_mode("o/r", 1, expected_head="h" * 40) is True
+    gql = [b for m, u, b in seen if u.endswith("/graphql")][-1]
+    assert gql["variables"]["head"] == "h" * 40
+    assert "expectedHeadOid" in gql["query"]
+
+    seen.clear()
+    client = GitHubClient(auth=provider, transport=T(decline_arm=True))
+    assert client.arm_auto_merge_auto_mode("o/r", 1, expected_head="h" * 40) is True
+    merge = [b for m, u, b in seen if "/pulls/1/merge" in u][-1]
+    assert merge["sha"] == "h" * 40

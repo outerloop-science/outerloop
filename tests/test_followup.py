@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
@@ -958,23 +957,22 @@ def test_conflict_wake_action_lifecycle(review_run) -> None:
 
     root, _ = review_run
     record = load_record(root, "tsp-r1")
-    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_dirty_pr()))) == "wake"
-    assert conflict_wake_action(record, cast(Any, FakeGitHub())) == ""  # clean, never woken
+    assert conflict_wake_action(record, _dirty_pr()) == "wake"
+    never_woken = {"state": "open", "merged": False}
+    assert conflict_wake_action(record, never_woken) == ""  # clean, never woken
     woken = replace(record, dirty_wake_head="h" * 40)
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr()))) == ""  # once/head
+    assert conflict_wake_action(woken, _dirty_pr()) == ""  # once/head
     # a new head (author pushed, conflicted again) re-arms
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr(head="i" * 40)))) == (
-        "wake"
-    )
+    assert conflict_wake_action(woken, _dirty_pr(head="i" * 40)) == ("wake")
     # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
     clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=clean))) == "clear"
+    assert conflict_wake_action(woken, clean) == "clear"
     # BEHIND (clean merge, stale base) wakes exactly like a conflict
-    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_behind_pr()))) == "wake"
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_behind_pr()))) == ""  # once/head
+    assert conflict_wake_action(record, _behind_pr()) == "wake"
+    assert conflict_wake_action(woken, _behind_pr()) == ""  # once/head
     # blocked-but-current does NOT wake (nothing to sync)
     blocked = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "blocked"}
-    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=blocked))) == ""
+    assert conflict_wake_action(record, blocked) == ""
 
 
 def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
@@ -1721,3 +1719,28 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
 
     tail = note.split("Changed paths:")[1]
     assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))
+
+
+def test_a_pushed_code_change_kills_the_auto_blessing(review_run) -> None:
+    """A followup that pushes a measured CODE CHANGE replaces the
+    panel-blessed content: the blessed head dies with it, so the tick can never
+    self-merge a head the panel never saw (terra #228 r4). A reply without a
+    pushed change keeps the blessing."""
+    from dataclasses import replace as dc_replace
+
+    root, _bare = review_run
+    record = load_record(root, "tsp-r1")
+    save_record(root, dc_replace(record, auto_blessed_head="b" * 40), NOW)
+    github = FakeGitHub(comments=[member(901, "please tweak the kick")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 tweaked\n"})
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""  # blessing dead
+
+    # a plain reply (no change pushed) keeps the blessing
+    save_record(root, dc_replace(load_record(root, "tsp-r1"), auto_blessed_head="b" * 40), NOW + 1)
+    github2 = FakeGitHub(comments=[member(902, "thanks, just explain")])
+    outcome2 = respond(root, github2, ResumingHarness(), QueueEvaluator(values=[]))
+    assert outcome2.action == "replied"
+    assert load_record(root, "tsp-r1").auto_blessed_head == "b" * 40

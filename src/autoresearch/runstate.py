@@ -149,6 +149,14 @@ class RunRecord:
     # head sha the last conflict wake was issued for: a dirty PR wakes the
     # author ONCE per head — a new push (or new conflict) re-arms it
     dirty_wake_head: str = ""
+    # The exact PR head the auto-arm may merge: set at publish to the pushed
+    # head when the PR was published UNDER merge:auto with a CLEAN panel
+    # (#171's arming condition), carried forward by signature-clean syncs
+    # (same measured bytes), cleared by any code-changing push. Binding the
+    # blessing to a sha — not a flag — means a crashed responder, a live
+    # one, or any unrecorded push simply fails the equality: the tick arms
+    # only when GitHub's head IS this sha. Empty = never arm (legacy too).
+    auto_blessed_head: str = ""
     followup_job_id: str = ""  # slurm job servicing this run's review comments
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0
