@@ -58,6 +58,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The tick chain sweeps stale `.git/*.lock` files (older than ten minutes,
+  no live git process) from its checkout before each deploy, so a tick killed
+  mid-fetch no longer freezes deploys on old code until someone clears the
+  lock by hand (`scripts/sweep_git_locks.sh`).
 - Dispatched wakes on research lines no longer read the line's memory files
   as out-of-scope deletions (the run's base is the line tip that carries them;
   the sealed candidate excludes them); the panel's claim diff omits them too.
