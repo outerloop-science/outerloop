@@ -3560,3 +3560,11 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     # behind (not clean): never arm — freshness comes from GitHub's own check
     service_in_review(tmp_path, G("behind"), LocalCompute(), spec, NOW, contract=auto)
     assert G.arms == []
+
+    # a DRAFT PR is not a merge candidate, clean or not (terra #228 r3)
+    class DraftG(G):
+        def get_pull_request(self, repo, number):
+            return {**super().get_pull_request(repo, number), "draft": True}
+
+    service_in_review(tmp_path, DraftG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []

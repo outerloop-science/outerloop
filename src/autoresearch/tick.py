@@ -548,6 +548,7 @@ def service_in_review(
                 and getattr(contract, "merge", "manual") == "auto"
                 and pr.get("state") == "open"
                 and not pr.get("merged")
+                and not pr.get("draft")
                 and pr.get("mergeable_state") == "clean"
             ):
                 try:
