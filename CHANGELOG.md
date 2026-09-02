@@ -65,10 +65,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- Tick successors carry a Slurm deadline one cadence past their slot, so a
-  successor the scheduler cannot start in time is removed by Slurm and frees
-  the `singleton` its twin waits on: a stuck successor delays the chain by a
-  cadence instead of deadlocking it.
+- Tick successors carry a Slurm deadline (slot + cadence + walltime), so a
+  successor the scheduler cannot start within its cadence is removed by Slurm
+  and frees the `singleton` its twin waits on: a stuck successor delays the
+  chain by a cadence instead of deadlocking it.
 - Jobs the site moves off their submitted partition no longer stall the kernel:
   the tick chain cancels and requeues a moved successor (it starved on a
   lower-tier partition and blocked its twin through `singleton`), and the
