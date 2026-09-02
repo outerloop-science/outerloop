@@ -612,28 +612,32 @@ def _respond(
     # any edit) and push a re-measured PR that is still behind/conflicted
     # (terra #224). An unchanged tree is different — an honest "superseded,
     # closing" reply spends the cursor and stands.
-    sync_failed = False
-    if conflict_wake and changed and base_sha_at_fetch:
+    # One ancestry probe decides the sync outcome: the cursor is spent only
+    # when HEAD objectively contains the fetched base. A session that neither
+    # merged nor changed anything (died early, replied vaguely, or declared
+    # itself superseded) leaves the head re-wakeable — supersession's
+    # terminal act is a human closing the PR, and retries stay capped by the
+    # tick's submit-time wake_attempts billing.
+    base_synced = False
+    if conflict_wake and base_sha_at_fetch:
         try:
             ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
+            base_synced = True
         except GitError:
-            sync_failed = True
+            base_synced = False
+    sync_failed = conflict_wake and changed and not base_synced
     # A clean base merge can produce a commit whose TREE is unchanged (the
     # branch already carried the base's content): committed/changed are both
     # empty, but the merge commit IS the contribution — without pushing it
     # the PR stays behind while the cursor is spent. Same measured tree, so
     # no re-eval is owed; push the topology and say so.
-    if conflict_wake and not changed and base_sha_at_fetch:
-        try:
-            ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
-            ws.push(branch)
-            measured_note = (
-                f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
-                "unchanged, so the measured numbers above still describe "
-                "exactly this content — only the ancestry moved.)_"
-            )
-        except GitError:
-            pass  # no merge happened; an honest no-change reply stands
+    if conflict_wake and not changed and base_synced:
+        ws.push(branch)
+        measured_note = (
+            f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
+            "unchanged, so the measured numbers above still describe "
+            "exactly this content — only the ancestry moved.)_"
+        )
     if sync_failed:
         _revert_response()
         measured_note = (
@@ -853,16 +857,15 @@ def _respond(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
-            # a failed sync leaves the cursor unspent so the wake retries —
-            # bounded: wake_attempts climbs instead of resetting, and the
-            # service stops resubmitting at MAX_WAKE_ATTEMPTS
+            # the cursor is spent only when the sync objectively happened
+            # (HEAD contains the fetched base); otherwise the head stays
+            # re-wakeable, bounded by the tick's submit-time billing — the
+            # count is kept, never advanced here, never reset without progress
             dirty_wake_head=(
-                conflict_head if (conflict_wake and not sync_failed) else record.dirty_wake_head
+                conflict_head if (conflict_wake and base_synced) else record.dirty_wake_head
             ),
             resume_session_id=session.session_id or record.resume_session_id,
-            # the tick already charged this submission; a failed sync keeps
-            # the count (retry stays capped), success resets it (progress)
-            wake_attempts=record.wake_attempts if sync_failed else 0,
+            wake_attempts=(record.wake_attempts if (conflict_wake and not base_synced) else 0),
         ),
         now,
     )

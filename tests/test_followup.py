@@ -1387,3 +1387,29 @@ def test_replace_ref_cannot_forge_the_ancestry_check(review_run) -> None:
     assert outcome.action == "replied"
     assert "does not include the fetched base" in github.posted[0]  # forgery refused
     assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == before  # no push
+
+
+def test_do_nothing_session_leaves_the_behind_wake_rearmed(review_run) -> None:
+    """A behind wake whose session neither merges nor edits must not spend
+    the cursor (terra #224 r6: the still-behind PR could never re-wake for
+    that head). The reply stands; the next pass wakes again, capped by the
+    tick's submit-time billing."""
+    root, bare = review_run
+    seed2 = root.parent / "seed2g"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr())
+    outcome = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # unspent: the sync did not happen
+    # the next pass re-wakes the same head instead of no-opping
+    second = ResumingHarness()
+    outcome2 = respond(root, github, second, QueueEvaluator(values=[10.2]))
+    assert outcome2.action == "replied"
+    assert second.calls, "the head must stay wakeable until the sync is real"
