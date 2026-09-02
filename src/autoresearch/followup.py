@@ -709,6 +709,14 @@ def _respond(
     # benchmark/scope difference takes the full scope-check + re-measure
     # path: base-owned content is NOT the same thing as measured-under
     # conditions (terra #225).
+    if conflict_wake and changed:
+        log.info(
+            "sync wake for %s: changed=%s base_synced=%s history_known=%s",
+            run_id,
+            changed[:20],
+            base_synced,
+            history_known,
+        )
     base_only_sync = False
     if (
         conflict_wake
@@ -783,8 +791,11 @@ def _respond(
             except Exception as exc:
                 _revert_response()
                 measured_note = (
-                    "\n\n_(A code change was attempted but the eval failed on "
-                    f"it, so it was not applied: {redact(str(exc), secrets)[:200]})_"
+                    "\n\n_(A code change was attempted but the eval failed "
+                    f"on it, so it was not applied. Changed paths: "
+                    f"{', '.join(f'`{p}`' for p in changed[:12])}"
+                    f"{' …' if len(changed) > 12 else ''}. "
+                    f"Error: {redact(str(exc), secrets)[:200]})_"
                 )
             else:
                 if _tree_hash(ws) != pre_eval_tree:
