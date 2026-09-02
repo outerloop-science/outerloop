@@ -722,10 +722,12 @@ def _respond(
     # path: base-owned content is NOT the same thing as measured-under
     # conditions (terra #225).
     if conflict_wake and changed:
+        # session-controlled names: same sanitizer+scrub chain as the note
+        # (a raw list could leak a secret or forge log lines via newlines)
         log.info(
             "sync wake for %s: changed=%s base_synced=%s history_known=%s",
             run_id,
-            changed[:20],
+            _safe_paths(changed),
             base_synced,
             history_known,
         )
