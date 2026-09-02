@@ -771,7 +771,7 @@ def _respond(
                     from autoresearch.steward import validate_and_measure
 
                     candidate = validate_and_measure(
-                        workspace, contract, bench, evaluator, run_seed=run_seed
+                        workspace, post_contract, bench, evaluator, run_seed=run_seed
                     )
                 else:
                     candidate = evaluator.evaluate(
@@ -868,7 +868,7 @@ def _respond(
                                 record.target,
                                 digits={
                                     b.name: b.display_digits
-                                    for b in contract.benchmarks
+                                    for b in post_contract.benchmarks
                                     if b.display_digits
                                 },
                             )
@@ -879,7 +879,13 @@ def _respond(
                     # the change is withheld like a failed eval — workspace
                     # cleaned, the reply says so, next pass retries.
                     disarmed = True
-                    if getattr(contract, "merge", "manual") == "auto":
+                    # EITHER contract can have armed auto-merge — the
+                    # pre-merge one at publish, the merged one as the
+                    # repo's current dial (same rule as _sync_push)
+                    if "auto" in {
+                        getattr(contract, "merge", "manual"),
+                        getattr(post_contract, "merge", "manual"),
+                    }:
                         try:
                             disarmed = github.disable_auto_merge(record.target, number)
                         except Exception as exc:
