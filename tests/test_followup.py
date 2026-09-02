@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
@@ -958,23 +957,22 @@ def test_conflict_wake_action_lifecycle(review_run) -> None:
 
     root, _ = review_run
     record = load_record(root, "tsp-r1")
-    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_dirty_pr()))) == "wake"
-    assert conflict_wake_action(record, cast(Any, FakeGitHub())) == ""  # clean, never woken
+    assert conflict_wake_action(record, _dirty_pr()) == "wake"
+    never_woken = {"state": "open", "merged": False}
+    assert conflict_wake_action(record, never_woken) == ""  # clean, never woken
     woken = replace(record, dirty_wake_head="h" * 40)
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr()))) == ""  # once/head
+    assert conflict_wake_action(woken, _dirty_pr()) == ""  # once/head
     # a new head (author pushed, conflicted again) re-arms
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_dirty_pr(head="i" * 40)))) == (
-        "wake"
-    )
+    assert conflict_wake_action(woken, _dirty_pr(head="i" * 40)) == ("wake")
     # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
     clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=clean))) == "clear"
+    assert conflict_wake_action(woken, clean) == "clear"
     # BEHIND (clean merge, stale base) wakes exactly like a conflict
-    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_behind_pr()))) == "wake"
-    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_behind_pr()))) == ""  # once/head
+    assert conflict_wake_action(record, _behind_pr()) == "wake"
+    assert conflict_wake_action(woken, _behind_pr()) == ""  # once/head
     # blocked-but-current does NOT wake (nothing to sync)
     blocked = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "blocked"}
-    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=blocked))) == ""
+    assert conflict_wake_action(record, blocked) == ""
 
 
 def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
@@ -1721,75 +1719,3 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
 
     tail = note.split("Changed paths:")[1]
     assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))
-
-
-def test_signature_clean_sync_rearms_when_both_worlds_say_auto(review_run) -> None:
-    """Live motivation: gpt-speedrun#5 sat CLEAN-but-unarmed after its
-    signature-clean sync until a human click. When the merge dial is auto in
-    BOTH the measured and merged worlds (auto at publish => the panel ran;
-    auto now => the owner still wants it), the sync push re-arms auto-merge;
-    a manual dial anywhere leaves the merge to a human."""
-    root, bare = review_run
-    head = _ws_head(root)
-    auto_contract = CONTRACT + "merge: auto\n"
-    ws = run_dir(root, "tsp-r1") / "ws"
-    git_id = ["-c", "user.name=t", "-c", "user.email=t@t"]
-    (ws / ".autoresearch.yaml").write_text(auto_contract)
-    _git(ws, *git_id, "add", "-A")
-    _git(ws, *git_id, "commit", "-qm", "branch is auto")
-    head = _ws_head(root)  # the committed tip is what GitHub would serve
-    seed2 = root.parent / "seed2p"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    # main commits the IDENTICAL auto contract: the merge is topology-only
-    # (tree unchanged), the cleanest signature-clean sync
-    (seed2 / ".autoresearch.yaml").write_text(auto_contract)
-    _git(seed2, *git_id, "add", "-A")
-    _git(seed2, *git_id, "commit", "-qm", "main goes auto identically")
-    _git(seed2, "push", "-q", "origin", "main")
-    _git(ws, "fetch", "-q", "origin", "main")
-    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
-
-    class ArmingGitHub(FakeGitHub):
-        disarms: int = 0
-        arms: int = 0
-
-        def disable_auto_merge(self, repo, number):
-            ArmingGitHub.disarms += 1
-            return True
-
-        def arm_auto_merge_auto_mode(self, repo, number):
-            ArmingGitHub.arms += 1
-            return True
-
-    github = ArmingGitHub(pr=_behind_pr(head=head))
-    outcome = respond(root, github, ResumingHarness(merge_base=True), QueueEvaluator(values=[]))
-    assert outcome.action == "replied"
-    assert "only the ancestry moved" in github.posted[0]
-    assert "Auto-merge re-armed" in github.posted[0]
-    assert ArmingGitHub.disarms == 1  # push still gated on confirmed disarm
-    assert ArmingGitHub.arms == 1
-
-
-def test_manual_dial_sync_never_rearms(review_run) -> None:
-    """The fixture contract is manual: a signature-clean sync pushes but
-    leaves arming alone — a human merges."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2q"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(CONTRACT + "# lines flip\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-
-    class RefusingGitHub(FakeGitHub):
-        def arm_auto_merge_auto_mode(self, repo, number):
-            raise AssertionError("manual dial must never re-arm")
-
-    github = RefusingGitHub(pr=_behind_pr(head=head))
-    outcome = respond(root, github, ResumingHarness(merge_base=True), QueueEvaluator(values=[]))
-    assert outcome.action == "replied"
-    assert "the numbers above stand" in github.posted[0]
-    assert "Auto-merge re-armed" not in github.posted[0]

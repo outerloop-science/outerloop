@@ -3477,3 +3477,86 @@ def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
         assert clamped == expect
         assert math.isfinite(clamped)
     assert _loop_cadence_s(0.0) == 45 * 60  # non-positive defers to the env
+
+
+def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
+    """The idempotent auto-arm (terra #228's redesign): once GitHub reports
+    the PR CLEAN (up-to-date with the CURRENT base + green — GitHub's own
+    freshness proof), the kernel-read contract says auto, and the RECORD says
+    the publish had a panel round, the service arms/merges. panel_ran=False,
+    a manual dial, or a non-clean PR must never arm. Running tick-side (not
+    in the sync push) survives a crash between push and arm."""
+    from types import SimpleNamespace
+
+    from autoresearch.compute import LocalCompute
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    spec = FollowupSpec(
+        account="a", partition="p", run_root=tmp_path, image="/img/a.sif", home=Path("/h")
+    )
+
+    from typing import ClassVar
+
+    class G:
+        arms: ClassVar[list[int]] = []
+
+        def __init__(self, state: str = "clean") -> None:
+            self._state = state
+
+        def get_pull_request(self, repo, number):
+            return {
+                "state": "open",
+                "merged": False,
+                "mergeable": True,
+                "mergeable_state": self._state,
+                "head": {"sha": "h" * 40},
+            }
+
+        def arm_auto_merge_auto_mode(self, repo, number):
+            G.arms.append(number)
+            return True
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def rec(run_id: str, panel: bool) -> None:
+        save_record(
+            tmp_path,
+            RunRecord(
+                run_id=run_id,
+                target="org/pilot",
+                task_title="t",
+                benchmark="tsp",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/7",
+                panel_ran=panel,
+            ),
+            now=NOW,
+        )
+
+    auto = SimpleNamespace(merge="auto")
+    manual = SimpleNamespace(merge="manual")
+
+    rec("r-arm", panel=True)
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == [7]  # armed exactly once
+
+    G.arms.clear()
+    rec("r-arm", panel=False)  # no panel provenance: never arm
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
+    rec("r-arm", panel=True)  # manual dial: never arm
+    service_in_review(tmp_path, G(), LocalCompute(), spec, NOW, contract=manual)
+    assert G.arms == []
+
+    # behind (not clean): never arm — freshness comes from GitHub's own check
+    service_in_review(tmp_path, G("behind"), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []

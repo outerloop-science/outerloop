@@ -159,16 +159,13 @@ def base_sync_head(pr: dict) -> str:
     return dirty_pr_head(pr) or stale_pr_head(pr)
 
 
-def conflict_wake_action(record: RunRecord, github: GitHubClient) -> str:
-    """Tick-side gate (cheap, read-only): "wake" for an in-review PR whose
-    base moved out from under it — conflicted OR cleanly behind — and that
-    has not been woken for THIS head yet; "clear" when a previously-woken PR
-    is current again (the base can move and stale the SAME head a second
-    time, so the cursor must re-arm); "" otherwise."""
-    try:
-        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
-    except Exception:
-        return ""
+def conflict_wake_action(record: RunRecord, pr: dict) -> str:
+    """Tick-side gate (cheap, read-only, PURE — the caller fetched the PR):
+    "wake" for an in-review PR whose base moved out from under it —
+    conflicted OR cleanly behind — and that has not been woken for THIS
+    head yet; "clear" when a previously-woken PR is current again (the base
+    can move and stale the SAME head a second time, so the cursor must
+    re-arm); "" otherwise."""
     head = base_sync_head(pr)
     if head and head != record.dirty_wake_head:
         return "wake"
@@ -676,21 +673,22 @@ def _respond(
     def _sync_push(note: str) -> bool:
         """Push the synced head under the #171 rule: an armed auto-mode PR
         would merge the new head on green CI, so the push is gated on a
-        CONFIRMED disarm. After a SIGNATURE-CLEAN push, auto-merge re-arms
-        when BOTH worlds say auto: auto at publish means the panel
-        necessarily ran (the publish gate enforces it), auto now means the
-        owner still wants self-merging — and the clean sync restored exactly
-        the freshness _arm_unless_base_moved was protecting. Any other
-        combination leaves the merge to a human. (Live motivation:
-        gpt-speedrun#5 sat CLEAN-but-unarmed until a human click.)"""
+        CONFIRMED disarm. Arming is NOT this function's job: the tick's
+        in-review service re-arms idempotently once GitHub reports the PR
+        clean — panel provenance from the record, the dial from the
+        kernel-read contract, freshness from GitHub's own up-to-date check —
+        which survives crashes here and never trusts two contract dials as
+        proof a panel ran."""
         nonlocal measured_note, sync_pushed
         disarm_ok = True
-        pre_mode = getattr(contract, "merge", "manual")
-        post_mode = getattr(post_contract, "merge", "manual")
         # EITHER contract can have armed auto-merge: the pre-merge one at
         # publish time, the merged one as the repo's current dial — a push
         # to a possibly-armed PR is never made without a confirmed disarm
-        if "auto" in {pre_mode, post_mode}:
+        merge_modes = {
+            getattr(contract, "merge", "manual"),
+            getattr(post_contract, "merge", "manual"),
+        }
+        if "auto" in merge_modes:
             try:
                 disarm_ok = github.disable_auto_merge(record.target, number)
             except Exception as exc:
@@ -704,19 +702,7 @@ def _respond(
             return False
         ws.push(branch)
         sync_pushed = True
-        rearmed = False
-        if pre_mode == "auto" and post_mode == "auto":
-            try:
-                rearmed = bool(github.arm_auto_merge_auto_mode(record.target, number))
-            except Exception as exc:  # un-armed is just a normal PR
-                log.warning("auto-merge re-arm errored after sync push: %s", exc)
-        measured_note = note + (
-            "\n\n_(Auto-merge re-armed: the sync is signature-clean and the "
-            "contract's merge dial is `auto` in both the measured and merged "
-            "worlds.)_"
-            if rearmed
-            else ""
-        )
+        measured_note = note
         return True
 
     # A clean base merge can produce a commit whose TREE is unchanged (the

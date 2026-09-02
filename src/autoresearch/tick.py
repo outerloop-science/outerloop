@@ -483,6 +483,7 @@ def service_in_review(
     now: float,
     dry_run: bool = False,
     allow_submit: bool = True,
+    contract: Any = None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """PR-state transitions + follow-up job submission for in-review runs.
 
@@ -495,7 +496,12 @@ def service_in_review(
     duplicate submission no-ops on the lease, and `followup_job_id` keeps the
     tick from queueing duplicates in the first place.
     """
-    from autoresearch.followup import close_if_done, conflict_wake_action, has_new_comments
+    from autoresearch.followup import (
+        _pr_number,
+        close_if_done,
+        conflict_wake_action,
+        has_new_comments,
+    )
 
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
@@ -520,7 +526,32 @@ def service_in_review(
             if paused:
                 log.info("follow-up for %s paused (api outage: %s)", record.run_id, paused)
                 continue
-            wake_action = conflict_wake_action(record, github)
+            try:
+                pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+            except Exception:
+                continue  # unreadable PR: nothing to decide this tick
+            # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
+            # checks AND up-to-date with the CURRENT base — GitHub's own
+            # freshness proof), the kernel-read contract says auto, and the
+            # RECORD says the publish had a panel round (contracts alone can
+            # never prove that), arming self-merges the PR. Running every
+            # tick survives any crash between a sync push and this step; the
+            # helper direct-merges when nothing is pending to arm against.
+            if (
+                not dry_run
+                and not is_steward
+                and record.panel_ran
+                and contract is not None
+                and getattr(contract, "merge", "manual") == "auto"
+                and pr.get("state") == "open"
+                and not pr.get("merged")
+                and pr.get("mergeable_state") == "clean"
+            ):
+                try:
+                    github.arm_auto_merge_auto_mode(record.target, _pr_number(record.pr_url))
+                except Exception as exc:
+                    log.warning("auto-arm failed for %s: %s", record.run_id, exc)
+            wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the
                 # base can move and conflict the SAME head a second time
@@ -1487,6 +1518,7 @@ def tick(
             now,
             dry_run=followup_dry_run,
             allow_submit=launch_ok,
+            contract=contract,
         )
         try:
             service_research_log(root, github, spec, now)

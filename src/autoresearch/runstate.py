@@ -149,6 +149,10 @@ class RunRecord:
     # head sha the last conflict wake was issued for: a dirty PR wakes the
     # author ONCE per head — a new push (or new conflict) re-arms it
     dirty_wake_head: str = ""
+    # whether the publish that opened this run's PR had a panel round —
+    # the provenance the auto re-arm requires (contracts alone cannot
+    # prove it; default False so legacy records never re-arm)
+    panel_ran: bool = False
     followup_job_id: str = ""  # slurm job servicing this run's review comments
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0

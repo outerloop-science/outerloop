@@ -1591,6 +1591,7 @@ def resume_run(
                         **record.__dict__,
                         "state": IN_REVIEW,
                         "pr_url": pr_url,
+                        "panel_ran": result.panel_rounds > 0,
                         "resume_session_id": result.session.session_id if result.session else "",
                         "ending_note": pr_url,
                     }
@@ -1793,6 +1794,7 @@ def resume_run(
                     **record.__dict__,
                     "state": IN_REVIEW,
                     "pr_url": pr_url,
+                    "panel_ran": result.panel_rounds > 0,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
                 }
@@ -2671,6 +2673,7 @@ def live_attempt(
                     **record.__dict__,
                     "state": IN_REVIEW,
                     "pr_url": pr_url,
+                    "panel_ran": result.panel_rounds > 0,
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
                 }
