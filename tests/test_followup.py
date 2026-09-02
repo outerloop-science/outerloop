@@ -1486,3 +1486,38 @@ def test_withheld_sync_leaves_the_cursor_unspent(review_run) -> None:
     assert "eval failed" in github.posted[0]
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == ""  # unspent: nothing reached the remote
+
+
+def test_bench_definition_change_in_base_still_remeasures(review_run) -> None:
+    """The narrow skip applies ONLY to contract changes that leave every
+    benchmark definition and the scope identical. A base move that edits a
+    bench stanza (here: the command) changes the measurement conditions, so
+    the sync takes the full re-measure path — base-owned content is not the
+    same thing as measured-under conditions (terra #225)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2j"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        CONTRACT.replace("--env tsp --json", "--env tsp --json --fast")
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bench change")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class RecordingEvaluator:
+        calls = 0
+
+        def evaluate(self, *a, **k):
+            RecordingEvaluator.calls += 1
+            raise RuntimeError("no GPU on this node")
+
+    outcome = respond(root, github, ResumingHarness(merge_base=True), RecordingEvaluator())
+    assert outcome.action == "replied"
+    assert RecordingEvaluator.calls == 1  # the re-measure path ran
+    assert "eval failed" in github.posted[0]  # and was withheld honestly
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # nothing reached the remote

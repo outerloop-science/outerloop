@@ -614,6 +614,20 @@ def _respond(
             ws.git("reset", "--hard", pushed_tip)
 
     changed = sorted(set(_changed_paths(ws)) | set(committed))
+    # The merge may have brought a NEW contract in: everything downstream —
+    # the sync-skip comparison, the scope check, the re-measure's bench —
+    # must see the tree's contract, not the one loaded before the session
+    # ran. An unparsable merged contract withholds the response outright.
+    contract_path = ".autoresearch.yaml"
+    post_contract = contract
+    contract_broken = False
+    if contract_path in changed:
+        try:
+            post_contract = load_contract((workspace / contract_path).read_text(), record.target)
+        except Exception as exc:
+            contract_broken = True
+            log.warning("merged contract does not parse for %s: %s", run_id, exc)
+
     # A base-sync wake that changed the tree must actually CONTAIN the fetched
     # base: without the ancestry check a session could copy base files (or make
     # any edit) and push a re-measured PR that is still behind/conflicted
@@ -632,7 +646,9 @@ def _respond(
             base_synced = True
         except GitError:
             base_synced = False
-    sync_failed = conflict_wake and ((changed and not base_synced) or not history_known)
+    sync_failed = conflict_wake and (
+        (changed and not base_synced) or not history_known or contract_broken
+    )
     # The cursor spends only on REMOTE progress: a sync that exists solely in
     # the workspace (e.g. the re-measure was withheld) leaves the head
     # re-wakeable — the live lesson from gpt-speedrun#5, where a locally
@@ -674,32 +690,50 @@ def _respond(
             "exactly this content — only the ancestry moved. A human "
             "merges the synced PR.)_"
         )
-    # The next rung: every changed path is the BASE'S OWN content (the merge
-    # brought it in; `_matches_base` pins against the fetched sha). The
-    # solver and eval surface are bit-for-bit what was measured, so the
-    # numbers stand and no re-measure is owed — exactly the topology case
-    # with a fatter diff. Any non-base-identical path (a solver edit, an
-    # eval tweak) falls through to the full scope-check + re-measure path.
+    # The next rung, deliberately NARROW: the merge changed exactly one
+    # path — the contract file, with the base's own content — and the merged
+    # contract's benchmark definitions and scope parse IDENTICAL to the
+    # pre-merge ones. Then only kernel-workflow keys moved (a lines flip, a
+    # cadence knob): the eval command, metric, protocol, suite, and solver
+    # bytes are all exactly what was measured, so the numbers stand. ANY
+    # other changed path — eval/, docs, data, a solver edit — and any
+    # benchmark/scope difference takes the full scope-check + re-measure
+    # path: base-owned content is NOT the same thing as measured-under
+    # conditions (terra #225).
     base_only_sync = False
-    if conflict_wake and changed and base_synced and history_known:
-        base_only_sync = all(_matches_base(p) for p in changed)
-    if base_only_sync:
+    if (
+        conflict_wake
+        and base_synced
+        and history_known
+        and not contract_broken
+        and set(changed) == {contract_path}
+        and all(_matches_base(p) for p in changed)
+        and post_contract.benchmarks == contract.benchmarks
+        and post_contract.scope == contract.scope
+    ):
+        base_only_sync = True
         _sync_push(
-            f"\n\n_(Base sync: `origin/{base_ref}` merged; every changed "
-            "path is the base's own content, so the solver and eval surface "
-            "are bit-for-bit what was measured — the numbers above stand. "
-            "A human merges the synced PR.)_"
+            f"\n\n_(Base sync: `origin/{base_ref}` merged; the only change "
+            "is the contract file, whose benchmark definitions and scope are "
+            "identical — the eval surface and solver are bit-for-bit what "
+            "was measured, so the numbers above stand. A human merges the "
+            "synced PR.)_"
         )
     if sync_failed:
         _revert_response()
         measured_note = (
-            "\n\n_(A code change was attempted but does not include the "
-            "fetched base — the sync wake requires an actual merge of "
+            "\n\n_(The merged contract does not parse, so the change was "
+            "not applied; the wake will retry.)_"
+            if contract_broken
+            else "\n\n_(A code change was attempted but does not include "
+            "the fetched base — the sync wake requires an actual merge of "
             f"`origin/{base_ref}` — so it was not applied; the wake will "
             "retry.)_"
         )
     elif changed and not base_only_sync:
-        violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
+        # the tree's own contract governs its scope and its measurement
+        bench = next((b for b in post_contract.benchmarks if b.name == record.benchmark), bench)
+        violations = [p for p in scope_check(changed, post_contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
             _revert_response()
