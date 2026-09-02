@@ -34,6 +34,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+DEFAULT_BOT_LOGIN = "agentic-learning-bot"
+
+
+def bot_login_from_env(default: str = DEFAULT_BOT_LOGIN) -> str:
+    """The login the kernel posts and pushes as — the bot ACCOUNT under a PAT,
+    the App's `<slug>[bot]` under App auth (docs/design/github-app-auth.md).
+    `AUTORESEARCH_BOT_LOGIN` sets it for every role at once (the tick exports
+    it, jobs inherit it); every own-comment filter, alarm-issue lookup and
+    intake-claim scan keys on this string, so it must follow the credential."""
+    return os.environ.get("AUTORESEARCH_BOT_LOGIN", "").strip() or default
+
+
 log = logging.getLogger(__name__)
 
 API = "https://api.github.com"

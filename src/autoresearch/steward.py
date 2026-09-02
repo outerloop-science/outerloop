@@ -21,7 +21,7 @@ carry orchestrator provenance, like every other number in the ledger).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -36,7 +36,7 @@ from autoresearch.attempt import (
     arm_sigterm_containment,
 )
 from autoresearch.contract import Contract, load_contract
-from autoresearch.github import GitHubClient, TokenProvider, Workspace
+from autoresearch.github import GitHubClient, TokenProvider, Workspace, bot_login_from_env
 from autoresearch.harness import Harness, budget_exhausted, outage, redact
 from autoresearch.intake import (
     CLAIM_MARKER,
@@ -399,7 +399,7 @@ def steward_brief(contract_text: str, contract: Contract, work_order: str, bench
 class StewardConfig:
     target: str
     benchmark: str
-    bot_login: str = "agentic-learning-bot"
+    bot_login: str = field(default_factory=bot_login_from_env)
 
 
 def live_steward(
