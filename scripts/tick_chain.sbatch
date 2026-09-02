@@ -56,12 +56,21 @@ fi
 epoch_now=$(date +%s)
 cadence_s=$((CADENCE_MIN * 60))
 next_slot=$(( (epoch_now / cadence_s + 1) * cadence_s ))
+# Each successor carries a DEADLINE one cadence past its slot: a successor
+# the scheduler cannot start in time (the site moved it to a starved
+# partition, 2026-09-02) is removed by Slurm itself, which frees the
+# `singleton` its twin waits on — a stuck successor can delay the chain by a
+# cadence, never deadlock it. (`--deadline` removes a pending job once it can
+# no longer finish its --time before the deadline.)
 for i in $(seq 1 "$need"); do
     begin_epoch=$((next_slot + (pending + i - 1) * cadence_s))
     begin=$(date -d "@$begin_epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
+    deadline_epoch=$((begin_epoch + cadence_s))
+    deadline=$(date -d "@$deadline_epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
+            || date -r "$deadline_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
-        if sbatch --dependency=singleton --begin="$begin" \
+        if sbatch --dependency=singleton --begin="$begin" --deadline="$deadline" \
                   --account="${AUTORESEARCH_ACCOUNT:-}" --partition="${AUTORESEARCH_PARTITION:-}" \
                   "${AUTORESEARCH_HOME:-}/scripts/tick_chain.sbatch"; then
             break
