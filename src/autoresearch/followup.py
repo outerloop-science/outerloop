@@ -582,17 +582,22 @@ def _respond(
 
     branch = _current_branch(ws)
     committed: list[str] = []
+    pushed_tip = str((pr.get("head") or {}).get("sha", "")) or f"origin/{branch}"
     try:
         # a session that COMMITTED its work (a resolved merge commit is the
         # normal shape) leaves the working tree clean — the diff against the
-        # PR branch's pushed tip is where those changes show
+        # PR branch's pushed tip is where those changes show. The tip is
+        # PINNED from the kernel-fetched PR object: refs/remotes/* are plain
+        # files the session can rewrite to make this diff read empty.
         committed = [
             p
-            for p in ws.git("diff", "--name-only", f"origin/{branch}..HEAD").splitlines()
+            for p in ws.git("diff", "--name-only", f"{pushed_tip}..HEAD").splitlines()
             if p.strip()
         ]
+        history_known = True
     except Exception:
         committed = []
+        history_known = False
 
     def _revert_response() -> None:
         # drop working-tree edits AND any local commits past the pushed tip;
@@ -604,7 +609,9 @@ def _respond(
         ws.git("checkout", "--", ".")
         ws.git("clean", "-fdq")
         if committed:
-            ws.git("reset", "--hard", f"origin/{branch}")
+            # the PINNED tip, same reason as the diff above: origin/<branch>
+            # is a session-writable file and may not even exist locally
+            ws.git("reset", "--hard", pushed_tip)
 
     changed = sorted(set(_changed_paths(ws)) | set(committed))
     # A base-sync wake that changed the tree must actually CONTAIN the fetched
@@ -625,19 +632,37 @@ def _respond(
             base_synced = True
         except GitError:
             base_synced = False
-    sync_failed = conflict_wake and changed and not base_synced
+    sync_failed = conflict_wake and ((changed and not base_synced) or not history_known)
     # A clean base merge can produce a commit whose TREE is unchanged (the
     # branch already carried the base's content): committed/changed are both
     # empty, but the merge commit IS the contribution — without pushing it
     # the PR stays behind while the cursor is spent. Same measured tree, so
     # no re-eval is owed; push the topology and say so.
-    if conflict_wake and not changed and base_synced:
-        ws.push(branch)
-        measured_note = (
-            f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
-            "unchanged, so the measured numbers above still describe "
-            "exactly this content — only the ancestry moved.)_"
-        )
+    if conflict_wake and not changed and base_synced and history_known:
+        # same #171 rule as every other push: an armed auto-mode PR would
+        # merge the new head on green CI, so the push is gated on a
+        # CONFIRMED disarm; a human merges the synced PR.
+        disarm_ok = True
+        if getattr(contract, "merge", "manual") == "auto":
+            try:
+                disarm_ok = github.disable_auto_merge(record.target, number)
+            except Exception as exc:
+                disarm_ok = False
+                log.warning("auto-merge disarm errored before topology push: %s", exc)
+        if disarm_ok:
+            ws.push(branch)
+            measured_note = (
+                f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
+                "unchanged, so the measured numbers above still describe "
+                "exactly this content — only the ancestry moved. A human "
+                "merges the synced PR.)_"
+            )
+        else:
+            base_synced = False  # withheld: cursor unspent, next tick retries
+            measured_note = (
+                "\n\n_(Base sync withheld: auto-merge could not be confirmed "
+                "disarmed on this auto-mode PR; the wake will retry.)_"
+            )
     if sync_failed:
         _revert_response()
         measured_note = (

@@ -912,6 +912,11 @@ def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     assert outcome2.action == "no-op"
 
 
+def _ws_head(root) -> str:
+    """The workspace's pre-session HEAD — what the remote PR tip really is."""
+    return _git(run_dir(root, "tsp-r1") / "ws", "rev-parse", "HEAD").strip()
+
+
 def _behind_pr(head="h" * 40) -> dict:
     return {
         "state": "open",
@@ -930,7 +935,8 @@ def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
     gpt-speedrun#5 (the 8640 record) sat BEHIND after the lines-flip landed
     mid-attempt, with no path back to the board."""
     root, _bare = review_run
-    github = FakeGitHub(pr=_behind_pr())
+    head = _ws_head(root)
+    github = FakeGitHub(pr=_behind_pr(head=head))
     harness = ResumingHarness()
     outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
     assert outcome.action == "replied"
@@ -941,7 +947,7 @@ def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
     assert resume_id == "sess-original"
     # once per head, same cursor as the conflict wake
     record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == "h" * 40
+    assert record.dirty_wake_head == head
     outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
     assert outcome2.action == "no-op"
 
@@ -1163,7 +1169,7 @@ def test_behind_wake_merge_is_remeasured_and_pushed(review_run) -> None:
     _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
     _git(seed2, "push", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr())  # no comments: the wake alone triggers
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))  # the wake alone triggers
     harness = ResumingHarness(
         merge_base=True,  # an honest session merges; ancestry is verified
         edits={"src/pilot/solvers/tsp.py": "v2 after sync\n"},
@@ -1191,7 +1197,7 @@ def test_behind_wake_without_a_real_merge_is_withheld(review_run) -> None:
     _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
     _git(seed2, "push", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr())
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
     # the fake merge: base files copied in, no actual merge of origin/main
     harness = ResumingHarness(
         edits={
@@ -1282,7 +1288,7 @@ def test_conflicted_sync_merge_is_aborted_on_revert(review_run) -> None:
 
     ws = run_dir(root, "tsp-r1") / "ws"
     _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr())
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
     outcome = respond(root, github, ConflictedMergeHarness(), QueueEvaluator(values=[10.2]))
     assert outcome.action == "replied"
     assert "does not include the fetched base" in github.posted[0]
@@ -1311,7 +1317,8 @@ def test_topology_only_base_merge_is_pushed(review_run) -> None:
     _git(seed2, *git_id, "add", "-A")
     _git(seed2, *git_id, "commit", "-qm", "main doc")
     _git(seed2, "push", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr())
+    head = _ws_head(root)
+    github = FakeGitHub(pr=_behind_pr(head=head))
     harness = ResumingHarness(merge_base=True)  # merge, no edits
     _git(ws, "fetch", "-q", "origin", "main")
     outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
@@ -1324,7 +1331,7 @@ def test_topology_only_base_merge_is_pushed(review_run) -> None:
     merge_base = _git(bare, "merge-base", main_sha, branch_sha).strip()
     assert merge_base == main_sha
     record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == "h" * 40  # cursor spent: sync done
+    assert record.dirty_wake_head == head  # cursor spent: sync done
 
 
 def test_replace_ref_cannot_forge_the_ancestry_check(review_run) -> None:
@@ -1382,7 +1389,7 @@ def test_replace_ref_cannot_forge_the_ancestry_check(review_run) -> None:
     # can diff origin/<branch>..HEAD and see the forger's commit
     _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
     before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    github = FakeGitHub(pr=_behind_pr())
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
     outcome = respond(root, github, ForgingHarness(), QueueEvaluator(values=[10.2]))
     assert outcome.action == "replied"
     assert "does not include the fetched base" in github.posted[0]  # forgery refused
@@ -1403,7 +1410,7 @@ def test_do_nothing_session_leaves_the_behind_wake_rearmed(review_run) -> None:
     _git(seed2, "push", "-q", "origin", "main")
     ws = run_dir(root, "tsp-r1") / "ws"
     _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr())
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
     outcome = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.2]))
     assert outcome.action == "replied"
     record = load_record(root, "tsp-r1")
