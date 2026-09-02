@@ -2297,12 +2297,21 @@ def test_a_reverted_response_keeps_the_panel_wake_pending(review_run) -> None:
         NOW,
     )
     github = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
+    save_record(root, dc_replace(load_record(root, "tsp-r1"), wake_attempts=3), NOW)
     outcome = respond(
         root, github, ResumingHarness(edits={"docs/roadmap.md": "widened\n"}), QueueEvaluator()
     )
     assert outcome.action == "replied" and "not applied" in github.posted[0]
     rec = load_record(root, "tsp-r1")
     assert rec.panel_wake_text == "PANEL FINDINGS" and rec.panel_wake_head == head
+    # ...and the retry count is KEPT, so the tick's billing still caps the loop (r2)
+    assert rec.wake_attempts == 3
+
+    # a serviced, non-reverted panel wake is progress: the count resets
+    github2 = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
+    respond(root, github2, ResumingHarness(text="Rebutted."), QueueEvaluator())
+    rec2 = load_record(root, "tsp-r1")
+    assert rec2.panel_wake_text == "" and rec2.wake_attempts == 0
 
 
 def test_a_push_during_the_read_supersedes_the_findings(review_run) -> None:

@@ -1093,9 +1093,17 @@ def _respond(
             panel_wake_text=(
                 "" if (panel_wake and not response_reverted) else record.panel_wake_text
             ),
+            # the count is KEPT (never advanced here, never reset) whenever a
+            # wake stays pending without progress — a base sync that did not
+            # reach GitHub, or a panel wake whose response was reverted — so
+            # the tick's submit-time billing still reaches MAX_WAKE_ATTEMPTS
+            # instead of resubmitting a failing job forever (terra #233 r2)
             wake_attempts=(
                 record.wake_attempts
-                if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))
+                if (
+                    (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))
+                    or (panel_wake and response_reverted)
+                )
                 else 0
             ),
         ),
