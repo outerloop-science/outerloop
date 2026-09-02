@@ -3483,7 +3483,7 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     """The idempotent auto-arm (terra #228's redesign): once GitHub reports
     the PR CLEAN (up-to-date with the CURRENT base + green — GitHub's own
     freshness proof), the kernel-read contract says auto, and the RECORD says
-    the publish had a panel round, the service arms/merges. panel_ran=False,
+    the publish was auto-eligible, the service arms/merges. auto_eligible=False,
     a manual dial, or a non-clean PR must never arm. Running tick-side (not
     in the sync push) survives a crash between push and arm."""
     from types import SimpleNamespace
@@ -3536,7 +3536,7 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
                 benchmark="tsp",
                 state=IN_REVIEW,
                 pr_url="https://github.com/org/pilot/pull/7",
-                panel_ran=panel,
+                auto_eligible=panel,
             ),
             now=NOW,
         )

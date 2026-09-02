@@ -532,15 +532,18 @@ def service_in_review(
                 continue  # unreadable PR: nothing to decide this tick
             # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
             # checks AND up-to-date with the CURRENT base — GitHub's own
-            # freshness proof), the kernel-read contract says auto, and the
-            # RECORD says the publish had a panel round (contracts alone can
-            # never prove that), arming self-merges the PR. Running every
-            # tick survives any crash between a sync push and this step; the
-            # helper direct-merges when nothing is pending to arm against.
+            # freshness proof), the kernel-read contract STILL says auto, and
+            # the RECORD says the publish was auto-eligible (published under
+            # merge:auto with a panel round — #171's exact arming condition;
+            # a manual publish never consented to self-merging, and contracts
+            # alone cannot prove either fact after a dial flip), arming
+            # self-merges the PR. Running every tick survives any crash
+            # between a sync push and this step; the helper direct-merges
+            # when nothing is pending to arm against.
             if (
                 not dry_run
                 and not is_steward
-                and record.panel_ran
+                and record.auto_eligible
                 and contract is not None
                 and getattr(contract, "merge", "manual") == "auto"
                 and pr.get("state") == "open"
