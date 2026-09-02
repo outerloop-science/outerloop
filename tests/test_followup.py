@@ -1644,3 +1644,31 @@ def test_workflow_dial_flip_inside_the_stanza_skips_the_remeasure(review_run) ->
     main_sha = _git(bare, "rev-parse", "main").strip()
     branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
     assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha
+
+
+def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
+    """direction (claim meaning), eval_minutes (execution route), floors, and
+    baseline protocol all sit in the measurement signature — a base change
+    to any of them re-measures instead of skipping (terra #226 r1). The
+    signature is built by EXCLUSION, so a future Benchmark field joins it by
+    default."""
+    from autoresearch.contract import load_contract
+
+    base = load_contract(CONTRACT, "o/r").benchmarks[0]
+    for mutation in (
+        ("direction: min", "direction: max"),
+        ("    metric: mean_tour_length", "    metric: mean_tour_length\n    eval_minutes: 6"),
+        ("    metric: mean_tour_length", "    metric: mean_tour_length\n    min_delta: 0.5"),
+        (
+            "    metric: mean_tour_length",
+            "    metric: mean_tour_length\n    baseline: cached\n    min_delta: 0.1",
+        ),
+    ):
+        changed = load_contract(CONTRACT.replace(*mutation), "o/r").benchmarks[0]
+        assert changed.measurement_signature() != base.measurement_signature(), mutation
+    # the pure dials stay OUT: the live lines flip still skips
+    dial = load_contract(
+        CONTRACT.replace("direction: min", "direction: min\n    lines: true\n    depth_k: 4"),
+        "o/r",
+    ).benchmarks[0]
+    assert dial.measurement_signature() == base.measurement_signature()
