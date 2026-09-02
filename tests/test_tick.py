@@ -3518,7 +3518,8 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
                 "head": {"sha": "h" * 40},
             }
 
-        def arm_auto_merge_auto_mode(self, repo, number):
+        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
+            assert expected_head == "h" * 40  # the mutation is bound to the blessed head
             G.arms.append(number)
             return True
 

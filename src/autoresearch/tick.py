@@ -602,7 +602,14 @@ def service_in_review(
                     and _base_dial(github, record.target, pr, contract, spec.target) == "auto"
                 ):
                     try:
-                        github.arm_auto_merge_auto_mode(record.target, _pr_number(record.pr_url))
+                        # the mutation itself is bound to the blessed head: a
+                        # push racing this check is refused by GitHub, not
+                        # merged (terra #228 r9)
+                        github.arm_auto_merge_auto_mode(
+                            record.target,
+                            _pr_number(record.pr_url),
+                            expected_head=record.auto_blessed_head,
+                        )
                     except Exception as exc:
                         log.warning("auto-arm failed for %s: %s", record.run_id, exc)
                 continue
