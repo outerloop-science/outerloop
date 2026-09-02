@@ -123,6 +123,14 @@ App provider when the config is set, PAT otherwise. Revert = unset the env
 var. The ids are not secrets; the key path inside keeps PAT-file custody
 (600, never committed).
 
+The identity flips WITH the credential: `AUTORESEARCH_BOT_LOGIN` names the
+login the kernel now posts as (`<app-slug>[bot]`, e.g.
+`outerloop-autoresearch[bot]`), read by every role through one
+`github.bot_login_from_env()` default. Every own-comment filter, alarm-issue
+lookup and intake-claim scan keys on that string, so the two lines are set
+together. An App's comments carry `author_association: NONE`, so they can
+never qualify as maintainer feedback whatever the login says.
+
 Redaction is refresh-proof process-wide: every minted installation token
 lands in a module registry that `redact` consults at write time, so a
 secrets tuple captured at CLI start covers tokens minted hours later.

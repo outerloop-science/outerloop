@@ -8,6 +8,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- `AUTORESEARCH_BOT_LOGIN` names the login the kernel posts as; every role
+  defaults to it (the bot account's name when unset), so a GitHub App cutover
+  flips identity and credential together.
 - A follow-up that pushes a re-measured code change now has the SAME
   verification panel re-read the new head, posted on the thread: a clean
   read under `merge: auto` re-blesses the pushed sha so the tick may arm the

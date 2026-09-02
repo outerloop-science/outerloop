@@ -157,6 +157,15 @@ MAX_ATTEMPT_JOB_MINUTES = 6 * 60
 MAX_JOB_MINUTES_CEILING = 10 * 60
 
 
+def _bot_login_default() -> str:
+    """FollowupSpec's login default, resolved at construction (the tick reads
+    the chain's env, jobs inherit it); github is imported here on purpose —
+    the tick module stays importable without it."""
+    from autoresearch.github import bot_login_from_env
+
+    return bot_login_from_env()
+
+
 @dataclass(frozen=True)
 class FollowupSpec:
     """How the tick launches follow-up jobs for in-review runs."""
@@ -166,7 +175,7 @@ class FollowupSpec:
     run_root: Path
     image: str
     home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
-    bot_login: str = "agentic-learning-bot"
+    bot_login: str = field(default_factory=_bot_login_default)
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
     max_turns: int = DEFAULT_MAX_TURNS  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default

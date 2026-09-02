@@ -24,7 +24,13 @@ from typing import Any
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
-from autoresearch.github import GitError, GitHubClient, NothingToCommit, Workspace
+from autoresearch.github import (
+    GitError,
+    GitHubClient,
+    NothingToCommit,
+    Workspace,
+    bot_login_from_env,
+)
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
     Evaluator,
@@ -1303,7 +1309,7 @@ def main() -> int:
     # the tick passes the effective limit explicitly; this fallback follows
     # the harness ceiling so a bare CLI run is never silently starved
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
-    parser.add_argument("--bot-login", default="agentic-learning-bot")
+    parser.add_argument("--bot-login", default=bot_login_from_env())
     parser.add_argument(
         "--job-minutes",
         type=int,
