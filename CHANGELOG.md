@@ -65,6 +65,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `AUTORESEARCH_BOT_ALIASES` names the kernel's former logins, and every
+  "is this ours" check (own issues, claims, alarms, own PRs, own comments)
+  recognizes them, so an identity flip does not turn the kernel's own
+  research-log issue into a research order or hide its earlier claims.
 - Tick successors carry a Slurm deadline (slot + cadence + walltime), so a
   successor the scheduler cannot start within its cadence is removed by Slurm
   and frees the `singleton` its twin waits on: a stuck successor delays the

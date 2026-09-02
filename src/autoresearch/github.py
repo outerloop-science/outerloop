@@ -46,6 +46,30 @@ def bot_login_from_env(default: str = DEFAULT_BOT_LOGIN) -> str:
     return os.environ.get("AUTORESEARCH_BOT_LOGIN", "").strip() or default
 
 
+def bot_aliases_from_env() -> tuple[str, ...]:
+    """Former logins the kernel posted as (comma-separated
+    `AUTORESEARCH_BOT_ALIASES`). Every issue, claim, alarm and PR created
+    before an identity flip carries the OLD login; recognition stays keyed on
+    login — never on the public markers, which anyone can paste — so the set
+    of our logins is what a flip must widen (live: after the App flip the
+    intake lane claimed the kernel's own research-log issue, authored by the
+    PAT account)."""
+    raw = os.environ.get("AUTORESEARCH_BOT_ALIASES", "")
+    return tuple(dict.fromkeys(a.strip() for a in raw.split(",") if a.strip()))
+
+
+def is_own_login(login: str, bot_login: str) -> bool:
+    """Whether `login` is one of the kernel's identities: the login it posts
+    as now, or a former one. Blank never matches (a blank identity must fail
+    closed at every gate, as before)."""
+    who = login.strip().casefold()
+    if not who:
+        return False
+    ours = {bot_login.strip().casefold()} | {a.casefold() for a in bot_aliases_from_env()}
+    ours.discard("")
+    return who in ours
+
+
 log = logging.getLogger(__name__)
 
 API = "https://api.github.com"

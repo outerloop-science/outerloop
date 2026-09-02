@@ -456,12 +456,14 @@ def _find_alarm_issue(github: Any, target: str, bot_login: str) -> int:
     """Only the BOT'S own marker'd issue counts: the marker is a public
     string, and adopting a stranger's issue would let anyone suppress the
     real alarm or get their issue closed by the bot."""
+    from autoresearch.github import is_own_login
+
     return next(
         (
             int(issue.get("number", 0))
             for issue in github.list_open_issues(target, max_pages=10)
             if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
-            and str((issue.get("user") or {}).get("login", "")).casefold() == bot_login.casefold()
+            and is_own_login(str((issue.get("user") or {}).get("login", "")), bot_login)
         ),
         0,
     )

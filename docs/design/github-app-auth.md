@@ -131,6 +131,15 @@ lookup and intake-claim scan keys on that string, so the two lines are set
 together. An App's comments carry `author_association: NONE`, so they can
 never qualify as maintainer feedback whatever the login says.
 
+Everything the kernel created BEFORE the flip carries the old login — the
+research-log issue, contract alarms, intake claims, its PRs. Recognition is
+keyed on login on purpose (the markers are public strings anyone can paste),
+so a flip must widen the set of our logins, not loosen the check:
+`AUTORESEARCH_BOT_ALIASES=agentic-learning-bot` names the former identity,
+and every "is this ours" gate goes through `github.is_own_login`. Live
+lesson: without it, the first tick under the App claimed the kernel's own
+research-log issue as a research order.
+
 Redaction is refresh-proof process-wide: every minted installation token
 lands in a module registry that `redact` consults at write time, so a
 secrets tuple captured at CLI start covers tokens minted hours later.
