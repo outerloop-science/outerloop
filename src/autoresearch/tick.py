@@ -475,6 +475,26 @@ def shape_followup_spec(spec: FollowupSpec, limits: EffectiveLimits, contract: A
     return spec
 
 
+def _base_dial(github: Any, target: str, pr: dict, main_contract: Any) -> str:
+    """The merge dial that governs THIS PR: its base branch's contract. The
+    tick's contract is read from main; a PR based elsewhere must be judged
+    by its own base's dial — unreadable or unparsable means "manual"
+    (never arm on doubt)."""
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    if base_ref == "main":
+        return str(getattr(main_contract, "merge", "manual"))
+    try:
+        from autoresearch.contract import load_contract
+
+        raw = github.get_file_content(target, ".autoresearch.yaml", base_ref)
+        if raw is None:
+            return "manual"
+        return str(getattr(load_contract(raw, target), "merge", "manual"))
+    except Exception as exc:
+        log.warning("base-contract read failed for %s@%s: %s", target, base_ref, exc)
+        return "manual"
+
+
 def service_in_review(
     root: Path,
     github: Any,  # GitHubClient (Any keeps tick importable without github deps)
@@ -545,11 +565,11 @@ def service_in_review(
                 and not is_steward
                 and record.auto_eligible
                 and contract is not None
-                and getattr(contract, "merge", "manual") == "auto"
                 and pr.get("state") == "open"
                 and not pr.get("merged")
                 and not pr.get("draft")
                 and pr.get("mergeable_state") == "clean"
+                and _base_dial(github, record.target, pr, contract) == "auto"
             ):
                 try:
                     github.arm_auto_merge_auto_mode(record.target, _pr_number(record.pr_url))

@@ -3561,6 +3561,24 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     service_in_review(tmp_path, G("behind"), LocalCompute(), spec, NOW, contract=auto)
     assert G.arms == []
 
+    # a non-main base is governed by ITS OWN contract dial (terra #228 r5):
+    # main says auto but the base branch's contract is manual -> never arm
+    class OtherBaseG(G):
+        def get_pull_request(self, repo, number):
+            return {**super().get_pull_request(repo, number), "base": {"ref": "release"}}
+
+        def get_file_content(self, repo, path, ref):
+            assert ref == "release"
+            return (
+                "benchmarks:\n  - name: tsp\n    command: x\n    metric: m\n"
+                "    direction: min\n"
+                "budgets: {gpu_hours_per_run: 1, runs_per_week: 1}\n"
+                "scope: {allowed: [src/]}\nroadmap: docs/roadmap.md\n"
+            )
+
+    service_in_review(tmp_path, OtherBaseG(), LocalCompute(), spec, NOW, contract=auto)
+    assert G.arms == []
+
     # a DRAFT PR is not a merge candidate, clean or not (terra #228 r3)
     class DraftG(G):
         def get_pull_request(self, repo, number):
