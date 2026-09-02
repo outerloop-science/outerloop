@@ -14,13 +14,14 @@ own comments and the advisory marker — is ignored.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
-from autoresearch.github import GitHubClient, NothingToCommit, Workspace
+from autoresearch.github import GitError, GitHubClient, NothingToCommit, Workspace
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
     Evaluator,
@@ -139,17 +140,35 @@ def dirty_pr_head(pr: dict) -> str:
     return ""
 
 
+def stale_pr_head(pr: dict) -> str:
+    """The head sha when an OPEN PR is cleanly mergeable but BEHIND its base,
+    else "". A moved base staled the measured claim (publish deliberately
+    declined to arm auto-merge), so the author is woken to merge the base in
+    and the result is re-measured — same machinery as a conflict, minus the
+    resolving."""
+    if pr.get("state") != "open" or pr.get("merged"):
+        return ""
+    if pr.get("mergeable") is True and pr.get("mergeable_state") == "behind":
+        return str((pr.get("head") or {}).get("sha", ""))
+    return ""
+
+
+def base_sync_head(pr: dict) -> str:
+    """The head needing a base sync — conflicted or merely behind."""
+    return dirty_pr_head(pr) or stale_pr_head(pr)
+
+
 def conflict_wake_action(record: RunRecord, github: GitHubClient) -> str:
-    """Tick-side gate (cheap, read-only): "wake" for an in-review PR that
-    conflicts with its base and has not been woken for THIS head yet;
-    "clear" when a previously-woken PR is clean again (base moved back or
-    forward past the conflict — the same head can conflict AGAIN later and
-    must be able to re-wake); "" otherwise."""
+    """Tick-side gate (cheap, read-only): "wake" for an in-review PR whose
+    base moved out from under it — conflicted OR cleanly behind — and that
+    has not been woken for THIS head yet; "clear" when a previously-woken PR
+    is current again (the base can move and stale the SAME head a second
+    time, so the cursor must re-arm); "" otherwise."""
     try:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
     except Exception:
         return ""
-    head = dirty_pr_head(pr)
+    head = base_sync_head(pr)
     if head and head != record.dirty_wake_head:
         return "wake"
     if not head and record.dirty_wake_head and pr.get("mergeable") is True:
@@ -375,7 +394,8 @@ def _respond(
         for source, (items, _) in per_source.items()
         for cid, author, body in items
     ]
-    conflict_head = dirty_pr_head(pr)
+    is_conflict = bool(dirty_pr_head(pr))
+    conflict_head = base_sync_head(pr)
     conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
     if not merged and not conflict_wake:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
@@ -437,18 +457,17 @@ def _respond(
     except Exception as exc:
         log.warning("base fetch failed for %s: %s", run_id, exc)
     base_fetched = bool(base_sha_at_fetch)
-    if conflict_wake and not base_fetched:
-        # never tell the session the base was fetched when it was not, and
-        # never spend the once-per-head cursor on a failed setup — the next
-        # tick retries the whole wake
-        conflict_wake = False
-        if not merged:
-            return FollowupOutcome(
-                run_id, "error", "conflict wake: base fetch failed; retrying next tick"
-            )
+    if base_sync_head(pr) and not base_fetched:
+        # a PR that NEEDS a base sync cannot be serviced without a current
+        # base — comment-driven edits included: they would measure and push
+        # against no known base while the PR stays behind/conflicted. The
+        # cursor is unspent; the next tick retries the whole wake.
+        return FollowupOutcome(
+            run_id, "error", "base sync needed but the base fetch failed; retrying next tick"
+        )
 
     prompt = render_review_wake([(author, body) for _, author, body in comments])
-    if conflict_wake:
+    if conflict_wake and is_conflict:
         prompt = (
             "# Your PR conflicts with its base\n"
             f"`{base_ref}` moved and this PR no longer merges cleanly. "
@@ -459,6 +478,20 @@ def _respond(
             "so plainly instead of forcing it (a maintainer will close the "
             "PR). Any change you keep is re-measured before it is pushed, "
             "and auto-merge stays off — a human merges the updated PR.\n\n"
+        ) + prompt
+    elif conflict_wake:
+        prompt = (
+            "# Your PR is behind its base\n"
+            f"`{base_ref}` moved since your claim was measured, so the "
+            "measurement is stale and auto-merge was deliberately not armed. "
+            f"`origin/{base_ref}` has been fetched into your workspace. "
+            "Merge it into the PR branch — no conflicts were detected, but "
+            "the base may have moved again since; if the merge does conflict, "
+            "resolve it honestly. Check whether what landed changes your "
+            "conclusion; if your "
+            "contribution is superseded, say so plainly instead of pushing "
+            "on. The merged result is re-measured before it is pushed, and "
+            "a human merges the updated PR.\n\n"
         ) + prompt
     if is_steward:
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
@@ -549,27 +582,96 @@ def _respond(
 
     branch = _current_branch(ws)
     committed: list[str] = []
+    pushed_tip = str((pr.get("head") or {}).get("sha", "")) or f"origin/{branch}"
     try:
         # a session that COMMITTED its work (a resolved merge commit is the
         # normal shape) leaves the working tree clean — the diff against the
-        # PR branch's pushed tip is where those changes show
+        # PR branch's pushed tip is where those changes show. The tip is
+        # PINNED from the kernel-fetched PR object: refs/remotes/* are plain
+        # files the session can rewrite to make this diff read empty.
         committed = [
             p
-            for p in ws.git("diff", "--name-only", f"origin/{branch}..HEAD").splitlines()
+            for p in ws.git("diff", "--name-only", f"{pushed_tip}..HEAD").splitlines()
             if p.strip()
         ]
+        history_known = True
     except Exception:
         committed = []
+        history_known = False
 
     def _revert_response() -> None:
-        # drop working-tree edits AND any local commits past the pushed tip
+        # drop working-tree edits AND any local commits past the pushed tip;
+        # abort first — a conflicted, uncommitted merge leaves MERGE_HEAD and
+        # unmerged paths that checkout/clean do not clear, and the next wake
+        # must never start inside someone else's half-merge
+        with contextlib.suppress(GitError):
+            ws.git("merge", "--abort")
         ws.git("checkout", "--", ".")
         ws.git("clean", "-fdq")
         if committed:
-            ws.git("reset", "--hard", f"origin/{branch}")
+            # the PINNED tip, same reason as the diff above: origin/<branch>
+            # is a session-writable file and may not even exist locally
+            ws.git("reset", "--hard", pushed_tip)
 
     changed = sorted(set(_changed_paths(ws)) | set(committed))
-    if changed:
+    # A base-sync wake that changed the tree must actually CONTAIN the fetched
+    # base: without the ancestry check a session could copy base files (or make
+    # any edit) and push a re-measured PR that is still behind/conflicted
+    # (terra #224). An unchanged tree is different — an honest "superseded,
+    # closing" reply spends the cursor and stands.
+    # One ancestry probe decides the sync outcome: the cursor is spent only
+    # when HEAD objectively contains the fetched base. A session that neither
+    # merged nor changed anything (died early, replied vaguely, or declared
+    # itself superseded) leaves the head re-wakeable — supersession's
+    # terminal act is a human closing the PR, and retries stay capped by the
+    # tick's submit-time wake_attempts billing.
+    base_synced = False
+    if conflict_wake and base_sha_at_fetch:
+        try:
+            ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
+            base_synced = True
+        except GitError:
+            base_synced = False
+    sync_failed = conflict_wake and ((changed and not base_synced) or not history_known)
+    # A clean base merge can produce a commit whose TREE is unchanged (the
+    # branch already carried the base's content): committed/changed are both
+    # empty, but the merge commit IS the contribution — without pushing it
+    # the PR stays behind while the cursor is spent. Same measured tree, so
+    # no re-eval is owed; push the topology and say so.
+    if conflict_wake and not changed and base_synced and history_known:
+        # same #171 rule as every other push: an armed auto-mode PR would
+        # merge the new head on green CI, so the push is gated on a
+        # CONFIRMED disarm; a human merges the synced PR.
+        disarm_ok = True
+        if getattr(contract, "merge", "manual") == "auto":
+            try:
+                disarm_ok = github.disable_auto_merge(record.target, number)
+            except Exception as exc:
+                disarm_ok = False
+                log.warning("auto-merge disarm errored before topology push: %s", exc)
+        if disarm_ok:
+            ws.push(branch)
+            measured_note = (
+                f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
+                "unchanged, so the measured numbers above still describe "
+                "exactly this content — only the ancestry moved. A human "
+                "merges the synced PR.)_"
+            )
+        else:
+            base_synced = False  # withheld: cursor unspent, next tick retries
+            measured_note = (
+                "\n\n_(Base sync withheld: auto-merge could not be confirmed "
+                "disarmed on this auto-mode PR; the wake will retry.)_"
+            )
+    if sync_failed:
+        _revert_response()
+        measured_note = (
+            "\n\n_(A code change was attempted but does not include the "
+            "fetched base — the sync wake requires an actual merge of "
+            f"`origin/{base_ref}` — so it was not applied; the wake will "
+            "retry.)_"
+        )
+    elif changed:
         violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
@@ -780,9 +882,15 @@ def _respond(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
-            dirty_wake_head=conflict_head if conflict_wake else record.dirty_wake_head,
+            # the cursor is spent only when the sync objectively happened
+            # (HEAD contains the fetched base); otherwise the head stays
+            # re-wakeable, bounded by the tick's submit-time billing — the
+            # count is kept, never advanced here, never reset without progress
+            dirty_wake_head=(
+                conflict_head if (conflict_wake and base_synced) else record.dirty_wake_head
+            ),
             resume_session_id=session.session_id or record.resume_session_id,
-            wake_attempts=0,  # progress: the retry cap starts fresh
+            wake_attempts=(record.wake_attempts if (conflict_wake and not base_synced) else 0),
         ),
         now,
     )

@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A PR left BEHIND by a base move now wakes its author the way a conflicted
+  one does: merge the base in (cleanly — no resolving), reconsider the
+  conclusion, and the result is re-measured before pushing. Publish already
+  declined to arm auto-merge on a stale claim; this closes the loop so the
+  claim can become fresh again instead of sitting until a human notices.
 - The kernel can authenticate as a GitHub App: set `AUTORESEARCH_GITHUB_APP_FILE`
   to a JSON config (`app_id`, `installation_id`, `private_key` path) and every
   role mints short-lived installation tokens instead of reading the bot PAT

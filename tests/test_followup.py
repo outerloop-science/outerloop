@@ -90,14 +90,36 @@ class FakeGitHub:
 
 @dataclass
 class ResumingHarness:
-    """Records the resume id + prompt; optionally edits files."""
+    """Records the resume id + prompt; optionally edits files. With
+    merge_base=True the fake session really merges origin/main first — what
+    an honest session does on a base-sync wake (the ancestry check pushes
+    nothing without it)."""
 
     edits: dict[str, str] = field(default_factory=dict)
     text: str = "Thanks — addressed. See the updated kick strategy."
     calls: list[tuple[str, str | None]] = field(default_factory=list)
+    merge_base: bool = False
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         self.calls.append((brief_text, resume_session_id))
+        if self.merge_base:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(workspace),
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "merge",
+                    "-q",
+                    "--no-edit",
+                    "origin/main",
+                ],
+                check=True,
+                capture_output=True,
+            )
         for rel, content in self.edits.items():
             path = workspace / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -890,6 +912,46 @@ def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     assert outcome2.action == "no-op"
 
 
+def _ws_head(root) -> str:
+    """The workspace's pre-session HEAD — what the remote PR tip really is."""
+    return _git(run_dir(root, "tsp-r1") / "ws", "rev-parse", "HEAD").strip()
+
+
+def _behind_pr(head="h" * 40) -> dict:
+    return {
+        "state": "open",
+        "merged": False,
+        "mergeable": True,
+        "mergeable_state": "behind",
+        "head": {"sha": head},
+        "base": {"ref": "main"},
+    }
+
+
+def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
+    """A cleanly-mergeable PR whose base moved wakes its author exactly like
+    a conflicted one — the claim is stale (publish declined to arm), so the
+    author merges the base in and the result is re-measured. First seen live:
+    gpt-speedrun#5 (the 8640 record) sat BEHIND after the lines-flip landed
+    mid-attempt, with no path back to the board."""
+    root, _bare = review_run
+    head = _ws_head(root)
+    github = FakeGitHub(pr=_behind_pr(head=head))
+    harness = ResumingHarness()
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
+    assert outcome.action == "replied"
+    prompt, resume_id = harness.calls[0]
+    assert "Your PR is behind its base" in prompt
+    assert "no conflicts were detected" in prompt
+    assert "re-measured" in prompt
+    assert resume_id == "sess-original"
+    # once per head, same cursor as the conflict wake
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == head
+    outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
+    assert outcome2.action == "no-op"
+
+
 def test_conflict_wake_action_lifecycle(review_run) -> None:
     from autoresearch.followup import conflict_wake_action
 
@@ -906,6 +968,12 @@ def test_conflict_wake_action_lifecycle(review_run) -> None:
     # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
     clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
     assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=clean))) == "clear"
+    # BEHIND (clean merge, stale base) wakes exactly like a conflict
+    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_behind_pr()))) == "wake"
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_behind_pr()))) == ""  # once/head
+    # blocked-but-current does NOT wake (nothing to sync)
+    blocked = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "blocked"}
+    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=blocked))) == ""
 
 
 def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
@@ -1087,3 +1155,268 @@ def test_forged_base_ref_cannot_vouch(review_run) -> None:
     assert outcome.action == "replied"
     assert "outside the contract" in github.posted[0]  # forgery did not vouch
     assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
+
+
+def test_behind_wake_merge_is_remeasured_and_pushed(review_run) -> None:
+    """The behind wake rides the full sync machinery: the session's merge of
+    the moved base plus its own kept edit are re-measured and pushed (terra
+    #224: the first behind test pinned only the trigger and prompt)."""
+    root, bare = review_run
+    # main moves cleanly: an out-of-scope doc lands upstream (no conflict)
+    seed2 = root.parent / "seed2b"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))  # the wake alone triggers
+    harness = ResumingHarness(
+        merge_base=True,  # an honest session merges; ancestry is verified
+        edits={"src/pilot/solvers/tsp.py": "v2 after sync\n"},
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    solver = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
+    assert "v2 after sync" in solver
+    assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
+
+
+def test_behind_wake_without_a_real_merge_is_withheld(review_run) -> None:
+    """A session that edits files but never merges the fetched base is
+    refused: nothing pushed, the cursor stays unspent so the wake retries,
+    and the retry cap climbs instead of resetting (terra #224: without the
+    ancestry check a copied-files 'sync' re-measured and pushed a PR that
+    stayed behind)."""
+    root, bare = review_run
+    seed2 = root.parent / "seed2c"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
+    # the fake merge: base files copied in, no actual merge of origin/main
+    harness = ResumingHarness(
+        edits={
+            "docs/news.md": "from main\n",
+            "src/pilot/solvers/tsp.py": "v2 faked\n",
+        }
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+
+    def _pushed() -> bool:
+        probe = subprocess.run(
+            ["git", "-C", str(bare), "rev-parse", "--verify", "feat/auto/agent-01/tsp-r1"],
+            capture_output=True,
+        )
+        return probe.returncode == 0
+
+    assert not _pushed()  # the fixture starts with no PR branch in the bare
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "does not include the fetched base" in github.posted[0]
+    assert not _pushed()  # the faked sync pushed nothing
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # cursor unspent: the wake retries
+    # the tick charged the submission already; the failed sync must not bill
+    # a second attempt (terra r4) — it keeps the count instead of resetting
+    assert record.wake_attempts == 0
+
+
+def test_sync_needed_with_failed_fetch_services_nothing(review_run, monkeypatch) -> None:
+    """A PR that needs a base sync but whose base fetch failed is not
+    serviced at all this pass — qualifying comments included (terra #224
+    r3: the comment path measured and pushed against no current base while
+    the PR stayed behind)."""
+    from autoresearch.github import Workspace
+
+    root, _bare = review_run
+
+    def boom(self) -> None:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(Workspace, "fetch_origin", boom)
+    github = FakeGitHub(pr=_behind_pr(), comments=[member(11, "please tweak the kick")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "comment-driven edit\n"})
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "error"
+    assert "base sync needed" in outcome.note
+    assert harness.calls == []  # no session ran; nothing measured or pushed
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # cursor unspent: retried next tick
+
+
+def test_conflicted_sync_merge_is_aborted_on_revert(review_run) -> None:
+    """A session that starts a base merge and leaves it conflicted must not
+    poison the workspace: the revert aborts the merge (terra #224 r3:
+    checkout+clean left MERGE_HEAD, so the NEXT wake started inside an
+    unfinished merge)."""
+    root, _bare = review_run
+    # main rewrites the solver the PR branch also changed -> guaranteed conflict
+    seed2 = root.parent / "seed2d"
+    _git(root.parent, "clone", "-q", str(_bare), str(seed2))
+    (seed2 / "src" / "pilot" / "solvers" / "tsp.py").write_text("conflicting main rewrite\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main rewrites")
+    _git(seed2, "push", "-q", "origin", "main")
+
+    class ConflictedMergeHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.calls.append((brief_text, resume_session_id))
+            git = ["git", "-C", str(workspace), "-c", "user.name=t", "-c", "user.email=t@t"]
+            # both sides rewrite the solver -> the merge MUST conflict
+            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("local rewrite\n")
+            subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+            subprocess.run([*git, "commit", "-qm", "local"], check=True, capture_output=True)
+            merged = subprocess.run(  # conflicts and leaves MERGE_HEAD, like a dying session
+                [*git, "merge", "--no-edit", "origin/main"], capture_output=True
+            )
+            assert merged.returncode != 0, "fixture expected a conflicted merge"
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.1,
+                num_turns=2,
+                session_id="sess-conflicted",
+                final_text="tried the merge",
+                transcript_path="",
+            )
+
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
+    outcome = respond(root, github, ConflictedMergeHarness(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "does not include the fetched base" in github.posted[0]
+    assert not (ws / ".git" / "MERGE_HEAD").exists()  # the merge was aborted
+    assert _git(ws, "status", "--porcelain") == ""  # workspace fully clean
+
+
+def test_topology_only_base_merge_is_pushed(review_run) -> None:
+    """A clean base merge whose tree is unchanged (the branch already carried
+    the base's content) still pushes — the merge commit IS the contribution;
+    without it the PR stays behind while the cursor is spent (terra #224 r4).
+    No re-measure is owed: the pushed tree is exactly the measured one."""
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    git_id = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    # the branch commits a doc; main lands the IDENTICAL content -> merging
+    # main creates a merge commit with the same tree
+    (ws / "docs").mkdir(exist_ok=True)
+    (ws / "docs" / "news.md").write_text("same everywhere\n")
+    _git(ws, *git_id, "add", "-A")
+    _git(ws, *git_id, "commit", "-qm", "branch doc")
+    seed2 = root.parent / "seed2e"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs").mkdir(exist_ok=True)
+    (seed2 / "docs" / "news.md").write_text("same everywhere\n")
+    _git(seed2, *git_id, "add", "-A")
+    _git(seed2, *git_id, "commit", "-qm", "main doc")
+    _git(seed2, "push", "-q", "origin", "main")
+    head = _ws_head(root)
+    github = FakeGitHub(pr=_behind_pr(head=head))
+    harness = ResumingHarness(merge_base=True)  # merge, no edits
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "only the ancestry moved" in github.posted[0]
+    # the merge commit reached the remote: the base tip is now an ancestor
+    # of the pushed PR branch
+    main_sha = _git(bare, "rev-parse", "main").strip()
+    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    merge_base = _git(bare, "merge-base", main_sha, branch_sha).strip()
+    assert merge_base == main_sha
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == head  # cursor spent: sync done
+
+
+def test_replace_ref_cannot_forge_the_ancestry_check(review_run) -> None:
+    """The session owns the clone: a planted refs/replace/* must not let
+    merge-base call a fake merge an ancestor of the fetched base (terra
+    #224 r5) — GIT_NO_REPLACE_OBJECTS rides every kernel git invocation."""
+    root, bare = review_run
+    seed2 = root.parent / "seed2f"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+
+    class ForgingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            self.calls.append((brief_text, resume_session_id))
+            git = ["git", "-C", str(workspace), "-c", "user.name=t", "-c", "user.email=t@t"]
+            # the "session" edits without merging, then REPLACES the fetched
+            # base commit with an ancestor of HEAD so ancestry appears to hold
+            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("forged sync\n")
+            subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+            subprocess.run([*git, "commit", "-qm", "forged"], check=True, capture_output=True)
+            base_sha = subprocess.run(
+                [*git, "rev-parse", "origin/main"], check=True, capture_output=True, text=True
+            ).stdout.strip()
+            root_commit = (
+                subprocess.run(
+                    [*git, "rev-list", "--max-parents=0", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .splitlines()[0]
+            )
+            subprocess.run(
+                [*git, "update-ref", f"refs/replace/{base_sha}", root_commit],
+                check=True,
+                capture_output=True,
+            )
+            return SessionResult(
+                stop_reason="end_turn",
+                is_error=False,
+                cost_usd=0.1,
+                num_turns=2,
+                session_id="sess-forger",
+                final_text="synced (not really)",
+                transcript_path="",
+            )
+
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    # production shape: the PR branch exists on the remote, so the kernel
+    # can diff origin/<branch>..HEAD and see the forger's commit
+    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
+    before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
+    outcome = respond(root, github, ForgingHarness(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "does not include the fetched base" in github.posted[0]  # forgery refused
+    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == before  # no push
+
+
+def test_do_nothing_session_leaves_the_behind_wake_rearmed(review_run) -> None:
+    """A behind wake whose session neither merges nor edits must not spend
+    the cursor (terra #224 r6: the still-behind PR could never re-wake for
+    that head). The reply stands; the next pass wakes again, capped by the
+    tick's submit-time billing."""
+    root, bare = review_run
+    seed2 = root.parent / "seed2g"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
+    outcome = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # unspent: the sync did not happen
+    # the next pass re-wakes the same head instead of no-opping
+    second = ResumingHarness()
+    outcome2 = respond(root, github, second, QueueEvaluator(values=[10.2]))
+    assert outcome2.action == "replied"
+    assert second.calls, "the head must stay wakeable until the sync is real"
