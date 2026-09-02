@@ -17,8 +17,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
@@ -293,7 +295,15 @@ def respond_once(
     secrets: tuple[str, ...] = (),
     created: str = "",
     spec: RoleSpec | None = None,
+    panel_lenses: tuple[Any, ...] = (),
+    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
 ) -> FollowupOutcome:
+    """Service one in-review run: reply to new maintainer comments (and base
+    moves), re-measure and push any code change the session made.
+
+    `panel_lenses` (the climb's `--panel`) re-reads a PUSHED code change with
+    the same verification panel; `panel_builder` is the runner factory
+    (`build_panel_runner` unless a test injects one)."""
     record = load_record(run_root, run_id)
     if record.state != IN_REVIEW:
         return FollowupOutcome(run_id, "no-op", f"state is {record.state}, not in-review")
@@ -318,6 +328,8 @@ def respond_once(
             secrets,
             created,
             spec,
+            panel_lenses,
+            panel_builder,
         )
     except Exception as exc:
         log.warning("followup failed for %s: %s", run_id, redact(str(exc), secrets))
@@ -341,6 +353,8 @@ def _respond(
     secrets: tuple[str, ...],
     created: str,
     spec: RoleSpec | None = None,
+    panel_lenses: tuple[Any, ...] = (),
+    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
 ) -> FollowupOutcome:
     # a deployment bug is refused before any GitHub read or contract load —
     # the contained error outcome retries next tick either way, so fail as
@@ -569,6 +583,7 @@ def _respond(
 
     measured_note = ""
     change_pushed = False
+    pushed_head = ""  # the exact sha a code-changing push put on the PR
 
     def _matches_base(path: str) -> bool:
         # content identical to origin/<base> is the base branch's own (a
@@ -960,6 +975,7 @@ def _respond(
                         except NothingToCommit:
                             if not committed:
                                 raise
+                        pushed_head = ws.git("rev-parse", "HEAD").strip()
                         ws.push(branch)
                         change_pushed = True
                         worse = prior is not None and not orch_improved(
@@ -1033,7 +1049,192 @@ def _respond(
         ),
         now,
     )
+    if change_pushed and panel_lenses and not is_steward:
+        # RE-READ: the pushed change replaced the content the panel blessed,
+        # and the write above already cleared the blessing — the tick never
+        # arms a head the panel has not read. Now the SAME panel reads the
+        # new head. A clean read under merge:auto moves the blessing to the
+        # pushed sha (the tick arms once GitHub reports the PR clean);
+        # blocking findings, a degraded read, a manual dial, or a panel that
+        # could not run all leave the merge to a human — named on the thread.
+        # Ordered AFTER the reply and the record write on purpose: judges
+        # take minutes, and a responder killed mid-read must cost an unarmed
+        # PR, never a silent push or a repeated wake.
+        _reread_pushed_change(
+            ws,
+            run_root,
+            run_id,
+            record,
+            number,
+            github,
+            bench,
+            candidate,
+            prior.best if prior is not None else None,
+            reply_body,
+            trusted_base=base_sha_at_fetch if base_fetched else "",
+            pushed_head=pushed_head,
+            dial=str(getattr(post_contract, "merge", "manual")),
+            panel_lenses=panel_lenses,
+            panel_builder=panel_builder,
+            bot_login=bot_login,
+            created=created,
+            now=now,
+            secrets=secrets,
+        )
     return FollowupOutcome(run_id, "replied", f"processed {len(comments)} comment(s)")
+
+
+REREAD_HEADING = "**Verification panel — re-read of the pushed change**"
+
+
+def _followup_claim_body(
+    benchmark: str,
+    number: int,
+    previous: float | None,
+    candidate: float,
+    report: str,
+    *,
+    lines: bool,
+) -> str:
+    """The claim a follow-up re-read judges: a re-measure on an OPEN PR, not
+    a fresh improvement claim — the panel must know the PR already carried
+    a measured number and this is the change made in response to review."""
+    from autoresearch.attempt import MAX_CLAIM_CHARS
+
+    mandate = (
+        "\n\nThis target runs research lines: the PR must stay ONE clean "
+        "contribution. A change that bundles unrelated or unablated work is "
+        "a BLOCKING finding — name the pieces that should be separated."
+        if lines
+        else ""
+    )
+    prev = f"{previous}" if previous is not None else "not recorded"
+    return (
+        f"Follow-up re-measure on open PR #{number}: {benchmark} = {candidate} "
+        f"after a code change made in response to review feedback (the PR's "
+        f"previously measured number: {prev}), measured by the orchestrator."
+        f"{mandate}\n\n## Author's reply\n\n*Session prose, written before "
+        f"the orchestrator measured.*\n\n{report[:MAX_CLAIM_CHARS]}"
+    )
+
+
+def _reread_pushed_change(
+    ws: Workspace,
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    number: int,
+    github: GitHubClient,
+    bench: Any,
+    candidate: float,
+    previous: float | None,
+    report: str,
+    *,
+    trusted_base: str,
+    pushed_head: str,
+    dial: str,
+    panel_lenses: tuple[Any, ...],
+    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
+    bot_login: str,
+    created: str,
+    now: float,
+    secrets: tuple[str, ...],
+) -> None:
+    """Run the panel over the head a follow-up just pushed and post the
+    read; bless the head for the tick's auto-arm ONLY on a clean read under
+    merge:auto against a trusted base, with the workspace still exactly the
+    pushed commit. Every other outcome is written down and left to a human.
+    Best-effort throughout: a failure here degrades to an unarmed PR."""
+    transcript = ""
+    clean = False
+    base = ""
+    if trusted_base and pushed_head:
+        # the panel's `base/` is the base the PR actually forks from: the
+        # merge-base of the pushed head and the kernel-pinned base sha (after
+        # a base sync the two coincide) — never a ref name a session can move
+        with contextlib.suppress(GitError):
+            base = ws.git("merge-base", pushed_head, trusted_base).strip()
+    if not base:
+        transcript = "- panel skipped: no trusted base to read against — NOT a clean read"
+    else:
+        try:
+            head_now = ws.git("rev-parse", "HEAD").strip()
+            head_tree = ws.git("rev-parse", "HEAD^{tree}").strip()
+            work_tree = _tree_hash(ws)
+        except GitError:
+            head_now = head_tree = work_tree = ""
+        if not head_now or head_now != pushed_head or work_tree != head_tree:
+            # the panel snapshots the WORKING tree; it must be the pushed commit
+            transcript = (
+                "- panel skipped: the workspace no longer matches the pushed head — "
+                "NOT a clean read"
+            )
+        else:
+            try:
+                from autoresearch.attempt import LINE_MEMORY_PATHS, _utc_date, build_panel_runner
+
+                lines = bool(getattr(bench, "lines", False))
+                try:
+                    contract_text = ws.git("show", f"{base}:.autoresearch.yaml")
+                except GitError:
+                    contract_text = (Path(ws.root) / ".autoresearch.yaml").read_text()
+                runner = (panel_builder or build_panel_runner)(
+                    ws,
+                    run_dir(run_root, run_id),
+                    base,
+                    panel_lenses,
+                    contract_text,
+                    record.target,
+                    bench.name,
+                    bot_login,
+                    created[:10] if created else _utc_date(now),
+                    exclude=LINE_MEMORY_PATHS if lines else (),
+                    claim_body=lambda _b, c, r: _followup_claim_body(
+                        bench.name, number, previous, c, r, lines=lines
+                    ),
+                )
+                verdict = runner(previous if previous is not None else candidate, candidate, report)
+            except Exception as exc:
+                # a panel that cannot run is a NON-read, said plainly
+                transcript = (
+                    f"- panel could not run ({redact(str(exc), secrets)[:160]}) — NOT a clean read"
+                )
+            else:
+                transcript = str(verdict.transcript)
+                clean = not verdict.blocking and not verdict.degraded
+    # judges held a shell next to this checkout: re-pin before trusting
+    try:
+        still_pushed = ws.git("rev-parse", "HEAD").strip() == pushed_head
+    except GitError:
+        still_pushed = False
+    bless = clean and still_pushed and dial == "auto"
+    if bless:
+        closing = (
+            "Clean read under `merge: auto`: the kernel may merge this head once "
+            "GitHub reports the PR clean and up to date with its base."
+        )
+    elif clean and dial != "auto":
+        closing = "Clean read; this repository merges by hand (`merge: manual`)."
+    elif clean:
+        closing = "Clean read, but the workspace moved during it — a human merges this PR."
+    else:
+        closing = "Not a clean read — a human decides this PR."
+    body = APPROVAL_PATTERN.sub(REDACTED, redact(transcript, secrets))[:MAX_REPLY_CHARS]
+    try:
+        github.comment(
+            record.target,
+            number,
+            f"{REPLY_MARKER}\n{REREAD_HEADING} (`{pushed_head[:12]}`)\n{body}\n\n_{closing}_",
+        )
+    except Exception as exc:
+        log.warning("re-read comment failed for %s#%s: %s", record.target, number, exc)
+        return  # an unposted read never blesses: the thread must carry it
+    if bless:
+        try:
+            latest = load_record(run_root, run_id)
+            save_record(run_root, replace(latest, auto_blessed_head=pushed_head), now)
+        except (OSError, ValueError) as exc:
+            log.warning("blessing write failed for %s: %s", run_id, exc)
 
 
 def _changed_paths(ws: Workspace) -> list[str]:
@@ -1113,6 +1314,13 @@ def main() -> int:
         help="author key file; default resolves per backend (config-driven): "
         "AUTORESEARCH_HARNESS_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
     )
+    parser.add_argument(
+        "--panel",
+        default="",
+        help="verification lenses (kind[:backend[:model]], comma-separated) that "
+        "re-read a pushed code change; '' = no re-read, a changed PR stays human-merged",
+    )
+    parser.add_argument("--panel-key-file", default="", help="the claude panel lenses' key file")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
@@ -1121,10 +1329,21 @@ def main() -> int:
     from datetime import UTC, datetime
 
     from autoresearch.attempt import (
+        PANEL_KEY_DEFAULT,
+        _panel_lenses_from_args,
         codex_author_config_error,
         resolve_author_key_file,
         resume_author,
     )
+    from autoresearch.panel import panel_read_minutes
+
+    args.panel_key_file = args.panel_key_file or PANEL_KEY_DEFAULT
+    try:
+        # the climb's own rules and credentials: judge keys are read only for
+        # the lenses that use them and join the redaction set
+        panel_lenses, panel_secrets = _panel_lenses_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # a follow-up services ONE run: reproduce THAT run's author (the persisted
     # (backend, model) PAIR), not the current fleet default, so a codex-authored
@@ -1163,11 +1382,14 @@ def main() -> int:
         log.info("self-deadline armed: Terminated in %ds", armed)
     # the manifest first, the harness from it (budget has one source: the
     # args). The session must end before its job does, so the walltime is
-    # bounded by the job minus the self-deadline margin when one is known.
+    # bounded by the job minus the self-deadline margin when one is known —
+    # and minus the panel's read, which runs AFTER the session on the same
+    # clock (the tick added exactly that allowance to the job).
+    session_minutes = max(0, args.job_minutes - panel_read_minutes(args.panel))
     spec = followup_spec(
         max_turns=args.max_turns,
         walltime_s=(
-            min(3600, max(300, args.job_minutes * 60 - 300)) if args.job_minutes > 0 else 3600
+            min(3600, max(300, session_minutes * 60 - 300)) if args.job_minutes > 0 else 3600
         ),
     )
     try:
@@ -1188,8 +1410,9 @@ def main() -> int:
             github=GitHubClient(auth=bot_auth),
             bot_login=args.bot_login,
             now=time.time(),
-            secrets=(api_key, bot_auth.token()),
+            secrets=(api_key, bot_auth.token(), *panel_secrets),
             created=datetime.now(UTC).isoformat(),
+            panel_lenses=panel_lenses,
         )
     finally:
         _signal.alarm(0)

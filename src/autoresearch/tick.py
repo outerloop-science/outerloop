@@ -635,6 +635,27 @@ def service_in_review(
             if dry_run:
                 submitted.append((record.run_id, "dry-run"))
                 continue
+            # The author follow-up carries the climb's panel so a pushed code
+            # change is RE-READ before the tick may arm it (followup.py). The
+            # panel brings its own walltime, like the climb's allowance — the
+            # contract's followup budget caps the author, not the gate. A
+            # panel that would die at startup is left off: the reply still
+            # goes out, the PR simply stays human-merged (the tick's contract
+            # alarm already names the misconfig).
+            panel_argv: list[str] = []
+            panel_minutes = 0
+            if not is_steward and spec.panel.strip():
+                panel_error = _panel_preflight_error(spec)
+                if panel_error:
+                    log.warning(
+                        "follow-up for %s runs without the panel: %s", record.run_id, panel_error
+                    )
+                else:
+                    from autoresearch.panel import panel_read_minutes
+
+                    panel_argv = _climb_panel_argv(spec)
+                    panel_minutes = panel_read_minutes(spec.panel)
+            job_minutes = min(spec.time_minutes + panel_minutes, spec.max_job_minutes)
             argv = [
                 "uv",
                 "run",
@@ -652,9 +673,10 @@ def service_in_review(
                 "--job-minutes",
                 # the SAME clamped value Slurm gets: a deadline armed past
                 # the real walltime is a Slurm kill before a clean ending
-                str(min(spec.time_minutes, spec.max_job_minutes)),
+                str(job_minutes),
                 "--max-turns",
                 str(spec.max_turns),
+                *panel_argv,
             ]
             if spec.pat_file:
                 argv += ["--pat-file", spec.pat_file]
@@ -668,7 +690,7 @@ def service_in_review(
                     job_name=f"followup-{record.run_id}"[:60],
                     account=spec.account,
                     partition=spec.job_partition or spec.partition,
-                    time_minutes=min(spec.time_minutes, spec.max_job_minutes),
+                    time_minutes=job_minutes,
                     command=_flight_command(spec.home, f"followup-{record.run_id}"[:60], now, argv),
                     cpus=4,
                     mem="8G",
@@ -2678,14 +2700,13 @@ def _wake_panel_minutes(spec: FollowupSpec) -> int:
     author session (the depth-axis wake-to-revise). The revision's re-measure
     only DISPATCHES (then the job ends, parked), so it needs no extra time.
     Grounded in the same judge/author budgets the climb job uses."""
-    lenses = [entry for entry in spec.panel.split(",") if entry.strip()]
-    if not lenses:
-        return 0
-    from autoresearch.roles import author_spec, reviewer_spec, verifier_spec
+    from autoresearch.panel import panel_read_minutes
+    from autoresearch.roles import author_spec
 
-    judge_minutes = max(reviewer_spec().budget.walltime_s, verifier_spec().budget.walltime_s) // 60
-    session_minutes = author_spec().budget.walltime_s // 60
-    return len(lenses) * judge_minutes + session_minutes
+    read_minutes = panel_read_minutes(spec.panel)
+    if not read_minutes:
+        return 0
+    return read_minutes + author_spec().budget.walltime_s // 60
 
 
 def _wake_dispatcher_from_env(

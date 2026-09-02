@@ -3663,3 +3663,98 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
 
     service_in_review(tmp_path, DraftG(), LocalCompute(), spec, NOW, contract=auto)
     assert G.arms == []
+
+
+def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path) -> None:
+    """The follow-up re-reads a pushed change with the climb's panel, so the
+    tick threads `--panel` and adds ONE read's walltime to the job (the
+    contract's followup budget caps the author, not the gate). A panel that
+    would die at startup is left off — the reply still goes out — and the
+    steward's follow-up never carries one."""
+    import os
+
+    from autoresearch.compute import CommandResult
+    from autoresearch.panel import panel_read_minutes
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    key = tmp_path / "verifier_key"
+    key.write_text("sk-panel\n")
+    os.chmod(key, 0o600)
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 9,
+                    "body": "explain",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def run(agent_id: str, panel: str, key_file: str) -> str:
+        root = tmp_path / f"root-{agent_id}-{len(panel)}-{bool(key_file)}"
+        root.mkdir()
+        save_record(
+            root,
+            RunRecord(
+                run_id="r-rev",
+                target="org/pilot",
+                task_title="t",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/9",
+                agent_id=agent_id,
+            ),
+            now=NOW,
+        )
+        submits: list[list[str]] = []
+
+        def runner(argv, timeout_s):
+            if argv[0] == "sbatch":
+                submits.append(list(argv))
+                return CommandResult(0, "4242\n", "")
+            if argv[0] == "sacct":
+                return CommandResult(0, "RUNNING\n", "")
+            raise AssertionError(argv)
+
+        spec = FollowupSpec(
+            account="acct",
+            partition="cpu_short",
+            run_root=root,
+            image="/img/a.sif",
+            home=Path("/home/x/autoresearch"),
+            time_minutes=90,
+            panel=panel,
+            panel_key_file=key_file,
+            steward_key_file="/k" if agent_id.startswith("steward") else "",
+        )
+        service_in_review(root, G(), SlurmCompute(runner=runner), spec, NOW)
+        return " ".join(submits[0])
+
+    allowance = panel_read_minutes("verify,review")
+    assert allowance > 0
+    armed = run("agent-01", "verify,review", str(key))
+    assert "--panel verify,review" in armed and f"--panel-key-file {key}" in armed
+    assert f"--time={90 + allowance}" in armed and f"--job-minutes {90 + allowance}" in armed
+
+    # a missing judge key fails the preflight: no panel, plain budget
+    unarmed = run("agent-02", "verify,review", str(tmp_path / "absent"))
+    assert "--panel" not in unarmed and "--time=90" in unarmed and "--job-minutes 90" in unarmed
+
+    # panel off: nothing added
+    off = run("agent-03", "", "")
+    assert "--panel" not in off and "--time=90" in off
+
+    # the steward's PRs are not panel-blessed: never a panel on its follow-up
+    steward = run("steward-01", "verify,review", str(key))
+    assert "--panel" not in steward and "--time=90" in steward

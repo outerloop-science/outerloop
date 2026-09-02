@@ -2031,6 +2031,7 @@ def build_panel_runner(
     today: str,
     start_round: int = 0,
     exclude: tuple[str, ...] = (),
+    claim_body: Callable[[float, float, str], str] | None = None,
 ) -> Callable[[float, float, str], PanelVerdict]:
     """The git half of the pre-PR panel: prepare the two read-only checkouts
     and the synthetic claim, then hand off to `run_panel` (which owns no git).
@@ -2039,10 +2040,19 @@ def build_panel_runner(
     checks it out as `pr-head/` (sanitized — the candidate is an untrusted
     tree), next to `base/` (the trusted pre-session commit: contract and
     ruler). Worktrees are removed after the read; a fresh pair is built per
-    round because the tree changes with every revision."""
+    round because the tree changes with every revision.
+
+    `claim_body` renders the claim the panel judges from (baseline,
+    candidate, report); the default is the pre-PR improvement claim, a
+    follow-up re-read passes its own wording."""
     from autoresearch.review_agent import sanitize_checkout
 
     reads = {"n": start_round}
+    render_claim = claim_body or (
+        lambda baseline, candidate, report: _panel_claim_body(
+            benchmark, baseline, candidate, report, lines=bool(exclude)
+        )
+    )
 
     def runner(baseline: float, candidate: float, report: str) -> PanelVerdict:
         reads["n"] += 1
@@ -2089,7 +2099,7 @@ def build_panel_runner(
                 repo=target,
                 number=0,
                 title=f"[agent] {benchmark}: {_title_pair(baseline, candidate)}",
-                body=_panel_claim_body(benchmark, baseline, candidate, report, lines=bool(exclude)),
+                body=render_claim(baseline, candidate, report),
                 # base..snapshot, never base..worktree: the snapshot commit
                 # includes newly ADDED files, which a working-tree diff omits
                 diff=ws.git("diff", f"{base_sha}..{snapshot}"),
