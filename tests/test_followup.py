@@ -90,14 +90,36 @@ class FakeGitHub:
 
 @dataclass
 class ResumingHarness:
-    """Records the resume id + prompt; optionally edits files."""
+    """Records the resume id + prompt; optionally edits files. With
+    merge_base=True the fake session really merges origin/main first — what
+    an honest session does on a base-sync wake (the ancestry check pushes
+    nothing without it)."""
 
     edits: dict[str, str] = field(default_factory=dict)
     text: str = "Thanks — addressed. See the updated kick strategy."
     calls: list[tuple[str, str | None]] = field(default_factory=list)
+    merge_base: bool = False
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         self.calls.append((brief_text, resume_session_id))
+        if self.merge_base:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(workspace),
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "merge",
+                    "-q",
+                    "--no-edit",
+                    "origin/main",
+                ],
+                check=True,
+                capture_output=True,
+            )
         for rel, content in self.edits.items():
             path = workspace / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1143,10 +1165,8 @@ def test_behind_wake_merge_is_remeasured_and_pushed(review_run) -> None:
     _git(seed2, "push", "-q", "origin", "main")
     github = FakeGitHub(pr=_behind_pr())  # no comments: the wake alone triggers
     harness = ResumingHarness(
-        edits={
-            "docs/news.md": "from main\n",  # the merge brings the base's file in
-            "src/pilot/solvers/tsp.py": "v2 after sync\n",
-        }
+        merge_base=True,  # an honest session merges; ancestry is verified
+        edits={"src/pilot/solvers/tsp.py": "v2 after sync\n"},
     )
     ws = run_dir(root, "tsp-r1") / "ws"
     _git(ws, "fetch", "-q", "origin", "main")
@@ -1156,3 +1176,44 @@ def test_behind_wake_merge_is_remeasured_and_pushed(review_run) -> None:
     solver = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
     assert "v2 after sync" in solver
     assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
+
+
+def test_behind_wake_without_a_real_merge_is_withheld(review_run) -> None:
+    """A session that edits files but never merges the fetched base is
+    refused: nothing pushed, the cursor stays unspent so the wake retries,
+    and the retry cap climbs instead of resetting (terra #224: without the
+    ancestry check a copied-files 'sync' re-measured and pushed a PR that
+    stayed behind)."""
+    root, bare = review_run
+    seed2 = root.parent / "seed2c"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr())
+    # the fake merge: base files copied in, no actual merge of origin/main
+    harness = ResumingHarness(
+        edits={
+            "docs/news.md": "from main\n",
+            "src/pilot/solvers/tsp.py": "v2 faked\n",
+        }
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+
+    def _pushed() -> bool:
+        probe = subprocess.run(
+            ["git", "-C", str(bare), "rev-parse", "--verify", "feat/auto/agent-01/tsp-r1"],
+            capture_output=True,
+        )
+        return probe.returncode == 0
+
+    assert not _pushed()  # the fixture starts with no PR branch in the bare
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "does not include the fetched base" in github.posted[0]
+    assert not _pushed()  # the faked sync pushed nothing
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # cursor unspent: the wake retries
+    assert record.wake_attempts == 1  # bounded by MAX_WAKE_ATTEMPTS

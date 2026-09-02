@@ -20,7 +20,7 @@ from pathlib import Path
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
-from autoresearch.github import GitHubClient, NothingToCommit, Workspace
+from autoresearch.github import GitError, GitHubClient, NothingToCommit, Workspace
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
     Evaluator,
@@ -602,7 +602,26 @@ def _respond(
             ws.git("reset", "--hard", f"origin/{branch}")
 
     changed = sorted(set(_changed_paths(ws)) | set(committed))
-    if changed:
+    # A base-sync wake that changed the tree must actually CONTAIN the fetched
+    # base: without the ancestry check a session could copy base files (or make
+    # any edit) and push a re-measured PR that is still behind/conflicted
+    # (terra #224). An unchanged tree is different — an honest "superseded,
+    # closing" reply spends the cursor and stands.
+    sync_failed = False
+    if conflict_wake and changed and base_sha_at_fetch:
+        try:
+            ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
+        except GitError:
+            sync_failed = True
+    if sync_failed:
+        _revert_response()
+        measured_note = (
+            "\n\n_(A code change was attempted but does not include the "
+            "fetched base — the sync wake requires an actual merge of "
+            f"`origin/{base_ref}` — so it was not applied; the wake will "
+            "retry.)_"
+        )
+    elif changed:
         violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
@@ -813,9 +832,14 @@ def _respond(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
-            dirty_wake_head=conflict_head if conflict_wake else record.dirty_wake_head,
+            # a failed sync leaves the cursor unspent so the wake retries —
+            # bounded: wake_attempts climbs instead of resetting, and the
+            # service stops resubmitting at MAX_WAKE_ATTEMPTS
+            dirty_wake_head=(
+                conflict_head if (conflict_wake and not sync_failed) else record.dirty_wake_head
+            ),
             resume_session_id=session.session_id or record.resume_session_id,
-            wake_attempts=0,  # progress: the retry cap starts fresh
+            wake_attempts=(record.wake_attempts + 1) if sync_failed else 0,
         ),
         now,
     )
