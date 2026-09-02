@@ -665,7 +665,11 @@ def _respond(
         committed = []
         history_known = False
 
+    response_reverted = False
+
     def _revert_response() -> None:
+        nonlocal response_reverted
+        response_reverted = True
         # drop working-tree edits AND any local commits past the pushed tip;
         # abort first — a conflicted, uncommitted merge leaves MERGE_HEAD and
         # unmerged paths that checkout/clean do not clear, and the next wake
@@ -1079,9 +1083,16 @@ def _respond(
             # before this write can never bless the pushed code (#228 r4/r8)
             auto_blessed_head="" if change_pushed else blessed_head,
             # a serviced panel wake is spent (the re-read below may set a new
-            # one for the head it just pushed); an unserviced one stands
-            panel_wake_head="" if panel_wake else record.panel_wake_head,
-            panel_wake_text="" if panel_wake else record.panel_wake_text,
+            # one for the head it just pushed) — unless the response was
+            # REVERTED (out of scope, failed eval, failed sync): the author
+            # never got to answer the findings, so the wake stands for the
+            # next job, bounded by the tick's wake_attempts billing
+            panel_wake_head=(
+                "" if (panel_wake and not response_reverted) else record.panel_wake_head
+            ),
+            panel_wake_text=(
+                "" if (panel_wake and not response_reverted) else record.panel_wake_text
+            ),
             wake_attempts=(
                 record.wake_attempts
                 if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))
@@ -1255,14 +1266,24 @@ def _reread_pushed_change(
     except GitError:
         still_pushed = False
     bless = clean and still_pushed and dial == "auto"
-    # blocking findings on a head that is still the pushed one go back to the
-    # AUTHOR (the climb's revise loop as a wake type), bounded; a degraded
+    # blocking findings on a head that is still the pushed one — in the
+    # workspace AND on GitHub (a push during the read supersedes the
+    # findings; a wake for the old sha could never be serviced) — go back to
+    # the AUTHOR (the climb's revise loop as a wake type), bounded; a degraded
     # read is not findings, and a capped-out author leaves them to a human
+    try:
+        gh_head = str(
+            (github.get_pull_request(record.target, number).get("head") or {}).get("sha", "")
+        )
+    except Exception:
+        gh_head = ""
+    superseded = bool(verdict is not None and verdict.blocking) and gh_head != pushed_head
     wake_author = (
         verdict is not None
         and bool(verdict.blocking)
         and not verdict.degraded
         and still_pushed
+        and gh_head == pushed_head
         and panel_wake_rounds < PANEL_WAKE_CAP
     )
     if bless:
@@ -1279,11 +1300,34 @@ def _reread_pushed_change(
             f"Blocking findings: the author is woken to address them (revision "
             f"{panel_wake_rounds + 1} of {PANEL_WAKE_CAP}); a human decides if they stand."
         )
+    elif superseded:
+        closing = (
+            "Blocking findings, but the PR moved during the read — they describe a "
+            "superseded head; the new head gets its own read when a follow-up pushes it."
+        )
     elif verdict is not None and verdict.blocking and not verdict.degraded:
         closing = f"Blocking findings after {PANEL_WAKE_CAP} revisions — a human decides this PR."
     else:
         closing = "Not a clean read — a human decides this PR."
     body = APPROVAL_PATTERN.sub(REDACTED, redact(transcript, secrets))[:MAX_REPLY_CHARS]
+    # the WAKE is persisted before the comment: a responder that dies between
+    # the two costs a thread without the transcript (the woken author still
+    # carries the findings in its prompt), never a lost wake (terra #233 r1)
+    if wake_author:
+        try:
+            latest = load_record(run_root, run_id)
+            save_record(
+                run_root,
+                replace(
+                    latest,
+                    panel_wake_head=pushed_head,
+                    panel_wake_text=str(verdict.wake_text),
+                    panel_wake_rounds=latest.panel_wake_rounds + 1,
+                ),
+                now,
+            )
+        except (OSError, ValueError) as exc:
+            log.warning("panel wake write failed for %s: %s", run_id, exc)
     try:
         github.comment(
             record.target,
@@ -1293,21 +1337,12 @@ def _reread_pushed_change(
     except Exception as exc:
         log.warning("re-read comment failed for %s#%s: %s", record.target, number, exc)
         return  # an unposted read never blesses: the thread must carry it
-    if bless or wake_author:
+    if bless:
         try:
             latest = load_record(run_root, run_id)
-            if bless:
-                latest = replace(latest, auto_blessed_head=pushed_head)
-            if wake_author:
-                latest = replace(
-                    latest,
-                    panel_wake_head=pushed_head,
-                    panel_wake_text=str(verdict.wake_text),
-                    panel_wake_rounds=latest.panel_wake_rounds + 1,
-                )
-            save_record(run_root, latest, now)
+            save_record(run_root, replace(latest, auto_blessed_head=pushed_head), now)
         except (OSError, ValueError) as exc:
-            log.warning("re-read record write failed for %s: %s", run_id, exc)
+            log.warning("blessing write failed for %s: %s", run_id, exc)
 
 
 def _changed_paths(ws: Workspace) -> list[str]:
