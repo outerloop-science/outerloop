@@ -2062,3 +2062,60 @@ def test_a_workspace_that_moves_under_the_judges_is_not_blessed(review_run) -> N
     )
     assert load_record(root, "tsp-r1").auto_blessed_head == ""
     assert "workspace moved" in github.posted[1]
+
+
+def test_a_read_that_cannot_fit_the_job_is_posted_as_a_skip(review_run) -> None:
+    """The tick tells the follow-up how many minutes the read got; when the cap
+    ate them the panel is not run, the skip is on the thread (silence is never
+    endorsement), nothing is blessed, and the author's reply stands."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict()])
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        panel_lenses=(),
+        panel_builder=panel,
+        panel_skip="the job's walltime cap left 10 min for a read that needs 60",
+    )
+    assert outcome.action == "replied"
+    assert panel.built == []
+    assert "panel skipped: the job's walltime cap left 10 min" in github.posted[1]
+    assert "NOT a clean read" in github.posted[1]
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+
+
+def test_the_judges_rules_come_from_the_trusted_base_only(review_run, monkeypatch) -> None:
+    """A base whose contract cannot be read is a non-read: the panel never
+    falls back to the workspace copy, which the pushed tree controls."""
+    from autoresearch.github import GitError, Workspace
+
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    real_git = Workspace.git
+
+    def unreadable_base_contract(self, *args):
+        if args and args[0] == "show" and str(args[1]).endswith(":.autoresearch.yaml"):
+            raise GitError("fatal: path '.autoresearch.yaml' does not exist in the base")
+        return real_git(self, *args)
+
+    monkeypatch.setattr(Workspace, "git", unreadable_base_contract)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict()])
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    assert panel.built == []  # no judges were briefed on a PR-controlled contract
+    assert "panel could not run" in github.posted[1] and "NOT a clean read" in github.posted[1]
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""

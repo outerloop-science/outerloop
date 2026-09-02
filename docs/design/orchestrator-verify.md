@@ -154,10 +154,15 @@ opened the PR: **the same panel reads the new head.**
 
 The tick threads the climb's `--panel` to author follow-ups (never the
 steward's — its PRs are not panel-blessed) and adds one read's walltime to
-the job, exactly as the climb's allowance does; the follow-up session's own
-budget is the job minus that read. A panel config that would die at startup
-is left off the follow-up (the reply still goes out; the PR stays
-human-merged; the tick's contract alarm already names the misconfig).
+the job on top of the author's budget, both under the partition cap; it tells
+the follow-up how many minutes the read actually got (`--panel-minutes`), so
+a cap that eats the allowance costs the read — skipped, and said so on the
+thread — never the author's session. The follow-up builds the panel only
+after the run's OWN author is resolved and refuses a judge key that equals
+that author's credential (role separation on the keys themselves, not the
+paths). A panel config that would die at startup is left off the follow-up
+(the reply still goes out; the PR stays human-merged; the tick's contract
+alarm already names the misconfig).
 
 Not yet: the climb's revise loop. A blocking re-read does not wake the
 author inside the same job — the findings sit on the thread, and the author

@@ -297,13 +297,17 @@ def respond_once(
     spec: RoleSpec | None = None,
     panel_lenses: tuple[Any, ...] = (),
     panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
+    panel_skip: str = "",
 ) -> FollowupOutcome:
     """Service one in-review run: reply to new maintainer comments (and base
     moves), re-measure and push any code change the session made.
 
     `panel_lenses` (the climb's `--panel`) re-reads a PUSHED code change with
     the same verification panel; `panel_builder` is the runner factory
-    (`build_panel_runner` unless a test injects one)."""
+    (`build_panel_runner` unless a test injects one). `panel_skip` names why a
+    configured panel cannot run in this job (no walltime for the read): the
+    skip is then posted on the thread instead of a read — silence is never
+    endorsement, and a skipped read never blesses."""
     record = load_record(run_root, run_id)
     if record.state != IN_REVIEW:
         return FollowupOutcome(run_id, "no-op", f"state is {record.state}, not in-review")
@@ -330,6 +334,7 @@ def respond_once(
             spec,
             panel_lenses,
             panel_builder,
+            panel_skip,
         )
     except Exception as exc:
         log.warning("followup failed for %s: %s", run_id, redact(str(exc), secrets))
@@ -355,6 +360,7 @@ def _respond(
     spec: RoleSpec | None = None,
     panel_lenses: tuple[Any, ...] = (),
     panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
+    panel_skip: str = "",
 ) -> FollowupOutcome:
     # a deployment bug is refused before any GitHub read or contract load —
     # the contained error outcome retries next tick either way, so fail as
@@ -1049,7 +1055,7 @@ def _respond(
         ),
         now,
     )
-    if change_pushed and panel_lenses and not is_steward:
+    if change_pushed and (panel_lenses or panel_skip) and not is_steward:
         # RE-READ: the pushed change replaced the content the panel blessed,
         # and the write above already cleared the blessing — the tick never
         # arms a head the panel has not read. Now the SAME panel reads the
@@ -1076,6 +1082,7 @@ def _respond(
             dial=str(getattr(post_contract, "merge", "manual")),
             panel_lenses=panel_lenses,
             panel_builder=panel_builder,
+            panel_skip=panel_skip,
             bot_login=bot_login,
             created=created,
             now=now,
@@ -1135,6 +1142,7 @@ def _reread_pushed_change(
     dial: str,
     panel_lenses: tuple[Any, ...],
     panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
+    panel_skip: str,
     bot_login: str,
     created: str,
     now: float,
@@ -1148,13 +1156,15 @@ def _reread_pushed_change(
     transcript = ""
     clean = False
     base = ""
-    if trusted_base and pushed_head:
+    if trusted_base and pushed_head and not panel_skip:
         # the panel's `base/` is the base the PR actually forks from: the
         # merge-base of the pushed head and the kernel-pinned base sha (after
         # a base sync the two coincide) — never a ref name a session can move
         with contextlib.suppress(GitError):
             base = ws.git("merge-base", pushed_head, trusted_base).strip()
-    if not base:
+    if panel_skip:
+        transcript = f"- panel skipped: {panel_skip} — NOT a clean read"
+    elif not base:
         transcript = "- panel skipped: no trusted base to read against — NOT a clean read"
     else:
         try:
@@ -1174,10 +1184,9 @@ def _reread_pushed_change(
                 from autoresearch.attempt import LINE_MEMORY_PATHS, _utc_date, build_panel_runner
 
                 lines = bool(getattr(bench, "lines", False))
-                try:
-                    contract_text = ws.git("show", f"{base}:.autoresearch.yaml")
-                except GitError:
-                    contract_text = (Path(ws.root) / ".autoresearch.yaml").read_text()
+                # the judges' rules come from the TRUSTED base only — never the
+                # workspace copy, which the pushed tree controls (terra #229 r1)
+                contract_text = ws.git("show", f"{base}:.autoresearch.yaml")
                 runner = (panel_builder or build_panel_runner)(
                     ws,
                     run_dir(run_root, run_id),
@@ -1321,6 +1330,13 @@ def main() -> int:
         "re-read a pushed code change; '' = no re-read, a changed PR stays human-merged",
     )
     parser.add_argument("--panel-key-file", default="", help="the claude panel lenses' key file")
+    parser.add_argument(
+        "--panel-minutes",
+        type=int,
+        default=0,
+        help="walltime the tick added to this job for the panel's read (0 = none fit: "
+        "the read is skipped and said so; the author's budget is never the panel's)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
@@ -1336,14 +1352,6 @@ def main() -> int:
         resume_author,
     )
     from autoresearch.panel import panel_read_minutes
-
-    args.panel_key_file = args.panel_key_file or PANEL_KEY_DEFAULT
-    try:
-        # the climb's own rules and credentials: judge keys are read only for
-        # the lenses that use them and join the redaction set
-        panel_lenses, panel_secrets = _panel_lenses_from_args(args)
-    except ValueError as exc:
-        parser.error(str(exc))
 
     # a follow-up services ONE run: reproduce THAT run's author (the persisted
     # (backend, model) PAIR), not the current fleet default, so a codex-authored
@@ -1368,6 +1376,33 @@ def main() -> int:
     api_key = role_key(args.key_file, author_backend)
     bot_auth = resolve_bot_auth(args.pat_file, args.github_app_file)
 
+    # The panel AFTER the author is resolved: this run's author key is the
+    # RECORDED one (not the fleet default the tick preflights against), so
+    # role separation is checked here on the credentials themselves — one
+    # key never plays author and judge, whatever paths it was read from
+    # (terra #229 r1). Lens rules and judge keys are the climb's own
+    # (_panel_lenses_from_args); every judge key joins the redaction set.
+    args.panel_key_file = args.panel_key_file or PANEL_KEY_DEFAULT
+    try:
+        panel_lenses, panel_secrets = _panel_lenses_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if api_key and api_key in panel_secrets:
+        parser.error(
+            f"run {args.run_id}: a panel judge key is the run's author key "
+            "(role separation: the judge needs its own key)"
+        )
+    # The read's walltime is what the TICK could add under the partition cap
+    # (--panel-minutes); a read that does not fit is skipped and said so on
+    # the thread rather than starving the author or dying mid-read.
+    panel_skip = ""
+    if panel_lenses and args.panel_minutes < panel_read_minutes(args.panel):
+        panel_skip = (
+            f"the job's walltime cap left {args.panel_minutes} min for a read "
+            f"that needs {panel_read_minutes(args.panel)}"
+        )
+        panel_lenses = ()
+
     # Same self-deadline as the climb: Slurm never signals this process,
     # so walltime deaths must be our own clock's job. respond_once contains
     # exceptions per-lane, and its lease/cursor rules keep a Terminated
@@ -1383,9 +1418,10 @@ def main() -> int:
     # the manifest first, the harness from it (budget has one source: the
     # args). The session must end before its job does, so the walltime is
     # bounded by the job minus the self-deadline margin when one is known —
-    # and minus the panel's read, which runs AFTER the session on the same
-    # clock (the tick added exactly that allowance to the job).
-    session_minutes = max(0, args.job_minutes - panel_read_minutes(args.panel))
+    # and minus the panel's minutes, which the tick ADDED for a read that
+    # runs after the session on the same clock: the author keeps exactly the
+    # budget it had without a panel.
+    session_minutes = max(0, args.job_minutes - (args.panel_minutes if panel_lenses else 0))
     spec = followup_spec(
         max_turns=args.max_turns,
         walltime_s=(
@@ -1413,6 +1449,7 @@ def main() -> int:
             secrets=(api_key, bot_auth.token(), *panel_secrets),
             created=datetime.now(UTC).isoformat(),
             panel_lenses=panel_lenses,
+            panel_skip=panel_skip,
         )
     finally:
         _signal.alarm(0)

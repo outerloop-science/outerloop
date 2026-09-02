@@ -3702,7 +3702,7 @@ def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path)
         def list_pr_review_comments(self, repo, number, max_pages=10):
             return []
 
-    def run(agent_id: str, panel: str, key_file: str) -> str:
+    def run(agent_id: str, panel: str, key_file: str, max_job_minutes: int = 600) -> str:
         root = tmp_path / f"root-{agent_id}-{len(panel)}-{bool(key_file)}"
         root.mkdir()
         save_record(
@@ -3736,6 +3736,7 @@ def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path)
             time_minutes=90,
             panel=panel,
             panel_key_file=key_file,
+            max_job_minutes=max_job_minutes,
             steward_key_file="/k" if agent_id.startswith("steward") else "",
         )
         service_in_review(root, G(), SlurmCompute(runner=runner), spec, NOW)
@@ -3746,6 +3747,13 @@ def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path)
     armed = run("agent-01", "verify,review", str(key))
     assert "--panel verify,review" in armed and f"--panel-key-file {key}" in armed
     assert f"--time={90 + allowance}" in armed and f"--job-minutes {90 + allowance}" in armed
+    assert f"--panel-minutes {allowance}" in armed  # the read got its full time
+
+    # a partition cap below author+read: the author keeps its 90, the read
+    # gets what fit (10) and the follow-up is told so (it skips, saying why)
+    capped = run("agent-05", "verify,review", str(key), max_job_minutes=100)
+    assert "--time=100" in capped and "--job-minutes 100" in capped
+    assert "--panel-minutes 10" in capped
 
     # a missing judge key fails the preflight: no panel, plain budget
     unarmed = run("agent-02", "verify,review", str(tmp_path / "absent"))

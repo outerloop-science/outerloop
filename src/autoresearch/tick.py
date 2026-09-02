@@ -655,7 +655,14 @@ def service_in_review(
 
                     panel_argv = _climb_panel_argv(spec)
                     panel_minutes = panel_read_minutes(spec.panel)
-            job_minutes = min(spec.time_minutes + panel_minutes, spec.max_job_minutes)
+            # the author's budget first, the read on top, both under the
+            # partition cap — and the follow-up is told how many minutes the
+            # read actually got (--panel-minutes), so a cap that eats the
+            # allowance costs the READ (skipped, said so), never the author
+            author_minutes = min(spec.time_minutes, spec.max_job_minutes)
+            job_minutes = min(author_minutes + panel_minutes, spec.max_job_minutes)
+            if panel_argv:
+                panel_argv = [*panel_argv, "--panel-minutes", str(job_minutes - author_minutes)]
             argv = [
                 "uv",
                 "run",
