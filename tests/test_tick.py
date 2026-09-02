@@ -3377,34 +3377,80 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
     assert spec.account == "" and spec.partition == ""
 
 
-def test_local_mode_waives_placement_at_the_attempt_gates(monkeypatch: Any, tmp_path: Path) -> None:
-    """The resume and dispatch gates accept empty account/partition under
+def test_local_mode_waives_placement_at_the_attempt_gates(
+    monkeypatch: Any, tmp_path: Path, capsys: Any
+) -> None:
+    """The resume gate accepts empty account/partition under
     AUTORESEARCH_COMPUTE=local (terra #223: locally dispatched wakes died at
-    the parser; fresh climbs silently downgraded to inline measurement)."""
+    the parser). Proof of admission: the CLI proceeds far enough to complain
+    about the missing parked run, not about the cluster triple — and without
+    local mode the same argv still trips the triple."""
     import sys
+
+    import pytest
 
     import autoresearch.attempt as attempt_mod
 
     image = tmp_path / "agent.sif"
     image.write_text("")
-    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    pat.chmod(0o600)
+    argv = [
+        "attempt",
+        "--resume",
+        "r-x",
+        "--run-root",
+        str(tmp_path),
+        "--image",
+        str(image),
+        "--pat-file",
+        str(pat),
+    ]
     monkeypatch.delenv("AUTORESEARCH_ACCOUNT", raising=False)
     monkeypatch.delenv("AUTORESEARCH_PARTITION", raising=False)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["attempt", "--resume", "r-x", "--run-root", str(tmp_path), "--image", str(image)],
-    )
-    # past the placement gate means the parser no longer errors; the resume
-    # then fails on the missing run record — proof the gate admitted it
-    import pytest
+    monkeypatch.setattr(sys, "argv", argv)
 
-    monkeypatch.setattr(
-        attempt_mod,
-        "load_record",
-        lambda *a, **k: (_ for _ in ()).throw(SystemExit(3)),
-        raising=False,
-    )
-    with pytest.raises(SystemExit) as exc:
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    # past the placement gate, the resume proceeds to the record read and
+    # fails THERE (no parked run in this tmp root) — proof of admission
+    with pytest.raises(FileNotFoundError, match=r"state\.json"):
         attempt_mod.main()
-    assert "cluster triple" not in str(exc.value)
+    assert "cluster triple" not in capsys.readouterr().err
+
+    monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
+    with pytest.raises(SystemExit):
+        attempt_mod.main()
+    assert "cluster triple" in capsys.readouterr().err
+
+
+def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:
+    """LocalCompute's job-env scrub passes AUTORESEARCH_*/REVIEW_HERMES_*
+    through as a prefix rule — a locally submitted wake must arrive still in
+    local mode (terra #223), and enumerated names are how flags die."""
+    from autoresearch.compute import LocalCompute
+
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
+    monkeypatch.setenv("REVIEW_HERMES_REPO", "/x/hermes")
+    monkeypatch.setenv("APPTAINERENV_EVIL", "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-live")
+    out = tmp_path / "env.txt"
+    from autoresearch.compute import JobSpec
+
+    LocalCompute().submit(
+        JobSpec(
+            job_name="envprobe",
+            account="",
+            partition="",
+            time_minutes=1,
+            command="env",
+            output=str(out),
+        )
+    )
+    dumped = out.read_text()
+    assert "AUTORESEARCH_COMPUTE=local" in dumped
+    assert "AUTORESEARCH_AUTHOR_BACKEND=codex" in dumped
+    assert "REVIEW_HERMES_REPO=/x/hermes" in dumped
+    assert "APPTAINERENV_EVIL" not in dumped  # would cross --cleanenv
+    assert "OPENROUTER_API_KEY" not in dumped  # raw secrets never pass

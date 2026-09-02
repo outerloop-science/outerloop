@@ -295,10 +295,17 @@ class LocalCompute:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
         # job script starts from a minimal environment and sets its own.
+        # AUTORESEARCH_* / REVIEW_HERMES_* pass through as a PREFIX rule:
+        # Slurm jobs inherit the tick's whole environment, and local jobs
+        # need the same config surface (compute mode, author backend, panel,
+        # key-file PATHS — never raw secrets, which are not env-borne under
+        # this prefix). Enumerating names here is how a mode flag dies
+        # silently (terra #222 and #223 both found exactly that).
         job_env = {
             k: v
             for k, v in os.environ.items()
             if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
+            or k.startswith(("AUTORESEARCH_", "REVIEW_HERMES_"))
         }
         try:
             # the job runs in its OWN session (= process group), so the
