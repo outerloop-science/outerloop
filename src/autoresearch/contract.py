@@ -132,6 +132,20 @@ class Benchmark(_StrictModel):
     # behavior; the branch substrate is inert until a contract opts in.
     lines: bool = False
 
+    # Pure loop-steering dials: how often/deep the fleet iterates and how a
+    # number renders. Everything else — the command, metric, seed, GPUs,
+    # walltime (it selects the execution route), direction, floors, and
+    # baseline protocol — defines the measurement or the claim's meaning.
+    _WORKFLOW_DIALS = frozenset({"lines", "depth_k", "sleep_k", "display_digits"})
+
+    def measurement_signature(self) -> tuple:
+        """The fields that determine how this benchmark is measured and what
+        a claim about it means — every field EXCEPT the pure workflow dials,
+        so a future field joins the signature by default and the base-sync
+        skip fails toward re-measuring."""
+        data = self.model_dump()
+        return tuple(sorted((k, repr(v)) for k, v in data.items() if k not in self._WORKFLOW_DIALS))
+
     @field_validator("seed_env")
     @classmethod
     def _seed_env_never_managed(cls, value: str | None) -> str | None:

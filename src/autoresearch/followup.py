@@ -698,11 +698,13 @@ def _respond(
             "merges the synced PR.)_"
         )
     # The next rung, deliberately NARROW: the merge changed exactly one
-    # path — the contract file, with the base's own content — and the merged
-    # contract's benchmark definitions and scope parse IDENTICAL to the
-    # pre-merge ones. Then only kernel-workflow keys moved (a lines flip, a
-    # cadence knob): the eval command, metric, protocol, suite, and solver
-    # bytes are all exactly what was measured, so the numbers stand. ANY
+    # path — the contract file, with the base's own content — and every
+    # benchmark's MEASUREMENT SIGNATURE (name, command, metric, seed_env,
+    # gpus) plus the scope parse identical to the pre-merge ones. Workflow
+    # dials and crediting policy may move (a lines flip, depth_k, floors —
+    # they steer the loop, not what a measured number means); the eval
+    # command, protocol, suite membership, and solver bytes are all exactly
+    # what was measured, so the numbers stand. ANY
     # other changed path — eval/, docs, data, a solver edit — and any
     # benchmark/scope difference takes the full scope-check + re-measure
     # path: base-owned content is NOT the same thing as measured-under
@@ -715,16 +717,17 @@ def _respond(
         and not contract_broken
         and set(changed) == {contract_path}
         and all(_matches_base(p) for p in changed)
-        and post_contract.benchmarks == contract.benchmarks
+        and [b.measurement_signature() for b in post_contract.benchmarks]
+        == [b.measurement_signature() for b in contract.benchmarks]
         and post_contract.scope == contract.scope
     ):
         base_only_sync = True
         _sync_push(
             f"\n\n_(Base sync: `origin/{base_ref}` merged; the only change "
-            "is the contract file, whose benchmark definitions and scope are "
-            "identical — the eval surface and solver are bit-for-bit what "
-            "was measured, so the numbers above stand. A human merges the "
-            "synced PR.)_"
+            "is the contract file, whose measurement signatures and scope "
+            "are identical — the eval surface and solver are bit-for-bit "
+            "what was measured, so the numbers above stand. A human merges "
+            "the synced PR.)_"
         )
     if sync_failed:
         _revert_response()

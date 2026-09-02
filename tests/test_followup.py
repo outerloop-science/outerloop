@@ -1610,3 +1610,65 @@ def test_widened_merged_scope_publishes_its_allowed_edit(review_run) -> None:
     assert "Re-measured" in github.posted[0]
     pushed = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/extra/helper.py")
     assert "new-area edit" in pushed
+
+
+def test_workflow_dial_flip_inside_the_stanza_skips_the_remeasure(review_run) -> None:
+    """The LIVE gpt-speedrun#5 shape, exactly: the base flips `lines: true`
+    INSIDE the benchmark stanza. Whole-model equality refused the skip (the
+    dial lives on the Benchmark model); measurement signatures accept it —
+    the dial steers the loop, not what the measured number means."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2n"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        CONTRACT.replace(
+            "    direction: min\n",
+            "    direction: min\n    lines: true\n",
+        )
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "lines flip")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class FailingEvaluator:
+        def evaluate(self, *a, **k):
+            raise AssertionError("a dial flip must not re-measure")
+
+    outcome = respond(root, github, ResumingHarness(merge_base=True), FailingEvaluator())
+    assert outcome.action == "replied"
+    assert "the numbers above stand" in github.posted[0]
+    main_sha = _git(bare, "rev-parse", "main").strip()
+    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha
+
+
+def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
+    """direction (claim meaning), eval_minutes (execution route), floors, and
+    baseline protocol all sit in the measurement signature — a base change
+    to any of them re-measures instead of skipping (terra #226 r1). The
+    signature is built by EXCLUSION, so a future Benchmark field joins it by
+    default."""
+    from autoresearch.contract import load_contract
+
+    base = load_contract(CONTRACT, "o/r").benchmarks[0]
+    for mutation in (
+        ("direction: min", "direction: max"),
+        ("    metric: mean_tour_length", "    metric: mean_tour_length\n    eval_minutes: 6"),
+        ("    metric: mean_tour_length", "    metric: mean_tour_length\n    min_delta: 0.5"),
+        (
+            "    metric: mean_tour_length",
+            "    metric: mean_tour_length\n    baseline: cached\n    min_delta: 0.1",
+        ),
+    ):
+        changed = load_contract(CONTRACT.replace(*mutation), "o/r").benchmarks[0]
+        assert changed.measurement_signature() != base.measurement_signature(), mutation
+    # the pure dials stay OUT: the live lines flip still skips
+    dial = load_contract(
+        CONTRACT.replace("direction: min", "direction: min\n    lines: true\n    depth_k: 4"),
+        "o/r",
+    ).benchmarks[0]
+    assert dial.measurement_signature() == base.measurement_signature()
