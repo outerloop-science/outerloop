@@ -731,10 +731,21 @@ def _respond(
             "retry.)_"
         )
     elif changed and not base_only_sync:
-        # the tree's own contract governs its scope and its measurement
-        bench = next((b for b in post_contract.benchmarks if b.name == record.benchmark), bench)
+        # the tree's own contract governs its scope and its measurement; a
+        # merged contract that no longer defines this run's benchmark means
+        # there is nothing left to measure the change AGAINST — withhold and
+        # say so, never evaluate a command the contract removed (terra #225
+        # r2: the pre-merge fallback published a phantom benchmark)
+        post_bench = next((b for b in post_contract.benchmarks if b.name == record.benchmark), None)
         violations = [p for p in scope_check(changed, post_contract) if not _matches_base(p)]
-        if violations:
+        if post_bench is None:
+            _revert_response()
+            measured_note = (
+                f"\n\n_(The merged contract no longer defines benchmark "
+                f"`{record.benchmark}`, so the change was not applied — a "
+                "human decides whether this PR is superseded.)_"
+            )
+        elif violations:
             # revert the out-of-scope response; reply honestly, keep the PR
             _revert_response()
             measured_note = (
@@ -742,6 +753,7 @@ def _respond(
                 "the contract's scope and was not applied.)_"
             )
         else:
+            bench = post_bench
             pre_eval_tree = _tree_hash(ws)
             # one fresh seed for this re-measure, recorded with the row —
             # same pairing/reproducibility rule as the climb and steward

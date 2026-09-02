@@ -1521,3 +1521,30 @@ def test_bench_definition_change_in_base_still_remeasures(review_run) -> None:
     assert "eval failed" in github.posted[0]  # and was withheld honestly
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == ""  # nothing reached the remote
+
+
+def test_removed_benchmark_is_never_measured_with_the_old_definition(review_run) -> None:
+    """A base sync whose merged contract no longer defines the run's
+    benchmark withholds — the old command must not be evaluated or
+    published against a contract that removed it (terra #225 r2)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2k"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(CONTRACT.replace("name: tsp", "name: tsp2"))
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bench renamed")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class NeverEvaluator:
+        def evaluate(self, *a, **k):
+            raise AssertionError("a removed benchmark must never be measured")
+
+    outcome = respond(root, github, ResumingHarness(merge_base=True), NeverEvaluator())
+    assert outcome.action == "replied"
+    assert "no longer defines benchmark" in github.posted[0]
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # nothing reached the remote
