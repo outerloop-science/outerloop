@@ -1672,3 +1672,35 @@ def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
         "o/r",
     ).benchmarks[0]
     assert dial.measurement_signature() == base.measurement_signature()
+
+
+def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
+    """The changed-path list in the eval-failed note is session-controlled
+    text: markdown-inert charset, secrets redacted, the self-approval scrub
+    applied — and the diagnostic itself is pinned (terra #227)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2o"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class ErroringEvaluator:
+        def evaluate(self, *a, **k):
+            raise RuntimeError("boom")
+
+    # a hostile filename: backtick breakout attempt + shell-ish noise
+    hostile = "src/pilot/solvers/x`y\nz.py"
+    harness = ResumingHarness(merge_base=True, edits={hostile: "evil\n"})
+    outcome = respond(root, github, harness, ErroringEvaluator())
+    assert outcome.action == "replied"
+    note = github.posted[0]
+    assert "Changed paths:" in note
+    assert "docs/news.md" in note  # the diagnostic names the merge's paths
+    assert "x?y?z.py" in note  # hostile chars stripped to the inert charset
+    assert "x`y" not in note  # the raw breakout sequence never survives
