@@ -44,10 +44,22 @@ live_git() {
     # reason enough to wait a cadence
     for pid in $(pgrep -u "$uid" -x git 2>/dev/null); do
         args=$(ps -o args= -p "$pid" 2>/dev/null || echo "")
-        case "$args" in *"$gitdir"*|*"$common"*) return 0 ;; esac
-        for wt in $worktrees; do
-            case "$args" in *"$wt"*) return 0 ;; esac
-        done
+        # paths match at argument boundaries (space or '=' before, space or
+        # '/' after) so a sibling checkout named with this one as a prefix
+        # never counts; worktree paths are read one per line (spaces inside
+        # a path survive)
+        case " $args " in
+            *" $gitdir "*|*" $gitdir/"*|*"=$gitdir "*|*"=$gitdir/"*) return 0 ;;
+            *" $common "*|*" $common/"*|*"=$common "*|*"=$common/"*) return 0 ;;
+        esac
+        while IFS= read -r wt; do
+            [ -n "$wt" ] || continue
+            case " $args " in
+                *" $wt "*|*" $wt/"*|*"=$wt "*|*"=$wt/"*) return 0 ;;
+            esac
+        done <<EOF_WT
+$worktrees
+EOF_WT
         # a RELATIVE -C / --git-dir / --work-tree naming the checkout by its
         # basename (started from the parent directory): matched by name,
         # conservatively — over-matching only delays the sweep a cadence
@@ -65,9 +77,12 @@ live_git() {
             return 0
         fi
         case "$cwd" in "$common"|"$common"/*) return 0 ;; esac
-        for wt in $worktrees; do
+        while IFS= read -r wt; do
+            [ -n "$wt" ] || continue
             case "$cwd" in "$wt"|"$wt"/*) return 0 ;; esac
-        done
+        done <<EOF_WT
+$worktrees
+EOF_WT
     done
     return 1
 }

@@ -141,3 +141,46 @@ def test_only_lock_files_are_touched_and_a_non_repo_is_a_no_op(tmp_path: Path) -
     plain = tmp_path / "not-a-checkout"
     plain.mkdir()
     assert _sweep(plain).returncode == 0
+
+
+def test_a_prefix_named_sibling_checkout_never_blocks_the_sweep(tmp_path: Path) -> None:
+    """A live git in `<checkout>-old` is unrelated work: paths match at
+    argument boundaries, so the sweep of `<checkout>` proceeds (r5)."""
+    repo = _repo(tmp_path, "app")
+    sibling = _repo(tmp_path, "app-old")
+    lock = _aged_lock(repo / ".git" / "index.lock")
+    proc = subprocess.Popen(
+        ["git", "-C", str(sibling), "hash-object", "--stdin"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.3)
+        out = _sweep(repo)
+        assert not lock.exists() and "swept stale git lock" in out.stdout
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=30)
+
+
+def test_a_worktree_path_with_spaces_still_counts_as_live(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    linked = tmp_path / "linked work tree"
+    _git(repo, "worktree", "add", "-q", "-b", "sp", str(linked))
+    common_lock = _aged_lock(repo / ".git" / "refs" / "heads" / "sp.lock")
+    proc = subprocess.Popen(
+        ["git", "hash-object", "--stdin"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        cwd=linked,
+    )
+    try:
+        time.sleep(0.3)
+        assert _sweep(repo).stdout == "" and common_lock.exists()
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=30)
+    _sweep(repo)
+    assert not common_lock.exists()
