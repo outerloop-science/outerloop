@@ -27,7 +27,7 @@ from typing import Any, cast
 
 from autoresearch.appauth import resolve_bot_auth
 from autoresearch.brief import BudgetState, distill_lessons
-from autoresearch.compute import LocalCompute
+from autoresearch.compute import LocalCompute, local_mode
 from autoresearch.contract import Benchmark, Contract, load_contract
 from autoresearch.dispatch import (
     Snapshot,
@@ -2992,10 +2992,12 @@ def main() -> int:
     # and re-enter the decision. The wake job the WakeDispatcher submits runs
     # exactly this.
     if args.resume:
-        if not (args.account and args.partition and args.image and Path(args.image).is_file()):
+        placed = bool(args.account and args.partition) or local_mode()
+        if not (placed and args.image and Path(args.image).is_file()):
             parser.error(
                 "--resume needs the cluster triple (--account/--partition/--image) "
-                "to rebuild the dispatched measurer"
+                "to rebuild the dispatched measurer (local compute waives the "
+                "account/partition pair, never the image)"
             )
         from autoresearch.runstate import load_record
 
@@ -3149,7 +3151,9 @@ def main() -> int:
     # file to bind against; missing any, the climb measures inline (the tick
     # sets these on the climb job's env, a bare CLI run leaves them empty).
     dispatch: DispatchSettings | None = None
-    if args.account and args.partition and args.image and Path(args.image).is_file():
+    if (bool(args.account and args.partition) or local_mode()) and (
+        args.image and Path(args.image).is_file()
+    ):
         dispatch = _dispatch_settings(args)
     try:
         try:

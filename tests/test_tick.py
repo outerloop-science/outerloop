@@ -3375,3 +3375,36 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None
     assert spec.account == "" and spec.partition == ""
+
+
+def test_local_mode_waives_placement_at_the_attempt_gates(monkeypatch: Any, tmp_path: Path) -> None:
+    """The resume and dispatch gates accept empty account/partition under
+    AUTORESEARCH_COMPUTE=local (terra #223: locally dispatched wakes died at
+    the parser; fresh climbs silently downgraded to inline measurement)."""
+    import sys
+
+    import autoresearch.attempt as attempt_mod
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    monkeypatch.delenv("AUTORESEARCH_ACCOUNT", raising=False)
+    monkeypatch.delenv("AUTORESEARCH_PARTITION", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["attempt", "--resume", "r-x", "--run-root", str(tmp_path), "--image", str(image)],
+    )
+    # past the placement gate means the parser no longer errors; the resume
+    # then fails on the missing run record — proof the gate admitted it
+    import pytest
+
+    monkeypatch.setattr(
+        attempt_mod,
+        "load_record",
+        lambda *a, **k: (_ for _ in ()).throw(SystemExit(3)),
+        raising=False,
+    )
+    with pytest.raises(SystemExit) as exc:
+        attempt_mod.main()
+    assert "cluster triple" not in str(exc.value)
