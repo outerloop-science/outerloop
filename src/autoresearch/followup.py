@@ -633,36 +633,63 @@ def _respond(
         except GitError:
             base_synced = False
     sync_failed = conflict_wake and ((changed and not base_synced) or not history_known)
-    # A clean base merge can produce a commit whose TREE is unchanged (the
-    # branch already carried the base's content): committed/changed are both
-    # empty, but the merge commit IS the contribution — without pushing it
-    # the PR stays behind while the cursor is spent. Same measured tree, so
-    # no re-eval is owed; push the topology and say so.
-    if conflict_wake and not changed and base_synced and history_known:
-        # same #171 rule as every other push: an armed auto-mode PR would
-        # merge the new head on green CI, so the push is gated on a
-        # CONFIRMED disarm; a human merges the synced PR.
+    # The cursor spends only on REMOTE progress: a sync that exists solely in
+    # the workspace (e.g. the re-measure was withheld) leaves the head
+    # re-wakeable — the live lesson from gpt-speedrun#5, where a locally
+    # clean merge whose eval was withheld spent the cursor with the PR still
+    # behind on GitHub.
+    sync_pushed = False
+
+    def _sync_push(note: str) -> bool:
+        """Push the synced head under the #171 rule: an armed auto-mode PR
+        would merge the new head on green CI, so the push is gated on a
+        CONFIRMED disarm; a human merges the synced PR."""
+        nonlocal measured_note, sync_pushed
         disarm_ok = True
         if getattr(contract, "merge", "manual") == "auto":
             try:
                 disarm_ok = github.disable_auto_merge(record.target, number)
             except Exception as exc:
                 disarm_ok = False
-                log.warning("auto-merge disarm errored before topology push: %s", exc)
-        if disarm_ok:
-            ws.push(branch)
-            measured_note = (
-                f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
-                "unchanged, so the measured numbers above still describe "
-                "exactly this content — only the ancestry moved. A human "
-                "merges the synced PR.)_"
-            )
-        else:
-            base_synced = False  # withheld: cursor unspent, next tick retries
+                log.warning("auto-merge disarm errored before sync push: %s", exc)
+        if not disarm_ok:
             measured_note = (
                 "\n\n_(Base sync withheld: auto-merge could not be confirmed "
                 "disarmed on this auto-mode PR; the wake will retry.)_"
             )
+            return False
+        ws.push(branch)
+        sync_pushed = True
+        measured_note = note
+        return True
+
+    # A clean base merge can produce a commit whose TREE is unchanged (the
+    # branch already carried the base's content): committed/changed are both
+    # empty, but the merge commit IS the contribution. Same measured tree, so
+    # no re-eval is owed; push the topology and say so.
+    if conflict_wake and not changed and base_synced and history_known:
+        _sync_push(
+            f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
+            "unchanged, so the measured numbers above still describe "
+            "exactly this content — only the ancestry moved. A human "
+            "merges the synced PR.)_"
+        )
+    # The next rung: every changed path is the BASE'S OWN content (the merge
+    # brought it in; `_matches_base` pins against the fetched sha). The
+    # solver and eval surface are bit-for-bit what was measured, so the
+    # numbers stand and no re-measure is owed — exactly the topology case
+    # with a fatter diff. Any non-base-identical path (a solver edit, an
+    # eval tweak) falls through to the full scope-check + re-measure path.
+    base_only_sync = False
+    if conflict_wake and changed and base_synced and history_known:
+        base_only_sync = all(_matches_base(p) for p in changed)
+    if base_only_sync:
+        _sync_push(
+            f"\n\n_(Base sync: `origin/{base_ref}` merged; every changed "
+            "path is the base's own content, so the solver and eval surface "
+            "are bit-for-bit what was measured — the numbers above stand. "
+            "A human merges the synced PR.)_"
+        )
     if sync_failed:
         _revert_response()
         measured_note = (
@@ -671,7 +698,7 @@ def _respond(
             f"`origin/{base_ref}` — so it was not applied; the wake will "
             "retry.)_"
         )
-    elif changed:
+    elif changed and not base_only_sync:
         violations = [p for p in scope_check(changed, contract) if not _matches_base(p)]
         if violations:
             # revert the out-of-scope response; reply honestly, keep the PR
@@ -882,15 +909,22 @@ def _respond(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
-            # the cursor is spent only when the sync objectively happened
-            # (HEAD contains the fetched base); otherwise the head stays
-            # re-wakeable, bounded by the tick's submit-time billing — the
-            # count is kept, never advanced here, never reset without progress
+            # the cursor is spent only on REMOTE progress: a base-containing
+            # head was pushed (or the change was measured and pushed while
+            # synced); otherwise the head stays re-wakeable, bounded by the
+            # tick's submit-time billing — the count is kept, never advanced
+            # here, never reset without progress
             dirty_wake_head=(
-                conflict_head if (conflict_wake and base_synced) else record.dirty_wake_head
+                conflict_head
+                if (conflict_wake and (sync_pushed or (base_synced and change_pushed)))
+                else record.dirty_wake_head
             ),
             resume_session_id=session.session_id or record.resume_session_id,
-            wake_attempts=(record.wake_attempts if (conflict_wake and not base_synced) else 0),
+            wake_attempts=(
+                record.wake_attempts
+                if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))
+                else 0
+            ),
         ),
         now,
     )

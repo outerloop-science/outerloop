@@ -897,7 +897,8 @@ def _dirty_pr(head="h" * 40) -> dict:
 
 def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     root, _bare = review_run
-    github = FakeGitHub(pr=_dirty_pr())
+    head = _ws_head(root)
+    github = FakeGitHub(pr=_dirty_pr(head=head))
     harness = ResumingHarness()
     outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
     assert outcome.action == "replied"
@@ -907,7 +908,7 @@ def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     assert resume_id == "sess-original"  # same session lineage, full context
     # once per head: the cursor is persisted, the next pass no-ops
     record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == "h" * 40
+    assert record.dirty_wake_head == head
     outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
     assert outcome2.action == "no-op"
 
@@ -1420,3 +1421,68 @@ def test_do_nothing_session_leaves_the_behind_wake_rearmed(review_run) -> None:
     outcome2 = respond(root, github, second, QueueEvaluator(values=[10.2]))
     assert outcome2.action == "replied"
     assert second.calls, "the head must stay wakeable until the sync is real"
+
+
+def test_base_identical_sync_pushes_without_remeasure(review_run) -> None:
+    """A base move whose merge changes ONLY base-owned content (the live
+    gpt-speedrun#5 shape: a contract flip landed mid-attempt) pushes without
+    a re-measure — the solver and eval surface are bit-for-bit what was
+    measured — and spends the cursor."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2h"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        (seed2 / ".autoresearch.yaml").read_text() + "# lines flip\n"
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract flip")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class FailingEvaluator:
+        def evaluate(self, *a, **k):  # the re-measure path must NOT run
+            raise AssertionError("base-identical sync must not re-measure")
+
+    harness = ResumingHarness(merge_base=True)  # merge brings only the contract
+    outcome = respond(root, github, harness, FailingEvaluator())
+    assert outcome.action == "replied"
+    assert "the numbers above stand" in github.posted[0]
+    # the pushed branch now contains the base tip
+    main_sha = _git(bare, "rev-parse", "main").strip()
+    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == head  # cursor spent: remote progress
+
+
+def test_withheld_sync_leaves_the_cursor_unspent(review_run) -> None:
+    """A sync whose re-measure fails (a solver edit rode along and the eval
+    errored) reaches the remote NOT AT ALL — so the cursor must stay unspent
+    and the head re-wakeable (the live gpt-speedrun#5 lesson: local ancestry
+    spent the cursor while GitHub still showed the PR behind)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2i"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class ErroringEvaluator:
+        def evaluate(self, *a, **k):
+            raise RuntimeError("no GPU on this node")
+
+    harness = ResumingHarness(merge_base=True, edits={"src/pilot/solvers/tsp.py": "solver tweak\n"})
+    outcome = respond(root, github, harness, ErroringEvaluator())
+    assert outcome.action == "replied"
+    assert "eval failed" in github.posted[0]
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # unspent: nothing reached the remote
