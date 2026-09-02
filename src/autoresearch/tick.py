@@ -1305,6 +1305,12 @@ def _sweep_one(
             # Layer 3, with real grace: time runs from when the sweep FIRST
             # saw every job terminal, not from submission — the afterany
             # job gets the full window to deliver before the backup steps in.
+            # Local compute has no afterany jobs to wait for (jobs are
+            # terminal at submit): the sweep IS the delivery, so grace would
+            # only cost a whole extra loop iteration.
+            if local_mode():
+                wake(record, f"experiment {state}", state)
+                return
             if record.terminal_seen <= 0:
                 if dry_run:
                     # no writes in dry-run: report the would-wake now so the
