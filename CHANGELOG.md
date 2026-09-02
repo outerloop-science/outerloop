@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A base sync whose merge changes only base-owned content pushes without a
+  re-measure — the solver and eval surface are bit-for-bit what was measured,
+  so the numbers stand (the topology rule, extended one rung). And the sync
+  cursor now spends only on REMOTE progress: a merge that exists solely in
+  the workspace (a withheld re-measure) leaves the head re-wakeable.
 - A PR left BEHIND by a base move now wakes its author the way a conflicted
   one does: merge the base in (cleanly — no resolving), reconsider the
   conclusion, and the result is re-measured before pushing. Publish already

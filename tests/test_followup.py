@@ -897,7 +897,8 @@ def _dirty_pr(head="h" * 40) -> dict:
 
 def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     root, _bare = review_run
-    github = FakeGitHub(pr=_dirty_pr())
+    head = _ws_head(root)
+    github = FakeGitHub(pr=_dirty_pr(head=head))
     harness = ResumingHarness()
     outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
     assert outcome.action == "replied"
@@ -907,7 +908,7 @@ def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     assert resume_id == "sess-original"  # same session lineage, full context
     # once per head: the cursor is persisted, the next pass no-ops
     record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == "h" * 40
+    assert record.dirty_wake_head == head
     outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
     assert outcome2.action == "no-op"
 
@@ -1420,3 +1421,192 @@ def test_do_nothing_session_leaves_the_behind_wake_rearmed(review_run) -> None:
     outcome2 = respond(root, github, second, QueueEvaluator(values=[10.2]))
     assert outcome2.action == "replied"
     assert second.calls, "the head must stay wakeable until the sync is real"
+
+
+def test_base_identical_sync_pushes_without_remeasure(review_run) -> None:
+    """A base move whose merge changes ONLY base-owned content (the live
+    gpt-speedrun#5 shape: a contract flip landed mid-attempt) pushes without
+    a re-measure — the solver and eval surface are bit-for-bit what was
+    measured — and spends the cursor."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2h"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        (seed2 / ".autoresearch.yaml").read_text() + "# lines flip\n"
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract flip")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class FailingEvaluator:
+        def evaluate(self, *a, **k):  # the re-measure path must NOT run
+            raise AssertionError("base-identical sync must not re-measure")
+
+    harness = ResumingHarness(merge_base=True)  # merge brings only the contract
+    outcome = respond(root, github, harness, FailingEvaluator())
+    assert outcome.action == "replied"
+    assert "the numbers above stand" in github.posted[0]
+    # the pushed branch now contains the base tip
+    main_sha = _git(bare, "rev-parse", "main").strip()
+    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
+    assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == head  # cursor spent: remote progress
+
+
+def test_withheld_sync_leaves_the_cursor_unspent(review_run) -> None:
+    """A sync whose re-measure fails (a solver edit rode along and the eval
+    errored) reaches the remote NOT AT ALL — so the cursor must stay unspent
+    and the head re-wakeable (the live gpt-speedrun#5 lesson: local ancestry
+    spent the cursor while GitHub still showed the PR behind)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2i"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class ErroringEvaluator:
+        def evaluate(self, *a, **k):
+            raise RuntimeError("no GPU on this node")
+
+    harness = ResumingHarness(merge_base=True, edits={"src/pilot/solvers/tsp.py": "solver tweak\n"})
+    outcome = respond(root, github, harness, ErroringEvaluator())
+    assert outcome.action == "replied"
+    assert "eval failed" in github.posted[0]
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # unspent: nothing reached the remote
+
+
+def test_bench_definition_change_in_base_still_remeasures(review_run) -> None:
+    """The narrow skip applies ONLY to contract changes that leave every
+    benchmark definition and the scope identical. A base move that edits a
+    bench stanza (here: the command) changes the measurement conditions, so
+    the sync takes the full re-measure path — base-owned content is not the
+    same thing as measured-under conditions (terra #225)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2j"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        CONTRACT.replace("--env tsp --json", "--env tsp --json --fast")
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bench change")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class RecordingEvaluator:
+        calls = 0
+
+        def evaluate(self, *a, **k):
+            RecordingEvaluator.calls += 1
+            raise RuntimeError("no GPU on this node")
+
+    outcome = respond(root, github, ResumingHarness(merge_base=True), RecordingEvaluator())
+    assert outcome.action == "replied"
+    assert RecordingEvaluator.calls == 1  # the re-measure path ran
+    assert "eval failed" in github.posted[0]  # and was withheld honestly
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # nothing reached the remote
+
+
+def test_removed_benchmark_is_never_measured_with_the_old_definition(review_run) -> None:
+    """A base sync whose merged contract no longer defines the run's
+    benchmark withholds — the old command must not be evaluated or
+    published against a contract that removed it (terra #225 r2)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2k"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(CONTRACT.replace("name: tsp", "name: tsp2"))
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bench renamed")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class NeverEvaluator:
+        def evaluate(self, *a, **k):
+            raise AssertionError("a removed benchmark must never be measured")
+
+    outcome = respond(root, github, ResumingHarness(merge_base=True), NeverEvaluator())
+    assert outcome.action == "replied"
+    assert "no longer defines benchmark" in github.posted[0]
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # nothing reached the remote
+
+
+def test_base_flip_to_auto_is_disarmed_before_the_sync_push(review_run) -> None:
+    """A base move that flips the contract's merge dial to auto must not
+    push without a confirmed disarm (terra #225 r3: _sync_push read the
+    pre-merge contract, so the flip pushed onto a potentially armed PR)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2l"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(CONTRACT + "merge: auto\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "auto flip")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+
+    class DisarmRefusingGitHub(FakeGitHub):
+        disarm_calls = 0
+
+        def disable_auto_merge(self, repo, number):
+            DisarmRefusingGitHub.disarm_calls += 1
+            return False  # cannot confirm the disarm
+
+    github = DisarmRefusingGitHub(pr=_behind_pr(head=head))
+    outcome = respond(root, github, ResumingHarness(merge_base=True), QueueEvaluator(values=[]))
+    assert outcome.action == "replied"
+    assert DisarmRefusingGitHub.disarm_calls == 1  # the merged dial was honored
+    assert "withheld" in github.posted[0]
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # nothing pushed, head re-wakeable
+
+
+def test_widened_merged_scope_publishes_its_allowed_edit(review_run) -> None:
+    """A base sync that widens the scope must let an edit in the NEW area
+    publish: the commit-time forbidden check reads the merged contract, not
+    the pre-merge one (terra #225 r5: commit_all raised ForbiddenPathError
+    after a successful re-measure)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2m"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(
+        CONTRACT.replace(
+            "scope: {allowed: [src/pilot/solvers/]}",
+            "scope: {allowed: [src/pilot/solvers/, src/pilot/extra/]}",
+        )
+    )
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "scope widens")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+    harness = ResumingHarness(
+        merge_base=True, edits={"src/pilot/extra/helper.py": "new-area edit\n"}
+    )
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    pushed = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/extra/helper.py")
+    assert "new-area edit" in pushed
