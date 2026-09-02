@@ -139,17 +139,35 @@ def dirty_pr_head(pr: dict) -> str:
     return ""
 
 
+def stale_pr_head(pr: dict) -> str:
+    """The head sha when an OPEN PR is cleanly mergeable but BEHIND its base,
+    else "". A moved base staled the measured claim (publish deliberately
+    declined to arm auto-merge), so the author is woken to merge the base in
+    and the result is re-measured — same machinery as a conflict, minus the
+    resolving."""
+    if pr.get("state") != "open" or pr.get("merged"):
+        return ""
+    if pr.get("mergeable") is True and pr.get("mergeable_state") == "behind":
+        return str((pr.get("head") or {}).get("sha", ""))
+    return ""
+
+
+def base_sync_head(pr: dict) -> str:
+    """The head needing a base sync — conflicted or merely behind."""
+    return dirty_pr_head(pr) or stale_pr_head(pr)
+
+
 def conflict_wake_action(record: RunRecord, github: GitHubClient) -> str:
-    """Tick-side gate (cheap, read-only): "wake" for an in-review PR that
-    conflicts with its base and has not been woken for THIS head yet;
-    "clear" when a previously-woken PR is clean again (base moved back or
-    forward past the conflict — the same head can conflict AGAIN later and
-    must be able to re-wake); "" otherwise."""
+    """Tick-side gate (cheap, read-only): "wake" for an in-review PR whose
+    base moved out from under it — conflicted OR cleanly behind — and that
+    has not been woken for THIS head yet; "clear" when a previously-woken PR
+    is current again (the base can move and stale the SAME head a second
+    time, so the cursor must re-arm); "" otherwise."""
     try:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
     except Exception:
         return ""
-    head = dirty_pr_head(pr)
+    head = base_sync_head(pr)
     if head and head != record.dirty_wake_head:
         return "wake"
     if not head and record.dirty_wake_head and pr.get("mergeable") is True:
@@ -375,7 +393,8 @@ def _respond(
         for source, (items, _) in per_source.items()
         for cid, author, body in items
     ]
-    conflict_head = dirty_pr_head(pr)
+    is_conflict = bool(dirty_pr_head(pr))
+    conflict_head = base_sync_head(pr)
     conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
     if not merged and not conflict_wake:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
@@ -448,7 +467,7 @@ def _respond(
             )
 
     prompt = render_review_wake([(author, body) for _, author, body in comments])
-    if conflict_wake:
+    if conflict_wake and is_conflict:
         prompt = (
             "# Your PR conflicts with its base\n"
             f"`{base_ref}` moved and this PR no longer merges cleanly. "
@@ -459,6 +478,18 @@ def _respond(
             "so plainly instead of forcing it (a maintainer will close the "
             "PR). Any change you keep is re-measured before it is pushed, "
             "and auto-merge stays off — a human merges the updated PR.\n\n"
+        ) + prompt
+    elif conflict_wake:
+        prompt = (
+            "# Your PR is behind its base\n"
+            f"`{base_ref}` moved since your claim was measured, so the "
+            "measurement is stale and auto-merge was deliberately not armed. "
+            f"`origin/{base_ref}` has been fetched into your workspace. "
+            "Merge it into the PR branch (it merges cleanly — no conflicts) "
+            "and check whether what landed changes your conclusion; if your "
+            "contribution is superseded, say so plainly instead of pushing "
+            "on. The merged result is re-measured before it is pushed, and "
+            "a human merges the updated PR.\n\n"
         ) + prompt
     if is_steward:
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE

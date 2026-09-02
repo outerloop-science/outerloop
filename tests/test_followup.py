@@ -890,6 +890,40 @@ def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
     assert outcome2.action == "no-op"
 
 
+def _behind_pr(head="h" * 40) -> dict:
+    return {
+        "state": "open",
+        "merged": False,
+        "mergeable": True,
+        "mergeable_state": "behind",
+        "head": {"sha": head},
+        "base": {"ref": "main"},
+    }
+
+
+def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
+    """A cleanly-mergeable PR whose base moved wakes its author exactly like
+    a conflicted one — the claim is stale (publish declined to arm), so the
+    author merges the base in and the result is re-measured. First seen live:
+    gpt-speedrun#5 (the 8640 record) sat BEHIND after the lines-flip landed
+    mid-attempt, with no path back to the board."""
+    root, _bare = review_run
+    github = FakeGitHub(pr=_behind_pr())
+    harness = ResumingHarness()
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
+    assert outcome.action == "replied"
+    prompt, resume_id = harness.calls[0]
+    assert "Your PR is behind its base" in prompt
+    assert "no conflicts" in prompt
+    assert "re-measured" in prompt
+    assert resume_id == "sess-original"
+    # once per head, same cursor as the conflict wake
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == "h" * 40
+    outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
+    assert outcome2.action == "no-op"
+
+
 def test_conflict_wake_action_lifecycle(review_run) -> None:
     from autoresearch.followup import conflict_wake_action
 
@@ -906,6 +940,12 @@ def test_conflict_wake_action_lifecycle(review_run) -> None:
     # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
     clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
     assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=clean))) == "clear"
+    # BEHIND (clean merge, stale base) wakes exactly like a conflict
+    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=_behind_pr()))) == "wake"
+    assert conflict_wake_action(woken, cast(Any, FakeGitHub(pr=_behind_pr()))) == ""  # once/head
+    # blocked-but-current does NOT wake (nothing to sync)
+    blocked = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "blocked"}
+    assert conflict_wake_action(record, cast(Any, FakeGitHub(pr=blocked))) == ""
 
 
 def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
