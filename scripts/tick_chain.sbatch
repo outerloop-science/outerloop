@@ -37,6 +37,9 @@ for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT AUTORESEARCH
 done
 
 # --- 1. keep two successors queued (singleton serializes same-name jobs) ---
+# A successor the SITE moved off our partition starves there and blocks its
+# twin through singleton; cancel it first so the top-up below requeues it.
+bash "${AUTORESEARCH_HOME:-.}/scripts/requeue_moved_successors.sh" "$JOB_NAME" "${AUTORESEARCH_PARTITION:-}" || true
 # Successors land on slots AFTER the ones already-queued jobs occupy —
 # otherwise every top-up doubles the tick rate on the next slot.
 if squeue_out=$(squeue -u "$USER" --name="$JOB_NAME" -h -t PENDING 2>/dev/null); then

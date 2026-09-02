@@ -191,6 +191,9 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
         def pending_reason(self, job_id: str) -> str:
             return ""
 
+        def job_partition(self, job_id: str) -> str:
+            return ""
+
         def active_job_names(self) -> list:
             return []
 

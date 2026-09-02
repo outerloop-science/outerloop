@@ -139,6 +139,7 @@ class Compute(Protocol):
     def submit(self, spec: JobSpec) -> str: ...
     def status(self, job_id: str) -> str: ...
     def pending_reason(self, job_id: str) -> str: ...
+    def job_partition(self, job_id: str) -> str: ...
     def active_job_names(self) -> list[str]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
@@ -218,6 +219,21 @@ class SlurmCompute:
             raise ValueError(f"not a job id: {job_id!r}")
         try:
             result = self.runner(["squeue", "-j", job_id, "-h", "-o", "%r"], self.command_timeout_s)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"squeue did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
+        return result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
+
+    def job_partition(self, job_id: str) -> str:
+        """The partition(s) a queued job currently sits in, as squeue prints
+        them, or "" when squeue no longer lists it. A site can MOVE a pending
+        job off the partition it was submitted to (Torch does, under
+        congestion); callers compare this with what they asked for."""
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        try:
+            result = self.runner(["squeue", "-j", job_id, "-h", "-o", "%P"], self.command_timeout_s)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SlurmQueryError(f"squeue did not run: {exc}") from exc
         if result.returncode != 0:
@@ -412,6 +428,9 @@ class LocalCompute:
 
     def pending_reason(self, job_id: str) -> str:
         return ""  # synchronous jobs are terminal at submit — never pending
+
+    def job_partition(self, job_id: str) -> str:
+        return ""  # no scheduler, no partitions
 
     def active_job_names(self) -> list[str]:
         return []  # synchronous: nothing is ever pending or running
