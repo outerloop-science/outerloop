@@ -25,6 +25,7 @@ uid=$(id -u)
 # locks in the shared dir too, and must count as live for this sweep
 worktrees=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 [ -n "$worktrees" ] || worktrees="$checkout"
+base=$(basename "$checkout")
 # ages are compared exactly, in seconds: find's -mmin truncates on GNU and
 # rounds UP on BSD, so neither says "at least N minutes old" the same way
 [ "$min_age" -ge 0 ] 2>/dev/null || min_age=10
@@ -47,6 +48,14 @@ live_git() {
         for wt in $worktrees; do
             case "$args" in *"$wt"*) return 0 ;; esac
         done
+        # a RELATIVE -C / --git-dir / --work-tree naming the checkout by its
+        # basename (started from the parent directory): matched by name,
+        # conservatively — over-matching only delays the sweep a cadence
+        case " $args " in
+            *" -C $base "*|*" -C ./$base "*|*" -C $base/"*|*" -C ./$base/"*) return 0 ;;
+            *"--git-dir=$base/"*|*"--git-dir=./$base/"*) return 0 ;;
+            *"--work-tree=$base"*|*"--work-tree=./$base"*) return 0 ;;
+        esac
         if [ -d /proc ]; then
             cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
         elif command -v lsof >/dev/null 2>&1; then

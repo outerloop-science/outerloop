@@ -70,10 +70,13 @@ def test_an_aged_lock_under_a_live_git_process_is_left_alone(tmp_path: Path) -> 
     reads stdin until we close it; swept once it is gone."""
     repo = _repo(tmp_path)
     lock = _aged_lock(repo / ".git" / "index.lock")
+    # the RELATIVE form, started from the parent: argv names the checkout by
+    # basename only and cwd is outside it (terra #231 r4)
     proc = subprocess.Popen(
-        ["git", "-C", str(repo), "hash-object", "--stdin"],
+        ["git", "-C", repo.name, "hash-object", "--stdin"],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
+        cwd=tmp_path,
     )
     try:
         time.sleep(0.3)
