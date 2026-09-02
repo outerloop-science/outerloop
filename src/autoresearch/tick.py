@@ -710,11 +710,15 @@ def _wake(
         log.warning("wake dispatch failed for %s: %s: %s", record.run_id, type(exc).__name__, exc)
         release_lease(root, record.run_id)
         return False
-    if holder_job:
+    if holder_job and not local_mode():
         # An async wake job now owns the lease; it releases on completion,
         # and the TTL/holder-dead check reaps it if it dies.
         update_lease_holder(root, record.run_id, f"wake-job:{holder_job}", holder_job, now)
     else:
+        # No job to hand the lease to — or a LOCAL dispatch, which ran the
+        # whole wake synchronously: the attempt already finished and released
+        # its own lease, and recreating one under a terminal job id would
+        # make the next sweep reap a corpse instead of delivering.
         release_lease(root, record.run_id)
     return True
 
