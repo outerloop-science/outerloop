@@ -23,14 +23,14 @@ common=$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir 2>
 uid=$(id -u)
 
 live_git() {
-    # a git of ours that NAMES this checkout or its git dir on its command line
-    if pgrep -u "$uid" -f -- "git.*($checkout|$gitdir|$common)" >/dev/null 2>&1; then
-        return 0
-    fi
-    # a git of ours started AFTER cd into the checkout names nothing: read its
-    # cwd (/proc on Linux, lsof elsewhere); with neither, any git of ours is
+    # only REAL git processes of ours (comm == git — never this bash script,
+    # whose own argv names the checkout): live when one names the checkout
+    # or its git dir on its command line, or works inside it (cwd via /proc
+    # on Linux, lsof elsewhere); with no cwd source, any git of ours is
     # reason enough to wait a cadence
     for pid in $(pgrep -u "$uid" -x git 2>/dev/null); do
+        args=$(ps -o args= -p "$pid" 2>/dev/null || echo "")
+        case "$args" in *"$checkout"*|*"$gitdir"*|*"$common"*) return 0 ;; esac
         if [ -d /proc ]; then
             cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
         elif command -v lsof >/dev/null 2>&1; then
