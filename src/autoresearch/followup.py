@@ -662,7 +662,14 @@ def _respond(
         CONFIRMED disarm; a human merges the synced PR."""
         nonlocal measured_note, sync_pushed
         disarm_ok = True
-        if getattr(contract, "merge", "manual") == "auto":
+        # EITHER contract can have armed auto-merge: the pre-merge one at
+        # publish time, the merged one as the repo's current dial — a push
+        # to a possibly-armed PR is never made without a confirmed disarm
+        merge_modes = {
+            getattr(contract, "merge", "manual"),
+            getattr(post_contract, "merge", "manual"),
+        }
+        if "auto" in merge_modes:
             try:
                 disarm_ok = github.disable_auto_merge(record.target, number)
             except Exception as exc:

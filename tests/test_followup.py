@@ -1548,3 +1548,34 @@ def test_removed_benchmark_is_never_measured_with_the_old_definition(review_run)
     assert "no longer defines benchmark" in github.posted[0]
     record = load_record(root, "tsp-r1")
     assert record.dirty_wake_head == ""  # nothing reached the remote
+
+
+def test_base_flip_to_auto_is_disarmed_before_the_sync_push(review_run) -> None:
+    """A base move that flips the contract's merge dial to auto must not
+    push without a confirmed disarm (terra #225 r3: _sync_push read the
+    pre-merge contract, so the flip pushed onto a potentially armed PR)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2l"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / ".autoresearch.yaml").write_text(CONTRACT + "merge: auto\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "auto flip")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+
+    class DisarmRefusingGitHub(FakeGitHub):
+        disarm_calls = 0
+
+        def disable_auto_merge(self, repo, number):
+            DisarmRefusingGitHub.disarm_calls += 1
+            return False  # cannot confirm the disarm
+
+    github = DisarmRefusingGitHub(pr=_behind_pr(head=head))
+    outcome = respond(root, github, ResumingHarness(merge_base=True), QueueEvaluator(values=[]))
+    assert outcome.action == "replied"
+    assert DisarmRefusingGitHub.disarm_calls == 1  # the merged dial was honored
+    assert "withheld" in github.posted[0]
+    record = load_record(root, "tsp-r1")
+    assert record.dirty_wake_head == ""  # nothing pushed, head re-wakeable
