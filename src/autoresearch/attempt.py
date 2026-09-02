@@ -18,7 +18,7 @@ import logging
 import os
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
@@ -796,9 +796,7 @@ def _wake_author_sleep(
         ws.git("add", "-A")
         paths = ws.staged_paths()
         ws.git("reset")
-        if wake_line:
-            paths = [p for p in paths if not _is_line_memory(p)]
-        return paths
+        return _without_line_memory(paths, wake_line)
 
     panel_runner = (
         build_panel_runner(
@@ -1061,6 +1059,16 @@ LINE_MEMORY_PATHS = ("AGENT_MEMORY.md", "agent_memory")
 
 def _is_line_memory(path: str) -> bool:
     return path in LINE_MEMORY_PATHS or path.startswith("agent_memory/")
+
+
+def _without_line_memory(paths: Iterable[str], line: str) -> list[str]:
+    """The run's OWN changes: with a line active, its memory paths are dropped.
+    Every sealed tree excludes them by construction, and the run's base is the
+    line tip that carries them — so a base..candidate diff lists them as
+    deletions that are not the run's change (live: a dispatched wake on
+    gpt-speedrun read eight memory files as out of scope and aborted a run
+    whose paired eval had already finished)."""
+    return [p for p in paths if not (line and _is_line_memory(p))]
 
 
 def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
@@ -1327,9 +1335,18 @@ def resume_run(
     # measured_paths from the COMMITTED base..candidate diff — the sealed
     # candidate, never `changed_paths()` on a live tree that may have drifted.
     # NUL-delimited (like Workspace.staged_paths) so a path with a space is one
-    # entry, not two that could each slip past the scope check.
+    # entry, not two that could each slip past the scope check. The same
+    # line-memory rule as the climb's changed_paths(): the base is the line
+    # tip, the seal excluded the memory, the diff must not read it as a change.
     measured_paths = tuple(
-        p for p in ws.git("diff", "--name-only", "-z", base_sha, candidate_sha).split("\0") if p
+        _without_line_memory(
+            (
+                p
+                for p in ws.git("diff", "--name-only", "-z", base_sha, candidate_sha).split("\0")
+                if p
+            ),
+            _line_ref_for(bench, config.agent_id),
+        )
     )
     seed = int(stage["seed"])  # type: ignore[call-overload]
     suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]
@@ -2091,8 +2108,15 @@ def build_panel_runner(
                 title=f"[agent] {benchmark}: {_title_pair(baseline, candidate)}",
                 body=_panel_claim_body(benchmark, baseline, candidate, report, lines=bool(exclude)),
                 # base..snapshot, never base..worktree: the snapshot commit
-                # includes newly ADDED files, which a working-tree diff omits
-                diff=ws.git("diff", f"{base_sha}..{snapshot}"),
+                # includes newly ADDED files, which a working-tree diff omits.
+                # Excluded (line-memory) paths are excluded from the diff too:
+                # the snapshot dropped them, so against a line-tip base they
+                # would read as deletions the author never made
+                diff=ws.git(
+                    "diff",
+                    f"{base_sha}..{snapshot}",
+                    *(["--", ".", *(f":(exclude){p}" for p in exclude)] if exclude else []),
+                ),
                 author=bot_login,
             )
             return run_panel(lenses, panel_ws, claim, contract_text, today, reads["n"])
