@@ -21,6 +21,7 @@ import os
 import shlex
 import signal
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -361,6 +362,16 @@ class LocalCompute:
                 tmp = state_dir / f".{job_id}.{os.getpid()}.tmp"
                 tmp.write_text(state)
                 os.replace(tmp, state_dir / job_id)
+                # opportunistic prune: one entry per job would leak forever
+                # on a long-running loop; anything the sweep could still want
+                # is far younger than a day
+                cutoff = time.time() - 24 * 3600
+                for old in state_dir.iterdir():
+                    try:
+                        if old.stat().st_mtime < cutoff:
+                            old.unlink()
+                    except OSError:
+                        pass
             except OSError as exc:
                 log.warning("local job %s: state persist failed: %s", spec.job_name, exc)
         if spec.output and spec.output != "/dev/null":
