@@ -1694,9 +1694,16 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
         def evaluate(self, *a, **k):
             raise RuntimeError("boom")
 
-    # a hostile filename: backtick breakout attempt + shell-ish noise
+    # hostile filenames: backtick breakout, a secret, the approval phrase —
+    # the inert charset keeps alphanumerics, so ONLY the scrub chain can
+    # neutralize the latter two
     hostile = "src/pilot/solvers/x`y\nz.py"
-    harness = ResumingHarness(merge_base=True, edits={hostile: "evil\n"})
+    keyed = "src/pilot/solvers/leak-sk-x-oops.py"  # carries the fixture secret
+    approving = "src/pilot/solvers/approved.py"  # matches APPROVAL_PATTERN
+    harness = ResumingHarness(
+        merge_base=True,
+        edits={hostile: "evil\n", keyed: "evil\n", approving: "evil\n"},
+    )
     outcome = respond(root, github, harness, ErroringEvaluator())
     assert outcome.action == "replied"
     note = github.posted[0]
@@ -1704,3 +1711,11 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
     assert "docs/news.md" in note  # the diagnostic names the merge's paths
     assert "x?y?z.py" in note  # hostile chars stripped to the inert charset
     assert "x`y" not in note  # the raw breakout sequence never survives
+    # the fixture secret rode in via a filename: redact() must strip it, and
+    # the approval-like name must hit the same scrub as every reply line
+    assert "sk-x" not in note
+    assert "[redacted]" in note
+    from autoresearch.review import APPROVAL_PATTERN
+
+    tail = note.split("Changed paths:")[1]
+    assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))
