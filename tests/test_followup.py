@@ -914,7 +914,7 @@ def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
     assert outcome.action == "replied"
     prompt, resume_id = harness.calls[0]
     assert "Your PR is behind its base" in prompt
-    assert "no conflicts" in prompt
+    assert "no conflicts were detected" in prompt
     assert "re-measured" in prompt
     assert resume_id == "sess-original"
     # once per head, same cursor as the conflict wake
@@ -1127,3 +1127,32 @@ def test_forged_base_ref_cannot_vouch(review_run) -> None:
     assert outcome.action == "replied"
     assert "outside the contract" in github.posted[0]  # forgery did not vouch
     assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
+
+
+def test_behind_wake_merge_is_remeasured_and_pushed(review_run) -> None:
+    """The behind wake rides the full sync machinery: the session's merge of
+    the moved base plus its own kept edit are re-measured and pushed (terra
+    #224: the first behind test pinned only the trigger and prompt)."""
+    root, bare = review_run
+    # main moves cleanly: an out-of-scope doc lands upstream (no conflict)
+    seed2 = root.parent / "seed2b"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr())  # no comments: the wake alone triggers
+    harness = ResumingHarness(
+        edits={
+            "docs/news.md": "from main\n",  # the merge brings the base's file in
+            "src/pilot/solvers/tsp.py": "v2 after sync\n",
+        }
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    solver = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
+    assert "v2 after sync" in solver
+    assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
