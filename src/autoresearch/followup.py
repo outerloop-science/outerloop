@@ -70,6 +70,9 @@ from autoresearch.verifier import VERIFY_MARKER
 log = logging.getLogger(__name__)
 
 QUALIFYING_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+# revisions a blocking re-read may ask of the author before the findings are
+# left to a human — the climb's depth axis, bounded the same way
+PANEL_WAKE_CAP = 2
 MAX_COMMENTS_PER_WAKE = 5
 MAX_REPLY_CHARS = 20_000
 
@@ -272,6 +275,15 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
     return ""
 
 
+def panel_wake_pending(record: RunRecord, pr: dict) -> bool:
+    """A blocking re-read is waiting for the author, and the PR still shows
+    the head it was read on (a later push supersedes the findings). Pure — the
+    tick and the follow-up decide from the same rule."""
+    return bool(record.panel_wake_text) and (
+        str((pr.get("head") or {}).get("sha", "")) == record.panel_wake_head
+    )
+
+
 def has_new_comments(record: RunRecord, github: GitHubClient, bot_login: str) -> bool:
     """Cheap read-only check the tick can afford every cycle."""
     number = _pr_number(record.pr_url)
@@ -421,7 +433,8 @@ def _respond(
     is_conflict = bool(dirty_pr_head(pr))
     conflict_head = base_sync_head(pr)
     conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
-    if not merged and not conflict_wake:
+    panel_wake = panel_wake_pending(record, pr)
+    if not merged and not conflict_wake and not panel_wake:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     # oldest first WITHIN each source (ids are monotonic per source); cap the
     # wake, and advance each cursor only to the max id actually processed
@@ -516,6 +529,18 @@ def _respond(
             "contribution is superseded, say so plainly instead of pushing "
             "on. The merged result is re-measured before it is pushed, and "
             "a human merges the updated PR.\n\n"
+        ) + prompt
+    if panel_wake:
+        # the verification panel's read of the author's last push — the same
+        # data-fenced findings the climb's revise loop delivers, framed for a
+        # PR that already exists
+        prompt = (
+            "# The verification panel read your last push\n"
+            "Your change was pushed and re-measured; then the panel read it and "
+            "found BLOCKING findings. Address them in the workspace, or leave the "
+            "code alone and rebut them in your reply. Any change is re-measured "
+            "and re-read; the PR merges only on a clean read.\n\n"
+            f"{record.panel_wake_text}\n\n"
         ) + prompt
     if is_steward:
         from autoresearch.steward import STEWARD_WAKE_PREAMBLE
@@ -1053,6 +1078,10 @@ def _respond(
             # the tick arms only on an exact head match, so even a crash
             # before this write can never bless the pushed code (#228 r4/r8)
             auto_blessed_head="" if change_pushed else blessed_head,
+            # a serviced panel wake is spent (the re-read below may set a new
+            # one for the head it just pushed); an unserviced one stands
+            panel_wake_head="" if panel_wake else record.panel_wake_head,
+            panel_wake_text="" if panel_wake else record.panel_wake_text,
             wake_attempts=(
                 record.wake_attempts
                 if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))
@@ -1089,6 +1118,7 @@ def _respond(
             panel_lenses=panel_lenses,
             panel_builder=panel_builder,
             panel_skip=panel_skip,
+            panel_wake_rounds=record.panel_wake_rounds,
             bot_login=bot_login,
             created=created,
             now=now,
@@ -1149,6 +1179,7 @@ def _reread_pushed_change(
     panel_lenses: tuple[Any, ...],
     panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
     panel_skip: str,
+    panel_wake_rounds: int,
     bot_login: str,
     created: str,
     now: float,
@@ -1161,6 +1192,7 @@ def _reread_pushed_change(
     Best-effort throughout: a failure here degrades to an unarmed PR."""
     transcript = ""
     clean = False
+    verdict: Any = None
     base = ""
     if trusted_base and pushed_head and not panel_skip:
         # the panel's `base/` is the base the PR actually forks from: the
@@ -1223,6 +1255,16 @@ def _reread_pushed_change(
     except GitError:
         still_pushed = False
     bless = clean and still_pushed and dial == "auto"
+    # blocking findings on a head that is still the pushed one go back to the
+    # AUTHOR (the climb's revise loop as a wake type), bounded; a degraded
+    # read is not findings, and a capped-out author leaves them to a human
+    wake_author = (
+        verdict is not None
+        and bool(verdict.blocking)
+        and not verdict.degraded
+        and still_pushed
+        and panel_wake_rounds < PANEL_WAKE_CAP
+    )
     if bless:
         closing = (
             "Clean read under `merge: auto`: the kernel may merge this head once "
@@ -1232,6 +1274,13 @@ def _reread_pushed_change(
         closing = "Clean read; this repository merges by hand (`merge: manual`)."
     elif clean:
         closing = "Clean read, but the workspace moved during it — a human merges this PR."
+    elif wake_author:
+        closing = (
+            f"Blocking findings: the author is woken to address them (revision "
+            f"{panel_wake_rounds + 1} of {PANEL_WAKE_CAP}); a human decides if they stand."
+        )
+    elif verdict is not None and verdict.blocking and not verdict.degraded:
+        closing = f"Blocking findings after {PANEL_WAKE_CAP} revisions — a human decides this PR."
     else:
         closing = "Not a clean read — a human decides this PR."
     body = APPROVAL_PATTERN.sub(REDACTED, redact(transcript, secrets))[:MAX_REPLY_CHARS]
@@ -1244,12 +1293,21 @@ def _reread_pushed_change(
     except Exception as exc:
         log.warning("re-read comment failed for %s#%s: %s", record.target, number, exc)
         return  # an unposted read never blesses: the thread must carry it
-    if bless:
+    if bless or wake_author:
         try:
             latest = load_record(run_root, run_id)
-            save_record(run_root, replace(latest, auto_blessed_head=pushed_head), now)
+            if bless:
+                latest = replace(latest, auto_blessed_head=pushed_head)
+            if wake_author:
+                latest = replace(
+                    latest,
+                    panel_wake_head=pushed_head,
+                    panel_wake_text=str(verdict.wake_text),
+                    panel_wake_rounds=latest.panel_wake_rounds + 1,
+                )
+            save_record(run_root, latest, now)
         except (OSError, ValueError) as exc:
-            log.warning("blessing write failed for %s: %s", run_id, exc)
+            log.warning("re-read record write failed for %s: %s", run_id, exc)
 
 
 def _changed_paths(ws: Workspace) -> list[str]:

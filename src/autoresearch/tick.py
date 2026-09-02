@@ -533,6 +533,7 @@ def service_in_review(
         close_if_done,
         conflict_wake_action,
         has_new_comments,
+        panel_wake_pending,
     )
 
     ended: list[tuple[str, str]] = []
@@ -573,7 +574,11 @@ def service_in_review(
                     save_record(root, replace(record, dirty_wake_head=""), now)
                 except OSError as exc:
                     log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
-            if not has_new_comments(record, github, spec.bot_login) and wake_action != "wake":
+            if (
+                not has_new_comments(record, github, spec.bot_login)
+                and wake_action != "wake"
+                and not panel_wake_pending(record, pr)
+            ):
                 # NOTHING awaits servicing — only a fully quiet PR may
                 # self-merge (pending reviewer feedback always wins over
                 # arming: a followup must service it first, and a pushed

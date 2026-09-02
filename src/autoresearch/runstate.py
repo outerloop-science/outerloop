@@ -157,6 +157,14 @@ class RunRecord:
     # one, or any unrecorded push simply fails the equality: the tick arms
     # only when GitHub's head IS this sha. Empty = never arm (legacy too).
     auto_blessed_head: str = ""
+    # A BLOCKING follow-up re-read wakes the author (docs/design/orchestrator-
+    # verify.md): the panel's findings, data-fenced, and the pushed head they
+    # were read on. The wake fires only while GitHub's head IS that sha, is
+    # cleared when a follow-up services it, and is set again by the next read
+    # if findings remain — bounded by `panel_wake_rounds`.
+    panel_wake_head: str = ""
+    panel_wake_text: str = ""
+    panel_wake_rounds: int = 0
     followup_job_id: str = ""  # slurm job servicing this run's review comments
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0

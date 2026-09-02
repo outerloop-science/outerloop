@@ -165,11 +165,17 @@ never depends on the panel. A panel config that would die at startup is
 left off the follow-up (the reply still goes out; the PR stays
 human-merged; the tick's contract alarm already names the misconfig).
 
-Not yet: the climb's revise loop. A blocking re-read does not wake the
-author inside the same job — the findings sit on the thread, and the author
-addresses them when a maintainer's comment next wakes it. Folding the
-responder's measure-and-push block into a callable so the panel can wake
-the author once is the next rung.
+**The revise loop is a wake type.** A blocking re-read (findings, not a
+degraded lens) is recorded on the run — the panel's data-fenced findings and
+the pushed head they were read on — and the tick submits a follow-up for it
+exactly as it does for a maintainer's comment or a base move: every step a
+job, on the one follow-up channel. The woken author addresses or rebuts the
+findings; a code change is re-measured and re-read, and a read that still
+blocks sets the wake again. Bounded by `PANEL_WAKE_CAP` revisions, after
+which the findings are left to a human (the panel's explicit demand stands).
+A wake is spent when a follow-up services it, and superseded by any later
+push (it fires only while GitHub's head is the read head); an open panel
+wake also holds off the auto-arm, whatever the record says about blessing.
 
 ## What changes on GitHub
 

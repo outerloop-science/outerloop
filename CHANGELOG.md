@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A blocking follow-up re-read wakes the author: the panel's findings are
+  recorded on the run and the tick submits a follow-up for them like any
+  other wake; the revision is re-measured and re-read, bounded by two rounds
+  before the findings are left to a human.
 - `AUTORESEARCH_BOT_LOGIN` names the login the kernel posts as; every role
   defaults to it (the bot account's name when unset), so a GitHub App cutover
   flips identity and credential together.

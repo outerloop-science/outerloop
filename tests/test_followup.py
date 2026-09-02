@@ -1921,7 +1921,8 @@ def test_blocking_or_degraded_rereads_leave_the_merge_to_a_human(review_run) -> 
     respond_with_panel(root, github, harness, QueueEvaluator(values=[10.2]), panel)
     assert load_record(root, "tsp-r1").auto_blessed_head == ""
     assert "unjustified constant" in github.posted[1]
-    assert "Not a clean read — a human decides" in github.posted[1]
+    # blocking findings go back to the author first; a human decides if they stand
+    assert "author is woken" in github.posted[1] and "a human decides" in github.posted[1]
 
     github2 = AutoGitHub(comments=[member(902, "again")])
     panel2 = FakePanel(
@@ -2119,3 +2120,117 @@ def test_the_judges_rules_come_from_the_trusted_base_only(review_run, monkeypatc
     assert panel.built == []  # no judges were briefed on a PR-controlled contract
     assert "panel could not run" in github.posted[1] and "NOT a clean read" in github.posted[1]
     assert load_record(root, "tsp-r1").auto_blessed_head == ""
+
+
+# --- the revise loop as a wake type: a blocking re-read wakes the author
+
+
+def test_a_blocking_reread_records_a_panel_wake_for_the_pushed_head(review_run) -> None:
+    """Findings (not a degraded lens) on a head that is still the pushed one
+    go back to the author: the record carries the fenced findings and the
+    head they were read on, the thread says a revision is asked."""
+    from autoresearch.followup import PANEL_WAKE_CAP
+
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(
+        verdicts=[
+            _verdict(
+                blocking=(_finding(),),
+                transcript="- `claude` (review): 1 blocking, 0 advisory",
+            )
+        ]
+    )
+    verdict_text = panel.verdicts[0]
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    rec = load_record(root, "tsp-r1")
+    assert rec.panel_wake_head == _ws_head(root)
+    assert rec.panel_wake_text == verdict_text.wake_text and rec.panel_wake_rounds == 1
+    assert rec.auto_blessed_head == ""
+    assert f"revision 1 of {PANEL_WAKE_CAP}" in github.posted[1]
+    assert "author is woken" in github.posted[1]
+
+
+def test_a_capped_out_or_degraded_reread_leaves_the_findings_to_a_human(review_run) -> None:
+    from dataclasses import replace as dc_replace
+
+    from autoresearch.followup import PANEL_WAKE_CAP
+
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    save_record(
+        root, dc_replace(load_record(root, "tsp-r1"), panel_wake_rounds=PANEL_WAKE_CAP), NOW
+    )
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict(blocking=(_finding(),), transcript="- 1 blocking")])
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    rec = load_record(root, "tsp-r1")
+    assert rec.panel_wake_text == "" and rec.panel_wake_rounds == PANEL_WAKE_CAP
+    assert f"after {PANEL_WAKE_CAP} revisions" in github.posted[1]
+
+    # degraded is not findings: no wake, no revision counted
+    github2 = AutoGitHub(comments=[member(902, "again")])
+    panel2 = FakePanel(verdicts=[_verdict(degraded=True, transcript="- no verdict")])
+    save_record(root, dc_replace(load_record(root, "tsp-r1"), panel_wake_rounds=0), NOW + 1)
+    respond_with_panel(
+        root,
+        github2,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"}),
+        QueueEvaluator(values=[10.1]),
+        panel2,
+    )
+    rec2 = load_record(root, "tsp-r1")
+    assert rec2.panel_wake_text == "" and rec2.panel_wake_rounds == 0
+
+
+def test_a_pending_panel_wake_is_serviced_without_new_comments(review_run) -> None:
+    """The findings reach the author as the wake's prompt; servicing spends the
+    wake (cleared on the record, cursors untouched); a head that moved since
+    the read supersedes the findings (no-op)."""
+    from dataclasses import replace as dc_replace
+
+    root, _bare = review_run
+    head = _ws_head(root)
+    fenced = "PANEL FINDINGS\n```\n- src/pilot/solvers/tsp.py:1 — unjustified constant\n```"
+    save_record(
+        root,
+        dc_replace(
+            load_record(root, "tsp-r1"),
+            panel_wake_head=head,
+            panel_wake_text=fenced,
+            panel_wake_rounds=1,
+        ),
+        NOW,
+    )
+    github = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
+    harness = ResumingHarness(text="Rebutted: the constant is the paper's value.")
+    outcome = respond(root, github, harness, QueueEvaluator(values=[]))
+    assert outcome.action == "replied"
+    assert "verification panel read your last push" in harness.calls[0][0]
+    assert "unjustified constant" in harness.calls[0][0]
+    rec = load_record(root, "tsp-r1")
+    assert rec.panel_wake_text == "" and rec.panel_wake_head == ""
+    assert rec.last_comment_id == 100  # no comment was consumed
+    assert "Rebutted" in github.posted[0]
+
+    # a later push moved the head: the findings are stale, nothing to service
+    save_record(
+        root,
+        dc_replace(load_record(root, "tsp-r1"), panel_wake_head="f" * 40, panel_wake_text=fenced),
+        NOW + 1,
+    )
+    github2 = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
+    assert respond(root, github2, ResumingHarness(), QueueEvaluator(values=[])).action == "no-op"

@@ -3766,3 +3766,83 @@ def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path)
     # the steward's PRs are not panel-blessed: never a panel on its follow-up
     steward = run("steward-01", "verify,review", str(key))
     assert "--panel" not in steward and "--time=90" in steward
+
+
+def test_a_pending_panel_wake_submits_a_followup_and_holds_off_the_arm(tmp_path: Path) -> None:
+    """No new comments, no base move — but the panel's blocking findings wait
+    for the author on the PR's current head: the tick submits a follow-up
+    (never arms, whatever the blessing says). A stale wake (head moved) is
+    nothing to service."""
+    from autoresearch.compute import CommandResult
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    class G:
+        def __init__(self, head: str) -> None:
+            self.head = head
+            self.armed: list[int] = []
+
+        def get_pull_request(self, repo, number):
+            return {
+                "state": "open",
+                "merged": False,
+                "draft": False,
+                "mergeable_state": "clean",
+                "head": {"sha": self.head},
+                "base": {"ref": "main"},
+            }
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
+            self.armed.append(number)
+
+    def run(wake_head: str, pr_head: str) -> tuple[list, list]:
+        root = tmp_path / f"root-{wake_head[:2]}-{pr_head[:2]}"
+        root.mkdir()
+        save_record(
+            root,
+            RunRecord(
+                run_id="r-rev",
+                target="org/pilot",
+                task_title="t",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/9",
+                auto_blessed_head=pr_head,
+                panel_wake_head=wake_head,
+                panel_wake_text="findings",
+            ),
+            now=NOW,
+        )
+        submits: list[list[str]] = []
+
+        def runner(argv, timeout_s):
+            if argv[0] == "sbatch":
+                submits.append(list(argv))
+                return CommandResult(0, "77\n", "")
+            if argv[0] == "sacct":
+                return CommandResult(0, "RUNNING\n", "")
+            raise AssertionError(argv)
+
+        g = G(pr_head)
+        spec = FollowupSpec(
+            account="acct",
+            partition="cpu_short",
+            run_root=root,
+            image="/img/a.sif",
+            home=Path("/home/x/autoresearch"),
+        )
+        _ended, submitted = service_in_review(root, g, SlurmCompute(runner=runner), spec, NOW)
+        return submitted, g.armed
+
+    submitted, armed = run("a" * 40, "a" * 40)
+    assert submitted == [("r-rev", "77")] and armed == []
+    submitted2, _armed2 = run("b" * 40, "c" * 40)
+    assert submitted2 == []
