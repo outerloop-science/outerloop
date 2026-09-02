@@ -1592,6 +1592,7 @@ def resume_run(
                         "state": IN_REVIEW,
                         "pr_url": pr_url,
                         "auto_eligible": result.panel_rounds > 0
+                        and not (result.panel_blocking_open or result.panel_degraded)
                         and getattr(contract, "merge", "manual") == "auto",
                         "resume_session_id": result.session.session_id if result.session else "",
                         "ending_note": pr_url,
@@ -1796,6 +1797,7 @@ def resume_run(
                     "state": IN_REVIEW,
                     "pr_url": pr_url,
                     "auto_eligible": result.panel_rounds > 0
+                    and not (result.panel_blocking_open or result.panel_degraded)
                     and getattr(contract, "merge", "manual") == "auto",
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,
@@ -2676,6 +2678,7 @@ def live_attempt(
                     "state": IN_REVIEW,
                     "pr_url": pr_url,
                     "auto_eligible": result.panel_rounds > 0
+                    and not (result.panel_blocking_open or result.panel_degraded)
                     and getattr(contract, "merge", "manual") == "auto",
                     "resume_session_id": result.session.session_id if result.session else "",
                     "ending_note": pr_url,

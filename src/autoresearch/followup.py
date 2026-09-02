@@ -1011,6 +1011,11 @@ def _respond(
                 else record.dirty_wake_head
             ),
             resume_session_id=session.session_id or record.resume_session_id,
+            # a pushed CODE CHANGE replaces the panel-blessed content, so the
+            # publish-time auto blessing dies with it (sync pushes preserve
+            # the measured content bit-for-bit and keep it) — the changed PR
+            # needs a human merge, panel or not (terra #228 r4)
+            auto_eligible=record.auto_eligible and not change_pushed,
             wake_attempts=(
                 record.wake_attempts
                 if (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))

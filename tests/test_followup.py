@@ -1719,3 +1719,28 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
 
     tail = note.split("Changed paths:")[1]
     assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))
+
+
+def test_a_pushed_code_change_kills_the_auto_blessing(review_run) -> None:
+    """A followup that pushes a measured CODE CHANGE replaces the
+    panel-blessed content: auto_eligible dies with it, so the tick can never
+    self-merge a head the panel never saw (terra #228 r4). A reply without a
+    pushed change keeps the blessing."""
+    from dataclasses import replace as dc_replace
+
+    root, _bare = review_run
+    record = load_record(root, "tsp-r1")
+    save_record(root, dc_replace(record, auto_eligible=True), NOW)
+    github = FakeGitHub(comments=[member(901, "please tweak the kick")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 tweaked\n"})
+    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
+    assert outcome.action == "replied"
+    assert "Re-measured" in github.posted[0]
+    assert load_record(root, "tsp-r1").auto_eligible is False  # blessing dead
+
+    # a plain reply (no change pushed) keeps the blessing
+    save_record(root, dc_replace(load_record(root, "tsp-r1"), auto_eligible=True), NOW + 1)
+    github2 = FakeGitHub(comments=[member(902, "thanks, just explain")])
+    outcome2 = respond(root, github2, ResumingHarness(), QueueEvaluator(values=[]))
+    assert outcome2.action == "replied"
+    assert load_record(root, "tsp-r1").auto_eligible is True
