@@ -2859,7 +2859,12 @@ def main() -> int:
     # The local-mode chain: same stateless tick, a foreground loop instead of
     # sbatch successors. Records on disk carry all state, so killing and
     # restarting the loop resumes exactly like the Slurm chain would.
-    cadence_s = max(60.0, args.cadence_min * 60 if args.cadence_min > 0 else _cadence_s())
+    # clamp both ends: argparse accepts inf (time.sleep would OverflowError
+    # out of the loop after one tick) and garbage negatives fall to the env
+    cadence_s = min(
+        24 * 3600.0,
+        max(60.0, args.cadence_min * 60 if args.cadence_min > 0 else _cadence_s()),
+    )
     while True:
         started = time.time()
         try:
