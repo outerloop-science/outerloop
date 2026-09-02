@@ -1672,3 +1672,52 @@ def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
         "o/r",
     ).benchmarks[0]
     assert dial.measurement_signature() == base.measurement_signature()
+
+
+def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
+    """The changed-path list in the eval-failed note is session-controlled
+    text: markdown-inert charset, secrets redacted, the self-approval scrub
+    applied — and the diagnostic itself is pinned (terra #227)."""
+    root, bare = review_run
+    head = _ws_head(root)
+    seed2 = root.parent / "seed2o"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = FakeGitHub(pr=_behind_pr(head=head))
+
+    class ErroringEvaluator:
+        def evaluate(self, *a, **k):
+            raise RuntimeError("boom")
+
+    # hostile filenames: backtick breakout, a secret, the approval phrase —
+    # the inert charset keeps alphanumerics, so ONLY the scrub chain can
+    # neutralize the latter two
+    hostile = "src/pilot/solvers/x`y\nz.py"
+    keyed = "src/pilot/solvers/leak-sk-x-oops.py"  # carries the fixture secret
+    # the secret STRADDLES the 120-char cut: redact must run pre-truncation
+    straddle = "src/pilot/solvers/" + "a" * (120 - len("src/pilot/solvers/") - 2) + "sk-x.py"
+    approving = "src/pilot/solvers/approved.py"  # matches APPROVAL_PATTERN
+    harness = ResumingHarness(
+        merge_base=True,
+        edits={p: "evil\n" for p in (hostile, keyed, approving, straddle)},
+    )
+    outcome = respond(root, github, harness, ErroringEvaluator())
+    assert outcome.action == "replied"
+    note = github.posted[0]
+    assert "Changed paths:" in note
+    assert "docs/news.md" in note  # the diagnostic names the merge's paths
+    assert "x?y?z.py" in note  # hostile chars stripped to the inert charset
+    assert "x`y" not in note  # the raw breakout sequence never survives
+    # the fixture secret rode in via a filename: redact() must strip it, and
+    # the approval-like name must hit the same scrub as every reply line
+    assert "sk-x" not in note
+    assert "[redacted]" in note
+    from autoresearch.review import APPROVAL_PATTERN
+
+    tail = note.split("Changed paths:")[1]
+    assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))

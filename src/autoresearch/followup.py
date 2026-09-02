@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -553,6 +554,22 @@ def _respond(
     reply_body = APPROVAL_PATTERN.sub(REDACTED, redact(session.final_text, secrets))[
         :MAX_REPLY_CHARS
     ]
+
+    def _safe_paths(paths: list[str]) -> str:
+        """Session-controlled filenames rendered into a bot comment: strip to
+        a markdown-inert charset (a name can carry backticks, newlines, a
+        secret, or the approval phrase), bound each, then run the same secret
+        redaction and self-approval scrub as every other reply line."""
+        # redact each RAW name before the length cut: a secret straddling
+        # the boundary would otherwise leak its prefix uncaught
+        cleaned = ", ".join(
+            # brackets stay: they cannot close a code span, and the
+            # redaction marker must survive the strip intact
+            "`" + re.sub(r"[^A-Za-z0-9._/@+\[\]-]", "?", redact(p, secrets))[:120] + "`"
+            for p in paths[:12]
+        ) + (" …" if len(paths) > 12 else "")
+        return APPROVAL_PATTERN.sub(REDACTED, redact(cleaned, secrets))
+
     measured_note = ""
     change_pushed = False
 
@@ -709,6 +726,16 @@ def _respond(
     # benchmark/scope difference takes the full scope-check + re-measure
     # path: base-owned content is NOT the same thing as measured-under
     # conditions (terra #225).
+    if conflict_wake and changed:
+        # session-controlled names: same sanitizer+scrub chain as the note
+        # (a raw list could leak a secret or forge log lines via newlines)
+        log.info(
+            "sync wake for %s: changed=%s base_synced=%s history_known=%s",
+            run_id,
+            _safe_paths(changed),
+            base_synced,
+            history_known,
+        )
     base_only_sync = False
     if (
         conflict_wake
@@ -783,8 +810,10 @@ def _respond(
             except Exception as exc:
                 _revert_response()
                 measured_note = (
-                    "\n\n_(A code change was attempted but the eval failed on "
-                    f"it, so it was not applied: {redact(str(exc), secrets)[:200]})_"
+                    "\n\n_(A code change was attempted but the eval failed "
+                    f"on it, so it was not applied. Changed paths: "
+                    f"{_safe_paths(changed)}. "
+                    f"Error: {redact(str(exc), secrets)[:200]})_"
                 )
             else:
                 if _tree_hash(ws) != pre_eval_tree:
