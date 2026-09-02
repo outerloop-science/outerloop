@@ -2807,8 +2807,10 @@ def main() -> int:
     # LocalCompute) read AUTORESEARCH_ROOT, so a bare `tick --loop --root X`
     # must not split-brain them: local job states would land nowhere and
     # every finished job would read GONE until the park deadline.
-    if os.environ.get("AUTORESEARCH_ROOT", "") != str(args.root):
-        os.environ["AUTORESEARCH_ROOT"] = str(args.root)
+    # RESOLVED: local jobs cd into flight checkouts, so a relative root
+    # would scatter their state dirs across working directories
+    if os.environ.get("AUTORESEARCH_ROOT", "") != str(args.root.resolve()):
+        os.environ["AUTORESEARCH_ROOT"] = str(args.root.resolve())
     # In-review servicing is LIVE when credentials + image are available in the
     # chain environment. The waiting-run sweep delivers real wakes only when the
     # operator arms it — the AUTORESEARCH_DISPATCH_WAKE env var or a
