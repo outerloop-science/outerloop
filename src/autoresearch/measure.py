@@ -485,8 +485,11 @@ class DispatchSettings:
     def placement(self, gpus: int) -> tuple[str, str]:
         """(account, partition) for a job needing `gpus` GPUs. Raises when a
         GPU job has no lane — a queue that can never run is worse than a
-        loud refusal."""
-        if gpus <= 0:
+        loud refusal. Local compute has no lanes: jobs are subprocesses on
+        whatever GPUs the machine has, so placement is empty by design."""
+        from autoresearch.compute import local_mode
+
+        if gpus <= 0 or local_mode():
             return self.account, self.partition
         if not self.gpu_partition:
             raise ValueError(

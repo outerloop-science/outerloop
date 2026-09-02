@@ -278,3 +278,22 @@ def test_gpu_contracts_pass_the_lane_check_under_local_mode(monkeypatch) -> None
     assert "no GPU lane" in _gpu_lane_error(contract, "speedrun", spec)
     monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
     assert _gpu_lane_error(contract, "speedrun", spec) == ""
+
+
+def test_local_mode_places_gpu_measures_without_a_lane(monkeypatch) -> None:
+    """DispatchSettings.placement must not raise for a GPU measure under
+    local mode (terra #223 r7: the lane waiver admitted GPU contracts that
+    then failed at placement) — local jobs run on the machine's own GPUs."""
+    from autoresearch.compute import LocalCompute
+    from autoresearch.measure import DispatchSettings
+
+    settings = DispatchSettings(
+        compute=LocalCompute(), image="", account="", partition="", gpu_partition=""
+    )
+    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    assert settings.placement(1) == ("", "")
+    monkeypatch.delenv("AUTORESEARCH_COMPUTE")
+    import pytest
+
+    with pytest.raises(ValueError, match="no GPU lane"):
+        settings.placement(1)  # slurm mode still refuses loudly
