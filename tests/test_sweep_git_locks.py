@@ -96,9 +96,36 @@ def test_a_linked_worktree_is_followed_to_its_git_dir(tmp_path: Path) -> None:
     assert (linked / ".git").is_file()
     wt_lock = _aged_lock(repo / ".git" / "worktrees" / "linked" / "HEAD.lock")
     common_lock = _aged_lock(repo / ".git" / "refs" / "heads" / "wt.lock")
+    # a git working in the SIBLING (main) worktree owns shared locks too (r3)
+    proc = subprocess.Popen(
+        ["git", "-C", str(repo), "hash-object", "--stdin"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.3)
+        assert _sweep(linked).stdout == "" and common_lock.exists()
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=30)
     out = _sweep(linked)
     assert not wt_lock.exists() and not common_lock.exists()
     assert out.stdout.count("swept stale git lock") == 2
+
+
+def test_the_age_threshold_means_at_least_that_old(tmp_path: Path) -> None:
+    """find truncates ages to whole minutes: a lock 10m30s old must count as
+    older than ten minutes (r3), while one 9m30s old must not."""
+    repo = _repo(tmp_path)
+    just_over = _aged_lock(repo / ".git" / "index.lock")
+    t = time.time() - 630
+    os.utime(just_over, (t, t))
+    just_under = _aged_lock(repo / ".git" / "HEAD.lock")
+    t = time.time() - 570
+    os.utime(just_under, (t, t))
+    _sweep(repo, "10")
+    assert not just_over.exists() and just_under.exists()
 
 
 def test_only_lock_files_are_touched_and_a_non_repo_is_a_no_op(tmp_path: Path) -> None:

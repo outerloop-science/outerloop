@@ -21,6 +21,14 @@ gitdir=$(git -C "$checkout" rev-parse --absolute-git-dir 2>/dev/null) || exit 0
 common=$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$gitdir")
 [ -d "$gitdir" ] || exit 0
 uid=$(id -u)
+# every worktree sharing $common: a git working in a SIBLING worktree holds
+# locks in the shared dir too, and must count as live for this sweep
+worktrees=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+[ -n "$worktrees" ] || worktrees="$checkout"
+# find truncates ages to whole minutes, so "+N" would skip a lock N minutes
+# and 30 seconds old; "+N-1" selects everything at least N minutes old
+[ "$min_age" -ge 1 ] 2>/dev/null || min_age=1
+age_arg=$((min_age - 1))
 
 live_git() {
     # only REAL git processes of ours (comm == git — never this bash script,
@@ -30,7 +38,10 @@ live_git() {
     # reason enough to wait a cadence
     for pid in $(pgrep -u "$uid" -x git 2>/dev/null); do
         args=$(ps -o args= -p "$pid" 2>/dev/null || echo "")
-        case "$args" in *"$checkout"*|*"$gitdir"*|*"$common"*) return 0 ;; esac
+        case "$args" in *"$gitdir"*|*"$common"*) return 0 ;; esac
+        for wt in $worktrees; do
+            case "$args" in *"$wt"*) return 0 ;; esac
+        done
         if [ -d /proc ]; then
             cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
         elif command -v lsof >/dev/null 2>&1; then
@@ -39,7 +50,10 @@ live_git() {
         else
             return 0
         fi
-        case "$cwd" in "$checkout"|"$checkout"/*|"$common"|"$common"/*) return 0 ;; esac
+        case "$cwd" in "$common"|"$common"/*) return 0 ;; esac
+        for wt in $worktrees; do
+            case "$cwd" in "$wt"|"$wt"/*) return 0 ;; esac
+        done
     done
     return 1
 }
@@ -49,7 +63,7 @@ if live_git; then
 fi
 for dir in "$gitdir" "$common"; do
     [ -d "$dir" ] || continue
-    find "$dir" -type f -name '*.lock' -mmin "+$min_age" 2>/dev/null
+    find "$dir" -type f -name '*.lock' -mmin "+$age_arg" 2>/dev/null
 done | sort -u | while IFS= read -r lock; do
     rm -f -- "$lock" && echo "deploy: swept stale git lock $lock"
 done
