@@ -66,6 +66,18 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
     return tuple(entries)
 
 
+def panel_read_minutes(panel: str) -> int:
+    """Walltime one read of every configured lens needs, from the judge role
+    budgets (the same numbers the climb's allowance is built from). 0 when the
+    panel is off. Callers that budget a revision wake add the author's session
+    on top."""
+    lenses = [entry for entry in panel.split(",") if entry.strip()]
+    if not lenses:
+        return 0
+    judge_minutes = max(reviewer_spec().budget.walltime_s, verifier_spec().budget.walltime_s) // 60
+    return len(lenses) * judge_minutes
+
+
 @dataclass(frozen=True)
 class PanelLens:
     """One opinion: a kind (verify = integrity, review = code) on a backend."""

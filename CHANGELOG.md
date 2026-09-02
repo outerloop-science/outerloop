@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A follow-up that pushes a re-measured code change now has the SAME
+  verification panel re-read the new head, posted on the thread: a clean
+  read under `merge: auto` re-blesses the pushed sha so the tick may arm the
+  merge once GitHub reports the PR clean; blocking findings, a degraded read,
+  a manual dial, or a panel that could not run leave the merge to a human,
+  each named. Author follow-up jobs carry the climb's `--panel` and one
+  read's walltime (`docs/design/orchestrator-verify.md`).
 - A signature-clean base sync re-arms auto-merge when the merge dial is
   `auto` in BOTH the measured and merged worlds (auto at publish means the
   panel ran; auto now means the owner still wants it) — the clean sync

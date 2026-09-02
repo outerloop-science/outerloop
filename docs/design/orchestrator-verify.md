@@ -123,6 +123,54 @@ before hibernating (author skill), data-fenced wakes re-ground facts, and
 distillation of reports into lessons is the curator role — nothing
 load-bearing lives only in a compressible medium.
 
+## Re-reading a follow-up
+
+A PR's content changes after publish in exactly one kernel-driven way: a
+follow-up session answers review feedback with a code change, which the
+responder re-measures and pushes. That push replaces the content the panel
+blessed, so the record's `auto_blessed_head` is cleared — the tick arms a
+self-merge only on an exact head match, so a changed PR could only ever be
+merged by a human. The follow-up now closes that gap the same way the climb
+opened the PR: **the same panel reads the new head.**
+
+- The responder posts its reply and writes the record (cursors advanced,
+  blessing cleared) FIRST, then runs the panel. Judges take minutes; a
+  responder killed mid-read must cost an unarmed PR, never a silent push
+  or a repeated wake.
+- The panel's `base/` is the merge-base of the pushed head and the
+  kernel-pinned base sha (after a base sync the two coincide); its contract
+  text is that base's. The claim is a *follow-up re-measure on an open PR*,
+  naming the PR's previous number — never a fresh pre-PR improvement claim.
+- The read is posted on the thread under the follow-up marker, with the
+  panel transcript and one closing line that says who merges.
+- **Bless** — `auto_blessed_head = pushed sha` — only when the read is clean
+  (no blocking finding, no degraded lens), the tree's contract says
+  `merge: auto`, and the workspace HEAD still equals the pushed sha after
+  the judges ran (they hold a shell next to the checkout). The tick then
+  arms once GitHub reports the PR clean and up to date.
+- Everything else is written down and left to a human: blocking findings
+  (the panel's explicit demand), a degraded read, a manual dial (the owner's
+  preference, not doubt), a panel that could not run, no trusted base.
+
+The tick threads the climb's `--panel` to author follow-ups (never the
+steward's — its PRs are not panel-blessed) and adds one read's walltime to
+the job on top of the author's budget, both under the partition cap; it tells
+the follow-up how many minutes the read actually got (`--panel-minutes`), so
+a cap that eats the allowance costs the read — skipped, and said so on the
+thread — never the author's session. The follow-up builds the panel only
+after the run's OWN author is resolved; a judge key that equals that
+author's credential (role separation on the keys themselves, not the paths)
+drops the panel for this job and posts the skip, the same way — the reply
+never depends on the panel. A panel config that would die at startup is
+left off the follow-up (the reply still goes out; the PR stays
+human-merged; the tick's contract alarm already names the misconfig).
+
+Not yet: the climb's revise loop. A blocking re-read does not wake the
+author inside the same job — the findings sit on the thread, and the author
+addresses them when a maintainer's comment next wakes it. Folding the
+responder's measure-and-push block into a callable so the panel can wake
+the author once is the next rung.
+
 ## What changes on GitHub
 
 - `verify.yml` on targets thins to defense-in-depth (a re-check of the

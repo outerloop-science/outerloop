@@ -1744,3 +1744,378 @@ def test_a_pushed_code_change_kills_the_auto_blessing(review_run) -> None:
     outcome2 = respond(root, github2, ResumingHarness(), QueueEvaluator(values=[]))
     assert outcome2.action == "replied"
     assert load_record(root, "tsp-r1").auto_blessed_head == "b" * 40
+
+
+# --- the follow-up re-read: a pushed change is read by the panel before the
+# tick may arm it (docs/design/orchestrator-verify.md, "Re-reading a follow-up")
+
+AUTO_CONTRACT = CONTRACT + "merge: auto\n"
+
+
+def _set_contract(root: Path, text: str, leader: float | None = 10.5) -> None:
+    """Commit a contract (and the PR's own measured ledger row) onto the PR
+    branch so the follow-up sees both as the tree's own, not as a change the
+    session made."""
+    from autoresearch.progress import load_leader, update_leader, write_progress
+
+    ws = run_dir(root, "tsp-r1") / "ws"
+    (ws / ".autoresearch.yaml").write_text(text)
+    if leader is not None:
+        entries = update_leader(
+            load_leader(ws),
+            benchmark="tsp",
+            metric="mean_tour_length",
+            direction="min",
+            baseline=leader,
+            candidate=leader,
+            run_id="tsp-r1",
+            date="2026-09-01",
+        )
+        write_progress(ws, entries, "org/pilot")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "dial")
+
+
+@dataclass
+class FakePanel:
+    """Stands in for build_panel_runner: records what it was asked to read
+    and returns canned verdicts."""
+
+    verdicts: list = field(default_factory=list)
+    built: list[dict] = field(default_factory=list)
+    reads: list[tuple[float, float, str]] = field(default_factory=list)
+
+    def __call__(
+        self,
+        ws,
+        run_dir_,
+        base_sha,
+        lenses,
+        contract_text,
+        target,
+        benchmark,
+        bot_login,
+        today,
+        exclude=(),
+        claim_body=None,
+    ):
+        self.built.append(
+            {
+                "base": base_sha,
+                "lenses": lenses,
+                "contract": contract_text,
+                "benchmark": benchmark,
+                "claim": claim_body(10.5, 10.2, "why") if claim_body else "",
+            }
+        )
+
+        def runner(baseline, candidate, report):
+            self.reads.append((baseline, candidate, report))
+            verdict = self.verdicts.pop(0)
+            if isinstance(verdict, Exception):
+                raise verdict
+            return verdict
+
+        return runner
+
+
+def _verdict(
+    blocking=(),
+    degraded=False,
+    transcript="**Verification round 1**\n- `claude` (verify): 0 blocking, 0 advisory",
+):
+    from autoresearch.panel import PanelVerdict
+
+    return PanelVerdict(
+        blocking=tuple(blocking), transcript=transcript, wake_text="", degraded=degraded
+    )
+
+
+def _finding(summary="unjustified constant"):
+    from autoresearch.review import Finding
+
+    return Finding(
+        file="src/pilot/solvers/tsp.py",
+        line=1,
+        confidence="high",
+        summary=summary,
+        detail="d",
+        blocking=True,
+    )
+
+
+@dataclass
+class AutoGitHub(FakeGitHub):
+    """An auto-mode PR is disarmed before any push; this fake confirms it."""
+
+    disarmed: list[int] = field(default_factory=list)
+
+    def disable_auto_merge(self, repo, number):
+        self.disarmed.append(number)
+        return True
+
+
+def respond_with_panel(root, github, harness, evaluator, panel):
+    return respond_once(
+        root,
+        "tsp-r1",
+        harness,
+        evaluator,
+        github,
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        panel_lenses=(object(),),
+        panel_builder=panel,
+    )
+
+
+def test_a_clean_reread_under_auto_blesses_the_pushed_head(review_run) -> None:
+    """The consent chain's missing link: after a follow-up pushes a measured
+    code change, the SAME panel reads the new head; clean + merge:auto moves
+    the blessing to exactly that sha, so the tick may arm it once GitHub says
+    the PR is clean. The read is posted on the thread, after the reply."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "please tweak the kick")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 tweaked\n"})
+    panel = FakePanel(verdicts=[_verdict()])
+    outcome = respond_with_panel(root, github, harness, QueueEvaluator(values=[10.2]), panel)
+    assert outcome.action == "replied"
+    head = _ws_head(root)
+    assert load_record(root, "tsp-r1").auto_blessed_head == head
+    # the reply first (durable before the judges run), then the read
+    assert "Re-measured" in github.posted[0]
+    assert "re-read of the pushed change" in github.posted[1] and head[:12] in github.posted[1]
+    assert "Verification round 1" in github.posted[1]
+    assert "kernel may merge this head" in github.posted[1]
+    # the panel read the pushed tree against the PR's real base, with the
+    # base's contract, under a follow-up claim (not a fresh pre-PR claim)
+    built = panel.built[0]
+    assert built["base"] == _git(run_dir(root, "tsp-r1") / "ws", "rev-parse", "origin/main").strip()
+    assert built["contract"].startswith("benchmarks:") and "merge: auto" not in built["contract"]
+    assert "Follow-up re-measure on open PR #9" in built["claim"]
+    assert "previously measured number: 10.5" in built["claim"]
+    assert panel.reads == [(10.5, 10.2, harness.text)]
+
+
+def test_blocking_or_degraded_rereads_leave_the_merge_to_a_human(review_run) -> None:
+    """Blocking findings are the panel's explicit demand for a human; a
+    degraded read is not a certified pass. Neither blesses; both are named
+    on the thread."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"})
+    panel = FakePanel(
+        verdicts=[
+            _verdict(
+                blocking=(_finding(),),
+                transcript=(
+                    "- `claude` (review): 1 blocking, 0 advisory\n"
+                    "  - **src/pilot/solvers/tsp.py:1** — unjustified constant"
+                ),
+            )
+        ]
+    )
+    respond_with_panel(root, github, harness, QueueEvaluator(values=[10.2]), panel)
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+    assert "unjustified constant" in github.posted[1]
+    assert "Not a clean read — a human decides" in github.posted[1]
+
+    github2 = AutoGitHub(comments=[member(902, "again")])
+    panel2 = FakePanel(
+        verdicts=[
+            _verdict(
+                degraded=True,
+                transcript=(
+                    "- `claude` (verify): **no verdict** (timeout) — silence is not endorsement"
+                ),
+            )
+        ]
+    )
+    respond_with_panel(
+        root,
+        github2,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"}),
+        QueueEvaluator(values=[10.1]),
+        panel2,
+    )
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+    assert "silence is not endorsement" in github2.posted[1]
+    assert "human decides" in github2.posted[1]
+
+
+def test_a_clean_reread_never_blesses_under_a_manual_dial(review_run) -> None:
+    """merge:manual is the owner's preference, not doubt: the read is still
+    posted (it is useful review), but nothing is blessed."""
+    root, _bare = review_run  # CONTRACT has no merge key -> manual
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict()])
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+    assert "merges by hand" in github.posted[1]
+
+
+def test_no_reread_without_a_pushed_change_or_without_a_panel(review_run) -> None:
+    """A plain reply spends no judge time; without lenses the change is
+    pushed, the blessing dies, and there is one comment — as before."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "just explain")])
+    panel = FakePanel(verdicts=[])
+    respond_with_panel(root, github, ResumingHarness(), QueueEvaluator(values=[]), panel)
+    assert panel.built == [] and len(github.posted) == 1
+
+    github2 = AutoGitHub(comments=[member(902, "tweak")])
+    respond(
+        root,
+        github2,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+    )
+    assert len(github2.posted) == 1
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+
+
+def test_a_panel_that_cannot_run_is_a_non_read(review_run) -> None:
+    """A judge outage after the push: the reply and the push stand, the
+    thread says the panel did not run, nothing is blessed, and the wake is
+    spent (no repeated push on the next tick)."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[RuntimeError("judge host unreachable sk-x")])
+    outcome = respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    assert outcome.action == "replied"
+    rec = load_record(root, "tsp-r1")
+    assert rec.auto_blessed_head == "" and rec.last_comment_id == 901
+    assert "panel could not run" in github.posted[1] and "sk-x" not in github.posted[1]
+    assert "NOT a clean read" in github.posted[1]
+
+
+def test_a_reread_needs_a_trusted_base(review_run, monkeypatch) -> None:
+    """No pinned base (the fetch failed) means no `base/` for the judges: the
+    read is skipped and said so — never a bless on a base a session could
+    have moved."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    from autoresearch.github import Workspace
+
+    def broken_fetch(self):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(Workspace, "fetch_origin", broken_fetch)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict()])
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    assert panel.built == []
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+    assert "no trusted base" in github.posted[1]
+
+
+def test_a_workspace_that_moves_under_the_judges_is_not_blessed(review_run) -> None:
+    """Judges hold a shell next to the checkout: a HEAD that differs from the
+    pushed sha after the read fails the bless, whatever the verdict said."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    ws = run_dir(root, "tsp-r1") / "ws"
+
+    class MovingPanel(FakePanel):
+        def __call__(self, *a, **kw):
+            runner = super().__call__(*a, **kw)
+
+            def moving(baseline, candidate, report):
+                verdict = runner(baseline, candidate, report)
+                (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("moved\n")
+                _git(ws, "-c", "user.name=j", "-c", "user.email=j@j", "commit", "-qam", "judge")
+                return verdict
+
+            return moving
+
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = MovingPanel(verdicts=[_verdict()])
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+    assert "workspace moved" in github.posted[1]
+
+
+def test_a_read_that_cannot_fit_the_job_is_posted_as_a_skip(review_run) -> None:
+    """The tick tells the follow-up how many minutes the read got; when the cap
+    ate them the panel is not run, the skip is on the thread (silence is never
+    endorsement), nothing is blessed, and the author's reply stands."""
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict()])
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        panel_lenses=(),
+        panel_builder=panel,
+        panel_skip="the job's walltime cap left 10 min for a read that needs 60",
+    )
+    assert outcome.action == "replied"
+    assert panel.built == []
+    assert "panel skipped: the job's walltime cap left 10 min" in github.posted[1]
+    assert "NOT a clean read" in github.posted[1]
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
+
+
+def test_the_judges_rules_come_from_the_trusted_base_only(review_run, monkeypatch) -> None:
+    """A base whose contract cannot be read is a non-read: the panel never
+    falls back to the workspace copy, which the pushed tree controls."""
+    from autoresearch.github import GitError, Workspace
+
+    root, _bare = review_run
+    _set_contract(root, AUTO_CONTRACT)
+    real_git = Workspace.git
+
+    def unreadable_base_contract(self, *args):
+        if args and args[0] == "show" and str(args[1]).endswith(":.autoresearch.yaml"):
+            raise GitError("fatal: path '.autoresearch.yaml' does not exist in the base")
+        return real_git(self, *args)
+
+    monkeypatch.setattr(Workspace, "git", unreadable_base_contract)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    panel = FakePanel(verdicts=[_verdict()])
+    respond_with_panel(
+        root,
+        github,
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        panel,
+    )
+    assert panel.built == []  # no judges were briefed on a PR-controlled contract
+    assert "panel could not run" in github.posted[1] and "NOT a clean read" in github.posted[1]
+    assert load_record(root, "tsp-r1").auto_blessed_head == ""
