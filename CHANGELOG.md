@@ -8,12 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- The base-sync skip compares benchmark MEASUREMENT SIGNATURES (name,
-  command, metric, seed_env, gpus) instead of whole-model equality: workflow
-  dials and crediting policy live on the same model but never change what a
-  measured number means. Live motivation: the `lines: true` flip sits inside
-  the benchmark stanza, so the equality check refused the exact sync it was
-  built for.
+- The base-sync skip compares benchmark MEASUREMENT SIGNATURES — all
+  benchmark fields except the pure workflow dials (lines, depth_k, sleep_k,
+  display_digits) — instead of whole-model equality: the dials steer the
+  loop, never what a measured number means. Live motivation: the
+  `lines: true` flip sits inside the benchmark stanza, so the equality
+  check refused the exact sync it was built for.
 - A base sync whose merge changes only base-owned content pushes without a
   re-measure — the solver and eval surface are bit-for-bit what was measured,
   so the numbers stand (the topology rule, extended one rung). And the sync
