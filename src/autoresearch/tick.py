@@ -1371,7 +1371,11 @@ def _moved_off_partition(root: Path, compute: Compute, job_id: str) -> tuple[str
         actual = compute.job_partition(job_id)
     except (SlurmQueryError, ValueError, AttributeError):
         return None
-    if not actual or actual == wanted:
+    # both sides may be comma-separated lists: moved only when the job holds
+    # NONE of the partitions the recipe asked for; empty is unknown, not moved
+    have = {p.strip() for p in actual.split(",") if p.strip()}
+    want = {p.strip() for p in wanted.split(",") if p.strip()}
+    if not have or have & want:
         return None
     return actual, wanted
 

@@ -3885,3 +3885,19 @@ def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_pat
     )
     _report2, dispatcher2 = run_tick(tmp_path, slurm2, now=NOW + 1, min_tick_s=0)
     assert "66" not in slurm2.cancelled and dispatcher2.dispatched == []
+
+
+def test_moved_off_partition_matches_lists_by_membership(tmp_path: Path) -> None:
+    from dataclasses import replace as dc_replace
+
+    from autoresearch.tick import _moved_off_partition, write_wake_spec
+
+    write_wake_spec(
+        tmp_path, dc_replace(_wake_spec(tmp_path), partition="cpu_short,cpu_prem", job_partition="")
+    )
+    slurm = FakeSlurm(partitions={"1": "cpu_short", "2": "cpu_short,all", "3": "all", "4": ""})
+    c = slurm.compute()
+    assert _moved_off_partition(tmp_path, c, "1") is None  # holds one we asked for
+    assert _moved_off_partition(tmp_path, c, "2") is None  # list overlaps
+    assert _moved_off_partition(tmp_path, c, "3") == ("all", "cpu_short,cpu_prem")
+    assert _moved_off_partition(tmp_path, c, "4") is None  # unknown is not moved

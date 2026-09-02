@@ -50,3 +50,12 @@ def test_nothing_moved_or_no_partition_is_a_no_op(tmp_path: Path) -> None:
     bindir2, log2 = _shims(tmp_path / "two", "101 all\\n")
     assert _run(bindir2, "autoresearch-tick", "").stdout == ""
     assert not log2.exists()
+
+
+def test_partition_lists_match_by_membership_and_unknown_is_never_cancelled(tmp_path: Path) -> None:
+    """A job submitted to `cpu_short,all` and now holding `cpu_short` is not
+    moved; one holding `all` alone is; an empty %P is unknown (r1)."""
+    bindir, log = _shims(tmp_path, "101 cpu_short\n102 all\n103 \n104 cpu_short,all\n")
+    out = _run(bindir, "autoresearch-tick", "cpu_short,cpu_prem")
+    assert log.read_text().split() == ["102"]
+    assert "102" in out.stdout and "101" not in out.stdout and "104" not in out.stdout
