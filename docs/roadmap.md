@@ -93,6 +93,11 @@ standing instruction they supersede — a resumed agent honors stale constraints
 - [ ] Ops runbook: manual restart, `scancel` procedures, PAT rotation calendar
 - [ ] Transcript storage on project space with stated retention
 
+- [ ] Resident tick (design/resident-tick.md): a six-hour looping job with a
+      single `afterany:self` successor, four scheduling events a day — the
+      structural answer to the 2026-09-02 chain stalls (site partition moves;
+      the #235 deadline reverted in #237). Opt-in mode first, then default.
+
 ## Phase 5 — Benchmark-climb pilot
 
 Target: [autoresearch-pilot](https://github.com/agentic-learning-ai-lab/autoresearch-pilot)
