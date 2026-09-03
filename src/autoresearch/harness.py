@@ -102,6 +102,37 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     return env
 
 
+def _uv_cache_binding(session_home: Path) -> tuple[Path, list[str]]:
+    """The uv cache the agent's own `uv` calls populate, and the apptainer
+    `--bind` args that expose it inside a contained session.
+
+    When the run home sits in the orchestrator's `<root>/runs/<id>/` layout,
+    every run shares one content-addressed cache at `<root>/caches/uv`. Without
+    it each run re-downloads the same wheels into its per-run home — tens of
+    thousands of files that come to dominate the home and stall the
+    housekeeper. The shared cache is on the same filesystem as the runs, so a
+    run's venv hardlinks out of it (few new inodes) and shedding a run's home
+    frees nothing the next run needs.
+
+    Falls back to a per-run cache under the home for an ad-hoc layout (tests, a
+    bare local tree) or when the shared directory cannot be created; that path
+    is inside the `--home` mount already, so it needs no extra bind.
+    """
+    runs_dir = session_home.parent.parent
+    if runs_dir.name == "runs":
+        shared = runs_dir.parent / "caches" / "uv"
+        try:
+            shared.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # fall back to the per-run cache below
+        else:
+            return shared, ["--bind", f"{shared}:{shared}"]
+    per_run = session_home / ".cache" / "uv"
+    with contextlib.suppress(OSError):
+        per_run.mkdir(parents=True, exist_ok=True)
+    return per_run, []
+
+
 @dataclass(frozen=True)
 class VertexConfig:
     """Claude-on-Vertex auth (ADC): set to bill Anthropic sessions to a GCP
@@ -476,6 +507,7 @@ class ClaudeCodeHarness:
         # A read-only session (no mutating tool) gets a permission mode that
         # denies edits rather than auto-accepting them — defense in depth
         # behind the tool allowlist, so a stray edit tool cannot auto-apply.
+        uv_cache, uv_binds = _uv_cache_binding(session_home)
         mutating = {"Write", "Edit", "Bash"}.intersection(self.allowed_tools)
         permission_mode = "acceptEdits" if mutating else "default"
         claude_argv = [
@@ -515,6 +547,7 @@ class ClaudeCodeHarness:
                 "--cleanenv",
                 "--bind",
                 f"{workspace}:{workspace}",
+                *uv_binds,
                 # --home (NOT --env HOME=..., which apptainer silently
                 # refuses): mounts the per-run home at the same path inside
                 # and sets $HOME to it — native resume state survives
@@ -561,6 +594,9 @@ class ClaudeCodeHarness:
                     # with the prefix stripped — the key travels via the
                     # environment, never argv (argv is world-readable in /proc).
                     env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
+            env["UV_CACHE_DIR"] = str(uv_cache)
+            if self.container_image:
+                env["APPTAINERENV_UV_CACHE_DIR"] = str(uv_cache)
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -860,7 +896,11 @@ class CodexHarness:
     supports_resume = True
 
     def _apptainer_argv(
-        self, inner: list[str], session_home: Path, workspace: Path | None
+        self,
+        inner: list[str],
+        session_home: Path,
+        workspace: Path | None,
+        uv_binds: list[str] | None = None,
     ) -> list[str]:
         """Wrap a codex argv in `apptainer exec --containall --cleanenv`. The
         run-home is bound via `--home` (auth.json survives login->exec and lands
@@ -878,6 +918,7 @@ class CodexHarness:
             f"{self.binary}:{self.CONTAINER_CODEX}:ro",
         ]
         if workspace is not None:
+            argv += uv_binds or []
             argv += ["--bind", f"{workspace}:{workspace}", "--pwd", str(workspace)]
         return [*argv, self.container_image, *inner]
 
@@ -959,6 +1000,7 @@ class CodexHarness:
         if codex_home.is_dir() and not codex_home.is_symlink():
             for scratch in (codex_home / ".tmp", codex_home / "tmp"):
                 shutil.rmtree(scratch, ignore_errors=True)
+        uv_cache, uv_binds = _uv_cache_binding(session_home)
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
         # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`
@@ -985,7 +1027,7 @@ class CodexHarness:
             self.extra_args,
         )
         command = (
-            self._apptainer_argv(codex_argv, session_home, workspace)
+            self._apptainer_argv(codex_argv, session_home, workspace, uv_binds)
             if self.container_image
             else codex_argv
         )
@@ -993,6 +1035,9 @@ class CodexHarness:
             env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
             if self.container_image:
                 env["APPTAINERENV_OPENAI_API_KEY"] = self.api_key
+            env["UV_CACHE_DIR"] = str(uv_cache)
+            if self.container_image:
+                env["APPTAINERENV_UV_CACHE_DIR"] = str(uv_cache)
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -1210,9 +1255,10 @@ class HermesHarness:
     # Apptainer image for session containment, same stance as the other
     # backends: when set, the session runs under `apptainer exec --containall
     # --cleanenv` seeing only the workspace, the per-run home, and a read-only
-    # bind of the pinned hermes repo. The project venv and uv cache live in
-    # the per-run home (UV_PROJECT_ENVIRONMENT/UV_CACHE_DIR), so the repo
-    # bind stays read-only and nothing survives across runs.
+    # bind of the pinned hermes repo. The project venv lives in the per-run
+    # home (UV_PROJECT_ENVIRONMENT) so the repo bind stays read-only; the uv
+    # download cache (UV_CACHE_DIR) is the fleet-shared one, like the other
+    # backends.
     container_image: str = ""
     apptainer_binary: str = "apptainer"
 
@@ -1227,6 +1273,7 @@ class HermesHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
+        uv_cache, uv_binds = _uv_cache_binding(session_home)
         # Resume: rehydrate the prior conversation into this brief. A missing
         # transcript is a hard error, NOT a blind fresh start (the deployment
         # must preserve the per-run home for resume, same as claude's $HOME /
@@ -1291,6 +1338,7 @@ class HermesHarness:
                 "--cleanenv",
                 "--bind",
                 f"{workspace_abs}:{workspace_abs}",
+                *uv_binds,
                 # --home mounts the per-run home at the same path inside and
                 # sets $HOME to it — hermes config, brief, samples, and the
                 # resume transcript all persist on the shared FS
@@ -1309,7 +1357,7 @@ class HermesHarness:
             # cache in the per-run home instead (fresh per run; nothing shared
             # across sessions)
             env["UV_PROJECT_ENVIRONMENT"] = str(session_home / "venv")
-            env["UV_CACHE_DIR"] = str(session_home / "uv-cache")
+            env["UV_CACHE_DIR"] = str(uv_cache)
             env["UV_LINK_MODE"] = "copy"
             if self.container_image:
                 # --cleanenv drops the host env inside the container EXCEPT

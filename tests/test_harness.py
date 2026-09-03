@@ -842,3 +842,70 @@ def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypat
     assert role_key(missing) == ""  # ADC-only claude deployment
     with pytest.raises(ValueError):
         role_key(missing, "codex")  # vertex never excuses a non-claude backend
+
+
+def test_uv_cache_binding_shares_one_cache_under_the_run_root(tmp_path: Path) -> None:
+    """In the orchestrator's <root>/runs/<id>/ layout every run points its uv
+    cache at one shared <root>/caches/uv, with the bind that exposes it."""
+    from autoresearch.harness import _uv_cache_binding
+
+    root = tmp_path
+    session_home = root / "runs" / "speedrun-20260903-x-agent-01" / "ws-home"
+    session_home.mkdir(parents=True)
+    cache, binds = _uv_cache_binding(session_home)
+    assert cache == root / "caches" / "uv"
+    assert cache.is_dir()  # created, so the --bind source exists at mount time
+    assert binds == ["--bind", f"{cache}:{cache}"]
+
+
+def test_uv_cache_binding_falls_back_per_run_for_an_adhoc_layout(tmp_path: Path) -> None:
+    """Without the runs/<id> layout (tests, a bare local tree) the cache stays
+    per-run under the home, which the --home mount already exposes (no bind)."""
+    from autoresearch.harness import _uv_cache_binding
+
+    session_home = tmp_path / "ws-home"  # no `runs` ancestor
+    session_home.mkdir()
+    cache, binds = _uv_cache_binding(session_home)
+    assert cache == session_home / ".cache" / "uv"
+    assert binds == []
+
+
+def test_codex_container_run_binds_and_exports_the_shared_uv_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A contained codex run exposes the shared cache to the agent's own uv:
+    the exec argv binds <root>/caches/uv and the env crosses --cleanenv via
+    APPTAINERENV_UV_CACHE_DIR."""
+    import autoresearch.harness as harness_mod
+
+    root = tmp_path
+    workspace = root / "runs" / "speedrun-20260903-x-agent-01" / "ws"
+    workspace.mkdir(parents=True)
+    binary = tmp_path / "codex"
+    binary.write_text("#!/bin/sh\n")
+
+    seen: dict[str, object] = {}
+
+    class FakePopen:
+        def __init__(self, argv: list[str], *a: object, env: dict[str, str], **k: object) -> None:
+            seen["argv"] = argv
+            seen["env"] = env
+
+        def communicate(self, *a: object, **k: object) -> tuple[str, str]:
+            return ("", "")
+
+        returncode = 1
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
+    CodexHarness(api_key="k", binary=str(binary), container_image="/img/agent.sif").run(
+        "brief", workspace
+    )
+
+    cache = root / "caches" / "uv"
+    argv = " ".join(str(a) for a in seen["argv"])  # type: ignore[arg-type]
+    assert f"--bind {cache}:{cache}" in argv
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["UV_CACHE_DIR"] == str(cache)
+    assert env["APPTAINERENV_UV_CACHE_DIR"] == str(cache)

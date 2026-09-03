@@ -23,6 +23,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The agent's `uv` cache is now shared across runs instead of re-downloaded
+  into every per-run home. Each session's own `uv` calls wrote wheels into
+  `.cache/uv` under the run home — tens of thousands of files per run that came
+  to dominate the home and slow the housekeeper. All three backends now point
+  `UV_CACHE_DIR` at one content-addressed cache under `<root>/caches/uv` (on
+  the runs' filesystem, bound into the container), so wheels are fetched once
+  and a run's venv hardlinks out of the shared cache.
 - Codex sessions no longer leak temp directories into the per-run home. Codex
   writes scratch to `.codex/.tmp` and fails to remove it (the "stale arg0 temp
   dirs: Directory not empty" aborts), so across a run's wakes it grew to tens
