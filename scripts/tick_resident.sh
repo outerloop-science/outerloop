@@ -136,7 +136,7 @@ while :; do
     fi
     echo "=== tick $(date -Is) on $(hostname -s) job=${self:-none} (resident)"
     (cd "$AUTORESEARCH_HOME" && timeout --kill-after=60s "$tick_timeout" \
-        uv run python -m autoresearch.tick --root "$AUTORESEARCH_ROOT")
+        uv run --no-sync python -m autoresearch.tick --root "$AUTORESEARCH_ROOT")
     rc=$?
     [ "$rc" -ne 0 ] && echo "resident: tick exited $rc; the loop continues"
     # sleep to the next slot, but never past the walltime margin: the loop

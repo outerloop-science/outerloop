@@ -128,4 +128,9 @@ cd "$AUTORESEARCH_HOME"
 # The tick keeps AUTORESEARCH_PAT_FILE: it reads GitHub (PR states, review
 # comments) and submits follow-up jobs. Agent sessions remain scrubbed by the
 # harness env allowlist regardless.
-exec uv run python -m autoresearch.tick --root "$AUTORESEARCH_ROOT"
+# --no-sync: the deploy step above already synced (or logged its failure);
+# a bare `uv run` would sync AGAIN and, when that fails — a full quota,
+# 2026-09-03: every tick from 13:30Z died here for two hours — the tick never
+# starts. Running the venv as it stands is the "continue on the previous
+# code" the deploy promises.
+exec uv run --no-sync python -m autoresearch.tick --root "$AUTORESEARCH_ROOT"

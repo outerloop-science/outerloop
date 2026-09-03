@@ -34,6 +34,8 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$AUTORESEARCH_ROOT/cache/uv}"
 export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$AUTORESEARCH_ROOT/cache/apptainer}"
 mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 
+# the tick runs with `uv run --no-sync` afterwards, so a failed sync here
+# (quota, network) leaves the previous venv in service instead of no tick
 (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
 
 # --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
