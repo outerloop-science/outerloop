@@ -4704,6 +4704,24 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     head.write_text(head_text)
     ensure_regular_git_dir(root)
 
+    # a reftable repository is not one the kernel made; its refs live in
+    # .git/reftable/ where none of the ref reads would see them
+    (git_dir / "reftable").mkdir()
+    with pytest.raises(GitError, match="reftable"):
+        ensure_regular_git_dir(root)
+    (git_dir / "reftable").rmdir()
+    rt = tmp_path / "reftable-repo"
+    rt.mkdir()
+    init = subprocess.run(
+        ["git", "init", "-q", "-b", "main", "--ref-format=reftable", str(rt)],
+        capture_output=True,
+        text=True,
+    )
+    if init.returncode == 0 and (rt / ".git" / "reftable").exists():  # git >= 2.45
+        with pytest.raises(GitError, match="reftable"):
+            ensure_regular_git_dir(rt)
+    ensure_regular_git_dir(root)
+
     # .git replaced by a gitdir file pointing at a session-owned repository
     real = tmp_path / "moved.git"
     git_dir.rename(real)

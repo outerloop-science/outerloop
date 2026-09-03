@@ -992,6 +992,13 @@ def ensure_regular_git_dir(root: Path | None) -> None:
     if not stat.S_ISDIR(st.st_mode):
         raise _altered(".git is not a directory (a gitdir file)")
     _ensure_regular_config(root)  # before any git subprocess below reads it
+    # The kernel clones with the files ref backend; a reftable repository
+    # (`git init --ref-format=reftable`, or a `git refs migrate`) keeps its
+    # refs in `.git/reftable/`, where none of the ref reads below would see
+    # them, so an emptied object store could slip past. It is not one the
+    # kernel made: refuse it.
+    if os.path.lexists(git_dir / "reftable"):
+        raise _altered("ref storage is not the files backend (reftable present)")
 
     def check(rel: str, want_dir: bool, required: bool) -> None:
         try:
