@@ -14,6 +14,14 @@ Versions follow [SemVer](https://semver.org).
   with `AUTORESEARCH_COMPUTE=local`, it runs the local loop in the
   foreground. `autoresearch tick` forwards to the tick entry.
 
+### Fixed
+
+- A research line no longer loses the snapshot of a run that ended while a
+  newer run on the same line had already pushed: the seal now parents on
+  the remote line head when the local ref is behind it, so the push
+  fast-forwards instead of being refused and skipped (this is how agent-01's
+  line fell behind its own merged win on gpt-speedrun, 2026-09-03).
+
 ### Changed
 
 - A candidate is now credited when its improvement equals the contract's

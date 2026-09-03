@@ -4289,6 +4289,51 @@ def test_wake_on_a_line_never_reads_the_lines_memory_as_out_of_scope(tmp_path, m
     assert record.ending == "negative-result" and "out-of-scope" not in record.ending_note
 
 
+def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path: Path) -> None:
+    """A park frees the slot; a newer run on the same line can push while this
+    one is parked. The seal must then parent on the remote head so its push
+    fast-forwards, instead of being refused and silently skipped."""
+    from autoresearch.attempt import _push_line_snapshot
+    from autoresearch.github import Workspace
+
+    wsroot = tmp_path / "ws"
+    wsroot.mkdir()
+    (wsroot / "train.py").write_text("v1\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(wsroot, "rev-parse", "HEAD").strip()
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "branch", "agents/agent-01", base)
+    _git(wsroot, "push", "-q", "origin", "agents/agent-01")
+    # the sibling run advances the remote line while we are parked
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
+    (other / "train.py").write_text("sibling\n")
+    _git(
+        other,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qam",
+        "line snapshot: sibling",
+    )
+    _git(other, "push", "-q", "origin", "agents/agent-01")
+    sibling = _git(other, "rev-parse", "HEAD").strip()
+    # our run ends with its own tree
+    (wsroot / "train.py").write_text("winner\n")
+    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    head = _git(bare, "rev-parse", "agents/agent-01").strip()
+    assert head != sibling
+    assert _git(bare, "rev-parse", f"{head}^").strip() == sibling  # parented on the moved remote
+    assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
+    assert _git(wsroot, "rev-parse", "agents/agent-01").strip() == head  # local ref advanced too
+
+
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
     from autoresearch.attempt import _without_line_memory
 

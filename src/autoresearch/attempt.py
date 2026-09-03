@@ -1101,6 +1101,22 @@ def _push_line_snapshot(
         # raises if the ref is absent (e.g. a park that predates the line
         # feature) — _best_effort turns that into a logged skip
         parent = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
+        # A park frees the slot, so a newer run on the same line can end
+        # (and push) while this one is parked: the remote line then sits
+        # past our local ref and a seal parented on the stale ref would be
+        # refused as a non-fast-forward (gpt-speedrun, 2026-09-03: agent-01's
+        # winning run left no snapshot for exactly this reason, and its line
+        # fell behind main). Parent on the remote head whenever our ref is
+        # an ancestor of it; offline, seal on the local ref as before.
+        try:
+            ws.fetch_origin()
+            remote = ws.git("rev-parse", f"refs/remotes/origin/{line_ref}").strip()
+            if remote != parent:
+                ws.git("merge-base", "--is-ancestor", parent, remote)  # raises when not
+                ws.git("update-ref", f"refs/heads/{line_ref}", remote)
+                parent = remote
+        except Exception as exc:
+            log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
         memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
         snap = snapshot_tree(ws, parent, force=memory)
         try:
