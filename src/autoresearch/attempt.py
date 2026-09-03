@@ -793,10 +793,7 @@ def _wake_author_sleep(
         return snap.commit
 
     def changed_paths() -> list[str]:
-        ws.git("add", "-A")
-        paths = ws.staged_paths()
-        ws.git("reset")
-        return _without_line_memory(paths, wake_line)
+        return _paths_changed_from_base(ws, base_sha, wake_line)
 
     panel_runner = (
         build_panel_runner(
@@ -1185,6 +1182,35 @@ def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: s
         # pushed: the conflict is session work, not line state.
         ws.push(line)
     return line
+
+
+def _paths_changed_from_base(ws: Workspace, base_sha: str, line_ref: str) -> list[str]:
+    """The paths the tree changed, measured against the BASE, not HEAD. On a
+    research line HEAD can be behind main: a run starts by merging main in,
+    and when that merge conflicts it stays uncommitted, so the files git
+    auto-merged (the kernel's own BENCHMARKS.md, results/leader.json) sit
+    staged against the stale HEAD while being identical to main. Those are
+    main's edits, not the agent's, and must not read as scope violations
+    (gpt-speedrun, 2026-09-03: agent-01's first run after its own win ended
+    scope-violation on exactly those two files). Line memory is excluded
+    as before."""
+    ws.git("add", "-A")
+    try:
+        staged = ws.staged_paths()
+        if not staged:
+            return []
+        # index vs base, restricted to what moved against HEAD: a path identical
+        # to base drops out, a new or deleted file still counts
+        differs = {
+            entry
+            for entry in ws.git(
+                "diff", "--cached", "--name-only", "-z", base_sha, "--", *staged
+            ).split("\0")
+            if entry
+        }
+    finally:
+        ws.git("reset")
+    return _without_line_memory([p for p in staged if p in differs], line_ref)
 
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
