@@ -926,8 +926,13 @@ _GIT_REGULAR_FILES = ("HEAD",)  # must exist and be regular files
 _GIT_REGULAR_IF_PRESENT = (
     "index",
     "packed-refs",
+    "shallow",
     "MERGE_HEAD",
     "FETCH_HEAD",
+    "ORIG_HEAD",
+    "COMMIT_EDITMSG",
+    "description",
+    "objects/info/packs",
     "info/exclude",  # the wake writes it; a symlink would carry the write elsewhere
 )
 _GIT_DIRS = ("objects", "refs")  # must exist and be directories
@@ -940,6 +945,9 @@ _GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info", "logs",
 # caught by the HEAD readability check below).
 _GIT_NO_SYMLINK_TREES = ("refs", "logs", "hooks", "info")
 _GIT_NO_SYMLINK_ENTRIES = ("", "objects", "objects/info", "objects/pack")
+
+
+GUARD_GIT_TIMEOUT_S = 20  # the guard's own git read; a stall here is a stall everywhere
 
 
 def _altered(what: str) -> GitError:
@@ -1015,6 +1023,28 @@ def ensure_regular_git_dir(root: Path | None) -> None:
                     raise _altered(f".git/{shown} is a symlink")
     if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
         raise _altered("object alternates are present")
+    # Every loose object and pack file must be a regular file: a FIFO in
+    # place of one would stall the next git call that reads it. d_type from
+    # scandir, no per-file stat, so this stays cheap on large stores.
+    objects = git_dir / "objects"
+    try:
+        fanouts = [e for e in os.scandir(objects) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        fanouts = []
+    for fan in fanouts:
+        if fan.name not in ("pack", "info") and not (
+            len(fan.name) == 2 and _HEX2.fullmatch(fan.name)
+        ):
+            raise _altered(f".git/objects/{fan.name} is not a git object directory")
+        try:
+            with os.scandir(fan.path) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        raise _altered(
+                            f".git/objects/{fan.name}/{entry.name} is not a regular file"
+                        )
+        except PermissionError:
+            raise _altered(f".git/objects/{fan.name} is unreadable") from None
     # The structure can be intact with the objects gone (pack files deleted,
     # or moved and the link removed): a commit the refs name must still be
     # readable. HEAD's commit when HEAD is born; otherwise any other ref (a
@@ -1027,14 +1057,18 @@ def ensure_regular_git_dir(root: Path | None) -> None:
             _run_git(
                 ["git", "-C", str(root), *SAFE_GIT_FLAGS, "cat-file", "-e", f"{sha}^{{commit}}"],
                 _git_env(None, Path(root)),
+                timeout=GUARD_GIT_TIMEOUT_S,  # a stalled read is refused, not waited on
             )
-        except GitError:
+        except GitError as exc:
+            if "timed out" in str(exc):
+                raise _altered("the object store did not answer: a git read stalled") from None
             raise _altered(
                 "HEAD's commit is unreadable: the object store was emptied or moved"
             ) from None
 
 
 _SHA_RE = re.compile(r"[0-9a-f]{40,64}")
+_HEX2 = re.compile(r"[0-9a-f]{2}")
 _REF_RE = re.compile(r"refs/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}")
 
 

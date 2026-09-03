@@ -4587,6 +4587,19 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
         ensure_regular_git_dir(root)
     head_file.write_text(head_saved)
     ensure_regular_git_dir(root)
+    # a FIFO in place of a loose object or of .git/shallow would stall git
+    fan = git_dir / "objects" / "ab"
+    fan.mkdir(exist_ok=True)
+    os.mkfifo(fan / "cdef")
+    with pytest.raises(GitError, match=r"\.git/objects/ab/cdef is not a regular file"):
+        ensure_regular_git_dir(root)
+    (fan / "cdef").unlink()
+    fan.rmdir()
+    os.mkfifo(git_dir / "shallow")
+    with pytest.raises(GitError, match=r"\.git/shallow is not a regular file"):
+        ensure_regular_git_dir(root)
+    (git_dir / "shallow").unlink()
+    ensure_regular_git_dir(root)
     # an unreadable control file (chmod 000) is tampering, never "absent"
     if os.geteuid() != 0:
         head_file.chmod(0)
