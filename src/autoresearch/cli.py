@@ -180,6 +180,17 @@ def plan_start(
     mode = "local" if compute.strip().lower() == "local" or not sbatch_on_path else "slurm"
     root_s = _setting("AUTORESEARCH_ROOT", root, environ, from_file)
     cadence = _setting("AUTORESEARCH_CADENCE_MIN", "", environ, from_file)
+    if cadence:
+        # the chain divides by it and the loop sleeps on it: a bad value would
+        # only surface after the job started
+        try:
+            cadence_ok = float(cadence) > 0
+        except ValueError:
+            cadence_ok = False
+        if not cadence_ok:
+            raise StartError(
+                f"AUTORESEARCH_CADENCE_MIN must be a positive number of minutes, got {cadence!r}"
+            )
     pat = _setting("AUTORESEARCH_PAT_FILE", "", environ, from_file)
     # both modes run from a checkout: the tick's launch lanes and GitHub
     # servicing switch off without AUTORESEARCH_HOME

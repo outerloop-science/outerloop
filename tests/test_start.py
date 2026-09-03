@@ -214,6 +214,25 @@ def test_slurm_rejects_values_that_would_break_export(tmp_path: Path) -> None:
         plan(tmp_path, root="/my root", account="a", partition="p")
 
 
+@pytest.mark.parametrize("bad", ["0", "-5", "30m", ""])
+def test_cadence_must_be_a_positive_number_in_both_modes(tmp_path: Path, bad: str) -> None:
+    if bad == "":
+        assert (
+            plan(tmp_path, local=True, environ={"AUTORESEARCH_CADENCE_MIN": ""}).cadence_min == ""
+        )
+        return
+    with pytest.raises(StartError, match="positive number of minutes"):
+        plan(tmp_path, local=True, environ={"AUTORESEARCH_CADENCE_MIN": bad})
+    with pytest.raises(StartError, match="positive number of minutes"):
+        plan(
+            tmp_path,
+            root="/r",
+            account="a",
+            partition="p",
+            from_file={"AUTORESEARCH_CADENCE_MIN": bad},
+        )
+
+
 def test_slurm_resident_minutes_must_be_a_positive_integer(tmp_path: Path) -> None:
     base = dict(root="/r", account="a", partition="p")
     p = plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "240"})
