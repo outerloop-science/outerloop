@@ -268,8 +268,12 @@ def _resident_jobs() -> list[str] | None:
     return sorted(ids, key=lambda s: (len(s), s))
 
 
-def _cancel(job: str) -> None:
-    subprocess.run(["scancel", job], capture_output=True, text=True, timeout=30)
+def _cancel(job: str) -> bool:
+    try:
+        proc = subprocess.run(["scancel", job], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
 
 
 def _exec(cmd: list[str], env: dict[str, str]) -> int:
@@ -279,7 +283,8 @@ def _exec(cmd: list[str], env: dict[str, str]) -> int:
 
 def start(args: argparse.Namespace) -> int:
     try:
-        from_file = env_file_values(ENV_FILE)
+        values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
+        from_file = {k: v for k, v in values.items() if k in START_KEYS}
         plan = plan_start(
             root=args.root or "",
             account=args.account or "",
@@ -301,13 +306,9 @@ def start(args: argparse.Namespace) -> int:
         # the loop has no deploy step, so the author knobs the chain would
         # export from .env each tick are exported here once; the shell wins
         env = dict(os.environ)
-        try:
-            knobs = env_file_values(ENV_FILE, TICK_ENV_KEYS)
-        except StartError as e:
-            print(f"autoresearch start: {e}", file=sys.stderr)
-            return 2
-        for key, value in knobs.items():
-            env.setdefault(key, value)
+        for key, value in values.items():
+            if key in TICK_ENV_KEYS:
+                env.setdefault(key, value)
         env["AUTORESEARCH_COMPUTE"] = "local"
         env["AUTORESEARCH_ROOT"] = str(plan.root)
         env["AUTORESEARCH_HOME"] = str(plan.home)
@@ -349,13 +350,20 @@ def start(args: argparse.Namespace) -> int:
     # running at once, and the later submission withdraws so one chain remains
     after = _resident_jobs()
     if after and after[0] != job and job in after:
-        _cancel(job)
+        if _cancel(job):
+            print(
+                f"another resident tick (job {after[0]}) was submitted at the same time; "
+                f"withdrew this one (job {job}).",
+                file=sys.stderr,
+            )
+            return 0
+        # a queued loser would run after the winner and start a second chain
         print(
-            f"another resident tick (job {after[0]}) was submitted at the same time; "
-            f"withdrew this one (job {job}).",
+            f"another resident tick (job {after[0]}) was submitted at the same time and "
+            f"this one (job {job}) could not be cancelled; cancel it by hand: scancel {job}",
             file=sys.stderr,
         )
-        return 0
+        return 1
     print(
         f"resident tick submitted: job {job} on {plan.partition}, "
         f"{plan.resident_minutes} min walltime, hands over to itself. "

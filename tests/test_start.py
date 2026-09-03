@@ -390,6 +390,48 @@ def test_slurm_start_withdraws_when_another_start_won_the_race(
     assert "job 4100" in capsys.readouterr().err
 
 
+def test_slurm_start_reports_a_race_loser_it_could_not_cancel(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = checkout(clean_env)
+    bin_dir = clean_env / "bin"
+    bin_dir.mkdir()
+    calls = clean_env / "squeue.calls"
+    shim(bin_dir, "sbatch", "echo 4242\n")
+    shim(
+        bin_dir,
+        "squeue",
+        f"echo x >> {calls}\n[ $(wc -l < {calls}) -gt 1 ] && printf '4242\\n4100\\n'\nexit 0\n",
+    )
+    shim(bin_dir, "scancel", "echo 'scancel: error: Kill job error' >&2\nexit 1\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.chdir(home)
+    assert main(["start", "--root", "/r", "--account", "a", "--partition", "p"]) == 1
+    err = capsys.readouterr().err
+    assert "could not be cancelled" in err and "scancel 4242" in err
+
+
+def test_local_start_reads_the_env_file_once(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli, "ENV_FILE", env_file(clean_env, "AUTORESEARCH_TARGET=o/r\n"))
+    reads: list[tuple[str, ...]] = []
+    real = cli.env_file_values
+
+    def counting(path: Path, keys: tuple[str, ...] = cli.START_KEYS) -> dict[str, str]:
+        reads.append(keys)
+        return real(path, keys)
+
+    monkeypatch.setattr(cli, "env_file_values", counting)
+    seen: dict[str, dict[str, str]] = {}
+    monkeypatch.setattr(cli, "_exec", lambda cmd, env: seen.setdefault("env", env) and 0)
+    monkeypatch.chdir(checkout(clean_env))
+    assert main(["start", "--root", str(clean_env / "s")]) == 0
+    assert len(reads) == 1
+    assert seen["env"]["AUTORESEARCH_TARGET"] == "o/r"
+
+
 def test_start_errors_are_exit_2_with_the_diagnosis(
     clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
