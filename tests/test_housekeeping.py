@@ -143,7 +143,7 @@ def test_shedding_stops_at_the_time_budget(tmp_path: Path) -> None:
     root = tmp_path / "state"
     for i in range(5):
         _run(root, f"r{i}", ENDED, NOW - DEFAULT_SHED_GRACE_S - 100 + i)
-    ticks = iter([0.0, 0.0, 200.0, 200.0, 200.0, 200.0])  # jumps past 120s budget after run 1
+    ticks = iter([0.0, 0.0, 0.0, 200.0, 200.0, 200.0])  # start, belt, run 1, then past 120s
     shed = shed_ended_workspaces(
         root, NOW, time_budget_s=120.0, limit=50, clock=lambda: next(ticks)
     )

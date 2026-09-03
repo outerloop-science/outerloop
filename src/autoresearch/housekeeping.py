@@ -131,6 +131,11 @@ def shed_ended_workspaces(
         )
     except OSError:
         return []
+    # One readdir + an in-memory sort is cheap even for thousands of run dirs,
+    # but never start shedding if it somehow overran the budget: the tick then
+    # spends the rest of its time publishing, not deleting.
+    if monotonic() - start >= time_budget_s:
+        return []
     shed: list[str] = []
     for run_id in run_ids:
         if len(shed) >= limit:
