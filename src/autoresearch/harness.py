@@ -950,9 +950,15 @@ class CodexHarness:
         # a run's wakes they pile up into tens of thousands of files, the bulk
         # of the per-run home. Clear codex's scratch before each run — its
         # durable state (auth.json, sessions, the sqlite) is elsewhere under
-        # .codex and untouched.
-        for scratch in (session_home / ".codex" / ".tmp", session_home / ".codex" / "tmp"):
-            shutil.rmtree(scratch, ignore_errors=True)
+        # .codex and untouched. A prior session owns this home, so if it
+        # replaced .codex with a symlink, deleting scratch "under" it would
+        # follow the link out of the run home: only clean a real directory
+        # (rmtree itself refuses a symlink AT a scratch path, so those are
+        # never followed either).
+        codex_home = session_home / ".codex"
+        if codex_home.is_dir() and not codex_home.is_symlink():
+            for scratch in (codex_home / ".tmp", codex_home / "tmp"):
+                shutil.rmtree(scratch, ignore_errors=True)
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
         # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`

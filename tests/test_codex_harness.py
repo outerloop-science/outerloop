@@ -115,6 +115,9 @@ def test_run_clears_codex_scratch_but_keeps_durable_state(monkeypatch: Any, tmp_
     tmp = home / ".codex" / ".tmp" / "leaked-dir"
     tmp.mkdir(parents=True)
     (tmp / "junk").write_text("x")
+    tmp_alt = home / ".codex" / "tmp" / "leaked-dir"  # the alternate scratch name
+    tmp_alt.mkdir(parents=True)
+    (tmp_alt / "junk").write_text("x")
     sessions = home / ".codex" / "sessions"
     sessions.mkdir(parents=True)
     (sessions / "s.json").write_text("keep")
@@ -132,4 +135,38 @@ def test_run_clears_codex_scratch_but_keeps_durable_state(monkeypatch: Any, tmp_
     monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
     CodexHarness(api_key="k").run("brief", workspace)
     assert not (home / ".codex" / ".tmp").exists()  # scratch cleared
+    assert not (home / ".codex" / "tmp").exists()  # alternate scratch cleared too
     assert (sessions / "s.json").read_text() == "keep"  # durable state kept
+
+
+def test_run_does_not_follow_a_symlinked_codex_out_of_home(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A prior session owns its home; if it replaced .codex with a symlink to
+    an external directory, the scratch cleanup must not follow the link and
+    delete the target's .tmp."""
+    from autoresearch import harness as harness_mod
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    home = tmp_path / "ws-home"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    keep = outside / ".tmp" / "keep"
+    keep.mkdir(parents=True)
+    (keep / "f").write_text("x")
+    (home / ".codex").symlink_to(outside)
+
+    class FakePopen:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def communicate(self, *a: Any, **k: Any) -> Any:
+            return ("", "")
+
+        returncode = 1
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
+    CodexHarness(api_key="k").run("brief", workspace)
+    assert (keep / "f").read_text() == "x"  # symlink target untouched
