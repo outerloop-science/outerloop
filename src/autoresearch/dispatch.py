@@ -36,7 +36,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from autoresearch.compute import JobSpec
-from autoresearch.github import SAFE_GIT_FLAGS, Workspace
+from autoresearch.github import SAFE_GIT_FLAGS, GitError, Workspace, ensure_regular_git_dir
 from autoresearch.orchestrator import EvalError, _metric_from_output, managed_eval_env
 
 log = logging.getLogger(__name__)
@@ -107,6 +107,10 @@ def snapshot_tree(
     a .gitignore entry cannot silently discard session memory; callers pass
     only paths that exist.
     """
+    # the snapshot writes an index, a tree, a commit, and a ref into this
+    # repository: a session-reshaped .git is refused first, like every other
+    # kernel git call on a workspace
+    ensure_regular_git_dir(Path(ws.root))
     # Unique per snapshot: two snapshots against the SAME base run
     # concurrently (the design's paired baseline/candidate fan-out) and must
     # not collide on one index file.
@@ -225,7 +229,14 @@ def drop_snapshot(ws: Workspace, snapshot: Snapshot) -> None:
     """Release the retaining ref (the commit becomes gc-eligible again). Called
     once the eval result has been read. Best-effort — it never RAISES, so a
     caller's ending sequence cannot hinge on it — but not SILENT: a ref that
-    fails to drop keeps its commit alive forever, so the failure is logged."""
+    fails to drop keeps its commit alive forever, so the failure is logged.
+    A session-reshaped .git is not written to at all (a symlinked refs dir
+    would carry the ref deletion outside the workspace): logged and left."""
+    try:
+        ensure_regular_git_dir(Path(ws.root))
+    except GitError as exc:
+        log.warning("snapshot ref %s not dropped: %s", snapshot.ref, exc)
+        return
     try:
         result = subprocess.run(
             ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS, "update-ref", "-d", snapshot.ref],

@@ -37,9 +37,11 @@ from autoresearch.dispatch import (
     snapshot_tree,
 )
 from autoresearch.github import (
+    GitError,
     GitHubClient,
     TokenProvider,
     Workspace,
+    ensure_regular_git_dir,
 )
 from autoresearch.harness import Harness, SessionResult, redact
 from autoresearch.measure import DispatchedMeasurer, DispatchSettings
@@ -1098,7 +1100,8 @@ def _push_line_snapshot(
 
     def _seal_and_push() -> None:
         # raises if the ref is absent (e.g. a park that predates the line
-        # feature) — _best_effort turns that into a logged skip
+        # feature) or the session altered .git (every ws.git call checks) —
+        # _best_effort turns either into a logged skip
         local = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
         memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
         last_exc: Exception | None = None
@@ -1349,6 +1352,25 @@ def _utc_date(now: float) -> str:
     return datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
 
 
+def _end_refused_wake(
+    run_root: Path, record: RunRecord, exc: Exception, now: float, secrets: tuple[str, ...]
+) -> AttemptOutcome:
+    """End a parked run whose workspace the wake refused (a session altered
+    .git): ABORTED with the tampering as the note. The candidate snapshot's
+    retaining ref lives inside that same, now untrusted, repository and is
+    deliberately not touched: deleting it would mean writing through the
+    very structure the guard refused (a symlinked refs dir carries the write
+    elsewhere), and an ENDED workspace is inert — the ref keeps a commit
+    alive only within a repository nothing will read again."""
+    note = redact(str(exc), secrets)[:480]
+    log.warning("wake refused for %s: %s", record.run_id, note)
+    failed = _clear_stage(
+        RunRecord(**{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note})
+    )
+    _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
+    return AttemptOutcome(run_id=record.run_id, outcome="attempt-error")
+
+
 def resume_run(
     run_root: Path,
     run_id: str,
@@ -1390,6 +1412,16 @@ def resume_run(
     # to another remote. Passing `url` here means `Workspace.push` uses it
     # instead of reading `remote.origin.url`.
     ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
+    # A session reshaped .git (symlinked object store, gitdir file, FIFO) is
+    # refused BEFORE anything writes through it: the exclude below opens
+    # .git/info/exclude, and every ws.git call re-checks. The refusal ENDS
+    # the parked run with the tampering as its note — the tree cannot be
+    # trusted, and a record left waiting would only be re-woken into the
+    # same refusal.
+    try:
+        ensure_regular_git_dir(workspace)
+    except GitError as exc:
+        return _end_refused_wake(run_root, record, exc, now, secrets)
     # Re-establish the merge-artifact exclude on the wake too: the workspace
     # persisted across the park, but a session could have removed the exclude,
     # and this wake's changed_paths / seal run `git add -A`. Idempotent.

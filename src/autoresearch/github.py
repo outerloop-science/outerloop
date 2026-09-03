@@ -914,6 +914,266 @@ _REDIRECT_SECTIONS = ("url", "include", "includeif")
 _SECTION_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9.-]+)")
 
 
+# The parts of a workspace's .git the kernel relies on after a session ran.
+# 2026-09-03 an author copied the pack files into the container's private
+# /tmp and symlinked objects/pack there, so the kernel's git on the host
+# found refs with no objects behind them. The guard runs inside every kernel
+# git call (Workspace.git / git_network), so no path can skip it.
+# config and config.worktree are NOT here: _ensure_regular_config sanitizes
+# them in place (a FIFO or symlink config is replaced, not fatal) and runs
+# first, so the guard's own git subprocess never reads a tampered config.
+_GIT_REGULAR_FILES = ("HEAD",)  # must exist and be regular files
+_GIT_REGULAR_IF_PRESENT = (
+    "index",
+    "packed-refs",
+    "shallow",
+    "MERGE_HEAD",
+    "FETCH_HEAD",
+    "ORIG_HEAD",
+    "COMMIT_EDITMSG",
+    "description",
+    "objects/info/packs",
+    "info/exclude",  # the wake writes it; a symlink would carry the write elsewhere
+)
+_GIT_DIRS = ("objects", "refs")  # must exist and be directories
+_GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info", "logs", "logs/refs")
+# No symlink may appear among .git's own entries, nor ANYWHERE under the
+# small control trees git writes to or reads from (refs, reflogs, hooks,
+# info): a link there carries a ref update, a reflog append, or a hook read
+# outside the workspace. The object store is checked one level deep plus
+# its pack/info dirs (loose-object trees are large; a missing object is
+# caught by the HEAD readability check below).
+_GIT_NO_SYMLINK_TREES = ("refs", "logs", "hooks", "info")
+_GIT_NO_SYMLINK_ENTRIES = ("", "objects", "objects/info", "objects/pack")
+
+
+GUARD_GIT_TIMEOUT_S = 20  # the guard's own git read; a stall here is a stall everywhere
+
+
+def _regular_files_only(git_dir: Path, rel: str, allow_dirs: tuple[str, ...] = ()) -> None:
+    """Every entry of .git/<rel> must be a regular file (directory-entry type,
+    no per-file stat); `allow_dirs` names the subdirectories git itself
+    creates there (objects/info/commit-graphs for a split commit graph),
+    which are checked the same way one level down."""
+    try:
+        with os.scandir(git_dir / rel) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False) and entry.name in allow_dirs:
+                    _regular_files_only(git_dir, f"{rel}/{entry.name}")
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    raise _altered(f".git/{rel}/{entry.name} is not a regular file")
+    except PermissionError:
+        raise _altered(f".git/{rel} is unreadable") from None
+    except FileNotFoundError:
+        return
+
+
+def _altered(what: str) -> GitError:
+    return GitError(f"workspace .git altered by the session: {what}")
+
+
+def ensure_regular_git_dir(root: Path | None) -> None:
+    """Refuse a workspace whose .git a session reshaped. `.git` must be a
+    real directory (no symlink, no gitdir file); HEAD and config must be
+    regular files and the other control files regular when present (a FIFO
+    would hang the next git call); objects and refs must be directories, as
+    must objects/pack when present; object alternates are never ours. A
+    root with no .git at all is left to git's own error."""
+    if root is None:
+        return
+    git_dir = Path(root) / ".git"
+    try:
+        st = os.lstat(git_dir)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise _altered(".git is a symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        raise _altered(".git is not a directory (a gitdir file)")
+    _ensure_regular_config(root)  # before any git subprocess below reads it
+    # The kernel clones with the files ref backend; a reftable repository
+    # (`git init --ref-format=reftable`, or a `git refs migrate`) keeps its
+    # refs in `.git/reftable/`, where none of the ref reads below would see
+    # them, so an emptied object store could slip past. It is not one the
+    # kernel made: refuse it.
+    if os.path.lexists(git_dir / "reftable"):
+        raise _altered("ref storage is not the files backend (reftable present)")
+
+    def check(rel: str, want_dir: bool, required: bool) -> None:
+        try:
+            st = os.lstat(git_dir / rel)
+        except OSError:
+            if required:
+                raise _altered(f".git/{rel} is missing") from None
+            return
+        if stat.S_ISLNK(st.st_mode):
+            raise _altered(f".git/{rel} is a symlink")
+        if want_dir and not stat.S_ISDIR(st.st_mode):
+            raise _altered(f".git/{rel} is not a directory")
+        if not want_dir and not stat.S_ISREG(st.st_mode):
+            raise _altered(f".git/{rel} is not a regular file")
+
+    for rel in _GIT_REGULAR_FILES:
+        check(rel, want_dir=False, required=True)
+    for rel in _GIT_REGULAR_IF_PRESENT:
+        check(rel, want_dir=False, required=False)
+    for rel in _GIT_DIRS:
+        check(rel, want_dir=True, required=True)
+    for rel in _GIT_DIRS_IF_PRESENT:
+        check(rel, want_dir=True, required=False)
+    for rel in _GIT_NO_SYMLINK_ENTRIES:
+        try:
+            with os.scandir(git_dir / rel if rel else git_dir) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        shown = f"{rel}/{entry.name}" if rel else entry.name
+                        raise _altered(f".git/{shown} is a symlink")
+        except PermissionError:
+            raise _altered(f".git/{rel or '.'} is unreadable") from None
+        except OSError:
+            continue
+
+    def _unreadable(err: OSError) -> None:
+        shown = os.path.relpath(err.filename or "?", git_dir)
+        raise _altered(f".git/{shown} is unreadable") from None
+
+    for rel in _GIT_NO_SYMLINK_TREES:
+        top = git_dir / rel
+        if not top.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=_unreadable):
+            for name in (*dirnames, *filenames):
+                full = os.path.join(dirpath, name)
+                if os.path.islink(full):
+                    shown = os.path.relpath(full, git_dir)
+                    raise _altered(f".git/{shown} is a symlink")
+            for name in filenames:
+                # a FIFO or device where a loose ref, reflog, or hook was would
+                # stall the next git command that scans this tree
+                full = os.path.join(dirpath, name)
+                try:
+                    if not stat.S_ISREG(os.lstat(full).st_mode):
+                        shown = os.path.relpath(full, git_dir)
+                        raise _altered(f".git/{shown} is not a regular file")
+                except FileNotFoundError:
+                    continue
+    if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
+        raise _altered("object alternates are present")
+    # Every loose object and pack file must be a regular file: a FIFO in
+    # place of one would stall the next git call that reads it. d_type from
+    # scandir, no per-file stat, so this stays cheap on large stores.
+    objects = git_dir / "objects"
+    try:
+        fanouts = [e for e in os.scandir(objects) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        fanouts = []
+    for fan in fanouts:
+        if fan.name not in ("pack", "info") and not (
+            len(fan.name) == 2 and _HEX2.fullmatch(fan.name)
+        ):
+            raise _altered(f".git/objects/{fan.name} is not a git object directory")
+        _regular_files_only(git_dir, f"objects/{fan.name}", allow_dirs=("commit-graphs",))
+    # The structure can be intact with the objects gone (pack files deleted,
+    # or moved and the link removed): a commit the refs name must still be
+    # readable. HEAD's commit when HEAD is born; otherwise any other ref (a
+    # clone whose remote HEAD names an unpushed branch has an unborn local
+    # HEAD beside real remote refs); a fresh repository with no refs at all
+    # has nothing to check.
+    sha = _head_commit_sha(git_dir) or _any_ref_sha(git_dir)
+    if sha is not None:
+        try:
+            _run_git(
+                ["git", "-C", str(root), *SAFE_GIT_FLAGS, "cat-file", "-e", f"{sha}^{{commit}}"],
+                _git_env(None, Path(root)),
+                timeout=GUARD_GIT_TIMEOUT_S,  # a stalled read is refused, not waited on
+            )
+        except GitError as exc:
+            if "timed out" in str(exc):
+                raise _altered("the object store did not answer: a git read stalled") from None
+            raise _altered(
+                "HEAD's commit is unreadable: the object store was emptied or moved"
+            ) from None
+
+
+_SHA_RE = re.compile(r"[0-9a-f]{40,64}")
+_HEX2 = re.compile(r"[0-9a-f]{2}")
+_REF_RE = re.compile(r"refs/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}")
+
+
+PACKED_REFS_MAX_BYTES = 64 * 1024 * 1024  # far beyond any real repository's packed-refs
+
+
+def _read_small_regular(path: Path, limit: int = 512) -> str | None:
+    """Read a control file only if it is a regular file (never follow a
+    symlink or block on a FIFO); None when absent. A file larger than
+    `limit` is refused rather than truncated: a truncated read would silently
+    drop entries (a HEAD ref past the cut would read as unborn)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        raise _altered(f"{path.name} is not a regular file")
+    if st.st_size > limit:
+        raise _altered(f"{path.name} is oversized ({st.st_size} bytes)")
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except OSError as exc:  # chmod 000 and friends: unreadable is altered, not "absent"
+        raise _altered(f"{path.name} is unreadable ({exc.strerror})") from None
+
+
+def _ref_sha(git_dir: Path, ref: str) -> str | None:
+    """A ref's sha from its loose file (inside .git only) or packed-refs."""
+    loose = _read_small_regular(git_dir / ref)
+    if loose is not None:
+        value = loose.strip()
+        return value if _SHA_RE.fullmatch(value) else None
+    packed = _read_small_regular(git_dir / "packed-refs", limit=PACKED_REFS_MAX_BYTES) or ""
+    for line in packed.splitlines():
+        if line.endswith(" " + ref) and _SHA_RE.fullmatch(line.split(" ", 1)[0]):
+            return line.split(" ", 1)[0]
+    return None
+
+
+def _head_commit_sha(git_dir: Path) -> str | None:
+    """The sha HEAD names, or None when HEAD's branch is unborn. A HEAD that
+    is not a plain sha or a well-formed `ref: refs/...` (a path with `..`, an
+    absolute path, junk) is tampering, not a state git ever writes."""
+    head = (_read_small_regular(git_dir / "HEAD") or "").strip()
+    if not head:
+        raise _altered("HEAD is empty")
+    if _SHA_RE.fullmatch(head):
+        return head
+    if not head.startswith("ref: "):
+        raise _altered("HEAD is malformed")
+    ref = head[5:].strip()
+    if not _REF_RE.fullmatch(ref) or ".." in ref.split("/"):
+        raise _altered("HEAD names a ref outside refs/")
+    return _ref_sha(git_dir, ref)
+
+
+def _any_ref_sha(git_dir: Path) -> str | None:
+    """Some commit-bearing ref's sha (packed first, then loose under refs/),
+    used to verify the object store when HEAD is unborn; None when the
+    repository has no refs at all."""
+    packed = _read_small_regular(git_dir / "packed-refs", limit=PACKED_REFS_MAX_BYTES) or ""
+    for line in packed.splitlines():
+        if line and not line.startswith(("#", "^")):
+            sha = line.split(" ", 1)[0]
+            if _SHA_RE.fullmatch(sha):
+                return sha
+    top = git_dir / "refs"
+    if top.is_dir():
+        for path in sorted(top.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                value = (_read_small_regular(path) or "").strip()
+                if _SHA_RE.fullmatch(value):
+                    return value
+    return None
+
+
 def _ensure_regular_config(root: Path | None) -> None:
     """Sanitize .git/config before any git command reads it. A session can
     (a) replace the file with a FIFO/symlink/device — git's own parse, or a
@@ -1078,8 +1338,10 @@ class Workspace:
 
     def git(self, *args: str) -> str:
         """Run a local git subcommand: no credential, no child-spawning config,
-        repo-defined filter drivers neutralized."""
-        _ensure_regular_config(self.root)
+        repo-defined filter drivers neutralized. A session-reshaped .git is
+        refused before git runs (ensure_regular_git_dir, which also
+        sanitizes the config first)."""
+        ensure_regular_git_dir(self.root)
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
@@ -1091,7 +1353,7 @@ class Workspace:
         remote or rewrite can steer a credentialed op."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
-        _ensure_regular_config(self.root)
+        ensure_regular_git_dir(self.root)  # sanitizes the config first, too
         token = self.auth.token() if self.auth is not None else None
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args],

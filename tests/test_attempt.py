@@ -4466,6 +4466,338 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     assert _paths_changed_from_base(ws, base_sha, True) == []
 
 
+def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path) -> None:
+    """2026-09-03: an author copied .git/objects/pack into the container's /tmp
+    and symlinked it, leaving the kernel's git with refs and no objects. Every
+    kernel git call must name the tampering instead of failing on plumbing;
+    the same goes for a gitdir file, a FIFO where a control file was, a
+    missing control file, and object alternates."""
+    import os
+
+    from autoresearch.attempt import _paths_changed_from_base
+    from autoresearch.github import GitError, Workspace, ensure_regular_git_dir
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "train.py").write_text("v1\n")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    ws = Workspace(root=root)
+    ensure_regular_git_dir(root)  # a clean clone passes
+    assert ws.git("rev-parse", "HEAD").strip() == base
+    git_dir = root / ".git"
+    elsewhere = tmp_path / "private-tmp"
+    elsewhere.mkdir()
+
+    # the session's move: pack files into a private tmp, a symlink left behind
+    _git(root, "gc", "-q")
+    pack = git_dir / "objects" / "pack"
+    for f in pack.iterdir():
+        f.rename(elsewhere / f.name)
+    pack.rmdir()
+    os.symlink(elsewhere, pack)
+    with pytest.raises(GitError, match=r"altered by the session: \.git/objects/pack is a symlink"):
+        ws.git("status")  # EVERY kernel git call refuses
+    with pytest.raises(GitError, match="altered by the session"):
+        _paths_changed_from_base(ws, base, False)
+    os.unlink(pack)
+    pack.mkdir()
+    for f in elsewhere.iterdir():
+        f.rename(pack / f.name)
+    ensure_regular_git_dir(root)
+
+    # object alternates pointing anywhere
+    alt = git_dir / "objects" / "info" / "alternates"
+    alt.parent.mkdir(exist_ok=True)
+    alt.write_text(str(elsewhere) + "\n")
+    with pytest.raises(GitError, match="alternates"):
+        ws.git("status")
+    alt.unlink()
+
+    # a FIFO where the index was would hang the next git call
+    index = git_dir / "index"
+    index_bytes = index.read_bytes()
+    index.unlink()
+    os.mkfifo(index)
+    with pytest.raises(GitError, match=r"\.git/index is not a regular file"):
+        ws.git("status")
+    index.unlink()
+    index.write_bytes(index_bytes)
+
+    # the pack directory intact but emptied: structure passes, objects gone
+    for f in list(pack.iterdir()):
+        f.rename(elsewhere / f.name)
+    with pytest.raises(GitError, match="object store was emptied or moved"):
+        ws.git("status")
+    for f in list(elsewhere.iterdir()):
+        f.rename(pack / f.name)
+    ensure_regular_git_dir(root)
+
+    # a symlinked info/exclude would carry the wake's write elsewhere
+    info = git_dir / "info"
+    info.mkdir(exist_ok=True)
+    excl = info / "exclude"
+    excl_text = excl.read_text() if excl.exists() else ""
+    if excl.exists():
+        excl.unlink()
+    os.symlink(elsewhere / "exclude", excl)
+    with pytest.raises(GitError, match=r"\.git/info/exclude is a symlink"):
+        ws.git("status")
+    excl.unlink()
+    excl.write_text(excl_text)
+    ensure_regular_git_dir(root)
+
+    # a symlinked reflog would carry the kernel's next commit record elsewhere
+    logs_head = git_dir / "logs" / "HEAD"
+    logs_head.parent.mkdir(exist_ok=True)
+    logs_text = logs_head.read_text() if logs_head.exists() else ""
+    if logs_head.exists():
+        logs_head.unlink()
+    os.symlink(elsewhere / "reflog", logs_head)
+    with pytest.raises(GitError, match=r"\.git/logs/HEAD is a symlink"):
+        ws.git("status")
+    logs_head.unlink()
+    logs_head.write_text(logs_text)
+    # and no symlink anywhere among .git's direct entries either
+    os.symlink(elsewhere, git_dir / "sneaky")
+    with pytest.raises(GitError, match=r"\.git/sneaky is a symlink"):
+        ws.git("status")
+    (git_dir / "sneaky").unlink()
+    # nested refs are walked: a research-line ref replaced by a link
+    nested = git_dir / "refs" / "heads" / "agents"
+    nested.mkdir(parents=True, exist_ok=True)
+    os.symlink(elsewhere / "ref", nested / "agent-01")
+    with pytest.raises(GitError, match=r"\.git/refs/heads/agents/agent-01 is a symlink"):
+        ws.git("status")
+    (nested / "agent-01").unlink()
+    # and a FIFO where a loose ref was
+    os.mkfifo(nested / "agent-02")
+    with pytest.raises(GitError, match=r"\.git/refs/heads/agents/agent-02 is not a regular file"):
+        ws.git("status")
+    (nested / "agent-02").unlink()
+    nested.rmdir()
+    ensure_regular_git_dir(root)
+
+    # packed-refs is read in full: HEAD's entry past the old 1 MB cut must
+    # still resolve (and its missing object still be caught), and an absurd
+    # file is refused rather than truncated
+    packed = git_dir / "packed-refs"
+    packed_saved = packed.read_text() if packed.exists() else None
+    head_sha = _git(root, "rev-parse", "HEAD").strip()
+    _git(root, "pack-refs", "--all")
+    lines = packed.read_text().splitlines()
+    head_line = next(ln for ln in lines if ln.endswith(" refs/heads/main"))
+    # no "sorted" header (git would binary-search and miss the tail entry);
+    # real shas for the filler so git accepts every line
+    others = [ln for ln in lines if ln != head_line and not ln.startswith("#")]
+    filler = [f"{head_sha} refs/tags/filler-{i:07d}" for i in range(30_000)]  # > 1 MB
+    packed.write_text("\n".join([*others, *filler, head_line]) + "\n")
+    assert _git(root, "rev-parse", "HEAD").strip() == head_sha
+    ensure_regular_git_dir(root)  # HEAD resolves through the tail of the file
+    for f in list(pack.iterdir()):
+        f.rename(elsewhere / f.name)
+    for d in (git_dir / "objects").iterdir():
+        if d.is_dir() and len(d.name) == 2:
+            for f in list(d.iterdir()):
+                f.rename(elsewhere / f"{d.name}{f.name}")
+    with pytest.raises(GitError, match="object store was emptied or moved"):
+        ensure_regular_git_dir(root)
+    for f in list(elsewhere.iterdir()):
+        if len(f.name) == 40 and not f.name.startswith("pack-"):
+            (git_dir / "objects" / f.name[:2]).mkdir(exist_ok=True)
+            f.rename(git_dir / "objects" / f.name[:2] / f.name[2:])
+        elif f.name.startswith("pack-"):
+            f.rename(pack / f.name)
+    packed.write_bytes(b"x" * (64 * 1024 * 1024 + 1))
+    with pytest.raises(GitError, match="packed-refs is oversized"):
+        ensure_regular_git_dir(root)
+    if packed_saved is None:
+        packed.write_text("\n".join([*others, head_line]) + "\n")
+    else:
+        packed.write_text(packed_saved)
+    ensure_regular_git_dir(root)
+    # a crafted symbolic HEAD must not be followed outside .git (a FIFO there
+    # would hang the guard); it is refused at once
+    head_file = git_dir / "HEAD"
+    head_saved = head_file.read_text()
+    head_file.write_text("ref: ../../outside/fifo\n")
+    with pytest.raises(GitError, match="HEAD names a ref outside refs/"):
+        ensure_regular_git_dir(root)
+    head_file.write_text("garbage\n")
+    with pytest.raises(GitError, match="HEAD is malformed"):
+        ensure_regular_git_dir(root)
+    head_file.write_text(head_saved)
+    ensure_regular_git_dir(root)
+    # git's own split commit-graph layout is a directory under objects/info
+    graphs = git_dir / "objects" / "info" / "commit-graphs"
+    graphs.mkdir(parents=True, exist_ok=True)
+    (graphs / "graph-abc.graph").write_bytes(b"CGPH")
+    (git_dir / "objects" / "info" / "commit-graphs-chain").write_text("abc\n")
+    ensure_regular_git_dir(root)
+    os.mkfifo(graphs / "graph-fifo.graph")
+    with pytest.raises(GitError, match=r"commit-graphs/graph-fifo\.graph is not a regular file"):
+        ensure_regular_git_dir(root)
+    (graphs / "graph-fifo.graph").unlink()
+    ensure_regular_git_dir(root)
+    # a FIFO in place of a loose object or of .git/shallow would stall git
+    fan = git_dir / "objects" / "ab"
+    fan.mkdir(exist_ok=True)
+    os.mkfifo(fan / "cdef")
+    with pytest.raises(GitError, match=r"\.git/objects/ab/cdef is not a regular file"):
+        ensure_regular_git_dir(root)
+    (fan / "cdef").unlink()
+    fan.rmdir()
+    os.mkfifo(git_dir / "shallow")
+    with pytest.raises(GitError, match=r"\.git/shallow is not a regular file"):
+        ensure_regular_git_dir(root)
+    (git_dir / "shallow").unlink()
+    ensure_regular_git_dir(root)
+    # an unreadable control file (chmod 000) is tampering, never "absent"
+    if os.geteuid() != 0:
+        head_file.chmod(0)
+        try:
+            with pytest.raises(GitError, match="HEAD is unreadable"):
+                ensure_regular_git_dir(root)
+        finally:
+            head_file.chmod(0o644)
+        refs_dir = git_dir / "refs"
+        refs_dir.chmod(0)
+        try:
+            with pytest.raises(GitError, match="is unreadable"):
+                ensure_regular_git_dir(root)
+        finally:
+            refs_dir.chmod(0o755)
+        ensure_regular_git_dir(root)
+    # a genuinely fresh repository with an unborn branch passes
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    _git(fresh, "init", "-q", "-b", "main")
+    ensure_regular_git_dir(fresh)
+    # so does a clone whose remote HEAD names an unpushed branch (unborn local
+    # HEAD beside real remote refs) — and its object store is still verified
+    bare = tmp_path / "bare.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "master", str(bare))
+    _git(root, "push", "-q", str(bare), "main")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(bare), str(clone))
+    ensure_regular_git_dir(clone)
+    Workspace(root=clone).git("status")
+    cpack = clone / ".git" / "objects" / "pack"
+    if cpack.is_dir():
+        for f in list(cpack.iterdir()):
+            f.rename(elsewhere / f.name)
+        for d in (clone / ".git" / "objects").iterdir():
+            if d.is_dir() and len(d.name) == 2:
+                for f in list(d.iterdir()):
+                    f.unlink()
+        with pytest.raises(GitError, match="object store was emptied or moved"):
+            ensure_regular_git_dir(clone)
+
+    # a missing HEAD
+    head = git_dir / "HEAD"
+    head_text = head.read_text()
+    head.unlink()
+    with pytest.raises(GitError, match=r"\.git/HEAD is missing"):
+        ws.git("status")
+    head.write_text(head_text)
+    ensure_regular_git_dir(root)
+
+    # a reftable repository is not one the kernel made; its refs live in
+    # .git/reftable/ where none of the ref reads would see them
+    (git_dir / "reftable").mkdir()
+    with pytest.raises(GitError, match="reftable"):
+        ensure_regular_git_dir(root)
+    (git_dir / "reftable").rmdir()
+    rt = tmp_path / "reftable-repo"
+    rt.mkdir()
+    init = subprocess.run(
+        ["git", "init", "-q", "-b", "main", "--ref-format=reftable", str(rt)],
+        capture_output=True,
+        text=True,
+    )
+    if init.returncode == 0 and (rt / ".git" / "reftable").exists():  # git >= 2.45
+        with pytest.raises(GitError, match="reftable"):
+            ensure_regular_git_dir(rt)
+    ensure_regular_git_dir(root)
+
+    # .git replaced by a gitdir file pointing at a session-owned repository
+    real = tmp_path / "moved.git"
+    git_dir.rename(real)
+    (root / ".git").write_text(f"gitdir: {real}\n")
+    with pytest.raises(GitError, match=r"\.git is not a directory"):
+        ws.git("status")
+    (root / ".git").unlink()
+    real.rename(git_dir)
+    ensure_regular_git_dir(root)
+
+
+def test_snapshot_ops_refuse_a_reshaped_git_without_writing(tmp_path: Path) -> None:
+    """snapshot_tree and drop_snapshot drive git directly (their own index and
+    refs), so they check the workspace themselves: a symlinked refs dir would
+    carry a ref write or deletion outside the workspace."""
+    import os
+
+    from autoresearch.dispatch import drop_snapshot, snapshot_tree
+    from autoresearch.github import GitError, Workspace
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "f.txt").write_text("x\n")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    ws = Workspace(root=root)
+    snap = snapshot_tree(ws, base)  # a clean repo snapshots as before
+    assert _git(root, "rev-parse", snap.ref).strip() == snap.commit
+    # the session replaces refs/ with a link to a directory it controls
+    refs = root / ".git" / "refs"
+    outside = tmp_path / "outside-refs"
+    refs.rename(outside)
+    os.symlink(outside, refs)
+    with pytest.raises(GitError, match=r"\.git/refs is a symlink"):
+        snapshot_tree(ws, base)
+    drop_snapshot(ws, snap)  # logged, never raises, and never writes through the link
+    assert (outside / "dispatch" / snap.ref.rsplit("/", 1)[1]).exists()
+    os.unlink(refs)
+    outside.rename(refs)
+    drop_snapshot(ws, snap)
+    assert not (refs / "dispatch" / snap.ref.rsplit("/", 1)[1]).exists()
+
+
+def test_a_refused_wake_ends_the_parked_run_with_the_tampering_note(tmp_path: Path) -> None:
+    from autoresearch.attempt import _end_refused_wake
+    from autoresearch.github import GitError
+    from autoresearch.runstate import load_record, save_record
+
+    run_root = tmp_path / "state"
+    record = RunRecord(
+        run_id="tsp-9",
+        target="org/pilot",
+        task_title="t",
+        benchmark="tsp",
+        state="waiting",
+        resume_session_id="s1",
+        agent_id="agent-02",
+        stage={"phase": "candidate", "base_sha": "a" * 40, "candidate_sha": "b" * 40},
+    )
+    save_record(run_root, record, 1.0)
+    out = _end_refused_wake(
+        run_root,
+        record,
+        GitError("workspace .git altered by the session: .git/objects/pack is a symlink"),
+        2.0,
+        (),
+    )
+    assert out.outcome == "attempt-error"
+    ended = load_record(run_root, "tsp-9")
+    assert ended.state == "ended" and ended.ending == "aborted"
+    assert "objects/pack is a symlink" in (ended.ending_note or "")
+    assert ended.stage == {}
+
+
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
     from autoresearch.attempt import _without_line_memory
 
