@@ -951,11 +951,14 @@ def _armed_wake_lost(
     (Slurm reports the dependency as never satisfiable, or the afterany was
     lost). Cancel it so the sweep redelivers; the lease is then reaped.
 
-    A wake the SITE moved off the partition it was submitted to is not
-    coming either — on Torch a pending job can be shifted to a lower-tier
-    catch-all partition and starve there for hours (2026-09-02, wake
-    16787511) — so a holder whose partition is not the one the wake recipe
-    asked for is cancelled the same way and redelivered onto the right one."""
+    A wake the SITE moved off the partition it was submitted to may be
+    starving there — on Torch a pending job can be shifted to a lower-tier
+    partition (2026-09-02, wake 16787511 sat on `all` for hours) — but
+    relocation alone is routine (jobs move to `cs` while still waiting on
+    their dependencies and start on time). So a relocated holder counts as
+    lost only once every job it waited on is terminal AND the grace window
+    has run out without it starting; then it is cancelled and redelivered
+    onto the requested partition."""
     if not lease.holder_job_id:
         return False
     job_ids = _poll_targets(record)
