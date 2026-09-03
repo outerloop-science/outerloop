@@ -246,3 +246,32 @@ def test_pause_wins_over_the_walltime_margin(tmp_path: Path) -> None:
     assert not (shimlog / "sbatch").exists() and not (shimlog / "ticks").exists()
     log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
     assert "pause sentinel present" in log and "handing over" not in log
+
+
+def test_the_handover_keeps_retrying_a_failed_submission_through_the_margin(tmp_path: Path) -> None:
+    """A scheduler outage inside the margin that clears before walltime still
+    yields a successor: the handover retries instead of giving up (r3)."""
+    from datetime import datetime, timedelta
+
+    home, root, bindir, shimlog = _install(tmp_path)
+    soon = (datetime.now() + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    (bindir / "scontrol").write_text(
+        f'#!/bin/sh\necho "JobId=42 EndTime={soon} JobState=RUNNING"\n'
+    )
+    # sbatch fails its first four calls (the loop's 3 attempts + 1), then works
+    (bindir / "sbatch").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{shimlog}/sbatch"
+n=$(wc -l < "{shimlog}/sbatch" | tr -d " ")
+[ "$n" -le 4 ] && exit 1
+echo "$((500 + n))"
+"""
+    )
+    proc = _run_chain(
+        home, _resident_env(home, root, bindir, AUTORESEARCH_RESIDENT_RETRY_S="0"), timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert len((shimlog / "sbatch").read_text().splitlines()) == 5
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    assert "submit failed at handover; retrying" in log
+    assert "handing over to successor 505" in log

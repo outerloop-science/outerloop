@@ -20,6 +20,7 @@ resident_minutes="${AUTORESEARCH_RESIDENT_MINUTES:-360}"
 cadence_s="${AUTORESEARCH_RESIDENT_CADENCE_S:-$((${AUTORESEARCH_CADENCE_MIN:-30} * 60))}"
 tick_timeout="${AUTORESEARCH_TICK_TIMEOUT:-15m}"
 margin_s="${AUTORESEARCH_RESIDENT_MARGIN_S:-1200}"
+retry_s="${AUTORESEARCH_RESIDENT_RETRY_S:-20}"  # backoff unit for submit retries (tests: 0)
 self="${SLURM_JOB_ID:-}"
 shim="$AUTORESEARCH_HOME/scripts/tick_chain.sbatch"
 sentinel="$AUTORESEARCH_ROOT/PAUSE"
@@ -49,7 +50,7 @@ submit_successor() {
             printf '%s' "${out%%;*}"
             return 0
         fi
-        sleep $((attempt * 20))
+        sleep $((attempt * retry_s))
     done
     return 1
 }
@@ -81,10 +82,18 @@ while :; do
         exit 0
     fi
     if [ $((end_epoch - now)) -le "$margin_s" ]; then
-        # never end without a successor: one more attempt on the way out
-        if [ -z "$successor" ] && successor=$(submit_successor); then
-            echo "resident: successor $successor queued at handover"
-        fi
+        # never end without a successor: keep trying through the margin (a
+        # scheduler outage that clears before walltime still gets a
+        # successor), giving up only two minutes before the job is killed
+        while [ -z "$successor" ] && [ $((end_epoch - $(date +%s))) -gt 120 ]; do
+            if successor=$(submit_successor); then
+                echo "resident: successor $successor queued at handover"
+            else
+                successor=""
+                echo "resident: successor submit failed at handover; retrying"
+                sleep $((retry_s + retry_s / 2))
+            fi
+        done
         if [ -n "$successor" ]; then
             echo "resident: walltime margin reached; handing over to successor $successor"
         else
