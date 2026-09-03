@@ -915,36 +915,63 @@ _SECTION_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9.-]+)")
 
 
 # The parts of a workspace's .git the kernel relies on after a session ran.
-# Any of them replaced by a symlink (or gone) means the session reached into
-# the repository's plumbing: 2026-09-03 an author copied the pack files into
-# the container's private /tmp and symlinked objects/pack there, so the
-# kernel's git on the host found refs with no objects behind them.
-GIT_DIR_INTEGRITY_PATHS = ("objects", "objects/pack", "refs", "HEAD", "index", "config")
+# 2026-09-03 an author copied the pack files into the container's private
+# /tmp and symlinked objects/pack there, so the kernel's git on the host
+# found refs with no objects behind them. The guard runs inside every kernel
+# git call (Workspace.git / git_network), so no path can skip it.
+_GIT_REGULAR_FILES = ("HEAD", "config")  # must exist and be regular files
+_GIT_REGULAR_IF_PRESENT = ("index", "config.worktree", "packed-refs", "MERGE_HEAD", "FETCH_HEAD")
+_GIT_DIRS = ("objects", "refs")  # must exist and be directories
+_GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info")
+
+
+def _altered(what: str) -> GitError:
+    return GitError(f"workspace .git altered by the session: {what}")
 
 
 def ensure_regular_git_dir(root: Path | None) -> None:
-    """Refuse a workspace whose .git was altered by the session: `.git` and
-    the entries the kernel reads must be regular (no symlinks), and the
-    object store and refs must be directories. Raises GitError with the
-    offending path; a workspace without .git is left to git's own error."""
+    """Refuse a workspace whose .git a session reshaped. `.git` must be a
+    real directory (no symlink, no gitdir file); HEAD and config must be
+    regular files and the other control files regular when present (a FIFO
+    would hang the next git call); objects and refs must be directories, as
+    must objects/pack when present; object alternates are never ours. A
+    root with no .git at all is left to git's own error."""
     if root is None:
         return
     git_dir = Path(root) / ".git"
-    if git_dir.is_symlink():
-        raise GitError(f"workspace .git altered by the session: {git_dir} is a symlink")
-    if not git_dir.is_dir():
+    try:
+        st = os.lstat(git_dir)
+    except OSError:
         return
-    for rel in GIT_DIR_INTEGRITY_PATHS:
-        path = git_dir / rel
-        if path.is_symlink():
-            raise GitError(f"workspace .git altered by the session: .git/{rel} is a symlink")
-        if rel in ("objects", "objects/pack", "refs"):
-            if rel == "objects/pack" and not path.exists():
-                continue  # a fresh repo with only loose objects has no pack dir
-            if not path.is_dir():
-                raise GitError(
-                    f"workspace .git altered by the session: .git/{rel} is not a directory"
-                )
+    if stat.S_ISLNK(st.st_mode):
+        raise _altered(".git is a symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        raise _altered(".git is not a directory (a gitdir file)")
+
+    def check(rel: str, want_dir: bool, required: bool) -> None:
+        try:
+            st = os.lstat(git_dir / rel)
+        except OSError:
+            if required:
+                raise _altered(f".git/{rel} is missing") from None
+            return
+        if stat.S_ISLNK(st.st_mode):
+            raise _altered(f".git/{rel} is a symlink")
+        if want_dir and not stat.S_ISDIR(st.st_mode):
+            raise _altered(f".git/{rel} is not a directory")
+        if not want_dir and not stat.S_ISREG(st.st_mode):
+            raise _altered(f".git/{rel} is not a regular file")
+
+    for rel in _GIT_REGULAR_FILES:
+        check(rel, want_dir=False, required=True)
+    for rel in _GIT_REGULAR_IF_PRESENT:
+        check(rel, want_dir=False, required=False)
+    for rel in _GIT_DIRS:
+        check(rel, want_dir=True, required=True)
+    for rel in _GIT_DIRS_IF_PRESENT:
+        check(rel, want_dir=True, required=False)
+    if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
+        raise _altered("object alternates are present")
 
 
 def _ensure_regular_config(root: Path | None) -> None:
@@ -1111,7 +1138,9 @@ class Workspace:
 
     def git(self, *args: str) -> str:
         """Run a local git subcommand: no credential, no child-spawning config,
-        repo-defined filter drivers neutralized."""
+        repo-defined filter drivers neutralized. A session-reshaped .git is
+        refused before git runs (ensure_regular_git_dir)."""
+        ensure_regular_git_dir(self.root)
         _ensure_regular_config(self.root)
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)

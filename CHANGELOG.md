@@ -16,10 +16,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A session that alters the workspace's `.git` (a symlinked object store,
-  pack directory, refs, HEAD, index, or config) now ends the run with a note
-  naming the tampering, at the first kernel git operation after the session,
-  instead of a later git error. (2026-09-03: an author moved the pack files
+- A session that reshapes the workspace's `.git` (a symlink or gitdir file
+  in place of `.git`, a symlinked or missing object store, pack directory, or
+  refs, a FIFO or missing control file, object alternates) now ends the run
+  with a note naming the tampering. Every kernel git call checks, so no
+  path, wake, or follow-up can reach a later bare git error instead. (2026-09-03: an author moved the pack files
   into the container's private /tmp and symlinked them; the kernel's git saw
   refs with no objects.)
 - A line snapshot now builds on a newer remote version of the line instead

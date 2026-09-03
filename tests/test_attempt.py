@@ -4466,12 +4466,12 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     assert _paths_changed_from_base(ws, base_sha, True) == []
 
 
-def test_a_session_that_symlinks_the_object_store_is_refused_with_a_plain_note(
-    tmp_path: Path,
-) -> None:
+def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path) -> None:
     """2026-09-03: an author copied .git/objects/pack into the container's /tmp
-    and symlinked it, leaving the kernel's git with refs and no objects. The
-    kernel must name the tampering instead of failing on a later git call."""
+    and symlinked it, leaving the kernel's git with refs and no objects. Every
+    kernel git call must name the tampering instead of failing on plumbing;
+    the same goes for a gitdir file, a FIFO where a control file was, a
+    missing control file, and object alternates."""
     import os
 
     from autoresearch.attempt import _paths_changed_from_base
@@ -4484,31 +4484,65 @@ def test_a_session_that_symlinks_the_object_store_is_refused_with_a_plain_note(
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
     base = _git(root, "rev-parse", "HEAD").strip()
+    ws = Workspace(root=root)
     ensure_regular_git_dir(root)  # a clean clone passes
-    # the session's move: pack files into a private tmp, a symlink left behind
-    pack = root / ".git" / "objects" / "pack"
-    _git(root, "gc", "-q")  # make sure a pack dir with content exists
+    assert ws.git("rev-parse", "HEAD").strip() == base
+    git_dir = root / ".git"
     elsewhere = tmp_path / "private-tmp"
     elsewhere.mkdir()
+
+    # the session's move: pack files into a private tmp, a symlink left behind
+    _git(root, "gc", "-q")
+    pack = git_dir / "objects" / "pack"
     for f in pack.iterdir():
         f.rename(elsewhere / f.name)
     pack.rmdir()
     os.symlink(elsewhere, pack)
     with pytest.raises(GitError, match=r"altered by the session: \.git/objects/pack is a symlink"):
-        ensure_regular_git_dir(root)
+        ws.git("status")  # EVERY kernel git call refuses
     with pytest.raises(GitError, match="altered by the session"):
-        _paths_changed_from_base(Workspace(root=root), base, False)
-    # other plumbing is covered too
+        _paths_changed_from_base(ws, base, False)
     os.unlink(pack)
     pack.mkdir()
-    head = root / ".git" / "HEAD"
+    for f in elsewhere.iterdir():
+        f.rename(pack / f.name)
+    ensure_regular_git_dir(root)
+
+    # object alternates pointing anywhere
+    alt = git_dir / "objects" / "info" / "alternates"
+    alt.parent.mkdir(exist_ok=True)
+    alt.write_text(str(elsewhere) + "\n")
+    with pytest.raises(GitError, match="alternates"):
+        ws.git("status")
+    alt.unlink()
+
+    # a FIFO where the index was would hang the next git call
+    index = git_dir / "index"
+    index_bytes = index.read_bytes()
+    index.unlink()
+    os.mkfifo(index)
+    with pytest.raises(GitError, match=r"\.git/index is not a regular file"):
+        ws.git("status")
+    index.unlink()
+    index.write_bytes(index_bytes)
+
+    # a missing HEAD
+    head = git_dir / "HEAD"
     head_text = head.read_text()
     head.unlink()
-    os.symlink(elsewhere / "nope", head)
-    with pytest.raises(GitError, match=r"\.git/HEAD is a symlink"):
-        ensure_regular_git_dir(root)
-    head.unlink()
+    with pytest.raises(GitError, match=r"\.git/HEAD is missing"):
+        ws.git("status")
     head.write_text(head_text)
+    ensure_regular_git_dir(root)
+
+    # .git replaced by a gitdir file pointing at a session-owned repository
+    real = tmp_path / "moved.git"
+    git_dir.rename(real)
+    (root / ".git").write_text(f"gitdir: {real}\n")
+    with pytest.raises(GitError, match=r"\.git is not a directory"):
+        ws.git("status")
+    (root / ".git").unlink()
+    real.rename(git_dir)
     ensure_regular_git_dir(root)
 
 
