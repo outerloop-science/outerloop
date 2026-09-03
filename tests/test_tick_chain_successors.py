@@ -24,3 +24,41 @@ def test_successors_are_singleton_on_the_grid_without_a_deadline() -> None:
     assert '--begin="$begin"' in line
     assert "--deadline" not in line and "--deadline" not in CHAIN
     assert '--partition="${AUTORESEARCH_PARTITION:-}"' in line
+
+
+def _grid(epoch_now: int, cadence_s: int, pending: int, i: int) -> int:
+    """Run the chain's OWN slot arithmetic (the exact lines from the script) in
+    bash with the given inputs and return begin_epoch."""
+    import subprocess
+
+    lines = [
+        line.strip()
+        for line in CHAIN.splitlines()
+        if line.strip().startswith(("next_slot=", "begin_epoch="))
+    ]
+    assert len(lines) == 2, lines
+    script = (
+        f"epoch_now={epoch_now}; cadence_s={cadence_s}; pending={pending}; i={i}\n"
+        + "\n".join(lines)
+        + "\necho $begin_epoch\n"
+    )
+    return int(
+        subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True).stdout
+    )
+
+
+def test_successors_land_on_the_cadence_grid_after_the_queued_ones() -> None:
+    cadence = 30 * 60
+    now = 1_900_000_000 + 7 * 60 + 13  # 7m13s past a slot
+    first = _grid(now, cadence, pending=0, i=1)
+    assert first % cadence == 0 and first > now  # the NEXT slot, on the grid
+    assert first - now < cadence
+    # with one successor already queued, the new one takes the slot after it
+    assert _grid(now, cadence, pending=1, i=1) == first + cadence
+    # two top-ups in one tick occupy consecutive slots
+    assert _grid(now, cadence, pending=0, i=2) == first + cadence
+    # exactly on a slot boundary, the next slot is still strictly in the future
+    on_slot = 1_900_000_000 - (1_900_000_000 % cadence)
+    assert _grid(on_slot, cadence, pending=0, i=1) == on_slot + cadence
+    # short cadences keep the same grid rule
+    assert _grid(now, 6 * 60, pending=0, i=1) % (6 * 60) == 0
