@@ -20,6 +20,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
+from fractions import Fraction
 from pathlib import Path
 from secrets import randbits
 from typing import TYPE_CHECKING, Protocol
@@ -634,6 +635,33 @@ def benchmark_floor(
     return max(floors) if floors else 0.0
 
 
+def reaches_floor(
+    prior: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None,
+    min_delta_rel: float | None,
+) -> bool:
+    """Inclusive floor test in exact decimal arithmetic. Metric values and
+    floors arrive as decimal text (eval JSON, the contract's YAML), so the
+    comparison is made on the decimals that were written, not on their
+    binary approximations: 0.3 - 0.2 is exactly 0.1 here, and there is no
+    tolerance for a short delta to hide in at any scale. Non-finite inputs
+    fail closed: an infinite floor (`min_delta: .inf` is valid YAML) is
+    never reached, and a NaN anywhere is not a measurement. The caller's
+    float floor is only for messages."""
+    if not all(math.isfinite(v) for v in (prior, candidate, min_delta or 0, min_delta_rel or 0)):
+        return False
+    p, c = Fraction(repr(prior)), Fraction(repr(candidate))
+    delta = c - p if direction == "max" else p - c
+    floors = []
+    if min_delta:
+        floors.append(Fraction(repr(min_delta)))
+    if min_delta_rel:
+        floors.append(Fraction(repr(min_delta_rel)) * abs(p))
+    return delta >= max(floors) if floors else True
+
+
 def clears_min_delta(
     prior_best: float,
     candidate: float,
@@ -641,17 +669,20 @@ def clears_min_delta(
     min_delta: float | None,
     min_delta_rel: float | None = None,
 ) -> bool:
-    """Cross-seed comparisons on a resampled pool must clear the
+    """Cross-seed comparisons on a resampled pool must reach the
     benchmark's noise floor: the recorded best was measured under a
-    different seed, so a delta inside the floor is pool luck, not progress.
-    Same-seed paired comparisons never call this."""
+    different seed, so a delta below the floor is pool luck, not progress.
+    The floor is INCLUSIVE — a delta equal to it is credited: the contract
+    declares the smallest movement it calls real, and on a quantized metric
+    (a step count measured every N steps) the floor IS a reachable value,
+    so a strict bar silently demands the next quantum (gpt-speedrun,
+    2026-09-03: three candidates measured exactly one floor better than the
+    base were all discarded). Same-seed paired comparisons never call this."""
     if not (min_delta or min_delta_rel):
         return True  # no floor declared
     if not (math.isfinite(prior_best) and math.isfinite(candidate)):
         return False  # a declared floor with non-finite inputs fails closed
-    floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
-    delta = candidate - prior_best if direction == "max" else prior_best - candidate
-    return delta > floor
+    return reaches_floor(prior_best, candidate, direction, min_delta, min_delta_rel)
 
 
 def suite_regressed(
@@ -909,9 +940,11 @@ def measure_and_decide(
     floor = benchmark_floor(baseline, bench.min_delta, bench.min_delta_rel)
     if floor:
         delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
-        # STRICTLY greater, matching clears_min_delta: a delta exactly at the
-        # floor is indistinguishable from the noise the floor models
-        if delta <= floor:
+        # INCLUSIVE, matching clears_min_delta: the floor is the smallest
+        # movement the contract calls real, so a delta equal to it clears
+        if not reaches_floor(
+            baseline, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
+        ):
             return AttemptResult(
                 outcome="no-improvement",
                 note=(

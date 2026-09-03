@@ -749,10 +749,27 @@ def test_relative_floor_scales_with_the_level() -> None:
 
 
 def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
-    from autoresearch.orchestrator import clears_min_delta
+    from autoresearch.orchestrator import clears_min_delta, reaches_floor
 
     assert clears_min_delta(12.0, 11.4, "min", 0.5)  # 0.6 > 0.5
-    assert not clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor
+    assert clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor: credited
+    # binary floats: 0.3 - 0.2 is 0.09999999999999998, still an exact-floor
+    # improvement in the contract's decimal terms (absolute and relative)
+    assert clears_min_delta(0.3, 0.2, "min", 0.1)
+    assert clears_min_delta(0.2, 0.3, "max", 0.1)
+    assert clears_min_delta(0.3, 0.27, "min", None, 0.1)  # floor 0.03 vs 0.02999…
+    # a delta genuinely short of the floor is not rescued by the tolerance
+    assert not clears_min_delta(0.3, 0.2000001, "min", 0.1)
+    assert not clears_min_delta(0.3, 0.2700001, "min", None, 0.1)
+    # exact decimal arithmetic: no tolerance for a short delta at any scale
+    assert not clears_min_delta(1_000_000_000.0, 0.0009, "min", 999_999_999.9991 + 0.0009)
+    assert clears_min_delta(1_000_000_000.0, 0.0, "min", 1_000_000_000.0)
+    assert not reaches_floor(1_000_000_000.0, 0.0009, "min", 1_000_000_000.0, None)
+    # an infinite floor (`min_delta: .inf` parses) is never reached, never a crash
+    assert not clears_min_delta(10.0, 0.0, "min", float("inf"))
+    assert not reaches_floor(10.0, 0.0, "min", float("inf"), None)
+    assert not reaches_floor(10.0, 0.0, "min", float("nan"), None)
+    assert not clears_min_delta(12.0, 11.6, "min", 0.5)  # 0.4 < 0.5: pool luck
     assert clears_min_delta(0.54, 0.65, "max", 0.10)
     assert not clears_min_delta(0.54, 0.60, "max", 0.10)  # inside pool luck
     assert clears_min_delta(12.0, 11.9, "min", None)  # no floor declared
@@ -1691,10 +1708,43 @@ def test_gate_publishes_a_floor_clearing_delta(tmp_path: Path) -> None:
     assert result.outcome == "improved"
 
 
-def test_gate_rejects_an_exact_floor_delta(tmp_path: Path) -> None:
-    # boundary matches clears_min_delta: STRICTLY greater publishes — a
-    # delta exactly at the floor is the noise the floor models (terra #169)
+def test_gate_credits_an_exact_floor_delta_and_rejects_below_it(tmp_path: Path) -> None:
+    # boundary matches clears_min_delta: the floor is INCLUSIVE — the
+    # contract's floor is the smallest movement it calls real, so a delta
+    # equal to it publishes; anything below it is the noise the floor models
     result, _, _ = run_climb(tmp_path, [13.876, 13.376], contract=FLOOR_CONTRACT)
+    assert result.outcome == "improved"
+    result, _, _ = run_climb(tmp_path, [13.876, 13.4], contract=FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
+    assert "inside the contract's significance floor" in (result.note or "")
+
+
+DECIMAL_FLOOR_CONTRACT = CONTRACT.replace(
+    "    direction: min\n",
+    "    direction: min\n    min_delta: 0.1\n",
+    1,
+)
+
+
+INF_FLOOR_CONTRACT = CONTRACT.replace(
+    "    direction: min\n",
+    "    direction: min\n    min_delta: .inf\n",
+    1,
+)
+
+
+def test_gate_rejects_under_an_infinite_floor_instead_of_crashing(tmp_path: Path) -> None:
+    result, _, _ = run_climb(tmp_path, [13.876, 1.0], contract=INF_FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
+    assert "inside the contract's significance floor" in (result.note or "")
+
+
+def test_gate_credits_an_exact_decimal_floor_despite_binary_rounding(tmp_path: Path) -> None:
+    # 0.3 - 0.2 is 0.09999999999999998 in binary; the contract said 0.1 and
+    # the candidate moved 0.1, so the gate must credit it
+    result, _, _ = run_climb(tmp_path, [0.3, 0.2], contract=DECIMAL_FLOOR_CONTRACT)
+    assert result.outcome == "improved"
+    result, _, _ = run_climb(tmp_path, [0.3, 0.2001], contract=DECIMAL_FLOOR_CONTRACT)
     assert result.outcome == "no-improvement"
 
 
