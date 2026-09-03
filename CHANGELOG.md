@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- `autoresearch start`, the one launch command: with `sbatch` on PATH it
+  submits the resident tick (walltime, job name, and exports filled in from
+  flags, the environment, or `~/.config/autoresearch/.env`); otherwise, or
+  with `AUTORESEARCH_COMPUTE=local`, it runs the local loop in the
+  foreground. `autoresearch tick` forwards to the tick entry.
+
 ### Changed
 
 - A candidate is now credited when its improvement equals the contract's

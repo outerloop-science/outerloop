@@ -77,6 +77,10 @@ resident job (cpu_short, --time=06:00:00 passed at start, singleton)
 - **Logs.** The loop reopens `logs/tick-YYYYMMDD.log` per iteration, so the
   daily files keep their shape and the watchdog keeps its heartbeat.
 
+Starting it is `autoresearch start` (`src/autoresearch/cli.py`): it fills in the
+walltime, job name, placement, and exports from flags, the environment, or
+`~/.config/autoresearch/.env`, and refuses to submit beside a live resident.
+
 ## What it does not fix
 
 If the resident job itself is pending (first start, or a handover during

@@ -18,9 +18,10 @@
 #   AUTORESEARCH_RESIDENT=1   run as the RESIDENT tick (design/resident-tick.md):
 #                             one long-lived job that loops deploy -> tick ->
 #                             sleep, with a single afterany:self successor.
-#                             Start it with an explicit walltime, e.g.
+#                             `autoresearch start` submits it (walltime,
+#                             name, and exports filled in); by hand:
 #                             `sbatch --time=360 --job-name=autoresearch-resident
-#                             --export=ALL,AUTORESEARCH_RESIDENT=1,...`; the
+#                             --export=ALL,AUTORESEARCH_RESIDENT=1,...`. The
 #                             per-cadence chain drains itself once a resident
 #                             job exists. Unset = the per-cadence chain below.
 # Further config also loads from ~/.config/autoresearch/.env (0600) each tick, so

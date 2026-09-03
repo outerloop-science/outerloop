@@ -20,6 +20,9 @@ dependencies = [
 #   github   : PyGithub or gh-CLI wrappers
 #   compute  : (stdlib subprocess over sbatch/squeue; no dep expected)
 
+[project.scripts]
+autoresearch = "autoresearch.cli:main"
+
 [project.optional-dependencies]
 # GitHub App auth: RS256 signing for App JWTs (docs/design/github-app-auth.md).
 # Install where AUTORESEARCH_GITHUB_APP_FILE is set; the PAT path needs nothing.
