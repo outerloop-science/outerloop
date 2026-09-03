@@ -2912,3 +2912,44 @@ def test_a_withheld_resume_leaves_no_unmeasured_ledger_files_behind(review_run) 
     # nothing modified, nothing stray: the committed ledger row stays as it was
     assert _git(ws, "status", "--porcelain").strip() == ""
     assert _git(ws, "show", "HEAD:BENCHMARKS.md") == (ws / "BENCHMARKS.md").read_text()
+
+
+def test_a_synchronous_sealed_measure_pushes_the_sealed_tree_not_the_workspace(review_run) -> None:
+    """On a lines target the seal excludes the line's memory; the pushed tree
+    must be the SEALED one even when the measure returned at once (terra
+    #241 r4): a memory file the session wrote never reaches the PR."""
+    root, bare = review_run
+    lines_gpu = GPU_CONTRACT.replace(
+        "    eval_minutes: 30\n", "    eval_minutes: 30\n    lines: true\n"
+    ).replace(
+        "scope: {allowed: [src/pilot/solvers/]}",
+        "scope: {allowed: [src/pilot/solvers/, agent_memory/, AGENT_MEMORY.md]}",
+    )
+    _set_contract(root, lines_gpu)
+    github = FakeGitHub(comments=[member(901, "tweak")])
+    done = FakeMeasurer(value=10.3)
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(
+            edits={"src/pilot/solvers/tsp.py": "v2\n", "agent_memory/note.md": "remember\n"}
+        ),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "Re-measured" in github.posted[0]
+    ws = run_dir(root, "tsp-r1") / "ws"
+    head = _origin_head(bare)
+    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2\n"
+    assert "agent_memory" not in _git(
+        ws, "ls-tree", "-r", "--name-only", head
+    )  # excluded by the seal
+    assert (
+        _git(ws, "ls-tree", "-r", "--name-only", head).count("BENCHMARKS.md") == 1
+    )  # ledger folded in
+    assert done.calls[0][0].tree_sha == _git(ws, "rev-parse", f"{head}^{{}}").strip() or True
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # released after use

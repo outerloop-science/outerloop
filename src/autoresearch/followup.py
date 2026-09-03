@@ -676,6 +676,7 @@ def _respond(
     measured_note = ""
     change_pushed = False
     pushed_head = ""  # the exact sha a code-changing push put on the PR
+    sealed_snap: Any = None  # a synchronous sealed measure's snapshot, released after the reply
 
     def _matches_base(path: str) -> bool:
         # content identical to origin/<base> is the base branch's own (a
@@ -924,7 +925,7 @@ def _respond(
                 # `gpus:`, never from the author. A synchronous compute
                 # (LocalCompute) returns the value here; a cluster parks.
                 try:
-                    sealed = _seal_and_measure(
+                    sealed, sealed_snap = _seal_and_measure(
                         ws, run_root, run_id, dispatch, bench, run_seed, workspace
                     )
                 except _RemeasureParked as pend:
@@ -950,9 +951,9 @@ def _respond(
                 except Exception as exc:
                     # a failed dispatch (eval error, no GPU lane, compute
                     # outage) is the failed-eval path: reverted and said
-                    dispatched_error, sealed = exc, None
+                    dispatched_error, sealed, sealed_snap = exc, None, None
             else:
-                sealed = None
+                sealed, sealed_snap = None, None
             try:
                 if dispatched_error is not None:
                     raise dispatched_error  # the same failed-eval path as inline
@@ -977,7 +978,14 @@ def _respond(
                     f"Error: {redact(str(exc), secrets)[:200]})_"
                 )
             else:
-                if _tree_hash(ws) != pre_eval_tree:
+                if sealed_snap is not None:
+                    # measured as a job on the SEALED tree: make that tree the
+                    # branch head now, so the ledger lands on it and the push
+                    # carries exactly what was measured — the live workspace
+                    # may hold content the seal excluded (line memory)
+                    ws.git("checkout", "-f", "-B", branch, sealed_snap.commit)
+                    ws.git("clean", "-fdq")
+                if sealed_snap is None and _tree_hash(ws) != pre_eval_tree:
                     # same drift rule as the climb: the pushed tree must be
                     # exactly the measured tree
                     _revert_response()
@@ -1044,22 +1052,28 @@ def _respond(
                         # a session that committed its work (a resolved merge)
                         # leaves nothing to stage; the committed diff was
                         # already scope-checked above, so push what is there
-                        try:
-                            ws.commit_all(
-                                f"{verb}: address review feedback "
-                                f"({bench.metric}="
-                                f"{fmt_metric(candidate, bench.display_digits)})"
-                                f"\n\nAgent: {record.agent_id}",
-                                author=bot_login,
-                                forbidden=lambda p: (
-                                    p not in PROGRESS_PATHS
-                                    and bool(scope_check([p], post_contract))
-                                    and not _matches_base(p)
-                                ),
-                            )
-                        except NothingToCommit:
-                            if not committed:
-                                raise
+                        message = (
+                            f"{verb}: address review feedback "
+                            f"({bench.metric}="
+                            f"{fmt_metric(candidate, bench.display_digits)})"
+                            f"\n\nAgent: {record.agent_id}"
+                        )
+                        if sealed_snap is not None:
+                            _commit_sealed_tree(ws, branch, sealed_snap.commit, bot_login, message)
+                        else:
+                            try:
+                                ws.commit_all(
+                                    message,
+                                    author=bot_login,
+                                    forbidden=lambda p: (
+                                        p not in PROGRESS_PATHS
+                                        and bool(scope_check([p], post_contract))
+                                        and not _matches_base(p)
+                                    ),
+                                )
+                            except NothingToCommit:
+                                if not committed:
+                                    raise
                         pushed_head = ws.git("rev-parse", "HEAD").strip()
                         ws.push(branch)
                         change_pushed = True
@@ -1077,6 +1091,10 @@ def _respond(
                             + floor_note
                         )
 
+    if sealed_snap is not None:
+        from autoresearch.dispatch import drop_snapshot
+
+        drop_snapshot(ws, sealed_snap)
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
     if change_pushed:
         try:
@@ -1459,6 +1477,27 @@ def _update_ledger(
 FOLLOWUP_MEASURE = "followup"
 
 
+def _commit_sealed_tree(
+    ws: Workspace, branch: str, sealed_sha: str, bot_login: str, message: str
+) -> None:
+    """Make the SEALED commit the branch head, fold the ledger update the
+    caller wrote into it (one amended commit with the standard message), so
+    the pushed tree is exactly the measured tree plus the ledger row — never
+    the live workspace, which may hold content the seal excluded."""
+    ws.git("add", "-A")
+    ws.git(
+        "-c",
+        f"user.name={bot_login}",
+        "-c",
+        f"user.email={bot_login}@users.noreply.github.com",
+        "commit",
+        "-q",
+        "--amend",
+        "-m",
+        message,
+    )
+
+
 def _followup_measure(bench: Any, tree_sha: str, run_seed: int) -> Any:
     """The one measure a follow-up's change needs: the sealed tree under the
     contract command at this run's fresh seed. Built identically at park and
@@ -1493,11 +1532,13 @@ def _seal_and_measure(
     bench: Any,
     run_seed: int,
     workspace: Path,
-) -> float:
+) -> tuple[float, Any]:
     """Seal the workspace's change as a commit on the PR's current head and
-    measure it through the dispatched measurer. Returns the value when the
-    compute is synchronous; raises `_RemeasureParked` when the job is queued
-    (the caller parks); an `EvalError` propagates with the snapshot released."""
+    measure it through the dispatched measurer. Returns (value, snapshot)
+    when the compute is synchronous — the snapshot is KEPT so the caller
+    pushes exactly the measured tree, and releases it; raises
+    `_RemeasureParked` when the job is queued (the caller parks); any other
+    failure propagates with the snapshot released."""
     from autoresearch.attempt import LINE_MEMORY_PATHS
     from autoresearch.dispatch import drop_snapshot, snapshot_tree
     from autoresearch.measure import MeasurementPending
@@ -1519,8 +1560,7 @@ def _seal_and_measure(
         # retained ref must never outlive the attempt (terra #241 r1)
         drop_snapshot(ws, snap)
         raise
-    drop_snapshot(ws, snap)
-    return float(vals[FOLLOWUP_MEASURE])
+    return float(vals[FOLLOWUP_MEASURE]), snap
 
 
 def _park_remeasure(
@@ -1731,16 +1771,11 @@ def _resume_measure(
     prior, floor_note = _update_ledger(
         workspace, bench, contract, candidate, run_id, created, run_seed, record.target
     )
-    ws.git("add", "-A")
-    ws.git(
-        "-c",
-        f"user.name={bot_login}",
-        "-c",
-        f"user.email={bot_login}@users.noreply.github.com",
-        "commit",
-        "-q",
-        "--amend",
-        "-m",
+    _commit_sealed_tree(
+        ws,
+        branch,
+        candidate_sha,
+        bot_login,
         f"agent: address review feedback ({bench.metric}="
         f"{fmt_metric(candidate, bench.display_digits)})\n\nAgent: {record.agent_id}",
     )
