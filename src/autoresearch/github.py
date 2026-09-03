@@ -995,13 +995,20 @@ def ensure_regular_git_dir(root: Path | None) -> None:
                     if entry.is_symlink():
                         shown = f"{rel}/{entry.name}" if rel else entry.name
                         raise _altered(f".git/{shown} is a symlink")
+        except PermissionError:
+            raise _altered(f".git/{rel or '.'} is unreadable") from None
         except OSError:
             continue
+
+    def _unreadable(err: OSError) -> None:
+        shown = os.path.relpath(err.filename or "?", git_dir)
+        raise _altered(f".git/{shown} is unreadable") from None
+
     for rel in _GIT_NO_SYMLINK_TREES:
         top = git_dir / rel
         if not top.is_dir():
             continue
-        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=_unreadable):
             for name in (*dirnames, *filenames):
                 if os.path.islink(os.path.join(dirpath, name)):
                     shown = os.path.relpath(os.path.join(dirpath, name), git_dir)
@@ -1040,8 +1047,11 @@ def _read_small_regular(path: Path, limit: int = 512) -> str | None:
         return None
     if not stat.S_ISREG(st.st_mode):
         raise _altered(f"{path.name} is not a regular file")
-    with open(path, "rb") as fh:
-        return fh.read(limit).decode("utf-8", errors="replace")
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except OSError as exc:  # chmod 000 and friends: unreadable is altered, not "absent"
+        raise _altered(f"{path.name} is unreadable ({exc.strerror})") from None
 
 
 def _ref_sha(git_dir: Path, ref: str) -> str | None:

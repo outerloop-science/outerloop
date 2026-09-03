@@ -4587,6 +4587,22 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
         ensure_regular_git_dir(root)
     head_file.write_text(head_saved)
     ensure_regular_git_dir(root)
+    # an unreadable control file (chmod 000) is tampering, never "absent"
+    if os.geteuid() != 0:
+        head_file.chmod(0)
+        try:
+            with pytest.raises(GitError, match="HEAD is unreadable"):
+                ensure_regular_git_dir(root)
+        finally:
+            head_file.chmod(0o644)
+        refs_dir = git_dir / "refs"
+        refs_dir.chmod(0)
+        try:
+            with pytest.raises(GitError, match="is unreadable"):
+                ensure_regular_git_dir(root)
+        finally:
+            refs_dir.chmod(0o755)
+        ensure_regular_git_dir(root)
     # a genuinely fresh repository with an unborn branch passes
     fresh = tmp_path / "fresh"
     fresh.mkdir()
