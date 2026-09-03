@@ -753,6 +753,14 @@ def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
 
     assert clears_min_delta(12.0, 11.4, "min", 0.5)  # 0.6 > 0.5
     assert clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor: credited
+    # binary floats: 0.3 - 0.2 is 0.09999999999999998, still an exact-floor
+    # improvement in the contract's decimal terms (absolute and relative)
+    assert clears_min_delta(0.3, 0.2, "min", 0.1)
+    assert clears_min_delta(0.2, 0.3, "max", 0.1)
+    assert clears_min_delta(0.3, 0.27, "min", None, 0.1)  # floor 0.03 vs 0.02999…
+    # a delta genuinely short of the floor is not rescued by the tolerance
+    assert not clears_min_delta(0.3, 0.2000001, "min", 0.1)
+    assert not clears_min_delta(0.3, 0.2700001, "min", None, 0.1)
     assert not clears_min_delta(12.0, 11.6, "min", 0.5)  # 0.4 < 0.5: pool luck
     assert clears_min_delta(0.54, 0.65, "max", 0.10)
     assert not clears_min_delta(0.54, 0.60, "max", 0.10)  # inside pool luck
@@ -1701,6 +1709,22 @@ def test_gate_credits_an_exact_floor_delta_and_rejects_below_it(tmp_path: Path) 
     result, _, _ = run_climb(tmp_path, [13.876, 13.4], contract=FLOOR_CONTRACT)
     assert result.outcome == "no-improvement"
     assert "inside the contract's significance floor" in (result.note or "")
+
+
+DECIMAL_FLOOR_CONTRACT = CONTRACT.replace(
+    "    direction: min\n",
+    "    direction: min\n    min_delta: 0.1\n",
+    1,
+)
+
+
+def test_gate_credits_an_exact_decimal_floor_despite_binary_rounding(tmp_path: Path) -> None:
+    # 0.3 - 0.2 is 0.09999999999999998 in binary; the contract said 0.1 and
+    # the candidate moved 0.1, so the gate must credit it
+    result, _, _ = run_climb(tmp_path, [0.3, 0.2], contract=DECIMAL_FLOOR_CONTRACT)
+    assert result.outcome == "improved"
+    result, _, _ = run_climb(tmp_path, [0.3, 0.2001], contract=DECIMAL_FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
 
 
 def test_branch_prefix_derives_from_the_agent_id() -> None:

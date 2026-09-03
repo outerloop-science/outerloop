@@ -634,6 +634,14 @@ def benchmark_floor(
     return max(floors) if floors else 0.0
 
 
+def reaches_floor(delta: float, floor: float) -> bool:
+    """Inclusive floor test that survives binary floats: 0.3 - 0.2 is
+    0.09999999999999998, which must still clear a 0.1 floor. Relative
+    tolerance only — an absolute one would let a genuinely short delta
+    through on a tiny floor."""
+    return delta >= floor or math.isclose(delta, floor, rel_tol=1e-9, abs_tol=0.0)
+
+
 def clears_min_delta(
     prior_best: float,
     candidate: float,
@@ -656,7 +664,7 @@ def clears_min_delta(
         return False  # a declared floor with non-finite inputs fails closed
     floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
     delta = candidate - prior_best if direction == "max" else prior_best - candidate
-    return delta >= floor
+    return reaches_floor(delta, floor)
 
 
 def suite_regressed(
@@ -916,7 +924,7 @@ def measure_and_decide(
         delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
         # INCLUSIVE, matching clears_min_delta: the floor is the smallest
         # movement the contract calls real, so a delta equal to it clears
-        if delta < floor:
+        if not reaches_floor(delta, floor):
             return AttemptResult(
                 outcome="no-improvement",
                 note=(
