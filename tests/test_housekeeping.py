@@ -133,3 +133,27 @@ def test_a_dry_run_tick_sheds_nothing(tmp_path: Path, monkeypatch) -> None:
     assert report.shed == ()
     assert (run_dir(root, "old-ended") / "ws").exists()
     assert load_record(root, "old-ended").workspace_shed == 0.0
+
+
+def test_shedding_stops_at_the_time_budget(tmp_path: Path) -> None:
+    """The per-tick wall-clock budget bounds shedding so a slow networked
+    delete cannot blow the tick's timeout: with a fake clock that jumps past
+    the budget after one shed, only one workspace goes even though more are
+    due."""
+    root = tmp_path / "state"
+    for i in range(5):
+        _run(root, f"r{i}", ENDED, NOW - DEFAULT_SHED_GRACE_S - 100 + i)
+    ticks = iter([0.0, 0.0, 200.0, 200.0, 200.0, 200.0])  # jumps past 120s budget after run 1
+    shed = shed_ended_workspaces(
+        root, NOW, time_budget_s=120.0, limit=50, clock=lambda: next(ticks)
+    )
+    assert len(shed) == 1  # budget stopped it after the first, though 5 were due
+    assert sum(1 for i in range(5) if (run_dir(root, f"r{i}") / "ws").exists()) == 4
+
+
+def test_the_count_limit_defaults_small(tmp_path: Path) -> None:
+    """A tick sheds only a few by default, so the batch never dominates it."""
+    root = tmp_path / "state"
+    for i in range(10):
+        _run(root, f"r{i}", ENDED, NOW - DEFAULT_SHED_GRACE_S - 100 + i)
+    assert len(shed_ended_workspaces(root, NOW)) == 3  # default limit

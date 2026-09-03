@@ -1646,10 +1646,16 @@ def tick(
     shed: list[str] = []
     if not dry_run:
         cannot_write = not disk_health.state_root.writable
+        # Bounded per tick so shedding (rm -rf of tens of thousands of files
+        # per workspace on a networked FS) never blows the tick's own timeout:
+        # a few runs on a healthy disk, more but still time-boxed when it is
+        # failing. The backlog drains over several ticks.
         shed = shed_ended_workspaces(
             root,
             now,
             force=cannot_write,
+            limit=25 if cannot_write else 3,
+            time_budget_s=300.0 if cannot_write else 120.0,
             until_ok=(lambda: check_disk(root, min_free_bytes=min_free_bytes).state_root.writable)
             if cannot_write
             else None,

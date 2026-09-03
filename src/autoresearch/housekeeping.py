@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -76,15 +77,32 @@ def shed_ended_workspaces(
     *,
     grace_s: float = DEFAULT_SHED_GRACE_S,
     force: bool = False,
-    limit: int = 50,
+    limit: int = 3,
+    time_budget_s: float = 120.0,
     until_ok: object = None,
+    clock: object = None,
 ) -> list[str]:
-    """Shed due workspaces, at most `limit` per call. With `until_ok` (a
-    callable returning True once the disk is healthy again) the sweep stops
-    as soon as it reports True, so a forced sweep frees only what it must."""
+    """Shed due workspaces, bounded by BOTH a count (`limit`) and a wall-clock
+    budget (`time_budget_s`). Removing a workspace is `rm -rf` over the state
+    filesystem, tens of thousands of tiny files each on a networked FS, so an
+    unbounded batch inside a tick can run for many minutes and blow the tick's
+    own timeout (2026-09-03: a 50-run batch killed the tick before it could
+    publish). The budget is checked between runs, so at most one extra
+    workspace's delete overruns it; the backlog drains over several ticks
+    instead of one. With `until_ok` a forced sweep also stops as soon as the
+    disk reports healthy."""
+    monotonic = clock if callable(clock) else time.monotonic
+    start = monotonic()
     shed: list[str] = []
     for record in shed_candidates(root, now, grace_s, force):
         if len(shed) >= limit:
+            break
+        if monotonic() - start >= time_budget_s:
+            log.info(
+                "housekeeping: time budget (%.0fs) reached; %d shed this tick",
+                time_budget_s,
+                len(shed),
+            )
             break
         if until_ok is not None and callable(until_ok) and until_ok():
             break
