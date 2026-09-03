@@ -67,8 +67,8 @@ Versions follow [SemVer](https://semver.org).
 
 - Tick successors no longer carry a Slurm `--deadline`: under congestion the
   scheduler cancels a deadline job on its own start estimate, which killed
-  every successor within minutes of deploying it. A stuck successor is
-  handled by the running tick's requeue instead.
+  every successor within minutes of deploying it. A successor moved off its
+  requested partition is handled by the running tick's requeue.
 - Jobs the site moves off their submitted partition no longer stall the kernel:
   the tick chain cancels and requeues a moved successor (it starved on a
   lower-tier partition and blocked its twin through `singleton`), and the
