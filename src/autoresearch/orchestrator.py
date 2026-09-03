@@ -641,17 +641,22 @@ def clears_min_delta(
     min_delta: float | None,
     min_delta_rel: float | None = None,
 ) -> bool:
-    """Cross-seed comparisons on a resampled pool must clear the
+    """Cross-seed comparisons on a resampled pool must reach the
     benchmark's noise floor: the recorded best was measured under a
-    different seed, so a delta inside the floor is pool luck, not progress.
-    Same-seed paired comparisons never call this."""
+    different seed, so a delta below the floor is pool luck, not progress.
+    The floor is INCLUSIVE — a delta equal to it is credited: the contract
+    declares the smallest movement it calls real, and on a quantized metric
+    (a step count measured every N steps) the floor IS a reachable value,
+    so a strict bar silently demands the next quantum (gpt-speedrun,
+    2026-09-03: three candidates measured exactly one floor better than the
+    base were all discarded). Same-seed paired comparisons never call this."""
     if not (min_delta or min_delta_rel):
         return True  # no floor declared
     if not (math.isfinite(prior_best) and math.isfinite(candidate)):
         return False  # a declared floor with non-finite inputs fails closed
     floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
     delta = candidate - prior_best if direction == "max" else prior_best - candidate
-    return delta > floor
+    return delta >= floor
 
 
 def suite_regressed(
@@ -909,9 +914,9 @@ def measure_and_decide(
     floor = benchmark_floor(baseline, bench.min_delta, bench.min_delta_rel)
     if floor:
         delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
-        # STRICTLY greater, matching clears_min_delta: a delta exactly at the
-        # floor is indistinguishable from the noise the floor models
-        if delta <= floor:
+        # INCLUSIVE, matching clears_min_delta: the floor is the smallest
+        # movement the contract calls real, so a delta equal to it clears
+        if delta < floor:
             return AttemptResult(
                 outcome="no-improvement",
                 note=(

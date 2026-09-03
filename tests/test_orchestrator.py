@@ -752,7 +752,8 @@ def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
     from autoresearch.orchestrator import clears_min_delta
 
     assert clears_min_delta(12.0, 11.4, "min", 0.5)  # 0.6 > 0.5
-    assert not clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor
+    assert clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor: credited
+    assert not clears_min_delta(12.0, 11.6, "min", 0.5)  # 0.4 < 0.5: pool luck
     assert clears_min_delta(0.54, 0.65, "max", 0.10)
     assert not clears_min_delta(0.54, 0.60, "max", 0.10)  # inside pool luck
     assert clears_min_delta(12.0, 11.9, "min", None)  # no floor declared
@@ -1691,11 +1692,15 @@ def test_gate_publishes_a_floor_clearing_delta(tmp_path: Path) -> None:
     assert result.outcome == "improved"
 
 
-def test_gate_rejects_an_exact_floor_delta(tmp_path: Path) -> None:
-    # boundary matches clears_min_delta: STRICTLY greater publishes — a
-    # delta exactly at the floor is the noise the floor models (terra #169)
+def test_gate_credits_an_exact_floor_delta_and_rejects_below_it(tmp_path: Path) -> None:
+    # boundary matches clears_min_delta: the floor is INCLUSIVE — the
+    # contract's floor is the smallest movement it calls real, so a delta
+    # equal to it publishes; anything below it is the noise the floor models
     result, _, _ = run_climb(tmp_path, [13.876, 13.376], contract=FLOOR_CONTRACT)
+    assert result.outcome == "improved"
+    result, _, _ = run_climb(tmp_path, [13.876, 13.4], contract=FLOOR_CONTRACT)
     assert result.outcome == "no-improvement"
+    assert "inside the contract's significance floor" in (result.note or "")
 
 
 def test_branch_prefix_derives_from_the_agent_id() -> None:
