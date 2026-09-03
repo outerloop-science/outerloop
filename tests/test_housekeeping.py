@@ -102,3 +102,34 @@ def test_the_per_call_limit_bounds_a_tick(tmp_path: Path) -> None:
     assert len(shed_ended_workspaces(root, NOW, limit=2)) == 2
     assert len(shed_ended_workspaces(root, NOW, limit=2)) == 2
     assert len(shed_ended_workspaces(root, NOW, limit=2)) == 1
+
+
+def test_a_dry_run_tick_sheds_nothing(tmp_path: Path, monkeypatch) -> None:
+    """The destructive housekeeping lane obeys the zero-writes dry-run
+    contract: tick(..., dry_run=True) removes no workspace and writes no
+    workspace_shed."""
+    import autoresearch.tick as tickmod
+    from autoresearch.compute import LocalCompute
+
+    root = tmp_path / "state"
+    _run(root, "old-ended", ENDED, NOW - DEFAULT_SHED_GRACE_S - 1)
+    calls = {"n": 0}
+    real = tickmod.shed_ended_workspaces
+
+    def spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(tickmod, "shed_ended_workspaces", spy)
+    report = tickmod.tick(
+        root,
+        LocalCompute(),
+        tickmod.LoggingDispatcher(),
+        now=NOW,
+        dry_run=True,
+        min_free_bytes=1,  # writable; never below threshold
+    )
+    assert calls["n"] == 0
+    assert report.shed == ()
+    assert (run_dir(root, "old-ended") / "ws").exists()
+    assert load_record(root, "old-ended").workspace_shed == 0.0

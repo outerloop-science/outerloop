@@ -1638,18 +1638,25 @@ def tick(
     # when the state filesystem's write probe failed, the grace is waived and
     # the sweep frees oldest-first until the probe passes, then the preflight
     # is taken again so launch lanes can come back this very tick.
-    disk_failing = not disk_health.launch_ok()
-    shed = shed_ended_workspaces(
-        root,
-        now,
-        force=disk_failing,
-        until_ok=(lambda: check_disk(root, min_free_bytes=min_free_bytes).launch_ok())
-        if disk_failing
-        else None,
-    )
-    if shed and disk_failing:
-        disk_health = check_disk(root, min_free_bytes=min_free_bytes)
-        write_heartbeat(root, now, disk=disk_health.as_dict())
+    # Force-shed (waive the grace) only when the state root cannot be WRITTEN,
+    # not merely when it is below the free-space threshold: a writable disk
+    # that is just low keeps the 24 h grace so a post-mortem is not deleted
+    # under someone. A dry-run tick sheds nothing (the destructive lane obeys
+    # the zero-writes contract, like sweep()).
+    shed: list[str] = []
+    if not dry_run:
+        cannot_write = not disk_health.state_root.writable
+        shed = shed_ended_workspaces(
+            root,
+            now,
+            force=cannot_write,
+            until_ok=(lambda: check_disk(root, min_free_bytes=min_free_bytes).state_root.writable)
+            if cannot_write
+            else None,
+        )
+        if shed and cannot_write:
+            disk_health = check_disk(root, min_free_bytes=min_free_bytes)
+            write_heartbeat(root, now, disk=disk_health.as_dict())
     if shed:
         from dataclasses import replace as _dc_replace
 
