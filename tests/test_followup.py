@@ -2819,3 +2819,96 @@ def test_a_pr_closed_while_parked_releases_the_sealed_snapshot(review_run) -> No
     rec = load_record(root, "tsp-r1")
     assert rec.state == "ended" and rec.followup_stage == {}
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_a_failed_comment_after_the_push_never_abandons_the_landed_change(review_run) -> None:
+    """The record says the change landed BEFORE any thread write: a comment
+    failure leaves nothing for a later follow-up to abandon (terra #241 r3)."""
+    root, bare = review_run
+    _gpu_run(root)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = run_dir(root, "tsp-r1") / "ws"
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+
+    class CommentExplodesAfterPush(AutoGitHub):
+        def comment(self, repo, number, body):
+            raise RuntimeError("github 502")
+
+    github2 = CommentExplodesAfterPush()
+    github2.ws = run_dir(root, "tsp-r1") / "ws"
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "applied" in out.note
+    ws = run_dir(root, "tsp-r1") / "ws"
+    assert _git(ws, "show", f"{_origin_head(bare)}:src/pilot/solvers/tsp.py") == "v2\n"  # landed
+    rec = load_record(root, "tsp-r1")
+    assert rec.followup_stage == {} and _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+    # a later follow-up finds nothing parked: it services comments as usual
+    github3 = AutoGitHub(comments=[member(902, "thanks")])
+    github3.ws = ws
+    out3 = respond(root, github3, ResumingHarness(), QueueEvaluator(values=[]))
+    assert out3.action == "replied" and "abandoned" not in out3.note
+
+
+def test_a_withheld_resume_leaves_no_unmeasured_ledger_files_behind(review_run) -> None:
+    """A refused disarm happens BEFORE any ledger write, and the workspace is
+    left exactly on the pushed head with no stray files — a retry's checkout
+    can never sweep unmeasured content into the sealed tree (terra #241 r3)."""
+    root, _bare = review_run
+    _gpu_run(root)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = run_dir(root, "tsp-r1") / "ws"
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    parent = load_record(root, "tsp-r1").followup_stage["parent"]
+
+    class DisarmRefuses(AutoGitHub):
+        def disable_auto_merge(self, repo, number):
+            return False
+
+    github2 = DisarmRefuses()
+    github2.ws = run_dir(root, "tsp-r1") / "ws"
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    assert _git(ws, "rev-parse", "HEAD").strip() == parent
+    # nothing modified, nothing stray: the committed ledger row stays as it was
+    assert _git(ws, "status", "--porcelain").strip() == ""
+    assert _git(ws, "show", "HEAD:BENCHMARKS.md") == (ws / "BENCHMARKS.md").read_text()

@@ -1703,23 +1703,21 @@ def _resume_measure(
     branch = _current_branch(ws)
     if branch == "HEAD":
         branch = str((pr.get("head") or {}).get("ref", "")) or branch
-    # the SEALED tree becomes the PR branch's head — exactly what was measured
-    ws.git("checkout", "-f", "-B", branch, candidate_sha)
-    ws.git("clean", "-fdq")
-    prior, floor_note = _update_ledger(
-        workspace, bench, contract, candidate, run_id, created, run_seed, record.target
-    )
-    # ALWAYS disarm before the push: the dial that armed this PR may be any
-    # of the pre-change, sealed, or current base contract, and a disarm on a
-    # PR with nothing armed is confirmed as such (terra #241 r1)
+    # ALWAYS disarm before anything is written: the dial that armed this PR
+    # may be any of the pre-change, sealed, or current base contract, and a
+    # disarm on a PR with nothing armed is confirmed as such (terra #241 r1)
     try:
         disarmed = github.disable_auto_merge(record.target, number)
     except Exception as exc:
         disarmed = False
         log.warning("auto-merge disarm errored: %s", exc)
     if not disarmed:
+        # nothing was written yet; still, leave the workspace exactly on the
+        # pushed head with no stray files for the retry (terra #241 r3)
         with contextlib.suppress(GitError):
             ws.git("checkout", "-f", parent)
+        with contextlib.suppress(GitError):
+            ws.git("clean", "-fdq")
         github.comment(
             record.target,
             number,
@@ -1727,6 +1725,12 @@ def _resume_measure(
             "be confirmed disarmed on this auto-mode PR; the follow-up will retry.)_",
         )
         return FollowupOutcome(run_id, "replied", "disarm unconfirmed; re-measure kept")
+    # the SEALED tree becomes the PR branch's head — exactly what was measured
+    ws.git("checkout", "-f", "-B", branch, candidate_sha)
+    ws.git("clean", "-fdq")
+    prior, floor_note = _update_ledger(
+        workspace, bench, contract, candidate, run_id, created, run_seed, record.target
+    )
     ws.git("add", "-A")
     ws.git(
         "-c",
@@ -1742,6 +1746,27 @@ def _resume_measure(
     )
     pushed_head = ws.git("rev-parse", "HEAD").strip()
     ws.push(branch)
+    # the change is on the PR: the record says so BEFORE any thread write, so
+    # a failed comment can never make a later retry "abandon" a change that
+    # already landed (terra #241 r3); the blessing dies with the pushed code
+    conflict_head = str(stage.get("conflict_head", ""))
+    latest = load_record(run_root, run_id)
+    save_record(
+        run_root,
+        replace(
+            latest,
+            followup_stage={},
+            auto_blessed_head="",
+            dirty_wake_head=(
+                conflict_head
+                if (conflict_head and stage.get("base_synced"))
+                else latest.dirty_wake_head
+            ),
+            wake_attempts=0,
+        ),
+        now,
+    )
+    drop_snapshot(ws, snapshot)
     worse = prior is not None and not orch_improved(prior.best, candidate, bench.direction, 0.0)
     measured_note = (
         f"**Re-measured after this change: `{bench.metric}` = "
@@ -1749,7 +1774,10 @@ def _resume_measure(
         + (" — worse than the PR's previous number, stated plainly." if worse else "")
         + floor_note
     )
-    github.comment(record.target, number, f"{REPLY_MARKER}\n{measured_note}")
+    try:
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{measured_note}")
+    except Exception as exc:  # the ledger and the row carry the number
+        log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
     try:
         github.update_candidate_row(record.target, number, candidate, digits=bench.display_digits)
     except Exception as exc:
@@ -1765,24 +1793,6 @@ def _resume_measure(
         )
     except Exception as exc:
         log.warning("body addendum failed for %s#%s: %s", record.target, number, exc)
-    conflict_head = str(stage.get("conflict_head", ""))
-    latest = load_record(run_root, run_id)
-    save_record(
-        run_root,
-        replace(
-            latest,
-            followup_stage={},
-            auto_blessed_head="",  # pushed code: the old blessing dies (the re-read may renew it)
-            dirty_wake_head=(
-                conflict_head
-                if (conflict_head and stage.get("base_synced"))
-                else latest.dirty_wake_head
-            ),
-            wake_attempts=0,
-        ),
-        now,
-    )
-    drop_snapshot(ws, snapshot)
     # the re-read needs a trusted base: pin it fresh, like a comment wake does
     trusted_base = ""
     base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
