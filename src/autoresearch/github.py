@@ -932,23 +932,14 @@ _GIT_REGULAR_IF_PRESENT = (
 )
 _GIT_DIRS = ("objects", "refs")  # must exist and be directories
 _GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info", "logs", "logs/refs")
-# Directories whose direct entries may not be symlinks at all: git appends
-# to reflogs, writes refs, and reads hooks/info from here, and a link would
-# carry that write or read outside the workspace. One-level listings, cheap.
-_GIT_NO_SYMLINK_ENTRIES = (
-    "",
-    "refs",
-    "refs/heads",
-    "refs/remotes",
-    "logs",
-    "logs/refs",
-    "logs/refs/heads",
-    "objects",
-    "objects/info",
-    "objects/pack",
-    "info",
-    "hooks",
-)
+# No symlink may appear among .git's own entries, nor ANYWHERE under the
+# small control trees git writes to or reads from (refs, reflogs, hooks,
+# info): a link there carries a ref update, a reflog append, or a hook read
+# outside the workspace. The object store is checked one level deep plus
+# its pack/info dirs (loose-object trees are large; a missing object is
+# caught by the HEAD readability check below).
+_GIT_NO_SYMLINK_TREES = ("refs", "logs", "hooks", "info")
+_GIT_NO_SYMLINK_ENTRIES = ("", "objects", "objects/info", "objects/pack")
 
 
 def _altered(what: str) -> GitError:
@@ -1006,12 +997,25 @@ def ensure_regular_git_dir(root: Path | None) -> None:
                         raise _altered(f".git/{shown} is a symlink")
         except OSError:
             continue
+    for rel in _GIT_NO_SYMLINK_TREES:
+        top = git_dir / rel
+        if not top.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            for name in (*dirnames, *filenames):
+                if os.path.islink(os.path.join(dirpath, name)):
+                    shown = os.path.relpath(os.path.join(dirpath, name), git_dir)
+                    raise _altered(f".git/{shown} is a symlink")
     if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
         raise _altered("object alternates are present")
     # The structure can be intact with the objects gone (pack files deleted,
     # or moved and the link removed): HEAD's commit must still be readable.
-    # An unborn HEAD (a branch with no commit yet) has nothing to check.
+    # An unborn HEAD (a fresh repository whose branch has no commit yet) has
+    # nothing to check; a HEAD whose branch ref vanished from a repository
+    # that has other refs is an erased ref, not an unborn one.
     sha = _head_commit_sha(git_dir)
+    if sha is None and _has_any_ref(git_dir):
+        raise _altered("HEAD names a branch whose ref is missing")
     if sha is not None:
         try:
             _run_git(
@@ -1022,6 +1026,18 @@ def ensure_regular_git_dir(root: Path | None) -> None:
             raise _altered(
                 "HEAD's commit is unreadable: the object store was emptied or moved"
             ) from None
+
+
+def _has_any_ref(git_dir: Path) -> bool:
+    """Does the repository hold any ref at all (loose or packed)? A clone
+    always does; only a fresh `git init` with no commit has none."""
+    if (git_dir / "packed-refs").is_file():
+        return True
+    for sub in ("heads", "remotes", "tags"):
+        top = git_dir / "refs" / sub
+        if top.is_dir() and any(p.is_file() for p in top.rglob("*")):
+            return True
+    return False
 
 
 def _head_commit_sha(git_dir: Path) -> str | None:

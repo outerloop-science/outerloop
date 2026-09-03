@@ -4565,7 +4565,29 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     with pytest.raises(GitError, match=r"\.git/sneaky is a symlink"):
         ws.git("status")
     (git_dir / "sneaky").unlink()
+    # nested refs are walked: a research-line ref replaced by a link
+    nested = git_dir / "refs" / "heads" / "agents"
+    nested.mkdir(parents=True, exist_ok=True)
+    os.symlink(elsewhere / "ref", nested / "agent-01")
+    with pytest.raises(GitError, match=r"\.git/refs/heads/agents/agent-01 is a symlink"):
+        ws.git("status")
+    (nested / "agent-01").unlink()
+    nested.rmdir()
     ensure_regular_git_dir(root)
+
+    # HEAD's branch ref erased in a repository that has refs is not "unborn"
+    main_sha = _git(root, "rev-parse", "HEAD").strip()
+    _git(root, "branch", "keep", "HEAD")  # another ref exists, as in any clone
+    _git(root, "update-ref", "-d", "refs/heads/main")  # loose or packed, gone
+    with pytest.raises(GitError, match="HEAD names a branch whose ref is missing"):
+        ws.git("status")
+    _git(root, "update-ref", "refs/heads/main", main_sha)
+    ensure_regular_git_dir(root)
+    # while a genuinely fresh repository with an unborn branch still passes
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    _git(fresh, "init", "-q", "-b", "main")
+    ensure_regular_git_dir(fresh)
 
     # a missing HEAD
     head = git_dir / "HEAD"
