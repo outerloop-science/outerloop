@@ -4549,6 +4549,24 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     excl.write_text(excl_text)
     ensure_regular_git_dir(root)
 
+    # a symlinked reflog would carry the kernel's next commit record elsewhere
+    logs_head = git_dir / "logs" / "HEAD"
+    logs_head.parent.mkdir(exist_ok=True)
+    logs_text = logs_head.read_text() if logs_head.exists() else ""
+    if logs_head.exists():
+        logs_head.unlink()
+    os.symlink(elsewhere / "reflog", logs_head)
+    with pytest.raises(GitError, match=r"\.git/logs/HEAD is a symlink"):
+        ws.git("status")
+    logs_head.unlink()
+    logs_head.write_text(logs_text)
+    # and no symlink anywhere among .git's direct entries either
+    os.symlink(elsewhere, git_dir / "sneaky")
+    with pytest.raises(GitError, match=r"\.git/sneaky is a symlink"):
+        ws.git("status")
+    (git_dir / "sneaky").unlink()
+    ensure_regular_git_dir(root)
+
     # a missing HEAD
     head = git_dir / "HEAD"
     head_text = head.read_text()

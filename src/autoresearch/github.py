@@ -931,7 +931,24 @@ _GIT_REGULAR_IF_PRESENT = (
     "info/exclude",  # the wake writes it; a symlink would carry the write elsewhere
 )
 _GIT_DIRS = ("objects", "refs")  # must exist and be directories
-_GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info")
+_GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info", "logs", "logs/refs")
+# Directories whose direct entries may not be symlinks at all: git appends
+# to reflogs, writes refs, and reads hooks/info from here, and a link would
+# carry that write or read outside the workspace. One-level listings, cheap.
+_GIT_NO_SYMLINK_ENTRIES = (
+    "",
+    "refs",
+    "refs/heads",
+    "refs/remotes",
+    "logs",
+    "logs/refs",
+    "logs/refs/heads",
+    "objects",
+    "objects/info",
+    "objects/pack",
+    "info",
+    "hooks",
+)
 
 
 def _altered(what: str) -> GitError:
@@ -980,6 +997,15 @@ def ensure_regular_git_dir(root: Path | None) -> None:
         check(rel, want_dir=True, required=True)
     for rel in _GIT_DIRS_IF_PRESENT:
         check(rel, want_dir=True, required=False)
+    for rel in _GIT_NO_SYMLINK_ENTRIES:
+        try:
+            with os.scandir(git_dir / rel if rel else git_dir) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        shown = f"{rel}/{entry.name}" if rel else entry.name
+                        raise _altered(f".git/{shown} is a symlink")
+        except OSError:
+            continue
     if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
         raise _altered("object alternates are present")
     # The structure can be intact with the objects gone (pack files deleted,
