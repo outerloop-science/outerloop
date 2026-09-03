@@ -14,6 +14,16 @@ Versions follow [SemVer](https://semver.org).
   with `AUTORESEARCH_COMPUTE=local`, it runs the local loop in the
   foreground. `autoresearch tick` forwards to the tick entry.
 
+### Fixed
+
+- A research line's first run after main moved no longer ends in a scope
+  violation on the project's ledger files (BENCHMARKS.md, results/leader.json). The run merges main into the
+  line at start; when that merge conflicts it stays uncommitted, and the
+  files git auto-merged were counted as agent edits. Changed paths are now
+  measured against the base branch head in both the first pass and the
+  wake, so a path identical to base never counts (gpt-speedrun, 2026-09-03,
+  agent-01 right after its own win).
+
 ### Changed
 
 - A candidate is now credited when its improvement equals the contract's
