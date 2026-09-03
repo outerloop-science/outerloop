@@ -65,6 +65,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `AUTORESEARCH_BOT_ALIASES` names the kernel's former logins, and every
+  "is this ours" check (own issues, claims, alarms, own PRs, own comments)
+  recognizes them, so an identity flip does not turn the kernel's own
+  research-log issue into a research order or hide its earlier claims.
 - Tick successors no longer carry a Slurm `--deadline`: under congestion the
   scheduler cancels a deadline job on its own start estimate, which killed
   every successor within minutes of deploying it. A successor moved off its

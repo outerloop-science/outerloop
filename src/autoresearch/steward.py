@@ -36,7 +36,13 @@ from autoresearch.attempt import (
     arm_sigterm_containment,
 )
 from autoresearch.contract import Contract, load_contract
-from autoresearch.github import GitHubClient, TokenProvider, Workspace, bot_login_from_env
+from autoresearch.github import (
+    GitHubClient,
+    TokenProvider,
+    Workspace,
+    bot_login_from_env,
+    is_own_login,
+)
 from autoresearch.harness import Harness, budget_exhausted, outage, redact
 from autoresearch.intake import (
     CLAIM_MARKER,
@@ -259,7 +265,7 @@ def pick_steward_issue(
             # free a claimed order, nor burn its attempts, nor erase them
             # into an unbounded paid retry loop.
             author = str((c.get("user") or {}).get("login", ""))
-            if author.casefold() != bot_login.casefold():
+            if not is_own_login(author, bot_login):
                 continue
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:
@@ -331,7 +337,7 @@ def release_orphaned_claims(
         claim_time = ""
         for c in github.list_comments(repo, number):
             author = str((c.get("user") or {}).get("login", ""))
-            if author.casefold() != bot_login.casefold():
+            if not is_own_login(author, bot_login):
                 continue  # same identity gate as pick_steward_issue
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:

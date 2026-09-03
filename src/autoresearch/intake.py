@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from autoresearch.brief import MAX_TASK_CHARS, _cap, _fence
 from autoresearch.contract import Contract
 from autoresearch.followup import QUALIFYING_ASSOCIATIONS
+from autoresearch.github import is_own_login
 
 log = logging.getLogger(__name__)
 
@@ -51,8 +52,8 @@ def infer_benchmark(text: str, contract: Contract) -> str:
 
 def qualifying_issue(issue: dict, bot_login: str) -> bool:
     author = str((issue.get("user") or {}).get("login", ""))
-    if author.casefold() == bot_login.casefold():
-        return False
+    if is_own_login(author, bot_login):
+        return False  # the kernel's own issues (research log, alarms) are never orders
     if str(issue.get("author_association", "")) not in QUALIFYING_ASSOCIATIONS:
         return False
     return bool(str(issue.get("title") or "").strip())
@@ -83,7 +84,7 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
         attempts = 0
         for c in github.list_comments(repo, number):
             author = str((c.get("user") or {}).get("login", ""))
-            if author.casefold() != bot_login.casefold():
+            if not is_own_login(author, bot_login):
                 continue  # only the bot's own markers count — no forged releases
             body = str(c.get("body", ""))
             if CLAIM_MARKER in body:

@@ -13,6 +13,13 @@ on:
         description: Login of your bot account — its PRs are never reviewed. Required.
         type: string
         required: true
+      bot_aliases:
+        description: >-
+          Former logins of your bot account, comma-separated (an identity flip
+          leaves earlier PRs and comments under the old login). Optional.
+        type: string
+        required: false
+        default: ''
       backend:
         description: Backend for the summarizer session (claude | hermes | codex).
         type: string
@@ -242,6 +249,7 @@ jobs:
           PR_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ env.PR_NUMBER }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          AUTORESEARCH_BOT_ALIASES: ${{ inputs.bot_aliases }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
           REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
         run: uv run python -m autoresearch.review_post_cli

@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
+from autoresearch.github import is_own_login
 from autoresearch.style import PLAIN_STYLE
 
 log = logging.getLogger(__name__)
@@ -169,7 +170,7 @@ def skip_reason(pr: PullRequest, bot_login: str) -> str | None:
     """Why this PR must not be reviewed, or None if it may be. The reviewer
     never comments on its own PRs (an echo chamber); the opt-out label
     suppresses review on any PR."""
-    if pr.author.casefold() == bot_login.casefold():
+    if is_own_login(pr.author, bot_login):
         return "bot-authored PR: the reviewer never comments on its own work"
     if any(label.casefold() == OPT_OUT_LABEL for label in pr.labels):
         return f"opted out via the {OPT_OUT_LABEL} label"

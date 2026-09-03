@@ -30,6 +30,7 @@ from autoresearch.github import (
     NothingToCommit,
     Workspace,
     bot_login_from_env,
+    is_own_login,
 )
 from autoresearch.harness import Harness, outage, redact
 from autoresearch.orchestrator import (
@@ -195,7 +196,7 @@ def qualifying_comments(
         if not isinstance(cid, int) or cid <= since_id:
             continue
         author = str((comment.get("user") or {}).get("login", ""))
-        if author.casefold() == bot_login.casefold():
+        if is_own_login(author, bot_login):
             continue
         body = str(comment.get("body") or "")
         if not body.strip():

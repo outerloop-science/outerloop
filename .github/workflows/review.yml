@@ -30,6 +30,7 @@ jobs:
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: agentic-learning-bot
+      bot_aliases: ''
       backend: hermes
       # openai-direct: same token rate, no OpenRouter platform fee (the org's
       # OpenAI account is tax-exempt); model id is provider-native
@@ -49,6 +50,7 @@ jobs:
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-summarize.yml@main
     with:
       bot_login: agentic-learning-bot
+      bot_aliases: ''
       backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra
@@ -64,6 +66,7 @@ jobs:
     uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: agentic-learning-bot
+      bot_aliases: ''
       backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra

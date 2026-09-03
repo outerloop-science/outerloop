@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from autoresearch.github import GitHubClient
+from autoresearch.github import GitHubClient, is_own_login
 from autoresearch.review import (
     CONFIDENCES,
     MAX_DETAIL_CHARS,
@@ -76,7 +76,7 @@ def _standing(comment: dict, bot_login: str) -> bool:
     login = str((comment.get("user") or {}).get("login", ""))
     if str(comment.get("author_association", "")) in QUALIFYING_ASSOCIATIONS:
         return True
-    if login.casefold() == bot_login.casefold():
+    if is_own_login(login, bot_login):
         return True
     return login.casefold() == ACTIONS_BOT_LOGIN.casefold() and body.lstrip().startswith(
         VERIFY_MARKER
@@ -229,7 +229,7 @@ def verify_skip_reason(pr: PullRequest, bot_login: str) -> str | None:
     """
     if not bot_login:
         return "bot login unknown: cannot identify bot-authored PRs (fail closed)"
-    if pr.author.casefold() != bot_login.casefold():
+    if not is_own_login(pr.author, bot_login):
         return "human-authored PR: integrity verification covers bot PRs only"
     if any(label.casefold() == OPT_OUT_LABEL for label in pr.labels):
         return f"opted out via the {OPT_OUT_LABEL} label"
