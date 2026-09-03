@@ -45,23 +45,33 @@ mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 # could not be made to (the rollback itself failed). Cleared on every deploy.
 AUTORESEARCH_DEPLOY_BROKEN=""
 if ! (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
-    if [ -n "${DEPLOY_PREV:-}" ] && [ "$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null)" != "$DEPLOY_PREV" ]; then
-        if git -C "$AUTORESEARCH_HOME" reset --hard --quiet "$DEPLOY_PREV"; then
-            # the failed sync may have already removed packages the old code
-            # needs (an exact sync prunes before it installs): restore the OLD
-            # commit's environment too, or skip the tick until a deploy succeeds
-            if (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
-                echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment"
-            else
-                echo "deploy: uv sync failed; back on $DEPLOY_PREV but its environment could not be restored; tick skipped until a deploy succeeds"
-                AUTORESEARCH_DEPLOY_BROKEN=1
-            fi
+    NEW_HEAD=$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null || echo "")
+    if [ -z "${DEPLOY_PREV:-}" ] || [ "$NEW_HEAD" = "$DEPLOY_PREV" ]; then
+        # nothing was fetched: the environment is whatever the last good
+        # deploy installed, and the checkout still matches it
+        echo "deploy: uv sync failed; environment unchanged"
+    elif [ -n "$NEW_HEAD" ] \
+        && [ "$(git -C "$AUTORESEARCH_HOME" rev-parse "$DEPLOY_PREV":uv.lock 2>/dev/null)" \
+           = "$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD:uv.lock 2>/dev/null)" ]; then
+        # the lockfile did not change between the old and new commit, so the
+        # installed environment already satisfies the new code: run it. This
+        # is the common case under quota exhaustion — an ordinary merge does
+        # not touch uv.lock — and it keeps the tick alive (2026-09-03: the
+        # scratch quota filled and every tick died here for two hours).
+        echo "deploy: uv sync failed but uv.lock is unchanged; running new code on the current environment"
+    else
+        # dependencies changed and could not be installed; the partial sync
+        # may have altered the environment, so go back to the previous commit
+        # and reinstall ITS environment. If that also fails (the quota is
+        # still full), the pair cannot be made consistent — skip the tick
+        # until a deploy succeeds rather than run on a half-synced venv.
+        if git -C "$AUTORESEARCH_HOME" reset --hard --quiet "$DEPLOY_PREV" \
+           && (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
+            echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment"
         else
-            echo "deploy: uv sync failed and the rollback to $DEPLOY_PREV failed; tick skipped until a deploy succeeds"
+            echo "deploy: uv sync failed and the environment could not be made consistent; tick skipped until a deploy succeeds"
             AUTORESEARCH_DEPLOY_BROKEN=1
         fi
-    else
-        echo "deploy: uv sync failed; environment unchanged"
     fi
 fi
 export AUTORESEARCH_DEPLOY_BROKEN

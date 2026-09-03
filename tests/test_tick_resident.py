@@ -302,10 +302,10 @@ def test_the_tick_runs_the_installed_environment_without_resyncing(tmp_path: Pat
     assert all(ln.startswith("run --no-sync python -m autoresearch.tick") for ln in runs), runs
 
 
-def test_a_failed_sync_rolls_the_checkout_back_to_the_installed_commit(tmp_path: Path) -> None:
-    """The deploy resets the checkout to the fetched commit and then syncs;
-    when the sync fails the checkout returns to the previous commit, so the
-    `--no-sync` tick never runs new source against the old environment."""
+def test_a_failed_sync_rolls_back_when_dependencies_changed(tmp_path: Path) -> None:
+    """A merge that changes uv.lock whose sync fails: the checkout returns to
+    the previous commit and that commit's environment is reinstalled, so the
+    `--no-sync` tick never runs new source against a half-synced venv."""
     home = tmp_path / "home"
     (home / "scripts").mkdir(parents=True)
     for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
@@ -317,11 +317,13 @@ def test_a_failed_sync_rolls_the_checkout_back_to_the_installed_commit(tmp_path:
     log = tmp_path / "gitlog"
     pat = tmp_path / "pat"
     pat.write_text("token\n")
-    # git: HEAD is OLD before the fetch and NEW after the reset to FETCH_HEAD
+    # locks DIFFER between OLD and HEAD -> the deploy must roll back
     (bindir / "git").write_text(
         f"""#!/bin/sh
 echo "$@" >> "{log}"
 case "$*" in
+  *"rev-parse OLD:uv.lock"*) echo lockOLD ;;
+  *"rev-parse HEAD:uv.lock"*) echo lockNEW ;;
   *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
   *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
   *"reset --hard --quiet OLD"*) rm -f "{tmp_path}/reset" ;;
@@ -329,7 +331,6 @@ esac
 exit 0
 """
     )
-    # the sync for NEW fails; the sync for OLD (after the rollback) succeeds
     syncs = tmp_path / "syncs"
     (bindir / "uv").write_text(
         f'#!/bin/sh\ncase "$1" in sync) echo x >> "{syncs}"; '
@@ -359,15 +360,11 @@ exit 0
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "deploy: uv sync failed; back on OLD with its environment" in proc.stdout
-    assert "BROKEN=\n" in proc.stdout  # the old pair is whole again: the tick runs
-    assert syncs.read_text().count("x") == 2  # NEW's sync, then OLD's
+    assert "back on OLD with its environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout  # consistent again: the tick runs
     gitlog = log.read_text()
-    assert "reset --hard --quiet FETCH_HEAD" in gitlog
-    assert gitlog.index("reset --hard --quiet FETCH_HEAD") < gitlog.index(
-        "reset --hard --quiet OLD"
-    )
-    assert not (tmp_path / "reset").exists()  # the checkout is back on OLD
+    assert "reset --hard --quiet OLD" in gitlog
+    assert syncs.read_text().count("x") == 2  # NEW's sync, then OLD's
 
 
 def test_a_failed_rollback_marks_the_deploy_broken_so_no_tick_runs(tmp_path: Path) -> None:
@@ -387,6 +384,8 @@ def test_a_failed_rollback_marks_the_deploy_broken_so_no_tick_runs(tmp_path: Pat
     (bindir / "git").write_text(
         f"""#!/bin/sh
 case "$*" in
+  *"rev-parse OLD:uv.lock"*) echo lockOLD ;;
+  *"rev-parse HEAD:uv.lock"*) echo lockNEW ;;
   *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
   *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
   *"reset --hard --quiet OLD"*) exit 1 ;;
@@ -397,8 +396,6 @@ exit 0
     (bindir / "uv").write_text('#!/bin/sh\ncase "$1" in sync) exit 2 ;; esac\nexit 0\n')
     for p in bindir.iterdir():
         os.chmod(p, 0o755)
-    # (the same shim, with a git whose rollback fails, is exercised below; a
-    # rollback that succeeds but whose re-sync fails is the case right after)
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -419,7 +416,7 @@ exit 0
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "rollback to OLD failed; tick skipped" in proc.stdout
+    assert "environment could not be made consistent; tick skipped" in proc.stdout
     assert "BROKEN=1" in proc.stdout
     # and the chain honours it: no tick, successors untouched, clean exit
     shim = (ROOT / "scripts" / "tick_chain.sbatch").read_text()
@@ -428,12 +425,11 @@ exit 0
     assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in resident and "tick skipped" in resident
 
 
-def test_a_rollback_whose_environment_cannot_be_restored_marks_the_deploy_broken(
-    tmp_path: Path,
-) -> None:
-    """The checkout goes back, but every sync fails (the quota is still
-    full): the old code's environment may already be pruned, so the tick is
-    skipped rather than run on it."""
+def test_a_failed_sync_with_unchanged_lock_keeps_ticking_on_the_current_env(tmp_path: Path) -> None:
+    """The 2026-09-03 quota case: a new commit whose uv.lock is identical to
+    the previous one, sync fails on the full disk. The installed environment
+    already satisfies the new code, so the deploy neither rolls back nor
+    marks itself broken — the tick runs."""
     home = tmp_path / "home"
     (home / "scripts").mkdir(parents=True)
     for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
@@ -442,14 +438,17 @@ def test_a_rollback_whose_environment_cannot_be_restored_marks_the_deploy_broken
     root.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    log = tmp_path / "gitlog"
     pat = tmp_path / "pat"
     pat.write_text("token\n")
     (bindir / "git").write_text(
         f"""#!/bin/sh
+echo "$@" >> "{log}"
 case "$*" in
+  *"rev-parse OLD:uv.lock"*) echo samelock ;;
+  *"rev-parse HEAD:uv.lock"*) echo samelock ;;
   *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
   *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
-  *"reset --hard --quiet OLD"*) rm -f "{tmp_path}/reset" ;;
 esac
 exit 0
 """
@@ -477,6 +476,6 @@ exit 0
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "environment could not be restored; tick skipped" in proc.stdout
-    assert "BROKEN=1" in proc.stdout
-    assert not (tmp_path / "reset").exists()  # the checkout is on OLD
+    assert "uv.lock is unchanged; running new code on the current environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout
+    assert "reset --hard --quiet OLD" not in log.read_text()  # no rollback: HEAD kept
