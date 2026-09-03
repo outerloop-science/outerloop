@@ -245,13 +245,37 @@ def _ending_comment(record: RunRecord, ending: str) -> str:
     )
 
 
+def _release_parked_snapshot(run_root: Path, record: RunRecord) -> None:
+    """A run that ends while a dispatched re-measure is parked must not leave
+    the sealed commit's retaining ref behind (best-effort: the ending is
+    load-bearing, the ref release is hygiene — a failure logs)."""
+    ref = str(record.followup_stage.get("candidate_ref", "") or "")
+    if not ref:
+        return
+    try:
+        from autoresearch.dispatch import Snapshot, drop_snapshot
+
+        ws = Workspace(root=run_dir(run_root, record.run_id) / "ws")
+        drop_snapshot(
+            ws,
+            Snapshot(commit=str(record.followup_stage.get("candidate_sha", "")), tree="", ref=ref),
+        )
+    except Exception as exc:
+        log.warning("parked snapshot release failed for %s: %s", record.run_id, exc)
+
+
 def _end_run(
     run_root: Path, record: RunRecord, github: GitHubClient, ending: str, note: str, now: float
 ) -> None:
     """Flip the record to ended, then tell the requesting issue (best effort:
     the state transition is load-bearing, the comment is a courtesy — a
     comment failure logs and is never retried)."""
-    save_record(run_root, replace(record, state=ENDED, ending=ending, ending_note=note), now)
+    _release_parked_snapshot(run_root, record)
+    save_record(
+        run_root,
+        replace(record, state=ENDED, ending=ending, ending_note=note, followup_stage={}),
+        now,
+    )
     if not record.issue_number:
         return
     try:
@@ -1543,19 +1567,28 @@ def _park_remeasure(
         f"({len(pend.job_ids)} job(s)) — the change is pushed with its number once the "
         "measurement lands. Comments posted meanwhile are answered after that.)_"
     )
-    github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{note}")
+    stage["reply_note"] = note
+    stage["reply_posted"] = False
+    # the STAGE is durable before the reply goes out: a GitHub write failure
+    # must never leave a running GPU job and its retained ref untracked — the
+    # resume posts the reply instead (terra #241 r2)
+    parked_record = replace(
+        record,
+        last_comment_id=cursors["comment"],
+        last_review_id=cursors["review"],
+        last_review_comment_id=cursors["review_comment"],
+        panel_wake_head="" if panel_wake else record.panel_wake_head,
+        panel_wake_text="" if panel_wake else record.panel_wake_text,
+        followup_stage=stage,
+    )
+    save_record(run_root, parked_record, now)
+    try:
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{note}")
+    except Exception as exc:
+        log.warning("parked reply failed for %s (the resume retries it): %s", run_id, exc)
+        return FollowupOutcome(run_id, "parked", "re-measure dispatched; reply pending")
     save_record(
-        run_root,
-        replace(
-            record,
-            last_comment_id=cursors["comment"],
-            last_review_id=cursors["review"],
-            last_review_comment_id=cursors["review_comment"],
-            panel_wake_head="" if panel_wake else record.panel_wake_head,
-            panel_wake_text="" if panel_wake else record.panel_wake_text,
-            followup_stage=stage,
-        ),
-        now,
+        run_root, replace(parked_record, followup_stage={**stage, "reply_posted": True}), now
     )
     return FollowupOutcome(run_id, "parked", f"re-measure dispatched: {pend.afterany() or 'blind'}")
 
@@ -1621,6 +1654,17 @@ def _resume_measure(
         run_tag=run_id,
     )
     snapshot = Snapshot(commit=candidate_sha, tree="", ref=candidate_ref)
+    if not stage.get("reply_posted", True):
+        # the park's reply never reached GitHub: post it now, before anything
+        # else, and record that it did
+        github.comment(
+            record.target,
+            number,
+            f"{REPLY_MARKER}\n{reply_body}{stage.get('reply_note', '')}",
+        )
+        record = replace(record, followup_stage={**stage, "reply_posted": True})
+        save_record(run_root, record, now)
+        stage = record.followup_stage
 
     def _abandon(note: str) -> FollowupOutcome:
         # the sealed change is dropped: workspace back to the pushed head,

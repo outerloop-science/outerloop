@@ -2724,7 +2724,7 @@ def test_a_resume_always_disarms_before_pushing(review_run) -> None:
 
     github2 = DisarmRefuses()
     github2.ws = run_dir(root, "tsp-r1") / "ws"
-    out = respond_once(
+    respond_once(
         root,
         "tsp-r1",
         ResumingHarness(),
@@ -2738,3 +2738,84 @@ def test_a_resume_always_disarms_before_pushing(review_run) -> None:
     assert github2.disarmed == [9] and "WITHHELD" in github2.posted[0]
     assert not _origin_has_branch(bare)
     assert load_record(root, "tsp-r1").followup_stage != {}  # kept: the next follow-up retries
+
+
+def test_a_parked_stage_is_durable_before_the_reply_and_the_reply_is_retried(review_run) -> None:
+    """A GitHub write failure on the park's reply must not leave the running
+    GPU job and its retained ref untracked: the stage is saved first, and the
+    resume posts the reply before anything else (terra #241 r2)."""
+    root, _bare = review_run
+    _gpu_run(root)
+
+    class CommentExplodes(FakeGitHub):
+        def comment(self, repo, number, body):
+            raise RuntimeError("github 502")
+
+    github = CommentExplodes(comments=[member(901, "tweak")])
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    assert out.action == "parked" and "reply pending" in out.note
+    rec = load_record(root, "tsp-r1")
+    assert rec.followup_stage["job_ids"] == ["9001"] and rec.followup_stage["reply_posted"] is False
+    # still pending: the resume posts the reply first, then waits
+    github2 = AutoGitHub()
+    github2.ws = run_dir(root, "tsp-r1") / "ws"
+    out2 = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    assert out2.action == "no-op"
+    assert len(github2.posted) == 1 and "re-measure is running" in github2.posted[0]
+    assert load_record(root, "tsp-r1").followup_stage["reply_posted"] is True
+
+
+def test_a_pr_closed_while_parked_releases_the_sealed_snapshot(review_run) -> None:
+    root, _bare = review_run
+    _gpu_run(root)
+    github = FakeGitHub(comments=[member(901, "tweak")])
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""
+    # the maintainer closes the PR while the GPU job runs: ended, ref released
+    closed = FakeGitHub(pr={"state": "closed", "merged": False})
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        closed,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    assert out.action == "ended-rejected"
+    rec = load_record(root, "tsp-r1")
+    assert rec.state == "ended" and rec.followup_stage == {}
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
