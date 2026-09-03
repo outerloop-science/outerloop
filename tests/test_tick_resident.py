@@ -40,6 +40,7 @@ def _install(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         # uv: `sync` is a no-op; `run ... tick` is the fake tick — it counts
         # its calls, appends to the shim on the 2nd call, sets PAUSE on the 3rd
         "uv": f'''#!/bin/sh
+echo "$@" >> "{shimlog}/uv"
 case "$1" in
   sync) exit 0 ;;
   run)
@@ -287,3 +288,194 @@ def test_a_misconfigured_resident_start_fails_loudly_before_queuing_anything(
     assert proc.returncode == 1
     assert "resident tick misconfigured; missing: AUTORESEARCH_ROOT" in proc.stderr
     assert not (shimlog / "sbatch").exists() and not (shimlog / "ticks").exists()
+
+
+def test_the_tick_runs_the_installed_environment_without_resyncing(tmp_path: Path) -> None:
+    """Every tick invocation is `uv run --no-sync ...`: the deploy step owns
+    syncing, so a sync that fails (a full quota, 2026-09-03) cannot stop the
+    tick from starting on the environment that is installed."""
+    home, root, bindir, shimlog = _install(tmp_path)
+    proc = _run_chain(home, _resident_env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    runs = [ln for ln in (shimlog / "uv").read_text().splitlines() if ln.startswith("run ")]
+    assert runs, "no tick was run"
+    assert all(ln.startswith("run --no-sync python -m autoresearch.tick") for ln in runs), runs
+
+
+def test_a_failed_sync_rolls_back_when_dependencies_changed(tmp_path: Path) -> None:
+    """A merge that changes uv.lock whose sync fails: the checkout returns to
+    the previous commit and that commit's environment is reinstalled, so the
+    `--no-sync` tick never runs new source against a half-synced venv."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    root = tmp_path / "root"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "gitlog"
+    pat = tmp_path / "pat"
+    pat.write_text("token\n")
+    # locks DIFFER between OLD and HEAD -> the deploy must roll back
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{log}"
+case "$*" in
+  *"rev-parse OLD:uv.lock"*) echo lockOLD ;;
+  *"rev-parse HEAD:uv.lock"*) echo lockNEW ;;
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
+  *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
+  *"reset --hard --quiet OLD"*) rm -f "{tmp_path}/reset" ;;
+esac
+exit 0
+"""
+    )
+    syncs = tmp_path / "syncs"
+    (bindir / "uv").write_text(
+        f'#!/bin/sh\ncase "$1" in sync) echo x >> "{syncs}"; '
+        f'[ "$(wc -l < "{syncs}" | tr -d " ")" -eq 1 ] && '
+        '{ echo "error: Disk quota exceeded" >&2; exit 2; } ;; esac\n'
+        "exit 0\n"
+    )
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": str(root),
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "back on OLD with its environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout  # consistent again: the tick runs
+    gitlog = log.read_text()
+    assert "reset --hard --quiet OLD" in gitlog
+    assert syncs.read_text().count("x") == 2  # NEW's sync, then OLD's
+
+
+def test_a_failed_rollback_marks_the_deploy_broken_so_no_tick_runs(tmp_path: Path) -> None:
+    """When the sync fails AND the reset back to the previous commit fails,
+    the deploy exports AUTORESEARCH_DEPLOY_BROKEN=1 and the tick callers skip
+    the tick: new source must never run against the old environment."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    root = tmp_path / "root"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    pat = tmp_path / "pat"
+    pat.write_text("token\n")
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+case "$*" in
+  *"rev-parse OLD:uv.lock"*) echo lockOLD ;;
+  *"rev-parse HEAD:uv.lock"*) echo lockNEW ;;
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
+  *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
+  *"reset --hard --quiet OLD"*) exit 1 ;;
+esac
+exit 0
+"""
+    )
+    (bindir / "uv").write_text('#!/bin/sh\ncase "$1" in sync) exit 2 ;; esac\nexit 0\n')
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": str(root),
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "environment could not be made consistent; tick skipped" in proc.stdout
+    assert "BROKEN=1" in proc.stdout
+    # and the chain honours it: no tick, successors untouched, clean exit
+    shim = (ROOT / "scripts" / "tick_chain.sbatch").read_text()
+    assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in shim and "tick skipped" in shim
+    resident = (ROOT / "scripts" / "tick_resident.sh").read_text()
+    assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in resident and "tick skipped" in resident
+
+
+def test_a_failed_sync_with_unchanged_lock_keeps_ticking_on_the_current_env(tmp_path: Path) -> None:
+    """The 2026-09-03 quota case: a new commit whose uv.lock is identical to
+    the previous one, sync fails on the full disk. The installed environment
+    already satisfies the new code, so the deploy neither rolls back nor
+    marks itself broken — the tick runs."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    root = tmp_path / "root"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "gitlog"
+    pat = tmp_path / "pat"
+    pat.write_text("token\n")
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{log}"
+case "$*" in
+  *"rev-parse OLD:uv.lock"*) echo samelock ;;
+  *"rev-parse HEAD:uv.lock"*) echo samelock ;;
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
+  *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
+esac
+exit 0
+"""
+    )
+    (bindir / "uv").write_text('#!/bin/sh\ncase "$1" in sync) exit 2 ;; esac\nexit 0\n')
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": str(root),
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "uv.lock is unchanged; running new code on the current environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout
+    assert "reset --hard --quiet OLD" not in log.read_text()  # no rollback: HEAD kept
