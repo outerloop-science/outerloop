@@ -102,3 +102,34 @@ def test_parse_skips_timestamped_log_lines() -> None:
     result = _parse_codex_result(stdout, "ok", 0)
     assert result.session_id == "t1"
     assert result.is_error is False
+
+
+def test_run_clears_codex_scratch_but_keeps_durable_state(monkeypatch: Any, tmp_path: Path) -> None:
+    """Codex leaks temp dirs into .codex/.tmp across a run's wakes; run() clears
+    that scratch each time, while its durable state (sessions, sqlite) stays."""
+    from autoresearch import harness as harness_mod
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    home = tmp_path / "ws-home"
+    tmp = home / ".codex" / ".tmp" / "leaked-dir"
+    tmp.mkdir(parents=True)
+    (tmp / "junk").write_text("x")
+    sessions = home / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "s.json").write_text("keep")
+
+    class FakePopen:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def communicate(self, *a: Any, **k: Any) -> Any:
+            return ("", "")
+
+        returncode = 1
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
+    CodexHarness(api_key="k").run("brief", workspace)
+    assert not (home / ".codex" / ".tmp").exists()  # scratch cleared
+    assert (sessions / "s.json").read_text() == "keep"  # durable state kept

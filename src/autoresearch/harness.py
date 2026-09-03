@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import uuid
@@ -944,6 +945,14 @@ class CodexHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
+        # Codex leaks temp directories into .codex/.tmp and fails to remove
+        # them (the "stale arg0 temp dirs: Directory not empty" aborts); across
+        # a run's wakes they pile up into tens of thousands of files, the bulk
+        # of the per-run home. Clear codex's scratch before each run — its
+        # durable state (auth.json, sessions, the sqlite) is elsewhere under
+        # .codex and untouched.
+        for scratch in (session_home / ".codex" / ".tmp", session_home / ".codex" / "tmp"):
+            shutil.rmtree(scratch, ignore_errors=True)
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
         # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`

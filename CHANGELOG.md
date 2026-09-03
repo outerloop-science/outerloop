@@ -23,6 +23,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Codex sessions no longer leak temp directories into the per-run home. Codex
+  writes scratch to `.codex/.tmp` and fails to remove it (the "stale arg0 temp
+  dirs: Directory not empty" aborts), so across a run's wakes it grew to tens
+  of thousands of files — most of the per-run home. The session now clears
+  that scratch before each run, keeping codex's durable state.
 - Disk housekeeping is bounded per tick by a count and a wall-clock budget
   (a few workspaces or ~2 minutes on a healthy disk; more but still
   time-boxed when the disk is failing), covering both finding candidates and
