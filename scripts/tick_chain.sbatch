@@ -15,6 +15,14 @@
 #   AUTORESEARCH_CADENCE_MIN  tick cadence, default 30
 #   AUTORESEARCH_PAT_FILE     bot PAT for the deploy pull (optional; no file
 #                             means run whatever code is already deployed)
+#   AUTORESEARCH_RESIDENT=1   run as the RESIDENT tick (design/resident-tick.md):
+#                             one long-lived job that loops deploy -> tick ->
+#                             sleep, with a single afterany:self successor.
+#                             Start it with an explicit walltime, e.g.
+#                             `sbatch --time=360 --job-name=autoresearch-resident
+#                             --export=ALL,AUTORESEARCH_RESIDENT=1,...`; the
+#                             per-cadence chain drains itself once a resident
+#                             job exists. Unset = the per-cadence chain below.
 # Further config also loads from ~/.config/autoresearch/.env (0600) each tick, so
 # a live config change (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex + its key file)
 # needs no chain restart — just an edit to that file.
@@ -30,13 +38,27 @@
 # vars are checked by hand instead.
 CADENCE_MIN="${AUTORESEARCH_CADENCE_MIN:-30}"
 JOB_NAME="autoresearch-tick"
+RESIDENT_JOB_NAME="autoresearch-resident"
 missing=""
 for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT AUTORESEARCH_PARTITION; do
     eval "val=\${$var:-}"
     [ -z "$val" ] && missing="$missing $var"
 done
 
+# --- 0. the resident tick: hand the whole job to the loop ---
+if [ "${AUTORESEARCH_RESIDENT:-}" = "1" ]; then
+    . "${AUTORESEARCH_HOME:-.}/scripts/tick_resident.sh"
+    exit $?
+fi
+
 # --- 1. keep two successors queued (singleton serializes same-name jobs) ---
+# A resident tick (design/resident-tick.md) supersedes this chain: while one
+# is queued or running, stop topping up so the per-cadence chain drains.
+if squeue -u "$USER" --name="$RESIDENT_JOB_NAME" -h 2>/dev/null | grep -q '[0-9]'; then
+    echo "chain: a resident tick exists; not queuing successors (draining)"
+    need=0
+    pending=0
+else
 # A successor the SITE moved off our partition starves there and blocks its
 # twin through singleton; cancel it first so the top-up below requeues it.
 bash "${AUTORESEARCH_HOME:-.}/scripts/requeue_moved_successors.sh" "$JOB_NAME" "${AUTORESEARCH_PARTITION:-}" || true
@@ -53,10 +75,13 @@ else
     pending=0
     need=0
 fi
+fi
 epoch_now=$(date +%s)
 cadence_s=$((CADENCE_MIN * 60))
 next_slot=$(( (epoch_now / cadence_s + 1) * cadence_s ))
-for i in $(seq 1 "$need"); do
+# a while loop, not `seq 1 $need`: BSD seq counts DOWN for `seq 1 0`
+i=1
+while [ "$i" -le "$need" ]; do
     begin_epoch=$((next_slot + (pending + i - 1) * cadence_s))
     begin=$(date -d "@$begin_epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
@@ -69,6 +94,7 @@ for i in $(seq 1 "$need"); do
         echo "sbatch retry $attempt failed; backing off"
         sleep $((attempt * 20))
     done
+    i=$((i + 1))
 done
 
 # Only NOW may configuration problems kill this tick — successors are queued.
@@ -84,101 +110,9 @@ if [ -w "$LOG_DIR" ]; then
 fi
 echo "=== tick $(date -Is) on $(hostname -s) job=${SLURM_JOB_ID:-none}"
 
-# --- 2. deploy: pull main with the bot PAT, sync deps (best-effort) ---
-# A tick killed mid-fetch leaves .git/*.lock files that make every later
-# deploy fail and the chain run stale code; sweep locks older than a few
-# minutes (a live git op holds one for seconds) before touching the checkout.
-bash "$AUTORESEARCH_HOME/scripts/sweep_git_locks.sh" "$AUTORESEARCH_HOME" 10 || true
-# The PAT never appears in argv (argv is world-readable via /proc on shared
-# nodes): git asks for it through GIT_ASKPASS instead.
-if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
-    ASKPASS=$(mktemp 2>/dev/null || echo "") && [ -n "$ASKPASS" ] && chmod 700 "$ASKPASS"
-    printf '#!/bin/sh\ncat "%s"\n' "$AUTORESEARCH_PAT_FILE" > "$ASKPASS"
-    if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -C "$AUTORESEARCH_HOME" fetch --quiet \
-        "https://x-access-token@github.com/agentic-learning-ai-lab/autoresearch.git" main; then
-        git -C "$AUTORESEARCH_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
-    else
-        echo "deploy: fetch failed; running previous code"
-    fi
-    rm -f "$ASKPASS"
-fi
-# Host-side caches must never land in $HOME: home quotas are tiny on many
-# clusters and invisible until EDQUOT (verified on Torch — a full home took
-# down a live run). Default them under the state root (scratch-class
-# storage); explicit env wins. Submitted jobs inherit these via sbatch.
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$AUTORESEARCH_ROOT/cache/uv}"
-export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$AUTORESEARCH_ROOT/cache/apptainer}"
-mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
-
-(cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
-
-# --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
-# live config changes need no chain restart. These are where
-# AUTORESEARCH_AUTHOR_BACKEND/_MODEL and the per-backend key files live; the
-# config-driven climb/followup default from them and the tick preflights them.
-#
-# We do NOT source .env: sourcing would execute it and let it set ANY variable
-# (the chain's own HOME/ROOT/PATH/cadence, arbitrary code). Instead we extract
-# only an ALLOWLIST of author knobs — so .env is structurally per-tick author
-# config and can never hijack the chain's identity or scheduling. And only from a
-# file that is ours and not group/world-writable (a writable one could still
-# inject a malicious VALUE, e.g. a bad codex binary path).
-ENV_FILE="$HOME/.config/autoresearch/.env"
-if [ -r "$ENV_FILE" ]; then
-    perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
-    owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
-    if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
-        for _k in AUTORESEARCH_AUTHOR_BACKEND AUTORESEARCH_AUTHOR_MODEL \
-                  AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
-                  AUTORESEARCH_HARNESS_KEY_FILE \
-                  AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
-                  AUTORESEARCH_VERTEX_ADC \
-                  AUTORESEARCH_TARGET \
-                  AUTORESEARCH_GITHUB_APP_FILE AUTORESEARCH_BOT_LOGIN AUTORESEARCH_BOT_ALIASES \
-                  AUTORESEARCH_GPU_PARTITION AUTORESEARCH_GPU_ACCOUNT \
-                  AUTORESEARCH_PANEL AUTORESEARCH_PANEL_KEY_FILE \
-                  AUTORESEARCH_PANEL_CODEX_KEY_FILE \
-                  AUTORESEARCH_PANEL_HERMES_KEY_FILE \
-                  REVIEW_HERMES_REPO REVIEW_HERMES_PROVIDER; do
-            _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
-            # PRESENCE-based, not value-based: a key set to "" in .env is a
-            # live OFF-SWITCH (AUTORESEARCH_PANEL="" disables the panel,
-            # VERTEX_PROJECT="" reverts to API-key billing) and must override
-            # an inherited chain value; an ABSENT key changes nothing.
-            if [ -n "$_line" ]; then
-                _v=${_line#*=}
-                _v=${_v%$'\r'}                     # CRLF-edited file
-                _v=${_v#[\"\']}; _v=${_v%[\"\']}   # optional surrounding quote
-                export "$_k=$_v"
-            fi
-        done
-    else
-        echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
-             "needs to be yours and not group/world-writable)"
-    fi
-fi
-
-# The codex author binary is a host prerequisite; install it (idempotent, fast
-# path is a local version check) when ANY codex role is deployed — the fleet
-# author, or a codex panel lens (a claude-author/codex-panel rollout still
-# bind-mounts the binary into every judge container). Best-effort: a failure
-# here must never break the chain — the climb will report a missing codex
-# clearly if it comes to that.
-case "${AUTORESEARCH_AUTHOR_BACKEND:-}:${AUTORESEARCH_PANEL:-}" in
-    codex:*|*:*codex*)
-        bash "$AUTORESEARCH_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
-        ;;
-esac
-case "${AUTORESEARCH_PANEL:-}" in
-    *hermes*)
-        # the default install location IS the default config: exporting it
-        # here connects the provisioned clone to the preflight/climb without
-        # requiring the operator to name a path they didn't choose
-        export REVIEW_HERMES_REPO="${REVIEW_HERMES_REPO:-$HOME/hermes-agent}"
-        bash "$AUTORESEARCH_HOME/scripts/install_hermes.sh" "$REVIEW_HERMES_REPO" \
-            || echo "deploy: hermes install failed"
-        ;;
-esac
+# --- 2. deploy: pull main, sync deps, read the operator's knobs (best-effort;
+#        scripts/tick_deploy.sh, sourced so its exports reach the tick) ---
+. "$AUTORESEARCH_HOME/scripts/tick_deploy.sh"
 
 # --- 3. the tick itself (scrubbed of the PAT path; sessions are scrubbed
 #        further down in the harness) ---
