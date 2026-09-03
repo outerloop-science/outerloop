@@ -45,7 +45,10 @@ non-interactive use):
   writable, Slurm placement accepted, contract readable on the target.
   The doctor is re-runnable on its own (`init --doctor`) and is the first
   thing support asks for.
-- **Print the start command.** Nothing starts implicitly.
+- **Print the start command.** Nothing starts implicitly. The command is
+  `autoresearch start` on both paths: it submits the resident tick where
+  `sbatch` exists and runs the local loop elsewhere, taking the root and
+  placement from flags, the environment, or the `.env` the wizard wrote.
 
 The wizard invents no new validation: every check calls the same functions
 the tick preflights with, so the doctor and the tick cannot disagree
@@ -69,8 +72,8 @@ simultaneously the zero-Slurm on-ramp and the paper's Karpathy-loop
 ablation cell (width 1 × serialized) — the same kernel, the compute seam
 swapped, nothing else different.
 
-- **The chain is a loop.** No sbatch → `python -m autoresearch.tick --loop`
-  runs a tick every cadence in the foreground. State stays in records on
+- **The chain is a loop.** No sbatch → `autoresearch start` runs
+  `tick --loop`, a tick every cadence in the foreground. State stays in records on
   disk, so killing and restarting the loop resumes exactly like the Slurm
   chain surviving a dead tick.
 - **Serialization is the semantics, not a bug.** A tick that launches a
@@ -93,7 +96,8 @@ swapped, nothing else different.
 1. **Kernel enablement** (this note's PR series, part 1):
    `AUTORESEARCH_COMPUTE` selection at the two `SlurmCompute()` sites,
    `tick --loop`, local-mode wake-arming skip, per-mode required-env
-   relaxation (no account/partition in local mode).
+   relaxation (no account/partition in local mode), and the one launch
+   command `autoresearch start` (`src/autoresearch/cli.py`). Done.
 2. **The wizard**: `autoresearch.init` — detection, prompts, `.env` writer,
    doctor (PAT path first).
 3. **The manifest flow**: App mint + installation discovery inside the
