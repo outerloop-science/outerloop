@@ -14,6 +14,12 @@ Versions follow [SemVer](https://semver.org).
   comment, panel re-read). CPU benchmarks keep measuring inline. Placement
   comes from the contract's `gpus:`, never from the author
   (`docs/design/orchestrator-verify.md`, "Measuring a follow-up's change").
+- The tick can run RESIDENT (`AUTORESEARCH_RESIDENT=1`, its own job name):
+  one six-hour job that loops deploy → tick → sleep with a single
+  `afterany:self` successor, so the chain needs four scheduling events a day
+  instead of one per cadence (`docs/design/resident-tick.md`). The per-cadence
+  chain drains itself once a resident job exists. The deploy step is shared
+  (`scripts/tick_deploy.sh`).
 - A blocking follow-up re-read wakes the author: the panel's findings are
   recorded on the run and the tick submits a follow-up for them like any
   other wake; the revision is re-measured and re-read, bounded by two rounds
