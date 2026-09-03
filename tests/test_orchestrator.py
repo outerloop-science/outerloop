@@ -765,6 +765,10 @@ def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
     assert not clears_min_delta(1_000_000_000.0, 0.0009, "min", 999_999_999.9991 + 0.0009)
     assert clears_min_delta(1_000_000_000.0, 0.0, "min", 1_000_000_000.0)
     assert not reaches_floor(1_000_000_000.0, 0.0009, "min", 1_000_000_000.0, None)
+    # an infinite floor (`min_delta: .inf` parses) is never reached, never a crash
+    assert not clears_min_delta(10.0, 0.0, "min", float("inf"))
+    assert not reaches_floor(10.0, 0.0, "min", float("inf"), None)
+    assert not reaches_floor(10.0, 0.0, "min", float("nan"), None)
     assert not clears_min_delta(12.0, 11.6, "min", 0.5)  # 0.4 < 0.5: pool luck
     assert clears_min_delta(0.54, 0.65, "max", 0.10)
     assert not clears_min_delta(0.54, 0.60, "max", 0.10)  # inside pool luck
@@ -1720,6 +1724,19 @@ DECIMAL_FLOOR_CONTRACT = CONTRACT.replace(
     "    direction: min\n    min_delta: 0.1\n",
     1,
 )
+
+
+INF_FLOOR_CONTRACT = CONTRACT.replace(
+    "    direction: min\n",
+    "    direction: min\n    min_delta: .inf\n",
+    1,
+)
+
+
+def test_gate_rejects_under_an_infinite_floor_instead_of_crashing(tmp_path: Path) -> None:
+    result, _, _ = run_climb(tmp_path, [13.876, 1.0], contract=INF_FLOOR_CONTRACT)
+    assert result.outcome == "no-improvement"
+    assert "inside the contract's significance floor" in (result.note or "")
 
 
 def test_gate_credits_an_exact_decimal_floor_despite_binary_rounding(tmp_path: Path) -> None:

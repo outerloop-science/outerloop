@@ -646,8 +646,12 @@ def reaches_floor(
     floors arrive as decimal text (eval JSON, the contract's YAML), so the
     comparison is made on the decimals that were written, not on their
     binary approximations: 0.3 - 0.2 is exactly 0.1 here, and there is no
-    tolerance for a short delta to hide in at any scale. Callers check
-    finiteness first; the caller's own float floor is only for messages."""
+    tolerance for a short delta to hide in at any scale. Non-finite inputs
+    fail closed: an infinite floor (`min_delta: .inf` is valid YAML) is
+    never reached, and a NaN anywhere is not a measurement. The caller's
+    float floor is only for messages."""
+    if not all(math.isfinite(v) for v in (prior, candidate, min_delta or 0, min_delta_rel or 0)):
+        return False
     p, c = Fraction(repr(prior)), Fraction(repr(candidate))
     delta = c - p if direction == "max" else p - c
     floors = []
