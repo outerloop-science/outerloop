@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import autoresearch.harness as harness_mod
-from autoresearch.harness import CodexHarness, _codex_command, _parse_codex_result
+from autoresearch.harness import CodexHarness, SessionResult, _codex_command, _parse_codex_result
 
 
 def test_command_has_expected_flags() -> None:
@@ -170,3 +170,31 @@ def test_run_does_not_follow_a_symlinked_codex_out_of_home(
     monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
     CodexHarness(api_key="k").run("brief", workspace)
     assert (keep / "f").read_text() == "x"  # symlink target untouched
+
+
+def test_run_survives_a_scratch_cleanup_that_raises(monkeypatch: Any, tmp_path: Path) -> None:
+    """Scratch cleanup is best-effort: even if rmtree raises (a RecursionError
+    on an adversarially deep leaked tree), run() returns a SessionResult rather
+    than aborting before login."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    home = tmp_path / "ws-home"
+    (home / ".codex" / ".tmp").mkdir(parents=True)
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise RecursionError("too deep")
+
+    class FakePopen:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def communicate(self, *a: Any, **k: Any) -> Any:
+            return ("", "")
+
+        returncode = 1
+
+    monkeypatch.setattr(harness_mod.shutil, "rmtree", boom)
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
+    result = CodexHarness(api_key="k").run("brief", workspace)
+    assert isinstance(result, SessionResult)  # cleanup did not propagate

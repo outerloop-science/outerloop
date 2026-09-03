@@ -958,7 +958,14 @@ class CodexHarness:
         codex_home = session_home / ".codex"
         if codex_home.is_dir() and not codex_home.is_symlink():
             for scratch in (codex_home / ".tmp", codex_home / "tmp"):
-                shutil.rmtree(scratch, ignore_errors=True)
+                # Best-effort: this cleanup must never abort the run it precedes
+                # (the harness contract is to return a SessionResult, not raise).
+                # ignore_errors swallows the per-file OSErrors; the guard also
+                # catches a RecursionError from an adversarially deep leaked tree.
+                try:
+                    shutil.rmtree(scratch, ignore_errors=True)
+                except Exception as exc:
+                    log.warning("codex scratch cleanup skipped %s: %s", scratch, exc)
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
         # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`
