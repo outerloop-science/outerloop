@@ -4526,6 +4526,29 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     index.unlink()
     index.write_bytes(index_bytes)
 
+    # the pack directory intact but emptied: structure passes, objects gone
+    for f in list(pack.iterdir()):
+        f.rename(elsewhere / f.name)
+    with pytest.raises(GitError, match="object store was emptied or moved"):
+        ws.git("status")
+    for f in list(elsewhere.iterdir()):
+        f.rename(pack / f.name)
+    ensure_regular_git_dir(root)
+
+    # a symlinked info/exclude would carry the wake's write elsewhere
+    info = git_dir / "info"
+    info.mkdir(exist_ok=True)
+    excl = info / "exclude"
+    excl_text = excl.read_text() if excl.exists() else ""
+    if excl.exists():
+        excl.unlink()
+    os.symlink(elsewhere / "exclude", excl)
+    with pytest.raises(GitError, match=r"\.git/info/exclude is a symlink"):
+        ws.git("status")
+    excl.unlink()
+    excl.write_text(excl_text)
+    ensure_regular_git_dir(root)
+
     # a missing HEAD
     head = git_dir / "HEAD"
     head_text = head.read_text()

@@ -919,8 +919,17 @@ _SECTION_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9.-]+)")
 # /tmp and symlinked objects/pack there, so the kernel's git on the host
 # found refs with no objects behind them. The guard runs inside every kernel
 # git call (Workspace.git / git_network), so no path can skip it.
-_GIT_REGULAR_FILES = ("HEAD", "config")  # must exist and be regular files
-_GIT_REGULAR_IF_PRESENT = ("index", "config.worktree", "packed-refs", "MERGE_HEAD", "FETCH_HEAD")
+# config and config.worktree are NOT here: _ensure_regular_config sanitizes
+# them in place (a FIFO or symlink config is replaced, not fatal) and runs
+# first, so the guard's own git subprocess never reads a tampered config.
+_GIT_REGULAR_FILES = ("HEAD",)  # must exist and be regular files
+_GIT_REGULAR_IF_PRESENT = (
+    "index",
+    "packed-refs",
+    "MERGE_HEAD",
+    "FETCH_HEAD",
+    "info/exclude",  # the wake writes it; a symlink would carry the write elsewhere
+)
 _GIT_DIRS = ("objects", "refs")  # must exist and be directories
 _GIT_DIRS_IF_PRESENT = ("objects/pack", "objects/info", "hooks", "info")
 
@@ -947,6 +956,7 @@ def ensure_regular_git_dir(root: Path | None) -> None:
         raise _altered(".git is a symlink")
     if not stat.S_ISDIR(st.st_mode):
         raise _altered(".git is not a directory (a gitdir file)")
+    _ensure_regular_config(root)  # before any git subprocess below reads it
 
     def check(rel: str, want_dir: bool, required: bool) -> None:
         try:
@@ -972,6 +982,43 @@ def ensure_regular_git_dir(root: Path | None) -> None:
         check(rel, want_dir=True, required=False)
     if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
         raise _altered("object alternates are present")
+    # The structure can be intact with the objects gone (pack files deleted,
+    # or moved and the link removed): HEAD's commit must still be readable.
+    # An unborn HEAD (a branch with no commit yet) has nothing to check.
+    sha = _head_commit_sha(git_dir)
+    if sha is not None:
+        try:
+            _run_git(
+                ["git", "-C", str(root), *SAFE_GIT_FLAGS, "cat-file", "-e", f"{sha}^{{commit}}"],
+                _git_env(None, Path(root)),
+            )
+        except GitError:
+            raise _altered(
+                "HEAD's commit is unreadable: the object store was emptied or moved"
+            ) from None
+
+
+def _head_commit_sha(git_dir: Path) -> str | None:
+    """The sha HEAD names, from the loose ref file or packed-refs, or None when
+    HEAD is detached-invalid or its branch is unborn (nothing to verify)."""
+    try:
+        head = (git_dir / "HEAD").read_text().strip()
+    except OSError:
+        return None
+    if not head.startswith("ref: "):
+        return head if re.fullmatch(r"[0-9a-f]{40,64}", head) else None
+    ref = head[5:].strip()
+    try:
+        return (git_dir / ref).read_text().strip() or None
+    except OSError:
+        pass
+    try:
+        for line in (git_dir / "packed-refs").read_text().splitlines():
+            if line.endswith(" " + ref):
+                return line.split(" ", 1)[0]
+    except OSError:
+        pass
+    return None
 
 
 def _ensure_regular_config(root: Path | None) -> None:
@@ -1139,9 +1186,9 @@ class Workspace:
     def git(self, *args: str) -> str:
         """Run a local git subcommand: no credential, no child-spawning config,
         repo-defined filter drivers neutralized. A session-reshaped .git is
-        refused before git runs (ensure_regular_git_dir)."""
+        refused before git runs (ensure_regular_git_dir, which also
+        sanitizes the config first)."""
         ensure_regular_git_dir(self.root)
-        _ensure_regular_config(self.root)
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
@@ -1153,8 +1200,7 @@ class Workspace:
         remote or rewrite can steer a credentialed op."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
-        ensure_regular_git_dir(self.root)
-        _ensure_regular_config(self.root)
+        ensure_regular_git_dir(self.root)  # sanitizes the config first, too
         token = self.auth.token() if self.auth is not None else None
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args],
