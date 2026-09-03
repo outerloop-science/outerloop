@@ -4575,19 +4575,42 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     nested.rmdir()
     ensure_regular_git_dir(root)
 
-    # HEAD's branch ref erased in a repository that has refs is not "unborn"
-    main_sha = _git(root, "rev-parse", "HEAD").strip()
-    _git(root, "branch", "keep", "HEAD")  # another ref exists, as in any clone
-    _git(root, "update-ref", "-d", "refs/heads/main")  # loose or packed, gone
-    with pytest.raises(GitError, match="HEAD names a branch whose ref is missing"):
-        ws.git("status")
-    _git(root, "update-ref", "refs/heads/main", main_sha)
+    # a crafted symbolic HEAD must not be followed outside .git (a FIFO there
+    # would hang the guard); it is refused at once
+    head_file = git_dir / "HEAD"
+    head_saved = head_file.read_text()
+    head_file.write_text("ref: ../../outside/fifo\n")
+    with pytest.raises(GitError, match="HEAD names a ref outside refs/"):
+        ensure_regular_git_dir(root)
+    head_file.write_text("garbage\n")
+    with pytest.raises(GitError, match="HEAD is malformed"):
+        ensure_regular_git_dir(root)
+    head_file.write_text(head_saved)
     ensure_regular_git_dir(root)
-    # while a genuinely fresh repository with an unborn branch still passes
+    # a genuinely fresh repository with an unborn branch passes
     fresh = tmp_path / "fresh"
     fresh.mkdir()
     _git(fresh, "init", "-q", "-b", "main")
     ensure_regular_git_dir(fresh)
+    # so does a clone whose remote HEAD names an unpushed branch (unborn local
+    # HEAD beside real remote refs) — and its object store is still verified
+    bare = tmp_path / "bare.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "master", str(bare))
+    _git(root, "push", "-q", str(bare), "main")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(bare), str(clone))
+    ensure_regular_git_dir(clone)
+    Workspace(root=clone).git("status")
+    cpack = clone / ".git" / "objects" / "pack"
+    if cpack.is_dir():
+        for f in list(cpack.iterdir()):
+            f.rename(elsewhere / f.name)
+        for d in (clone / ".git" / "objects").iterdir():
+            if d.is_dir() and len(d.name) == 2:
+                for f in list(d.iterdir()):
+                    f.unlink()
+        with pytest.raises(GitError, match="object store was emptied or moved"):
+            ensure_regular_git_dir(clone)
 
     # a missing HEAD
     head = git_dir / "HEAD"
@@ -4607,6 +4630,37 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     (root / ".git").unlink()
     real.rename(git_dir)
     ensure_regular_git_dir(root)
+
+
+def test_a_refused_wake_ends_the_parked_run_with_the_tampering_note(tmp_path: Path) -> None:
+    from autoresearch.attempt import _end_refused_wake
+    from autoresearch.github import GitError
+    from autoresearch.runstate import load_record, save_record
+
+    run_root = tmp_path / "state"
+    record = RunRecord(
+        run_id="tsp-9",
+        target="org/pilot",
+        task_title="t",
+        benchmark="tsp",
+        state="waiting",
+        resume_session_id="s1",
+        agent_id="agent-02",
+        stage={"phase": "candidate", "base_sha": "a" * 40, "candidate_sha": "b" * 40},
+    )
+    save_record(run_root, record, 1.0)
+    out = _end_refused_wake(
+        run_root,
+        record,
+        GitError("workspace .git altered by the session: .git/objects/pack is a symlink"),
+        2.0,
+        (),
+    )
+    assert out.outcome == "attempt-error"
+    ended = load_record(run_root, "tsp-9")
+    assert ended.state == "ended" and ended.ending == "aborted"
+    assert "objects/pack is a symlink" in (ended.ending_note or "")
+    assert ended.stage == {}
 
 
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:

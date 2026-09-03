@@ -1009,13 +1009,12 @@ def ensure_regular_git_dir(root: Path | None) -> None:
     if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
         raise _altered("object alternates are present")
     # The structure can be intact with the objects gone (pack files deleted,
-    # or moved and the link removed): HEAD's commit must still be readable.
-    # An unborn HEAD (a fresh repository whose branch has no commit yet) has
-    # nothing to check; a HEAD whose branch ref vanished from a repository
-    # that has other refs is an erased ref, not an unborn one.
-    sha = _head_commit_sha(git_dir)
-    if sha is None and _has_any_ref(git_dir):
-        raise _altered("HEAD names a branch whose ref is missing")
+    # or moved and the link removed): a commit the refs name must still be
+    # readable. HEAD's commit when HEAD is born; otherwise any other ref (a
+    # clone whose remote HEAD names an unpushed branch has an unborn local
+    # HEAD beside real remote refs); a fresh repository with no refs at all
+    # has nothing to check.
+    sha = _head_commit_sha(git_dir) or _any_ref_sha(git_dir)
     if sha is not None:
         try:
             _run_git(
@@ -1028,38 +1027,70 @@ def ensure_regular_git_dir(root: Path | None) -> None:
             ) from None
 
 
-def _has_any_ref(git_dir: Path) -> bool:
-    """Does the repository hold any ref at all (loose or packed)? A clone
-    always does; only a fresh `git init` with no commit has none."""
-    if (git_dir / "packed-refs").is_file():
-        return True
-    for sub in ("heads", "remotes", "tags"):
-        top = git_dir / "refs" / sub
-        if top.is_dir() and any(p.is_file() for p in top.rglob("*")):
-            return True
-    return False
+_SHA_RE = re.compile(r"[0-9a-f]{40,64}")
+_REF_RE = re.compile(r"refs/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}")
+
+
+def _read_small_regular(path: Path, limit: int = 512) -> str | None:
+    """Read a small control file only if it is a regular file (never follow a
+    symlink or block on a FIFO); None when absent or not regular."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        raise _altered(f"{path.name} is not a regular file")
+    with open(path, "rb") as fh:
+        return fh.read(limit).decode("utf-8", errors="replace")
+
+
+def _ref_sha(git_dir: Path, ref: str) -> str | None:
+    """A ref's sha from its loose file (inside .git only) or packed-refs."""
+    loose = _read_small_regular(git_dir / ref)
+    if loose is not None:
+        value = loose.strip()
+        return value if _SHA_RE.fullmatch(value) else None
+    packed = _read_small_regular(git_dir / "packed-refs", limit=1_000_000) or ""
+    for line in packed.splitlines():
+        if line.endswith(" " + ref) and _SHA_RE.fullmatch(line.split(" ", 1)[0]):
+            return line.split(" ", 1)[0]
+    return None
 
 
 def _head_commit_sha(git_dir: Path) -> str | None:
-    """The sha HEAD names, from the loose ref file or packed-refs, or None when
-    HEAD is detached-invalid or its branch is unborn (nothing to verify)."""
-    try:
-        head = (git_dir / "HEAD").read_text().strip()
-    except OSError:
-        return None
+    """The sha HEAD names, or None when HEAD's branch is unborn. A HEAD that
+    is not a plain sha or a well-formed `ref: refs/...` (a path with `..`, an
+    absolute path, junk) is tampering, not a state git ever writes."""
+    head = (_read_small_regular(git_dir / "HEAD") or "").strip()
+    if not head:
+        raise _altered("HEAD is empty")
+    if _SHA_RE.fullmatch(head):
+        return head
     if not head.startswith("ref: "):
-        return head if re.fullmatch(r"[0-9a-f]{40,64}", head) else None
+        raise _altered("HEAD is malformed")
     ref = head[5:].strip()
-    try:
-        return (git_dir / ref).read_text().strip() or None
-    except OSError:
-        pass
-    try:
-        for line in (git_dir / "packed-refs").read_text().splitlines():
-            if line.endswith(" " + ref):
-                return line.split(" ", 1)[0]
-    except OSError:
-        pass
+    if not _REF_RE.fullmatch(ref) or ".." in ref.split("/"):
+        raise _altered("HEAD names a ref outside refs/")
+    return _ref_sha(git_dir, ref)
+
+
+def _any_ref_sha(git_dir: Path) -> str | None:
+    """Some commit-bearing ref's sha (packed first, then loose under refs/),
+    used to verify the object store when HEAD is unborn; None when the
+    repository has no refs at all."""
+    packed = _read_small_regular(git_dir / "packed-refs", limit=1_000_000) or ""
+    for line in packed.splitlines():
+        if line and not line.startswith(("#", "^")):
+            sha = line.split(" ", 1)[0]
+            if _SHA_RE.fullmatch(sha):
+                return sha
+    top = git_dir / "refs"
+    if top.is_dir():
+        for path in sorted(top.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                value = (_read_small_regular(path) or "").strip()
+                if _SHA_RE.fullmatch(value):
+                    return value
     return None
 
 
