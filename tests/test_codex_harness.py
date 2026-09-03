@@ -256,3 +256,32 @@ def test_run_does_not_follow_a_symlinked_scratch_dir(monkeypatch: Any, tmp_path:
     monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
     CodexHarness(api_key="k").run("brief", workspace)
     assert (outside / "keep" / "f").read_text() == "x"  # symlink target untouched
+
+
+def test_run_does_not_follow_a_symlinked_run_home(monkeypatch: Any, tmp_path: Path) -> None:
+    """A prior session (uncontained: a plain host process) replaces ws-home with
+    a symlink to an external dir; cleanup resolves the run home with O_NOFOLLOW
+    anchored on the run directory, so it does not follow the link and delete the
+    target's .codex/.tmp."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    workspace = run_dir / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    (outside / ".codex" / ".tmp" / "keep").mkdir(parents=True)
+    (outside / ".codex" / ".tmp" / "keep" / "f").write_text("x")
+    (run_dir / "ws-home").symlink_to(outside)  # session_home is a symlink
+
+    class FakePopen:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def communicate(self, *a: Any, **k: Any) -> Any:
+            return ("", "")
+
+        returncode = 1
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
+    CodexHarness(api_key="k").run("brief", workspace)
+    assert (outside / ".codex" / ".tmp" / "keep" / "f").read_text() == "x"  # untouched
