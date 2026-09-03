@@ -4332,15 +4332,27 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     (root / "agent_memory" / "note.md").write_text("x\n")
 
     ws = Workspace(root=root)
-    assert _paths_changed_from_base(ws, base_sha, "agents/agent-01") == ["train.py"]
-    # without a line the memory dir is an ordinary path; the ledger still drops
-    assert _paths_changed_from_base(ws, base_sha, "") == ["agent_memory/note.md", "train.py"]
+    assert _paths_changed_from_base(ws, base_sha, True) == ["train.py"]
+    # the real call sites pass the base BRANCH ref; an unresolvable ref falls
+    # back (here to the same base) rather than crashing
+    git("update-ref", "refs/remotes/origin/main", base_sha)
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/main", True) == ["train.py"]
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True, fallback=base_sha) == [
+        "train.py"
+    ]
+    # falling back to HEAD restores the old staged-vs-HEAD reading
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True) == [
+        "BENCHMARKS.md",
+        "train.py",
+    ]
+    # memory not excluded (lines off): an ordinary path; the ledger still drops
+    assert _paths_changed_from_base(ws, base_sha, False) == ["agent_memory/note.md", "train.py"]
     # nothing staged against HEAD -> nothing, even though HEAD differs from base
     (root / "BENCHMARKS.md").write_text("best 8640\n")
     (root / "train.py").write_text("warmdown = 2048\n")
     (root / "agent_memory" / "note.md").unlink()
     (root / "agent_memory").rmdir()
-    assert _paths_changed_from_base(ws, base_sha, "agents/agent-01") == []
+    assert _paths_changed_from_base(ws, base_sha, True) == []
 
 
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
