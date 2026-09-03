@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import autoresearch.harness as harness_mod
-from autoresearch.harness import CodexHarness, SessionResult, _codex_command, _parse_codex_result
+from autoresearch.harness import (
+    CodexHarness,
+    SessionResult,
+    _codex_command,
+    _parse_codex_result,
+    _rmtree_at,
+)
 
 
 def test_command_has_expected_flags() -> None:
@@ -193,8 +199,60 @@ def test_run_survives_a_scratch_cleanup_that_raises(monkeypatch: Any, tmp_path: 
 
         returncode = 1
 
-    monkeypatch.setattr(harness_mod.shutil, "rmtree", boom)
+    monkeypatch.setattr(harness_mod, "_rmtree_at", boom)
     monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
     result = CodexHarness(api_key="k").run("brief", workspace)
     assert isinstance(result, SessionResult)  # cleanup did not propagate
+
+
+def test_rmtree_at_deletes_a_tree_but_never_follows_a_symlink(tmp_path: Path) -> None:
+    """_rmtree_at removes a real directory subtree, and when the named entry is
+    a symlink it deletes nothing (the target is left intact)."""
+    import os
+
+    parent = tmp_path / "parent"
+    (parent / "scratch" / "deep").mkdir(parents=True)
+    (parent / "scratch" / "deep" / "f").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("y")
+    (parent / "link").symlink_to(outside)
+
+    fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _rmtree_at(fd, "scratch")  # real subtree: gone
+        _rmtree_at(fd, "link")  # symlink: not followed
+    finally:
+        os.close(fd)
+
+    assert not (parent / "scratch").exists()
+    assert (parent / "link").is_symlink()  # the link itself is left in place
+    assert (outside / "keep").read_text() == "y"  # target untouched
+
+
+def test_run_does_not_follow_a_symlinked_scratch_dir(monkeypatch: Any, tmp_path: Path) -> None:
+    """.codex is a real directory but .codex/.tmp is a symlink to an external
+    dir; cleanup must not follow it and delete the target."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    home = tmp_path / "ws-home"
+    (home / ".codex").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "keep").mkdir(parents=True)
+    (outside / "keep" / "f").write_text("x")
+    (home / ".codex" / ".tmp").symlink_to(outside)
+
+    class FakePopen:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def communicate(self, *a: Any, **k: Any) -> Any:
+            return ("", "")
+
+        returncode = 1
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
+    CodexHarness(api_key="k").run("brief", workspace)
+    assert (outside / "keep" / "f").read_text() == "x"  # symlink target untouched

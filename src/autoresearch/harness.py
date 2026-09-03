@@ -17,8 +17,8 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 import signal
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass, field, replace
@@ -100,6 +100,34 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     env["HOME"] = str(home)
     env[key_variable] = api_key
     return env
+
+
+def _rmtree_at(dir_fd: int, name: str) -> None:
+    """Recursively delete directory `name` under `dir_fd`, anchored on file
+    descriptors and `O_NOFOLLOW` at every level. No path component is ever
+    resolved by name after the first open, so a session that swaps a directory
+    for a symlink mid-delete cannot divert it outside the tree (TOCTOU-safe).
+    Best-effort: a missing entry, a symlink, or a non-directory `name` is a
+    no-op."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=dir_fd)
+    except OSError:
+        return  # gone, a symlink (ELOOP), or not a directory
+    try:
+        for child in os.listdir(fd):
+            try:
+                st = os.stat(child, dir_fd=fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                _rmtree_at(fd, child)
+            else:
+                with contextlib.suppress(OSError):
+                    os.unlink(child, dir_fd=fd)
+    finally:
+        os.close(fd)
+    with contextlib.suppress(OSError):
+        os.rmdir(name, dir_fd=dir_fd)
 
 
 @dataclass(frozen=True)
@@ -950,22 +978,27 @@ class CodexHarness:
         # a run's wakes they pile up into tens of thousands of files, the bulk
         # of the per-run home. Clear codex's scratch before each run — its
         # durable state (auth.json, sessions, the sqlite) is elsewhere under
-        # .codex and untouched. A prior session owns this home, so if it
-        # replaced .codex with a symlink, deleting scratch "under" it would
-        # follow the link out of the run home: only clean a real directory
-        # (rmtree itself refuses a symlink AT a scratch path, so those are
-        # never followed either).
-        codex_home = session_home / ".codex"
-        if codex_home.is_dir() and not codex_home.is_symlink():
-            for scratch in (codex_home / ".tmp", codex_home / "tmp"):
-                # Best-effort: this cleanup must never abort the run it precedes
-                # (the harness contract is to return a SessionResult, not raise).
-                # ignore_errors swallows the per-file OSErrors; the guard also
-                # catches a RecursionError from an adversarially deep leaked tree.
-                try:
-                    shutil.rmtree(scratch, ignore_errors=True)
-                except Exception as exc:
-                    log.warning("codex scratch cleanup skipped %s: %s", scratch, exc)
+        # .codex and untouched. A prior session owns this home, so pin the real
+        # .codex directory with O_NOFOLLOW and delete the scratch anchored on
+        # that fd: a session that swaps .codex (or a scratch dir) for a symlink
+        # can never divert the delete out of the run home. Best-effort — this
+        # must never abort the run it precedes (the contract is to return a
+        # SessionResult, not raise), so an adversarially deep tree's
+        # RecursionError or any other error is caught and logged.
+        try:
+            codex_fd = os.open(
+                session_home / ".codex", os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+            )
+        except OSError:
+            codex_fd = -1  # no .codex, or it is a symlink → nothing to clean
+        if codex_fd >= 0:
+            try:
+                for scratch in (".tmp", "tmp"):
+                    _rmtree_at(codex_fd, scratch)
+            except Exception as exc:
+                log.warning("codex scratch cleanup skipped: %s", exc)
+            finally:
+                os.close(codex_fd)
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
         # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`
