@@ -1102,8 +1102,12 @@ def _push_line_snapshot(
         local = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
         memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
         last_exc: Exception | None = None
+        # the line commit this workspace's untouched files currently match:
+        # the local ref at first, then each remote head reconciled into it
+        # (so a retry does not mistake copied-in files for this run's edits)
+        fork = local
         for _ in range(3):
-            parent = local
+            parent = fork
             # A park frees the slot, so a newer run on the same line can end
             # (and push) while this one is parked: the remote line then sits
             # past our local ref, and a seal parented on the stale ref would be
@@ -1115,10 +1119,10 @@ def _push_line_snapshot(
             try:
                 ws.fetch_origin()
                 remote = ws.git("rev-parse", f"refs/remotes/origin/{line_ref}").strip()
-                if remote != local:
-                    ws.git("merge-base", "--is-ancestor", local, remote)  # raises when not
-                    _reconcile_with_remote(ws, local, remote)
-                    parent = remote
+                if remote != fork:
+                    ws.git("merge-base", "--is-ancestor", fork, remote)  # raises when not
+                    _reconcile_with_remote(ws, fork, remote)
+                    fork = parent = remote
             except Exception as exc:
                 log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
             snap = snapshot_tree(ws, parent, force=memory)

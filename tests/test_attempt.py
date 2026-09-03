@@ -4368,15 +4368,23 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     _git(wsroot, "push", "-q", "origin", "agents/agent-01")
     other = tmp_path / "other"
     _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
+    # a first sibling commit is already on the remote when we seal: it adds
+    # config.txt, which the first reconciliation copies into our workspace
+    (other / "config.txt").write_text("s1\n")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "sibling 1")
+    _git(other, "push", "-q", "origin", "agents/agent-01")
     pushes: list[str] = []
     real_push = Workspace.push
 
     def racing_push(self: Workspace, branch: str) -> None:
         pushes.append(branch)
         if len(pushes) == 1:
-            # a sibling lands between our fetch and our push
+            # a second sibling commit lands between our fetch and our push,
+            # changing the very file the first reconciliation copied in
             (other / "train.py").write_text("sibling\n")
-            _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "sibling")
+            (other / "config.txt").write_text("s2\n")
+            _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "sibling 2")
             _git(other, "push", "-q", "origin", "agents/agent-01")
         real_push(self, branch)  # the first attempt is now a non-fast-forward and raises
 
@@ -4388,6 +4396,8 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     assert len(pushes) == 2
     assert _git(bare, "rev-parse", f"{head}^").strip() == sibling
     assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
+    # the copied-in file is not "ours": the retry takes the sibling's newer version
+    assert _git(bare, "show", f"{head}:config.txt").strip() == "s2"
 
 
 def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path: Path) -> None:
