@@ -5,8 +5,9 @@ are the evidence.*
 
 ## The problem
 
-The tick chain schedules **one Slurm job per cadence**: every tick queues two
-successors (`--dependency=singleton`, `--begin` on the cadence grid) and exits.
+The tick chain schedules **one Slurm job per cadence**: each tick maintains two
+queued successors (`--dependency=singleton`, `--begin` on the cadence grid) and
+exits.
 That is 48 scheduling events a day, each one an opportunity for the scheduler
 to do something we cannot control. On Torch, 2026-09-02, it did:
 
