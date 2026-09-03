@@ -636,10 +636,11 @@ def benchmark_floor(
 
 def reaches_floor(delta: float, floor: float) -> bool:
     """Inclusive floor test that survives binary floats: 0.3 - 0.2 is
-    0.09999999999999998, which must still clear a 0.1 floor. Relative
-    tolerance only — an absolute one would let a genuinely short delta
-    through on a tiny floor."""
-    return delta >= floor or math.isclose(delta, floor, rel_tol=1e-9, abs_tol=0.0)
+    0.09999999999999998, which must still clear a 0.1 floor. The tolerance
+    is relative and sized to rounding only (subtraction error is ~1e-16 of
+    the operands, so 1e-12 of the floor covers values up to thousands of
+    floors wide); a genuinely short delta is never rescued, at any scale."""
+    return delta >= floor or math.isclose(delta, floor, rel_tol=1e-12, abs_tol=0.0)
 
 
 def clears_min_delta(
