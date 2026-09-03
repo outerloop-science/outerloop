@@ -22,8 +22,8 @@ to do something we cannot control. On Torch, 2026-09-02, it did:
   deadline against its own *estimated* start, which under congestion sits
   hours out, so it **cancelled every successor within minutes** (#237 reverted).
 - At 19:02 ET the scheduler also cancelled every pending job of ours at once,
-  armed wakes included — cause unknown, but a reminder that pending jobs are
-  hostage to the site.
+  armed wakes included — cause unknown, but a reminder that pending jobs depend
+  on the site scheduler.
 
 Mitigations shipped (#234: a running tick requeues a moved successor; the
 sweep redelivers a moved wake) only help while a tick runs. The root cause is
@@ -33,30 +33,41 @@ job every thirty minutes.
 ## The design
 
 **One long-lived tick job that loops** — deploy, tick, sleep to the next slot —
-so the chain needs one scheduling event per *day*, not per cadence:
+so the chain needs a handful of scheduling events per *day*, not one per
+cadence. `cpu_short` accepts at most six hours (`sbatch --test-only`: 06:00:00
+accepted, 06:01:00 rejected — the partition's QoS), so a resident job lives
+six hours and hands over four times a day: twelve times fewer scheduling
+events than the 48 per-cadence jobs.
 
 ```
-resident job (cpu_short, --time=1-00:00:00, singleton)
+resident job (cpu_short, --time=06:00:00 passed at start, singleton)
   submit ONE successor: --dependency=afterany:<self>,singleton   # continuity
   loop until 20 minutes before walltime:
+    if the pause sentinel is set: cancel the successor, exit     # no resubmit
     deploy (fetch main + reset, uv sync, re-read .env)            # as today
-    run one tick as a CHILD process with a 15-minute timeout      # never exec
+    if the shim's hash changed: cancel + resubmit the successor   # fresh shim
+    run one tick as a CHILD: timeout --kill-after=60s 15m         # never exec
     sleep until the next cadence slot
 ```
 
 - **Continuity.** The single successor waits on `afterany:self`, so it is
   ineligible (not a candidate for the site's moves) until this job ends —
   walltime, node death, or preemption — and then starts as soon as the
-  scheduler gives it a node. One handover per day; during it, the armed
+  scheduler gives it a node. Four handovers a day; during one, the armed
   per-run wakes keep firing on their own, exactly as they did today.
+- **Pause exits without resubmitting.** The sentinel is read at the top of
+  every iteration; when set, the loop cancels its queued successor and exits,
+  which is the architecture's rule for the pause and what a paused chain must
+  mean: nothing queued.
 - **Deploy-at-tick stays.** Each iteration re-deploys and re-reads the operator
   `.env` before the tick, so merges to `main` and live config changes still
-  land at the next cadence. The successor also runs the script from the
-  checkout, so shim changes propagate at handover instead of one generation
-  later.
+  land at the next cadence. Slurm spools a batch script at submission, so the
+  queued successor carries the shim as it was when queued: after a deploy that
+  changed `tick_chain.sbatch` (hash compare), the loop cancels and resubmits
+  the successor, and handover runs the current shim — no extra generation.
 - **A hung or crashed tick never takes the loop with it.** The tick runs as a
-  child under `timeout`; the loop logs the exit and sleeps to the next slot.
-  The pause sentinel is honored per iteration.
+  child under `timeout --kill-after=60s 15m` (TERM, then KILL a minute later
+  if it ignores TERM); the loop logs the exit and sleeps to the next slot.
 - **Idempotent by construction.** Nothing in the tick changes: same records,
   leases, markers, coalescing guard. A tick that runs twice or late is already
   safe (the lease makes restarts safe); the resident loop only changes *who
@@ -68,16 +79,20 @@ resident job (cpu_short, --time=1-00:00:00, singleton)
 
 If the resident job itself is pending (first start, or a handover during
 congestion) the chain is down until it starts — the same exposure as today,
-once a day instead of 48 times. `cpu_short` has `PreemptMode=OFF`, so a running
+four times a day instead of 48. `cpu_short` has `PreemptMode=OFF`, so a running
 resident job is not preempted. A dead node kills the job; the successor
 covers it.
 
 ## Rollout
 
-1. Opt-in mode in `scripts/tick_chain.sbatch`: `AUTORESEARCH_RESIDENT_HOURS=24`
-   selects the loop; unset keeps today's per-cadence chain, byte for byte.
-   The loop's slot arithmetic and the tick timeout are small helpers with
-   tests (PATH shims), like the lock sweep.
+1. Opt-in mode in `scripts/tick_chain.sbatch`: `AUTORESEARCH_RESIDENT=1` in
+   the chain's environment selects the loop; unset keeps today's per-cadence
+   chain, byte for byte. The walltime is fixed by Slurm before the script
+   runs, so the resident chain is STARTED with an explicit
+   `sbatch --time=06:00:00 …` (the `#SBATCH --time=15` header stays the
+   per-cadence default) and its successors are submitted the same way. The
+   loop's slot arithmetic and the tick timeout are small helpers with tests
+   (PATH shims), like the lock sweep.
 2. Start one resident chain beside nothing else (singleton makes the two
    modes exclusive); watch a day of handovers in the tick log.
 3. Make resident the default; keep the per-cadence mode as the LocalCompute /

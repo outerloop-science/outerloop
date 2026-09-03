@@ -58,8 +58,9 @@ needs inbound access is a human with the runbook.
   drift), submitted with retry/backoff. One failed submit doesn't kill the loop;
   two consecutive failures leave the watchdog alert as the signal.
   Under scheduler congestion this per-cadence chain is fragile (a moved
-  successor can stall it); **design/resident-tick.md** proposes one long-lived
-  looping job with a single `afterany:self` successor instead.
+  successor can stall it); **design/resident-tick.md** proposes a six-hour
+  looping job with a single `afterany:self` successor instead — four
+  scheduling events a day instead of 48.
 - **Tick order**: (1) read the pause sentinel on the state branch — if set, exit
   *without resubmitting*; (2) acquire the lease by compare-and-swap commit to the
   state branch — a non-fast-forward push means another tick is alive: exit;
