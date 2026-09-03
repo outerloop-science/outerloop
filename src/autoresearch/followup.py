@@ -1729,10 +1729,30 @@ def _resume_measure(
         )
     candidate = float(vals[FOLLOWUP_MEASURE])
 
+    head_now = str((pr.get("head") or {}).get("sha", ""))
+    landed = str(stage.get("pushed_head", ""))
+    if landed and head_now == landed:
+        # a previous resume pushed this very commit and died before its
+        # record write (terra #241 r5): finish the bookkeeping, never abandon
+        latest = load_record(run_root, run_id)
+        save_record(
+            run_root,
+            replace(latest, followup_stage={}, auto_blessed_head="", wake_attempts=0),
+            now,
+        )
+        drop_snapshot(ws, snapshot)
+        with contextlib.suppress(Exception):
+            github.comment(
+                record.target,
+                number,
+                f"{REPLY_MARKER}\n**Re-measured after this change: `{bench.metric}` = "
+                f"{fmt_metric(candidate, bench.display_digits)}** (pushed as `{landed[:12]}`).",
+            )
+        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
+
     # the sealed commit is parented on the head the PR had at park: a push
     # since (a maintainer's) makes it unpushable AND measured on a tree that
     # is no longer the PR's — abandon honestly rather than force or rebuild
-    head_now = str((pr.get("head") or {}).get("sha", ""))
     if head_now and parent and head_now != parent:
         return _abandon(
             f"_(The PR's head moved while the re-measure ran (`{parent[:12]}` → "
@@ -1780,6 +1800,23 @@ def _resume_measure(
         f"{fmt_metric(candidate, bench.display_digits)})\n\nAgent: {record.agent_id}",
     )
     pushed_head = ws.git("rev-parse", "HEAD").strip()
+    # the commit about to be pushed is recorded FIRST: a resume that finds it
+    # as the PR head knows the push landed even if the write after the push
+    # never happened (terra #241 r5). A failed write here withholds the push.
+    try:
+        latest = load_record(run_root, run_id)
+        save_record(
+            run_root,
+            replace(latest, followup_stage={**latest.followup_stage, "pushed_head": pushed_head}),
+            now,
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("pre-push record write failed for %s: %s", run_id, exc)
+        with contextlib.suppress(GitError):
+            ws.git("checkout", "-f", parent)
+        with contextlib.suppress(GitError):
+            ws.git("clean", "-fdq")
+        return FollowupOutcome(run_id, "error", "record write failed before the push; retrying")
     ws.push(branch)
     # the change is on the PR: the record says so BEFORE any thread write, so
     # a failed comment can never make a later retry "abandon" a change that

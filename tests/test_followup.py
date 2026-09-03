@@ -2953,3 +2953,77 @@ def test_a_synchronous_sealed_measure_pushes_the_sealed_tree_not_the_workspace(r
     )  # ledger folded in
     assert done.calls[0][0].tree_sha == _git(ws, "rev-parse", f"{head}^{{}}").strip() or True
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # released after use
+
+
+def test_a_resume_that_died_after_its_push_completes_on_the_next_follow_up(
+    review_run, monkeypatch
+) -> None:
+    """The commit about to be pushed is recorded before the push; a retry that
+    finds it as the PR head finishes the bookkeeping instead of abandoning a
+    change that already landed (terra #241 r5)."""
+    import autoresearch.followup as fu
+
+    root, bare = review_run
+    _gpu_run(root)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    ws = run_dir(root, "tsp-r1") / "ws"
+    github.ws = ws
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    # the write AFTER the push dies (the clearing save: followup_stage == {})
+    real_save = fu.save_record
+
+    def dying_save(run_root_, record, now_):
+        if record.followup_stage == {}:
+            raise OSError("disk full")
+        return real_save(run_root_, record, now_)
+
+    monkeypatch.setattr(fu, "save_record", dying_save)
+    github2 = AutoGitHub()
+    github2.ws = ws
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out.action == "error"  # the crash
+    landed = _origin_head(bare)
+    rec = load_record(root, "tsp-r1")
+    assert (
+        rec.followup_stage and rec.followup_stage["pushed_head"] == landed
+    )  # recorded before the push
+    monkeypatch.setattr(fu, "save_record", real_save)
+    # the retry: the PR head IS the recorded push -> completed, not abandoned
+    github3 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": landed}})
+    out3 = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github3,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 2,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out3.action == "replied" and "already landed" in out3.note
+    assert "head moved" not in " ".join(github3.posted)
+    assert "Re-measured" in github3.posted[0]
+    assert load_record(root, "tsp-r1").followup_stage == {}
+    assert _origin_head(bare) == landed  # nothing re-pushed
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
