@@ -4016,3 +4016,63 @@ def test_a_parked_remeasure_is_polled_then_finished_by_a_followup(tmp_path: Path
     # the follow-up gets the cluster coordinates to read (or dispatch) the measure
     assert "--gpu-partition h200" in wrap and "--gpu-account gacct" in wrap
     assert "--account acct" in wrap and "--partition cpu_short" in wrap
+
+
+def test_a_blind_parked_remeasure_waits_its_floor_before_a_followup_is_sent(tmp_path: Path) -> None:
+    """No job ids to poll (the measurer could not read the queue): the eval
+    walltime plus the queue slack is the floor — never a follow-up per tick."""
+    from autoresearch.compute import CommandResult
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import BLIND_PARK_SLACK_MIN, FollowupSpec, service_in_review
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False, "head": {"sha": "a" * 40}}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def run(parked_at: float) -> list:
+        root = tmp_path / f"root-{int(parked_at)}"
+        root.mkdir()
+        save_record(
+            root,
+            RunRecord(
+                run_id="r-rev",
+                target="org/pilot",
+                task_title="t",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/9",
+                followup_stage={
+                    "job_ids": [],
+                    "candidate_sha": "c" * 40,
+                    "parked_at": parked_at,
+                    "eval_minutes": 30,
+                },
+            ),
+            now=NOW,
+        )
+        submits: list[list[str]] = []
+
+        def runner(argv, timeout_s):
+            if argv[0] == "sbatch":
+                submits.append(list(argv))
+                return CommandResult(0, "78\n", "")
+            raise AssertionError(argv)
+
+        spec = FollowupSpec(
+            account="a", partition="p", run_root=root, image="/img/a.sif", home=Path("/h")
+        )
+        _ended, submitted = service_in_review(root, G(), SlurmCompute(runner=runner), spec, NOW)
+        return submitted
+
+    assert run(NOW - 60) == []  # just parked: wait
+    assert run(NOW - (30 + BLIND_PARK_SLACK_MIN) * 60 - 1) == [
+        ("r-rev", "78")
+    ]  # floor passed: look

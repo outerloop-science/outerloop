@@ -82,6 +82,9 @@ WORK_MARKER_NAME = "last_worked.json"
 # Grace between "experiment terminal" and the sweep stepping in: the afterany
 # job gets this long to deliver before the backup assumes it lost.
 DEFAULT_GRACE_S = 15 * 60
+# a blind park (no job ids to poll) waits its eval walltime plus this queue
+# slack before a follow-up is sent to look for the result
+BLIND_PARK_SLACK_MIN = 12 * 60
 # A held lease is stale after the session timeout plus slack.
 DEFAULT_LEASE_TTL_S = 3600 + 15 * 60
 # Coalesce guard: skip a tick's work if another ran within this window. Under
@@ -576,13 +579,27 @@ def service_in_review(
             if record.followup_stage:
                 raw_ids = record.followup_stage.get("job_ids")
                 job_ids = [str(j) for j in raw_ids] if isinstance(raw_ids, list) else []
-                try:
-                    states = [compute.status(j) for j in job_ids]
-                except SlurmQueryError:
-                    continue  # unknown: neither service nor arm
-                if job_ids and not all(is_terminal(s) or s == GONE for s in states):
-                    continue
-                measure_ready = True
+                if job_ids:
+                    try:
+                        states = [compute.status(j) for j in job_ids]
+                    except SlurmQueryError:
+                        continue  # unknown: neither service nor arm
+                    if not all(is_terminal(s) or s == GONE for s in states):
+                        continue
+                    measure_ready = True
+                else:
+                    # a BLIND park (the measurer could not read the queue at
+                    # dispatch): no ids to poll, so the eval walltime plus the
+                    # climb's queue slack is the floor before a follow-up is
+                    # sent to look — never one per tick (terra #241 r1)
+                    from autoresearch.dispatch import effective_eval_minutes
+
+                    parked_at = float(record.followup_stage.get("parked_at", 0.0) or 0.0)  # type: ignore[arg-type]
+                    floor_min = int(record.followup_stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
+                    floor_s = (effective_eval_minutes(floor_min) + BLIND_PARK_SLACK_MIN) * 60
+                    if now - parked_at < floor_s:
+                        continue
+                    measure_ready = True
             wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the

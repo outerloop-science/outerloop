@@ -899,8 +899,6 @@ def _respond(
                 # the climb does — placement comes from the contract's
                 # `gpus:`, never from the author. A synchronous compute
                 # (LocalCompute) returns the value here; a cluster parks.
-                from autoresearch.measure import EvalError
-
                 try:
                     sealed = _seal_and_measure(
                         ws, run_root, run_id, dispatch, bench, run_seed, workspace
@@ -925,7 +923,9 @@ def _respond(
                         now=now,
                         secrets=secrets,
                     )
-                except EvalError as exc:
+                except Exception as exc:
+                    # a failed dispatch (eval error, no GPU lane, compute
+                    # outage) is the failed-eval path: reverted and said
                     dispatched_error, sealed = exc, None
             else:
                 sealed = None
@@ -1476,7 +1476,7 @@ def _seal_and_measure(
     (the caller parks); an `EvalError` propagates with the snapshot released."""
     from autoresearch.attempt import LINE_MEMORY_PATHS
     from autoresearch.dispatch import drop_snapshot, snapshot_tree
-    from autoresearch.measure import EvalError, MeasurementPending
+    from autoresearch.measure import MeasurementPending
 
     parent = ws.git("rev-parse", "HEAD").strip()
     snap = snapshot_tree(ws, parent, exclude=LINE_MEMORY_PATHS if bench.lines else ())
@@ -1490,7 +1490,9 @@ def _seal_and_measure(
         vals = measurer.results([_followup_measure(bench, snap.commit, run_seed)])
     except MeasurementPending as pend:
         raise _RemeasureParked(snap, pend) from pend
-    except EvalError:
+    except Exception:
+        # EvalError, a missing GPU lane (ValueError), a compute outage: the
+        # retained ref must never outlive the attempt (terra #241 r1)
         drop_snapshot(ws, snap)
         raise
     drop_snapshot(ws, snap)
@@ -1534,6 +1536,7 @@ def _park_remeasure(
         "conflict_head": conflict_head,
         "base_synced": bool(base_synced),
         "parked_at": now,
+        "eval_minutes": int(bench.eval_minutes or 0),
     }
     note = (
         "\n\n_(A code change was made; its re-measure is running on the GPU lane "
@@ -1598,7 +1601,13 @@ def _resume_measure(
     from autoresearch.attempt import _target_clone_url
 
     ws = Workspace(root=workspace, auth=github.auth, url=_target_clone_url(record.target))
-    contract_text = (workspace / ".autoresearch.yaml").read_text()
+    # the measurement's contract is the SEALED tree's — what was actually
+    # measured — never the live workspace file, which can change during the
+    # wait (terra #241 r1)
+    try:
+        contract_text = ws.git("show", f"{candidate_sha}:.autoresearch.yaml")
+    except GitError as exc:
+        return FollowupOutcome(run_id, "error", f"sealed contract unreadable: {exc}")
     contract = load_contract(contract_text, record.target)
     bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
     if bench is None:
@@ -1636,6 +1645,17 @@ def _resume_measure(
         )
     candidate = float(vals[FOLLOWUP_MEASURE])
 
+    # the sealed commit is parented on the head the PR had at park: a push
+    # since (a maintainer's) makes it unpushable AND measured on a tree that
+    # is no longer the PR's — abandon honestly rather than force or rebuild
+    head_now = str((pr.get("head") or {}).get("sha", ""))
+    if head_now and parent and head_now != parent:
+        return _abandon(
+            f"_(The PR's head moved while the re-measure ran (`{parent[:12]}` → "
+            f"`{head_now[:12]}`), so the measured change no longer applies to this "
+            "branch and was not pushed. Ask again and it will be redone on the new head.)_"
+        )
+
     branch = _current_branch(ws)
     if branch == "HEAD":
         branch = str((pr.get("head") or {}).get("ref", "")) or branch
@@ -1645,13 +1665,14 @@ def _resume_measure(
     prior, floor_note = _update_ledger(
         workspace, bench, contract, candidate, run_id, created, run_seed, record.target
     )
-    disarmed = True
-    if getattr(contract, "merge", "manual") == "auto":
-        try:
-            disarmed = github.disable_auto_merge(record.target, number)
-        except Exception as exc:
-            disarmed = False
-            log.warning("auto-merge disarm errored: %s", exc)
+    # ALWAYS disarm before the push: the dial that armed this PR may be any
+    # of the pre-change, sealed, or current base contract, and a disarm on a
+    # PR with nothing armed is confirmed as such (terra #241 r1)
+    try:
+        disarmed = github.disable_auto_merge(record.target, number)
+    except Exception as exc:
+        disarmed = False
+        log.warning("auto-merge disarm errored: %s", exc)
     if not disarmed:
         with contextlib.suppress(GitError):
             ws.git("checkout", "-f", parent)

@@ -2590,3 +2590,151 @@ def test_a_cpu_benchmark_still_measures_inline_with_dispatch_configured(review_r
     )
     assert out.action == "replied" and "10.2" in github.posted[0]
     assert never.calls == []
+
+
+def test_a_failed_dispatch_releases_the_snapshot_and_is_the_failed_eval_path(review_run) -> None:
+    """A missing GPU lane (ValueError from the measurer), an outage — any
+    failure after sealing must release the retained ref and read as a failed
+    eval on the thread (terra #241 r1)."""
+    root, bare = review_run
+    _gpu_run(root)
+
+    @dataclass
+    class NoLane:
+        def results(self, measures):
+            raise ValueError("measure followup needs 1 GPU(s) but no GPU lane is configured")
+
+    github = FakeGitHub(comments=[member(901, "tweak")])
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(NoLane()),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "eval failed" in github.posted[0]
+    ws = run_dir(root, "tsp-r1") / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # no leaked ref
+    assert not _origin_has_branch(bare)
+    assert load_record(root, "tsp-r1").followup_stage == {}
+
+
+def test_a_resume_measures_under_the_sealed_contract_not_the_workspace_file(review_run) -> None:
+    root, _bare = review_run
+    _gpu_run(root)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = run_dir(root, "tsp-r1") / "ws"
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    # someone edits the live contract during the wait
+    (ws / ".autoresearch.yaml").write_text(GPU_CONTRACT.replace("--json", "--json --cheat"))
+    done = FakeMeasurer(value=10.2)
+    github2 = AutoGitHub()
+    github2.ws = ws
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "applied" in out.note
+    assert "--cheat" not in done.calls[0][0].command  # the SEALED contract's command
+
+
+def test_a_moved_pr_head_abandons_the_parked_change_honestly(review_run) -> None:
+    root, bare = review_run
+    _gpu_run(root)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = run_dir(root, "tsp-r1") / "ws"
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    # a maintainer pushed to the PR while the GPU job ran
+    github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": "e" * 40}})
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "abandoned" in out.note
+    assert "head moved while the re-measure ran" in github2.posted[0]
+    assert not _origin_has_branch(bare)
+    rec = load_record(root, "tsp-r1")
+    assert rec.followup_stage == {}
+    assert _git(run_dir(root, "tsp-r1") / "ws", "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_a_resume_always_disarms_before_pushing(review_run) -> None:
+    """The dial that armed the PR may be any contract the PR saw: the resume
+    disarms unconditionally and withholds the push when the disarm is not
+    confirmed."""
+    root, bare = review_run
+    _gpu_run(root)  # a MANUAL contract: the inline path would not disarm
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = run_dir(root, "tsp-r1") / "ws"
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+
+    class DisarmRefuses(AutoGitHub):
+        def disable_auto_merge(self, repo, number):
+            self.disarmed.append(number)
+            return False
+
+    github2 = DisarmRefuses()
+    github2.ws = run_dir(root, "tsp-r1") / "ws"
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert github2.disarmed == [9] and "WITHHELD" in github2.posted[0]
+    assert not _origin_has_branch(bare)
+    assert load_record(root, "tsp-r1").followup_stage != {}  # kept: the next follow-up retries
