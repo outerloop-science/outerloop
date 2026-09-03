@@ -47,7 +47,15 @@ AUTORESEARCH_DEPLOY_BROKEN=""
 if ! (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
     if [ -n "${DEPLOY_PREV:-}" ] && [ "$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null)" != "$DEPLOY_PREV" ]; then
         if git -C "$AUTORESEARCH_HOME" reset --hard --quiet "$DEPLOY_PREV"; then
-            echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment"
+            # the failed sync may have already removed packages the old code
+            # needs (an exact sync prunes before it installs): restore the OLD
+            # commit's environment too, or skip the tick until a deploy succeeds
+            if (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
+                echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment"
+            else
+                echo "deploy: uv sync failed; back on $DEPLOY_PREV but its environment could not be restored; tick skipped until a deploy succeeds"
+                AUTORESEARCH_DEPLOY_BROKEN=1
+            fi
         else
             echo "deploy: uv sync failed and the rollback to $DEPLOY_PREV failed; tick skipped until a deploy succeeds"
             AUTORESEARCH_DEPLOY_BROKEN=1

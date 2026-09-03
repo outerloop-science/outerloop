@@ -329,8 +329,12 @@ esac
 exit 0
 """
     )
+    # the sync for NEW fails; the sync for OLD (after the rollback) succeeds
+    syncs = tmp_path / "syncs"
     (bindir / "uv").write_text(
-        '#!/bin/sh\ncase "$1" in sync) echo "error: Disk quota exceeded" >&2; exit 2 ;; esac\n'
+        f'#!/bin/sh\ncase "$1" in sync) echo x >> "{syncs}"; '
+        f'[ "$(wc -l < "{syncs}" | tr -d " ")" -eq 1 ] && '
+        '{ echo "error: Disk quota exceeded" >&2; exit 2; } ;; esac\n'
         "exit 0\n"
     )
     for p in bindir.iterdir():
@@ -344,14 +348,20 @@ exit 0
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
-        ["bash", "-c", f'. "{home}/scripts/tick_deploy.sh"'],
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+        ],
         env=env,
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "deploy: uv sync failed; back on OLD" in proc.stdout
+    assert "deploy: uv sync failed; back on OLD with its environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout  # the old pair is whole again: the tick runs
+    assert syncs.read_text().count("x") == 2  # NEW's sync, then OLD's
     gitlog = log.read_text()
     assert "reset --hard --quiet FETCH_HEAD" in gitlog
     assert gitlog.index("reset --hard --quiet FETCH_HEAD") < gitlog.index(
@@ -387,6 +397,8 @@ exit 0
     (bindir / "uv").write_text('#!/bin/sh\ncase "$1" in sync) exit 2 ;; esac\nexit 0\n')
     for p in bindir.iterdir():
         os.chmod(p, 0o755)
+    # (the same shim, with a git whose rollback fails, is exercised below; a
+    # rollback that succeeds but whose re-sync fails is the case right after)
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -414,3 +426,57 @@ exit 0
     assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in shim and "tick skipped" in shim
     resident = (ROOT / "scripts" / "tick_resident.sh").read_text()
     assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in resident and "tick skipped" in resident
+
+
+def test_a_rollback_whose_environment_cannot_be_restored_marks_the_deploy_broken(
+    tmp_path: Path,
+) -> None:
+    """The checkout goes back, but every sync fails (the quota is still
+    full): the old code's environment may already be pruned, so the tick is
+    skipped rather than run on it."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    root = tmp_path / "root"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    pat = tmp_path / "pat"
+    pat.write_text("token\n")
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+case "$*" in
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
+  *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
+  *"reset --hard --quiet OLD"*) rm -f "{tmp_path}/reset" ;;
+esac
+exit 0
+"""
+    )
+    (bindir / "uv").write_text('#!/bin/sh\ncase "$1" in sync) exit 2 ;; esac\nexit 0\n')
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": str(root),
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "environment could not be restored; tick skipped" in proc.stdout
+    assert "BROKEN=1" in proc.stdout
+    assert not (tmp_path / "reset").exists()  # the checkout is on OLD
