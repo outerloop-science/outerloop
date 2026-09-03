@@ -16,6 +16,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A session that alters the workspace's `.git` (a symlinked object store,
+  pack directory, refs, HEAD, index, or config) now ends the run with a note
+  naming the tampering, at the first kernel git operation after the session,
+  instead of a later git error. (2026-09-03: an author moved the pack files
+  into the container's private /tmp and symlinked them; the kernel's git saw
+  refs with no objects.)
 - A line snapshot now builds on a newer remote version of the line instead
   of being skipped when another run on the same line pushed while this run
   was parked. Files the other run added, changed, or deleted that this run

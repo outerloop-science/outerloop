@@ -914,6 +914,39 @@ _REDIRECT_SECTIONS = ("url", "include", "includeif")
 _SECTION_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9.-]+)")
 
 
+# The parts of a workspace's .git the kernel relies on after a session ran.
+# Any of them replaced by a symlink (or gone) means the session reached into
+# the repository's plumbing: 2026-09-03 an author copied the pack files into
+# the container's private /tmp and symlinked objects/pack there, so the
+# kernel's git on the host found refs with no objects behind them.
+GIT_DIR_INTEGRITY_PATHS = ("objects", "objects/pack", "refs", "HEAD", "index", "config")
+
+
+def ensure_regular_git_dir(root: Path | None) -> None:
+    """Refuse a workspace whose .git was altered by the session: `.git` and
+    the entries the kernel reads must be regular (no symlinks), and the
+    object store and refs must be directories. Raises GitError with the
+    offending path; a workspace without .git is left to git's own error."""
+    if root is None:
+        return
+    git_dir = Path(root) / ".git"
+    if git_dir.is_symlink():
+        raise GitError(f"workspace .git altered by the session: {git_dir} is a symlink")
+    if not git_dir.is_dir():
+        return
+    for rel in GIT_DIR_INTEGRITY_PATHS:
+        path = git_dir / rel
+        if path.is_symlink():
+            raise GitError(f"workspace .git altered by the session: .git/{rel} is a symlink")
+        if rel in ("objects", "objects/pack", "refs"):
+            if rel == "objects/pack" and not path.exists():
+                continue  # a fresh repo with only loose objects has no pack dir
+            if not path.is_dir():
+                raise GitError(
+                    f"workspace .git altered by the session: .git/{rel} is not a directory"
+                )
+
+
 def _ensure_regular_config(root: Path | None) -> None:
     """Sanitize .git/config before any git command reads it. A session can
     (a) replace the file with a FIFO/symlink/device — git's own parse, or a
@@ -1091,6 +1124,7 @@ class Workspace:
         remote or rewrite can steer a credentialed op."""
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
+        ensure_regular_git_dir(self.root)
         _ensure_regular_config(self.root)
         token = self.auth.token() if self.auth is not None else None
         return _run_git(

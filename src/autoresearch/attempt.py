@@ -40,6 +40,7 @@ from autoresearch.github import (
     GitHubClient,
     TokenProvider,
     Workspace,
+    ensure_regular_git_dir,
 )
 from autoresearch.harness import Harness, SessionResult, redact
 from autoresearch.measure import DispatchedMeasurer, DispatchSettings
@@ -1098,7 +1099,9 @@ def _push_line_snapshot(
 
     def _seal_and_push() -> None:
         # raises if the ref is absent (e.g. a park that predates the line
-        # feature) — _best_effort turns that into a logged skip
+        # feature) or the session altered .git — _best_effort turns either
+        # into a logged skip
+        ensure_regular_git_dir(Path(ws.root))
         local = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
         memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
         last_exc: Exception | None = None
@@ -1271,6 +1274,7 @@ def _paths_changed_from_base(
     count. `fallback` is used when `base` does not resolve (no remote).
     `exclude_memory` drops the line's memory files whenever lines are active
     for the benchmark (a failed line checkout still keeps them out)."""
+    ensure_regular_git_dir(Path(ws.root))  # the first kernel git op after a session
     try:
         base_commit = ws.git("rev-parse", "--verify", f"{base}^{{commit}}").strip()
     except Exception:

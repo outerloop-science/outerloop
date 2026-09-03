@@ -4466,6 +4466,52 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     assert _paths_changed_from_base(ws, base_sha, True) == []
 
 
+def test_a_session_that_symlinks_the_object_store_is_refused_with_a_plain_note(
+    tmp_path: Path,
+) -> None:
+    """2026-09-03: an author copied .git/objects/pack into the container's /tmp
+    and symlinked it, leaving the kernel's git with refs and no objects. The
+    kernel must name the tampering instead of failing on a later git call."""
+    import os
+
+    from autoresearch.attempt import _paths_changed_from_base
+    from autoresearch.github import GitError, Workspace, ensure_regular_git_dir
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "train.py").write_text("v1\n")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    ensure_regular_git_dir(root)  # a clean clone passes
+    # the session's move: pack files into a private tmp, a symlink left behind
+    pack = root / ".git" / "objects" / "pack"
+    _git(root, "gc", "-q")  # make sure a pack dir with content exists
+    elsewhere = tmp_path / "private-tmp"
+    elsewhere.mkdir()
+    for f in pack.iterdir():
+        f.rename(elsewhere / f.name)
+    pack.rmdir()
+    os.symlink(elsewhere, pack)
+    with pytest.raises(GitError, match=r"altered by the session: \.git/objects/pack is a symlink"):
+        ensure_regular_git_dir(root)
+    with pytest.raises(GitError, match="altered by the session"):
+        _paths_changed_from_base(Workspace(root=root), base, False)
+    # other plumbing is covered too
+    os.unlink(pack)
+    pack.mkdir()
+    head = root / ".git" / "HEAD"
+    head_text = head.read_text()
+    head.unlink()
+    os.symlink(elsewhere / "nope", head)
+    with pytest.raises(GitError, match=r"\.git/HEAD is a symlink"):
+        ensure_regular_git_dir(root)
+    head.unlink()
+    head.write_text(head_text)
+    ensure_regular_git_dir(root)
+
+
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
     from autoresearch.attempt import _without_line_memory
 
