@@ -1094,15 +1094,22 @@ _HEX2 = re.compile(r"[0-9a-f]{2}")
 _REF_RE = re.compile(r"refs/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}")
 
 
+PACKED_REFS_MAX_BYTES = 64 * 1024 * 1024  # far beyond any real repository's packed-refs
+
+
 def _read_small_regular(path: Path, limit: int = 512) -> str | None:
-    """Read a small control file only if it is a regular file (never follow a
-    symlink or block on a FIFO); None when absent or not regular."""
+    """Read a control file only if it is a regular file (never follow a
+    symlink or block on a FIFO); None when absent. A file larger than
+    `limit` is refused rather than truncated: a truncated read would silently
+    drop entries (a HEAD ref past the cut would read as unborn)."""
     try:
         st = os.lstat(path)
     except OSError:
         return None
     if not stat.S_ISREG(st.st_mode):
         raise _altered(f"{path.name} is not a regular file")
+    if st.st_size > limit:
+        raise _altered(f"{path.name} is oversized ({st.st_size} bytes)")
     try:
         with open(path, "rb") as fh:
             return fh.read(limit).decode("utf-8", errors="replace")
@@ -1116,7 +1123,7 @@ def _ref_sha(git_dir: Path, ref: str) -> str | None:
     if loose is not None:
         value = loose.strip()
         return value if _SHA_RE.fullmatch(value) else None
-    packed = _read_small_regular(git_dir / "packed-refs", limit=1_000_000) or ""
+    packed = _read_small_regular(git_dir / "packed-refs", limit=PACKED_REFS_MAX_BYTES) or ""
     for line in packed.splitlines():
         if line.endswith(" " + ref) and _SHA_RE.fullmatch(line.split(" ", 1)[0]):
             return line.split(" ", 1)[0]
@@ -1144,7 +1151,7 @@ def _any_ref_sha(git_dir: Path) -> str | None:
     """Some commit-bearing ref's sha (packed first, then loose under refs/),
     used to verify the object store when HEAD is unborn; None when the
     repository has no refs at all."""
-    packed = _read_small_regular(git_dir / "packed-refs", limit=1_000_000) or ""
+    packed = _read_small_regular(git_dir / "packed-refs", limit=PACKED_REFS_MAX_BYTES) or ""
     for line in packed.splitlines():
         if line and not line.startswith(("#", "^")):
             sha = line.split(" ", 1)[0]

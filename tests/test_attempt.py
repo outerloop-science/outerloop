@@ -4580,6 +4580,44 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     nested.rmdir()
     ensure_regular_git_dir(root)
 
+    # packed-refs is read in full: HEAD's entry past the old 1 MB cut must
+    # still resolve (and its missing object still be caught), and an absurd
+    # file is refused rather than truncated
+    packed = git_dir / "packed-refs"
+    packed_saved = packed.read_text() if packed.exists() else None
+    head_sha = _git(root, "rev-parse", "HEAD").strip()
+    _git(root, "pack-refs", "--all")
+    lines = packed.read_text().splitlines()
+    head_line = next(ln for ln in lines if ln.endswith(" refs/heads/main"))
+    # no "sorted" header (git would binary-search and miss the tail entry);
+    # real shas for the filler so git accepts every line
+    others = [ln for ln in lines if ln != head_line and not ln.startswith("#")]
+    filler = [f"{head_sha} refs/tags/filler-{i:07d}" for i in range(30_000)]  # > 1 MB
+    packed.write_text("\n".join([*others, *filler, head_line]) + "\n")
+    assert _git(root, "rev-parse", "HEAD").strip() == head_sha
+    ensure_regular_git_dir(root)  # HEAD resolves through the tail of the file
+    for f in list(pack.iterdir()):
+        f.rename(elsewhere / f.name)
+    for d in (git_dir / "objects").iterdir():
+        if d.is_dir() and len(d.name) == 2:
+            for f in list(d.iterdir()):
+                f.rename(elsewhere / f"{d.name}{f.name}")
+    with pytest.raises(GitError, match="object store was emptied or moved"):
+        ensure_regular_git_dir(root)
+    for f in list(elsewhere.iterdir()):
+        if len(f.name) == 40 and not f.name.startswith("pack-"):
+            (git_dir / "objects" / f.name[:2]).mkdir(exist_ok=True)
+            f.rename(git_dir / "objects" / f.name[:2] / f.name[2:])
+        elif f.name.startswith("pack-"):
+            f.rename(pack / f.name)
+    packed.write_bytes(b"x" * (64 * 1024 * 1024 + 1))
+    with pytest.raises(GitError, match="packed-refs is oversized"):
+        ensure_regular_git_dir(root)
+    if packed_saved is None:
+        packed.write_text("\n".join([*others, head_line]) + "\n")
+    else:
+        packed.write_text(packed_saved)
+    ensure_regular_git_dir(root)
     # a crafted symbolic HEAD must not be followed outside .git (a FIFO there
     # would hang the guard); it is refused at once
     head_file = git_dir / "HEAD"
