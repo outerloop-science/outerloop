@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A follow-up's code change on a GPU benchmark is measured on the GPU lane as
+  a dispatched job: the follow-up seals the change and parks, the tick polls
+  the eval, and a later follow-up finishes on the sealed tree (ledger, push,
+  comment, panel re-read). CPU benchmarks keep measuring inline. Placement
+  comes from the contract's `gpus:`, never from the author
+  (`docs/design/orchestrator-verify.md`, "Measuring a follow-up's change").
 - The tick can run RESIDENT (`AUTORESEARCH_RESIDENT=1`, its own job name):
   one six-hour job that loops deploy → tick → sleep with a single
   `afterany:self` successor, so the chain needs four scheduling events a day

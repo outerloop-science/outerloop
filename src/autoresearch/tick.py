@@ -82,6 +82,9 @@ WORK_MARKER_NAME = "last_worked.json"
 # Grace between "experiment terminal" and the sweep stepping in: the afterany
 # job gets this long to deliver before the backup assumes it lost.
 DEFAULT_GRACE_S = 15 * 60
+# a blind park (no job ids to poll) waits its eval walltime plus this queue
+# slack before a follow-up is sent to look for the result
+BLIND_PARK_SLACK_MIN = 12 * 60
 # A held lease is stale after the session timeout plus slack.
 DEFAULT_LEASE_TTL_S = 3600 + 15 * 60
 # Coalesce guard: skip a tick's work if another ran within this window. Under
@@ -568,6 +571,35 @@ def service_in_review(
             # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
             # checks AND up-to-date with the CURRENT base — GitHub's own
             # freshness proof), the kernel-read contract STILL says auto, and
+            # A dispatched re-measure in flight: nothing else is serviced (the
+            # sealed change lands first, so the next comment is answered on
+            # the tree it will actually see) and nothing is armed. Once every
+            # eval job is terminal, a follow-up is submitted to finish it.
+            measure_ready = False
+            if record.followup_stage:
+                raw_ids = record.followup_stage.get("job_ids")
+                job_ids = [str(j) for j in raw_ids] if isinstance(raw_ids, list) else []
+                if job_ids:
+                    try:
+                        states = [compute.status(j) for j in job_ids]
+                    except SlurmQueryError:
+                        continue  # unknown: neither service nor arm
+                    if not all(is_terminal(s) or s == GONE for s in states):
+                        continue
+                    measure_ready = True
+                else:
+                    # a BLIND park (the measurer could not read the queue at
+                    # dispatch): no ids to poll, so the eval walltime plus the
+                    # climb's queue slack is the floor before a follow-up is
+                    # sent to look — never one per tick (terra #241 r1)
+                    from autoresearch.dispatch import effective_eval_minutes
+
+                    parked_at = float(record.followup_stage.get("parked_at", 0.0) or 0.0)  # type: ignore[arg-type]
+                    floor_min = int(record.followup_stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
+                    floor_s = (effective_eval_minutes(floor_min) + BLIND_PARK_SLACK_MIN) * 60
+                    if now - parked_at < floor_s:
+                        continue
+                    measure_ready = True
             wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the
@@ -577,7 +609,8 @@ def service_in_review(
                 except OSError as exc:
                     log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
             if (
-                not has_new_comments(record, github, spec.bot_login)
+                not measure_ready
+                and not has_new_comments(record, github, spec.bot_login)
                 and wake_action != "wake"
                 and not panel_wake_pending(record, pr)
             ):
@@ -699,6 +732,16 @@ def service_in_review(
                 str(job_minutes),
                 "--max-turns",
                 str(spec.max_turns),
+                # the cluster coordinates the climb gets: a GPU benchmark's
+                # re-measure is dispatched to the GPU lane, never run here
+                "--account",
+                spec.account,
+                "--partition",
+                spec.partition,
+                "--gpu-partition",
+                spec.gpu_partition,
+                "--gpu-account",
+                spec.gpu_account,
                 *panel_argv,
             ]
             if spec.pat_file:

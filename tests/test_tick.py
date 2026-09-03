@@ -3927,3 +3927,152 @@ def test_moved_off_partition_matches_lists_by_membership(tmp_path: Path) -> None
     assert _moved_off_partition(tmp_path, c, "2") is None  # list overlaps
     assert _moved_off_partition(tmp_path, c, "3") == ("all", "cpu_short,cpu_prem")
     assert _moved_off_partition(tmp_path, c, "4") is None  # unknown is not moved
+
+
+def test_a_parked_remeasure_is_polled_then_finished_by_a_followup(tmp_path: Path) -> None:
+    """While the dispatched eval runs: no follow-up, no arm, comments wait.
+    Once its jobs are terminal: a follow-up is submitted to finish it."""
+    from autoresearch.compute import CommandResult
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import FollowupSpec, service_in_review
+
+    class G:
+        def __init__(self) -> None:
+            self.armed: list[int] = []
+
+        def get_pull_request(self, repo, number):
+            return {
+                "state": "open",
+                "merged": False,
+                "draft": False,
+                "mergeable_state": "clean",
+                "head": {"sha": "a" * 40},
+                "base": {"ref": "main"},
+            }
+
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 9,
+                    "body": "explain",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
+            self.armed.append(number)
+
+    def run(eval_state: str) -> tuple[list, list, list]:
+        root = tmp_path / f"root-{eval_state}"
+        root.mkdir()
+        save_record(
+            root,
+            RunRecord(
+                run_id="r-rev",
+                target="org/pilot",
+                task_title="t",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/9",
+                auto_blessed_head="a" * 40,
+                followup_stage={"job_ids": ["9001"], "candidate_sha": "c" * 40},
+            ),
+            now=NOW,
+        )
+        submits: list[list[str]] = []
+
+        def runner(argv, timeout_s):
+            if argv[0] == "sbatch":
+                submits.append(list(argv))
+                return CommandResult(0, "77\n", "")
+            if argv[0] == "sacct":
+                return CommandResult(0, f"{eval_state}\n", "")
+            raise AssertionError(argv)
+
+        g = G()
+        spec = FollowupSpec(
+            account="acct",
+            partition="cpu_short",
+            run_root=root,
+            image="/img/a.sif",
+            home=Path("/home/x/autoresearch"),
+            gpu_partition="h200",
+            gpu_account="gacct",
+        )
+        _ended, submitted = service_in_review(root, g, SlurmCompute(runner=runner), spec, NOW)
+        return submitted, g.armed, submits
+
+    submitted, armed, _ = run("RUNNING")
+    assert submitted == [] and armed == []  # comments wait; nothing armed
+    submitted2, armed2, submits2 = run("COMPLETED")
+    assert submitted2 == [("r-rev", "77")] and armed2 == []
+    wrap = " ".join(submits2[0])
+    # the follow-up gets the cluster coordinates to read (or dispatch) the measure
+    assert "--gpu-partition h200" in wrap and "--gpu-account gacct" in wrap
+    assert "--account acct" in wrap and "--partition cpu_short" in wrap
+
+
+def test_a_blind_parked_remeasure_waits_its_floor_before_a_followup_is_sent(tmp_path: Path) -> None:
+    """No job ids to poll (the measurer could not read the queue): the eval
+    walltime plus the queue slack is the floor — never a follow-up per tick."""
+    from autoresearch.compute import CommandResult
+    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
+    from autoresearch.tick import BLIND_PARK_SLACK_MIN, FollowupSpec, service_in_review
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False, "head": {"sha": "a" * 40}}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return []
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def run(parked_at: float) -> list:
+        root = tmp_path / f"root-{int(parked_at)}"
+        root.mkdir()
+        save_record(
+            root,
+            RunRecord(
+                run_id="r-rev",
+                target="org/pilot",
+                task_title="t",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/9",
+                followup_stage={
+                    "job_ids": [],
+                    "candidate_sha": "c" * 40,
+                    "parked_at": parked_at,
+                    "eval_minutes": 30,
+                },
+            ),
+            now=NOW,
+        )
+        submits: list[list[str]] = []
+
+        def runner(argv, timeout_s):
+            if argv[0] == "sbatch":
+                submits.append(list(argv))
+                return CommandResult(0, "78\n", "")
+            raise AssertionError(argv)
+
+        spec = FollowupSpec(
+            account="a", partition="p", run_root=root, image="/img/a.sif", home=Path("/h")
+        )
+        _ended, submitted = service_in_review(root, G(), SlurmCompute(runner=runner), spec, NOW)
+        return submitted
+
+    assert run(NOW - 60) == []  # just parked: wait
+    assert run(NOW - (30 + BLIND_PARK_SLACK_MIN) * 60 - 1) == [
+        ("r-rev", "78")
+    ]  # floor passed: look

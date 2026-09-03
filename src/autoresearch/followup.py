@@ -20,7 +20,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from autoresearch.measure import DispatchSettings
 
 from autoresearch.brief import render_review_wake
 from autoresearch.contract import load_contract
@@ -242,13 +245,37 @@ def _ending_comment(record: RunRecord, ending: str) -> str:
     )
 
 
+def _release_parked_snapshot(run_root: Path, record: RunRecord) -> None:
+    """A run that ends while a dispatched re-measure is parked must not leave
+    the sealed commit's retaining ref behind (best-effort: the ending is
+    load-bearing, the ref release is hygiene — a failure logs)."""
+    ref = str(record.followup_stage.get("candidate_ref", "") or "")
+    if not ref:
+        return
+    try:
+        from autoresearch.dispatch import Snapshot, drop_snapshot
+
+        ws = Workspace(root=run_dir(run_root, record.run_id) / "ws")
+        drop_snapshot(
+            ws,
+            Snapshot(commit=str(record.followup_stage.get("candidate_sha", "")), tree="", ref=ref),
+        )
+    except Exception as exc:
+        log.warning("parked snapshot release failed for %s: %s", record.run_id, exc)
+
+
 def _end_run(
     run_root: Path, record: RunRecord, github: GitHubClient, ending: str, note: str, now: float
 ) -> None:
     """Flip the record to ended, then tell the requesting issue (best effort:
     the state transition is load-bearing, the comment is a courtesy — a
     comment failure logs and is never retried)."""
-    save_record(run_root, replace(record, state=ENDED, ending=ending, ending_note=note), now)
+    _release_parked_snapshot(run_root, record)
+    save_record(
+        run_root,
+        replace(record, state=ENDED, ending=ending, ending_note=note, followup_stage={}),
+        now,
+    )
     if not record.issue_number:
         return
     try:
@@ -317,9 +344,15 @@ def respond_once(
     panel_lenses: tuple[Any, ...] = (),
     panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
     panel_skip: str = "",
+    dispatch: DispatchSettings | None = None,
 ) -> FollowupOutcome:
     """Service one in-review run: reply to new maintainer comments (and base
     moves), re-measure and push any code change the session made.
+
+    `dispatch` carries the cluster coordinates: a code change on a GPU
+    benchmark is then sealed and measured on the GPU lane as a job (the
+    follow-up parks on it and a later follow-up finishes); without it, or on
+    a CPU benchmark, the change is measured inline as before.
 
     `panel_lenses` (the climb's `--panel`) re-reads a PUSHED code change with
     the same verification panel; `panel_builder` is the runner factory
@@ -354,6 +387,7 @@ def respond_once(
             panel_lenses,
             panel_builder,
             panel_skip,
+            dispatch,
         )
     except Exception as exc:
         log.warning("followup failed for %s: %s", run_id, redact(str(exc), secrets))
@@ -380,6 +414,7 @@ def _respond(
     panel_lenses: tuple[Any, ...] = (),
     panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
     panel_skip: str = "",
+    dispatch: DispatchSettings | None = None,
 ) -> FollowupOutcome:
     # a deployment bug is refused before any GitHub read or contract load —
     # the contained error outcome retries next tick either way, so fail as
@@ -397,6 +432,25 @@ def _respond(
     if pr.get("state") == "closed":
         _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
         return FollowupOutcome(run_id, "ended-rejected")
+    if record.followup_stage:
+        # a sealed change is waiting on its dispatched measure: finish THAT
+        # (or find it still pending) before any comment is serviced
+        return _resume_measure(
+            run_root,
+            run_id,
+            record,
+            number,
+            pr,
+            github,
+            bot_login,
+            now,
+            secrets,
+            created,
+            dispatch,
+            panel_lenses,
+            panel_builder,
+            panel_skip,
+        )
 
     # All three places a maintainer can write — three REST collections with
     # INDEPENDENT id sequences, so each keeps its own cursor.
@@ -622,6 +676,7 @@ def _respond(
     measured_note = ""
     change_pushed = False
     pushed_head = ""  # the exact sha a code-changing push put on the PR
+    sealed_snap: Any = None  # a synchronous sealed measure's snapshot, released after the reply
 
     def _matches_base(path: str) -> bool:
         # content identical to origin/<base> is the base branch's own (a
@@ -862,8 +917,49 @@ def _respond(
             # same pairing/reproducibility rule as the climb and steward
             run_seed = draw_run_seed() if bench.seed_env else 0
             seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
+            dispatched_error: Exception | None = None
+            if dispatch is not None and not is_steward and bench.gpus > 0:
+                # A GPU benchmark is never measured on this CPU node: seal the
+                # change and measure it on the GPU lane as a job, exactly as
+                # the climb does — placement comes from the contract's
+                # `gpus:`, never from the author. A synchronous compute
+                # (LocalCompute) returns the value here; a cluster parks.
+                try:
+                    sealed, sealed_snap = _seal_and_measure(
+                        ws, run_root, run_id, dispatch, bench, run_seed, workspace
+                    )
+                except _RemeasureParked as pend:
+                    return _park_remeasure(
+                        run_root,
+                        run_id,
+                        record,
+                        number,
+                        github,
+                        ws,
+                        bench,
+                        pend,
+                        run_seed,
+                        reply_body,
+                        cursors,
+                        changed=changed,
+                        conflict_head=conflict_head if conflict_wake else "",
+                        base_synced=base_synced,
+                        panel_wake=panel_wake,
+                        now=now,
+                        secrets=secrets,
+                    )
+                except Exception as exc:
+                    # a failed dispatch (eval error, no GPU lane, compute
+                    # outage) is the failed-eval path: reverted and said
+                    dispatched_error, sealed, sealed_snap = exc, None, None
+            else:
+                sealed, sealed_snap = None, None
             try:
-                if is_steward:
+                if dispatched_error is not None:
+                    raise dispatched_error  # the same failed-eval path as inline
+                if sealed is not None:
+                    candidate = sealed  # measured on the sealed tree, as a job
+                elif is_steward:
                     from autoresearch.steward import validate_and_measure
 
                     candidate = validate_and_measure(
@@ -882,7 +978,14 @@ def _respond(
                     f"Error: {redact(str(exc), secrets)[:200]})_"
                 )
             else:
-                if _tree_hash(ws) != pre_eval_tree:
+                if sealed_snap is not None:
+                    # measured as a job on the SEALED tree: make that tree the
+                    # branch head now, so the ledger lands on it and the push
+                    # carries exactly what was measured — the live workspace
+                    # may hold content the seal excluded (line memory)
+                    ws.git("checkout", "-f", "-B", branch, sealed_snap.commit)
+                    ws.git("clean", "-fdq")
+                if sealed_snap is None and _tree_hash(ws) != pre_eval_tree:
                     # same drift rule as the climb: the pushed tree must be
                     # exactly the measured tree
                     _revert_response()
@@ -908,68 +1011,16 @@ def _respond(
                             run_seed=run_seed,
                         )
                     else:
-                        prior = load_leader(workspace).get(bench.name)
-                        # cross-seed floor, same rule as the climb's publish
-                        # path: this re-measure ran under a FRESH seed, so a
-                        # sub-floor delta over the recorded best is pool
-                        # luck and must not ratchet the ledger
-                        # The floor explains only a delta that WOULD have
-                        # improved: an outright regression must read as a
-                        # regression (the `worse` flag), never as noise.
-                        beats_prior = prior is not None and (
-                            candidate > prior.best
-                            if bench.direction == "max"
-                            else candidate < prior.best
+                        prior, floor_note = _update_ledger(
+                            workspace,
+                            bench,
+                            post_contract,
+                            candidate,
+                            run_id,
+                            created,
+                            run_seed,
+                            record.target,
                         )
-                        if (
-                            prior is not None
-                            and beats_prior
-                            and not clears_min_delta(
-                                prior.best,
-                                candidate,
-                                bench.direction,
-                                bench.min_delta,
-                                bench.min_delta_rel,
-                            )
-                        ):
-                            # named on the thread, like the climb's ending
-                            # note — a silently unchanged ledger row reads
-                            # as a bug
-                            floor = benchmark_floor(
-                                prior.best, bench.min_delta, bench.min_delta_rel
-                            )
-                            where = (
-                                f"the cross-seed noise floor "
-                                f"({fmt_metric(floor, bench.display_digits)})"
-                                if floor > 0
-                                else f"a usable baseline (recorded best {prior.best})"
-                            )
-                            floor_note = (
-                                f" — within {where} of the recorded "
-                                f"best {prior.best}, so the ledger row is unchanged"
-                            )
-                        if not floor_note:
-                            entries = update_leader(
-                                load_leader(workspace),
-                                benchmark=bench.name,
-                                metric=bench.metric,
-                                direction=bench.direction,
-                                baseline=candidate,  # pinned by existing entry
-                                candidate=candidate,
-                                run_id=run_id,
-                                date=created[:10],
-                                run_seed=run_seed,
-                            )
-                            write_progress(
-                                workspace,
-                                entries,
-                                record.target,
-                                digits={
-                                    b.name: b.display_digits
-                                    for b in post_contract.benchmarks
-                                    if b.display_digits
-                                },
-                            )
                     # AUTO merge mode: an armed PR would merge THIS new head
                     # on green CI without a fresh gate/suite/panel, so the
                     # commit+push are GATED on a confirmed disarm (terra #171
@@ -1001,22 +1052,28 @@ def _respond(
                         # a session that committed its work (a resolved merge)
                         # leaves nothing to stage; the committed diff was
                         # already scope-checked above, so push what is there
-                        try:
-                            ws.commit_all(
-                                f"{verb}: address review feedback "
-                                f"({bench.metric}="
-                                f"{fmt_metric(candidate, bench.display_digits)})"
-                                f"\n\nAgent: {record.agent_id}",
-                                author=bot_login,
-                                forbidden=lambda p: (
-                                    p not in PROGRESS_PATHS
-                                    and bool(scope_check([p], post_contract))
-                                    and not _matches_base(p)
-                                ),
-                            )
-                        except NothingToCommit:
-                            if not committed:
-                                raise
+                        message = (
+                            f"{verb}: address review feedback "
+                            f"({bench.metric}="
+                            f"{fmt_metric(candidate, bench.display_digits)})"
+                            f"\n\nAgent: {record.agent_id}"
+                        )
+                        if sealed_snap is not None:
+                            _commit_sealed_tree(ws, branch, sealed_snap.commit, bot_login, message)
+                        else:
+                            try:
+                                ws.commit_all(
+                                    message,
+                                    author=bot_login,
+                                    forbidden=lambda p: (
+                                        p not in PROGRESS_PATHS
+                                        and bool(scope_check([p], post_contract))
+                                        and not _matches_base(p)
+                                    ),
+                                )
+                            except NothingToCommit:
+                                if not committed:
+                                    raise
                         pushed_head = ws.git("rev-parse", "HEAD").strip()
                         ws.push(branch)
                         change_pushed = True
@@ -1034,6 +1091,10 @@ def _respond(
                             + floor_note
                         )
 
+    if sealed_snap is not None:
+        from autoresearch.dispatch import drop_snapshot
+
+        drop_snapshot(ws, sealed_snap)
     github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
     if change_pushed:
         try:
@@ -1354,6 +1415,491 @@ def _reread_pushed_change(
             log.warning("blessing write failed for %s: %s", run_id, exc)
 
 
+def _update_ledger(
+    workspace: Path,
+    bench: Any,
+    contract: Any,
+    candidate: float,
+    run_id: str,
+    created: str,
+    run_seed: int,
+    target: str,
+) -> tuple[Any, str]:
+    """Apply a follow-up's re-measured number to the ledger under the climb's
+    cross-seed floor rule, returning (the prior leader entry or None, a note
+    naming an unchanged row). The floor explains only a delta that WOULD have
+    improved: an outright regression must read as a regression, never as
+    noise."""
+    prior = load_leader(workspace).get(bench.name)
+    floor_note = ""
+    beats_prior = prior is not None and (
+        candidate > prior.best if bench.direction == "max" else candidate < prior.best
+    )
+    if (
+        prior is not None
+        and beats_prior
+        and not clears_min_delta(
+            prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
+        )
+    ):
+        # named on the thread, like the climb's ending note — a silently
+        # unchanged ledger row reads as a bug
+        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
+        where = (
+            f"the cross-seed noise floor ({fmt_metric(floor, bench.display_digits)})"
+            if floor > 0
+            else f"a usable baseline (recorded best {prior.best})"
+        )
+        floor_note = (
+            f" — within {where} of the recorded best {prior.best}, so the ledger row is unchanged"
+        )
+    if not floor_note:
+        entries = update_leader(
+            load_leader(workspace),
+            benchmark=bench.name,
+            metric=bench.metric,
+            direction=bench.direction,
+            baseline=candidate,  # pinned by existing entry
+            candidate=candidate,
+            run_id=run_id,
+            date=created[:10],
+            run_seed=run_seed,
+        )
+        write_progress(
+            workspace,
+            entries,
+            target,
+            digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+        )
+    return prior, floor_note
+
+
+FOLLOWUP_MEASURE = "followup"
+
+
+def _commit_sealed_tree(
+    ws: Workspace, branch: str, sealed_sha: str, bot_login: str, message: str
+) -> None:
+    """Make the SEALED commit the branch head, fold the ledger update the
+    caller wrote into it (one amended commit with the standard message), so
+    the pushed tree is exactly the measured tree plus the ledger row — never
+    the live workspace, which may hold content the seal excluded."""
+    ws.git("add", "-A")
+    ws.git(
+        "-c",
+        f"user.name={bot_login}",
+        "-c",
+        f"user.email={bot_login}@users.noreply.github.com",
+        "commit",
+        "-q",
+        "--amend",
+        "-m",
+        message,
+    )
+
+
+def _followup_measure(bench: Any, tree_sha: str, run_seed: int) -> Any:
+    """The one measure a follow-up's change needs: the sealed tree under the
+    contract command at this run's fresh seed. Built identically at park and
+    at resume so the measurer's determinant (and result dir) matches."""
+    from autoresearch.measure import Measure
+
+    return Measure(
+        name=FOLLOWUP_MEASURE,
+        tree_sha=tree_sha,
+        command=bench.command,
+        metric=bench.metric,
+        extra_env=((bench.seed_env, str(run_seed)),) if bench.seed_env and run_seed else (),
+        gpus=bench.gpus,
+    )
+
+
+class _RemeasureParked(Exception):
+    """The dispatched measure is queued: carries the sealed snapshot (kept
+    alive by its ref) and the pending job set the park records."""
+
+    def __init__(self, snapshot: Any, pending: Any) -> None:
+        self.snapshot = snapshot
+        self.pending = pending
+        super().__init__(str(pending))
+
+
+def _seal_and_measure(
+    ws: Workspace,
+    run_root: Path,
+    run_id: str,
+    dispatch: Any,
+    bench: Any,
+    run_seed: int,
+    workspace: Path,
+) -> tuple[float, Any]:
+    """Seal the workspace's change as a commit on the PR's current head and
+    measure it through the dispatched measurer. Returns (value, snapshot)
+    when the compute is synchronous — the snapshot is KEPT so the caller
+    pushes exactly the measured tree, and releases it; raises
+    `_RemeasureParked` when the job is queued (the caller parks); any other
+    failure propagates with the snapshot released."""
+    from autoresearch.attempt import LINE_MEMORY_PATHS
+    from autoresearch.dispatch import drop_snapshot, snapshot_tree
+    from autoresearch.measure import MeasurementPending
+
+    parent = ws.git("rev-parse", "HEAD").strip()
+    snap = snapshot_tree(ws, parent, exclude=LINE_MEMORY_PATHS if bench.lines else ())
+    measurer = dispatch.measurer(
+        run_dir(run_root, run_id),
+        repo_root=workspace,
+        eval_minutes=int(bench.eval_minutes or 0),
+        run_tag=run_id,
+    )
+    try:
+        vals = measurer.results([_followup_measure(bench, snap.commit, run_seed)])
+    except MeasurementPending as pend:
+        raise _RemeasureParked(snap, pend) from pend
+    except Exception:
+        # EvalError, a missing GPU lane (ValueError), a compute outage: the
+        # retained ref must never outlive the attempt (terra #241 r1)
+        drop_snapshot(ws, snap)
+        raise
+    return float(vals[FOLLOWUP_MEASURE]), snap
+
+
+def _park_remeasure(
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    number: int,
+    github: GitHubClient,
+    ws: Workspace,
+    bench: Any,
+    parked: _RemeasureParked,
+    run_seed: int,
+    reply_body: str,
+    cursors: dict[str, int],
+    *,
+    changed: list[str],
+    conflict_head: str,
+    base_synced: bool,
+    panel_wake: bool,
+    now: float,
+    secrets: tuple[str, ...],
+) -> FollowupOutcome:
+    """The change is sealed and its measure queued: post the author's reply
+    now (the comments ARE serviced), record the re-entry point, and end this
+    job. The change stays unpushed until the measure lands — the tick polls
+    the jobs and resubmits a follow-up that finishes (`_resume_measure`)."""
+    snap, pend = parked.snapshot, parked.pending
+    stage: dict[str, object] = {
+        "candidate_sha": snap.commit,
+        "candidate_ref": snap.ref,
+        "parent": ws.git("rev-parse", "HEAD").strip(),
+        "job_ids": list(pend.job_ids),
+        "afterany": pend.afterany(),
+        "seed": run_seed,
+        "changed": [redact(p, secrets)[:200] for p in changed[:50]],
+        "reply_body": reply_body,
+        "conflict_head": conflict_head,
+        "base_synced": bool(base_synced),
+        "parked_at": now,
+        "eval_minutes": int(bench.eval_minutes or 0),
+    }
+    note = (
+        "\n\n_(A code change was made; its re-measure is running on the GPU lane "
+        f"({len(pend.job_ids)} job(s)) — the change is pushed with its number once the "
+        "measurement lands. Comments posted meanwhile are answered after that.)_"
+    )
+    stage["reply_note"] = note
+    stage["reply_posted"] = False
+    # the STAGE is durable before the reply goes out: a GitHub write failure
+    # must never leave a running GPU job and its retained ref untracked — the
+    # resume posts the reply instead (terra #241 r2)
+    parked_record = replace(
+        record,
+        last_comment_id=cursors["comment"],
+        last_review_id=cursors["review"],
+        last_review_comment_id=cursors["review_comment"],
+        panel_wake_head="" if panel_wake else record.panel_wake_head,
+        panel_wake_text="" if panel_wake else record.panel_wake_text,
+        followup_stage=stage,
+    )
+    save_record(run_root, parked_record, now)
+    try:
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{note}")
+    except Exception as exc:
+        log.warning("parked reply failed for %s (the resume retries it): %s", run_id, exc)
+        return FollowupOutcome(run_id, "parked", "re-measure dispatched; reply pending")
+    save_record(
+        run_root, replace(parked_record, followup_stage={**stage, "reply_posted": True}), now
+    )
+    return FollowupOutcome(run_id, "parked", f"re-measure dispatched: {pend.afterany() or 'blind'}")
+
+
+def _resume_measure(
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    number: int,
+    pr: dict,
+    github: GitHubClient,
+    bot_login: str,
+    now: float,
+    secrets: tuple[str, ...],
+    created: str,
+    dispatch: Any,
+    panel_lenses: tuple[Any, ...],
+    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
+    panel_skip: str,
+) -> FollowupOutcome:
+    """Finish a parked re-measure: read the dispatched result, then do what
+    the inline path does after its eval — ledger, disarm, commit, push,
+    comment, row, record — on the SEALED tree (never the live workspace),
+    and hand the pushed head to the panel re-read."""
+    from autoresearch.dispatch import Snapshot, drop_snapshot
+    from autoresearch.measure import EvalError, MeasurementPending
+
+    stage = record.followup_stage
+    candidate_sha = str(stage.get("candidate_sha", ""))
+    candidate_ref = str(stage.get("candidate_ref", ""))
+    parent = str(stage.get("parent", ""))
+    run_seed = int(stage.get("seed", 0))  # type: ignore[call-overload]
+    reply_body = str(stage.get("reply_body", ""))
+    workspace = run_dir(run_root, run_id) / "ws"
+    if not workspace.is_dir():
+        return FollowupOutcome(run_id, "error", "workspace no longer exists (GC'd?)")
+    if dispatch is None:
+        return FollowupOutcome(
+            run_id,
+            "error",
+            "a dispatched re-measure is parked but no cluster coordinates were given",
+        )
+    from autoresearch.attempt import _target_clone_url
+
+    ws = Workspace(root=workspace, auth=github.auth, url=_target_clone_url(record.target))
+    # the measurement's contract is the SEALED tree's — what was actually
+    # measured — never the live workspace file, which can change during the
+    # wait (terra #241 r1)
+    try:
+        contract_text = ws.git("show", f"{candidate_sha}:.autoresearch.yaml")
+    except GitError as exc:
+        return FollowupOutcome(run_id, "error", f"sealed contract unreadable: {exc}")
+    contract = load_contract(contract_text, record.target)
+    bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
+    if bench is None:
+        return FollowupOutcome(
+            run_id, "error", f"benchmark {record.benchmark!r} not in the contract"
+        )
+    measurer = dispatch.measurer(
+        run_dir(run_root, run_id),
+        repo_root=workspace,
+        eval_minutes=int(bench.eval_minutes or 0),
+        run_tag=run_id,
+    )
+    snapshot = Snapshot(commit=candidate_sha, tree="", ref=candidate_ref)
+    if not stage.get("reply_posted", True):
+        # the park's reply never reached GitHub: post it now, before anything
+        # else, and record that it did
+        github.comment(
+            record.target,
+            number,
+            f"{REPLY_MARKER}\n{reply_body}{stage.get('reply_note', '')}",
+        )
+        record = replace(record, followup_stage={**stage, "reply_posted": True})
+        save_record(run_root, record, now)
+        stage = record.followup_stage
+
+    def _abandon(note: str) -> FollowupOutcome:
+        # the sealed change is dropped: workspace back to the pushed head,
+        # snapshot released, stage cleared, the thread told why
+        with contextlib.suppress(GitError):
+            ws.git("checkout", "-f", parent)
+        with contextlib.suppress(GitError):
+            ws.git("clean", "-fdq")
+        drop_snapshot(ws, snapshot)
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{note}")
+        save_record(run_root, replace(load_record(run_root, run_id), followup_stage={}), now)
+        return FollowupOutcome(run_id, "replied", "dispatched re-measure abandoned")
+
+    try:
+        vals = measurer.results([_followup_measure(bench, candidate_sha, run_seed)])
+    except MeasurementPending:
+        return FollowupOutcome(run_id, "no-op", "dispatched re-measure still pending")
+    except EvalError as exc:
+        return _abandon(
+            "_(The dispatched re-measure of the code change failed, so it was not "
+            f"applied. Error: {redact(str(exc), secrets)[:200]})_"
+        )
+    candidate = float(vals[FOLLOWUP_MEASURE])
+
+    head_now = str((pr.get("head") or {}).get("sha", ""))
+    landed = str(stage.get("pushed_head", ""))
+    if landed and head_now == landed:
+        # a previous resume pushed this very commit and died before its
+        # record write (terra #241 r5): finish the bookkeeping, never abandon
+        latest = load_record(run_root, run_id)
+        save_record(
+            run_root,
+            replace(latest, followup_stage={}, auto_blessed_head="", wake_attempts=0),
+            now,
+        )
+        drop_snapshot(ws, snapshot)
+        with contextlib.suppress(Exception):
+            github.comment(
+                record.target,
+                number,
+                f"{REPLY_MARKER}\n**Re-measured after this change: `{bench.metric}` = "
+                f"{fmt_metric(candidate, bench.display_digits)}** (pushed as `{landed[:12]}`).",
+            )
+        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
+
+    # the sealed commit is parented on the head the PR had at park: a push
+    # since (a maintainer's) makes it unpushable AND measured on a tree that
+    # is no longer the PR's — abandon honestly rather than force or rebuild
+    if head_now and parent and head_now != parent:
+        return _abandon(
+            f"_(The PR's head moved while the re-measure ran (`{parent[:12]}` → "
+            f"`{head_now[:12]}`), so the measured change no longer applies to this "
+            "branch and was not pushed. Ask again and it will be redone on the new head.)_"
+        )
+
+    branch = _current_branch(ws)
+    if branch == "HEAD":
+        branch = str((pr.get("head") or {}).get("ref", "")) or branch
+    # ALWAYS disarm before anything is written: the dial that armed this PR
+    # may be any of the pre-change, sealed, or current base contract, and a
+    # disarm on a PR with nothing armed is confirmed as such (terra #241 r1)
+    try:
+        disarmed = github.disable_auto_merge(record.target, number)
+    except Exception as exc:
+        disarmed = False
+        log.warning("auto-merge disarm errored: %s", exc)
+    if not disarmed:
+        # nothing was written yet; still, leave the workspace exactly on the
+        # pushed head with no stray files for the retry (terra #241 r3)
+        with contextlib.suppress(GitError):
+            ws.git("checkout", "-f", parent)
+        with contextlib.suppress(GitError):
+            ws.git("clean", "-fdq")
+        github.comment(
+            record.target,
+            number,
+            f"{REPLY_MARKER}\n_(The re-measured change was WITHHELD: auto-merge could not "
+            "be confirmed disarmed on this auto-mode PR; the follow-up will retry.)_",
+        )
+        return FollowupOutcome(run_id, "replied", "disarm unconfirmed; re-measure kept")
+    # the SEALED tree becomes the PR branch's head — exactly what was measured
+    ws.git("checkout", "-f", "-B", branch, candidate_sha)
+    ws.git("clean", "-fdq")
+    prior, floor_note = _update_ledger(
+        workspace, bench, contract, candidate, run_id, created, run_seed, record.target
+    )
+    _commit_sealed_tree(
+        ws,
+        branch,
+        candidate_sha,
+        bot_login,
+        f"agent: address review feedback ({bench.metric}="
+        f"{fmt_metric(candidate, bench.display_digits)})\n\nAgent: {record.agent_id}",
+    )
+    pushed_head = ws.git("rev-parse", "HEAD").strip()
+    # the commit about to be pushed is recorded FIRST: a resume that finds it
+    # as the PR head knows the push landed even if the write after the push
+    # never happened (terra #241 r5). A failed write here withholds the push.
+    try:
+        latest = load_record(run_root, run_id)
+        save_record(
+            run_root,
+            replace(latest, followup_stage={**latest.followup_stage, "pushed_head": pushed_head}),
+            now,
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("pre-push record write failed for %s: %s", run_id, exc)
+        with contextlib.suppress(GitError):
+            ws.git("checkout", "-f", parent)
+        with contextlib.suppress(GitError):
+            ws.git("clean", "-fdq")
+        return FollowupOutcome(run_id, "error", "record write failed before the push; retrying")
+    ws.push(branch)
+    # the change is on the PR: the record says so BEFORE any thread write, so
+    # a failed comment can never make a later retry "abandon" a change that
+    # already landed (terra #241 r3); the blessing dies with the pushed code
+    conflict_head = str(stage.get("conflict_head", ""))
+    latest = load_record(run_root, run_id)
+    save_record(
+        run_root,
+        replace(
+            latest,
+            followup_stage={},
+            auto_blessed_head="",
+            dirty_wake_head=(
+                conflict_head
+                if (conflict_head and stage.get("base_synced"))
+                else latest.dirty_wake_head
+            ),
+            wake_attempts=0,
+        ),
+        now,
+    )
+    drop_snapshot(ws, snapshot)
+    worse = prior is not None and not orch_improved(prior.best, candidate, bench.direction, 0.0)
+    measured_note = (
+        f"**Re-measured after this change: `{bench.metric}` = "
+        f"{fmt_metric(candidate, bench.display_digits)}**"
+        + (" — worse than the PR's previous number, stated plainly." if worse else "")
+        + floor_note
+    )
+    try:
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{measured_note}")
+    except Exception as exc:  # the ledger and the row carry the number
+        log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
+    try:
+        github.update_candidate_row(record.target, number, candidate, digits=bench.display_digits)
+    except Exception as exc:
+        log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
+    try:
+        github.append_pull_body(
+            record.target,
+            number,
+            f"---\n**Edit ({created[:10] or 'date unknown'}, follow-up):** the solver changed "
+            f"after review feedback and was re-measured ({measured_note.strip().strip('*')}). "
+            "The report above describes the original version; see the follow-up replies "
+            "in the comments for the current one.",
+        )
+    except Exception as exc:
+        log.warning("body addendum failed for %s#%s: %s", record.target, number, exc)
+    # the re-read needs a trusted base: pin it fresh, like a comment wake does
+    trusted_base = ""
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    try:
+        ws.fetch_origin()
+        trusted_base = ws.git("rev-parse", f"origin/{base_ref}").strip()
+    except Exception as exc:
+        log.warning("base fetch failed for %s: %s", run_id, exc)
+    if panel_lenses or panel_skip:
+        _reread_pushed_change(
+            ws,
+            run_root,
+            run_id,
+            load_record(run_root, run_id),
+            number,
+            github,
+            bench,
+            candidate,
+            prior.best if prior is not None else None,
+            reply_body,
+            trusted_base=trusted_base,
+            pushed_head=pushed_head,
+            dial=str(getattr(contract, "merge", "manual")),
+            panel_lenses=panel_lenses,
+            panel_builder=panel_builder,
+            panel_skip=panel_skip,
+            panel_wake_rounds=latest.panel_wake_rounds,
+            bot_login=bot_login,
+            created=created,
+            now=now,
+            secrets=secrets,
+        )
+    return FollowupOutcome(run_id, "replied", "dispatched re-measure applied")
+
+
 def _changed_paths(ws: Workspace) -> list[str]:
     ws.git("add", "-A")
     paths = ws.staged_paths()
@@ -1438,6 +1984,10 @@ def main() -> int:
         "re-read a pushed code change; '' = no re-read, a changed PR stays human-merged",
     )
     parser.add_argument("--panel-key-file", default="", help="the claude panel lenses' key file")
+    parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
+    parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
+    parser.add_argument("--gpu-partition", default=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""))
+    parser.add_argument("--gpu-account", default=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""))
     parser.add_argument(
         "--panel-minutes",
         type=int,
@@ -1454,12 +2004,19 @@ def main() -> int:
 
     from autoresearch.attempt import (
         PANEL_KEY_DEFAULT,
+        _dispatch_settings,
         _panel_lenses_from_args,
         codex_author_config_error,
         resolve_author_key_file,
         resume_author,
     )
     from autoresearch.panel import panel_read_minutes
+
+    # cluster coordinates (the climb's own resolver): a GPU benchmark's
+    # re-measure is dispatched to the GPU lane; with none, evals run inline
+    dispatch = (
+        _dispatch_settings(args) if (args.account or args.partition or args.gpu_partition) else None
+    )
 
     # a follow-up services ONE run: reproduce THAT run's author (the persisted
     # (backend, model) PAIR), not the current fleet default, so a codex-authored
@@ -1560,6 +2117,7 @@ def main() -> int:
             created=datetime.now(UTC).isoformat(),
             panel_lenses=panel_lenses,
             panel_skip=panel_skip,
+            dispatch=dispatch,
         )
     finally:
         _signal.alarm(0)
