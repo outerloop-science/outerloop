@@ -58,9 +58,10 @@ def test_only_a_starving_relocated_successor_is_cancelled(tmp_path: Path) -> Non
         ("103", "cs", "Dependency"),  # relocated but singleton-blocked -> keep
         ("104", "cs", "Priority"),  # relocated, eligible only 5 minutes -> keep
         ("105", "cpu_short", "Priority"),  # not relocated -> keep
-        ("106", "cs", "Priority"),  # relocated, eligibility unknown -> keep (doubt)
+        ("106", "cs", "Priority"),  # relocated, eligibility absent -> keep (doubt)
+        ("107", "cs", "Priority"),  # relocated, EligibleTime=Unknown -> keep (doubt)
     ]
-    eligible = {"101": _iso(45), "104": _iso(5)}
+    eligible = {"101": _iso(45), "104": _iso(5), "107": "Unknown"}
     bindir, log = _shims(tmp_path, rows, eligible)
     out = _run(bindir, "autoresearch-tick", "cpu_short", "20")
     assert log.read_text().split() == ["101"]

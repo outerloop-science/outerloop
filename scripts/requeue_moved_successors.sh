@@ -35,8 +35,12 @@ squeue -u "$USER" --name="$name" -h -t PENDING -o "%i|%P|%r" 2>/dev/null | while
     case "$reason" in BeginTime|Dependency|DependencyNeverSatisfied) continue ;; esac
     # eligible: starving only if it has been eligible for a while
     eligible=$(scontrol show job "$jid" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^EligibleTime=//p' | head -1)
+    # unknown = never cancel on doubt: an absent or non-timestamp value must
+    # not reach date(1), whose GNU form reads "" as today at midnight
+    case "$eligible" in ""|Unknown|N/A|None) continue ;; esac
+    case "$eligible" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;; *) continue ;; esac
     el_epoch=$(epoch_of "$eligible")
-    [ -n "$el_epoch" ] || continue  # unknown = never cancel on doubt
+    [ -n "$el_epoch" ] || continue
     if [ $(( now - el_epoch )) -ge $(( starve_min * 60 )) ]; then
         scancel "$jid" 2>/dev/null && echo "chain: cancelled successor $jid starving on $part since $eligible (asked for $wanted)"
     fi
