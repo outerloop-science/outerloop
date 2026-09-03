@@ -4289,6 +4289,117 @@ def test_wake_on_a_line_never_reads_the_lines_memory_as_out_of_scope(tmp_path, m
     assert record.ending == "negative-result" and "out-of-scope" not in record.ending_note
 
 
+def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path: Path) -> None:
+    """A park frees the slot; a newer run on the same line can push while this
+    one is parked. The seal must then parent on the remote head so its push
+    fast-forwards, instead of being refused and silently skipped."""
+    from autoresearch.attempt import _push_line_snapshot
+    from autoresearch.github import Workspace
+
+    wsroot = tmp_path / "ws"
+    wsroot.mkdir()
+    (wsroot / "train.py").write_text("v1\n")
+    (wsroot / "notes.txt").write_text("stale\n")  # the sibling will delete this
+    (wsroot / "config.txt").write_text("v1\n")  # the sibling will change this
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(wsroot, "rev-parse", "HEAD").strip()
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "branch", "agents/agent-01", base)
+    _git(wsroot, "push", "-q", "origin", "agents/agent-01")
+    # the sibling run advances the remote line while we are parked
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
+    (other / "train.py").write_text("sibling\n")
+    (other / "notes.txt").unlink()
+    (other / "config.txt").write_text("sibling config\n")
+    (other / "agent_memory").mkdir()
+    (other / "agent_memory" / "sibling.md").write_text("a note only the sibling wrote\n")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(
+        other,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        "line snapshot: sibling",
+    )
+    _git(other, "push", "-q", "origin", "agents/agent-01")
+    sibling = _git(other, "rev-parse", "HEAD").strip()
+    # our run ends with its own tree
+    (wsroot / "train.py").write_text("winner\n")
+    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    head = _git(bare, "rev-parse", "agents/agent-01").strip()
+    assert head != sibling
+    assert _git(bare, "rev-parse", f"{head}^").strip() == sibling  # parented on the moved remote
+    assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
+    # the sibling's addition survives; a file both touched keeps our version
+    assert "only the sibling" in _git(bare, "show", f"{head}:agent_memory/sibling.md")
+    # files this run never touched follow the sibling: deleted stays deleted,
+    # modified takes the sibling's content
+    assert "notes.txt" not in _git(bare, "ls-tree", "-r", "--name-only", head)
+    assert _git(bare, "show", f"{head}:config.txt").strip() == "sibling config"
+    assert _git(wsroot, "rev-parse", "agents/agent-01").strip() == head  # local ref advanced too
+
+
+def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoresearch import attempt as attempt_mod
+    from autoresearch.attempt import _push_line_snapshot
+    from autoresearch.github import Workspace
+
+    wsroot = tmp_path / "ws"
+    wsroot.mkdir()
+    (wsroot / "train.py").write_text("v1\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(wsroot, "rev-parse", "HEAD").strip()
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "branch", "agents/agent-01", base)
+    _git(wsroot, "push", "-q", "origin", "agents/agent-01")
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
+    # a first sibling commit is already on the remote when we seal: it adds
+    # config.txt, which the first reconciliation copies into our workspace
+    (other / "config.txt").write_text("s1\n")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "sibling 1")
+    _git(other, "push", "-q", "origin", "agents/agent-01")
+    pushes: list[str] = []
+    real_push = Workspace.push
+
+    def racing_push(self: Workspace, branch: str) -> None:
+        pushes.append(branch)
+        if len(pushes) == 1:
+            # a second sibling commit lands between our fetch and our push,
+            # changing the very file the first reconciliation copied in
+            (other / "train.py").write_text("sibling\n")
+            (other / "config.txt").write_text("s2\n")
+            _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "sibling 2")
+            _git(other, "push", "-q", "origin", "agents/agent-01")
+        real_push(self, branch)  # the first attempt is now a non-fast-forward and raises
+
+    monkeypatch.setattr(attempt_mod.Workspace, "push", racing_push)
+    (wsroot / "train.py").write_text("winner\n")
+    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    sibling = _git(other, "rev-parse", "HEAD").strip()
+    head = _git(bare, "rev-parse", "agents/agent-01").strip()
+    assert len(pushes) == 2
+    assert _git(bare, "rev-parse", f"{head}^").strip() == sibling
+    assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
+    # the copied-in file is not "ours": the retry takes the sibling's newer version
+    assert _git(bare, "show", f"{head}:config.txt").strip() == "s2"
+
+
 def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path: Path) -> None:
     """A line behind main merges main at run start; when that merge conflicts
     it stays uncommitted, and git's auto-merged files (the kernel's ledger)
