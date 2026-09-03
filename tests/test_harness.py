@@ -884,12 +884,13 @@ def test_codex_container_run_binds_and_exports_the_shared_uv_cache(
     binary = tmp_path / "codex"
     binary.write_text("#!/bin/sh\n")
 
-    seen: dict[str, object] = {}
+    captured_argv: list[list[str]] = []
+    captured_env: list[dict[str, str]] = []
 
     class FakePopen:
         def __init__(self, argv: list[str], *a: object, env: dict[str, str], **k: object) -> None:
-            seen["argv"] = argv
-            seen["env"] = env
+            captured_argv.append(argv)
+            captured_env.append(env)
 
         def communicate(self, *a: object, **k: object) -> tuple[str, str]:
             return ("", "")
@@ -903,9 +904,8 @@ def test_codex_container_run_binds_and_exports_the_shared_uv_cache(
     )
 
     cache = root / "caches" / "uv"
-    argv = " ".join(str(a) for a in seen["argv"])  # type: ignore[arg-type]
+    argv = " ".join(captured_argv[0])
     assert f"--bind {cache}:{cache}" in argv
-    env = seen["env"]
-    assert isinstance(env, dict)
+    env = captured_env[0]
     assert env["UV_CACHE_DIR"] == str(cache)
     assert env["APPTAINERENV_UV_CACHE_DIR"] == str(cache)
