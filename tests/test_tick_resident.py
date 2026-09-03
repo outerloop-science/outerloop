@@ -275,3 +275,15 @@ echo "$((500 + n))"
     log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
     assert "submit failed at handover; retrying" in log
     assert "handing over to successor 505" in log
+
+
+def test_a_misconfigured_resident_start_fails_loudly_before_queuing_anything(
+    tmp_path: Path,
+) -> None:
+    home, root, bindir, shimlog = _install(tmp_path)
+    env = _resident_env(home, root, bindir)
+    env.pop("AUTORESEARCH_ROOT")
+    proc = _run_chain(home, env)
+    assert proc.returncode == 1
+    assert "resident tick misconfigured; missing: AUTORESEARCH_ROOT" in proc.stderr
+    assert not (shimlog / "sbatch").exists() and not (shimlog / "ticks").exists()

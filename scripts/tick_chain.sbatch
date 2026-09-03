@@ -46,7 +46,14 @@ for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT AUTORESEARCH
 done
 
 # --- 0. the resident tick: hand the whole job to the loop ---
+# A resident job has no queued successor to protect yet, so a misconfigured
+# start fails LOUDLY here (the per-cadence chain below checks after its
+# top-up on purpose: its successors are already queued and must stay so).
 if [ "${AUTORESEARCH_RESIDENT:-}" = "1" ]; then
+    if [ -n "$missing" ]; then
+        echo "resident tick misconfigured; missing:$missing" >&2
+        exit 1
+    fi
     . "${AUTORESEARCH_HOME:-.}/scripts/tick_resident.sh"
     exit $?
 fi
