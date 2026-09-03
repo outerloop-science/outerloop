@@ -132,7 +132,7 @@ def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_c
     log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
     assert log.count("(resident)") == 3
     assert "successor 501 queued (afterany:42)" in log
-    assert "shim changed; successor resubmitted as 502" in log
+    assert "shim changed; successor 501 replaced by 502" in log
     assert "pause sentinel present; cancelling successor 502" in log
 
 
@@ -149,3 +149,82 @@ def test_per_cadence_chain_drains_when_a_resident_exists(tmp_path: Path) -> None
     # its note goes to the job's stdout
     assert "a resident tick exists; not queuing successors" in proc.stdout
     assert (shimlog / "ticks").read_text().count("tick") == 1  # this tick still ran
+
+
+def _resident_env(home: Path, root: Path, bindir: Path, **extra: str) -> dict[str, str]:
+    return _env(
+        home,
+        root,
+        bindir,
+        AUTORESEARCH_RESIDENT="1",
+        AUTORESEARCH_RESIDENT_CADENCE_S="1",
+        AUTORESEARCH_RESIDENT_MINUTES="360",
+        SLURM_JOB_ID="42",
+        **extra,
+    )
+
+
+def test_a_shim_change_on_the_first_deploy_replaces_the_successor(tmp_path: Path) -> None:
+    """The successor is queued before the first deploy; a deploy that changes
+    the shim on that very iteration must still replace it (r1)."""
+    home, root, bindir, shimlog = _install(tmp_path)
+    # the deploy's `uv sync` edits the shim (a deploy that pulled a new shim);
+    # the fake tick pauses on its first call
+    (bindir / "uv").write_text(
+        f"""#!/bin/sh
+case "$1" in
+  sync) echo "# shim edited by the first deploy" >> "{home}/scripts/tick_chain.sbatch"; exit 0 ;;
+  run) echo tick >> "{shimlog}/ticks"; touch "{root}/PAUSE"; exit 0 ;;
+esac
+"""
+    )
+    proc = _run_chain(home, _resident_env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    sbatch = (shimlog / "sbatch").read_text().splitlines()
+    assert len(sbatch) == 2  # initial + the replacement, before the first tick
+    assert (shimlog / "scancel").read_text().split() == ["501", "502"]  # stale, then pause
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    assert "shim changed; successor 501 replaced by 502" in log
+    assert log.index("replaced by 502") < log.index("(resident)")
+
+
+def test_a_refused_cancellation_keeps_the_stale_successor_and_drops_the_replacement(
+    tmp_path: Path,
+) -> None:
+    """Never two successors, never none: if Slurm refuses to cancel the stale
+    successor, the replacement is withdrawn and the stale one kept (r1)."""
+    home, root, bindir, shimlog = _install(tmp_path)
+    (bindir / "scancel").write_text(
+        f'#!/bin/sh\ncase "$1" in 501) exit 1 ;; esac\necho "$1" >> "{shimlog}/scancel"\n'
+    )
+    proc = _run_chain(home, _resident_env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    sbatch = (shimlog / "sbatch").read_text().splitlines()
+    assert len(sbatch) == 2  # initial + one replacement attempt
+    # the replacement (502) was withdrawn; at PAUSE the stale 501 is cancelled
+    # (refused again by the shim, so it does not appear in the log)
+    assert (shimlog / "scancel").read_text().split() == ["502"]
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    assert "could not cancel stale successor 501; keeping it" in log
+    assert "cancelling successor 501 and exiting" in log
+
+
+def test_the_walltime_margin_hands_over_with_a_successor_and_never_sleeps_past_it(
+    tmp_path: Path,
+) -> None:
+    """Inside the margin the loop queues a successor if it has none and
+    exits at once — no tick, no sleep (r1)."""
+    from datetime import datetime, timedelta
+
+    home, root, bindir, shimlog = _install(tmp_path)
+    soon = (datetime.now() + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    (bindir / "scontrol").write_text(
+        f'#!/bin/sh\necho "JobId=42 EndTime={soon} JobState=RUNNING"\n'
+    )
+    proc = _run_chain(home, _resident_env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    assert not (shimlog / "ticks").exists()
+    assert len((shimlog / "sbatch").read_text().splitlines()) == 1
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    assert "successor 501 queued at handover" in log
+    assert "walltime margin reached; handing over to successor 501" in log

@@ -63,8 +63,10 @@ drain_per_cadence_chain() {
     done
 }
 
+shim_checksum() { cksum "$shim" 2>/dev/null | cut -d' ' -f1; }
+
 successor=""
-shim_sum=""
+successor_sum=""  # the shim checksum the queued successor was submitted under
 LOG_DIR="$AUTORESEARCH_ROOT/logs"
 mkdir -p "$LOG_DIR" || true
 while :; do
@@ -72,7 +74,15 @@ while :; do
     if [ -w "$LOG_DIR" ]; then exec >>"$LOG_DIR/tick-$(date +%Y%m%d).log" 2>&1; fi
     now=$(date +%s)
     if [ $((end_epoch - now)) -le "$margin_s" ]; then
-        echo "resident: walltime margin reached; handing over to successor ${successor:-none}"
+        # never end without a successor: one more attempt on the way out
+        if [ -z "$successor" ] && successor=$(submit_successor); then
+            echo "resident: successor $successor queued at handover"
+        fi
+        if [ -n "$successor" ]; then
+            echo "resident: walltime margin reached; handing over to successor $successor"
+        else
+            echo "resident: walltime margin reached with NO successor queued — the chain needs a restart"
+        fi
         exit 0
     fi
     if [ -e "$sentinel" ]; then
@@ -81,6 +91,7 @@ while :; do
         exit 0
     fi
     if [ -z "$successor" ]; then
+        successor_sum=$(shim_checksum)
         if successor=$(submit_successor); then
             echo "resident: successor $successor queued (afterany:${self:-none})"
             drain_per_cadence_chain
@@ -91,25 +102,38 @@ while :; do
     fi
     # deploy + operator knobs, fresh every iteration (exports reach the tick)
     . "$AUTORESEARCH_HOME/scripts/tick_deploy.sh"
-    new_sum=$(cksum "$shim" 2>/dev/null | cut -d' ' -f1)
-    if [ -n "$shim_sum" ] && [ "$new_sum" != "$shim_sum" ] && [ -n "$successor" ]; then
+    new_sum=$(shim_checksum)
+    if [ -n "$successor" ] && [ "$new_sum" != "$successor_sum" ]; then
         # Slurm spooled the successor's script at submission: resubmit so
-        # handover runs the shim the deploy just installed
-        scancel "$successor" 2>/dev/null
-        if successor=$(submit_successor); then
-            echo "resident: shim changed; successor resubmitted as $successor"
+        # handover runs the shim the deploy just installed. The REPLACEMENT is
+        # queued first (a moment with two singleton successors is harmless —
+        # they serialize), and the stale one is cancelled only then; a
+        # cancellation Slurm refuses keeps the stale one and drops the
+        # replacement, so the chain can never fork or go successor-less here
+        if replacement=$(submit_successor); then
+            if scancel "$successor" 2>/dev/null; then
+                echo "resident: shim changed; successor $successor replaced by $replacement"
+                successor="$replacement"
+                successor_sum="$new_sum"
+            else
+                scancel "$replacement" 2>/dev/null || true
+                echo "resident: could not cancel stale successor $successor; keeping it (retry next iteration)"
+            fi
         else
-            successor=""
             echo "resident: shim changed but resubmit failed; retrying next iteration"
         fi
     fi
-    shim_sum="$new_sum"
     echo "=== tick $(date -Is) on $(hostname -s) job=${self:-none} (resident)"
     (cd "$AUTORESEARCH_HOME" && timeout --kill-after=60s "$tick_timeout" \
         uv run python -m autoresearch.tick --root "$AUTORESEARCH_ROOT")
     rc=$?
     [ "$rc" -ne 0 ] && echo "resident: tick exited $rc; the loop continues"
+    # sleep to the next slot, but never past the walltime margin: the loop
+    # must wake to hand over, not be killed asleep
     now=$(date +%s)
     next=$(( (now / cadence_s + 1) * cadence_s ))
-    sleep $((next - now))
+    wait=$((next - now))
+    limit=$((end_epoch - margin_s - now))
+    [ "$limit" -lt "$wait" ] && wait="$limit"
+    [ "$wait" -gt 0 ] && sleep "$wait"
 done
