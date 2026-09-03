@@ -18,6 +18,7 @@ bash "$AUTORESEARCH_HOME/scripts/sweep_git_locks.sh" "$AUTORESEARCH_HOME" 10 || 
 if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
     ASKPASS=$(mktemp 2>/dev/null || echo "") && [ -n "$ASKPASS" ] && chmod 700 "$ASKPASS"
     printf '#!/bin/sh\ncat "%s"\n' "$AUTORESEARCH_PAT_FILE" > "$ASKPASS"
+    DEPLOY_PREV=$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null || echo "")
     if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -C "$AUTORESEARCH_HOME" fetch --quiet \
         "https://x-access-token@github.com/agentic-learning-ai-lab/autoresearch.git" main; then
         git -C "$AUTORESEARCH_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
@@ -34,9 +35,20 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$AUTORESEARCH_ROOT/cache/uv}"
 export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$AUTORESEARCH_ROOT/cache/apptainer}"
 mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 
-# the tick runs with `uv run --no-sync` afterwards, so a failed sync here
-# (quota, network) leaves the previous venv in service instead of no tick
-(cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet) || echo "deploy: uv sync failed"
+# Code and environment move together or not at all. The tick runs with
+# `uv run --no-sync` afterwards, so when the sync fails (quota, network) the
+# checkout goes BACK to the commit whose environment is installed: new code
+# never runs against an old venv (a merge that adds a dependency would fail
+# at import), and the tick keeps running on the previous, consistent pair.
+if ! (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
+    if [ -n "${DEPLOY_PREV:-}" ] && [ "$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null)" != "$DEPLOY_PREV" ]; then
+        git -C "$AUTORESEARCH_HOME" reset --hard --quiet "$DEPLOY_PREV" \
+            && echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment" \
+            || echo "deploy: uv sync failed and the rollback to $DEPLOY_PREV failed"
+    else
+        echo "deploy: uv sync failed; environment unchanged"
+    fi
+fi
 
 # --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
 # live config changes need no chain restart. These are where

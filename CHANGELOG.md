@@ -16,10 +16,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- The tick runs the deployed environment as it stands (`uv run --no-sync`).
-  A failed `uv sync` at deploy time (a full quota, a network outage) used to
-  be repeated by `uv run` itself, so no tick started at all; now the tick
-  continues on the previous environment, as the deploy step always promised.
+- The tick runs the installed environment as it stands (`uv run --no-sync`),
+  and the deploy moves code and environment together: when `uv sync` fails
+  (a full quota, a network outage) the checkout goes back to the commit whose
+  environment is installed. Before, `uv run` repeated the failed sync and no
+  tick started at all.
   (2026-09-03: every tick from 13:30Z died this way for two hours after the
   scratch quota filled.)
 - A line snapshot now builds on a newer remote version of the line instead

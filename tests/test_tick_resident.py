@@ -40,6 +40,7 @@ def _install(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         # uv: `sync` is a no-op; `run ... tick` is the fake tick — it counts
         # its calls, appends to the shim on the 2nd call, sets PAUSE on the 3rd
         "uv": f'''#!/bin/sh
+echo "$@" >> "{shimlog}/uv"
 case "$1" in
   sync) exit 0 ;;
   run)
@@ -287,3 +288,73 @@ def test_a_misconfigured_resident_start_fails_loudly_before_queuing_anything(
     assert proc.returncode == 1
     assert "resident tick misconfigured; missing: AUTORESEARCH_ROOT" in proc.stderr
     assert not (shimlog / "sbatch").exists() and not (shimlog / "ticks").exists()
+
+
+def test_the_tick_runs_the_installed_environment_without_resyncing(tmp_path: Path) -> None:
+    """Every tick invocation is `uv run --no-sync ...`: the deploy step owns
+    syncing, so a sync that fails (a full quota, 2026-09-03) cannot stop the
+    tick from starting on the environment that is installed."""
+    home, root, bindir, shimlog = _install(tmp_path)
+    proc = _run_chain(home, _resident_env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    runs = [ln for ln in (shimlog / "uv").read_text().splitlines() if ln.startswith("run ")]
+    assert runs, "no tick was run"
+    assert all(ln.startswith("run --no-sync python -m autoresearch.tick") for ln in runs), runs
+
+
+def test_a_failed_sync_rolls_the_checkout_back_to_the_installed_commit(tmp_path: Path) -> None:
+    """The deploy resets the checkout to the fetched commit and then syncs;
+    when the sync fails the checkout returns to the previous commit, so the
+    `--no-sync` tick never runs new source against the old environment."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    root = tmp_path / "root"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "gitlog"
+    pat = tmp_path / "pat"
+    pat.write_text("token\n")
+    # git: HEAD is OLD before the fetch and NEW after the reset to FETCH_HEAD
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{log}"
+case "$*" in
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
+  *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
+  *"reset --hard --quiet OLD"*) rm -f "{tmp_path}/reset" ;;
+esac
+exit 0
+"""
+    )
+    (bindir / "uv").write_text(
+        '#!/bin/sh\ncase "$1" in sync) echo "error: Disk quota exceeded" >&2; exit 2 ;; esac\n'
+        "exit 0\n"
+    )
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": str(root),
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        ["bash", "-c", f'. "{home}/scripts/tick_deploy.sh"'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "deploy: uv sync failed; back on OLD" in proc.stdout
+    gitlog = log.read_text()
+    assert "reset --hard --quiet FETCH_HEAD" in gitlog
+    assert gitlog.index("reset --hard --quiet FETCH_HEAD") < gitlog.index(
+        "reset --hard --quiet OLD"
+    )
+    assert not (tmp_path / "reset").exists()  # the checkout is back on OLD
