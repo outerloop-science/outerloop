@@ -157,3 +157,13 @@ def test_the_count_limit_defaults_small(tmp_path: Path) -> None:
     for i in range(10):
         _run(root, f"r{i}", ENDED, NOW - DEFAULT_SHED_GRACE_S - 100 + i)
     assert len(shed_ended_workspaces(root, NOW)) == 3  # default limit
+
+
+def test_forced_sweep_is_oldest_first_across_benchmark_prefixes(tmp_path: Path) -> None:
+    """Oldest-first is by the timestamp in the run id, not lexical: a newer
+    `speedrun-` must not be shed before an older `tsp-` just because 's' < 't'."""
+    root = tmp_path / "state"
+    _run(root, "tsp-20260820-201843", ENDED, NOW - 500)  # older by timestamp
+    _run(root, "speedrun-20260903-063055-agent-03", ENDED, NOW - 100)  # newer
+    shed = shed_ended_workspaces(root, NOW, force=True, limit=1)
+    assert shed == ["tsp-20260820-201843"]  # the older id, though it sorts later lexically

@@ -23,6 +23,8 @@ Rules (docs/design/disk-maintenance.md):
 from __future__ import annotations
 
 import logging
+import os
+import re
 import shutil
 import time
 from dataclasses import replace
@@ -71,6 +73,14 @@ def shed_workspace(root: Path, record: RunRecord, now: float) -> bool:
     return True
 
 
+_TS_RE = re.compile(r"(\d{8}-\d{6})")
+
+
+def _run_id_timestamp(run_id: str) -> str | None:
+    m = _TS_RE.search(run_id)
+    return m.group(1) if m else None
+
+
 def _is_shed_candidate(
     root: Path, record: RunRecord, now: float, grace_s: float, force: bool
 ) -> bool:
@@ -101,19 +111,24 @@ def shed_ended_workspaces(
     filesystem, tens of thousands of tiny files each on a networked FS, so an
     unbounded batch inside a tick can run for many minutes and blow the tick's
     own timeout (2026-09-03: a 50-run batch, and reading every record to find
-    candidates, killed the tick before it could publish). Run ids are
-    timestamp-prefixed, so oldest-first needs no upfront scan: iterate the run
-    directory in name order and load one record at a time, checking the budget
-    EACH step, so both discovery and deletion are bounded. The backlog drains
-    over several ticks. With `until_ok` a forced sweep also stops as soon as
-    the disk reports healthy."""
+    candidates, killed the tick before it could publish). Discovery is ONE
+    directory read, sorted oldest-first by the timestamp embedded in each run
+    id (no per-entry stat, no record load); the loop then loads one record at
+    a time and checks the budget EACH step, so both are bounded. The backlog
+    drains over several ticks. With `until_ok` a forced sweep also stops as
+    soon as the disk reports healthy."""
     monotonic = clock if callable(clock) else time.monotonic
     start = monotonic()
     runs_root = root / "runs"
-    if not runs_root.is_dir():
-        return []
     try:
-        run_ids = sorted(p.name for p in runs_root.iterdir() if p.is_dir())
+        # ONE directory read (no per-entry stat), sorted oldest-first by the
+        # timestamp every run id carries (`<name>-YYYYMMDD-HHMMSS-...`), which
+        # is chronological across benchmark prefixes where a lexical sort is
+        # not; ids without one sort last so they never block the backlog.
+        run_ids = sorted(
+            (e.name for e in os.scandir(runs_root)),
+            key=lambda name: (_run_id_timestamp(name) or "99999999-999999", name),
+        )
     except OSError:
         return []
     shed: list[str] = []
