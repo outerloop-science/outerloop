@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import signal
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass, field, replace
@@ -99,6 +100,42 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     env["HOME"] = str(home)
     env[key_variable] = api_key
     return env
+
+
+def _open_nofollow_dir(name: str, dir_fd: int) -> int:
+    """`openat` `name` as a directory under `dir_fd` without following a final
+    symlink; -1 if it is missing, a symlink (ELOOP), or not a directory."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=dir_fd)
+    except OSError:
+        return -1
+
+
+def _rmtree_at(dir_fd: int, name: str) -> None:
+    """Recursively delete directory `name` under `dir_fd`, anchored on file
+    descriptors and `O_NOFOLLOW` at every level. No path component is ever
+    resolved by name after the first open, so a session that swaps a directory
+    for a symlink mid-delete cannot divert it outside the tree (TOCTOU-safe).
+    Best-effort: a missing entry, a symlink, or a non-directory `name` is a
+    no-op."""
+    fd = _open_nofollow_dir(name, dir_fd)
+    if fd < 0:
+        return  # gone, a symlink (ELOOP), or not a directory
+    try:
+        for child in os.listdir(fd):
+            try:
+                st = os.stat(child, dir_fd=fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                _rmtree_at(fd, child)
+            else:
+                with contextlib.suppress(OSError):
+                    os.unlink(child, dir_fd=fd)
+    finally:
+        os.close(fd)
+    with contextlib.suppress(OSError):
+        os.rmdir(name, dir_fd=dir_fd)
 
 
 @dataclass(frozen=True)
@@ -944,6 +981,39 @@ class CodexHarness:
         except OSError as exc:
             log.warning("could not create session home %s: %s", session_home, exc)
             return _error_result("workspace-error")
+        # Codex leaks temp directories into .codex/.tmp and fails to remove
+        # them (the "stale arg0 temp dirs: Directory not empty" aborts); across
+        # a run's wakes they pile up into tens of thousands of files, the bulk
+        # of the per-run home. Clear codex's scratch before each run — its
+        # durable state (auth.json, sessions, the sqlite) is elsewhere under
+        # .codex and untouched. A prior session owns this home, so resolve every
+        # component it can write — the run home and .codex — with O_NOFOLLOW,
+        # anchored on the run directory the orchestrator owns (a contained
+        # session's binds expose only the run home and workspace, never their
+        # parent; an uncontained session runs as a plain host process, so
+        # guarding these two components is the boundary either way). A swap of
+        # ws-home or .codex for a symlink then cannot divert the delete out of
+        # the run home. Best-effort — this must never abort the run it precedes
+        # (the contract is to return a SessionResult, not raise), so an
+        # adversarially deep tree's RecursionError or any other error is caught.
+        try:
+            run_fd = os.open(session_home.parent, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            run_fd = -1
+        if run_fd >= 0:
+            home_fd = _open_nofollow_dir(session_home.name, run_fd)
+            os.close(run_fd)
+            if home_fd >= 0:
+                codex_fd = _open_nofollow_dir(".codex", home_fd)
+                if codex_fd >= 0:
+                    try:
+                        for scratch in (".tmp", "tmp"):
+                            _rmtree_at(codex_fd, scratch)
+                    except Exception as exc:
+                        log.warning("codex scratch cleanup skipped: %s", exc)
+                    finally:
+                        os.close(codex_fd)
+                os.close(home_fd)
         # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
         # (the responses endpoint 401s on env-only). Write auth.json
         # into the scrubbed per-run HOME with `codex login --with-api-key`
