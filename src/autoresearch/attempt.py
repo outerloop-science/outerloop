@@ -1117,7 +1117,7 @@ def _push_line_snapshot(
                 remote = ws.git("rev-parse", f"refs/remotes/origin/{line_ref}").strip()
                 if remote != local:
                     ws.git("merge-base", "--is-ancestor", local, remote)  # raises when not
-                    _keep_remote_additions(ws, local, remote)
+                    _reconcile_with_remote(ws, local, remote)
                     parent = remote
             except Exception as exc:
                 log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
@@ -1162,17 +1162,35 @@ def _push_line_snapshot(
     _best_effort(f"line push ({outcome})", _seal_and_push, secrets)
 
 
-def _keep_remote_additions(ws: Workspace, old: str, new: str) -> None:
-    """The seal is built from THIS workspace, so a file another run added to
-    the line since `old` (a sibling's memory note, say) would read as deleted.
-    Materialize the ones this workspace lacks; files both sides have keep
-    this run's version, as the line always did."""
-    added = [
-        p for p in ws.git("diff", "--name-only", "-z", "--diff-filter=A", old, new).split("\0") if p
+def _reconcile_with_remote(ws: Workspace, old: str, new: str) -> None:
+    """The seal is built from THIS workspace, which forked the line at `old`;
+    another run has since moved the line to `new`. For every path that run
+    changed, take its state when this workspace left the path untouched
+    since `old` (added: materialize, modified: update, deleted: remove); a
+    path this run touched keeps this run's version, as the line always did.
+    Without this, a seal would silently undo the other run's work on files
+    this run never looked at."""
+    entries = [
+        e for e in ws.git("diff", "--name-status", "--no-renames", "-z", old, new).split("\0") if e
     ]
-    missing = [p for p in added if not (Path(ws.root) / p).exists()]
-    if missing:
-        ws.git("checkout", new, "--", *missing)
+    remote_changes = list(zip(entries[0::2], entries[1::2], strict=True))
+    if not remote_changes:
+        return
+    touched = {
+        p for p in ws.git("diff", "--name-only", "-z", old).split("\0") if p
+    }  # tracked paths this run changed or deleted
+    touched |= {
+        p for p in ws.git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p
+    }  # and the files it created
+    for status, path in remote_changes:
+        if path in touched:
+            continue
+        if status.startswith("D"):
+            target = Path(ws.root) / path
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+        else:
+            ws.git("checkout", new, "--", path)
 
 
 def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: str) -> str:

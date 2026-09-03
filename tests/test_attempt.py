@@ -4299,6 +4299,8 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     wsroot = tmp_path / "ws"
     wsroot.mkdir()
     (wsroot / "train.py").write_text("v1\n")
+    (wsroot / "notes.txt").write_text("stale\n")  # the sibling will delete this
+    (wsroot / "config.txt").write_text("v1\n")  # the sibling will change this
     _git(wsroot, "init", "-q", "-b", "main")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
@@ -4312,6 +4314,8 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     other = tmp_path / "other"
     _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
     (other / "train.py").write_text("sibling\n")
+    (other / "notes.txt").unlink()
+    (other / "config.txt").write_text("sibling config\n")
     (other / "agent_memory").mkdir()
     (other / "agent_memory" / "sibling.md").write_text("a note only the sibling wrote\n")
     _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -4334,8 +4338,12 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     assert head != sibling
     assert _git(bare, "rev-parse", f"{head}^").strip() == sibling  # parented on the moved remote
     assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
-    # the sibling's addition survives; a file both had keeps our version
+    # the sibling's addition survives; a file both touched keeps our version
     assert "only the sibling" in _git(bare, "show", f"{head}:agent_memory/sibling.md")
+    # files this run never touched follow the sibling: deleted stays deleted,
+    # modified takes the sibling's content
+    assert "notes.txt" not in _git(bare, "ls-tree", "-r", "--name-only", head)
+    assert _git(bare, "show", f"{head}:config.txt").strip() == "sibling config"
     assert _git(wsroot, "rev-parse", "agents/agent-01").strip() == head  # local ref advanced too
 
 

@@ -18,7 +18,8 @@ Versions follow [SemVer](https://semver.org).
 
 - A line snapshot now builds on a newer remote version of the line instead
   of being skipped when another run on the same line pushed while this run
-  was parked. Files that newer version added are kept, and a push refused
+  was parked. Files the other run added, changed, or deleted that this run
+  never touched follow the other run, and a push refused
   because the line moved again is retried on the new head. (This is how
   agent-01's line fell behind its own merged win on gpt-speedrun,
   2026-09-03.)
