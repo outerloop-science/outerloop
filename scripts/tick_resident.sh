@@ -73,6 +73,13 @@ while :; do
     # the log file rolls daily: reopen it every iteration
     if [ -w "$LOG_DIR" ]; then exec >>"$LOG_DIR/tick-$(date +%Y%m%d).log" 2>&1; fi
     now=$(date +%s)
+    # the sentinel is read FIRST on every iteration, the handover included: a
+    # paused chain ends with nothing queued, whatever brought the loop here
+    if [ -e "$sentinel" ]; then
+        echo "resident: pause sentinel present; cancelling successor ${successor:-none} and exiting"
+        [ -n "$successor" ] && scancel "$successor" 2>/dev/null
+        exit 0
+    fi
     if [ $((end_epoch - now)) -le "$margin_s" ]; then
         # never end without a successor: one more attempt on the way out
         if [ -z "$successor" ] && successor=$(submit_successor); then
@@ -83,11 +90,6 @@ while :; do
         else
             echo "resident: walltime margin reached with NO successor queued — the chain needs a restart"
         fi
-        exit 0
-    fi
-    if [ -e "$sentinel" ]; then
-        echo "resident: pause sentinel present; cancelling successor ${successor:-none} and exiting"
-        [ -n "$successor" ] && scancel "$successor" 2>/dev/null
         exit 0
     fi
     if [ -z "$successor" ]; then

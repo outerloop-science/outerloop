@@ -228,3 +228,21 @@ def test_the_walltime_margin_hands_over_with_a_successor_and_never_sleeps_past_i
     log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
     assert "successor 501 queued at handover" in log
     assert "walltime margin reached; handing over to successor 501" in log
+
+
+def test_pause_wins_over_the_walltime_margin(tmp_path: Path) -> None:
+    """PAUSE set while the loop slept up to the margin: the handover branch
+    must not run — the successor is cancelled and nothing is queued (r2)."""
+    from datetime import datetime, timedelta
+
+    home, root, bindir, shimlog = _install(tmp_path)
+    soon = (datetime.now() + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    (bindir / "scontrol").write_text(
+        f'#!/bin/sh\necho "JobId=42 EndTime={soon} JobState=RUNNING"\n'
+    )
+    (root / "PAUSE").touch()
+    proc = _run_chain(home, _resident_env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    assert not (shimlog / "sbatch").exists() and not (shimlog / "ticks").exists()
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    assert "pause sentinel present" in log and "handing over" not in log
