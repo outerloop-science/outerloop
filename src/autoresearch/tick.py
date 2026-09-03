@@ -42,6 +42,7 @@ from autoresearch.compute import (
 )
 from autoresearch.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from autoresearch.harness import DEFAULT_MAX_TURNS, redact
+from autoresearch.housekeeping import shed_ended_workspaces
 from autoresearch.limits import EffectiveLimits, effective_limits
 from autoresearch.runstate import (
     ABORTED,
@@ -145,6 +146,7 @@ class TickReport:
     steward: tuple[str, str] = ("", "")  # (issue tag, job_id) when a stewardship launched
     disk: tuple[str, ...] = ()  # preflight warnings (home entries are warn-only)
     launch_blocked: bool = False  # True when the preflight turned launch lanes off
+    shed: tuple[str, ...] = ()  # ended runs whose workspaces housekeeping removed
 
 
 # The submitted walltime must never exceed the job partition's MaxTime —
@@ -1632,6 +1634,26 @@ def tick(
             )
             return TickReport(coalesced=True)
     report = sweep(root, compute, dispatcher, now, grace_s, lease_ttl_s, dry_run=dry_run)
+    # Housekeeping: ended runs shed ws/ and ws-home/ after a grace period;
+    # when the state filesystem's write probe failed, the grace is waived and
+    # the sweep frees oldest-first until the probe passes, then the preflight
+    # is taken again so launch lanes can come back this very tick.
+    disk_failing = not disk_health.launch_ok()
+    shed = shed_ended_workspaces(
+        root,
+        now,
+        force=disk_failing,
+        until_ok=(lambda: check_disk(root, min_free_bytes=min_free_bytes).launch_ok())
+        if disk_failing
+        else None,
+    )
+    if shed and disk_failing:
+        disk_health = check_disk(root, min_free_bytes=min_free_bytes)
+        write_heartbeat(root, now, disk=disk_health.as_dict())
+    if shed:
+        from dataclasses import replace as _dc_replace
+
+        report = _dc_replace(report, shed=tuple(shed))
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
@@ -3082,7 +3104,7 @@ def main() -> int:
         log.info(
             "tick done: paused=%s coalesced=%s swept=%d woken=%d deferred=%d reaped=%d stuck=%d "
             "impl_ended=%s review_ended=%s followups=%s intake=%s self_initiated=%s steward=%s "
-            "disk=%s launch_blocked=%s",
+            "disk=%s launch_blocked=%s shed=%d",
             report.paused,
             report.coalesced,
             report.swept,
@@ -3098,6 +3120,7 @@ def main() -> int:
             report.steward,
             report.disk or "ok",
             report.launch_blocked,
+            len(report.shed),
         )
 
     if not args.loop:

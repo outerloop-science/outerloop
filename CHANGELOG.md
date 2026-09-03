@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Disk housekeeping: an ended run sheds its `ws/` and `ws-home/` directories
+  once its tree is on GitHub, keeping the record, report, transcripts, and
+  ledger. The tick sheds after a 24 h grace, oldest first; when the state
+  filesystem's write probe fails the grace is waived and it frees oldest-first
+  until the probe passes, so a full quota heals itself. A symlinked workspace
+  is left for a human. (2026-09-03: 139 ended runs held ~1.6M files under the
+  state root and the scratch inode quota hit its ceiling.)
 - `autoresearch start`, the one launch command: with `sbatch` on PATH it
   submits the resident tick (walltime, job name, and exports filled in from
   flags, the environment, or `~/.config/autoresearch/.env`); otherwise, or

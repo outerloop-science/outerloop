@@ -187,6 +187,9 @@ class RunRecord:
     ending_note: str = ""
     created: float = 0.0
     updated: float = 0.0
+    # when housekeeping removed this ended run's ws/ and ws-home/ (0 = never);
+    # the record, report, transcripts, and ledger stay (housekeeping.py)
+    workspace_shed: float = 0.0
 
     def ended(self) -> bool:
         return self.state == ENDED
