@@ -950,6 +950,25 @@ _GIT_NO_SYMLINK_ENTRIES = ("", "objects", "objects/info", "objects/pack")
 GUARD_GIT_TIMEOUT_S = 20  # the guard's own git read; a stall here is a stall everywhere
 
 
+def _regular_files_only(git_dir: Path, rel: str, allow_dirs: tuple[str, ...] = ()) -> None:
+    """Every entry of .git/<rel> must be a regular file (directory-entry type,
+    no per-file stat); `allow_dirs` names the subdirectories git itself
+    creates there (objects/info/commit-graphs for a split commit graph),
+    which are checked the same way one level down."""
+    try:
+        with os.scandir(git_dir / rel) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False) and entry.name in allow_dirs:
+                    _regular_files_only(git_dir, f"{rel}/{entry.name}")
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    raise _altered(f".git/{rel}/{entry.name} is not a regular file")
+    except PermissionError:
+        raise _altered(f".git/{rel} is unreadable") from None
+    except FileNotFoundError:
+        return
+
+
 def _altered(what: str) -> GitError:
     return GitError(f"workspace .git altered by the session: {what}")
 
@@ -1036,15 +1055,7 @@ def ensure_regular_git_dir(root: Path | None) -> None:
             len(fan.name) == 2 and _HEX2.fullmatch(fan.name)
         ):
             raise _altered(f".git/objects/{fan.name} is not a git object directory")
-        try:
-            with os.scandir(fan.path) as entries:
-                for entry in entries:
-                    if not entry.is_file(follow_symlinks=False):
-                        raise _altered(
-                            f".git/objects/{fan.name}/{entry.name} is not a regular file"
-                        )
-        except PermissionError:
-            raise _altered(f".git/objects/{fan.name} is unreadable") from None
+        _regular_files_only(git_dir, f"objects/{fan.name}", allow_dirs=("commit-graphs",))
     # The structure can be intact with the objects gone (pack files deleted,
     # or moved and the link removed): a commit the refs name must still be
     # readable. HEAD's commit when HEAD is born; otherwise any other ref (a

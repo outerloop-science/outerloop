@@ -4587,6 +4587,17 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
         ensure_regular_git_dir(root)
     head_file.write_text(head_saved)
     ensure_regular_git_dir(root)
+    # git's own split commit-graph layout is a directory under objects/info
+    graphs = git_dir / "objects" / "info" / "commit-graphs"
+    graphs.mkdir(parents=True, exist_ok=True)
+    (graphs / "graph-abc.graph").write_bytes(b"CGPH")
+    (git_dir / "objects" / "info" / "commit-graphs-chain").write_text("abc\n")
+    ensure_regular_git_dir(root)
+    os.mkfifo(graphs / "graph-fifo.graph")
+    with pytest.raises(GitError, match=r"commit-graphs/graph-fifo\.graph is not a regular file"):
+        ensure_regular_git_dir(root)
+    (graphs / "graph-fifo.graph").unlink()
+    ensure_regular_git_dir(root)
     # a FIFO in place of a loose object or of .git/shallow would stall git
     fan = git_dir / "objects" / "ab"
     fan.mkdir(exist_ok=True)
