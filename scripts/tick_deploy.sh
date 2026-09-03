@@ -40,15 +40,23 @@ mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 # checkout goes BACK to the commit whose environment is installed: new code
 # never runs against an old venv (a merge that adds a dependency would fail
 # at import), and the tick keeps running on the previous, consistent pair.
+# AUTORESEARCH_DEPLOY_BROKEN=1 tells the caller NOT to run the tick this
+# iteration: the checkout and the installed environment do not match and
+# could not be made to (the rollback itself failed). Cleared on every deploy.
+AUTORESEARCH_DEPLOY_BROKEN=""
 if ! (cd "$AUTORESEARCH_HOME" && uv sync --locked --quiet); then
     if [ -n "${DEPLOY_PREV:-}" ] && [ "$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null)" != "$DEPLOY_PREV" ]; then
-        git -C "$AUTORESEARCH_HOME" reset --hard --quiet "$DEPLOY_PREV" \
-            && echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment" \
-            || echo "deploy: uv sync failed and the rollback to $DEPLOY_PREV failed"
+        if git -C "$AUTORESEARCH_HOME" reset --hard --quiet "$DEPLOY_PREV"; then
+            echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment"
+        else
+            echo "deploy: uv sync failed and the rollback to $DEPLOY_PREV failed; tick skipped until a deploy succeeds"
+            AUTORESEARCH_DEPLOY_BROKEN=1
+        fi
     else
         echo "deploy: uv sync failed; environment unchanged"
     fi
 fi
+export AUTORESEARCH_DEPLOY_BROKEN
 
 # --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
 # live config changes need no chain restart. These are where

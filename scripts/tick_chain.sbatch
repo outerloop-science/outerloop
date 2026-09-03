@@ -133,4 +133,8 @@ cd "$AUTORESEARCH_HOME"
 # 2026-09-03: every tick from 13:30Z died here for two hours — the tick never
 # starts. Running the venv as it stands is the "continue on the previous
 # code" the deploy promises.
+if [ "${AUTORESEARCH_DEPLOY_BROKEN:-}" = "1" ]; then
+    echo "tick skipped: checkout and environment inconsistent after a failed deploy"
+    exit 0  # successors are already queued; the next deploy retries
+fi
 exec uv run --no-sync python -m autoresearch.tick --root "$AUTORESEARCH_ROOT"

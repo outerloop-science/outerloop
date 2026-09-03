@@ -358,3 +358,59 @@ exit 0
         "reset --hard --quiet OLD"
     )
     assert not (tmp_path / "reset").exists()  # the checkout is back on OLD
+
+
+def test_a_failed_rollback_marks_the_deploy_broken_so_no_tick_runs(tmp_path: Path) -> None:
+    """When the sync fails AND the reset back to the previous commit fails,
+    the deploy exports AUTORESEARCH_DEPLOY_BROKEN=1 and the tick callers skip
+    the tick: new source must never run against the old environment."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    root = tmp_path / "root"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    pat = tmp_path / "pat"
+    pat.write_text("token\n")
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+case "$*" in
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/reset" ]; then echo NEW; else echo OLD; fi ;;
+  *"reset --hard --quiet FETCH_HEAD"*) touch "{tmp_path}/reset" ;;
+  *"reset --hard --quiet OLD"*) exit 1 ;;
+esac
+exit 0
+"""
+    )
+    (bindir / "uv").write_text('#!/bin/sh\ncase "$1" in sync) exit 2 ;; esac\nexit 0\n')
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": str(root),
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "rollback to OLD failed; tick skipped" in proc.stdout
+    assert "BROKEN=1" in proc.stdout
+    # and the chain honours it: no tick, successors untouched, clean exit
+    shim = (ROOT / "scripts" / "tick_chain.sbatch").read_text()
+    assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in shim and "tick skipped" in shim
+    resident = (ROOT / "scripts" / "tick_resident.sh").read_text()
+    assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in resident and "tick skipped" in resident

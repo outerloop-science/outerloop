@@ -135,8 +135,12 @@ while :; do
         fi
     fi
     echo "=== tick $(date -Is) on $(hostname -s) job=${self:-none} (resident)"
+    if [ "${AUTORESEARCH_DEPLOY_BROKEN:-}" = "1" ]; then
+        echo "$(date -u +%FT%TZ) tick skipped: checkout and environment inconsistent after a failed deploy (resident)"
+    else
     (cd "$AUTORESEARCH_HOME" && timeout --kill-after=60s "$tick_timeout" \
         uv run --no-sync python -m autoresearch.tick --root "$AUTORESEARCH_ROOT")
+    fi
     rc=$?
     [ "$rc" -ne 0 ] && echo "resident: tick exited $rc; the loop continues"
     # sleep to the next slot, but never past the walltime margin: the loop
