@@ -10,8 +10,9 @@ Versions follow [SemVer](https://semver.org).
 
 - A candidate is now credited when its improvement equals the contract's
   `min_delta`, in both the paired gate and the follow-up re-measure; before,
-  it had to beat the floor outright. Floor comparisons also tolerate
-  binary-float rounding, so a 0.1 improvement clears a 0.1 floor.
+  it had to beat the floor outright. Floor comparisons are made in exact
+  decimal arithmetic on the values as written, so a 0.1 improvement clears
+  a 0.1 floor and nothing short of the floor is credited.
 - A follow-up's code change on a GPU benchmark is measured on the GPU lane as
   a dispatched job: the follow-up seals the change and parks, the tick polls
   the eval, and a later follow-up finishes on the sealed tree (ledger, push,

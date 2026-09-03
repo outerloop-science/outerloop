@@ -20,6 +20,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
+from fractions import Fraction
 from pathlib import Path
 from secrets import randbits
 from typing import TYPE_CHECKING, Protocol
@@ -634,13 +635,27 @@ def benchmark_floor(
     return max(floors) if floors else 0.0
 
 
-def reaches_floor(delta: float, floor: float) -> bool:
-    """Inclusive floor test that survives binary floats: 0.3 - 0.2 is
-    0.09999999999999998, which must still clear a 0.1 floor. The tolerance
-    is relative and sized to rounding only (subtraction error is ~1e-16 of
-    the operands, so 1e-12 of the floor covers values up to thousands of
-    floors wide); a genuinely short delta is never rescued, at any scale."""
-    return delta >= floor or math.isclose(delta, floor, rel_tol=1e-12, abs_tol=0.0)
+def reaches_floor(
+    prior: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None,
+    min_delta_rel: float | None,
+) -> bool:
+    """Inclusive floor test in exact decimal arithmetic. Metric values and
+    floors arrive as decimal text (eval JSON, the contract's YAML), so the
+    comparison is made on the decimals that were written, not on their
+    binary approximations: 0.3 - 0.2 is exactly 0.1 here, and there is no
+    tolerance for a short delta to hide in at any scale. Callers check
+    finiteness first; the caller's own float floor is only for messages."""
+    p, c = Fraction(repr(prior)), Fraction(repr(candidate))
+    delta = c - p if direction == "max" else p - c
+    floors = []
+    if min_delta:
+        floors.append(Fraction(repr(min_delta)))
+    if min_delta_rel:
+        floors.append(Fraction(repr(min_delta_rel)) * abs(p))
+    return delta >= max(floors) if floors else True
 
 
 def clears_min_delta(
@@ -663,9 +678,7 @@ def clears_min_delta(
         return True  # no floor declared
     if not (math.isfinite(prior_best) and math.isfinite(candidate)):
         return False  # a declared floor with non-finite inputs fails closed
-    floor = benchmark_floor(prior_best, min_delta, min_delta_rel)
-    delta = candidate - prior_best if direction == "max" else prior_best - candidate
-    return reaches_floor(delta, floor)
+    return reaches_floor(prior_best, candidate, direction, min_delta, min_delta_rel)
 
 
 def suite_regressed(
@@ -925,7 +938,9 @@ def measure_and_decide(
         delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
         # INCLUSIVE, matching clears_min_delta: the floor is the smallest
         # movement the contract calls real, so a delta equal to it clears
-        if not reaches_floor(delta, floor):
+        if not reaches_floor(
+            baseline, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
+        ):
             return AttemptResult(
                 outcome="no-improvement",
                 note=(

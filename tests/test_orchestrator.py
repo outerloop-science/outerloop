@@ -761,9 +761,10 @@ def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
     # a delta genuinely short of the floor is not rescued by the tolerance
     assert not clears_min_delta(0.3, 0.2000001, "min", 0.1)
     assert not clears_min_delta(0.3, 0.2700001, "min", None, 0.1)
-    # the tolerance absorbs rounding, not a measurable shortfall at any scale
-    assert not reaches_floor(999_999_999.5, 1_000_000_000.0)
-    assert reaches_floor(1_000_000_000.0, 1_000_000_000.0)
+    # exact decimal arithmetic: no tolerance for a short delta at any scale
+    assert not clears_min_delta(1_000_000_000.0, 0.0009, "min", 999_999_999.9991 + 0.0009)
+    assert clears_min_delta(1_000_000_000.0, 0.0, "min", 1_000_000_000.0)
+    assert not reaches_floor(1_000_000_000.0, 0.0009, "min", 1_000_000_000.0, None)
     assert not clears_min_delta(12.0, 11.6, "min", 0.5)  # 0.4 < 0.5: pool luck
     assert clears_min_delta(0.54, 0.65, "max", 0.10)
     assert not clears_min_delta(0.54, 0.60, "max", 0.10)  # inside pool luck
