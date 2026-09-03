@@ -63,8 +63,8 @@ def is_own_login(login: str, bot_login: str) -> bool:
     as now, or a former one. Blank never matches (a blank identity must fail
     closed at every gate, as before)."""
     who = login.strip().casefold()
-    if not who:
-        return False
+    if not who or not bot_login.strip():
+        return False  # no identity of our own = no identity at all (aliases included)
     ours = {bot_login.strip().casefold()} | {a.casefold() for a in bot_aliases_from_env()}
     ours.discard("")
     return who in ours

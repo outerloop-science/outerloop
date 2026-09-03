@@ -18,9 +18,12 @@ def test_aliases_parse_and_own_login_matches_any_identity(monkeypatch) -> None:
     assert is_own_login("Agentic-Learning-Bot", "outerloop-autoresearch[bot]")
     assert is_own_login("old-bot", "outerloop-autoresearch[bot]")
     assert not is_own_login("renmengye", "outerloop-autoresearch[bot]")
-    # blank identities fail closed, as before
+    # blank identities fail closed, as before — a blank CURRENT login disables
+    # the aliases too (no identity of our own means no identity at all)
     assert not is_own_login("", "outerloop-autoresearch[bot]")
     assert not is_own_login("someone", "")
+    assert not is_own_login("old-bot", "")
+    assert not is_own_login("agentic-learning-bot", "   ")
 
 
 def test_the_kernels_old_research_log_issue_is_never_an_order(monkeypatch) -> None:
