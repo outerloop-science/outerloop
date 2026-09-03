@@ -16,6 +16,13 @@ on:
         description: Login of your bot account — ONLY its PRs are verified. Required.
         type: string
         required: true
+      bot_aliases:
+        description: >-
+          Former logins of your bot account, comma-separated (an identity flip
+          leaves earlier PRs and comments under the old login). Optional.
+        type: string
+        required: false
+        default: ''
       verifier_repo:
         description: Repo holding the verifier (change this if you forked).
         type: string
@@ -71,7 +78,8 @@ jobs:
     timeout-minutes: 70
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.user.login == inputs.bot_login &&
+      (github.event.pull_request.user.login == inputs.bot_login ||
+       contains(format(',{0},', inputs.bot_aliases), format(',{0},', github.event.pull_request.user.login))) &&
       (github.event.action != 'labeled' ||
        (github.event.label.name == 'autoresearch:review' &&
         github.event.sender.login != github.event.pull_request.user.login))
@@ -127,6 +135,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          AUTORESEARCH_BOT_ALIASES: ${{ inputs.bot_aliases }}
           VERIFY_MODEL: ${{ inputs.model }}
           # The parent of the two checkouts (pr-head/ and base/).
           VERIFY_CHECKOUT: ${{ github.workspace }}
@@ -164,7 +173,8 @@ jobs:
     # two jobs run or skip together.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.user.login == inputs.bot_login &&
+      (github.event.pull_request.user.login == inputs.bot_login ||
+       contains(format(',{0},', inputs.bot_aliases), format(',{0},', github.event.pull_request.user.login))) &&
       (github.event.action != 'labeled' ||
        (github.event.label.name == 'autoresearch:review' &&
         github.event.sender.login != github.event.pull_request.user.login))
@@ -205,5 +215,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
+          AUTORESEARCH_BOT_ALIASES: ${{ inputs.bot_aliases }}
           VERIFY_EMIT_FILE: ${{ runner.temp }}/verdict.json
         run: uv run python -m autoresearch.verify_post_cli

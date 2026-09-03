@@ -83,3 +83,33 @@ def test_old_claims_alarms_and_comments_are_still_ours(monkeypatch) -> None:
     assert _find_alarm_issue(G(), "org/repo", bot) == 7
     monkeypatch.delenv("AUTORESEARCH_BOT_ALIASES")
     assert _find_alarm_issue(G(), "org/repo", bot) == 0  # without the alias: not ours
+
+
+def test_the_reusable_workflows_carry_the_aliases() -> None:
+    """The reviewer and verifier run in GitHub Actions with only what the
+    workflow exports: the alias input must reach the process env everywhere
+    REVIEW_BOT_LOGIN does, and the verifier's author gate must accept it."""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    for name in ("advisory-review-agent.yml", "advisory-review-summarize.yml", "verify-agent.yml"):
+        text = (root / name).read_text()
+        doc = yaml.safe_load(text)
+        inputs = (
+            doc[True]["workflow_call"]["inputs"]
+            if True in doc
+            else doc["on"]["workflow_call"]["inputs"]
+        )
+        assert "bot_aliases" in inputs and inputs["bot_aliases"]["required"] is False, name
+        for job in doc["jobs"].values():
+            for step in job.get("steps", []):
+                env = step.get("env") or {}
+                if "REVIEW_BOT_LOGIN" in env:
+                    assert env.get("AUTORESEARCH_BOT_ALIASES") == "${{ inputs.bot_aliases }}", (
+                        name,
+                        step.get("name"),
+                    )
+    verify = (root / "verify-agent.yml").read_text()
+    assert verify.count("contains(format(',{0},', inputs.bot_aliases)") == 2
