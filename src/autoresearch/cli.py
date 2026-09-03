@@ -105,7 +105,7 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
 class StartPlan:
     mode: str  # "slurm" | "local"
     root: Path
-    home: Path | None = None
+    home: Path = Path(".")
     account: str = ""
     partition: str = ""
     cadence_min: str = ""
@@ -115,7 +115,6 @@ class StartPlan:
     def command(self) -> list[str]:
         if self.mode == "local":
             return [sys.executable, "-m", "autoresearch.tick", "--root", str(self.root), "--loop"]
-        assert self.home is not None
         exports = [
             "ALL",
             "AUTORESEARCH_RESIDENT=1",
@@ -152,8 +151,9 @@ def _setting(key: str, flag: str, environ: dict[str, str], from_file: dict[str, 
 
 
 def _home(environ: dict[str, str], cwd: Path) -> Path:
-    """The checkout the chain deploys from: AUTORESEARCH_HOME, else the
-    current directory when it is one."""
+    """The checkout the loop runs from: AUTORESEARCH_HOME, else the current
+    directory when it is one. Both modes need it; the tick's launch lanes
+    and GitHub servicing switch off without it."""
     home = (
         Path(environ["AUTORESEARCH_HOME"]).expanduser() if environ.get("AUTORESEARCH_HOME") else cwd
     )
@@ -181,14 +181,17 @@ def plan_start(
     root_s = _setting("AUTORESEARCH_ROOT", root, environ, from_file)
     cadence = _setting("AUTORESEARCH_CADENCE_MIN", "", environ, from_file)
     pat = _setting("AUTORESEARCH_PAT_FILE", "", environ, from_file)
+    # both modes run from a checkout: the tick's launch lanes and GitHub
+    # servicing switch off without AUTORESEARCH_HOME
+    home = _home(environ, cwd)
     if mode == "local":
         return StartPlan(
             mode="local",
             root=Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT,
+            home=home,
             cadence_min=cadence,
             pat_file=pat,
         )
-    home = _home(environ, cwd)
     if not root_s:
         raise StartError(
             "Slurm mode needs the state root on the shared filesystem: "
@@ -307,6 +310,7 @@ def start(args: argparse.Namespace) -> int:
             env.setdefault(key, value)
         env["AUTORESEARCH_COMPUTE"] = "local"
         env["AUTORESEARCH_ROOT"] = str(plan.root)
+        env["AUTORESEARCH_HOME"] = str(plan.home)
         if plan.cadence_min:
             env["AUTORESEARCH_CADENCE_MIN"] = plan.cadence_min
         if plan.pat_file:

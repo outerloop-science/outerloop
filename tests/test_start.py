@@ -115,6 +115,7 @@ def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
     p = plan(tmp_path, sbatch_on_path=False)
     assert p.mode == "local"
     assert p.root == DEFAULT_LOCAL_ROOT
+    assert p.home == tmp_path / "checkout"  # the loop needs the checkout too
     assert p.command() == [
         sys.executable,
         "-m",
@@ -182,14 +183,16 @@ def test_precedence_is_flag_then_environment_then_file(tmp_path: Path) -> None:
     assert (str(p.root), p.account, p.partition) == ("/env/root", "envacct", "flagged")
 
 
-def test_slurm_home_from_env_or_cwd_and_must_be_a_checkout(tmp_path: Path) -> None:
+def test_home_from_env_or_cwd_and_must_be_a_checkout_in_both_modes(tmp_path: Path) -> None:
     home = checkout(tmp_path)
     base = {"AUTORESEARCH_ROOT": "/r", "AUTORESEARCH_ACCOUNT": "a", "AUTORESEARCH_PARTITION": "p"}
-    assert (
-        plan(tmp_path, cwd=tmp_path, environ={**base, "AUTORESEARCH_HOME": str(home)}).home == home
-    )
+    with_home = {**base, "AUTORESEARCH_HOME": str(home)}
+    assert plan(tmp_path, cwd=tmp_path, environ=with_home).home == home
+    assert plan(tmp_path, cwd=tmp_path, local=True, environ=with_home).home == home
     with pytest.raises(StartError, match="not an autoresearch checkout"):
         plan(tmp_path, cwd=tmp_path, environ=base)
+    with pytest.raises(StartError, match="not an autoresearch checkout"):
+        plan(tmp_path, cwd=tmp_path, local=True)
 
 
 def test_slurm_requires_root_account_and_partition(tmp_path: Path) -> None:
@@ -244,6 +247,7 @@ def test_dry_run_prints_the_command(
     clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.chdir(checkout(clean_env))
     assert main(["start", "--dry-run", "--root", str(clean_env / "s")]) == 0
     out = capsys.readouterr().out
     assert "autoresearch.tick" in out and "--loop" in out and str(clean_env / "s") in out
@@ -270,6 +274,8 @@ def test_local_start_execs_the_loop_with_env_knobs(
         return 0
 
     monkeypatch.setattr(cli, "_exec", fake_exec)
+    home = checkout(clean_env)
+    monkeypatch.chdir(home)
     assert main(["start", "--root", str(clean_env / "state")]) == 0
     assert seen["cmd"] == [
         sys.executable,
@@ -283,6 +289,7 @@ def test_local_start_execs_the_loop_with_env_knobs(
     assert isinstance(env, dict)
     assert env["AUTORESEARCH_COMPUTE"] == "local"
     assert env["AUTORESEARCH_ROOT"] == str(clean_env / "state")
+    assert env["AUTORESEARCH_HOME"] == str(home)  # the tick's lanes need the checkout
     assert env["AUTORESEARCH_TARGET"] == "shell/wins"  # the shell beats the file at launch
     assert env["AUTORESEARCH_PANEL"] == ""  # an off-switch in the file still lands
     assert env["AUTORESEARCH_CADENCE_MIN"] == "15"  # the loop's cadence comes from .env too
