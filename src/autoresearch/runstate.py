@@ -165,6 +165,13 @@ class RunRecord:
     panel_wake_head: str = ""
     panel_wake_text: str = ""
     panel_wake_rounds: int = 0
+    # A follow-up's DISPATCHED re-measure in flight (docs/design/
+    # orchestrator-verify.md, "Measuring a follow-up's change"): the sealed
+    # candidate (sha + retaining ref), the eval job ids the tick polls, the
+    # seed, and the reply/cursor context the resume needs to finish — push,
+    # ledger, comment, re-read. Empty = no re-measure pending. While set, no
+    # comment is serviced and nothing is armed: the sealed change lands first.
+    followup_stage: dict[str, object] = field(default_factory=dict)
     followup_job_id: str = ""  # slurm job servicing this run's review comments
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0

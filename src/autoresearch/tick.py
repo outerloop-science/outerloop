@@ -568,6 +568,21 @@ def service_in_review(
             # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
             # checks AND up-to-date with the CURRENT base — GitHub's own
             # freshness proof), the kernel-read contract STILL says auto, and
+            # A dispatched re-measure in flight: nothing else is serviced (the
+            # sealed change lands first, so the next comment is answered on
+            # the tree it will actually see) and nothing is armed. Once every
+            # eval job is terminal, a follow-up is submitted to finish it.
+            measure_ready = False
+            if record.followup_stage:
+                raw_ids = record.followup_stage.get("job_ids")
+                job_ids = [str(j) for j in raw_ids] if isinstance(raw_ids, list) else []
+                try:
+                    states = [compute.status(j) for j in job_ids]
+                except SlurmQueryError:
+                    continue  # unknown: neither service nor arm
+                if job_ids and not all(is_terminal(s) or s == GONE for s in states):
+                    continue
+                measure_ready = True
             wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the
@@ -577,7 +592,8 @@ def service_in_review(
                 except OSError as exc:
                     log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
             if (
-                not has_new_comments(record, github, spec.bot_login)
+                not measure_ready
+                and not has_new_comments(record, github, spec.bot_login)
                 and wake_action != "wake"
                 and not panel_wake_pending(record, pr)
             ):
@@ -699,6 +715,16 @@ def service_in_review(
                 str(job_minutes),
                 "--max-turns",
                 str(spec.max_turns),
+                # the cluster coordinates the climb gets: a GPU benchmark's
+                # re-measure is dispatched to the GPU lane, never run here
+                "--account",
+                spec.account,
+                "--partition",
+                spec.partition,
+                "--gpu-partition",
+                spec.gpu_partition,
+                "--gpu-account",
+                spec.gpu_account,
                 *panel_argv,
             ]
             if spec.pat_file:

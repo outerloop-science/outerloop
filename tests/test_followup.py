@@ -2342,3 +2342,251 @@ def test_a_push_during_the_read_supersedes_the_findings(review_run) -> None:
     rec = load_record(root, "tsp-r1")
     assert rec.panel_wake_text == "" and rec.panel_wake_rounds == 0
     assert "superseded head" in github.posted[1]
+
+
+# --- a GPU benchmark's change is measured on the GPU lane as a job: the
+# follow-up seals it and parks; a later follow-up finishes on the sealed tree
+
+GPU_CONTRACT = CONTRACT.replace(
+    "    direction: min\n", "    direction: min\n    gpus: 1\n    eval_minutes: 30\n"
+)
+
+
+@dataclass
+class FakeMeasurer:
+    """Stands in for DispatchedMeasurer: pending until told the result."""
+
+    value: float | None = None
+    error: str = ""
+    calls: list = field(default_factory=list)
+
+    def results(self, measures):
+        from autoresearch.measure import EvalError, MeasurementPending
+
+        self.calls.append(measures)
+        if self.error:
+            raise EvalError(self.error)
+        if self.value is None:
+            raise MeasurementPending(("9001",))
+        return {m.name: self.value for m in measures}
+
+
+@dataclass
+class FakeDispatch:
+    measurer_: FakeMeasurer
+    built: list = field(default_factory=list)
+
+    def measurer(self, run_dir_, repo_root, eval_minutes, run_tag):
+        self.built.append((run_dir_, repo_root, eval_minutes, run_tag))
+        return self.measurer_
+
+
+def _gpu_run(root: Path) -> None:
+    _set_contract(root, GPU_CONTRACT)
+
+
+PR_BRANCH = "feat/auto/agent-01/tsp-r1"
+
+
+def _origin_head(bare: Path, branch: str = PR_BRANCH) -> str:
+    return _git(bare, "rev-parse", branch).strip()
+
+
+def _origin_has_branch(bare: Path, branch: str = PR_BRANCH) -> bool:
+    return bool(_git(bare, "branch", "--list", branch).strip())
+
+
+def test_a_gpu_change_is_sealed_and_parked_on_its_dispatched_measure(review_run) -> None:
+    root, bare = review_run
+    _gpu_run(root)
+    before = _ws_head(root)
+    github = FakeGitHub(comments=[member(901, "please tweak the kick")])
+    measurer = FakeMeasurer()  # pending
+    dispatch = FakeDispatch(measurer)
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
+        QueueEvaluator(values=[]),  # never consulted: the eval is a job
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=dispatch,  # type: ignore[arg-type]
+    )
+    assert outcome.action == "parked" and "9001" in outcome.note
+    # the author's reply went out now, with the parked note; nothing was pushed
+    assert (
+        "addressed" in github.posted[0]
+        and "re-measure is running on the GPU lane" in github.posted[0]
+    )
+    assert not _origin_has_branch(bare)  # nothing pushed
+    rec = load_record(root, "tsp-r1")
+    stage = rec.followup_stage
+    assert stage["job_ids"] == ["9001"] and stage["afterany"] == "afterany:9001"
+    assert stage["candidate_sha"] and str(stage["candidate_ref"]).startswith("refs/dispatch/")
+    assert rec.last_comment_id == 901  # the comment IS serviced
+    ws = run_dir(root, "tsp-r1") / "ws"
+    # the sealed commit carries the change, parented on the pushed head
+    assert _git(ws, "show", f"{stage['candidate_sha']}:src/pilot/solvers/tsp.py") == "v2 gpu\n"
+    assert _git(ws, "rev-parse", f"{stage['candidate_sha']}^").strip() == before
+    # the measure asked for the GPU lane at the contract command
+    m = measurer.calls[0][0]
+    assert m.gpus == 1 and m.tree_sha == stage["candidate_sha"] and m.name == "followup"
+    assert dispatch.built[0][2] == 30  # eval_minutes from the contract
+
+
+def test_a_parked_remeasure_is_finished_on_the_sealed_tree(review_run) -> None:
+    root, bare = review_run
+    _gpu_run(root)
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = run_dir(root, "tsp-r1") / "ws"
+    pending = FakeMeasurer()
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(pending),  # type: ignore[arg-type]
+    )
+    sealed = load_record(root, "tsp-r1").followup_stage["candidate_sha"]
+    # meanwhile the workspace drifts (a stray edit after the park): the push
+    # must carry the SEALED tree, not the live one
+    ws = run_dir(root, "tsp-r1") / "ws"
+    (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("drift\n")
+
+    # still pending: a resume is a no-op that changes nothing
+    github2 = AutoGitHub(comments=[member(902, "another comment, waits its turn")])
+    github2.ws = ws
+    out2 = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    assert out2.action == "no-op" and "still pending" in out2.note
+    assert github2.posted == [] and load_record(root, "tsp-r1").last_comment_id == 901
+
+    # the measure landed: ledger, push of the sealed tree, comment, record
+    github3 = AutoGitHub(comments=[member(902, "another comment, waits its turn")])
+    github3.ws = ws
+    done = FakeMeasurer(value=10.2)
+    out3 = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github3,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 2,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
+    )
+    assert out3.action == "replied" and "applied" in out3.note
+    assert "Re-measured after this change" in github3.posted[0] and "10.2" in github3.posted[0]
+    assert github3.row_updates == [10.2] and github3.body_addenda
+    head = _origin_head(bare)
+    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2 gpu\n"  # sealed, not drift
+    assert "address review feedback" in _git(ws, "log", "-1", "--format=%s", head)
+    assert (ws / "BENCHMARKS.md").exists()
+    rec = load_record(root, "tsp-r1")
+    assert rec.followup_stage == {} and rec.auto_blessed_head == "" and rec.wake_attempts == 0
+    assert rec.last_comment_id == 901  # comment 902 is serviced by the NEXT follow-up
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # snapshot released
+    # the resumed measure asked for the same determinant as the park
+    assert done.calls[0][0].tree_sha == sealed
+
+
+def test_a_failed_dispatched_remeasure_is_abandoned_and_said(review_run) -> None:
+    root, bare = review_run
+    _gpu_run(root)
+    github = FakeGitHub(comments=[member(901, "tweak")])
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    github2 = FakeGitHub()
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(error="job died sk-x")),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "abandoned" in out.note
+    assert (
+        "re-measure of the code change failed" in github2.posted[0]
+        and "sk-x" not in github2.posted[0]
+    )
+    assert not _origin_has_branch(bare)  # still nothing pushed
+    rec = load_record(root, "tsp-r1")
+    assert rec.followup_stage == {}
+    ws = run_dir(root, "tsp-r1") / "ws"
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+    assert (
+        ws / "src" / "pilot" / "solvers" / "tsp.py"
+    ).read_text() == "v1\n"  # workspace back to the pushed head
+
+
+def test_a_synchronous_compute_measures_the_sealed_tree_inline(review_run) -> None:
+    """LocalCompute-style: results() returns at once, so the change is applied
+    in the same follow-up, still measured on the SEALED tree."""
+    root, bare = review_run
+    _gpu_run(root)
+    github = FakeGitHub(comments=[member(901, "tweak")])
+    done = FakeMeasurer(value=10.3)
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "Re-measured" in github.posted[0]
+    ws = run_dir(root, "tsp-r1") / "ws"
+    assert _git(ws, "show", f"{_origin_head(bare)}:src/pilot/solvers/tsp.py") == "v2\n"
+    assert load_record(root, "tsp-r1").followup_stage == {}
+    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_a_cpu_benchmark_still_measures_inline_with_dispatch_configured(review_run) -> None:
+    root, _bare = review_run  # CONTRACT: no gpus
+    github = FakeGitHub(comments=[member(901, "tweak")])
+    never = FakeMeasurer(value=99.0)
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
+        QueueEvaluator(values=[10.2]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(never),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "10.2" in github.posted[0]
+    assert never.calls == []
