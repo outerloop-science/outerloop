@@ -111,5 +111,17 @@ def test_the_reusable_workflows_carry_the_aliases() -> None:
                         name,
                         step.get("name"),
                     )
-    verify = (root / "verify-agent.yml").read_text()
-    assert verify.count("contains(format(',{0},', inputs.bot_aliases)") == 2
+    verify = yaml.safe_load((root / "verify-agent.yml").read_text())
+    gate = verify["jobs"]["gate"]
+    # one normalizing gate (bash trims each alias), consumed by both jobs
+    run = gate["steps"][0]["run"]
+    assert "tr -d '[:space:]'" in run and "BOT_ALIASES" in run and "bot_authored=" in run
+    assert gate["steps"][0]["env"]["BOT_ALIASES"] == "${{ inputs.bot_aliases }}"
+    for job in ("verify", "post"):
+        assert "gate" in (
+            [verify["jobs"][job]["needs"]]
+            if isinstance(verify["jobs"][job]["needs"], str)
+            else verify["jobs"][job]["needs"]
+        )
+        assert "needs.gate.outputs.bot_authored == 'true'" in verify["jobs"][job]["if"]
+        assert "inputs.bot_aliases" not in verify["jobs"][job]["if"]

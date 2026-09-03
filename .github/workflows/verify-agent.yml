@@ -65,21 +65,45 @@ concurrency:
   group: verification-review-agent-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
-# The gate below is duplicated verbatim on BOTH jobs (GitHub Actions has no
-# top-level place to share it): fork PRs must not reach the secret; the BOT's
-# PRs only (human PRs belong to the advisory reviewer); and a label event
-# counts only for the re-request label applied by someone other than the author.
+# The author gate is computed ONCE, in a job whose bash trims the alias list
+# (an Actions expression cannot normalize `old-bot, previous-bot`), and the two
+# jobs below consume it; the fork and label conditions are duplicated verbatim
+# on both (Actions has no shared top-level `if`): fork PRs must not reach the
+# secret; the BOT's PRs only (human PRs belong to the advisory reviewer); and
+# a label event counts only for the re-request label applied by someone other
+# than the author.
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      bot_authored: ${{ steps.author.outputs.bot_authored }}
+    steps:
+      - id: author
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BOT_LOGIN: ${{ inputs.bot_login }}
+          BOT_ALIASES: ${{ inputs.bot_aliases }}
+        # exact match against the bot login or ANY trimmed alias, case-insensitive
+        run: |
+          ok=false
+          author=$(printf '%s' "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')
+          for name in "$BOT_LOGIN" ${BOT_ALIASES//,/ }; do
+            name=$(printf '%s' "$name" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+            [ -n "$name" ] && [ "$name" = "$author" ] && ok=true
+          done
+          echo "bot_authored=$ok" >> "$GITHUB_OUTPUT"
+
   verify:
     runs-on: ubuntu-latest
+    needs: gate
     # Advisory role: an infrastructure failure must never red the caller's PR.
     continue-on-error: true
     # Backstop a hung session; the harness kills at its own walltime first.
     timeout-minutes: 70
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.pull_request.user.login == inputs.bot_login ||
-       contains(format(',{0},', inputs.bot_aliases), format(',{0},', github.event.pull_request.user.login))) &&
+      needs.gate.outputs.bot_authored == 'true' &&
       (github.event.action != 'labeled' ||
        (github.event.label.name == 'autoresearch:review' &&
         github.event.sender.login != github.event.pull_request.user.login))
@@ -168,13 +192,12 @@ jobs:
 
   post:
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [gate, verify]
     # Same gate as `verify` (duplicated: no shared top-level in Actions), so the
     # two jobs run or skip together.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.pull_request.user.login == inputs.bot_login ||
-       contains(format(',{0},', inputs.bot_aliases), format(',{0},', github.event.pull_request.user.login))) &&
+      needs.gate.outputs.bot_authored == 'true' &&
       (github.event.action != 'labeled' ||
        (github.event.label.name == 'autoresearch:review' &&
         github.event.sender.login != github.event.pull_request.user.login))
