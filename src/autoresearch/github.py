@@ -1037,9 +1037,20 @@ def ensure_regular_git_dir(root: Path | None) -> None:
             continue
         for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=_unreadable):
             for name in (*dirnames, *filenames):
-                if os.path.islink(os.path.join(dirpath, name)):
-                    shown = os.path.relpath(os.path.join(dirpath, name), git_dir)
+                full = os.path.join(dirpath, name)
+                if os.path.islink(full):
+                    shown = os.path.relpath(full, git_dir)
                     raise _altered(f".git/{shown} is a symlink")
+            for name in filenames:
+                # a FIFO or device where a loose ref, reflog, or hook was would
+                # stall the next git command that scans this tree
+                full = os.path.join(dirpath, name)
+                try:
+                    if not stat.S_ISREG(os.lstat(full).st_mode):
+                        shown = os.path.relpath(full, git_dir)
+                        raise _altered(f".git/{shown} is not a regular file")
+                except FileNotFoundError:
+                    continue
     if os.path.lexists(git_dir / "objects" / "info" / "alternates"):
         raise _altered("object alternates are present")
     # Every loose object and pack file must be a regular file: a FIFO in

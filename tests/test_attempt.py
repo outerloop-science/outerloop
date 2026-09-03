@@ -4572,6 +4572,11 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     with pytest.raises(GitError, match=r"\.git/refs/heads/agents/agent-01 is a symlink"):
         ws.git("status")
     (nested / "agent-01").unlink()
+    # and a FIFO where a loose ref was
+    os.mkfifo(nested / "agent-02")
+    with pytest.raises(GitError, match=r"\.git/refs/heads/agents/agent-02 is not a regular file"):
+        ws.git("status")
+    (nested / "agent-02").unlink()
     nested.rmdir()
     ensure_regular_git_dir(root)
 
