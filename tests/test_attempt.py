@@ -4661,6 +4661,40 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     ensure_regular_git_dir(root)
 
 
+def test_snapshot_ops_refuse_a_reshaped_git_without_writing(tmp_path: Path) -> None:
+    """snapshot_tree and drop_snapshot drive git directly (their own index and
+    refs), so they check the workspace themselves: a symlinked refs dir would
+    carry a ref write or deletion outside the workspace."""
+    import os
+
+    from autoresearch.dispatch import drop_snapshot, snapshot_tree
+    from autoresearch.github import GitError, Workspace
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "f.txt").write_text("x\n")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    ws = Workspace(root=root)
+    snap = snapshot_tree(ws, base)  # a clean repo snapshots as before
+    assert _git(root, "rev-parse", snap.ref).strip() == snap.commit
+    # the session replaces refs/ with a link to a directory it controls
+    refs = root / ".git" / "refs"
+    outside = tmp_path / "outside-refs"
+    refs.rename(outside)
+    os.symlink(outside, refs)
+    with pytest.raises(GitError, match=r"\.git/refs is a symlink"):
+        snapshot_tree(ws, base)
+    drop_snapshot(ws, snap)  # logged, never raises, and never writes through the link
+    assert (outside / "dispatch" / snap.ref.rsplit("/", 1)[1]).exists()
+    os.unlink(refs)
+    outside.rename(refs)
+    drop_snapshot(ws, snap)
+    assert not (refs / "dispatch" / snap.ref.rsplit("/", 1)[1]).exists()
+
+
 def test_a_refused_wake_ends_the_parked_run_with_the_tampering_note(tmp_path: Path) -> None:
     from autoresearch.attempt import _end_refused_wake
     from autoresearch.github import GitError

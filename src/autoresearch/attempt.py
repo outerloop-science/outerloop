@@ -1356,8 +1356,12 @@ def _end_refused_wake(
     run_root: Path, record: RunRecord, exc: Exception, now: float, secrets: tuple[str, ...]
 ) -> AttemptOutcome:
     """End a parked run whose workspace the wake refused (a session altered
-    .git): ABORTED with the tampering as the note. The candidate snapshot
-    lives in that same workspace and is not touched."""
+    .git): ABORTED with the tampering as the note. The candidate snapshot's
+    retaining ref lives inside that same, now untrusted, repository and is
+    deliberately not touched: deleting it would mean writing through the
+    very structure the guard refused (a symlinked refs dir carries the write
+    elsewhere), and an ENDED workspace is inert — the ref keeps a commit
+    alive only within a repository nothing will read again."""
     note = redact(str(exc), secrets)[:480]
     log.warning("wake refused for %s: %s", record.run_id, note)
     failed = _clear_stage(
