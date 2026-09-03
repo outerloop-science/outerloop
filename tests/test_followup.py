@@ -2951,7 +2951,14 @@ def test_a_synchronous_sealed_measure_pushes_the_sealed_tree_not_the_workspace(r
     assert (
         _git(ws, "ls-tree", "-r", "--name-only", head).count("BENCHMARKS.md") == 1
     )  # ledger folded in
-    assert done.calls[0][0].tree_sha == _git(ws, "rev-parse", f"{head}^{{}}").strip() or True
+    # the measured commit is the sealed one: same parent as the pushed (amended)
+    # head and the same solver content — the ledger row is the only addition
+    measured = done.calls[0][0].tree_sha
+    assert (
+        _git(ws, "rev-parse", f"{measured}^").strip() == _git(ws, "rev-parse", f"{head}^").strip()
+    )
+    assert _git(ws, "show", f"{measured}:src/pilot/solvers/tsp.py") == "v2\n"
+    assert "agent_memory" not in _git(ws, "ls-tree", "-r", "--name-only", measured)
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # released after use
 
 
