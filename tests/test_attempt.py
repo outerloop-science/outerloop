@@ -4382,6 +4382,72 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
 
 
+def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path: Path) -> None:
+    """A line behind main merges main at run start; when that merge conflicts
+    it stays uncommitted, and git's auto-merged files (the kernel's ledger)
+    are staged against the stale HEAD yet identical to base. They are not the
+    agent's edits and must not count; a real edit still does."""
+    import subprocess
+
+    from autoresearch.attempt import _paths_changed_from_base
+    from autoresearch.github import Workspace
+
+    root = tmp_path / "ws"
+    root.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    (root / "BENCHMARKS.md").write_text("best 8640\n")
+    (root / "train.py").write_text("warmdown = 2048\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "line state")
+    stale_head = git("rev-parse", "HEAD")
+    # main moved on: the ledger and train.py both changed
+    (root / "BENCHMARKS.md").write_text("best 8192\n")
+    (root / "train.py").write_text("warmdown = 3072\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "main: improve speedrun")
+    base_sha = git("rev-parse", "HEAD")
+    # back on the stale line HEAD with main's ledger auto-merged in (identical
+    # to base) and train.py carrying the agent's own, different edit
+    git("checkout", "-q", stale_head)
+    (root / "BENCHMARKS.md").write_text("best 8192\n")
+    (root / "train.py").write_text("warmdown = 2560\n")
+    (root / "agent_memory").mkdir()
+    (root / "agent_memory" / "note.md").write_text("x\n")
+
+    ws = Workspace(root=root)
+    assert _paths_changed_from_base(ws, base_sha, True) == ["train.py"]
+    # the real call sites pass the base BRANCH ref; an unresolvable ref falls
+    # back (here to the same base) rather than crashing
+    git("update-ref", "refs/remotes/origin/main", base_sha)
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/main", True) == ["train.py"]
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True, fallback=base_sha) == [
+        "train.py"
+    ]
+    # falling back to HEAD restores the old staged-vs-HEAD reading
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True) == [
+        "BENCHMARKS.md",
+        "train.py",
+    ]
+    # memory not excluded (lines off): an ordinary path; the ledger still drops
+    assert _paths_changed_from_base(ws, base_sha, False) == ["agent_memory/note.md", "train.py"]
+    # nothing staged against HEAD -> nothing, even though HEAD differs from base
+    (root / "BENCHMARKS.md").write_text("best 8640\n")
+    (root / "train.py").write_text("warmdown = 2048\n")
+    (root / "agent_memory" / "note.md").unlink()
+    (root / "agent_memory").rmdir()
+    assert _paths_changed_from_base(ws, base_sha, True) == []
+
+
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
     from autoresearch.attempt import _without_line_memory
 

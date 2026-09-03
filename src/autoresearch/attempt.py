@@ -793,10 +793,9 @@ def _wake_author_sleep(
         return snap.commit
 
     def changed_paths() -> list[str]:
-        ws.git("add", "-A")
-        paths = ws.staged_paths()
-        ws.git("reset")
-        return _without_line_memory(paths, wake_line)
+        return _paths_changed_from_base(
+            ws, f"refs/remotes/origin/{base_branch}", bool(wake_line), fallback=base_sha
+        )
 
     panel_runner = (
         build_panel_runner(
@@ -1232,6 +1231,46 @@ def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: s
         # pushed: the conflict is session work, not line state.
         ws.push(line)
     return line
+
+
+def _paths_changed_from_base(
+    ws: Workspace, base: str, exclude_memory: bool, fallback: str = "HEAD"
+) -> list[str]:
+    """The paths the session changed, measured against the BASE BRANCH head
+    (`base`, a commit-ish such as refs/remotes/origin/main), not HEAD. On a
+    research line HEAD can be behind main: a run starts by merging main in,
+    and when that merge conflicts it stays uncommitted, so the files git
+    auto-merged (the project's BENCHMARKS.md and results/leader.json) sit
+    staged against the stale HEAD while being identical to main. Those are
+    main's edits, not the agent's, and must not read as scope violations
+    (gpt-speedrun, 2026-09-03: agent-01's first run after its own win ended
+    scope-violation on exactly those two files). A path counts only when it
+    moved against HEAD AND differs from the base; new and deleted files
+    count. `fallback` is used when `base` does not resolve (no remote).
+    `exclude_memory` drops the line's memory files whenever lines are active
+    for the benchmark (a failed line checkout still keeps them out)."""
+    try:
+        base_commit = ws.git("rev-parse", "--verify", f"{base}^{{commit}}").strip()
+    except Exception:
+        base_commit = fallback
+    ws.git("add", "-A")
+    try:
+        staged = ws.staged_paths()
+        if not staged:
+            return []
+        # index vs base, restricted to what moved against HEAD: a path identical
+        # to base drops out, a new or deleted file still counts
+        differs = {
+            entry
+            for entry in ws.git(
+                "diff", "--cached", "--name-only", "-z", base_commit, "--", *staged
+            ).split("\0")
+            if entry
+        }
+    finally:
+        ws.git("reset")
+    kept = [p for p in staged if p in differs]
+    return [p for p in kept if not (exclude_memory and _is_line_memory(p))]
 
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
@@ -2407,12 +2446,9 @@ def live_attempt(
             syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id))
 
         def changed_paths() -> list[str]:
-            ws.git("add", "-A")
-            paths = ws.staged_paths()
-            ws.git("reset")
-            if lines_active:
-                paths = [p for p in paths if not _is_line_memory(p)]
-            return paths
+            # against the base branch head, never the line tip a conflicted
+            # merge can leave HEAD on (see _paths_changed_from_base)
+            return _paths_changed_from_base(ws, f"refs/remotes/origin/{base_branch}", lines_active)
 
         if issue_number:
             from autoresearch.intake import CLAIM_MARKER

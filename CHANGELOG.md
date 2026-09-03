@@ -22,6 +22,13 @@ Versions follow [SemVer](https://semver.org).
   because the line moved again is retried on the new head. (This is how
   agent-01's line fell behind its own merged win on gpt-speedrun,
   2026-09-03.)
+- A research line's first run after main moved no longer ends in a scope
+  violation on the project's ledger files (BENCHMARKS.md, results/leader.json). The run merges main into the
+  line at start; when that merge conflicts it stays uncommitted, and the
+  files git auto-merged were counted as agent edits. Changed paths are now
+  measured against the base branch head in both the first pass and the
+  wake, so a path identical to base never counts (gpt-speedrun, 2026-09-03,
+  agent-01 right after its own win).
 
 ### Changed
 
@@ -276,8 +283,6 @@ Versions follow [SemVer](https://semver.org).
   autoresearch's own rounds resolved the local path fine, which hid the
   breakage from this repo's reviews.
 
-### Fixed
-
 - `AUTORESEARCH_TARGET` joins the tick chain's `.env` allowlist, making the
   launch target a LIVE knob like its siblings. It was only ever inherited
   from the chain-start environment, so a `.env` edit could not retarget the
@@ -324,8 +329,6 @@ Versions follow [SemVer](https://semver.org).
   Callers and the reusable's own top-level block grant the `actions: write`
   ceiling (terra's advisory: the reusable's block would have capped its own
   provision job); session jobs still downscope to read-only.
-
-### Fixed
 
 - Wide-round lens sessions no longer die on GitHub's clone rate limit. The
   wide first round fans out several hermes (terra) lens sessions at once, and
