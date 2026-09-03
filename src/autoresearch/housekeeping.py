@@ -23,11 +23,14 @@ Rules (docs/design/disk-maintenance.md):
 from __future__ import annotations
 
 import logging
+import os
+import re
 import shutil
+import time
 from dataclasses import replace
 from pathlib import Path
 
-from autoresearch.runstate import ENDED, RunRecord, list_runs, run_dir, save_record
+from autoresearch.runstate import ENDED, RunRecord, list_runs, load_record, run_dir, save_record
 
 log = logging.getLogger(__name__)
 
@@ -70,26 +73,90 @@ def shed_workspace(root: Path, record: RunRecord, now: float) -> bool:
     return True
 
 
+_TS_RE = re.compile(r"(\d{8}-\d{6})")
+
+
+def _run_id_timestamp(run_id: str) -> str | None:
+    m = _TS_RE.search(run_id)
+    return m.group(1) if m else None
+
+
+def _is_shed_candidate(
+    root: Path, record: RunRecord, now: float, grace_s: float, force: bool
+) -> bool:
+    if record.state != ENDED or record.workspace_shed:
+        return False
+    if not force and now - record.updated < grace_s:
+        return False
+    return any((run_dir(root, record.run_id) / d).exists() for d in WORKSPACE_DIRS)
+
+
 def shed_ended_workspaces(
     root: Path,
     now: float,
     *,
     grace_s: float = DEFAULT_SHED_GRACE_S,
     force: bool = False,
-    limit: int = 50,
+    limit: int = 3,
+    time_budget_s: float = 120.0,
     until_ok: object = None,
+    clock: object = None,
 ) -> list[str]:
-    """Shed due workspaces, at most `limit` per call. With `until_ok` (a
-    callable returning True once the disk is healthy again) the sweep stops
-    as soon as it reports True, so a forced sweep frees only what it must."""
+    """Shed due workspaces until `limit` is reached or `time_budget_s`
+    elapses, checking the budget between runs; a forced sweep also stops when
+    `until_ok` reports a healthy disk.
+
+    Bounded by BOTH a count (`limit`) and a wall-clock budget
+    (`time_budget_s`). Removing a workspace is `rm -rf` over the state
+    filesystem, tens of thousands of tiny files each on a networked FS, so an
+    unbounded batch inside a tick can run for many minutes and blow the tick's
+    own timeout (2026-09-03: a 50-run batch, and reading every record to find
+    candidates, killed the tick before it could publish). Discovery is ONE
+    directory read, sorted oldest-first by the timestamp embedded in each run
+    id (no per-entry stat, no record load); the loop then loads one record at
+    a time and checks the budget EACH step, so both are bounded. The backlog
+    drains over several ticks. With `until_ok` a forced sweep also stops as
+    soon as the disk reports healthy."""
+    monotonic = clock if callable(clock) else time.monotonic
+    start = monotonic()
+    runs_root = root / "runs"
+    try:
+        # ONE directory read (no per-entry stat), sorted oldest-first by the
+        # timestamp every run id carries (`<name>-YYYYMMDD-HHMMSS-...`), which
+        # is chronological across benchmark prefixes where a lexical sort is
+        # not; ids without one sort last so they never block the backlog.
+        run_ids = sorted(
+            (e.name for e in os.scandir(runs_root)),
+            key=lambda name: (_run_id_timestamp(name) or "99999999-999999", name),
+        )
+    except OSError:
+        return []
+    # One readdir + an in-memory sort is cheap even for thousands of run dirs,
+    # but never start shedding if it somehow overran the budget: the tick then
+    # spends the rest of its time publishing, not deleting.
+    if monotonic() - start >= time_budget_s:
+        return []
     shed: list[str] = []
-    for record in shed_candidates(root, now, grace_s, force):
+    for run_id in run_ids:
         if len(shed) >= limit:
+            break
+        if monotonic() - start >= time_budget_s:
+            log.info(
+                "housekeeping: time budget (%.0fs) reached; %d shed this tick",
+                time_budget_s,
+                len(shed),
+            )
             break
         if until_ok is not None and callable(until_ok) and until_ok():
             break
-        if shed_workspace(root, record, now):
-            shed.append(record.run_id)
+        try:
+            record = load_record(root, run_id)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if _is_shed_candidate(root, record, now, grace_s, force) and shed_workspace(
+            root, record, now
+        ):
+            shed.append(run_id)
     if shed:
         log.info(
             "shed %d ended workspace(s)%s: %s",
