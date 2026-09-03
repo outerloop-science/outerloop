@@ -30,10 +30,6 @@
 # vars are checked by hand instead.
 CADENCE_MIN="${AUTORESEARCH_CADENCE_MIN:-30}"
 JOB_NAME="autoresearch-tick"
-# the tick's walltime, passed explicitly to every successor (the #SBATCH
-# --time above is the fallback for a hand-started chain) and the same number
-# the successor deadline is built from — one owner, never two
-TICK_WALLTIME_MIN=15
 missing=""
 for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT AUTORESEARCH_PARTITION; do
     eval "val=\${$var:-}"
@@ -60,19 +56,12 @@ fi
 epoch_now=$(date +%s)
 cadence_s=$((CADENCE_MIN * 60))
 next_slot=$(( (epoch_now / cadence_s + 1) * cadence_s ))
-# Each successor carries a DEADLINE: it must START within one cadence of its
-# slot (deadline = slot + cadence + walltime, scripts/successor_window.sh). A
-# successor the scheduler cannot start in time (the site moved it to a
-# starved partition, 2026-09-02) is removed by Slurm itself, which frees the
-# `singleton` its twin waits on — a stuck successor delays the chain by a
-# cadence, never deadlocks it.
 for i in $(seq 1 "$need"); do
     begin_epoch=$((next_slot + (pending + i - 1) * cadence_s))
-    read -r begin deadline _ < <(bash "${AUTORESEARCH_HOME:-.}/scripts/successor_window.sh" \
-        "$begin_epoch" "$cadence_s" "$TICK_WALLTIME_MIN")
+    begin=$(date -d "@$begin_epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
+            || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
-        if sbatch --dependency=singleton --begin="$begin" --deadline="$deadline" \
-                  --time="$TICK_WALLTIME_MIN" \
+        if sbatch --dependency=singleton --begin="$begin" \
                   --account="${AUTORESEARCH_ACCOUNT:-}" --partition="${AUTORESEARCH_PARTITION:-}" \
                   "${AUTORESEARCH_HOME:-}/scripts/tick_chain.sbatch"; then
             break
