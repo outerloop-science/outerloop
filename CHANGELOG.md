@@ -25,11 +25,12 @@ Versions follow [SemVer](https://semver.org).
 
 - Disk housekeeping is bounded per tick by a count and a wall-clock budget
   (a few workspaces or ~2 minutes on a healthy disk; more but still
-  time-boxed when the disk is failing). Removing a workspace is `rm -rf` of
-  tens of thousands of files over a networked filesystem, and an unbounded
-  batch ran long enough to trip the tick's own 15-minute timeout, so the
-  tick was killed before it published (2026-09-03). The backlog now drains
-  over several ticks and every tick finishes.
+  time-boxed when the disk is failing), covering both finding candidates and
+  deleting them. Removing a workspace is `rm -rf` of tens of thousands of
+  files over a networked filesystem, and an unbounded batch, plus reading
+  every record to find candidates, ran long enough to trip the tick's own
+  15-minute timeout, so the tick was killed before it published (2026-09-03).
+  The backlog drains over several ticks instead.
 - A session that reshapes the workspace's `.git` (a symlink or gitdir file
   in place of `.git`, a symlinked or missing object store, pack directory, or
   refs, a FIFO or missing control file, object alternates) now ends the run

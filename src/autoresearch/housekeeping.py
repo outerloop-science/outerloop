@@ -28,7 +28,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from autoresearch.runstate import ENDED, RunRecord, list_runs, run_dir, save_record
+from autoresearch.runstate import ENDED, RunRecord, list_runs, load_record, run_dir, save_record
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,16 @@ def shed_workspace(root: Path, record: RunRecord, now: float) -> bool:
     return True
 
 
+def _is_shed_candidate(
+    root: Path, record: RunRecord, now: float, grace_s: float, force: bool
+) -> bool:
+    if record.state != ENDED or record.workspace_shed:
+        return False
+    if not force and now - record.updated < grace_s:
+        return False
+    return any((run_dir(root, record.run_id) / d).exists() for d in WORKSPACE_DIRS)
+
+
 def shed_ended_workspaces(
     root: Path,
     now: float,
@@ -82,19 +92,32 @@ def shed_ended_workspaces(
     until_ok: object = None,
     clock: object = None,
 ) -> list[str]:
-    """Shed due workspaces, bounded by BOTH a count (`limit`) and a wall-clock
-    budget (`time_budget_s`). Removing a workspace is `rm -rf` over the state
+    """Shed due workspaces until `limit` is reached or `time_budget_s`
+    elapses, checking the budget between runs; a forced sweep also stops when
+    `until_ok` reports a healthy disk.
+
+    Bounded by BOTH a count (`limit`) and a wall-clock budget
+    (`time_budget_s`). Removing a workspace is `rm -rf` over the state
     filesystem, tens of thousands of tiny files each on a networked FS, so an
     unbounded batch inside a tick can run for many minutes and blow the tick's
-    own timeout (2026-09-03: a 50-run batch killed the tick before it could
-    publish). The budget is checked between runs, so at most one extra
-    workspace's delete overruns it; the backlog drains over several ticks
-    instead of one. With `until_ok` a forced sweep also stops as soon as the
-    disk reports healthy."""
+    own timeout (2026-09-03: a 50-run batch, and reading every record to find
+    candidates, killed the tick before it could publish). Run ids are
+    timestamp-prefixed, so oldest-first needs no upfront scan: iterate the run
+    directory in name order and load one record at a time, checking the budget
+    EACH step, so both discovery and deletion are bounded. The backlog drains
+    over several ticks. With `until_ok` a forced sweep also stops as soon as
+    the disk reports healthy."""
     monotonic = clock if callable(clock) else time.monotonic
     start = monotonic()
+    runs_root = root / "runs"
+    if not runs_root.is_dir():
+        return []
+    try:
+        run_ids = sorted(p.name for p in runs_root.iterdir() if p.is_dir())
+    except OSError:
+        return []
     shed: list[str] = []
-    for record in shed_candidates(root, now, grace_s, force):
+    for run_id in run_ids:
         if len(shed) >= limit:
             break
         if monotonic() - start >= time_budget_s:
@@ -106,8 +129,14 @@ def shed_ended_workspaces(
             break
         if until_ok is not None and callable(until_ok) and until_ok():
             break
-        if shed_workspace(root, record, now):
-            shed.append(record.run_id)
+        try:
+            record = load_record(root, run_id)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if _is_shed_candidate(root, record, now, grace_s, force) and shed_workspace(
+            root, record, now
+        ):
+            shed.append(run_id)
     if shed:
         log.info(
             "shed %d ended workspace(s)%s: %s",
