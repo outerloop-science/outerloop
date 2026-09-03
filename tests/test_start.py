@@ -67,6 +67,12 @@ def test_env_file_values_missing_file_is_empty(tmp_path: Path) -> None:
     assert env_file_values(tmp_path / "absent") == {}
 
 
+def test_env_file_values_unreadable_is_a_start_error(tmp_path: Path) -> None:
+    (tmp_path / ".env").mkdir()  # a directory where the file should be
+    with pytest.raises(StartError, match="cannot read"):
+        env_file_values(tmp_path / ".env")
+
+
 @pytest.mark.parametrize("mode", [0o620, 0o602, 0o666])
 def test_env_file_values_refuses_a_writable_file(tmp_path: Path, mode: int) -> None:
     path = env_file(tmp_path, "AUTORESEARCH_ROOT=/x\n", mode)
@@ -144,6 +150,7 @@ def test_slurm_composes_the_resident_submit(tmp_path: Path) -> None:
     assert p.command() == [
         "sbatch",
         "--parsable",
+        "--dependency=singleton",
         f"--time={DEFAULT_RESIDENT_MINUTES}",
         f"--job-name={RESIDENT_JOB_NAME}",
         "--account=pr_1_general",
@@ -151,6 +158,7 @@ def test_slurm_composes_the_resident_submit(tmp_path: Path) -> None:
         "--export=ALL,AUTORESEARCH_RESIDENT=1,"
         f"AUTORESEARCH_HOME={home},AUTORESEARCH_ROOT=/scratch/me/ar,"
         "AUTORESEARCH_ACCOUNT=pr_1_general,AUTORESEARCH_PARTITION=cpu_short,"
+        f"AUTORESEARCH_RESIDENT_MINUTES={DEFAULT_RESIDENT_MINUTES},"
         "AUTORESEARCH_CADENCE_MIN=20,AUTORESEARCH_PAT_FILE=/home/me/.config/autoresearch/bot_pat",
         str(home / "scripts" / "tick_chain.sbatch"),
     ]
@@ -205,10 +213,10 @@ def test_slurm_rejects_values_that_would_break_export(tmp_path: Path) -> None:
 
 def test_slurm_resident_minutes_must_be_a_positive_integer(tmp_path: Path) -> None:
     base = dict(root="/r", account="a", partition="p")
-    assert (
-        plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "240"}).resident_minutes
-        == 240
-    )
+    p = plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "240"})
+    assert p.resident_minutes == 240
+    assert "--time=240" in p.command()
+    assert any("AUTORESEARCH_RESIDENT_MINUTES=240" in a for a in p.command())  # successors keep it
     with pytest.raises(StartError, match="whole number"):
         plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "4h"})
     with pytest.raises(StartError, match="positive"):
@@ -246,7 +254,13 @@ def test_local_start_execs_the_loop_with_env_knobs(
 ) -> None:
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     monkeypatch.setattr(
-        cli, "ENV_FILE", env_file(clean_env, "AUTORESEARCH_TARGET=o/r\nAUTORESEARCH_PANEL=\n")
+        cli,
+        "ENV_FILE",
+        env_file(
+            clean_env,
+            "AUTORESEARCH_TARGET=o/r\nAUTORESEARCH_PANEL=\nAUTORESEARCH_CADENCE_MIN=15\n"
+            "AUTORESEARCH_PAT_FILE=/home/me/pat\n",
+        ),
     )
     monkeypatch.setenv("AUTORESEARCH_TARGET", "shell/wins")
     seen: dict[str, object] = {}
@@ -271,6 +285,8 @@ def test_local_start_execs_the_loop_with_env_knobs(
     assert env["AUTORESEARCH_ROOT"] == str(clean_env / "state")
     assert env["AUTORESEARCH_TARGET"] == "shell/wins"  # the shell beats the file at launch
     assert env["AUTORESEARCH_PANEL"] == ""  # an off-switch in the file still lands
+    assert env["AUTORESEARCH_CADENCE_MIN"] == "15"  # the loop's cadence comes from .env too
+    assert env["AUTORESEARCH_PAT_FILE"] == "/home/me/pat"
 
 
 def test_slurm_start_submits_once_and_reports(
@@ -292,6 +308,7 @@ def test_slurm_start_submits_once_and_reports(
     assert "job 4242" in out and "cpu_short" in out and "PAUSE" in out
     argv = log.read_text().split("\n")
     assert argv[0] == "--parsable" and f"--job-name={RESIDENT_JOB_NAME}" in argv
+    assert "--dependency=singleton" in argv
     assert any(
         a.startswith("--export=ALL,AUTORESEARCH_RESIDENT=1,") and f"AUTORESEARCH_HOME={home}" in a
         for a in argv
@@ -326,6 +343,44 @@ def test_slurm_start_reports_a_failed_submit(
     monkeypatch.chdir(home)
     assert main(["start", "--root", "/r", "--account", "a", "--partition", "nope"]) == 1
     assert "invalid partition" in capsys.readouterr().err
+
+
+def test_slurm_start_fails_closed_when_the_scheduler_cannot_be_asked(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = checkout(clean_env)
+    bin_dir = clean_env / "bin"
+    bin_dir.mkdir()
+    shim(bin_dir, "sbatch", "echo SUBMITTED > " + str(clean_env / "submitted") + "\necho 1\n")
+    shim(bin_dir, "squeue", "echo 'squeue: error: slurm_load_jobs' >&2\nexit 1\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.chdir(home)
+    assert main(["start", "--root", "/r", "--account", "a", "--partition", "p"]) == 1
+    assert "could not ask the scheduler" in capsys.readouterr().err
+    assert not (clean_env / "submitted").exists()
+
+
+def test_slurm_start_withdraws_when_another_start_won_the_race(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both starts see no resident, both submit; the later job id withdraws."""
+    home = checkout(clean_env)
+    bin_dir = clean_env / "bin"
+    bin_dir.mkdir()
+    calls = clean_env / "squeue.calls"
+    shim(bin_dir, "sbatch", "echo 4242\n")
+    # first lookup: nothing; after the submit: the other start's job and ours
+    shim(
+        bin_dir,
+        "squeue",
+        f"echo x >> {calls}\n[ $(wc -l < {calls}) -gt 1 ] && printf '4242\\n4100\\n'\nexit 0\n",
+    )
+    shim(bin_dir, "scancel", 'echo "$1" > ' + str(clean_env / "cancelled") + "\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.chdir(home)
+    assert main(["start", "--root", "/r", "--account", "a", "--partition", "p"]) == 0
+    assert (clean_env / "cancelled").read_text().strip() == "4242"
+    assert "job 4100" in capsys.readouterr().err
 
 
 def test_start_errors_are_exit_2_with_the_diagnosis(

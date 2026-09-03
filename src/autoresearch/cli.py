@@ -81,8 +81,12 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
         raise StartError(
             f"refusing to read {path}: it must be owned by you and not group/world-writable"
         )
+    try:
+        text = path.read_text()
+    except OSError as e:
+        raise StartError(f"cannot read {path}: {e}") from None
     out: dict[str, str] = {}
-    for raw in path.read_text().splitlines():
+    for raw in text.splitlines():
         line = raw.rstrip("\r").strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -119,6 +123,7 @@ class StartPlan:
             f"AUTORESEARCH_ROOT={self.root}",
             f"AUTORESEARCH_ACCOUNT={self.account}",
             f"AUTORESEARCH_PARTITION={self.partition}",
+            f"AUTORESEARCH_RESIDENT_MINUTES={self.resident_minutes}",  # successors reuse it
         ]
         if self.cadence_min:
             exports.append(f"AUTORESEARCH_CADENCE_MIN={self.cadence_min}")
@@ -127,6 +132,7 @@ class StartPlan:
         return [
             "sbatch",
             "--parsable",
+            "--dependency=singleton",  # two starts can both submit; only one ever runs
             f"--time={self.resident_minutes}",
             f"--job-name={RESIDENT_JOB_NAME}",
             f"--account={self.account}",
@@ -173,9 +179,14 @@ def plan_start(
     compute = _setting("AUTORESEARCH_COMPUTE", "local" if local else "", environ, from_file)
     mode = "local" if compute.strip().lower() == "local" or not sbatch_on_path else "slurm"
     root_s = _setting("AUTORESEARCH_ROOT", root, environ, from_file)
+    cadence = _setting("AUTORESEARCH_CADENCE_MIN", "", environ, from_file)
+    pat = _setting("AUTORESEARCH_PAT_FILE", "", environ, from_file)
     if mode == "local":
         return StartPlan(
-            mode="local", root=Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT
+            mode="local",
+            root=Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT,
+            cadence_min=cadence,
+            pat_file=pat,
         )
     home = _home(environ, cwd)
     if not root_s:
@@ -195,7 +206,6 @@ def plan_start(
     ]
     if missing:
         raise StartError("Slurm mode needs " + " and ".join(missing))
-    cadence = _setting("AUTORESEARCH_CADENCE_MIN", "", environ, from_file)
     minutes_s = _setting("AUTORESEARCH_RESIDENT_MINUTES", "", environ, from_file)
     try:
         minutes = int(minutes_s) if minutes_s else DEFAULT_RESIDENT_MINUTES
@@ -205,7 +215,6 @@ def plan_start(
         ) from None
     if minutes <= 0:
         raise StartError("AUTORESEARCH_RESIDENT_MINUTES must be positive")
-    pat = _setting("AUTORESEARCH_PAT_FILE", "", environ, from_file)
     for name, value in (
         ("root", root_s),
         ("account", acc),
@@ -230,10 +239,11 @@ def plan_start(
     )
 
 
-def _resident_job() -> str:
-    """The id of a queued or running resident tick, or ''. Unknown on error."""
+def _resident_jobs() -> list[str] | None:
+    """Ids of queued or running resident ticks, lowest first; None when the
+    scheduler could not be asked (a failed lookup must never read as 'none')."""
     try:
-        out = subprocess.run(
+        proc = subprocess.run(
             [
                 "squeue",
                 "-u",
@@ -246,10 +256,17 @@ def _resident_job() -> str:
             capture_output=True,
             text=True,
             timeout=30,
-        ).stdout
+        )
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return out.split()[0] if out.split() else ""
+        return None
+    if proc.returncode != 0:
+        return None
+    ids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return sorted(ids, key=lambda s: (len(s), s))
+
+
+def _cancel(job: str) -> None:
+    subprocess.run(["scancel", job], capture_output=True, text=True, timeout=30)
 
 
 def _exec(cmd: list[str], env: dict[str, str]) -> int:
@@ -290,15 +307,27 @@ def start(args: argparse.Namespace) -> int:
             env.setdefault(key, value)
         env["AUTORESEARCH_COMPUTE"] = "local"
         env["AUTORESEARCH_ROOT"] = str(plan.root)
+        if plan.cadence_min:
+            env["AUTORESEARCH_CADENCE_MIN"] = plan.cadence_min
+        if plan.pat_file:
+            env["AUTORESEARCH_PAT_FILE"] = plan.pat_file
         print(
             f"local loop: state in {plan.root}; Ctrl-C stops it, the records resume it",
             file=sys.stderr,
         )
         return _exec(cmd, env)
-    existing = _resident_job()
+    existing = _resident_jobs()
+    if existing is None:
+        print(
+            "autoresearch start: could not ask the scheduler whether a resident tick "
+            "exists (squeue failed); nothing submitted. Retry, or check "
+            f"`squeue --name {RESIDENT_JOB_NAME}`.",
+            file=sys.stderr,
+        )
+        return 1
     if existing:
         print(
-            f"a resident tick is already queued or running (job {existing}); nothing "
+            f"a resident tick is already queued or running (job {existing[0]}); nothing "
             f"submitted. Stop it with `scancel --name {RESIDENT_JOB_NAME}`, or pause it "
             f"with `touch {plan.root}/PAUSE`.",
             file=sys.stderr,
@@ -312,6 +341,17 @@ def start(args: argparse.Namespace) -> int:
         )
         return 1
     job = proc.stdout.strip().split(";")[0]
+    # two starts can pass the check above together; singleton keeps them from
+    # running at once, and the later submission withdraws so one chain remains
+    after = _resident_jobs()
+    if after and after[0] != job and job in after:
+        _cancel(job)
+        print(
+            f"another resident tick (job {after[0]}) was submitted at the same time; "
+            f"withdrew this one (job {job}).",
+            file=sys.stderr,
+        )
+        return 0
     print(
         f"resident tick submitted: job {job} on {plan.partition}, "
         f"{plan.resident_minutes} min walltime, hands over to itself. "
