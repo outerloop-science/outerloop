@@ -12,7 +12,8 @@ CHAIN = (Path(__file__).resolve().parents[1] / "scripts" / "tick_chain.sbatch").
 
 
 def _successor_sbatch() -> str:
-    m = re.search(r"sbatch --dependency=singleton[^\n]*(?:\\\n[^\n]*)*", CHAIN)
+    # the whole continued command, from sbatch to the script path
+    m = re.search(r'sbatch --dependency=singleton.*?tick_chain\.sbatch"', CHAIN, re.S)
     assert m, "the successor sbatch line must be present"
     return m.group(0)
 
