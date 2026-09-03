@@ -1,7 +1,8 @@
 # The resident tick
 
-*Design note, 2026-09-02. Status: proposed — the chain restarts of 2026-09-02
-are the evidence.*
+*Design note, 2026-09-02. Status: built as the opt-in mode
+(`AUTORESEARCH_RESIDENT=1`, `scripts/tick_resident.sh`); the chain restarts of
+2026-09-02 are the evidence.*
 
 ## The problem
 
@@ -87,15 +88,26 @@ covers it.
 ## Rollout
 
 1. Opt-in mode in `scripts/tick_chain.sbatch`: `AUTORESEARCH_RESIDENT=1` in
-   the chain's environment selects the loop; unset keeps today's per-cadence
-   chain, byte for byte. The walltime is fixed by Slurm before the script
-   runs, so the resident chain is STARTED with an explicit
-   `sbatch --time=06:00:00 …` (the `#SBATCH --time=15` header stays the
-   per-cadence default) and its successors are submitted the same way. The
-   loop's slot arithmetic and the tick timeout are small helpers with tests
-   (PATH shims), like the lock sweep.
-2. Start one resident chain beside nothing else (singleton makes the two
-   modes exclusive); watch a day of handovers in the tick log.
+   the chain's environment selects the loop; unset keeps the per-cadence
+   chain. The walltime is fixed by Slurm before the script runs, so the
+   resident chain is STARTED with an explicit walltime and its own job name:
+
+   ```
+   sbatch --time=360 --job-name=autoresearch-resident --dependency=singleton \
+     --account=… --partition=cpu_short \
+     --export=ALL,AUTORESEARCH_RESIDENT=1,AUTORESEARCH_HOME=…,AUTORESEARCH_ROOT=…,\
+   AUTORESEARCH_ACCOUNT=…,AUTORESEARCH_PARTITION=cpu_short,AUTORESEARCH_PAT_FILE=… \
+     scripts/tick_chain.sbatch
+   ```
+
+   The two modes have different job names, so the switch needs no cancel:
+   the per-cadence chain stops topping up as soon as a resident job exists
+   and drains within a cadence (the resident also cancels its pending
+   successors on start; a still-running one finishes its tick, and the
+   tick's coalescing guard makes an overlap a no-op). Switching back: set the
+   pause sentinel (the resident cancels its successor and exits), clear it,
+   start a per-cadence chain.
+2. Watch a day of handovers in the tick log (four, at six-hour walltime).
 3. Make resident the default; keep the per-cadence mode as the LocalCompute /
    dev path.
 
