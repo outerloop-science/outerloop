@@ -16,6 +16,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The tick runs the installed environment as it stands (`uv run --no-sync`),
+  so a failed `uv sync` at deploy time no longer stops it. When a fetched
+  commit's `uv.lock` is unchanged, the tick runs the new code on the existing
+  environment; when the lockfile changed and the sync failed, the deploy
+  rolls back to the previous commit and reinstalls its environment, skipping
+  the tick only if that cannot be made consistent. Before, `uv run` repeated
+  the failed sync and no tick started at all (2026-09-03: the scratch quota
+  filled and every tick died this way for two hours).
+  (2026-09-03: every tick from 13:30Z died this way for two hours after the
+  scratch quota filled.)
 - A line snapshot now builds on a newer remote version of the line instead
   of being skipped when another run on the same line pushed while this run
   was parked. Files the other run added, changed, or deleted that this run
