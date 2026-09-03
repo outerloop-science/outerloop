@@ -23,6 +23,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A session that reshapes the workspace's `.git` (a symlink or gitdir file
+  in place of `.git`, a symlinked or missing object store, pack directory, or
+  refs, a FIFO or missing control file, object alternates) now ends the run
+  with a note naming the tampering. Every kernel git call checks, so no
+  path, wake, or follow-up can reach a later bare git error instead. (2026-09-03: an author moved the pack files
+  into the container's private /tmp and symlinked them; the kernel's git saw
+  refs with no objects.)
 - The tick runs the installed environment as it stands (`uv run --no-sync`),
   so a failed `uv sync` at deploy time no longer stops it. When a fetched
   commit's `uv.lock` is unchanged, the tick runs the new code on the existing
