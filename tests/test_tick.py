@@ -3875,6 +3875,32 @@ def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_pat
     assert report.reaped_leases == ("r1",)
     assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
 
+    # relocated but its dependencies still RUN: nothing to redeliver, no cancel
+    waiting_run(tmp_path, run_id="r3", experiment_job_id="300")
+    acquire_lease(tmp_path, "r3", "wake-job:77", "77", now=NOW - 60)
+    slurm3 = FakeSlurm(
+        states={"300": "RUNNING", "77": "PENDING"},
+        reasons={"77": "Dependency"},
+        partitions={"77": "cs"},
+    )
+    _r3, d3 = run_tick(tmp_path, slurm3, now=NOW + 2, min_tick_s=0)
+    assert "77" not in slurm3.cancelled and d3.dispatched == []
+
+    # relocated, dependencies terminal, but seen terminal only now: the grace
+    # window runs first (stamped), the cancel comes a tick later
+    waiting_run(tmp_path, run_id="r4", terminal_seen=0.0, experiment_job_id="400")
+    acquire_lease(tmp_path, "r4", "wake-job:88", "88", now=NOW - 60)
+    slurm4 = FakeSlurm(
+        states={"400": "COMPLETED", "88": "PENDING"},
+        reasons={"88": "Priority"},
+        partitions={"88": "cs"},
+    )
+    _r4, d4 = run_tick(tmp_path, slurm4, now=NOW + 3, min_tick_s=0)
+    assert "88" not in slurm4.cancelled and d4.dispatched == []
+    assert load_record(tmp_path, "r4").terminal_seen == NOW + 3
+    _r4b, d4b = run_tick(tmp_path, slurm4, now=NOW + 3 + GRACE + 1, min_tick_s=0)
+    assert slurm4.cancelled == ["88"] and d4b.dispatched == [("r4", "experiment COMPLETED")]
+
     # the same partition is not a move: the grace path stands (no cancel yet)
     waiting_run(tmp_path, run_id="r2", terminal_seen=0.0, experiment_job_id="200")
     acquire_lease(tmp_path, "r2", "wake-job:66", "66", now=NOW - 60)

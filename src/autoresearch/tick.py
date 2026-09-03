@@ -951,11 +951,14 @@ def _armed_wake_lost(
     (Slurm reports the dependency as never satisfiable, or the afterany was
     lost). Cancel it so the sweep redelivers; the lease is then reaped.
 
-    A wake the SITE moved off the partition it was submitted to is not
-    coming either — on Torch a pending job can be shifted to a lower-tier
-    catch-all partition and starve there for hours (2026-09-02, wake
-    16787511) — so a holder whose partition is not the one the wake recipe
-    asked for is cancelled the same way and redelivered onto the right one."""
+    A wake the SITE moved off the partition it was submitted to may be
+    starving there — on Torch a pending job can be shifted to a lower-tier
+    partition (2026-09-02, wake 16787511 sat on `all` for hours) — but
+    relocation alone is routine (jobs move to `cs` while still waiting on
+    their dependencies and start on time). So a relocated holder counts as
+    lost only once every job it waited on is terminal AND the grace window
+    has run out without it starting; then it is cancelled and redelivered
+    onto the requested partition."""
     if not lease.holder_job_id:
         return False
     job_ids = _poll_targets(record)
@@ -970,24 +973,33 @@ def _armed_wake_lost(
     except SlurmQueryError:
         return False
     moved = _moved_off_partition(root, compute, lease.holder_job_id)
-    if moved:
-        log.warning(
-            "armed wake %s for %s was moved to partition %s (asked for %s); redelivering",
-            lease.holder_job_id,
-            record.run_id,
-            moved[0],
-            moved[1],
-        )
-    elif reason == "DependencyNeverSatisfied":
+    if reason == "DependencyNeverSatisfied":
         pass
-    elif reason != "Dependency" or not all(is_terminal(s) for s in states):
+    elif not all(is_terminal(s) for s in states):
+        return False  # its dependencies are still running: nothing to redeliver yet
+    elif reason != "Dependency" and not moved:
         return False
-    elif record.terminal_seen <= 0:
-        if not dry_run:
-            save_record(root, replace(record, terminal_seen=now), now)
-        return False
-    elif now - record.terminal_seen < grace_s:
-        return False
+    else:
+        # Dependency-pending past its dependencies, or RELOCATED and eligible:
+        # both get the grace window. Relocation alone is normal (the site
+        # moves pending jobs routinely); a relocated wake counts as lost only
+        # when every job it waited on is terminal and it still has not
+        # started once the grace has run out — cancelling earlier would only
+        # reset its queue age and burn a wake attempt.
+        if moved:
+            log.info(
+                "armed wake %s for %s sits on partition %s (asked for %s) past its dependencies",
+                lease.holder_job_id,
+                record.run_id,
+                moved[0],
+                moved[1],
+            )
+        if record.terminal_seen <= 0:
+            if not dry_run:
+                save_record(root, replace(record, terminal_seen=now), now)
+            return False
+        if now - record.terminal_seen < grace_s:
+            return False
     if dry_run:
         return True
     try:

@@ -1,24 +1,41 @@
-"""The chain's pre-top-up sweep: same-name successors moved off our partition
-are cancelled (so the top-up requeues them); the rest are left alone."""
+"""The chain's pre-top-up sweep: a same-name successor relocated off our
+partition is cancelled only when it is STARVING there — eligible and not
+started for a while. Relocation alone (or a job still waiting on its slot or
+a dependency) is left alone: cancelling would only reset its queue age."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "requeue_moved_successors.sh"
 
 
-def _shims(tmp_path: Path, squeue_rows: str) -> tuple[Path, Path]:
-    """Fake squeue/scancel on PATH: squeue prints the given `%i %P` rows,
-    scancel appends its argument to a log file."""
+def _iso(minutes_ago: int) -> str:
+    return (datetime.now() - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _shims(
+    tmp_path: Path, rows: list[tuple[str, str, str]], eligible: dict[str, str]
+) -> tuple[Path, Path]:
+    """Fake squeue (`%i|%P|%r` rows), scontrol (EligibleTime per job) and
+    scancel (logs its argument) on PATH."""
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True)
     log = tmp_path / "scancel.log"
-    (bindir / "squeue").write_text(f"#!/bin/sh\nprintf '{squeue_rows}'\n")
+    body = "".join(f"{jid}|{part}|{reason}\\n" for jid, part, reason in rows)
+    (bindir / "squeue").write_text(f"#!/bin/sh\nprintf '{body}'\n")
+    cases = "".join(
+        f'  {jid}) echo "JobId={jid} EligibleTime={t} JobState=PENDING";;\n'
+        for jid, t in eligible.items()
+    )
+    (bindir / "scontrol").write_text(
+        f'#!/bin/sh\ncase "$3" in\n{cases}  *) echo "JobId=$3";;\nesac\n'
+    )
     (bindir / "scancel").write_text(f'#!/bin/sh\necho "$1" >> "{log}"\n')
-    for f in ("squeue", "scancel"):
+    for f in ("squeue", "scontrol", "scancel"):
         os.chmod(bindir / f, 0o755)
     return bindir, log
 
@@ -34,28 +51,33 @@ def _run(bindir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_moved_successors_are_cancelled_and_named(tmp_path: Path) -> None:
-    bindir, log = _shims(tmp_path, "101 all\\n102 cpu_short\\n103 all\\n")
-    out = _run(bindir, "autoresearch-tick", "cpu_short")
-    assert log.read_text().split() == ["101", "103"]
-    assert "cancelled successor 101 moved to all (asked for cpu_short)" in out.stdout
-    assert "102" not in out.stdout
+def test_only_a_starving_relocated_successor_is_cancelled(tmp_path: Path) -> None:
+    rows = [
+        ("101", "cs", "Priority"),  # relocated, eligible, starving -> cancel
+        ("102", "cs", "BeginTime"),  # relocated but waiting for its slot -> keep
+        ("103", "cs", "Dependency"),  # relocated but singleton-blocked -> keep
+        ("104", "cs", "Priority"),  # relocated, eligible only 5 minutes -> keep
+        ("105", "cpu_short", "Priority"),  # not relocated -> keep
+        ("106", "cs", "Priority"),  # relocated, eligibility absent -> keep (doubt)
+        ("107", "cs", "Priority"),  # relocated, EligibleTime=Unknown -> keep (doubt)
+    ]
+    eligible = {"101": _iso(45), "104": _iso(5), "107": "Unknown"}
+    bindir, log = _shims(tmp_path, rows, eligible)
+    out = _run(bindir, "autoresearch-tick", "cpu_short", "20")
+    assert log.read_text().split() == ["101"]
+    assert "cancelled successor 101 starving on cs" in out.stdout
 
 
-def test_nothing_moved_or_no_partition_is_a_no_op(tmp_path: Path) -> None:
-    bindir, log = _shims(tmp_path, "101 cpu_short\\n102 cpu_short\\n")
-    assert _run(bindir, "autoresearch-tick", "cpu_short").stdout == ""
-    assert not log.exists()
-    # no requested partition known: never cancel on doubt
-    bindir2, log2 = _shims(tmp_path / "two", "101 all\\n")
-    assert _run(bindir2, "autoresearch-tick", "").stdout == ""
-    assert not log2.exists()
-
-
-def test_partition_lists_match_by_membership_and_unknown_is_never_cancelled(tmp_path: Path) -> None:
-    """A job submitted to `cpu_short,all` and now holding `cpu_short` is not
-    moved; one holding `all` alone is; an empty %P is unknown (r1)."""
-    bindir, log = _shims(tmp_path, "101 cpu_short\n102 all\n103 \n104 cpu_short,all\n")
+def test_partition_lists_match_by_membership_and_no_partition_is_a_no_op(tmp_path: Path) -> None:
+    rows = [
+        ("201", "cpu_short,all", "Priority"),
+        ("202", "all", "Priority"),
+        ("203", "", "Priority"),
+    ]
+    eligible = {"201": _iso(60), "202": _iso(60), "203": _iso(60)}
+    bindir, log = _shims(tmp_path, rows, eligible)
     out = _run(bindir, "autoresearch-tick", "cpu_short,cpu_prem")
-    assert log.read_text().split() == ["102"]
-    assert "102" in out.stdout and "101" not in out.stdout and "104" not in out.stdout
+    assert log.read_text().split() == ["202"]
+    assert "201" not in out.stdout and "203" not in out.stdout
+    bindir2, log2 = _shims(tmp_path / "two", rows, eligible)
+    assert _run(bindir2, "autoresearch-tick", "").stdout == "" and not log2.exists()

@@ -65,6 +65,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A job the site relocated off its submitted partition counts as lost only
+  when it is also starving: eligible (dependencies done, slot passed) and not
+  started past the grace window. Relocation alone is routine on Torch and
+  cancelling a relocated job only reset its queue age.
 - `AUTORESEARCH_BOT_ALIASES` names the kernel's former logins, and every
   "is this ours" check (own issues, claims, alarms, own PRs, own comments)
   recognizes them, so an identity flip does not turn the kernel's own
