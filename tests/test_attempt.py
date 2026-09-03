@@ -4312,6 +4312,9 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     other = tmp_path / "other"
     _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
     (other / "train.py").write_text("sibling\n")
+    (other / "agent_memory").mkdir()
+    (other / "agent_memory" / "sibling.md").write_text("a note only the sibling wrote\n")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(
         other,
         "-c",
@@ -4319,7 +4322,7 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
         "-c",
         "user.email=t@t",
         "commit",
-        "-qam",
+        "-qm",
         "line snapshot: sibling",
     )
     _git(other, "push", "-q", "origin", "agents/agent-01")
@@ -4331,7 +4334,52 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     assert head != sibling
     assert _git(bare, "rev-parse", f"{head}^").strip() == sibling  # parented on the moved remote
     assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
+    # the sibling's addition survives; a file both had keeps our version
+    assert "only the sibling" in _git(bare, "show", f"{head}:agent_memory/sibling.md")
     assert _git(wsroot, "rev-parse", "agents/agent-01").strip() == head  # local ref advanced too
+
+
+def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoresearch import attempt as attempt_mod
+    from autoresearch.attempt import _push_line_snapshot
+    from autoresearch.github import Workspace
+
+    wsroot = tmp_path / "ws"
+    wsroot.mkdir()
+    (wsroot / "train.py").write_text("v1\n")
+    _git(wsroot, "init", "-q", "-b", "main")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(wsroot, "rev-parse", "HEAD").strip()
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "branch", "agents/agent-01", base)
+    _git(wsroot, "push", "-q", "origin", "agents/agent-01")
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", "-b", "agents/agent-01", str(bare), str(other))
+    pushes: list[str] = []
+    real_push = Workspace.push
+
+    def racing_push(self: Workspace, branch: str) -> None:
+        pushes.append(branch)
+        if len(pushes) == 1:
+            # a sibling lands between our fetch and our push
+            (other / "train.py").write_text("sibling\n")
+            _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "sibling")
+            _git(other, "push", "-q", "origin", "agents/agent-01")
+        real_push(self, branch)  # the first attempt is now a non-fast-forward and raises
+
+    monkeypatch.setattr(attempt_mod.Workspace, "push", racing_push)
+    (wsroot / "train.py").write_text("winner\n")
+    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    sibling = _git(other, "rev-parse", "HEAD").strip()
+    head = _git(bare, "rev-parse", "agents/agent-01").strip()
+    assert len(pushes) == 2
+    assert _git(bare, "rev-parse", f"{head}^").strip() == sibling
+    assert _git(bare, "show", f"{head}:train.py").strip() == "winner"
 
 
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:

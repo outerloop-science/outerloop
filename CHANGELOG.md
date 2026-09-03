@@ -16,11 +16,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A research line no longer loses the snapshot of a run that ended while a
-  newer run on the same line had already pushed: the seal now parents on
-  the remote line head when the local ref is behind it, so the push
-  fast-forwards instead of being refused and skipped (this is how agent-01's
-  line fell behind its own merged win on gpt-speedrun, 2026-09-03).
+- A line snapshot now builds on a newer remote version of the line instead
+  of being skipped when another run on the same line pushed while this run
+  was parked. Files that newer version added are kept, and a push refused
+  because the line moved again is retried on the new head. (This is how
+  agent-01's line fell behind its own merged win on gpt-speedrun,
+  2026-09-03.)
 
 ### Changed
 

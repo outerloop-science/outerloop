@@ -1100,49 +1100,80 @@ def _push_line_snapshot(
     def _seal_and_push() -> None:
         # raises if the ref is absent (e.g. a park that predates the line
         # feature) — _best_effort turns that into a logged skip
-        parent = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
-        # A park frees the slot, so a newer run on the same line can end
-        # (and push) while this one is parked: the remote line then sits
-        # past our local ref and a seal parented on the stale ref would be
-        # refused as a non-fast-forward (gpt-speedrun, 2026-09-03: agent-01's
-        # winning run left no snapshot for exactly this reason, and its line
-        # fell behind main). Parent on the remote head whenever our ref is
-        # an ancestor of it; offline, seal on the local ref as before.
-        try:
-            ws.fetch_origin()
-            remote = ws.git("rev-parse", f"refs/remotes/origin/{line_ref}").strip()
-            if remote != parent:
-                ws.git("merge-base", "--is-ancestor", parent, remote)  # raises when not
-                ws.git("update-ref", f"refs/heads/{line_ref}", remote)
-                parent = remote
-        except Exception as exc:
-            log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
+        local = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
         memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
-        snap = snapshot_tree(ws, parent, force=memory)
-        try:
-            # seal only when the tree moved past the local ref; the PUSH runs
-            # either way — a session that COMMITTED its work advanced the
-            # local ref without dirtying the tree, and that commit must still
-            # reach the remote (an already-current ref push is a no-op).
-            if snap.tree != ws.git("rev-parse", f"{parent}^{{tree}}").strip():
-                sealed = ws.git(
-                    "-c",
-                    "user.name=autoresearch",
-                    "-c",
-                    "user.email=autoresearch@localhost",
-                    "commit-tree",
-                    snap.tree,
-                    "-p",
-                    parent,
-                    "-m",
-                    f"line snapshot: {run_id} ({outcome})",
-                ).strip()
+        last_exc: Exception | None = None
+        for _ in range(3):
+            parent = local
+            # A park frees the slot, so a newer run on the same line can end
+            # (and push) while this one is parked: the remote line then sits
+            # past our local ref, and a seal parented on the stale ref would be
+            # refused as a non-fast-forward (gpt-speedrun, 2026-09-03: agent-01's
+            # winning run left no snapshot this way, and its line fell behind
+            # main). Parent on the remote head whenever our ref is an ancestor
+            # of it, keeping the files that head added since; offline, seal on
+            # the local ref as before.
+            try:
+                ws.fetch_origin()
+                remote = ws.git("rev-parse", f"refs/remotes/origin/{line_ref}").strip()
+                if remote != local:
+                    ws.git("merge-base", "--is-ancestor", local, remote)  # raises when not
+                    _keep_remote_additions(ws, local, remote)
+                    parent = remote
+            except Exception as exc:
+                log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
+            snap = snapshot_tree(ws, parent, force=memory)
+            try:
+                # seal only when the tree moved past the parent; the PUSH runs
+                # either way — a session that COMMITTED its work advanced the
+                # local ref without dirtying the tree, and that commit must
+                # still reach the remote (an already-current ref push is a no-op)
+                sealed = parent
+                if snap.tree != ws.git("rev-parse", f"{parent}^{{tree}}").strip():
+                    sealed = ws.git(
+                        "-c",
+                        "user.name=autoresearch",
+                        "-c",
+                        "user.email=autoresearch@localhost",
+                        "commit-tree",
+                        snap.tree,
+                        "-p",
+                        parent,
+                        "-m",
+                        f"line snapshot: {run_id} ({outcome})",
+                    ).strip()
                 ws.git("update-ref", f"refs/heads/{line_ref}", sealed)
-            ws.push(line_ref)
-        finally:
-            drop_snapshot(ws, snap)
+                try:
+                    ws.push(line_ref)
+                    return
+                except Exception as exc:
+                    # another run pushed between our fetch and this push:
+                    # re-read the line and seal again on its new head
+                    last_exc = exc
+                    log.info(
+                        "line %s: push refused, re-sealing on the moved line (%s)",
+                        line_ref,
+                        type(exc).__name__,
+                    )
+            finally:
+                drop_snapshot(ws, snap)
+        assert last_exc is not None
+        raise last_exc
 
     _best_effort(f"line push ({outcome})", _seal_and_push, secrets)
+
+
+def _keep_remote_additions(ws: Workspace, old: str, new: str) -> None:
+    """The seal is built from THIS workspace, so a file another run added to
+    the line since `old` (a sibling's memory note, say) would read as deleted.
+    Materialize the ones this workspace lacks; files both sides have keep
+    this run's version, as the line always did."""
+    added = [
+        p for p in ws.git("diff", "--name-only", "-z", "--diff-filter=A", old, new).split("\0") if p
+    ]
+    missing = [p for p in added if not (Path(ws.root) / p).exists()]
+    if missing:
+        ws.git("checkout", new, "--", *missing)
 
 
 def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: str) -> str:
