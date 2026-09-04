@@ -16,6 +16,7 @@ from autoresearch.syscall import (
     SyscallError,
     SyscallRequest,
     VerdictError,
+    annotate_launch_states,
     budget_error,
     ensure_excluded,
     install_tool,
@@ -272,6 +273,49 @@ def test_wake_text_flags_the_last_sleep() -> None:
     text = render_wake((), "", launches_used=0, launch_budget=4, sleeps_used=4, sleep_budget=4)
     assert "LAST sleep" in text
     assert "checkpoint sleep" in text  # no launches -> says so
+
+
+def _lr(name: str, exit_code, state: str = "") -> LaunchResult:
+    return LaunchResult(
+        name=name,
+        exit_code=exit_code,
+        stdout_tail="",
+        stderr_tail="",
+        delivered=(),
+        skipped=(),
+        slurm_state=state,
+    )
+
+
+def test_annotate_launch_states_fills_only_exitless_jobs() -> None:
+    results = (_lr("a", 0), _lr("b", None), _lr("c", 137))
+    states = {"j-a": "COMPLETED", "j-b": "OUT_OF_MEMORY", "j-c": "FAILED"}
+    out = annotate_launch_states(results, ["j-a", "j-b", "j-c"], lambda j: states[j])
+    assert out[0].slurm_state == ""  # had an exit code: untouched, unqueried
+    assert out[1].slurm_state == "OUT_OF_MEMORY"  # the exitless one is annotated
+    assert out[2].slurm_state == ""  # had an exit code
+
+
+def test_annotate_launch_states_survives_a_failing_query() -> None:
+    def boom(_job_id: str) -> str:
+        raise RuntimeError("sacct down")
+
+    out = annotate_launch_states((_lr("a", None),), ["j-a"], boom)
+    assert out[0].slurm_state == ""  # best-effort: blank, not a crash
+
+
+def test_annotate_launch_states_bails_on_a_length_mismatch() -> None:
+    results = (_lr("a", None), _lr("b", None))
+    out = annotate_launch_states(results, ["only-one-id"], lambda j: "OUT_OF_MEMORY")
+    assert out == results  # no positional mapping -> nothing guessed
+
+
+def test_wake_text_names_the_scheduler_state_for_an_exitless_job() -> None:
+    res = _lr("width1024", None, state="OUT_OF_MEMORY")
+    text = render_wake((res,), "", launches_used=1, launch_budget=4, sleeps_used=1, sleep_budget=4)
+    assert "scheduler state OUT_OF_MEMORY" in text
+    assert "running out of memory" in text  # the honest hint
+    assert "none (job failure)" not in text  # replaced by the diagnosable line
 
 
 def test_refusal_names_the_reason_and_the_remaining_budget() -> None:

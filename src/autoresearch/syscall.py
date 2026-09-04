@@ -36,8 +36,8 @@ import contextlib
 import json
 import os
 import re
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +139,10 @@ class LaunchResult:
     stderr_tail: str
     delivered: tuple[str, ...]  # workspace-relative artifact paths delivered
     skipped: tuple[str, ...]  # declared artifacts not delivered (with reason)
+    # The scheduler's terminal state, filled in only when the job left no exit
+    # code (an untrappable SIGKILL — OOM, walltime kill, node failure — writes
+    # none). "" when known from the exit code, unavailable, or unqueried.
+    slurm_state: str = ""
 
 
 def launch_jobs(launch: Launch) -> tuple[tuple[str, dict[str, str]], ...]:
@@ -719,6 +723,58 @@ def _read_tail(path: Path, max_chars: int) -> str:
     return data.decode("utf-8", "replace")[-max_chars:]
 
 
+def annotate_launch_states(
+    results: tuple[LaunchResult, ...],
+    job_ids: list[str],
+    status_of: Callable[[str], str],
+) -> tuple[LaunchResult, ...]:
+    """Attach each launch's terminal scheduler state to the results that left
+    NO exit code. An untrappable SIGKILL — the cgroup OOM killer, a hard
+    walltime kill, a node failure — writes no exit-code file, so the exit code
+    alone cannot say why the job died; the scheduler still knows. Results and
+    job_ids are both in launch/array submission order, so they align
+    positionally. Best-effort: a failed query (or a backend that cannot say)
+    leaves the state blank and the wake falls back to the bare exit-code line."""
+    if len(job_ids) != len(results):
+        return results  # the positional mapping is unsafe — never guess one
+    annotated: list[LaunchResult] = []
+    for result, job_id in zip(results, job_ids, strict=True):
+        if result.exit_code is None and job_id:
+            try:
+                state = status_of(job_id)
+            except Exception:
+                state = ""
+            if state:
+                result = replace(result, slurm_state=state)
+        annotated.append(result)
+    return tuple(annotated)
+
+
+def _state_hint(state: str) -> str:
+    """A one-line, honest reading of a terminal state for a launch that left no
+    exit code — the untrappable-SIGKILL causes an author otherwise cannot tell
+    apart."""
+    upper = state.upper()
+    if upper.startswith("OUT_OF_MEMORY"):
+        return " (killed for running out of memory — reduce the config's memory footprint)"
+    if upper.startswith(("TIMEOUT", "DEADLINE")):
+        return " (killed at the walltime cap before it finished)"
+    if upper.startswith(("NODE_FAIL", "BOOT_FAIL")):
+        return " (a node failure, not your code — worth a retry)"
+    return ""
+
+
+def _exit_code_line(result: LaunchResult) -> str:
+    """The exit-code text for one launch. A missing exit code is a job that
+    died without its wrapper running; the scheduler state, when known, says
+    why (OOM / walltime / node) instead of a bare 'job failure'."""
+    if result.exit_code is not None:
+        return str(result.exit_code)
+    if result.slurm_state:
+        return f"none — scheduler state {result.slurm_state}{_state_hint(result.slurm_state)}"
+    return "none (job failure)"
+
+
 def _tail(text: str) -> str:
     return text[-MAX_OUTPUT_CHARS:] if len(text) > MAX_OUTPUT_CHARS else text
 
@@ -739,11 +795,7 @@ def render_wake(
     data-fenced exactly like panel findings."""
     blocks: list[str] = []
     for r in results:
-        lines = [
-            "launch `{}` — exit code: {}".format(
-                r.name, r.exit_code if r.exit_code is not None else "none (job failure)"
-            )
-        ]
+        lines = [f"launch `{r.name}` — exit code: {_exit_code_line(r)}"]
         if r.delivered:
             lines.append("artifacts delivered: " + ", ".join(f"`{p}`" for p in r.delivered))
         if r.skipped:
