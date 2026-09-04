@@ -242,6 +242,9 @@ def test_wake_prompt_is_bounded_and_asks_for_conclusion() -> None:
     assert "0.31" in text
     assert "GPU-hours remaining: 2.0" in text
     assert "research report" in text
+    # a negative is framed as a step, not the finish line: the wake pushes the
+    # next hypothesis while budget remains rather than concluding early
+    assert "not the finish line" in text and "launch again" in text
     huge = render_wake("x" * 100_000, budget)
     assert len(huge) < MAX_WAKE_CHARS + 600
     assert "[truncated" in huge

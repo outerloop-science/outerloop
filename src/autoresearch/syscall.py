@@ -836,8 +836,20 @@ def render_wake(
         fence = _fence(note)
         parts.append(f"Your note to yourself:\n{fence}\n{note}\n{fence}")
     gpu = f", {gpu_hours_remaining:.1f} GPU-hours" if gpu_hours_remaining is not None else ""
+    # Push to keep going ONLY when another launch is actually possible: a launch
+    # needs a remaining launch count AND (for a GPU benchmark) remaining
+    # GPU-hours, or budget_error would reject the very launch this urges. When
+    # nothing more can launch, the honest instruction is to conclude.
+    can_launch = launches_used < launch_budget and (
+        gpu_hours_remaining is None or gpu_hours_remaining > 0
+    )
     if sleeps_used >= sleep_budget:
         tail = " This was your LAST sleep — conclude this session with your best result."
+    elif not can_launch:
+        tail = (
+            " Your launch budget is spent — conclude this session with your best "
+            "result (submit your best candidate, or write your report)."
+        )
     else:
         # The budget is there to be spent: a negative is a step, not a stopping
         # point. Push the next hypothesis rather than concluding early — a
