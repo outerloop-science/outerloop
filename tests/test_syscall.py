@@ -275,6 +275,14 @@ def test_wake_text_flags_the_last_sleep() -> None:
     assert "checkpoint sleep" in text  # no launches -> says so
 
 
+def test_wake_text_pushes_to_keep_going_while_budget_remains() -> None:
+    # a negative with budget left is a step, not a stopping point: the wake
+    # pushes the next hypothesis instead of letting the author conclude early.
+    text = render_wake((), "", launches_used=1, launch_budget=8, sleeps_used=1, sleep_budget=8)
+    assert "not a stopping point" in text and "launch again" in text
+    assert "LAST sleep" not in text  # budget remains
+
+
 def _lr(name: str, exit_code, state: str = "") -> LaunchResult:
     return LaunchResult(
         name=name,

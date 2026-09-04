@@ -836,14 +836,22 @@ def render_wake(
         fence = _fence(note)
         parts.append(f"Your note to yourself:\n{fence}\n{note}\n{fence}")
     gpu = f", {gpu_hours_remaining:.1f} GPU-hours" if gpu_hours_remaining is not None else ""
+    if sleeps_used >= sleep_budget:
+        tail = " This was your LAST sleep — conclude this session with your best result."
+    else:
+        # The budget is there to be spent: a negative is a step, not a stopping
+        # point. Push the next hypothesis rather than concluding early — a
+        # session that ends with launches and GPU-hours in hand left the
+        # question half-answered.
+        tail = (
+            " A negative or a miss is a step, not a stopping point: while this "
+            "budget remains, form your next hypothesis and launch again — a new "
+            "direction or a sweep — rather than concluding. Finish only with an "
+            "improvement to submit or a genuinely spent budget."
+        )
     parts.append(
         f"Budgets: {launch_budget - launches_used} launches and "
-        f"{sleep_budget - sleeps_used} sleeps{gpu} remaining."
-        + (
-            " This was your LAST sleep — conclude this session with your best result."
-            if sleeps_used >= sleep_budget
-            else ""
-        )
+        f"{sleep_budget - sleeps_used} sleeps{gpu} remaining." + tail
     )
     return "\n\n".join(parts)
 

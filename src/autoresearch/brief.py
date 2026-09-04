@@ -264,10 +264,10 @@ def render_wake(update: str, budget: BudgetState) -> str:
             f"Runs remaining this week: {budget.runs_remaining_this_week}",
             "",
             "Continue from your notes: interpret these results against your "
-            "hypothesis, then either iterate (if the budget allows and a "
-            "clear next step exists) or finish with your research report. If "
-            "the results are inconclusive or negative, say so plainly — a "
-            "negative result reported clearly is a success.",
+            "hypothesis, and report a negative or inconclusive result plainly. "
+            "A negative is a step, not the finish line: while budget remains, "
+            "form your next hypothesis and launch again rather than finishing "
+            "your research report.",
         ]
     )
 
