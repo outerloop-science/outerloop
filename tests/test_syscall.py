@@ -289,7 +289,8 @@ def test_wake_text_says_conclude_when_no_launch_is_possible() -> None:
     text = render_wake((), "", launches_used=4, launch_budget=4, sleeps_used=1, sleep_budget=8)
     assert "launch budget is spent" in text and "conclude" in text
     assert "launch again" not in text
-    # same when GPU-hours are exhausted though launches nominally remain
+    # a positive GPU-hours remainder BELOW a one-minute launch cost (gpus/60)
+    # still cannot pay for a launch: conclude, don't urge one
     gpu_dry = render_wake(
         (),
         "",
@@ -297,9 +298,22 @@ def test_wake_text_says_conclude_when_no_launch_is_possible() -> None:
         launch_budget=8,
         sleeps_used=1,
         sleep_budget=8,
-        gpu_hours_remaining=0.0,
+        gpu_hours_remaining=0.01,  # < 1/60 (one minute on one GPU)
+        gpus=1,
     )
     assert "launch again" not in gpu_dry and "conclude" in gpu_dry
+    # ample GPU-hours -> keep going
+    gpu_ok = render_wake(
+        (),
+        "",
+        launches_used=1,
+        launch_budget=8,
+        sleeps_used=1,
+        sleep_budget=8,
+        gpu_hours_remaining=50.0,
+        gpus=1,
+    )
+    assert "launch again" in gpu_ok
 
 
 def _lr(name: str, exit_code, state: str = "") -> LaunchResult:

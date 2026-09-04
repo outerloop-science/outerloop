@@ -806,6 +806,7 @@ def render_wake(
     sleeps_used: int,
     sleep_budget: int,
     gpu_hours_remaining: float | None = None,
+    gpus: int = 0,
 ) -> str:
     """The text a woken author sees: every job's results as fenced DATA, the
     author's own note echoed back, and the remaining budgets. Job output is
@@ -837,11 +838,14 @@ def render_wake(
         parts.append(f"Your note to yourself:\n{fence}\n{note}\n{fence}")
     gpu = f", {gpu_hours_remaining:.1f} GPU-hours" if gpu_hours_remaining is not None else ""
     # Push to keep going ONLY when another launch is actually possible: a launch
-    # needs a remaining launch count AND (for a GPU benchmark) remaining
-    # GPU-hours, or budget_error would reject the very launch this urges. When
-    # nothing more can launch, the honest instruction is to conclude.
+    # needs a remaining launch count AND enough GPU-hours to pay for even the
+    # cheapest one (a 1-minute job on `gpus` GPUs), or budget_error would reject
+    # the very launch this urges — a positive remainder below that floor cannot
+    # buy a launch. When nothing more can launch, the honest instruction is to
+    # conclude.
+    min_launch_gpu_hours = gpus / 60.0  # one minute on `gpus` GPUs
     can_launch = launches_used < launch_budget and (
-        gpu_hours_remaining is None or gpu_hours_remaining > 0
+        gpu_hours_remaining is None or gpu_hours_remaining >= min_launch_gpu_hours
     )
     if sleeps_used >= sleep_budget:
         tail = " This was your LAST sleep — conclude this session with your best result."
