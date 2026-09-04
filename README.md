@@ -1,9 +1,9 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-dark.svg">
-  <img alt="autoresearch" src="docs/assets/icon-light.svg" width="132">
+  <img alt="Outerloop" src="docs/assets/icon-light.svg" width="132">
 </picture>
 
-# autoresearch
+# Outerloop
 
 [![ci](https://github.com/outerloop-science/outerloop/actions/workflows/ci.yml/badge.svg)](https://github.com/outerloop-science/outerloop/actions/workflows/ci.yml)
 
@@ -157,7 +157,7 @@ uv run pytest
 
 | Path | Purpose |
 | --- | --- |
-| `src/autoresearch/` | The kernel: contract, tick (the Slurm chain), attempt/orchestrator (the climb), measure/dispatch (evals as jobs), syscall (the author's tool), panel/verifier/review, github, harness backends |
+| `src/outerloop/` | The kernel: contract, tick (the Slurm chain), attempt/orchestrator (the climb), measure/dispatch (evals as jobs), syscall (the author's tool), panel/verifier/review, github, harness backends |
 | `tests/` | Tiers: unit (default), `slow`, `llm`, `slurm` markers |
 | `scripts/` | Committed operational scripts (the tick chain, provisioning) |
 | `docs/` | Install guide, architecture and design notes, roadmap |
