@@ -27,7 +27,7 @@ on:
         description: Repo holding the verifier (change this if you forked).
         type: string
         required: false
-        default: agentic-learning-ai-lab/autoresearch
+        default: outerloop-science/outerloop
       verifier_ref:
         description: Ref of the verifier to run. Pin to a tag or SHA in production.
         type: string

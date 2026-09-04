@@ -96,7 +96,7 @@ on:
         description: Repo holding the reviewer (change this if you forked).
         type: string
         required: false
-        default: agentic-learning-ai-lab/autoresearch
+        default: outerloop-science/outerloop
       reviewer_ref:
         description: >-
           Ref of the reviewer to run. Pin to a tag or SHA in production —

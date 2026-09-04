@@ -5,7 +5,7 @@
 
 # autoresearch
 
-[![ci](https://github.com/agentic-learning-ai-lab/autoresearch/actions/workflows/ci.yml/badge.svg)](https://github.com/agentic-learning-ai-lab/autoresearch/actions/workflows/ci.yml)
+[![ci](https://github.com/outerloop-science/outerloop/actions/workflows/ci.yml/badge.svg)](https://github.com/outerloop-science/outerloop/actions/workflows/ci.yml)
 
 An autonomous research agent you point at your own repos. It reviews pull
 requests, implements ideas, runs experiments on your compute, and opens a PR

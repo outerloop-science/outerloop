@@ -35,7 +35,7 @@ jobs:
   advisory:
     # a labeled event only runs for the autoresearch:review label (manual re-review)
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: my-bot            # PRs by this login are never reviewed
     secrets:
@@ -55,7 +55,7 @@ same reusable, different backend. Each opinion posts its own labeled round:
 ```yaml
   second-opinion:
     if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: my-bot
       backend: hermes

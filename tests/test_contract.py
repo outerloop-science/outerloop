@@ -65,7 +65,7 @@ def test_suite_contract_parses() -> None:
 
 def test_self_target_refused_case_insensitive() -> None:
     with pytest.raises(SelfTargetError):
-        load_contract(PILOT_CONTRACT, "Agentic-Learning-AI-Lab/AutoResearch")
+        load_contract(PILOT_CONTRACT, "OuterLoop-Science/OuterLoop")
 
 
 def test_forbidden_paths_include_roadmap() -> None:

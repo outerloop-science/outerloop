@@ -27,10 +27,10 @@ jobs:
         # era: swap toward measurement. coverage earns its seat by being the
         # one class serial review never catches.
         lens: [general, credentials, deployment, lifecycle, coverage, prose]
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
-      bot_login: agentic-learning-bot
-      bot_aliases: ''
+      bot_login: 'outerloop-science[bot]'
+      bot_aliases: agentic-learning-bot
       backend: hermes
       # openai-direct: same token rate, no OpenRouter platform fee (the org's
       # OpenAI account is tax-exempt); model id is provider-native
@@ -47,10 +47,10 @@ jobs:
   summarize:
     needs: lens
     if: ${{ !cancelled() && github.event.action != 'labeled' }}
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-summarize.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-summarize.yml@main
     with:
-      bot_login: agentic-learning-bot
-      bot_aliases: ''
+      bot_login: 'outerloop-science[bot]'
+      bot_aliases: agentic-learning-bot
       backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra
@@ -63,10 +63,10 @@ jobs:
   # --- convergence rounds: one full-rubric session, label-triggered ---
   review:
     if: github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review'
-    uses: agentic-learning-ai-lab/autoresearch/.github/workflows/advisory-review-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
-      bot_login: agentic-learning-bot
-      bot_aliases: ''
+      bot_login: 'outerloop-science[bot]'
+      bot_aliases: agentic-learning-bot
       backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra

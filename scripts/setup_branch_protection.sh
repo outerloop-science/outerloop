@@ -4,7 +4,7 @@
 # Usage:
 #   bash scripts/setup_branch_protection.sh [owner/repo] [approvals] [enforce_admins]
 #   bash scripts/setup_branch_protection.sh                    # solo phase: 0 approvals, admins enforced
-#   bash scripts/setup_branch_protection.sh agentic-learning-ai-lab/autoresearch 1
+#   bash scripts/setup_branch_protection.sh outerloop-science/outerloop 1
 #                                                              # once a second code owner joins
 #
 # Solo-phase default is approvals=0 (a sole code owner cannot approve their own PRs);
@@ -16,7 +16,7 @@
 # - The checks list must match the job names in .github/workflows/ci.yml.
 set -euo pipefail
 
-REPO="${1:-agentic-learning-ai-lab/autoresearch}"
+REPO="${1:-outerloop-science/outerloop}"
 APPROVALS="${2:-0}"
 ENFORCE_ADMINS="${3:-true}"
 
