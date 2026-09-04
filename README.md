@@ -113,8 +113,9 @@ uv run python -m autoresearch.contract_cli .autoresearch.yaml   # validate befor
 ## Getting started
 
 See **[docs/install.md](docs/install.md)**. Level 1 (advisory reviews) needs
-only an LLM API key and one workflow file. Level 2 (the climber) adds a bot
-account, a contract, and a Slurm cluster with Apptainer.
+only an LLM API key and one workflow file — **[docs/reviewer.md](docs/reviewer.md)**
+walks through it in three steps. Level 2 (the climber) adds a bot account, a
+contract, and a Slurm cluster with Apptainer.
 
 ## Design principles
 
