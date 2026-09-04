@@ -7,8 +7,8 @@ name = "autoresearch"
 dynamic = ["version"]
 description = "Autonomous research agent that co-develops the lab's benchmark-bearing repos"
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 authors = [{ name = "Agentic Learning AI Lab, New York University" }]
 dependencies = [
