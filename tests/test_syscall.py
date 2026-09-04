@@ -310,6 +310,34 @@ def test_annotate_launch_states_bails_on_a_length_mismatch() -> None:
     assert out == results  # no positional mapping -> nothing guessed
 
 
+def test_annotate_launch_states_skips_a_gone_record() -> None:
+    # GONE = the scheduler forgot the job; it is not a failure state to show
+    out = annotate_launch_states((_lr("a", None),), ["j-a"], lambda j: "GONE")
+    assert out[0].slurm_state == ""
+
+
+def test_annotate_launch_states_stops_at_the_time_budget() -> None:
+    # a stalled sacct must not burn the wake: once the budget is spent, the
+    # remaining exit-less jobs keep the blank fallback and are never queried.
+    queried: list[str] = []
+
+    def status_of(job_id: str) -> str:
+        queried.append(job_id)
+        return "OUT_OF_MEMORY"
+
+    # clock: start=0, then every check is already past the 30s budget
+    ticks = iter([0.0, 100.0, 100.0, 100.0])
+    out = annotate_launch_states(
+        (_lr("a", None), _lr("b", None)),
+        ["j-a", "j-b"],
+        status_of,
+        time_budget_s=30.0,
+        clock=lambda: next(ticks),
+    )
+    assert queried == []  # budget already spent at the first check -> no queries
+    assert all(r.slurm_state == "" for r in out)
+
+
 def test_wake_text_names_the_scheduler_state_for_an_exitless_job() -> None:
     res = _lr("width1024", None, state="OUT_OF_MEMORY")
     text = render_wake((res,), "", launches_used=1, launch_budget=4, sleeps_used=1, sleep_budget=4)

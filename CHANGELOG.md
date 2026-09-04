@@ -28,8 +28,8 @@ Versions follow [SemVer](https://semver.org).
   only "exit code: none (job failure)" with empty output and could not tell
   why. The wake now surfaces the job's terminal scheduler state
   (`OUT_OF_MEMORY` / `TIMEOUT` / `NODE_FAIL`) with a one-line reading, using
-  the state the backend already knows — turning an invisible death into a
-  diagnosable one.
+  the state the backend already knows, so the author can see why the launch
+  died and adjust, instead of retrying a config that will fail the same way.
 - Codex sessions no longer leak temp directories into the per-run home. Codex
   writes scratch to `.codex/.tmp` and fails to remove it (the "stale arg0 temp
   dirs: Directory not empty" aborts), so across a run's wakes it grew to tens

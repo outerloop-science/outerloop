@@ -39,9 +39,11 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from autoresearch.brief import _fence
+from autoresearch.compute import GONE
 
 SYSCALL_DIR = ".autoresearch"
 SYSCALL_FILE = "syscall.json"
@@ -727,25 +729,41 @@ def annotate_launch_states(
     results: tuple[LaunchResult, ...],
     job_ids: list[str],
     status_of: Callable[[str], str],
+    *,
+    time_budget_s: float = 30.0,
+    clock: Callable[[], float] = monotonic,
 ) -> tuple[LaunchResult, ...]:
     """Attach each launch's terminal scheduler state to the results that left
     NO exit code. An untrappable SIGKILL — the cgroup OOM killer, a hard
     walltime kill, a node failure — writes no exit-code file, so the exit code
     alone cannot say why the job died; the scheduler still knows. Results and
     job_ids are both in launch/array submission order, so they align
-    positionally. Best-effort: a failed query (or a backend that cannot say)
-    leaves the state blank and the wake falls back to the bare exit-code line."""
+    positionally.
+
+    Bounded: the whole annotation spends at most ~`time_budget_s` querying the
+    scheduler (one in-flight query may still overrun by its own timeout), so a
+    stalled `sacct` across the many jobs a wake can carry (up to depth_k x the
+    array width) can never burn the author's wake walltime — jobs past the
+    budget keep the blank fallback. Best-effort throughout: a failed query, a
+    backend that cannot say, or a GONE record (the scheduler forgot the job —
+    not a failure state) also leaves the state blank and the wake falls back to
+    the bare exit-code line."""
     if len(job_ids) != len(results):
         return results  # the positional mapping is unsafe — never guess one
     annotated: list[LaunchResult] = []
+    start = clock()
+    over_budget = False
     for result, job_id in zip(results, job_ids, strict=True):
-        if result.exit_code is None and job_id:
-            try:
-                state = status_of(job_id)
-            except Exception:
-                state = ""
-            if state:
-                result = replace(result, slurm_state=state)
+        if result.exit_code is None and job_id and not over_budget:
+            if clock() - start >= time_budget_s:
+                over_budget = True  # stop querying; the rest keep the fallback
+            else:
+                try:
+                    state = status_of(job_id)
+                except Exception:
+                    state = ""
+                if state and state != GONE:
+                    result = replace(result, slurm_state=state)
         annotated.append(result)
     return tuple(annotated)
 
