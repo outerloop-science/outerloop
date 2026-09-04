@@ -1352,6 +1352,24 @@ def _utc_date(now: float) -> str:
     return datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
 
 
+def _is_git_tamper(exc: GitError) -> bool:
+    """True when a GitError means the workspace's object store or refs are
+    damaged / session-altered — as opposed to an ordinary git failure (a push
+    conflict, a fetch outage). The guard raises its own `_altered(...)` for the
+    states it models; a raw object-store error ("Could not parse object", "bad
+    tree object") is the same class reaching a git command through a TOCTOU
+    window. Either way the wake cannot be trusted and must END, not crash."""
+    msg = str(exc).lower()
+    return (
+        "altered by the session" in msg  # the guard's own _altered signal
+        or "could not parse object" in msg
+        or "bad tree object" in msg
+        or "bad object" in msg
+        or "unable to read tree" in msg
+        or ("object file" in msg and "empty" in msg)
+    )
+
+
 def _end_refused_wake(
     run_root: Path, record: RunRecord, exc: Exception, now: float, secrets: tuple[str, ...]
 ) -> AttemptOutcome:
@@ -3253,6 +3271,7 @@ def main() -> int:
                 container_image=args.image,
                 codex_extra_args=codex_extra,
             )
+        wake_secrets = tuple(k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k)
         try:
             resumed = resume_run(
                 args.run_root,
@@ -3261,13 +3280,27 @@ def main() -> int:
                 github=GitHubClient(auth=bot_auth),
                 bot_auth=bot_auth,
                 now=time.time(),
-                secrets=tuple(
-                    k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k
-                ),
+                secrets=wake_secrets,
                 base_branch=args.base_branch,
                 panel_lenses=wake_lenses,
                 harness=wake_harness,
                 spec=wake_spec,
+            )
+        except GitError as exc:
+            # A tamper-class GitError that escaped the wake body (a TOCTOU
+            # object removal past the entry guard, or a git op that reached a
+            # damaged object) ends the run cleanly as a refused wake — "a
+            # refused wake ends the run" — instead of crashing the job into a
+            # re-park that only wakes into the same failure. A non-tamper
+            # GitError (push conflict, fetch outage) propagates unchanged.
+            if not _is_git_tamper(exc):
+                raise
+            resumed = _end_refused_wake(
+                args.run_root,
+                load_record(args.run_root, args.resume),
+                exc,
+                time.time(),
+                wake_secrets,
             )
         finally:
             # This wake job HOLDS the run's lease (the sweep transferred it on

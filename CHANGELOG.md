@@ -23,6 +23,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A wake no longer crashes into an `attempt-error` when a session emptied the
+  workspace's object store behind a symbolic ref. The `.git` integrity guard
+  now follows a symbolic loose ref (`HEAD -> refs/heads/link -> refs/heads/main`)
+  to verify HEAD's object, closing a blind spot where the object could be gone
+  yet the guard passed and a later `git reset` failed raw ("Could not parse
+  object 'HEAD'"). Any tamper-class `GitError` that still escapes the wake body
+  (a TOCTOU object removal) now ends the run cleanly as a refused wake instead
+  of crashing it into a re-park.
 - Codex sessions no longer leak temp directories into the per-run home. Codex
   writes scratch to `.codex/.tmp` and fails to remove it (the "stale arg0 temp
   dirs: Directory not empty" aborts), so across a run's wakes it grew to tens
