@@ -10,12 +10,12 @@ from typing import Any, ClassVar, cast
 
 import pytest
 
-from autoresearch import attempt as climb_mod
-from autoresearch.attempt import _park_run, live_attempt, resume_run
-from autoresearch.dispatch import Snapshot
-from autoresearch.harness import SessionResult
-from autoresearch.orchestrator import RunConfig, RunParked
-from autoresearch.runstate import RunRecord, load_record, save_record
+from outerloop import attempt as climb_mod
+from outerloop.attempt import _park_run, live_attempt, resume_run
+from outerloop.dispatch import Snapshot
+from outerloop.harness import SessionResult
+from outerloop.orchestrator import RunConfig, RunParked
+from outerloop.runstate import RunRecord, load_record, save_record
 
 CONTRACT = """\
 benchmarks:
@@ -97,11 +97,11 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
     """With dispatched wakes on (the tick publishes wake-spec.json), a park
     submits its wake immediately and the wake job holds the lease; without
     the recipe nothing is armed and the sweep delivers as before."""
-    from autoresearch.runstate import read_lease
-    from autoresearch.tick import FollowupSpec, write_wake_spec
+    from outerloop.runstate import read_lease
+    from outerloop.tick import FollowupSpec, write_wake_spec
 
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
 
     def park(run_id: str) -> None:
@@ -141,8 +141,8 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
 
 
 def test_release_own_lease_keeps_a_lease_handed_to_the_armed_wake(tmp_path, monkeypatch) -> None:
-    from autoresearch.attempt import _lease_held_by_another_job, _release_own_lease
-    from autoresearch.runstate import acquire_lease, read_lease, release_lease
+    from outerloop.attempt import _lease_held_by_another_job, _release_own_lease
+    from outerloop.runstate import acquire_lease, read_lease, release_lease
 
     acquire_lease(tmp_path, "r", "wake-job:9001", "9001", now=1.0)
     monkeypatch.setenv("SLURM_JOB_ID", "55")  # the wake job that armed 9001, exiting
@@ -173,8 +173,8 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
     per park, however many wakes read the budget afterwards."""
     from dataclasses import dataclass
 
-    from autoresearch.attempt import _reconcile_launch_hours, _stage_launch_job_ids
-    from autoresearch.syscall import Launch
+    from outerloop.attempt import _reconcile_launch_hours, _stage_launch_job_ids
+    from outerloop.syscall import Launch
 
     @dataclass
     class Elapsed:
@@ -235,8 +235,8 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     for the brief, full texts into the channel archive; a target without the
     branch is an empty memory, never an error. Only plain file names reach
     the archive (branch content is remote-controlled)."""
-    from autoresearch.attempt import _fetch_research_reports, _install_report_archive
-    from autoresearch.github import Workspace
+    from outerloop.attempt import _fetch_research_reports, _install_report_archive
+    from outerloop.github import Workspace
 
     origin = tmp_path / "origin.git"
     _git(tmp_path, "init", "-q", "--bare", str(origin))
@@ -272,7 +272,7 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
 
     # a huge report (branch content is remote-controlled) is skipped by its
     # blob size BEFORE `git show` would load it; the next report fills the slot
-    from autoresearch.attempt import MAX_ARCHIVED_REPORT_CHARS
+    from outerloop.attempt import MAX_ARCHIVED_REPORT_CHARS
 
     (seed / "reports" / "2026-08-30-run-c.md").write_text("x" * (MAX_ARCHIVED_REPORT_CHARS + 999))
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -285,7 +285,7 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     # branch without it means no siblings known
     import json as _json
 
-    from autoresearch.attempt import _sibling_entries
+    from outerloop.attempt import _sibling_entries
 
     assert _sibling_entries(ws, "agent-01") == []  # no status.json yet
     status = {
@@ -312,7 +312,7 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     # production order: the tool installer recreates the channel dir it owns,
     # so the archive must be written AFTER it (review #191: writing before
     # deleted every archive)
-    from autoresearch.syscall import ensure_excluded, install_tool
+    from outerloop.syscall import ensure_excluded, install_tool
 
     ensure_excluded(ws_dir)
     install_tool(ws_dir)
@@ -330,9 +330,9 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
 def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
     """A gate negative the author answered by launching more work rides the
     park, so the wake that ends on the same tree reuses it (review #182)."""
-    from autoresearch.attempt import _stage_judged
-    from autoresearch.orchestrator import AttemptResult
-    from autoresearch.syscall import Launch, SyscallRequest
+    from outerloop.attempt import _stage_judged
+    from outerloop.orchestrator import AttemptResult
+    from outerloop.syscall import Launch, SyscallRequest
 
     record = RunRecord(
         run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
@@ -373,7 +373,7 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
     # needs — and its deadline floors on the LONGEST LAUNCH's walltime, not the
     # benchmark's eval hint (an in-job-cheap benchmark can still train for
     # hours; the sweep must not cancel the author's jobs).
-    from autoresearch.syscall import Launch, SyscallRequest
+    from outerloop.syscall import Launch, SyscallRequest
 
     record = RunRecord(
         run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
@@ -421,8 +421,8 @@ def test_checkpoint_sleep_park_gets_a_near_term_deadline(tmp_path) -> None:
     must reach only the next sweep pass (CHECKPOINT_SLEEP_SLACK_MIN), never
     the 12h queue slack. Observed live (yolo heldout_probe, 2026-08-27): the
     queue slack turned a checkpoint nap into a 12h coma."""
-    from autoresearch.attempt import CHECKPOINT_SLEEP_SLACK_MIN
-    from autoresearch.syscall import SyscallRequest
+    from outerloop.attempt import CHECKPOINT_SLEEP_SLACK_MIN
+    from outerloop.syscall import SyscallRequest
 
     record = RunRecord(
         run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
@@ -546,7 +546,7 @@ def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
     bare = tmp_path / "origin.git"
     _git(tmp_path, "clone", "-q", "--bare", str(seed), str(bare))
 
-    from autoresearch.github import Workspace
+    from outerloop.github import Workspace
 
     real_clone = Workspace.clone
 
@@ -675,7 +675,7 @@ class NoAuth:
 @contextlib.contextmanager
 def _queued_local(queue):
     """Route the gate's local eval jobs through QueueCompute(queue)."""
-    import autoresearch.attempt as _climb_mod
+    import outerloop.attempt as _climb_mod
 
     orig = _climb_mod.LocalCompute
     _climb_mod.LocalCompute = lambda: QueueCompute(values=queue)  # type: ignore[assignment,misc]
@@ -724,8 +724,8 @@ def _fake_dispatch(image="/img.sif", account="acct", partition="cpu", cancelled=
     returns a fresh numeric id, squeue reports no live job (so results()
     dispatches then parks on the ids it just submitted). `cancelled`, if given,
     records the job ids passed to scancel."""
-    from autoresearch.compute import CommandResult, SlurmCompute
-    from autoresearch.measure import DispatchSettings
+    from outerloop.compute import CommandResult, SlurmCompute
+    from outerloop.measure import DispatchSettings
 
     ids = iter(range(1000, 1100))
 
@@ -801,7 +801,7 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
     recorded key path survives (else it resolves per backend)."""
     from types import SimpleNamespace
 
-    from autoresearch.attempt import resume_author
+    from outerloop.attempt import resume_author
 
     monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "/h")
     monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/c")
@@ -834,7 +834,7 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
 
 def test_codex_author_config_error() -> None:
     """codex needs --image and a non-claude model; claude is always fine."""
-    from autoresearch.attempt import codex_author_config_error
+    from outerloop.attempt import codex_author_config_error
 
     assert codex_author_config_error("claude", "claude-opus-5", "") == ""
     assert codex_author_config_error("codex", "gpt-5.6-terra", "img.sif") == ""
@@ -850,7 +850,7 @@ def test_resolve_author_key_file(monkeypatch) -> None:
     path wins, else the per-backend env var, else the packaged default."""
     import os
 
-    from autoresearch.attempt import (
+    from outerloop.attempt import (
         CODEX_KEY_DEFAULT,
         HARNESS_KEY_DEFAULT,
         resolve_author_key_file,
@@ -1118,7 +1118,7 @@ def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
 
 
 def test_title_pair_never_renders_identical() -> None:
-    from autoresearch.attempt import _title_pair
+    from outerloop.attempt import _title_pair
 
     assert _title_pair(13.875696168157484, 10.844662077277105) == "13.88 -> 10.84"
     assert _title_pair(10.00001, 10.00002) == "10.00001 -> 10.00002"
@@ -1370,7 +1370,7 @@ def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, ta
     ws_root = tmp_path / "state" / "runs" / "tsp-seal" / "ws"
     _q = [13.876, 13.1]
     github = FakeGitHub()
-    import autoresearch.attempt as _climb_mod
+    import outerloop.attempt as _climb_mod
 
     orig = _climb_mod.LocalCompute
     _climb_mod.LocalCompute = lambda: DivergingCompute(_q, ws_root)  # type: ignore[assignment,misc]
@@ -1459,7 +1459,7 @@ def _push_upstream(target_repo, tmp_path, rel_path: str, content: str, name: str
 def test_terminated_is_contained_like_any_crash(tmp_path, target_repo) -> None:
     """A SIGTERM surfaced as Terminated mid-session must end the run through
     the ordinary containment: record aborted, report written."""
-    from autoresearch.attempt import Terminated
+    from outerloop.attempt import Terminated
 
     @dataclass
     class KilledHarness(ScriptedHarness):
@@ -1495,7 +1495,7 @@ def test_sigterm_containment_is_one_shot() -> None:
 
     import pytest
 
-    from autoresearch.attempt import Terminated, arm_sigterm_containment
+    from outerloop.attempt import Terminated, arm_sigterm_containment
 
     original = signal.getsignal(signal.SIGTERM)
     try:
@@ -1527,7 +1527,7 @@ def test_self_deadline_arms_before_the_walltime(monkeypatch) -> None:
     inside a real allocation SLURM_JOB_START_TIME would change the math."""
     import signal
 
-    from autoresearch.attempt import arm_self_deadline
+    from outerloop.attempt import arm_self_deadline
 
     monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
     original = signal.getsignal(signal.SIGALRM)
@@ -1546,7 +1546,7 @@ def test_self_deadline_anchors_on_slurm_job_start(monkeypatch) -> None:
     import signal
     import time
 
-    from autoresearch.attempt import arm_self_deadline
+    from outerloop.attempt import arm_self_deadline
 
     monkeypatch.setenv("SLURM_JOB_START_TIME", str(int(time.time()) - 600))
     original = signal.getsignal(signal.SIGALRM)
@@ -1561,7 +1561,7 @@ def test_self_deadline_anchors_on_slurm_job_start(monkeypatch) -> None:
 def test_self_deadline_margin_floor_and_off_switch(monkeypatch) -> None:
     import signal
 
-    from autoresearch.attempt import MIN_ARM_S, arm_self_deadline
+    from outerloop.attempt import MIN_ARM_S, arm_self_deadline
 
     monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
     original = signal.getsignal(signal.SIGALRM)
@@ -1581,7 +1581,7 @@ def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
 
     import pytest
 
-    from autoresearch.attempt import Terminated, arm_self_deadline
+    from outerloop.attempt import Terminated, arm_self_deadline
 
     monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
     original = signal.getsignal(signal.SIGALRM)
@@ -1599,9 +1599,9 @@ def test_self_deadline_raises_terminated_into_containment(monkeypatch) -> None:
 def test_author_harness_is_built_from_the_spec() -> None:
     """The spec is the single source for the session budget: manifest and
     harness cannot disagree (one build_harness for every role)."""
-    from autoresearch.harness import ClaudeCodeHarness
-    from autoresearch.role_runner import build_harness
-    from autoresearch.roles import author_spec
+    from outerloop.harness import ClaudeCodeHarness
+    from outerloop.role_runner import build_harness
+    from outerloop.roles import author_spec
 
     spec = author_spec(max_turns=7, walltime_s=120)
     harness = build_harness("sk-key", spec, container_image="img.sif")
@@ -1616,9 +1616,9 @@ def test_editor_harness_codex_backend_is_contained() -> None:
     """The codex author backend is one branch of the ONE builder: apptainer is
     the boundary (--sandbox danger-full-access; no bwrap), containment passed
     through from the deployment."""
-    from autoresearch.harness import CodexHarness
-    from autoresearch.role_runner import build_harness
-    from autoresearch.roles import author_spec
+    from outerloop.harness import CodexHarness
+    from outerloop.role_runner import build_harness
+    from outerloop.roles import author_spec
 
     spec = author_spec(max_turns=9, walltime_s=300)
     harness = build_harness(
@@ -1689,7 +1689,7 @@ def _panel_judge(texts):
 def test_panel_clean_read_lands_a_normal_pr_with_transcript(tmp_path, target_repo) -> None:
     import json as _json
 
-    from autoresearch.panel import PanelLens
+    from outerloop.panel import PanelLens
 
     judge = _panel_judge([_json.dumps({"findings": [], "notes": "clean"})])
     github = FakeGitHub()
@@ -1722,7 +1722,7 @@ def test_panel_clean_read_lands_a_normal_pr_with_transcript(tmp_path, target_rep
 def test_panel_capped_blocking_opens_a_draft_and_never_arms(tmp_path, target_repo) -> None:
     import json as _json
 
-    from autoresearch.panel import PanelLens
+    from outerloop.panel import PanelLens
 
     blocking = _json.dumps(
         {
@@ -2041,8 +2041,8 @@ def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
     # ends as a loud error (terra #132 r1).
     import json as json_mod
 
-    from autoresearch.compute import CommandResult, SlurmCompute
-    from autoresearch.measure import DispatchSettings
+    from outerloop.compute import CommandResult, SlurmCompute
+    from outerloop.measure import DispatchSettings
 
     cancelled: list[str] = []
     calls = {"sbatch": 0}
@@ -2164,9 +2164,9 @@ def _write_parked_candidate(
     snapshot commit (via `snapshot_tree`, off any branch) kept alive by its ref.
     Plus a WAITING record with the re-entry stage. The dispatched measurer is
     monkeypatched to a fake so no cluster is touched."""
-    from autoresearch.dispatch import snapshot_tree
-    from autoresearch.github import Workspace
-    from autoresearch.measure import DispatchSettings
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+    from outerloop.measure import DispatchSettings
 
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
@@ -2222,7 +2222,7 @@ def _write_parked_candidate(
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
     # the wake pushes to the canonical target URL (never the ws git config);
     # point that at this run's local bare so the improved-wake test can push.
-    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
     return state, run_id
 
 
@@ -2250,7 +2250,7 @@ def test_resume_negative_ends_run_and_drops_snapshot(tmp_path, monkeypatch) -> N
 def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None:
     # a needed measure isn't done -> re-park on the new afterany, KEEP the
     # candidate snapshot for the next wake.
-    from autoresearch.measure import MeasurementPending
+    from outerloop.measure import MeasurementPending
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602"))
@@ -2317,7 +2317,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     # keep the submitted marker, the budget counts, and the sibling-launch
     # descriptors, or the next wake drafts instead of waking the author and
     # the launches' results are never gathered.
-    from autoresearch.measure import MeasurementPending
+    from outerloop.measure import MeasurementPending
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, raise_exc=MeasurementPending(("601", "602"))
@@ -2398,7 +2398,7 @@ def test_resume_routes_tamper_in_publish_to_a_refused_wake(tmp_path, monkeypatch
     # a tamper-class GitError raised inside the publish block (a concurrent
     # object-store removal) must END the run as a refused wake, ABORTED with the
     # tamper as its note — never masked as a publish-error.
-    from autoresearch.github import GitError
+    from outerloop.github import GitError
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
@@ -2428,7 +2428,7 @@ def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, m
     # the stuck cap still bites; a productive re-park (a NEW job set) resets it.
     import dataclasses
 
-    from autoresearch.measure import MeasurementPending
+    from outerloop.measure import MeasurementPending
 
     # blind re-park: MeasurementPending(()) -> empty afterany -> no progress
     state, run_id = _write_parked_candidate(tmp_path, monkeypatch, raise_exc=MeasurementPending(()))
@@ -2535,8 +2535,8 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     # the wake job holds the run's lease (transferred by the sweep on dispatch);
     # the --resume CLI must release it on every exit so a re-parked run is
     # immediately eligible for the next sweep, not stuck until the TTL reap.
-    from autoresearch.attempt import AttemptOutcome, main
-    from autoresearch.runstate import acquire_lease, run_dir
+    from outerloop.attempt import AttemptOutcome, main
+    from outerloop.runstate import acquire_lease, run_dir
 
     run_id = "tsp-wake"
     (tmp_path / "runs" / run_id).mkdir(parents=True)
@@ -2602,7 +2602,7 @@ def test_resume_reports_terminal_back_to_the_requesting_issue(tmp_path, monkeypa
     num, body = github.issue_comments[-1]
     assert num == 42 and "finished (improved)" in body and outcome.pr_url in body
     # improved KEEPS the claim (the PR is the ongoing work) -> no release marker
-    from autoresearch.intake import RELEASE_MARKER
+    from outerloop.intake import RELEASE_MARKER
 
     assert RELEASE_MARKER not in body
 
@@ -2611,7 +2611,7 @@ def test_resume_negative_releases_the_issue_claim(tmp_path, monkeypatch) -> None
     # a negative run opens no PR, so nothing will ever resolve the issue -> the
     # terminal comment must carry RELEASE_MARKER, or intake keeps it claimed and
     # it can never be re-selected (a comment alone does NOT un-claim).
-    from autoresearch.intake import RELEASE_MARKER
+    from outerloop.intake import RELEASE_MARKER
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}, issue_number=7
@@ -2632,7 +2632,7 @@ def test_resume_negative_releases_the_issue_claim(tmp_path, monkeypatch) -> None
 
 
 def _panel_lens(text):
-    from autoresearch.panel import PanelLens
+    from outerloop.panel import PanelLens
 
     return (PanelLens("review", _panel_judge([text])),)
 
@@ -2707,7 +2707,7 @@ def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypat
     import json as _json
     from dataclasses import dataclass, field
 
-    from autoresearch.panel import PanelLens
+    from outerloop.panel import PanelLens
 
     @dataclass
     class _SpyJudge:
@@ -2744,7 +2744,7 @@ def test_resume_panel_does_not_see_untracked_workspace_cruft(tmp_path, monkeypat
 def test_resume_panel_error_drafts_and_keeps_candidate(tmp_path, monkeypatch) -> None:
     # a panel ERROR (not a finding) must not abort the publish and drop the
     # candidate snapshot — the improvement is real. Fail closed to a DRAFT.
-    from autoresearch.panel import PanelLens
+    from outerloop.panel import PanelLens
 
     def boom(*a, **k):
         raise RuntimeError("worktree add failed")
@@ -2774,8 +2774,8 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
     import json as _json
     from dataclasses import dataclass
 
-    from autoresearch.orchestrator import author_spec
-    from autoresearch.panel import PanelLens
+    from outerloop.orchestrator import author_spec
+    from outerloop.panel import PanelLens
 
     @dataclass
     class RevisingHarness:
@@ -2819,12 +2819,12 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
     # the real flow excluded the channel at climb start (.git/info/exclude
     # persists in the run's ws); the hand-built test ws needs it too, or the
     # wake's budget refresh pollutes changed_paths
-    from autoresearch.syscall import ensure_excluded
+    from outerloop.syscall import ensure_excluded
 
     ensure_excluded(state / "runs" / run_id / "ws")
     # the INITIAL measure returns improved (-> panel -> author wake); the
     # re-measure of the revised candidate PARKS, as the dispatched backend does.
-    from autoresearch.measure import DispatchSettings, MeasurementPending
+    from outerloop.measure import DispatchSettings, MeasurementPending
 
     class _TwoPhase:
         def __init__(self):
@@ -2873,9 +2873,9 @@ def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
     byte-identical tree, 2026-08-28)."""
     from dataclasses import dataclass
 
-    from autoresearch.measure import DispatchSettings
-    from autoresearch.orchestrator import author_spec
-    from autoresearch.syscall import ensure_excluded
+    from outerloop.measure import DispatchSettings
+    from outerloop.orchestrator import author_spec
+    from outerloop.syscall import ensure_excluded
 
     @dataclass
     class ConcedingHarness:
@@ -2938,9 +2938,9 @@ def test_errored_gate_wake_with_a_conceding_author_ends_without_a_retry(
     — nothing is dispatched again (only a resubmit is a retry)."""
     from dataclasses import dataclass
 
-    from autoresearch.measure import DispatchSettings
-    from autoresearch.orchestrator import EvalError, author_spec
-    from autoresearch.syscall import ensure_excluded
+    from outerloop.measure import DispatchSettings
+    from outerloop.orchestrator import EvalError, author_spec
+    from outerloop.syscall import ensure_excluded
 
     @dataclass
     class ConcedingHarness:
@@ -2997,8 +2997,8 @@ def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -
     # the author drives depth via `submit`).
     import json as _json
 
-    from autoresearch.orchestrator import author_spec
-    from autoresearch.panel import PanelLens
+    from outerloop.orchestrator import author_spec
+    from outerloop.panel import PanelLens
 
     blocking = _json.dumps(
         {
@@ -3070,10 +3070,10 @@ def _write_parked_author_sleep(tmp_path, monkeypatch, *, raise_exc=None, run_id=
     a WAITING record carrying the request + budget counts."""
     import json as json_mod
 
-    from autoresearch.dispatch import snapshot_tree
-    from autoresearch.github import Workspace
-    from autoresearch.measure import DispatchSettings
-    from autoresearch.syscall import ensure_excluded
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+    from outerloop.measure import DispatchSettings
+    from outerloop.syscall import ensure_excluded
 
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
@@ -3130,12 +3130,12 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
 ) -> None:
     # the woken session continues, finishes, and the gate (dispatched) parks the
     # run as a CANDIDATE — the existing wake path decides it next time.
-    from autoresearch.measure import MeasurementPending
+    from outerloop.measure import MeasurementPending
 
     state, run_id, wsroot, _ = _write_parked_author_sleep(
         tmp_path, monkeypatch, raise_exc=MeasurementPending(("701", "702"))
     )
-    from autoresearch.roles import author_spec
+    from outerloop.roles import author_spec
 
     class RecordingHarness(ScriptedHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
@@ -3180,7 +3180,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
 def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
     # the woken author launches more work and sleeps again: a fresh author-sleep
     # park with the counts advanced.
-    from autoresearch.roles import author_spec
+    from outerloop.roles import author_spec
 
     state, run_id, _wsroot, json_mod = _write_parked_author_sleep(tmp_path, monkeypatch)
 
@@ -3239,7 +3239,7 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
 
     import pytest
 
-    from autoresearch.attempt import _panel_lenses_from_args
+    from outerloop.attempt import _panel_lenses_from_args
 
     monkeypatch.delenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", raising=False)
     args = argparse.Namespace(
@@ -3249,7 +3249,7 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
         codex_bin="codex",
         image="/img.sif",
     )
-    monkeypatch.setattr("autoresearch.attempt.role_key", lambda *a, **k: "k")
+    monkeypatch.setattr("outerloop.attempt.role_key", lambda *a, **k: "k")
     with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_CODEX_KEY_FILE"):
         _panel_lenses_from_args(args)
 
@@ -3258,7 +3258,7 @@ def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> N
     # a codex-only panel must not demand the (unused) anthropic panel key
     import argparse
 
-    from autoresearch.attempt import _panel_lenses_from_args
+    from outerloop.attempt import _panel_lenses_from_args
 
     codex_key = tmp_path / "panel_codex_key"
     codex_key.write_text("sk-judge")
@@ -3283,7 +3283,7 @@ def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> No
 
     import pytest
 
-    from autoresearch.attempt import _panel_lenses_from_args
+    from outerloop.attempt import _panel_lenses_from_args
 
     author_key = tmp_path / "codex_key"
     author_key.write_text("sk-author")
@@ -3308,7 +3308,7 @@ def test_codex_panel_key_must_not_be_the_claude_panel_key(monkeypatch, tmp_path)
 
     import pytest
 
-    from autoresearch.attempt import _panel_lenses_from_args
+    from outerloop.attempt import _panel_lenses_from_args
 
     shared = tmp_path / "verifier_key"
     shared.write_text("sk-ant")
@@ -3332,7 +3332,7 @@ def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> N
 
     import pytest
 
-    from autoresearch.attempt import _panel_lenses_from_args
+    from outerloop.attempt import _panel_lenses_from_args
 
     judge_key = tmp_path / "panel_codex_key"
     judge_key.write_text("sk-judge")
@@ -3356,7 +3356,7 @@ def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> 
 
     import pytest
 
-    from autoresearch.attempt import _panel_lenses_from_args
+    from outerloop.attempt import _panel_lenses_from_args
 
     def args(image="/img.sif"):
         return argparse.Namespace(
@@ -3395,7 +3395,7 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
     """The contract's autonomy dial: merge_mode=auto calls the auto-mode
     arming (arm, or direct merge when nothing is pending) instead of the
     manual review-required guard; the base-moved decline binds in BOTH."""
-    from autoresearch.attempt import _arm_unless_base_moved
+    from outerloop.attempt import _arm_unless_base_moved
 
     class ArmingGitHub:
         def __init__(self):
@@ -3461,7 +3461,7 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
 def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
     """auto means gate+PANEL clean: a publish that ran no panel falls back
     to the manual review-required guard (terra #171)."""
-    from autoresearch.attempt import _arm_unless_base_moved
+    from outerloop.attempt import _arm_unless_base_moved
 
     class ArmingGitHub:
         def __init__(self):
@@ -3520,7 +3520,7 @@ def test_dispatch_settings_read_once_for_fresh_and_wake() -> None:
     the GPU lane exactly like the fresh climb (terra #174 r1 — it dropped it)."""
     import argparse
 
-    from autoresearch.attempt import _dispatch_settings
+    from outerloop.attempt import _dispatch_settings
 
     args = argparse.Namespace(
         image="/i.sif",
@@ -3541,7 +3541,7 @@ def test_dispatch_settings_read_once_for_fresh_and_wake() -> None:
 
 def _line_ws(tmp_path: Path, bare: Path):
     """A Workspace cloned from the test origin, checked out on main."""
-    from autoresearch.github import Workspace
+    from outerloop.github import Workspace
 
     ws = Workspace.clone(str(bare), tmp_path / "line-ws", auth=None)
     ws.git("checkout", "-q", "-B", "main", "origin/main")
@@ -3575,7 +3575,7 @@ def _advance_main(tmp_path: Path, bare: Path, files: dict[str, str]) -> None:
 
 
 def test_checkout_line_creates_the_branch_from_base(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line
+    from outerloop.attempt import _checkout_line
 
     ws = _line_ws(tmp_path, target_repo)
     ref = _checkout_line(ws, ws.root, "agent-07", "main")
@@ -3587,7 +3587,7 @@ def test_checkout_line_creates_the_branch_from_base(tmp_path: Path, target_repo)
 
 
 def test_checkout_line_merges_main_into_an_existing_line(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line
+    from outerloop.attempt import _checkout_line
 
     _push_line(tmp_path, target_repo, {"docs/line-note.md": "belief\n"})
     _advance_main(tmp_path, target_repo, {"docs/news.md": "main moved\n"})
@@ -3600,7 +3600,7 @@ def test_checkout_line_merges_main_into_an_existing_line(tmp_path: Path, target_
 
 
 def test_checkout_line_leaves_a_conflict_for_the_session(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line
+    from outerloop.attempt import _checkout_line
 
     _push_line(tmp_path, target_repo, {"docs/roadmap.md": "# line view\n"})
     _advance_main(tmp_path, target_repo, {"docs/roadmap.md": "# main view\n"})
@@ -3614,7 +3614,7 @@ def test_checkout_line_leaves_a_conflict_for_the_session(tmp_path: Path, target_
 
 
 def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line
+    from outerloop.attempt import _checkout_line
 
     _push_line(
         tmp_path,
@@ -3641,7 +3641,7 @@ def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_r
 
 
 def test_checkout_line_rejects_a_ref_shaping_agent_id(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line
+    from outerloop.attempt import _checkout_line
 
     ws = _line_ws(tmp_path, target_repo)
     with pytest.raises(ValueError, match="cannot shape a line ref"):
@@ -3654,7 +3654,7 @@ def target_repo_lines(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_push_line_snapshot_publishes_the_terminal_tree(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
@@ -3671,7 +3671,7 @@ def test_push_line_snapshot_publishes_the_terminal_tree(tmp_path: Path, target_r
 
 
 def test_push_line_snapshot_skips_an_unchanged_tree(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
@@ -3681,7 +3681,7 @@ def test_push_line_snapshot_skips_an_unchanged_tree(tmp_path: Path, target_repo)
 
 
 def test_push_line_snapshot_chains_sequential_terminals(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
@@ -3696,7 +3696,7 @@ def test_push_line_snapshot_chains_sequential_terminals(tmp_path: Path, target_r
 
 
 def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
-    from autoresearch.attempt import _push_line_snapshot
+    from outerloop.attempt import _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
     _push_line_snapshot(ws, "", "tsp-9", "no-improvement")  # feature off: no-op
@@ -3736,7 +3736,7 @@ def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_re
 def test_push_line_snapshot_publishes_session_commits(tmp_path: Path, target_repo) -> None:
     """A session that COMMITTED its work advanced the local ref without
     dirtying the tree — the push must still publish that commit."""
-    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
@@ -3836,7 +3836,7 @@ def test_memory_only_session_measures_nothing(tmp_path, target_repo_lines) -> No
 def test_notebook_keeps_memory_the_target_gitignores(tmp_path: Path, target_repo) -> None:
     """A target .gitignore matching the memory paths must not silently
     discard session memory from the notebook seal."""
-    from autoresearch.attempt import _checkout_line, _push_line_snapshot
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
@@ -3943,7 +3943,7 @@ def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_
 
 
 def test_panel_claim_carries_the_one_contribution_mandate() -> None:
-    from autoresearch.attempt import _panel_claim_body
+    from outerloop.attempt import _panel_claim_body
 
     lines = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=True)
     assert "ONE clean contribution" in lines and "BLOCKING finding" in lines
@@ -4037,7 +4037,7 @@ def test_gpu_benchmark_brief_shows_the_per_run_pool(tmp_path, monkeypatch) -> No
 
 
 def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
-    from autoresearch.attempt import main as climb_main
+    from outerloop.attempt import main as climb_main
 
     # "-leading" is not here: argparse consumes it as an option flag and
     # rejects it on its own ("expected one argument")
@@ -4195,7 +4195,7 @@ def test_merge_artifacts_do_not_trip_scope(tmp_path, target_repo) -> None:
 
 
 def test_exclude_merge_artifacts_is_idempotent(tmp_path) -> None:
-    from autoresearch.attempt import _exclude_merge_artifacts
+    from outerloop.attempt import _exclude_merge_artifacts
 
     ws = tmp_path
     (ws / ".git" / "info").mkdir(parents=True)
@@ -4210,7 +4210,7 @@ def test_exclude_merge_artifacts_is_idempotent(tmp_path) -> None:
 def test_wake_re_establishes_the_merge_artifact_exclude(tmp_path, monkeypatch) -> None:
     """A session could delete .git/info/exclude before parking; the wake
     re-establishes it so a .orig does not trip the wake's changed_paths."""
-    from autoresearch.syscall import SYSCALL_DIR
+    from outerloop.syscall import SYSCALL_DIR
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
@@ -4245,10 +4245,10 @@ def _write_parked_line_candidate(tmp_path, monkeypatch, *, values, run_id="tsp-l
     """Like _write_parked_candidate, but the run's base is a LINE TIP that
     carries memory files, and the candidate was sealed with the line-memory
     exclude — exactly the park a lines run reaches."""
-    from autoresearch.attempt import LINE_MEMORY_PATHS
-    from autoresearch.dispatch import snapshot_tree
-    from autoresearch.github import Workspace
-    from autoresearch.measure import DispatchSettings
+    from outerloop.attempt import LINE_MEMORY_PATHS
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+    from outerloop.measure import DispatchSettings
 
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
@@ -4294,7 +4294,7 @@ def _write_parked_line_candidate(tmp_path, monkeypatch, *, values, run_id="tsp-l
     save_record(state, record, 1_000_000.0)
     fake = _FakeMeasurer(values=values)
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
-    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
     return state, run_id
 
 
@@ -4322,8 +4322,8 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     """A park frees the slot; a newer run on the same line can push while this
     one is parked. The seal must then parent on the remote head so its push
     fast-forwards, instead of being refused and silently skipped."""
-    from autoresearch.attempt import _push_line_snapshot
-    from autoresearch.github import Workspace
+    from outerloop.attempt import _push_line_snapshot
+    from outerloop.github import Workspace
 
     wsroot = tmp_path / "ws"
     wsroot.mkdir()
@@ -4379,9 +4379,9 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
 def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from autoresearch import attempt as attempt_mod
-    from autoresearch.attempt import _push_line_snapshot
-    from autoresearch.github import Workspace
+    from outerloop import attempt as attempt_mod
+    from outerloop.attempt import _push_line_snapshot
+    from outerloop.github import Workspace
 
     wsroot = tmp_path / "ws"
     wsroot.mkdir()
@@ -4436,8 +4436,8 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     agent's edits and must not count; a real edit still does."""
     import subprocess
 
-    from autoresearch.attempt import _paths_changed_from_base
-    from autoresearch.github import Workspace
+    from outerloop.attempt import _paths_changed_from_base
+    from outerloop.github import Workspace
 
     root = tmp_path / "ws"
     root.mkdir()
@@ -4503,8 +4503,8 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     missing control file, and object alternates."""
     import os
 
-    from autoresearch.attempt import _paths_changed_from_base
-    from autoresearch.github import GitError, Workspace, ensure_regular_git_dir
+    from outerloop.attempt import _paths_changed_from_base
+    from outerloop.github import GitError, Workspace, ensure_regular_git_dir
 
     root = tmp_path / "ws"
     root.mkdir()
@@ -4768,8 +4768,8 @@ def test_snapshot_ops_refuse_a_reshaped_git_without_writing(tmp_path: Path) -> N
     carry a ref write or deletion outside the workspace."""
     import os
 
-    from autoresearch.dispatch import drop_snapshot, snapshot_tree
-    from autoresearch.github import GitError, Workspace
+    from outerloop.dispatch import drop_snapshot, snapshot_tree
+    from outerloop.github import GitError, Workspace
 
     root = tmp_path / "ws"
     root.mkdir()
@@ -4797,9 +4797,9 @@ def test_snapshot_ops_refuse_a_reshaped_git_without_writing(tmp_path: Path) -> N
 
 
 def test_a_refused_wake_ends_the_parked_run_with_the_tampering_note(tmp_path: Path) -> None:
-    from autoresearch.attempt import _end_refused_wake
-    from autoresearch.github import GitError
-    from autoresearch.runstate import load_record, save_record
+    from outerloop.attempt import _end_refused_wake
+    from outerloop.github import GitError
+    from outerloop.runstate import load_record, save_record
 
     run_root = tmp_path / "state"
     record = RunRecord(
@@ -4828,7 +4828,7 @@ def test_a_refused_wake_ends_the_parked_run_with_the_tampering_note(tmp_path: Pa
 
 
 def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
-    from autoresearch.attempt import _without_line_memory
+    from outerloop.attempt import _without_line_memory
 
     paths = ["AGENT_MEMORY.md", "agent_memory/x.md", "train.py", "agent_memory"]
     assert _without_line_memory(paths, "agents/agent-02") == ["train.py"]
@@ -4838,9 +4838,9 @@ def test_without_line_memory_drops_memory_only_when_a_line_is_active() -> None:
 def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> None:
     """Judges read the claim's diff: against a line-tip base it must not show
     the memory the seal dropped as deletions the author never made."""
-    from autoresearch.attempt import LINE_MEMORY_PATHS, build_panel_runner
-    from autoresearch.github import Workspace
-    from autoresearch.panel import PanelVerdict
+    from outerloop.attempt import LINE_MEMORY_PATHS, build_panel_runner
+    from outerloop.github import Workspace
+    from outerloop.panel import PanelVerdict
 
     wsroot = tmp_path / "ws"
     (wsroot / "agent_memory").mkdir(parents=True)
@@ -4859,8 +4859,8 @@ def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> No
         seen["diff"] = claim.diff
         return PanelVerdict(blocking=(), transcript="ok", wake_text="")
 
-    monkeypatch.setattr("autoresearch.attempt.run_panel", fake_run_panel)
-    monkeypatch.setattr("autoresearch.review_agent.sanitize_checkout", lambda p: (0, 0))
+    monkeypatch.setattr("outerloop.attempt.run_panel", fake_run_panel)
+    monkeypatch.setattr("outerloop.review_agent.sanitize_checkout", lambda p: (0, 0))
     runner = build_panel_runner(
         Workspace(root=wsroot),
         tmp_path / "run",
@@ -4884,7 +4884,7 @@ def test_guard_follows_a_symbolic_loose_ref_to_verify_heads_object(tmp_path) -> 
     as unborn and the guard fell back to some OTHER present ref, so an emptied
     object store behind HEAD slipped past and only failed later at a raw
     `git reset` ("Could not parse object 'HEAD'")."""
-    from autoresearch.github import GitError, ensure_regular_git_dir
+    from outerloop.github import GitError, ensure_regular_git_dir
 
     root = tmp_path / "ws"
     root.mkdir()
@@ -4917,8 +4917,8 @@ def test_guard_follows_a_symbolic_loose_ref_to_verify_heads_object(tmp_path) -> 
 
 
 def test_is_git_tamper_classifies_object_store_damage_not_ordinary_failures() -> None:
-    from autoresearch.attempt import _is_git_tamper
-    from autoresearch.github import GitError
+    from outerloop.attempt import _is_git_tamper
+    from outerloop.github import GitError
 
     assert _is_git_tamper(GitError("workspace .git altered by the session: HEAD is empty"))
     assert _is_git_tamper(GitError("git reset failed: fatal: Could not parse object 'HEAD'."))

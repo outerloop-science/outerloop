@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from autoresearch.contract import (
+from outerloop.contract import (
     Contract,
     ScopeError,
     SelfTargetError,
@@ -135,7 +135,7 @@ def test_duplicate_benchmark_names_refused() -> None:
 
 def test_seed_env_accepts_env_var_names_only() -> None:
     """seed_env reaches a subprocess environment: strict shape."""
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -154,7 +154,7 @@ roadmap: docs/roadmap.md
 
 
 def test_min_delta_must_be_non_negative() -> None:
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -172,7 +172,7 @@ roadmap: docs/roadmap.md
 
 def test_depth_k_defaults_generous_and_validates_range() -> None:
     # the per-benchmark depth dial: default 1 (single pass), bounded [1, 8].
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -193,7 +193,7 @@ roadmap: docs/roadmap.md
 def test_seed_env_rejects_the_evaluators_managed_names() -> None:
     """seed_env: UV_PROJECT_ENVIRONMENT (or HOME) would defeat per-eval
     isolation; contracts are untrusted input, so the loader refuses."""
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -222,7 +222,7 @@ roadmap: docs/roadmap.md
 
 
 def test_min_delta_rel_is_optional_and_non_negative() -> None:
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -277,7 +277,7 @@ def test_benchmark_name_must_be_a_slug() -> None:
 
 
 def test_climb_job_minutes_is_a_transitional_alias_for_attempt_job_minutes() -> None:
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -302,7 +302,7 @@ roadmap: docs/roadmap.md
 
 
 def test_merge_mode_defaults_manual_and_validates() -> None:
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:
@@ -323,7 +323,7 @@ roadmap: docs/roadmap.md
 def test_benchmark_gpus_field() -> None:
     """`gpus` sizes the benchmark's dispatched jobs: default 0 (CPU),
     bounded at one node's worth."""
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = """
 benchmarks:

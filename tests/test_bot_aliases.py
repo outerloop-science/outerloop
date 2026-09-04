@@ -3,7 +3,7 @@ former logins. Recognition stays keyed on login, never on public markers."""
 
 from __future__ import annotations
 
-from autoresearch.github import bot_aliases_from_env, is_own_login
+from outerloop.github import bot_aliases_from_env, is_own_login
 
 
 def test_aliases_parse_and_own_login_matches_any_identity(monkeypatch) -> None:
@@ -29,7 +29,7 @@ def test_aliases_parse_and_own_login_matches_any_identity(monkeypatch) -> None:
 def test_the_kernels_old_research_log_issue_is_never_an_order(monkeypatch) -> None:
     """Live 2026-09-02: after the App flip the intake lane claimed issue #1
     (the research log, authored by the PAT account) as a research request."""
-    from autoresearch.intake import qualifying_issue
+    from outerloop.intake import qualifying_issue
 
     issue = {
         "number": 1,
@@ -48,8 +48,8 @@ def test_the_kernels_old_research_log_issue_is_never_an_order(monkeypatch) -> No
 
 
 def test_old_claims_alarms_and_comments_are_still_ours(monkeypatch) -> None:
-    from autoresearch.followup import qualifying_comments
-    from autoresearch.tick import CONTRACT_ALARM_MARKER, _find_alarm_issue
+    from outerloop.followup import qualifying_comments
+    from outerloop.tick import CONTRACT_ALARM_MARKER, _find_alarm_issue
 
     monkeypatch.setenv("AUTORESEARCH_BOT_ALIASES", "agentic-learning-bot")
     bot = "outerloop-autoresearch[bot]"

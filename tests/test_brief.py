@@ -3,7 +3,7 @@ are the contract."""
 
 from __future__ import annotations
 
-from autoresearch.brief import (
+from outerloop.brief import (
     MAX_CONTRACT_CHARS,
     MAX_LESSONS_CHARS,
     MAX_REPORT_CHARS,
@@ -138,7 +138,7 @@ def test_brief_demands_measured_evidence_before_submit() -> None:
 
 
 def test_distill_lessons_extracts_takeaways_newest_first() -> None:
-    from autoresearch.brief import MAX_LESSONS_CHARS, distill_lessons
+    from outerloop.brief import MAX_LESSONS_CHARS, distill_lessons
 
     reports = [
         (
@@ -234,7 +234,7 @@ def test_fence_outruns_backticks_in_memory() -> None:
 
 
 def test_wake_prompt_is_bounded_and_asks_for_conclusion() -> None:
-    from autoresearch.brief import MAX_WAKE_CHARS, render_wake
+    from outerloop.brief import MAX_WAKE_CHARS, render_wake
 
     budget = BudgetState(gpu_hours_remaining=2.0, runs_remaining_this_week=1)
     text = render_wake("success_rate: 0.31 (was 0.25)", budget)
@@ -252,7 +252,7 @@ def test_wake_prompt_is_bounded_and_asks_for_conclusion() -> None:
 
 def test_render_uses_orientation_labels_not_directives() -> None:
     # the de-prescriptified brief labels the metric/finish as context
-    from autoresearch.brief import BriefInputs, Task, build_brief, render
+    from outerloop.brief import BriefInputs, Task, build_brief, render
 
     t = Task(
         hypothesis="h",
@@ -303,7 +303,7 @@ def test_brief_renders_the_memory_index_data_fenced() -> None:
 
 
 def test_memory_index_is_capped_and_round_trips() -> None:
-    from autoresearch.brief import MAX_MEMORY_CHARS
+    from outerloop.brief import MAX_MEMORY_CHARS
 
     brief = build_brief(
         make_inputs(line_ref="agents/agent-07", memory="m" * (MAX_MEMORY_CHARS + 500)),

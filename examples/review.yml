@@ -1,0 +1,33 @@
+# Outerloop advisory reviewer — drop this into your repo at
+# .github/workflows/review.yml to get an AI code review on every pull request.
+#
+# It posts advisory findings as a PR review. It NEVER approves, never blocks
+# your CI, and never runs your PR's code — it only reads the diff. It reviews
+# pull requests from branches in THIS repository; PRs from forks are skipped
+# (fork-PR review is a planned addition). The model key lives only in a
+# read-only, write-tokenless job.
+#
+# Setup (see docs/reviewer.md): (1) have a bot account whose PRs are skipped,
+# (2) add this file, (3) set the ANTHROPIC_REVIEWER_KEY repo secret.
+name: outerloop-review
+on:
+  pull_request_target:
+    # first round when a PR opens; re-review by (re)applying the label below
+    types: [opened, reopened, labeled]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    if: >-
+      github.event.action != 'labeled'
+      || github.event.label.name == 'autoresearch:review'
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v1
+    with:
+      # PRs authored by this login are never reviewed (so the bot never
+      # reviews its own PRs). Use your own bot/app login.
+      bot_login: your-bot-login
+      backend: claude          # claude | hermes | codex
+      # model: claude-opus-5   # optional; the backend default is used if unset
+    secrets:
+      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}

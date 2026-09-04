@@ -107,14 +107,15 @@ draw on it, and the author sets how long its final eval may run
 is never the metric. CPU benchmarks are not metered.
 
 ```bash
-uv run python -m autoresearch.contract_cli .autoresearch.yaml   # validate before you push
+uv run python -m outerloop.contract_cli .autoresearch.yaml   # validate before you push
 ```
 
 ## Getting started
 
 See **[docs/install.md](docs/install.md)**. Level 1 (advisory reviews) needs
-only an LLM API key and one workflow file. Level 2 (the climber) adds a bot
-account, a contract, and a Slurm cluster with Apptainer.
+only an LLM API key and one workflow file — **[docs/reviewer.md](docs/reviewer.md)**
+walks through it in three steps. Level 2 (the climber) adds a bot account, a
+contract, and a Slurm cluster with Apptainer.
 
 ## Design principles
 

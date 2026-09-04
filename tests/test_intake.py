@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from autoresearch.contract import load_contract
-from autoresearch.intake import (
+from outerloop.contract import load_contract
+from outerloop.intake import (
     CLAIM_MARKER,
     infer_benchmark,
     issue_hypothesis,
@@ -77,7 +77,7 @@ def test_pick_oldest_unclaimed_with_one_benchmark() -> None:
 
 
 def test_released_claim_is_pickable_again_and_forgeries_ignored() -> None:
-    from autoresearch.intake import RELEASE_MARKER
+    from outerloop.intake import RELEASE_MARKER
 
     class G2(G):
         def __init__(self, issues, comments):
@@ -104,7 +104,7 @@ def test_released_claim_is_pickable_again_and_forgeries_ignored() -> None:
 
 
 def test_intake_attempt_cap_stops_the_claim_release_loop() -> None:
-    from autoresearch.intake import MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
+    from outerloop.intake import MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
 
     class G2(G):
         def __init__(self, issues, comments):
@@ -141,8 +141,8 @@ def test_hypothesis_fences_issue_text() -> None:
 def test_intake_never_claims_steward_work_orders() -> None:
     """A steward-labeled issue naming one benchmark would otherwise qualify
     for the requested lane; the label reserves it for the steward."""
-    from autoresearch.contract import load_contract
-    from autoresearch.intake import pick_issue
+    from outerloop.contract import load_contract
+    from outerloop.intake import pick_issue
 
     contract = load_contract(
         """

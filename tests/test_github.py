@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.github import FileTokenProvider, GitHubClient, GitHubError, Workspace
+from outerloop.github import FileTokenProvider, GitHubClient, GitHubError, Workspace
 
 
 class FakeTransport:
@@ -117,7 +117,7 @@ def test_workspace_dry_run_push_stays_local(tmp_path: Path) -> None:
 
 
 def test_env_token_provider(monkeypatch) -> None:
-    from autoresearch.github import EnvTokenProvider
+    from outerloop.github import EnvTokenProvider
 
     monkeypatch.setenv("SOME_TOKEN", " tok \n")
     assert EnvTokenProvider("SOME_TOKEN").token() == "tok"
@@ -162,7 +162,7 @@ def test_default_raw_transport_returns_text_not_json() -> None:
     """Regression: the diff path must not go through json.loads."""
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    from autoresearch.github import _raw_transport
+    from outerloop.github import _raw_transport
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -218,7 +218,7 @@ def test_file_content_decodes_base64(provider: FileTokenProvider) -> None:
 
 
 def test_file_content_is_none_on_error_or_nonfile(provider: FileTokenProvider) -> None:
-    from autoresearch.github import GitHubError
+    from outerloop.github import GitHubError
 
     def failing(request: urllib.request.Request) -> object:
         raise GitHubError(404, "/contents", "not found")
@@ -401,7 +401,7 @@ def test_auto_mode_arming_merges_only_on_clean_status(monkeypatch) -> None:
     arming because the PR is already clean; any other decline (auto-merge
     disabled in repo settings, missing permission) is a repo-owner control
     and stops."""
-    from autoresearch.github import GitHubClient, GitHubError
+    from outerloop.github import GitHubClient, GitHubError
 
     class _Tok:
         def token(self) -> str:
@@ -435,7 +435,7 @@ def test_auto_mode_arming_merges_only_on_clean_status(monkeypatch) -> None:
 def test_redirect_off_host_loses_the_authorization_header() -> None:
     # the shared opener forwards Authorization on a same-host redirect but
     # strips it when the redirect changes host (or scheme)
-    from autoresearch.github import _NoAuthRedirect
+    from outerloop.github import _NoAuthRedirect
 
     handler = _NoAuthRedirect()
     request = urllib.request.Request(

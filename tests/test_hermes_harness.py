@@ -9,8 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-import autoresearch.harness as harness_mod
-from autoresearch.harness import HermesHarness, _hermes_command, _parse_hermes_result
+import outerloop.harness as harness_mod
+from outerloop.harness import HermesHarness, _hermes_command, _parse_hermes_result
 
 
 def test_command_shape_and_toolsets() -> None:
@@ -169,7 +169,7 @@ def test_resume_with_empty_transcript_errors_not_blind(tmp_path: Path) -> None:
     # an empty (or all-invalid) transcript is NO usable context: a corrupted
     # session-writable file must surface as resume-unavailable, not a blind
     # resume with only the new brief (terra #139).
-    from autoresearch.harness import _resume_transcript_path
+    from outerloop.harness import _resume_transcript_path
 
     workspace = tmp_path / "clone"
     workspace.mkdir()
@@ -196,7 +196,7 @@ def test_resume_with_empty_transcript_errors_not_blind(tmp_path: Path) -> None:
 def test_saved_transcript_redacts_the_session_key(monkeypatch: Any, tmp_path: Path) -> None:
     # final_text comes from the sample (not the redacted stdout), so an agent
     # reply echoing the key must not land in the persisted transcript (terra #139).
-    from autoresearch.harness import _resume_transcript_path
+    from outerloop.harness import _resume_transcript_path
 
     workspace = tmp_path / "clone"
     workspace.mkdir()
@@ -268,7 +268,7 @@ def test_parse_conversations_wrapper() -> None:
 def test_sample_read_does_not_follow_symlink(tmp_path: Path) -> None:
     # the per-run home is session-writable; a planted sample_*.json symlink must
     # not be read as a trajectory (that would exfil an arbitrary same-user file)
-    from autoresearch.harness import _collect_hermes_sample
+    from outerloop.harness import _collect_hermes_sample
 
     home = tmp_path / "home"
     home.mkdir()
@@ -282,7 +282,7 @@ def test_sample_read_does_not_follow_symlink(tmp_path: Path) -> None:
 
 
 def test_config_write_refuses_symlink(tmp_path: Path) -> None:
-    from autoresearch.harness import _write_private_fixed
+    from outerloop.harness import _write_private_fixed
 
     target = tmp_path / "target.txt"
     target.write_text("ORIG")
@@ -297,7 +297,7 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     # APPTAINERENV, never argv
     import subprocess
 
-    from autoresearch.harness import HermesHarness
+    from outerloop.harness import HermesHarness
 
     captured = {}
 

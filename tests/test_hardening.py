@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.contract import (
+from outerloop.contract import (
     ContractError,
     ScopeError,
     SelfTargetError,
@@ -21,7 +21,7 @@ from autoresearch.contract import (
     normalize_repo,
     path_is_forbidden,
 )
-from autoresearch.github import (
+from outerloop.github import (
     FileTokenProvider,
     ForbiddenPathError,
     GitHubClient,

@@ -7,12 +7,12 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from autoresearch.contract import load_contract
-from autoresearch.harness import SessionResult
-from autoresearch.intake import CLAIM_MARKER
-from autoresearch.orchestrator import steward_out_of_scope
-from autoresearch.runstate import load_record, outage_active
-from autoresearch.steward import (
+from outerloop.contract import load_contract
+from outerloop.harness import SessionResult
+from outerloop.intake import CLAIM_MARKER
+from outerloop.orchestrator import steward_out_of_scope
+from outerloop.runstate import load_record, outage_active
+from outerloop.steward import (
     OUTAGE_MARKER,
     RELEASE_MARKER,
     StewardConfig,
@@ -166,7 +166,7 @@ def test_steward_scope_folds_case_against_solver_territory() -> None:
 def test_contract_rejects_steward_solver_overlap() -> None:
     import pytest as _pytest
 
-    from autoresearch.contract import ScopeError
+    from outerloop.contract import ScopeError
 
     overlapping = CONTRACT.replace(
         "steward: {allowed: [src/pilot/instances.py, src/pilot/eval.py, tests/]}",
@@ -223,8 +223,8 @@ def steward_repo(tmp_path, monkeypatch):
         ["git", "-C", str(tmp_path), "clone", "-q", "--bare", str(seed), str(bare)], check=True
     )
 
-    from autoresearch import steward as steward_mod
-    from autoresearch.github import Workspace
+    from outerloop import steward as steward_mod
+    from outerloop.github import Workspace
 
     real_clone = Workspace.clone
 
@@ -265,7 +265,7 @@ class CheckingEvaluator:
     def check(self, workspace, command) -> None:
         self.checks.append(command)
         if self.check_error:
-            from autoresearch.orchestrator import EvalError
+            from outerloop.orchestrator import EvalError
 
             raise EvalError(self.check_error)
 
@@ -613,7 +613,7 @@ budgets:""",
 def test_contract_rejects_steward_scope_over_the_ledger() -> None:
     import pytest as _pytest
 
-    from autoresearch.contract import ScopeError
+    from outerloop.contract import ScopeError
 
     for bad in ("results/leader.json", "BENCHMARKS.md", "results/"):
         with _pytest.raises(ScopeError, match="record ledger"):
@@ -628,8 +628,8 @@ def test_contract_rejects_steward_scope_over_the_ledger() -> None:
 
 def test_orphaned_claims_are_released_for_dead_runs() -> None:
     """Killed jobs never post their own release: reconciliation does."""
-    from autoresearch.runstate import RunRecord
-    from autoresearch.steward import release_orphaned_claims
+    from outerloop.runstate import RunRecord
+    from outerloop.steward import release_orphaned_claims
 
     class G(FakeIssues):
         def __init__(self, issues, comments):
@@ -707,7 +707,7 @@ def test_rebase_row_records_the_measurement_seed(tmp_path) -> None:
     carries the seed the orchestrator measured under."""
     import json as _json
 
-    from autoresearch.steward import rebase_leader_row
+    from outerloop.steward import rebase_leader_row
 
     contract = load_contract(CONTRACT, "org/pilot")
     bench = contract.benchmarks[0]
@@ -730,8 +730,8 @@ def test_rebase_row_records_the_measurement_seed(tmp_path) -> None:
 def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> None:
     # the steward edits env code; a non-executing spec here is a deployment
     # bug — loud and immediate, before the record or any network work
-    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
-    from autoresearch.steward import StewardConfig, live_steward
+    from outerloop.rolespec import Execution, RoleSpec, SessionBudget
+    from outerloop.steward import StewardConfig, live_steward
 
     read_only = RoleSpec(
         name="reviewer",

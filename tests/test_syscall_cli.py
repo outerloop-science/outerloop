@@ -10,8 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from autoresearch.syscall import read_request, read_verdict
-from autoresearch.syscall_cli import main
+from outerloop.syscall import read_request, read_verdict
+from outerloop.syscall_cli import main
 
 
 def run(tmp: Path, *argv: str, capsys=None) -> int:
@@ -122,7 +122,7 @@ def test_artifact_path_check_matches_the_kernel(tmp_path: Path, capsys) -> None:
     # the tool's fast check must accept EXACTLY what the kernel accepts, or the
     # author burns a sleep on a post-session error (terra #133 r2). Cross-check
     # each tricky path against both validators.
-    from autoresearch.syscall import _rel_path_ok as kernel_ok
+    from outerloop.syscall import _rel_path_ok as kernel_ok
 
     cases = ["out/x.json", "", ".", "out/./x", "out//x", "../x", "/abs", "~/x", "a\\b"]
     for path in cases:
@@ -152,7 +152,7 @@ def test_sleep_with_nothing_staged_is_a_checkpoint(tmp_path: Path, capsys) -> No
 
 
 def test_status_shows_the_kernel_written_budget(tmp_path: Path, capsys) -> None:
-    from autoresearch.syscall import write_budget
+    from outerloop.syscall import write_budget
 
     write_budget(tmp_path, launches_remaining=3, sleeps_remaining=4)
     run(tmp_path, "status")
@@ -163,7 +163,7 @@ def test_installed_tool_is_standalone(tmp_path: Path) -> None:
     """The kernel copies the tool into a sandbox WITHOUT autoresearch
     installed — prove the copy runs under a bare interpreter (isolated mode:
     no site-packages, no cwd on sys.path)."""
-    from autoresearch.syscall import install_tool
+    from outerloop.syscall import install_tool
 
     install_tool(tmp_path)
     tool = tmp_path / ".autoresearch" / "syscall"
@@ -335,7 +335,7 @@ def test_installed_tool_roots_at_its_install_location_not_cwd(tmp_path: Path) ->
     entirely (hermes starts in its per-run home): the syscall must land in the
     tool's OWN workspace channel, never a cwd-relative one the kernel never
     reads (adversarial review of the interchangeable-backend refactor)."""
-    from autoresearch.syscall import install_tool, read_verdict
+    from outerloop.syscall import install_tool, read_verdict
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -357,7 +357,7 @@ def test_installed_tool_roots_at_its_install_location_not_cwd(tmp_path: Path) ->
 def test_tool_command_is_absolute(tmp_path: Path) -> None:
     # a judge whose cwd is not the workspace (hermes) must still find the tool:
     # the brief command is absolute (adversarial/terra review of #140).
-    from autoresearch.syscall import tool_command
+    from outerloop.syscall import tool_command
 
     cmd = tool_command(tmp_path / "ws")
     assert cmd.startswith("python /")  # absolute, resolves from any cwd

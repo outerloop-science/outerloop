@@ -8,10 +8,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from autoresearch.harness import SessionResult
-from autoresearch.review import format_review
-from autoresearch.role_runner import RoleResult, run_role
-from autoresearch.roles import review_result_from_role, reviewer_spec
+from outerloop.harness import SessionResult
+from outerloop.review import format_review
+from outerloop.role_runner import RoleResult, run_role
+from outerloop.roles import review_result_from_role, reviewer_spec
 
 # a diff whose new side has an anchorable line in models/encoder.py
 _DIFF = (

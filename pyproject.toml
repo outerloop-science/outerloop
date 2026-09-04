@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "autoresearch"
+name = "outerloop"
 dynamic = ["version"]
 description = "Autonomous research agent that co-develops the lab's benchmark-bearing repos"
 readme = "README.md"
@@ -21,7 +21,7 @@ dependencies = [
 #   compute  : (stdlib subprocess over sbatch/squeue; no dep expected)
 
 [project.scripts]
-autoresearch = "autoresearch.cli:main"
+outerloop = "outerloop.cli:main"
 
 [project.optional-dependencies]
 # GitHub App auth: RS256 signing for App JWTs (docs/design/github-app-auth.md).
@@ -38,10 +38,10 @@ dev = [
 ]
 
 [tool.hatch.version]
-path = "src/autoresearch/__init__.py"
+path = "src/outerloop/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/autoresearch"]
+packages = ["src/outerloop"]
 
 [tool.ruff]
 line-length = 100

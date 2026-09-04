@@ -103,4 +103,4 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           REVIEW_BOT_LOGIN: 'outerloop-science[bot]'
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
-        run: uv run python -m autoresearch.review_agent_cli
+        run: uv run python -m outerloop.review_agent_cli

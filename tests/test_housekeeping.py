@@ -6,13 +6,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from autoresearch.housekeeping import (
+from outerloop.housekeeping import (
     DEFAULT_SHED_GRACE_S,
     shed_candidates,
     shed_ended_workspaces,
     shed_workspace,
 )
-from autoresearch.runstate import ENDED, WAITING, RunRecord, load_record, run_dir, save_record
+from outerloop.runstate import ENDED, WAITING, RunRecord, load_record, run_dir, save_record
 
 NOW = 2_000_000.0
 
@@ -108,8 +108,8 @@ def test_a_dry_run_tick_sheds_nothing(tmp_path: Path, monkeypatch) -> None:
     """The destructive housekeeping lane obeys the zero-writes dry-run
     contract: tick(..., dry_run=True) removes no workspace and writes no
     workspace_shed."""
-    import autoresearch.tick as tickmod
-    from autoresearch.compute import LocalCompute
+    import outerloop.tick as tickmod
+    from outerloop.compute import LocalCompute
 
     root = tmp_path / "state"
     _run(root, "old-ended", ENDED, NOW - DEFAULT_SHED_GRACE_S - 1)

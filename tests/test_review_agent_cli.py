@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import autoresearch.review_agent_cli as cli
+import outerloop.review_agent_cli as cli
 
 
 def _base_env() -> dict[str, str]:

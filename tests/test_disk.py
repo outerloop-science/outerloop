@@ -6,7 +6,7 @@ import os
 import stat
 from pathlib import Path
 
-from autoresearch.disk import (
+from outerloop.disk import (
     DiskHealth,
     MountHealth,
     check_disk,

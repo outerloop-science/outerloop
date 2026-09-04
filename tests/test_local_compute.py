@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.compute import GONE, JobSpec, LocalCompute
-from autoresearch.dispatch import snapshot_tree
-from autoresearch.github import Workspace
-from autoresearch.measure import DispatchedMeasurer, MeasurementPending, plan_measures
-from autoresearch.orchestrator import EvalError
+from outerloop.compute import GONE, JobSpec, LocalCompute
+from outerloop.dispatch import snapshot_tree
+from outerloop.github import Workspace
+from outerloop.measure import DispatchedMeasurer, MeasurementPending, plan_measures
+from outerloop.orchestrator import EvalError
 
 
 def _spec(command: str = "", script: str = "", minutes: int = 1) -> JobSpec:
@@ -254,7 +254,7 @@ def test_terminal_states_survive_across_instances(tmp_path, monkeypatch) -> None
     the sweep would sit on the 12h park deadline instead of waking at the
     next cadence). With a state root, terminal states persist; without one,
     memory-only behavior is unchanged."""
-    from autoresearch.compute import GONE, JobSpec, LocalCompute
+    from outerloop.compute import GONE, JobSpec, LocalCompute
 
     monkeypatch.setenv("AUTORESEARCH_ROOT", str(tmp_path))
     submitter = LocalCompute()
@@ -272,7 +272,7 @@ def test_gpu_contracts_pass_the_lane_check_under_local_mode(monkeypatch) -> None
     rejected for a missing AUTORESEARCH_GPU_PARTITION (terra #223)."""
     from types import SimpleNamespace
 
-    from autoresearch.tick import FollowupSpec, _gpu_lane_error
+    from outerloop.tick import FollowupSpec, _gpu_lane_error
 
     spec = FollowupSpec(
         account="", partition="", run_root=Path("/tmp/x"), image="", home=Path("/tmp/x")
@@ -287,8 +287,8 @@ def test_local_mode_places_gpu_measures_without_a_lane(monkeypatch) -> None:
     """DispatchSettings.placement must not raise for a GPU measure under
     local mode (terra #223 r7: the lane waiver admitted GPU contracts that
     then failed at placement) — local jobs run on the machine's own GPUs."""
-    from autoresearch.compute import LocalCompute
-    from autoresearch.measure import DispatchSettings
+    from outerloop.compute import LocalCompute
+    from outerloop.measure import DispatchSettings
 
     settings = DispatchSettings(
         compute=LocalCompute(), image="", account="", partition="", gpu_partition=""
