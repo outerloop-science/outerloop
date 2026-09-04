@@ -619,10 +619,14 @@ def _make_launcher(
                                 gpus=gpus,
                                 # a capacity experiment can ask for more host
                                 # RAM than the per-GPU floor (its compile OOMs
-                                # at the floor); eval_job_spec never SHRINKS the
-                                # floor, so this only ever raises it (the "8G"
-                                # default is below the floor, so it is a no-op).
-                                mem=f"{launch.mem_gb}G" if launch.mem_gb else "8G",
+                                # at the floor). mem_gb is PER GPU (like the
+                                # EVAL_MEM_GB_PER_GPU floor), so scale it by the
+                                # GPU count for the TOTAL Slurm request;
+                                # eval_job_spec never shrinks below its floor, so
+                                # the "8G" default (below the floor) is a no-op.
+                                mem=(
+                                    f"{launch.mem_gb * gpus}G" if launch.mem_gb and gpus else "8G"
+                                ),
                             )
                         )
                     )

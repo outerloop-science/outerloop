@@ -4847,3 +4847,38 @@ def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> No
     runner(13.0, 12.0, "report")
     assert "train.py" in seen["diff"]
     assert "AGENT_MEMORY" not in seen["diff"] and "agent_memory" not in seen["diff"]
+
+
+def test_launch_scales_mem_gb_by_gpu_count(tmp_path) -> None:
+    # mem_gb is PER GPU: the launcher must scale it by the GPU count for the
+    # total Slurm request, or eval_job_spec's per-GPU floor silently swallows it.
+    from autoresearch.attempt import _make_launcher
+    from autoresearch.syscall import Launch, SyscallRequest
+
+    run_dir = tmp_path / "runs" / "r1"
+    ws = run_dir / "ws"
+    ws.mkdir(parents=True)
+    import dataclasses
+
+    dispatch = dataclasses.replace(_fake_dispatch(), gpu_partition="gpu", gpu_account="gacct")
+    specs: list = []
+    real = dispatch.compute.submit
+
+    def rec(spec):
+        specs.append(spec)
+        return real(spec)
+
+    dispatch.compute.submit = rec
+    launcher = _make_launcher(dispatch, run_dir, ws, "run-1", gpus=8)
+    launcher(
+        "0" * 40,
+        SyscallRequest(
+            launches=(
+                Launch(name="wide", command="echo hi", minutes=30, mem_gb=128),
+                Launch(name="plain", command="echo hi", minutes=30),
+            )
+        ),
+    )
+    by = {Path(s.script).parent.name: s for s in specs}
+    assert by["eval-launch-wide"].mem == "1024G"  # 128 GB/GPU x 8 GPUs
+    assert by["eval-launch-plain"].mem == "512G"  # no --mem: the 64x8 floor
