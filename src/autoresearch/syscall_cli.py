@@ -55,8 +55,9 @@ MAX_LAUNCHES = 8
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
 MAX_NOTE_CHARS = 2_000
-MAX_LAUNCH_MINUTES = 240
+MAX_LAUNCH_MINUTES = 360
 MAX_LAUNCH_ARRAY = 16  # jobs one launch may fan out to (a sweep)
+MAX_LAUNCH_MEM_GB = 128  # host RAM (GB) an author may ask for (kernel re-clamps)
 # a submit's declared eval walltime (matches the kernel's backstop)
 MAX_EVAL_MINUTES = 1440
 # judge (finding/conclude) bounds
@@ -148,6 +149,11 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     if array < 1:
         raise ToolError("--array must be a positive integer")
     array = min(array, MAX_LAUNCH_ARRAY)
+    mem_gb = args.mem
+    if mem_gb is not None:
+        if mem_gb < 1:
+            raise ToolError("--mem must be a positive integer (GB)")
+        mem_gb = min(mem_gb, MAX_LAUNCH_MEM_GB)
     if len(args.artifact) > MAX_ARTIFACTS:
         raise ToolError(f"at most {MAX_ARTIFACTS} --artifact paths")
     for a in args.artifact:
@@ -165,6 +171,7 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
             "minutes": minutes,
             "artifacts": args.artifact,
             "array": array,
+            **({"mem_gb": mem_gb} if mem_gb is not None else {}),
         }
     )
     _save_staged(root, staged)
@@ -325,7 +332,9 @@ def build_parser() -> argparse.ArgumentParser:
     # author verbs
     la = sub.add_parser("launch", help="stage a job to run outside the sandbox")
     la.add_argument("--name", required=True, help="your handle for this job (a-z0-9-)")
-    la.add_argument("--minutes", type=int, default=30, help="walltime ask (clamped to 240)")
+    la.add_argument(
+        "--minutes", type=int, default=30, help="walltime ask in minutes (clamped to 360)"
+    )
     la.add_argument(
         "--array",
         type=int,
@@ -333,6 +342,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="fan out to N jobs of this command, each with SWEEP_INDEX=0..N-1 "
         "and its own results/<name>/<i>/ (a sweep; counts as one launch, "
         "N times the GPU-hours)",
+    )
+    la.add_argument(
+        "--mem",
+        type=int,
+        default=None,
+        help="host RAM (GB) to request when a large model's compile host-OOMs "
+        "the default per-GPU floor (clamped); omit for the default",
     )
     la.add_argument(
         "--artifact",

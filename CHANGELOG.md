@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Authors can size a launch's host memory with `launch --mem <GB>` (clamped),
+  and the launch walltime ceiling is raised to 360 minutes (matching the eval
+  ceiling). Capacity experiments — a larger model whose `torch.compile` workers
+  host-OOM at the default per-GPU floor, or that needs more than 240 minutes to
+  reach the target — were silently killed before; they can now ask for the room
+  they need. The default is unchanged, so ordinary launches are unaffected.
+
+### Added
+
 - Disk housekeeping: an ended run sheds its `ws/` and `ws-home/` directories
   once its tree is on GitHub, keeping the record, report, transcripts, and
   ledger. The tick sheds after a 24 h grace, oldest first; when the state

@@ -617,6 +617,12 @@ def _make_launcher(
                                 partition=partition,
                                 eval_minutes=launch.minutes,
                                 gpus=gpus,
+                                # a capacity experiment can ask for more host
+                                # RAM than the per-GPU floor (its compile OOMs
+                                # at the floor); eval_job_spec never SHRINKS the
+                                # floor, so this only ever raises it (the "8G"
+                                # default is below the floor, so it is a no-op).
+                                mem=f"{launch.mem_gb}G" if launch.mem_gb else "8G",
                             )
                         )
                     )

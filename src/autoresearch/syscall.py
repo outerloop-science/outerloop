@@ -69,7 +69,8 @@ MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS_PER_LAUNCH = 8
 MAX_NOTE_CHARS = 2_000
 # Per-job walltime ask, clamped to the same ceiling as dispatched evals.
-MAX_LAUNCH_MINUTES = 240
+MAX_LAUNCH_MINUTES = 360  # matches the eval walltime ceiling
+MAX_LAUNCH_MEM_GB = 128  # host-RAM an author may ask for per GPU (see EVAL_MEM_GB_PER_GPU floor)
 # a submit's declared eval walltime: bounded only by the GPU-hour budget the
 # author draws on, plus this backstop (the dispatcher's own ceiling matches)
 MAX_EVAL_MINUTES = 1440
@@ -108,6 +109,10 @@ class Launch:
     # a sweep: N jobs of this command, each told its index through SWEEP_INDEX;
     # one launch against depth_k, N times the walltime against GPU-hours
     array: int = 1
+    # host RAM (GB) to ask for, when the default per-GPU floor is too small
+    # (a large model's torch.compile workers host-OOM at the floor); None = the
+    # floor. Clamped to MAX_LAUNCH_MEM_GB; never shrinks the floor.
+    mem_gb: int | None = None
 
 
 @dataclass(frozen=True)
@@ -221,7 +226,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     for i, item in enumerate(raw_launches):
         if not isinstance(item, dict):
             raise SyscallError(f"launch #{i} must be an object")
-        bad = set(item) - {"name", "command", "minutes", "artifacts", "array"}
+        bad = set(item) - {"name", "command", "minutes", "artifacts", "array", "mem_gb"}
         if bad:
             raise SyscallError(f"launch #{i}: unknown keys {sorted(bad)}")
         name = item.get("name")
@@ -243,6 +248,11 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if not isinstance(array, int) or isinstance(array, bool) or array < 1:
             raise SyscallError(f"launch {name}: array must be a positive integer")
         array = min(array, MAX_LAUNCH_ARRAY)
+        mem_gb = item.get("mem_gb")
+        if mem_gb is not None:
+            if not isinstance(mem_gb, int) or isinstance(mem_gb, bool) or mem_gb < 1:
+                raise SyscallError(f"launch {name}: mem_gb must be a positive integer")
+            mem_gb = min(mem_gb, MAX_LAUNCH_MEM_GB)
         arts = item.get("artifacts", [])
         if not isinstance(arts, list) or len(arts) > MAX_ARTIFACTS_PER_LAUNCH:
             raise SyscallError(
@@ -255,7 +265,14 @@ def read_request(workspace: Path) -> SyscallRequest | None:
                     f"launch {name}: artifact {a!r} must be a repo-relative file path"
                 )
         launches.append(
-            Launch(name=name, command=command, minutes=minutes, artifacts=tuple(arts), array=array)
+            Launch(
+                name=name,
+                command=command,
+                minutes=minutes,
+                artifacts=tuple(arts),
+                array=array,
+                mem_gb=mem_gb,
+            )
         )
     # a sleep with no launches is legitimate: checkpoint-and-reschedule
     # (research-loop.md, "the session clock is visible") — it still burns a

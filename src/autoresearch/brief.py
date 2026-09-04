@@ -387,7 +387,8 @@ def render(brief: SessionBrief) -> str:
             "inside your own session time — it costs no budget:",
             "",
             "    python .autoresearch/syscall launch --name <handle> "
-            "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",
+            "--minutes <N> [--array <K>] [--mem <GB>] "
+            "--artifact <repo-relative file> -- <command>",
             "    python .autoresearch/syscall submit [--minutes <N>]",
             "    python .autoresearch/syscall siblings",
             "    python .autoresearch/syscall sync",

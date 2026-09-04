@@ -394,3 +394,24 @@ def test_reports_summary_and_full_views(tmp_path: Path, capsys) -> None:
     bare.mkdir(parents=True)
     assert run(bare, "reports", capsys=capsys) == 0
     assert "no report archive" in capsys.readouterr().out
+
+
+def test_launch_stages_and_clamps_mem(tmp_path: Path, capsys) -> None:
+    # a capacity experiment asks for more host RAM; the CLI clamps client-side
+    # and the kernel's reader carries it through.
+    assert run(tmp_path, "launch", "--name", "wide", "--mem", "9999", "--", "run", "it") == 0
+    capsys.readouterr()
+    assert run(tmp_path, "sleep") == 0
+    capsys.readouterr()
+    req = read_request(tmp_path)
+    assert req is not None
+    assert req.launches[0].mem_gb == 128  # clamped to MAX_LAUNCH_MEM_GB
+
+
+def test_launch_without_mem_leaves_it_default(tmp_path: Path, capsys) -> None:
+    assert run(tmp_path, "launch", "--name", "plain", "--", "run", "it") == 0
+    capsys.readouterr()
+    assert run(tmp_path, "sleep") == 0
+    capsys.readouterr()
+    req = read_request(tmp_path)
+    assert req is not None and req.launches[0].mem_gb is None

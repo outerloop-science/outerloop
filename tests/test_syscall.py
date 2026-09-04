@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from autoresearch.syscall import (
+    MAX_LAUNCH_MEM_GB,
+    MAX_LAUNCH_MINUTES,
     SYSCALL_DIR,
     SYSCALL_FILE,
     LaunchResult,
@@ -82,6 +84,33 @@ def test_empty_launches_is_a_checkpoint_sleep(tmp_path: Path) -> None:
     assert req is not None and req.launches == ()
 
 
+def test_read_request_parses_and_clamps_mem_gb(tmp_path: Path) -> None:
+    write_req(
+        tmp_path,
+        {
+            "launches": [
+                {"name": "small", "command": "run", "minutes": 30},
+                {"name": "big", "command": "run", "minutes": 30, "mem_gb": 96},
+                {"name": "huge", "command": "run", "minutes": 30, "mem_gb": 9999},
+            ]
+        },
+    )
+    req = read_request(tmp_path)
+    assert req is not None
+    assert req.launches[0].mem_gb is None  # default: the per-GPU floor applies
+    assert req.launches[1].mem_gb == 96  # honored as asked
+    assert req.launches[2].mem_gb == MAX_LAUNCH_MEM_GB  # clamped to the ceiling
+
+
+def test_read_request_rejects_a_non_positive_mem_gb(tmp_path: Path) -> None:
+    write_req(
+        tmp_path,
+        {"launches": [{"name": "x", "command": "run", "minutes": 30, "mem_gb": 0}]},
+    )
+    with pytest.raises(SyscallError, match="mem_gb must be a positive integer"):
+        read_request(tmp_path)
+
+
 def test_malformed_request_raises_and_is_still_consumed(tmp_path: Path) -> None:
     f = write_req(tmp_path, "{not json")
     with pytest.raises(SyscallError, match="not valid JSON"):
@@ -146,7 +175,7 @@ def test_oversized_request_file_is_refused_before_parsing(tmp_path: Path) -> Non
 def test_minutes_are_clamped_to_the_ceiling(tmp_path: Path) -> None:
     write_req(tmp_path, {"launches": [{"name": "big", "command": "x", "minutes": 100000}]})
     req = read_request(tmp_path)
-    assert req is not None and req.launches[0].minutes == 240
+    assert req is not None and req.launches[0].minutes == MAX_LAUNCH_MINUTES
 
 
 def test_siblings_command_reads_the_fleet_snapshot(tmp_path: Path) -> None:
