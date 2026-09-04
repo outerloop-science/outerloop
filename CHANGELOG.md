@@ -8,10 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- Relicensed from MIT to Apache-2.0 (added `LICENSE` + `NOTICE`), ahead of the
-  public release as the Outerloop platform — the explicit patent grant is the
-  standard for infrastructure others build on. Copyright remains the Agentic
-  Learning AI Lab at NYU.
+- Relicensed from MIT to Apache-2.0 (added `LICENSE` and `NOTICE`) ahead of the
+  public Outerloop release; copyright stays with the Agentic Learning AI Lab at NYU.
 
 ### Changed
 
