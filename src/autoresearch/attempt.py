@@ -1354,11 +1354,12 @@ def _utc_date(now: float) -> str:
 
 def _is_git_tamper(exc: GitError) -> bool:
     """True when a GitError means the workspace's object store or refs are
-    damaged / session-altered — as opposed to an ordinary git failure (a push
+    damaged or session-altered — as opposed to an ordinary git failure (a push
     conflict, a fetch outage). The guard raises its own `_altered(...)` for the
-    states it models; a raw object-store error ("Could not parse object", "bad
-    tree object") is the same class reaching a git command through a TOCTOU
-    window. Either way the wake cannot be trusted and must END, not crash."""
+    states it models; a raw object-store error ("could not parse object", "bad
+    tree object", a corrupt or unreadable pack) is the same damage reaching a
+    git command in the gap between the guard's check and the command. Either
+    way the wake cannot be trusted and must END, not crash."""
     msg = str(exc).lower()
     return (
         "altered by the session" in msg  # the guard's own _altered signal
@@ -1366,6 +1367,8 @@ def _is_git_tamper(exc: GitError) -> bool:
         or "bad tree object" in msg
         or "bad object" in msg
         or "unable to read tree" in msg
+        or "data stream error" in msg  # inflate: a corrupt pack
+        or "is corrupt" in msg  # "packed object ... is corrupt", loose too
         or ("object file" in msg and "empty" in msg)
     )
 
@@ -1848,6 +1851,10 @@ def resume_run(
                         ),
                     )(baseline, candidate, str(stage.get("report", "")))
                 except Exception as exc:
+                    if isinstance(exc, GitError) and _is_git_tamper(exc):
+                        # tamper during the panel is not a panel error to draft
+                        # around — end as a refused wake.
+                        return _end_refused_wake(run_root, record, exc, now, secrets)
                     log.warning(
                         "wake panel errored for %s (%s); opening a DRAFT",
                         run_id,
@@ -1952,6 +1959,11 @@ def resume_run(
                     panel_ran=result.panel_rounds > 0,
                 )
         except Exception as exc:
+            if isinstance(exc, GitError) and _is_git_tamper(exc):
+                # a concurrent object-store removal during the publish block is
+                # tamper, not a publish failure: end as a refused wake (the
+                # clean tamper terminal) rather than mask it as a publish-error.
+                return _end_refused_wake(run_root, record, exc, now, secrets)
             # push / PR / commit failed — end as an error. Save the ENDED record
             # BEFORE dropping the snapshot (same ordering as the other terminals):
             # a failed save then leaves the run WAITING with its snapshot intact
