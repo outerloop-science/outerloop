@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.dispatch import (
+from outerloop.dispatch import (
     EVAL_JOB_MINUTES_CEILING,
     drop_snapshot,
     effective_eval_minutes,
@@ -20,7 +20,7 @@ from autoresearch.dispatch import (
     snapshot_tree,
     write_eval_job,
 )
-from autoresearch.orchestrator import EvalError
+from outerloop.orchestrator import EvalError
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -86,7 +86,7 @@ def test_snapshot_captures_dirty_tree_without_touching_the_index(tmp_path):
 def test_drop_snapshot_logs_a_failure_without_raising(tmp_path, caplog):
     import logging
 
-    from autoresearch.dispatch import Snapshot
+    from outerloop.dispatch import Snapshot
 
     ws = _WS(tmp_path / "not-a-repo")  # no git dir -> update-ref fails
     snap = Snapshot(commit="a" * 40, tree="b" * 40, ref="refs/dispatch/nope")
@@ -338,7 +338,7 @@ def test_read_result_failures(tmp_path):
 
 
 def test_contract_accepts_and_bounds_eval_minutes():
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     c = load_contract(
         """
@@ -404,7 +404,7 @@ def test_gpu_evals_are_sized_per_gpu(tmp_path):
     """A GPU eval trains: it gets cores and host RAM per GPU (compile workers
     and data loading OOM-kill at the CPU eval's 4 cores / 8 GB); CPU evals
     keep the small defaults; an explicit larger request is never shrunk."""
-    from autoresearch.dispatch import EVAL_CPUS_PER_GPU, EVAL_MEM_GB_PER_GPU
+    from outerloop.dispatch import EVAL_CPUS_PER_GPU, EVAL_MEM_GB_PER_GPU
 
     script = tmp_path / "job.sh"
     script.write_text("#!/bin/sh\n")

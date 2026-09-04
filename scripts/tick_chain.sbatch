@@ -18,7 +18,7 @@
 #   AUTORESEARCH_RESIDENT=1   run as the RESIDENT tick (design/resident-tick.md):
 #                             one long-lived job that loops deploy -> tick ->
 #                             sleep, with a single afterany:self successor.
-#                             `autoresearch start` submits it (walltime,
+#                             `outerloop start` submits it (walltime,
 #                             name, and exports filled in); by hand:
 #                             `sbatch --time=360 --job-name=autoresearch-resident
 #                             --export=ALL,AUTORESEARCH_RESIDENT=1,...`. The
@@ -137,4 +137,4 @@ if [ "${AUTORESEARCH_DEPLOY_BROKEN:-}" = "1" ]; then
     echo "tick skipped: checkout and environment inconsistent after a failed deploy"
     exit 0  # successors are already queued; the next deploy retries
 fi
-exec uv run --no-sync python -m autoresearch.tick --root "$AUTORESEARCH_ROOT"
+exec uv run --no-sync python -m outerloop.tick --root "$AUTORESEARCH_ROOT"

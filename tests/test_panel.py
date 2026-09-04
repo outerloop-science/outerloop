@@ -6,9 +6,9 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from autoresearch.harness import SessionResult
-from autoresearch.panel import PanelLens, run_panel
-from autoresearch.review import PullRequest
+from outerloop.harness import SessionResult
+from outerloop.panel import PanelLens, run_panel
+from outerloop.review import PullRequest
 
 _PR = PullRequest(
     repo="org/pilot",
@@ -118,7 +118,7 @@ def test_no_verdict_degrades_the_read(tmp_path: Path) -> None:
 def test_parse_lenses_admits_codex_and_refuses_uncontainable_backends() -> None:
     import pytest
 
-    from autoresearch.panel import parse_lenses
+    from outerloop.panel import parse_lenses
 
     # backends are peers; the one gate is containment on the climb host
     assert parse_lenses("verify:claude:claude-fable-5,review:codex:gpt-5.6-terra") == (

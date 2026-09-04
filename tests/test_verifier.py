@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from autoresearch.review import PullRequest, ReviewResult
-from autoresearch.verifier import (
+from outerloop.review import PullRequest, ReviewResult
+from outerloop.verifier import (
     VERIFY_HEADER,
     VERIFY_MARKER,
     VERIFY_SCHEMA,
@@ -199,7 +199,7 @@ def test_thread_reaches_the_prompt_with_reread_instruction() -> None:
 
 
 def test_thread_is_bounded_to_the_most_recent_comments() -> None:
-    from autoresearch.verifier import MAX_THREAD_COMMENTS
+    from outerloop.verifier import MAX_THREAD_COMMENTS
 
     thread = tuple((f"user{i}", f"comment-{i}") for i in range(30))
     prompt = build_verify_prompt(make_pr(), contract_text="c", thread=thread)
@@ -255,7 +255,7 @@ def test_aggregation_is_a_first_class_verify_category() -> None:
     # the code owner's standard from yolo-jepa#16: a mixture must not clear
     # the floor by aggregation — the judge's taste names it, the syscall
     # clamp keeps it (a taxonomy miss would silently demote it to 'other')
-    from autoresearch.verifier import CATEGORIES, VERIFY_SYSTEM_PROMPT
+    from outerloop.verifier import CATEGORIES, VERIFY_SYSTEM_PROMPT
 
     assert "aggregation" in CATEGORIES
     assert "clears the floor ON ITS OWN" in VERIFY_SYSTEM_PROMPT

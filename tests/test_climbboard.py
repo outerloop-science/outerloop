@@ -5,7 +5,7 @@ import json
 from dataclasses import replace as dc_replace
 from pathlib import Path
 
-from autoresearch.climbboard import (
+from outerloop.climbboard import (
     ClimbRow,
     collect_rows,
     contract_directions,
@@ -15,7 +15,7 @@ from autoresearch.climbboard import (
     service_climb_board,
     service_status,
 )
-from autoresearch.runstate import RunRecord, run_dir, save_record
+from outerloop.runstate import RunRecord, run_dir, save_record
 
 REPORT = """# Run report — org/repo / speedrun
 Outcome: **no-improvement**
@@ -124,7 +124,7 @@ def test_views_render_the_rows_and_respect_direction(tmp_path: Path) -> None:
 def test_row_cap_is_loud_not_silent() -> None:
     import json as _json
 
-    from autoresearch.climbboard import MAX_ROWS_PER_BENCHMARK
+    from outerloop.climbboard import MAX_ROWS_PER_BENCHMARK
 
     rows = [{"run_id": f"r{i}", "ended": f"2026-01-01 {i:02d}:00"} for i in range(40)]
     many = [
@@ -164,7 +164,7 @@ def test_terminal_transition_keeps_the_spend_for_the_board(tmp_path: Path) -> No
     """_clear_stage wipes the waiting bookkeeping but keeps gpu_hours_used —
     the production transition the board reads after (review #193 r6: rows
     published zero GPU-hours because the collector ran on a wiped stage)."""
-    from autoresearch.attempt import _clear_stage
+    from outerloop.attempt import _clear_stage
 
     record = RunRecord(
         run_id="r",
@@ -186,7 +186,7 @@ def test_terminal_transition_keeps_the_spend_for_the_board(tmp_path: Path) -> No
 
 
 def test_contract_directions_maps_benchmarks() -> None:
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     contract = load_contract(
         """
@@ -429,7 +429,7 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
     """The strip is pushed when a run appears, leaves, or changes
     state/phase — never for timestamp drift (that would be a commit per
     tick; the page computes elapsed time itself)."""
-    from autoresearch.climbboard import collect_status, service_status
+    from outerloop.climbboard import collect_status, service_status
 
     gh = _BoardGitHub()
     record = RunRecord(
@@ -466,7 +466,7 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
 
 
 def test_html_carries_the_live_strip() -> None:
-    from autoresearch.climbboard import render_html
+    from outerloop.climbboard import render_html
 
     html = render_html("org/repo", {"b": []}, {"b": "min"})
     assert "climb/status.json" in html
@@ -481,7 +481,7 @@ def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_pa
     """The tick's one entry point (tick.service_boards) publishes both the
     views (so a fleet with only live runs still has a page that fetches the
     strip) and the strip itself — removing either call breaks this test."""
-    from autoresearch.tick import service_boards
+    from outerloop.tick import service_boards
 
     gh = _BoardGitHub()
     record = RunRecord(
@@ -558,7 +558,7 @@ STDOUT_WITH_CURVE = (
 
 
 def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
-    from autoresearch.climbboard import MAX_CURVE_POINTS, _curve_from_eval
+    from outerloop.climbboard import MAX_CURVE_POINTS, _curve_from_eval
 
     _terminal_run(tmp_path, "speedrun-1")
     ev = run_dir(tmp_path, "speedrun-1") / "eval-candidate-abc-def"
@@ -578,7 +578,7 @@ def test_curves_come_from_eval_stdout_downsampled(tmp_path: Path) -> None:
 def test_curve_falls_back_to_the_best_launch(tmp_path: Path) -> None:
     """A run that launched experiments but never submitted (no candidate
     eval) shows its best launch's curve, so its agent stays on the panel."""
-    from autoresearch.climbboard import _curve_from_eval
+    from outerloop.climbboard import _curve_from_eval
 
     _terminal_run(tmp_path, "speedrun-3")
     rd = run_dir(tmp_path, "speedrun-3")
@@ -593,7 +593,7 @@ def test_curve_falls_back_to_the_best_launch(tmp_path: Path) -> None:
 
 
 def test_merge_curves_caps_five_per_agent(tmp_path: Path) -> None:
-    from autoresearch.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
+    from outerloop.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
 
     class _GH:
         def get_file(self, repo, path, ref):
@@ -616,7 +616,7 @@ def test_merge_curves_caps_five_per_agent(tmp_path: Path) -> None:
 def test_curveless_rows_do_not_consume_the_per_agent_quota(tmp_path: Path) -> None:
     """An attempt with no curve must not spend one of an agent's five slots —
     the fifth CURVE should still be kept even behind curveless newer rows."""
-    from autoresearch.climbboard import _merge_curves
+    from outerloop.climbboard import _merge_curves
 
     class _GH:
         def get_file(self, repo, path, ref):
@@ -635,7 +635,7 @@ def test_curveless_rows_do_not_consume_the_per_agent_quota(tmp_path: Path) -> No
 def test_quiet_agent_curve_survives_a_busy_agent(tmp_path: Path) -> None:
     """A quiet agent whose only row sits far down the list still keeps its
     curve — the per-agent cap is applied across ALL rows, not a global slice."""
-    from autoresearch.climbboard import _merge_curves
+    from outerloop.climbboard import _merge_curves
 
     class _GH:
         def get_file(self, repo, path, ref):
@@ -653,7 +653,7 @@ def test_quiet_agent_curve_survives_a_busy_agent(tmp_path: Path) -> None:
 def test_every_agent_is_kept_beyond_any_total_ceiling(tmp_path: Path) -> None:
     """No global total ceiling drops an agent: 40 agents * 5 curves = 200 are
     all kept (the per-agent cap is the only bound)."""
-    from autoresearch.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
+    from outerloop.climbboard import MAX_CURVE_RUNS_PER_AGENT, _merge_curves
 
     class _GH:
         def get_file(self, repo, path, ref):
@@ -675,7 +675,7 @@ def test_every_agent_is_kept_beyond_any_total_ceiling(tmp_path: Path) -> None:
 def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
     """A 400-nines 'loss' parses as float inf and a 400-digit step exceeds
     JS-safe integers; both skip the point, not the curve."""
-    from autoresearch.climbboard import _curve_from_eval
+    from outerloop.climbboard import _curve_from_eval
 
     rd = tmp_path / "r"
     ev = rd / "eval-candidate-x"
@@ -694,7 +694,7 @@ def test_fresh_curve_skips_garbage_points(tmp_path: Path) -> None:
 
 
 def test_cap_truncation_never_publishes_a_partial_number(tmp_path: Path, monkeypatch) -> None:
-    import autoresearch.climbboard as cb
+    import outerloop.climbboard as cb
 
     rd = tmp_path / "r"
     ev = rd / "eval-candidate-x"
@@ -709,7 +709,7 @@ def test_cap_truncation_never_publishes_a_partial_number(tmp_path: Path, monkeyp
 
 def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -> None:
     """One giant line without newlines must not buffer past the cap."""
-    import autoresearch.climbboard as cb
+    import outerloop.climbboard as cb
 
     rd = tmp_path / "r"
     ev = rd / "eval-candidate-x"
@@ -722,7 +722,7 @@ def test_fresh_curve_bounds_a_newline_free_stdout(tmp_path: Path, monkeypatch) -
 def test_published_curves_cost_no_stdout_scan(tmp_path: Path) -> None:
     """A run whose curve is already on the branch is never re-read from
     disk: only unpublished runs invoke the fresh supplier."""
-    from autoresearch.climbboard import _merge_curves
+    from outerloop.climbboard import _merge_curves
 
     gh = _BoardGitHub()
     gh.files["climb/curves/b.json"] = json.dumps({"r1": [[1, 4.0]]})
@@ -742,7 +742,7 @@ def test_published_curves_cost_no_stdout_scan(tmp_path: Path) -> None:
 def test_fresh_curve_abandons_oversized_stdout(tmp_path: Path, monkeypatch) -> None:
     """A verbose eval must not exhaust the tick: scanning stops at the
     byte cap, keeping the points already parsed."""
-    import autoresearch.climbboard as cb
+    import outerloop.climbboard as cb
 
     rd = tmp_path / "r"
     ev = rd / "eval-candidate-x"
@@ -755,7 +755,7 @@ def test_fresh_curve_abandons_oversized_stdout(tmp_path: Path, monkeypatch) -> N
 
 
 def test_curves_publish_capped_and_never_clobbered(tmp_path: Path) -> None:
-    from autoresearch.climbboard import _merge_curves
+    from outerloop.climbboard import _merge_curves
 
     gh = _BoardGitHub()
     rows = [
@@ -840,7 +840,7 @@ def test_board_publish_is_one_atomic_batch(tmp_path: Path) -> None:
 def test_curve_survives_a_vanishing_eval_dir(tmp_path: Path, monkeypatch) -> None:
     """The mtime sort must not abort the pass when an eval dir disappears
     between glob and stat."""
-    from autoresearch.climbboard import _curve_from_eval
+    from outerloop.climbboard import _curve_from_eval
 
     rd = tmp_path / "r"
     for name in ("eval-candidate-a", "eval-candidate-b"):
@@ -859,7 +859,7 @@ def test_curve_survives_a_vanishing_eval_dir(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_summarize_first_sentence_and_cap() -> None:
-    from autoresearch.climbboard import summarize
+    from outerloop.climbboard import summarize
 
     text = "The warmdown starts too early. Moving it later should preserve late learning rate."
     assert summarize(text) == "The warmdown starts too early."
@@ -951,7 +951,7 @@ def test_html_carries_curves_and_direction_and_log_toggle() -> None:
 
 
 def test_status_carries_the_working_direction(tmp_path: Path) -> None:
-    from autoresearch.climbboard import collect_status
+    from outerloop.climbboard import collect_status
 
     record = RunRecord(
         run_id="live-9",
@@ -980,7 +980,7 @@ def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
     still render meters: zero launches/spend, the contract's eval cap."""
     from types import SimpleNamespace
 
-    from autoresearch.climbboard import collect_status
+    from outerloop.climbboard import collect_status
 
     record = RunRecord(
         run_id="bare-1",
@@ -1003,14 +1003,14 @@ def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
     assert r["gpu_hours_used"] == 0.0
     assert r["eval_minutes"] == 240  # the contract cap the gate runs under
     # an oversized contract value is clamped exactly like the dispatched job
-    from autoresearch.dispatch import effective_eval_minutes
+    from outerloop.dispatch import effective_eval_minutes
 
     contract.benchmarks[0].eval_minutes = 100_000
     (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
     assert r["eval_minutes"] == effective_eval_minutes(100_000)
     assert r["direction"] == "Bold claim"  # markdown bold stripped
     # literal dunders survive (they are filenames, not emphasis)
-    from autoresearch.climbboard import _phrase
+    from outerloop.climbboard import _phrase
 
     assert _phrase("Investigate __init__.py imports") == "Investigate __init__.py imports"
 
@@ -1021,8 +1021,8 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
     walltime cap, and a direction cut to its first clause."""
     from types import SimpleNamespace
 
-    from autoresearch.climbboard import collect_status
-    from autoresearch.runstate import run_dir
+    from outerloop.climbboard import collect_status
+    from outerloop.runstate import run_dir
 
     record = RunRecord(
         run_id="live-10",
@@ -1065,7 +1065,7 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
 
 
 def test_md_baseline_chip_is_the_ledger_starting_position() -> None:
-    from autoresearch.climbboard import render_md
+    from outerloop.climbboard import render_md
 
     rows = [
         {"run_id": "r1", "baseline": 9472.0, "candidate": 9088.0, "outcome": "merged"},
@@ -1094,7 +1094,7 @@ def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path) -> 
 
 
 def test_run_base_renders_as_markers_not_a_line() -> None:
-    from autoresearch.climbboard import render_html
+    from outerloop.climbboard import render_html
 
     html = render_html(
         "o/r",

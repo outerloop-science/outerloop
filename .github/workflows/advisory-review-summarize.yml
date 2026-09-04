@@ -187,7 +187,7 @@ jobs:
           SUMMARIZE_DIR: ${{ runner.temp }}/opinions
           SUMMARIZE_EXPECTED: ${{ inputs.expected_lenses }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
-        run: uv run python -m autoresearch.review_summarize_cli
+        run: uv run python -m outerloop.review_summarize_cli
       - name: Backstop envelope
         # !cancelled(), unlike the reviewer workflow's exit-0-only backstop:
         # that one guards legacy pinned refs; this workflow has no pre-envelope
@@ -252,4 +252,4 @@ jobs:
           AUTORESEARCH_BOT_ALIASES: ${{ inputs.bot_aliases }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
           REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
-        run: uv run python -m autoresearch.review_post_cli
+        run: uv run python -m outerloop.review_post_cli

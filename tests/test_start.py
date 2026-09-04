@@ -1,4 +1,4 @@
-"""`autoresearch start`: one command, Slurm or local, settings from flags,
+"""`outerloop start`: one command, Slurm or local, settings from flags,
 environment, then .env."""
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from autoresearch import cli
-from autoresearch.cli import (
+from outerloop import cli
+from outerloop.cli import (
     DEFAULT_LOCAL_ROOT,
     DEFAULT_RESIDENT_MINUTES,
     RESIDENT_JOB_NAME,
@@ -119,7 +119,7 @@ def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
     assert p.command() == [
         sys.executable,
         "-m",
-        "autoresearch.tick",
+        "outerloop.tick",
         "--root",
         str(DEFAULT_LOCAL_ROOT),
         "--loop",
@@ -269,7 +269,7 @@ def test_dry_run_prints_the_command(
     monkeypatch.chdir(checkout(clean_env))
     assert main(["start", "--dry-run", "--root", str(clean_env / "s")]) == 0
     out = capsys.readouterr().out
-    assert "autoresearch.tick" in out and "--loop" in out and str(clean_env / "s") in out
+    assert "outerloop.tick" in out and "--loop" in out and str(clean_env / "s") in out
 
 
 def test_local_start_execs_the_loop_with_env_knobs(
@@ -299,7 +299,7 @@ def test_local_start_execs_the_loop_with_env_knobs(
     assert seen["cmd"] == [
         sys.executable,
         "-m",
-        "autoresearch.tick",
+        "outerloop.tick",
         "--root",
         str(clean_env / "state"),
         "--loop",
@@ -461,7 +461,7 @@ def test_start_errors_are_exit_2_with_the_diagnosis(
 
 
 def test_tick_subcommand_forwards_to_the_tick_entry(monkeypatch: pytest.MonkeyPatch) -> None:
-    from autoresearch import tick
+    from outerloop import tick
 
     seen: list[str] = []
 

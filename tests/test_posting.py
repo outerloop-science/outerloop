@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from autoresearch import posting
-from autoresearch.github import GitHubError
+from outerloop import posting
+from outerloop.github import GitHubError
 
 _MARKER = "<!-- test-marker -->"
 
@@ -174,7 +174,7 @@ def test_skip_stub_redacts_the_provided_key_any_provider() -> None:
 
 def test_rounds_count_per_reviewer() -> None:
     # two standing opinions must not inflate each other's round numbers
-    from autoresearch.posting import _round_stamp
+    from outerloop.posting import _round_stamp
 
     class _C:
         def list_comments(self, repo, number):

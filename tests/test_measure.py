@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.compute import CommandResult, SlurmCompute
-from autoresearch.measure import (
+from outerloop.compute import CommandResult, SlurmCompute
+from outerloop.measure import (
     DispatchedMeasurer,
     Measure,
     MeasurementPending,
     SiblingSpec,
     plan_measures,
 )
-from autoresearch.orchestrator import EvalError
+from outerloop.orchestrator import EvalError
 
 
 def _measurer(
@@ -270,7 +270,7 @@ def test_plan_suite_siblings_use_their_own_seed_env():
 def test_long_measure_names_get_distinct_job_names(tmp_path):
     """Two long measure names sharing a 60-char prefix must get distinct
     Slurm job names (a plain truncation would collide them into one job)."""
-    from autoresearch.compute import CommandResult, SlurmCompute
+    from outerloop.compute import CommandResult, SlurmCompute
 
     m = DispatchedMeasurer(
         compute=SlurmCompute(runner=lambda a, t: CommandResult(0, "", "")),
@@ -291,7 +291,7 @@ def test_long_measure_names_get_distinct_job_names(tmp_path):
 def test_long_run_tags_get_distinct_job_names(tmp_path):
     """Two run tags sharing their first chars must get distinct job names for
     the same measure (the hash covers the full run_tag, not just a prefix)."""
-    from autoresearch.compute import CommandResult, SlurmCompute
+    from outerloop.compute import CommandResult, SlurmCompute
 
     def mk(tag):
         return DispatchedMeasurer(
@@ -367,7 +367,7 @@ def test_dispatch_settings_place_gpu_jobs_on_the_gpu_lane(tmp_path):
     """`gpus > 0` routes measures to the GPU lane (its own account when
     given, else the CPU account); no lane configured is a loud error, never
     a CPU-partition job that can never run."""
-    from autoresearch.measure import DispatchSettings
+    from outerloop.measure import DispatchSettings
 
     cpu_only = DispatchSettings(
         compute=SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "1\n", "")),
@@ -404,7 +404,7 @@ def test_mixed_suite_places_each_measure_on_its_own_lane(tmp_path):
     sibling of a CPU benchmark (or vice versa) must land on its own lane with
     its own allocation — placement is per MEASURE, not per measurer (terra
     #174 r3)."""
-    from autoresearch.measure import SiblingSpec, plan_measures
+    from outerloop.measure import SiblingSpec, plan_measures
 
     submitted: list[list[str]] = []
 

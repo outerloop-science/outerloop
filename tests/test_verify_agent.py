@@ -6,9 +6,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from autoresearch.harness import SessionResult
-from autoresearch.verifier import build_verify_agent_brief
-from autoresearch.verify_agent import run_agent_verify
+from outerloop.harness import SessionResult
+from outerloop.verifier import build_verify_agent_brief
+from outerloop.verify_agent import run_agent_verify
 
 _WORKSPACE = Path("/tmp/two-trees")
 BOT = "agentic-learning-bot"
@@ -149,8 +149,8 @@ def test_malformed_output_posts_nothing() -> None:
 
 
 def test_category_survives_the_result_policy() -> None:
-    from autoresearch.role_runner import RoleResult
-    from autoresearch.roles import verify_result_from_role
+    from outerloop.role_runner import RoleResult
+    from outerloop.roles import verify_result_from_role
 
     role_result = RoleResult(
         ok=True,
@@ -164,7 +164,7 @@ def test_category_survives_the_result_policy() -> None:
 
 
 def test_brief_directs_ruler_reads_at_base() -> None:
-    from autoresearch.review import PullRequest
+    from outerloop.review import PullRequest
 
     pr = PullRequest("org/repo", 9, "t", "b", "diff", BOT)
     brief = build_verify_agent_brief(pr, "contract: yes", today="2026-08-13")
@@ -176,7 +176,7 @@ def test_brief_directs_ruler_reads_at_base() -> None:
 
 
 def test_bogus_category_clamps_to_other() -> None:
-    from autoresearch.verifier import verify_result_from_data
+    from outerloop.verifier import verify_result_from_data
 
     data = {
         "findings": [
@@ -201,7 +201,7 @@ def test_tokenless_split_emits_then_posts(tmp_path: Path) -> None:
     # separate post step (verify_post_cli) reads it and posts.
     import json as _json
 
-    from autoresearch.verify_post_cli import post_from_file
+    from outerloop.verify_post_cli import post_from_file
 
     ws = tmp_path / "two-trees"
     ws.mkdir()
@@ -232,7 +232,7 @@ def test_tokenless_split_emits_then_posts(tmp_path: Path) -> None:
 def test_post_from_file_refuses_a_mismatched_pr(tmp_path: Path) -> None:
     import json as _json
 
-    from autoresearch.verify_post_cli import post_from_file
+    from outerloop.verify_post_cli import post_from_file
 
     emit = tmp_path / "verdict.json"
     emit.write_text(_json.dumps({"repo": "org/repo", "number": 9, "kind": "findings", "data": {}}))

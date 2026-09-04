@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.syscall import (
+from outerloop.syscall import (
     SYSCALL_DIR,
     SYSCALL_FILE,
     LaunchResult,
@@ -136,7 +136,7 @@ def test_read_request_rejects_a_wrong_or_missing_type(tmp_path: Path) -> None:
 def test_oversized_request_file_is_refused_before_parsing(tmp_path: Path) -> None:
     # the file is agent-controlled: a giant request must be refused by SIZE
     # before any parse work (and still consumed).
-    from autoresearch.syscall import MAX_REQUEST_BYTES
+    from outerloop.syscall import MAX_REQUEST_BYTES
 
     f = write_req(tmp_path, "x" * (MAX_REQUEST_BYTES + 1))
     with pytest.raises(SyscallError, match="exceeds"):
@@ -153,8 +153,8 @@ def test_minutes_are_clamped_to_the_ceiling(tmp_path: Path) -> None:
 def test_siblings_command_reads_the_fleet_snapshot(tmp_path: Path) -> None:
     """`siblings` is author-PULLED: the kernel writes the snapshot at session
     start and the command renders it; absent or malformed means none known."""
-    from autoresearch.syscall import write_siblings
-    from autoresearch.syscall_cli import main as cli_main
+    from outerloop.syscall import write_siblings
+    from outerloop.syscall_cli import main as cli_main
 
     assert cli_main(["siblings"], root=tmp_path) == 0  # missing file: no crash
     write_siblings(
@@ -169,7 +169,7 @@ def test_siblings_command_reads_the_fleet_snapshot(tmp_path: Path) -> None:
             {"agent": "agent-03", "state": "implementing", "phase": "", "direction": ""},
         ],
     )
-    from autoresearch.syscall_cli import cmd_siblings
+    from outerloop.syscall_cli import cmd_siblings
 
     out = cmd_siblings(tmp_path, None)
     assert "agent-02 (waiting/candidate): compose embedding decay" in out
@@ -238,7 +238,7 @@ def test_submit_requires_a_prior_launch() -> None:
 
 
 def _launch(name: str):
-    from autoresearch.syscall import Launch
+    from outerloop.syscall import Launch
 
     return Launch(name=name, command="run", minutes=5)
 
@@ -518,7 +518,7 @@ def test_read_verdict_handles_unhashable_enum_values(tmp_path: Path) -> None:
 
 
 def test_read_verdict_size_caps_a_giant_verdict(tmp_path: Path) -> None:
-    from autoresearch.syscall import MAX_VERDICT_BYTES
+    from outerloop.syscall import MAX_VERDICT_BYTES
 
     d = tmp_path / SYSCALL_DIR
     d.mkdir()
@@ -556,7 +556,7 @@ def test_install_tool_clears_a_pre_planted_abi(tmp_path: Path) -> None:
 def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
     # the wake side: read each launch's exit/stdout/stderr + skips, and copy
     # delivered artifacts into the excluded channel dir the author reads.
-    from autoresearch.syscall import Launch, gather_results
+    from outerloop.syscall import Launch, gather_results
 
     run_dir = tmp_path / "run"
     ws = tmp_path / "ws"
@@ -598,7 +598,7 @@ def test_gather_results_refuses_symlinked_destination_channel(tmp_path) -> None:
     # the author controls .autoresearch in its sandbox: a symlinked results dir
     # (or a planted output symlink) must not make delivery write through it to a
     # host path (terra #135 r2).
-    from autoresearch.syscall import Launch, gather_results
+    from outerloop.syscall import Launch, gather_results
 
     run_dir = tmp_path / "run"
     ws = tmp_path / "ws"
@@ -624,7 +624,7 @@ def test_gather_results_reads_only_the_tail_of_huge_output(tmp_path) -> None:
     # launch output is agent-controlled and can be arbitrarily large: the wake
     # must read only the trailing window, never load the whole file
     # (terra #135 r1).
-    from autoresearch.syscall import MAX_OUTPUT_CHARS, Launch, gather_results
+    from outerloop.syscall import MAX_OUTPUT_CHARS, Launch, gather_results
 
     run_dir = tmp_path / "run"
     ws = tmp_path / "ws"
@@ -645,7 +645,7 @@ def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
     and missing ones recorded in artifacts.log; a shell-metacharacter name is
     INERT (never runs as code — terra #132 r1); a symlink pointing outside the
     tree is refused, not dereferenced (terra #132 r1)."""
-    from autoresearch.dispatch import write_eval_job
+    from outerloop.dispatch import write_eval_job
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -710,7 +710,7 @@ def test_submit_carries_a_declared_eval_walltime(tmp_path: Path) -> None:
     """`eval_minutes` is the author's walltime for the submit's paired gate
     evals: positive, clamped to the backstop, and meaningless without a
     submit (refused loudly rather than silently ignored)."""
-    from autoresearch.syscall import MAX_EVAL_MINUTES
+    from outerloop.syscall import MAX_EVAL_MINUTES
 
     write_req(tmp_path, {"launches": [], "submit": True, "eval_minutes": 420})
     req = read_request(tmp_path)
@@ -735,7 +735,7 @@ def test_gpu_hours_are_metered_against_the_run_budget() -> None:
     submit's two gate evals (at the declared, else default, walltime) draw on
     gpu_hours_per_run; an over-budget request is refused with the numbers.
     CPU benchmarks meter nothing."""
-    from autoresearch.syscall import evals_gpu_hours, gpu_hours_cost, launches_gpu_hours
+    from outerloop.syscall import evals_gpu_hours, gpu_hours_cost, launches_gpu_hours
 
     launches = (_launch("a"), _launch("b"))  # 5 min each
     plain = SyscallRequest(launches=launches)
@@ -799,7 +799,7 @@ def test_gpu_hours_are_metered_against_the_run_budget() -> None:
 def test_cached_gate_is_charged_one_main_eval() -> None:
     """A `baseline: cached` submit with a warm cache runs only the candidate:
     the gate charges one main eval, not two (terra #178); siblings stay paired."""
-    from autoresearch.syscall import evals_gpu_hours
+    from outerloop.syscall import evals_gpu_hours
 
     sub = SyscallRequest(launches=(), submit=True, eval_minutes=240)
     assert evals_gpu_hours(sub, gpus=1, eval_minutes_default=0, main_evals=2) == 8.0
@@ -815,7 +815,7 @@ def test_array_launch_fans_out_and_gathers_per_index(tmp_path: Path) -> None:
     results/<name>/<i>/; it costs K times the GPU-hours but one launch. The
     width is clamped; zero is refused. The dot is outside the name alphabet,
     so a plain launch can never share a job name with an array member."""
-    from autoresearch.syscall import (
+    from outerloop.syscall import (
         MAX_LAUNCH_ARRAY,
         Launch,
         gather_results,
@@ -876,7 +876,7 @@ def test_launch_hours_refund_hands_back_unused_declared_walltime() -> None:
     """A sweep charged 8 x 240 min at dispatch that died after 5 minutes per
     job is refunded almost all of it; a job that ran its full walltime is
     refunded nothing; an unknown elapsed time refunds nothing at all."""
-    from autoresearch.syscall import Launch, launch_hours_refund
+    from outerloop.syscall import Launch, launch_hours_refund
 
     sweep = (Launch(name="sweep", command="x", minutes=240, array=8),)
     assert launch_hours_refund(sweep, [300] * 8, gpus=1) == 32.0 - 8 * 300 / 3600
@@ -890,7 +890,7 @@ def test_launch_hours_refund_hands_back_unused_declared_walltime() -> None:
 
 
 def test_parse_elapsed_reads_sacct_fields() -> None:
-    from autoresearch.compute import parse_elapsed
+    from outerloop.compute import parse_elapsed
 
     assert parse_elapsed("00:05:00") == 300
     assert parse_elapsed("04:10:05") == 4 * 3600 + 605
@@ -906,8 +906,8 @@ def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
     import threading
     import time as _time
 
-    from autoresearch.syscall import SYSCALL_DIR, mark_synced
-    from autoresearch.syscall_cli import cmd_sync
+    from outerloop.syscall import SYSCALL_DIR, mark_synced
+    from outerloop.syscall_cli import cmd_sync
 
     (tmp_path / SYSCALL_DIR).mkdir()
 
@@ -924,8 +924,8 @@ def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
 
 
 def test_sync_cli_times_out_gracefully(tmp_path, monkeypatch) -> None:
-    from autoresearch.syscall import SYSCALL_DIR
-    from autoresearch.syscall_cli import cmd_sync
+    from outerloop.syscall import SYSCALL_DIR
+    from outerloop.syscall_cli import cmd_sync
 
     (tmp_path / SYSCALL_DIR).mkdir()
     monkeypatch.setattr("time.sleep", lambda s: None)
@@ -940,7 +940,7 @@ def test_sync_cli_times_out_gracefully(tmp_path, monkeypatch) -> None:
 def test_sync_request_tracking(tmp_path) -> None:
     import os
 
-    from autoresearch.syscall import SYSCALL_DIR, mark_synced, sync_requested
+    from outerloop.syscall import SYSCALL_DIR, mark_synced, sync_requested
 
     ws = tmp_path
     (ws / SYSCALL_DIR).mkdir()
@@ -969,7 +969,7 @@ def test_sync_request_tracking(tmp_path) -> None:
 def test_mark_synced_never_touches_a_hardlinked_marker(tmp_path) -> None:
     import os
 
-    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+    from outerloop.syscall import SYSCALL_DIR, mark_synced
 
     ws = tmp_path
     (ws / SYSCALL_DIR).mkdir()
@@ -990,7 +990,7 @@ def test_mark_synced_refuses_a_hardlinked_temp(tmp_path, monkeypatch) -> None:
     truncated (open fails); the victim survives."""
     import os as _os
 
-    from autoresearch.syscall import SYSCALL_DIR, mark_synced
+    from outerloop.syscall import SYSCALL_DIR, mark_synced
 
     ws = tmp_path
     (ws / SYSCALL_DIR).mkdir()
@@ -1008,7 +1008,7 @@ def test_mark_synced_refuses_a_hardlinked_temp(tmp_path, monkeypatch) -> None:
 
 
 def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
-    from autoresearch.syscall import mark_synced, sync_requested
+    from outerloop.syscall import mark_synced, sync_requested
 
     ws = tmp_path
     outside = ws / "outside"

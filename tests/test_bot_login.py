@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from autoresearch.github import DEFAULT_BOT_LOGIN, bot_login_from_env
+from outerloop.github import DEFAULT_BOT_LOGIN, bot_login_from_env
 
 
 def test_bot_login_defaults_to_the_account_and_follows_the_knob(monkeypatch) -> None:
@@ -17,9 +17,9 @@ def test_bot_login_defaults_to_the_account_and_follows_the_knob(monkeypatch) -> 
 def test_every_role_config_reads_the_login_at_construction(monkeypatch, tmp_path) -> None:
     """The defaults are call-time factories: a tick, climb, or steward built
     after the env is set sees the App's login; an explicit value still wins."""
-    from autoresearch.orchestrator import RunConfig
-    from autoresearch.steward import StewardConfig
-    from autoresearch.tick import FollowupSpec
+    from outerloop.orchestrator import RunConfig
+    from outerloop.steward import StewardConfig
+    from outerloop.tick import FollowupSpec
 
     monkeypatch.setenv("AUTORESEARCH_BOT_LOGIN", "outerloop-autoresearch[bot]")
     spec = FollowupSpec(account="a", partition="p", run_root=tmp_path, image="", home=tmp_path)

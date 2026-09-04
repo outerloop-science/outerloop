@@ -7,10 +7,10 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from autoresearch.harness import SessionResult
-from autoresearch.review import FINDINGS_SCHEMA
-from autoresearch.role_runner import run_role
-from autoresearch.roles import author_spec, reviewer_spec
+from outerloop.harness import SessionResult
+from outerloop.review import FINDINGS_SCHEMA
+from outerloop.role_runner import run_role
+from outerloop.roles import author_spec, reviewer_spec
 
 _WORKSPACE = Path("/tmp/does-not-matter")
 _FINDINGS = json.dumps({"findings": [], "notes": "looks fine"})
@@ -78,7 +78,7 @@ def test_editing_role_needs_no_schema() -> None:
 
 
 def test_followup_spec_carries_the_resuming_roles_key() -> None:
-    from autoresearch.roles import followup_spec
+    from outerloop.roles import followup_spec
 
     spec = followup_spec()
     assert spec.name == "followup" and spec.key == "author"
@@ -89,7 +89,7 @@ def test_followup_spec_carries_the_resuming_roles_key() -> None:
 
 
 def test_steward_spec_is_an_executing_editor_in_its_own_territory() -> None:
-    from autoresearch.roles import steward_spec
+    from outerloop.roles import steward_spec
 
     spec = steward_spec()
     assert spec.name == "steward" and spec.key == "steward"
@@ -178,8 +178,8 @@ def test_verdict_tool_mode_malformed_verdict_is_a_failure(tmp_path: Path) -> Non
 
 
 def test_build_harness_claude_judge_gets_tools_and_bare() -> None:
-    from autoresearch.harness import ClaudeCodeHarness
-    from autoresearch.role_runner import build_harness
+    from outerloop.harness import ClaudeCodeHarness
+    from outerloop.role_runner import build_harness
 
     h = build_harness("k", reviewer_spec())
     assert isinstance(h, ClaudeCodeHarness)
@@ -193,8 +193,8 @@ def test_build_harness_claude_judge_gets_tools_and_bare() -> None:
 def test_build_harness_codex_is_uniform_for_all_roles() -> None:
     # one execution surface: codex's own sandbox stays off; the deployment's
     # container or ephemeral runner is the boundary, for judges and editors alike
-    from autoresearch.harness import CodexHarness
-    from autoresearch.role_runner import build_harness
+    from outerloop.harness import CodexHarness
+    from outerloop.role_runner import build_harness
 
     judge = build_harness("k", reviewer_spec(), backend="codex")
     editor = build_harness("k", author_spec(), backend="codex", container_image="img.sif")
@@ -208,8 +208,8 @@ def test_build_harness_codex_is_uniform_for_all_roles() -> None:
 
 
 def test_build_harness_hermes_toolsets_follow_the_spec(tmp_path: Path) -> None:
-    from autoresearch.harness import HermesHarness
-    from autoresearch.role_runner import build_harness
+    from outerloop.harness import HermesHarness
+    from outerloop.role_runner import build_harness
 
     h = build_harness(
         "k", reviewer_spec(), backend="hermes", hermes_repo=tmp_path, hermes_provider="openai"
@@ -229,8 +229,8 @@ def test_build_harness_hermes_terminal_keys_on_the_bash_tool(tmp_path: Path) -> 
     # executes (terra #140 r5).
     from dataclasses import replace
 
-    from autoresearch.harness import HermesHarness
-    from autoresearch.role_runner import build_harness
+    from outerloop.harness import HermesHarness
+    from outerloop.role_runner import build_harness
 
     spec = replace(reviewer_spec(), tools=("Read", "Grep", "Glob"))  # no Bash
     h = build_harness("k", spec, backend="hermes", hermes_repo=tmp_path)
@@ -242,7 +242,7 @@ def test_build_harness_hermes_terminal_keys_on_the_bash_tool(tmp_path: Path) -> 
 def test_build_harness_hermes_requires_repo_and_known_provider(tmp_path: Path) -> None:
     import pytest
 
-    from autoresearch.role_runner import build_harness
+    from outerloop.role_runner import build_harness
 
     with pytest.raises(ValueError, match="hermes_repo"):
         build_harness("k", reviewer_spec(), backend="hermes")
@@ -255,7 +255,7 @@ def test_build_harness_hermes_requires_repo_and_known_provider(tmp_path: Path) -
 def test_build_harness_rejects_unknown_backend() -> None:
     import pytest
 
-    from autoresearch.role_runner import build_harness
+    from outerloop.role_runner import build_harness
 
     with pytest.raises(ValueError, match="unknown backend"):
         build_harness("k", reviewer_spec(), backend="gemini-cli")

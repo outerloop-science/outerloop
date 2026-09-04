@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from autoresearch.review import (
+from outerloop.review import (
     ADVISORY_HEADER,
     FINDINGS_SCHEMA,
     MARKER,
@@ -74,7 +74,7 @@ ONE_FINDING = {
 
 
 def test_result_from_data_parses_and_defaults_kind() -> None:
-    from autoresearch.review import result_from_data
+    from outerloop.review import result_from_data
 
     def item(**extra: Any) -> dict[str, Any]:
         return {
@@ -99,7 +99,7 @@ def test_result_from_data_parses_and_defaults_kind() -> None:
 
 
 def test_result_from_data_drops_malformed_items_without_crashing() -> None:
-    from autoresearch.review import result_from_data
+    from outerloop.review import result_from_data
 
     good = {
         "file": "x.py",
@@ -130,7 +130,7 @@ def test_result_from_data_drops_malformed_items_without_crashing() -> None:
 
 
 def test_boolean_line_is_not_treated_as_a_line_number() -> None:
-    from autoresearch.review import result_from_data
+    from outerloop.review import result_from_data
 
     data: dict[str, Any] = {
         "findings": [
@@ -242,7 +242,7 @@ def test_findings_sorted_by_confidence() -> None:
 
 
 def test_verdict_leads_and_blocking_split_from_advisory() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_comment
+    from outerloop.review import Finding, ReviewResult, format_comment
 
     r = ReviewResult(
         findings=[
@@ -276,7 +276,7 @@ def test_verdict_leads_and_blocking_split_from_advisory() -> None:
 
 
 def test_verdict_says_mergeable_when_nothing_blocks() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_comment
+    from outerloop.review import Finding, ReviewResult, format_comment
 
     r = ReviewResult(
         findings=[
@@ -325,8 +325,8 @@ def test_advisory_header_semantics_are_pinned() -> None:
 
 
 def test_backticked_filename_cannot_break_the_reference_span() -> None:
-    from autoresearch.review import Finding, ReviewResult
-    from autoresearch.review import format_comment as _fc
+    from outerloop.review import Finding, ReviewResult
+    from outerloop.review import format_comment as _fc
 
     body = _fc(
         ReviewResult(
@@ -362,7 +362,7 @@ DIFF = """\
 
 
 def test_commentable_lines_maps_the_new_side() -> None:
-    from autoresearch.review import commentable_lines
+    from outerloop.review import commentable_lines
 
     lines = commentable_lines(DIFF)
     # new side: 10 (context), 11-12 (added), 13 (context); nothing else
@@ -370,7 +370,7 @@ def test_commentable_lines_maps_the_new_side() -> None:
 
 
 def test_format_review_splits_anchored_from_body() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_review
+    from outerloop.review import Finding, ReviewResult, format_review
 
     anchored = Finding(
         file="src/x.py",
@@ -401,7 +401,7 @@ def test_format_review_splits_anchored_from_body() -> None:
 
 
 def test_nonblocking_suggestion_anchors_inline_with_label() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_review
+    from outerloop.review import Finding, ReviewResult, format_review
 
     sugg = Finding(
         file="src/x.py",
@@ -419,7 +419,7 @@ def test_nonblocking_suggestion_anchors_inline_with_label() -> None:
 
 
 def test_inline_lead_distinguishes_blocking_from_change() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_review
+    from outerloop.review import Finding, ReviewResult, format_review
 
     blocking = Finding(
         file="src/x.py",
@@ -446,7 +446,7 @@ def test_inline_lead_distinguishes_blocking_from_change() -> None:
 
 
 def test_local_question_and_note_stay_in_body() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_review
+    from outerloop.review import Finding, ReviewResult, format_review
 
     question = Finding(
         file="src/x.py",
@@ -476,7 +476,7 @@ def test_unanchored_suggestion_keeps_its_text_in_the_body() -> None:
     """A suggestion that cannot anchor inline (its line is not in the diff)
     is rendered with its detail: for a prose finding the detail IS the
     rewrite, and a bare claim would lose it. Notes stay one line."""
-    from autoresearch.review import Finding, ReviewResult, format_review
+    from outerloop.review import Finding, ReviewResult, format_review
 
     rewrite = Finding(
         file="docs/guide.md",
@@ -507,7 +507,7 @@ def test_commentable_lines_survives_header_lookalike_content() -> None:
     """An added line whose CONTENT starts with '++ b/' arrives as
     '+++ b/...' and must not rebind the file mid-hunk (review finding:
     file content is contributor-controlled)."""
-    from autoresearch.review import commentable_lines
+    from outerloop.review import commentable_lines
 
     tricky = (
         "diff --git a/real.py b/real.py\n"
@@ -524,7 +524,7 @@ def test_commentable_lines_survives_header_lookalike_content() -> None:
 
 
 def test_format_review_all_anchored_says_so() -> None:
-    from autoresearch.review import Finding, ReviewResult, format_review
+    from outerloop.review import Finding, ReviewResult, format_review
 
     f = Finding(
         file="src/x.py",
@@ -544,7 +544,7 @@ def test_format_review_all_anchored_says_so() -> None:
 def test_commentable_lines_stops_at_file_boundaries() -> None:
     """Inter-file headers must not inflate the previous file's anchors
     (review finding: they read as context lines past the last hunk)."""
-    from autoresearch.review import commentable_lines
+    from outerloop.review import commentable_lines
 
     two_files = (
         "diff --git a/a.py b/a.py\n"

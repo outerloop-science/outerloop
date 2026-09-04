@@ -11,8 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-import autoresearch.harness as harness_mod
-from autoresearch.harness import (
+import outerloop.harness as harness_mod
+from outerloop.harness import (
     CodexHarness,
     SessionResult,
     _codex_command,
@@ -113,7 +113,7 @@ def test_parse_skips_timestamped_log_lines() -> None:
 def test_run_clears_codex_scratch_but_keeps_durable_state(monkeypatch: Any, tmp_path: Path) -> None:
     """Codex leaks temp dirs into .codex/.tmp across a run's wakes; run() clears
     that scratch each time, while its durable state (sessions, sqlite) stays."""
-    from autoresearch import harness as harness_mod
+    from outerloop import harness as harness_mod
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -151,7 +151,7 @@ def test_run_does_not_follow_a_symlinked_codex_out_of_home(
     """A prior session owns its home; if it replaced .codex with a symlink to
     an external directory, the scratch cleanup must not follow the link and
     delete the target's .tmp."""
-    from autoresearch import harness as harness_mod
+    from outerloop import harness as harness_mod
 
     workspace = tmp_path / "ws"
     workspace.mkdir()

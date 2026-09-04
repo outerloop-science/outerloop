@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.runstate import (
+from outerloop.runstate import (
     ENDED,
     MAX_CLOCK_SKEW_S,
     OUTAGE_COOLDOWN_S,
@@ -113,7 +113,7 @@ def test_lease_staleness_rules(tmp_path: Path) -> None:
 
 
 def test_reap_lease_exactly_one_reaper_wins(tmp_path: Path) -> None:
-    from autoresearch.runstate import reap_lease
+    from outerloop.runstate import reap_lease
 
     acquire_lease(tmp_path, "r1", "dead", "", now=1.0)
     stale = read_lease(tmp_path, "r1")
@@ -126,7 +126,7 @@ def test_reap_lease_exactly_one_reaper_wins(tmp_path: Path) -> None:
 def test_reap_lease_refuses_a_fresh_lease_it_did_not_observe(tmp_path: Path) -> None:
     """The CAS: reaper B saw the stale lease, but reaper A already reaped it
     and a fresh lease was written — B must restore, not steal."""
-    from autoresearch.runstate import reap_lease
+    from outerloop.runstate import reap_lease
 
     acquire_lease(tmp_path, "r1", "dead", "", now=1.0)
     stale = read_lease(tmp_path, "r1")
@@ -225,7 +225,7 @@ def test_load_record_maps_legacy_climb_job_id(tmp_path: Path) -> None:
     # load must map it to run_job_id so the sweep still ends a killed job
     import json
 
-    from autoresearch.runstate import RECORD_NAME, load_record, run_dir
+    from outerloop.runstate import RECORD_NAME, load_record, run_dir
 
     d = run_dir(tmp_path, "r1")
     d.mkdir(parents=True)

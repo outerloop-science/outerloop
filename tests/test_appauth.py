@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from autoresearch.appauth import (
+from outerloop.appauth import (
     AppInstallationTokenProvider,
     build_app_jwt,
     signer_from_private_key,
@@ -101,7 +101,7 @@ def test_default_transport_routes_through_the_shared_opener(monkeypatch) -> None
     # a cross-host redirect can never forward the App JWT
     import io
 
-    from autoresearch import appauth
+    from outerloop import appauth
 
     seen = {}
 
@@ -135,8 +135,8 @@ def _iso(epoch: float) -> str:
 
 
 def test_resolve_bot_auth_defaults_to_the_pat(tmp_path) -> None:
-    from autoresearch.appauth import resolve_bot_auth
-    from autoresearch.github import FileTokenProvider
+    from outerloop.appauth import resolve_bot_auth
+    from outerloop.github import FileTokenProvider
 
     pat = tmp_path / "pat"
     pat.write_text("github_pat_x\n")
@@ -165,7 +165,7 @@ def _rsa_pem(path) -> None:
 
 
 def test_resolve_bot_auth_selects_the_app_provider(tmp_path) -> None:
-    from autoresearch.appauth import resolve_bot_auth
+    from outerloop.appauth import resolve_bot_auth
 
     key = tmp_path / "app.pem"
     _rsa_pem(key)
@@ -181,7 +181,7 @@ def test_resolve_bot_auth_selects_the_app_provider(tmp_path) -> None:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-    from autoresearch.appauth import build_app_jwt, signer_from_private_key
+    from outerloop.appauth import build_app_jwt, signer_from_private_key
 
     jwt = build_app_jwt(4797847, 1_000_000.0, signer_from_private_key(key))
     signing_input, _, sig_seg = jwt.rpartition(".")
@@ -194,7 +194,7 @@ def test_resolve_bot_auth_selects_the_app_provider(tmp_path) -> None:
 
 
 def test_app_config_failures_are_loud(tmp_path) -> None:
-    from autoresearch.appauth import app_provider_from_file
+    from outerloop.appauth import app_provider_from_file
 
     with pytest.raises(ValueError, match="cannot read App config"):
         app_provider_from_file(tmp_path / "absent.json")
@@ -219,8 +219,8 @@ def test_app_config_failures_are_loud(tmp_path) -> None:
 def test_redact_covers_tokens_minted_after_the_snapshot(monkeypatch) -> None:
     """The round-2 obligation: a secrets tuple captured at CLI start must not
     miss an installation token minted by a later refresh."""
-    from autoresearch import appauth
-    from autoresearch.harness import redact
+    from outerloop import appauth
+    from outerloop.harness import redact
 
     monkeypatch.setattr(appauth, "_ISSUED_TOKENS", [])
     clock = {"t": 1_000.0}

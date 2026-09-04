@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.harness import FakeHarness, SessionResult
-from autoresearch.orchestrator import (
+from outerloop.harness import FakeHarness, SessionResult
+from outerloop.orchestrator import (
     EvalError,
     RunConfig,
     _metric_from_output,
@@ -77,7 +77,7 @@ def _wire(evaluator, workspace, base_ws=None):
             self._cache: dict = {}
 
         def results(self, measures):
-            from autoresearch.orchestrator import EvalError as _EvalError
+            from outerloop.orchestrator import EvalError as _EvalError
 
             out = {}
             for m in measures:
@@ -268,7 +268,7 @@ DEEP_CONTRACT = CONTRACT.replace(
 def test_author_sleep_parks_on_a_sealed_snapshot(tmp_path: Path) -> None:
     # the author launched work and slept: the tree is sealed, the launcher is
     # handed the request, and the park carries request + budget counts.
-    from autoresearch.orchestrator import RunParked
+    from outerloop.orchestrator import RunParked
 
     _write_syscall(
         tmp_path,
@@ -288,7 +288,7 @@ def test_author_sleep_parks_on_a_sealed_snapshot(tmp_path: Path) -> None:
 
 
 def test_checkpoint_sleep_parks_with_no_dependency(tmp_path: Path) -> None:
-    from autoresearch.orchestrator import RunParked
+    from outerloop.orchestrator import RunParked
 
     _write_syscall(tmp_path, {"launches": []})
     with pytest.raises(RunParked) as exc:
@@ -302,7 +302,7 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     # is sealed, the dispatched gate parks the run as a candidate carrying the
     # submitted marker + budget counts, and a sibling launch rides the same
     # afterany, submitted on the sealed sha.
-    from autoresearch.orchestrator import RunParked
+    from outerloop.orchestrator import RunParked
 
     _write_syscall(
         tmp_path,
@@ -412,7 +412,7 @@ def test_feature_off_metered_runs_still_measure_at_finish(tmp_path: Path) -> Non
     """With syscalls disabled (launcher None) zero launches is structural,
     not a choice: the terminal gate is the run's ONLY measurement and must
     run."""
-    from autoresearch.orchestrator import RunParked
+    from outerloop.orchestrator import RunParked
 
     metered = CONTRACT.replace(
         "    metric: mean_tour_length\n",
@@ -509,7 +509,7 @@ def test_conceding_after_an_errored_eval_ends_without_another_gate(tmp_path: Pat
     """The gate's eval errored; the author read the note and concluded
     without touching the tree. The attempt ends on that error — the
     identical tree is not evaluated again."""
-    from autoresearch.orchestrator import EvalError
+    from outerloop.orchestrator import EvalError
 
     harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
     evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)")])  # type: ignore[list-item]
@@ -523,7 +523,7 @@ def test_conceding_after_an_errored_eval_ends_without_another_gate(tmp_path: Pat
 def test_resubmitting_after_an_errored_eval_runs_it_again(tmp_path: Path) -> None:
     """After an errored eval a resubmit of the same tree is the retry (more
     minutes declared, say): it is measured again, not answered from memory."""
-    from autoresearch.orchestrator import EvalError
+    from outerloop.orchestrator import EvalError
 
     harness = _SeqHarness(["the claim", "again", "conceded"], submit_on=(1, 2))
     evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)"), 13.9])  # type: ignore[list-item]
@@ -538,7 +538,7 @@ def test_resubmit_after_a_gate_verdict_keeps_scope_and_snapshot_guards(tmp_path:
     """The early seal of a resubmit runs behind the same guards as the late
     one: an out-of-scope edit is a scope violation before anything is
     snapshotted, and a failed snapshot is the eval error it always was."""
-    from autoresearch.orchestrator import EvalError
+    from outerloop.orchestrator import EvalError
 
     harness = _SeqHarness(["the claim", "again"], submit_on=(1, 2))
     evaluator = FakeEvaluator(values=[13.9, 13.9])
@@ -729,7 +729,7 @@ def test_unseeded_benchmark_injects_nothing(tmp_path: Path) -> None:
 
 
 def test_relative_floor_scales_with_the_level() -> None:
-    from autoresearch.orchestrator import benchmark_floor, clears_min_delta
+    from outerloop.orchestrator import benchmark_floor, clears_min_delta
 
     # 13% relative floor: at level 500 the floor is 65, at 550 it is 71.5
     assert benchmark_floor(500.0, None, 0.13) == 65.0
@@ -749,7 +749,7 @@ def test_relative_floor_scales_with_the_level() -> None:
 
 
 def test_clears_min_delta_is_direction_aware_and_absolute() -> None:
-    from autoresearch.orchestrator import clears_min_delta, reaches_floor
+    from outerloop.orchestrator import clears_min_delta, reaches_floor
 
     assert clears_min_delta(12.0, 11.4, "min", 0.5)  # 0.6 > 0.5
     assert clears_min_delta(12.0, 11.5, "min", 0.5)  # exactly at the floor: credited
@@ -787,7 +787,7 @@ class ParkingMeasurer:
         self.calls = 0
 
     def results(self, measures):
-        from autoresearch.measure import MeasurementPending
+        from outerloop.measure import MeasurementPending
 
         self.calls += 1
         if self.calls == self.park_on:
@@ -809,7 +809,7 @@ def test_candidate_measure_parks_after_the_session(tmp_path: Path) -> None:
     # The ONLY park: the session runs (no pre-session baseline), then the gate
     # dispatches baseline+candidate together and hibernates. A dispatched climb
     # never has a baseline park.
-    from autoresearch.orchestrator import RunParked
+    from outerloop.orchestrator import RunParked
 
     harness = FakeHarness(result=ok_session())
     m = ParkingMeasurer(park_on_call=1)  # the gate's first (baseline+candidate) call parks
@@ -993,7 +993,7 @@ def test_improved_rejects_nonfinite_and_zero_baseline_uses_absolute() -> None:
 
 
 def test_draw_run_seed_never_returns_the_sentinel() -> None:
-    from autoresearch.orchestrator import draw_run_seed
+    from outerloop.orchestrator import draw_run_seed
 
     for _ in range(64):
         seed = draw_run_seed()
@@ -1003,7 +1003,7 @@ def test_draw_run_seed_never_returns_the_sentinel() -> None:
 def test_extra_env_cannot_override_managed_isolation_vars(tmp_path: Path) -> None:
     """HOME/UV_* are the eval's isolation; a colliding injection is dropped
     (the contract validator rejects such seed_env names — this is depth)."""
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     value = SubprocessEvaluator(timeout_s=30).evaluate(
         tmp_path,
@@ -1018,7 +1018,7 @@ def test_extra_env_cannot_override_managed_isolation_vars(tmp_path: Path) -> Non
 def test_subprocess_evaluator_injects_extra_env(tmp_path: Path) -> None:
     """The seed reaches the eval subprocess (the base env is a scrubbed
     allowlist, so injection must be explicit and is tested for real)."""
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     value = SubprocessEvaluator(timeout_s=30).evaluate(
         tmp_path,
@@ -1030,7 +1030,7 @@ def test_subprocess_evaluator_injects_extra_env(tmp_path: Path) -> None:
 
 
 def test_subprocess_evaluator_real_run(tmp_path: Path) -> None:
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     value = SubprocessEvaluator(timeout_s=30).evaluate(tmp_path, """printf '{"m": 0.5}\n'""", "m")
     assert value == 0.5
@@ -1041,7 +1041,7 @@ def test_subprocess_evaluator_scrubs_home(tmp_path: Path) -> None:
     shelters the bot PAT) must never be visible to it."""
     import os
 
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     real_home = os.environ.get("HOME", "")
     value = SubprocessEvaluator(timeout_s=30).evaluate(
@@ -1051,14 +1051,14 @@ def test_subprocess_evaluator_scrubs_home(tmp_path: Path) -> None:
 
 
 def test_subprocess_evaluator_nonzero_exit_is_eval_error(tmp_path: Path) -> None:
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     with pytest.raises(EvalError, match="eval failed"):
         SubprocessEvaluator(timeout_s=30).evaluate(tmp_path, "exit 3", "m")
 
 
 def test_subprocess_evaluator_rejects_nonfinite(tmp_path: Path) -> None:
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     with pytest.raises(EvalError, match="not finite"):
         SubprocessEvaluator(timeout_s=30).evaluate(tmp_path, """printf '{"m": Infinity}\n'""", "m")
@@ -1068,7 +1068,7 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path) -> None:
     """With an image set, the eval command runs inside apptainer."""
     import stat as stat_mod
 
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     fake = tmp_path / "apptainer"
     fake.write_text(
@@ -1144,7 +1144,7 @@ def test_report_covers_failure_outcomes(tmp_path: Path) -> None:
 
 def test_eval_home_is_outside_the_clone(tmp_path: Path) -> None:
     """Eval cache/state must not masquerade as agent edits in the diff."""
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -1165,7 +1165,7 @@ def test_report_redacts_secrets(tmp_path: Path) -> None:
 
 
 def test_progress_render_and_ledger_roundtrip(tmp_path: Path) -> None:
-    from autoresearch.progress import (
+    from outerloop.progress import (
         load_leader,
         render_markdown,
         update_leader,
@@ -1183,7 +1183,7 @@ def test_progress_render_and_ledger_roundtrip(tmp_path: Path) -> None:
 
 
 def test_leader_survives_corruption(tmp_path: Path) -> None:
-    from autoresearch.progress import LEADER_FILE, load_leader
+    from outerloop.progress import LEADER_FILE, load_leader
 
     path = tmp_path / LEADER_FILE
     path.parent.mkdir(parents=True)
@@ -1192,7 +1192,7 @@ def test_leader_survives_corruption(tmp_path: Path) -> None:
 
 
 def test_leader_best_never_regresses() -> None:
-    from autoresearch.progress import update_leader
+    from outerloop.progress import update_leader
 
     entries = update_leader({}, "tsp", "m", "min", 13.876, 13.1, "r1", "d1")
     # a later run improved vs its own (stale) baseline but is worse than best
@@ -1209,7 +1209,7 @@ def test_eval_cache_is_bound_alone_and_cleaned(tmp_path: Path, monkeypatch) -> N
     whole host tmp — and it dies with the eval."""
     import stat as stat_mod
 
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     scratch = tmp_path / "scratch"
     scratch.mkdir()
@@ -1245,7 +1245,7 @@ def test_subprocess_evaluator_env_is_private_per_eval(tmp_path: Path) -> None:
     with the session, no NFS close-to-open race, no session-authored
     entrypoints in the orchestrator's path): UV_PROJECT_ENVIRONMENT points
     at node-local scratch beside the uv cache, unique per eval."""
-    from autoresearch.orchestrator import SubprocessEvaluator
+    from outerloop.orchestrator import SubprocessEvaluator
 
     command = (
         """printf '{"m": %s}\\n' """
@@ -1401,7 +1401,7 @@ def test_seeded_benchmark_shares_its_run_seed_with_the_suite(tmp_path: Path) -> 
 
 
 def test_suite_regressed_is_direction_aware_and_fails_closed() -> None:
-    from autoresearch.orchestrator import suite_regressed
+    from outerloop.orchestrator import suite_regressed
 
     assert suite_regressed(0.8, 0.5, "max")  # max: drop is a regression
     assert not suite_regressed(0.8, 0.9, "max")
@@ -1422,8 +1422,8 @@ def test_pr_body_carries_the_suite_table(tmp_path: Path) -> None:
 
 
 def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
-    from autoresearch.contract import load_contract
-    from autoresearch.orchestrator import make_task
+    from outerloop.contract import load_contract
+    from outerloop.orchestrator import make_task
 
     gated = make_task(load_contract(SHARED_CONTRACT, "org/pilot"), "tsp", 13.876)
     assert "suite-gated" in gated.done_criteria
@@ -1433,7 +1433,7 @@ def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
 
 def test_attempt_once_refuses_a_read_only_spec(tmp_path: Path) -> None:
     # the author is an editing role; a non-executing spec here is a deployment bug
-    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+    from outerloop.rolespec import Execution, RoleSpec, SessionBudget
 
     read_only = RoleSpec(
         name="reviewer",
@@ -1509,8 +1509,8 @@ class _QueuedPanel:
 
 
 def _verdict(blocking: bool, round_no: int):
-    from autoresearch.panel import PanelVerdict
-    from autoresearch.review import Finding
+    from outerloop.panel import PanelVerdict
+    from outerloop.review import Finding
 
     findings = (
         (
@@ -1639,7 +1639,7 @@ def test_panel_pr_body_carries_banner_and_transcript(tmp_path: Path) -> None:
 
 
 def test_degraded_final_read_marks_the_result_and_skips_the_wake(tmp_path: Path) -> None:
-    from autoresearch.panel import PanelVerdict
+    from outerloop.panel import PanelVerdict
 
     degraded = PanelVerdict(
         blocking=(),

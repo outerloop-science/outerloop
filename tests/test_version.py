@@ -1,7 +1,7 @@
 from importlib.metadata import version
 
-import autoresearch
+import outerloop
 
 
 def test_installed_metadata_matches_package_version() -> None:
-    assert version("autoresearch") == autoresearch.__version__
+    assert version("autoresearch") == outerloop.__version__

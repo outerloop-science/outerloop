@@ -107,7 +107,7 @@ draw on it, and the author sets how long its final eval may run
 is never the metric. CPU benchmarks are not metered.
 
 ```bash
-uv run python -m autoresearch.contract_cli .autoresearch.yaml   # validate before you push
+uv run python -m outerloop.contract_cli .autoresearch.yaml   # validate before you push
 ```
 
 ## Getting started
