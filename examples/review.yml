@@ -2,9 +2,10 @@
 # .github/workflows/review.yml to get an AI code review on every pull request.
 #
 # It posts advisory findings as a PR review. It NEVER approves, never blocks
-# your CI, and never runs your PR's code — it only reads the diff. Same-repo
-# and fork PRs are both reviewed; the reviewer's model key lives only in a
-# read-only, write-tokenless job, so a fork PR cannot reach it.
+# your CI, and never runs your PR's code — it only reads the diff. It reviews
+# pull requests from branches in THIS repository; PRs from forks are skipped
+# (fork-PR review is a planned addition). The model key lives only in a
+# read-only, write-tokenless job.
 #
 # Setup (see docs/reviewer.md): (1) have a bot account whose PRs are skipped,
 # (2) add this file, (3) set the ANTHROPIC_REVIEWER_KEY repo secret.
@@ -20,7 +21,7 @@ jobs:
   review:
     if: >-
       github.event.action != 'labeled'
-      || github.event.label.name == 'outerloop:review'
+      || github.event.label.name == 'autoresearch:review'
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v1
     with:
       # PRs authored by this login are never reviewed (so the bot never
