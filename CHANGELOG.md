@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Relicensed from MIT to Apache-2.0 (added `LICENSE` + `NOTICE`), ahead of the
+  public release as the Outerloop platform — the explicit patent grant is the
+  standard for infrastructure others build on. Copyright remains the Agentic
+  Learning AI Lab at NYU.
+
+### Changed
+
 - The session's wake now pushes the author to keep going while budget remains
   instead of treating a single negative as a finished session. A negative or
   inconclusive result is framed as a step, not the finish line: while launches,
