@@ -386,7 +386,7 @@ def start(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="autoresearch", description="autonomous research agents in an outer loop"
+        prog="outerloop", description="autonomous research agents in an outer loop"
     )
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser(
