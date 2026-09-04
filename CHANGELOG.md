@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- The session's wake now pushes the author to keep going while budget remains
+  instead of treating a single negative as a finished session. A negative or
+  inconclusive result is framed as a step, not the finish line: while launches,
+  sleeps, and GPU-hours remain, form the next hypothesis and launch again rather
+  than concluding. (Persistent research lines removed the old use-it-or-lose-it
+  pressure to go deep in one session; this restores it through the brief.)
+
 ### Added
 
 - Disk housekeeping: an ended run sheds its `ws/` and `ws-home/` directories

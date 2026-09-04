@@ -806,6 +806,7 @@ def render_wake(
     sleeps_used: int,
     sleep_budget: int,
     gpu_hours_remaining: float | None = None,
+    gpus: int = 0,
 ) -> str:
     """The text a woken author sees: every job's results as fenced DATA, the
     author's own note echoed back, and the remaining budgets. Job output is
@@ -836,14 +837,37 @@ def render_wake(
         fence = _fence(note)
         parts.append(f"Your note to yourself:\n{fence}\n{note}\n{fence}")
     gpu = f", {gpu_hours_remaining:.1f} GPU-hours" if gpu_hours_remaining is not None else ""
+    # Push to keep going ONLY when another launch is actually possible: a launch
+    # needs a remaining launch count AND enough GPU-hours to pay for even the
+    # cheapest one (a 1-minute job on `gpus` GPUs), or budget_error would reject
+    # the very launch this urges — a positive remainder below that floor cannot
+    # buy a launch. When nothing more can launch, the honest instruction is to
+    # conclude.
+    min_launch_gpu_hours = gpus / 60.0  # one minute on `gpus` GPUs
+    can_launch = launches_used < launch_budget and (
+        gpu_hours_remaining is None or gpu_hours_remaining >= min_launch_gpu_hours
+    )
+    if sleeps_used >= sleep_budget:
+        tail = " This was your LAST sleep — conclude this session with your best result."
+    elif not can_launch:
+        tail = (
+            " Your launch budget is spent — conclude this session with your best "
+            "result (submit your best candidate, or write your report)."
+        )
+    else:
+        # The budget is there to be spent: a negative is a step, not a stopping
+        # point. Push the next hypothesis rather than concluding early — a
+        # session that ends with launches and GPU-hours in hand left the
+        # question half-answered.
+        tail = (
+            " A negative or a miss is a step, not a stopping point: while this "
+            "budget remains, form your next hypothesis and launch again — a new "
+            "direction or a sweep — rather than concluding. Finish only with an "
+            "improvement to submit or a genuinely spent budget."
+        )
     parts.append(
         f"Budgets: {launch_budget - launches_used} launches and "
-        f"{sleep_budget - sleeps_used} sleeps{gpu} remaining."
-        + (
-            " This was your LAST sleep — conclude this session with your best result."
-            if sleeps_used >= sleep_budget
-            else ""
-        )
+        f"{sleep_budget - sleeps_used} sleeps{gpu} remaining." + tail
     )
     return "\n\n".join(parts)
 

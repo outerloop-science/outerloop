@@ -275,6 +275,47 @@ def test_wake_text_flags_the_last_sleep() -> None:
     assert "checkpoint sleep" in text  # no launches -> says so
 
 
+def test_wake_text_pushes_to_keep_going_while_budget_remains() -> None:
+    # a negative with budget left is a step, not a stopping point: the wake
+    # pushes the next hypothesis instead of letting the author conclude early.
+    text = render_wake((), "", launches_used=1, launch_budget=8, sleeps_used=1, sleep_budget=8)
+    assert "not a stopping point" in text and "launch again" in text
+    assert "LAST sleep" not in text  # budget remains
+
+
+def test_wake_text_says_conclude_when_no_launch_is_possible() -> None:
+    # sleeps remain but the LAUNCH budget is spent (4/4): the wake must NOT tell
+    # the author to launch again (budget_error would reject it) — it concludes.
+    text = render_wake((), "", launches_used=4, launch_budget=4, sleeps_used=1, sleep_budget=8)
+    assert "launch budget is spent" in text and "conclude" in text
+    assert "launch again" not in text
+    # a positive GPU-hours remainder BELOW a one-minute launch cost (gpus/60)
+    # still cannot pay for a launch: conclude, don't urge one
+    gpu_dry = render_wake(
+        (),
+        "",
+        launches_used=1,
+        launch_budget=8,
+        sleeps_used=1,
+        sleep_budget=8,
+        gpu_hours_remaining=0.01,  # < 1/60 (one minute on one GPU)
+        gpus=1,
+    )
+    assert "launch again" not in gpu_dry and "conclude" in gpu_dry
+    # ample GPU-hours -> keep going
+    gpu_ok = render_wake(
+        (),
+        "",
+        launches_used=1,
+        launch_budget=8,
+        sleeps_used=1,
+        sleep_budget=8,
+        gpu_hours_remaining=50.0,
+        gpus=1,
+    )
+    assert "launch again" in gpu_ok
+
+
 def _lr(name: str, exit_code, state: str = "") -> LaunchResult:
     return LaunchResult(
         name=name,
