@@ -30,7 +30,7 @@ jobs:
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: 'outerloop-science[bot]'
-      bot_aliases: agentic-learning-bot
+      bot_aliases: 'outerloop-autoresearch[bot], agentic-learning-bot'
       backend: hermes
       # openai-direct: same token rate, no OpenRouter platform fee (the org's
       # OpenAI account is tax-exempt); model id is provider-native
@@ -50,7 +50,7 @@ jobs:
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-summarize.yml@main
     with:
       bot_login: 'outerloop-science[bot]'
-      bot_aliases: agentic-learning-bot
+      bot_aliases: 'outerloop-autoresearch[bot], agentic-learning-bot'
       backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra
@@ -66,7 +66,7 @@ jobs:
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: 'outerloop-science[bot]'
-      bot_aliases: agentic-learning-bot
+      bot_aliases: 'outerloop-autoresearch[bot], agentic-learning-bot'
       backend: hermes
       hermes_provider: openai
       model: gpt-5.6-terra
