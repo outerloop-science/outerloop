@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from autoresearch.contract import load_contract
-from autoresearch.limits import EffectiveLimits, effective_limits
+from outerloop.contract import load_contract
+from outerloop.limits import EffectiveLimits, effective_limits
 
 BASE = """
 benchmarks:

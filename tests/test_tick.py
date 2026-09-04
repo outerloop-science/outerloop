@@ -8,8 +8,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from autoresearch.compute import CommandResult, SlurmCompute
-from autoresearch.runstate import (
+from outerloop.compute import CommandResult, SlurmCompute
+from outerloop.runstate import (
     ENDED,
     STUCK,
     WAITING,
@@ -19,7 +19,7 @@ from autoresearch.runstate import (
     read_lease,
     save_record,
 )
-from autoresearch.tick import (
+from outerloop.tick import (
     DEFAULT_MIN_TICK_S,
     PAUSE_SENTINEL,
     WORK_MARKER_NAME,
@@ -155,7 +155,7 @@ def test_coalesce_is_disablable_and_pause_takes_precedence(tmp_path: Path) -> No
 
 
 def test_mark_tick_complete_stamps_only_a_worked_tick_at_completion_time(tmp_path: Path) -> None:
-    from autoresearch.tick import TickReport, _last_worked_ts
+    from outerloop.tick import TickReport, _last_worked_ts
 
     # a worked tick stamps the marker at the COMPLETION time the caller passes
     # (not the start-of-tick `now`) — so a long tick leaves a fresh marker
@@ -168,7 +168,7 @@ def test_mark_tick_complete_stamps_only_a_worked_tick_at_completion_time(tmp_pat
 
 
 def test_last_worked_ts_survives_a_corrupt_marker(tmp_path: Path) -> None:
-    from autoresearch.tick import _last_worked_ts
+    from outerloop.tick import _last_worked_ts
 
     marker = tmp_path / WORK_MARKER_NAME
     for bad in (
@@ -187,7 +187,7 @@ def test_last_worked_ts_survives_a_corrupt_marker(tmp_path: Path) -> None:
 
 
 def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
-    from autoresearch.tick import _min_tick_s_from_env
+    from outerloop.tick import _min_tick_s_from_env
 
     # default cadence (30 min) -> safe ceiling = half-cadence = 15 min = 900s
     monkeypatch.delenv("AUTORESEARCH_CADENCE_MIN", raising=False)
@@ -210,7 +210,7 @@ def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
 
 
 def test_default_coalesce_window_scales_with_cadence(monkeypatch) -> None:
-    from autoresearch.tick import _default_min_tick_s, _min_tick_s_from_env
+    from outerloop.tick import _default_min_tick_s, _min_tick_s_from_env
 
     monkeypatch.delenv("AUTORESEARCH_MIN_TICK_MINUTES", raising=False)
     # no cadence set -> assume 30-min cadence -> min(10, 15) = 10 min
@@ -260,7 +260,7 @@ def test_checkpoint_sleep_park_deadline_is_near_term() -> None:
     nothing in any queue) — its deadline reaches only the next sweep pass.
     Observed live (yolo heldout_probe, 2026-08-27): a nap became a 12h coma,
     and the existing deadline-floor branch then wakes it promptly."""
-    from autoresearch.attempt import CHECKPOINT_SLEEP_SLACK_MIN, PARK_QUEUE_SLACK_MIN
+    from outerloop.attempt import CHECKPOINT_SLEEP_SLACK_MIN, PARK_QUEUE_SLACK_MIN
 
     assert CHECKPOINT_SLEEP_SLACK_MIN * 60 < 3600  # near-term, sub-hour
     assert PARK_QUEUE_SLACK_MIN == 12 * 60  # queue slack untouched
@@ -340,10 +340,10 @@ def test_first_terminal_sighting_starts_the_grace_clock_not_a_wake(tmp_path: Pat
 
 
 def test_dry_run_reports_without_any_writes(tmp_path: Path) -> None:
-    """python -m autoresearch.tick runs exactly this until phase 5: a healthy
+    """python -m outerloop.tick runs exactly this until phase 5: a healthy
     completed run must survive any number of dry ticks unchanged."""
-    from autoresearch.tick import RecordingDispatcher as RD
-    from autoresearch.tick import tick as tick_fn
+    from outerloop.tick import RecordingDispatcher as RD
+    from outerloop.tick import tick as tick_fn
 
     waiting_run(tmp_path)
     slurm = FakeSlurm(states={"100": "COMPLETED"})
@@ -623,7 +623,7 @@ def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
     """--grace-s must actually change sweep behavior (was parsed-but-ignored)."""
     import sys
 
-    import autoresearch.tick as tick_mod
+    import outerloop.tick as tick_mod
 
     waiting_run(tmp_path, terminal_seen=NOW - 5)  # 5s since sighting
     captured: dict = {}
@@ -644,9 +644,9 @@ def test_cli_grace_flag_reaches_the_sweep(tmp_path: Path, monkeypatch) -> None:
 def test_service_in_review_submits_followup_once(tmp_path: Path) -> None:
     """Comment present → one job submitted, recorded; second tick skips while
     that job is queued/running."""
-    from autoresearch.compute import CommandResult
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     record = RunRecord(
         run_id="r-rev",
@@ -698,8 +698,8 @@ def test_service_in_review_submits_followup_once(tmp_path: Path) -> None:
     )
     _ended, submitted = service_in_review(tmp_path, G(), compute, spec, NOW)
     assert submitted == [("r-rev", "4242")]
-    assert any("autoresearch.followup" in a for a in submits[0])
-    from autoresearch.runstate import load_record as lr
+    assert any("outerloop.followup" in a for a in submits[0])
+    from outerloop.runstate import load_record as lr
 
     assert lr(tmp_path, "r-rev").followup_job_id == "4242"
     # second pass: job RUNNING → no duplicate
@@ -708,8 +708,8 @@ def test_service_in_review_submits_followup_once(tmp_path: Path) -> None:
 
 
 def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
-    from autoresearch.runstate import IN_REVIEW, RunRecord, load_record, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.runstate import IN_REVIEW, RunRecord, load_record, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     record = RunRecord(
         run_id="r-m",
@@ -742,7 +742,7 @@ def test_service_in_review_ends_merged_runs(tmp_path: Path) -> None:
 
 
 def _self_contract():
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     return load_contract(
         """
@@ -772,7 +772,7 @@ def _run(run_id, benchmark, created, state=ENDED, ending="negative-result", targ
 
 
 def test_self_initiated_selection_rules() -> None:
-    from autoresearch.tick import pick_self_initiated
+    from outerloop.tick import pick_self_initiated
 
     contract = _self_contract()
     pick = lambda records, **kw: pick_self_initiated(records, contract, "org/pilot", now=NOW, **kw)
@@ -795,7 +795,7 @@ def test_self_initiated_selection_rules() -> None:
 
 
 def test_self_initiated_scoped_to_target() -> None:
-    from autoresearch.tick import pick_self_initiated
+    from outerloop.tick import pick_self_initiated
 
     contract = _self_contract()
     # active run + full budget on ANOTHER target: neither blocks org/pilot
@@ -807,7 +807,7 @@ def test_self_initiated_scoped_to_target() -> None:
 
 
 def test_self_initiated_stranded_implementing_unblocks() -> None:
-    from autoresearch.tick import STRANDED_IMPLEMENTING_S, pick_self_initiated
+    from outerloop.tick import STRANDED_IMPLEMENTING_S, pick_self_initiated
 
     contract = _self_contract()
     stale = STRANDED_IMPLEMENTING_S + 3600
@@ -821,7 +821,7 @@ def test_self_initiated_stranded_implementing_unblocks() -> None:
 
 
 def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None:
-    from autoresearch.tick import (
+    from outerloop.tick import (
         FollowupSpec,
         read_pending,
         service_self_initiated,
@@ -875,7 +875,7 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
     heartbeats and reports why."""
     import json as _json
 
-    from autoresearch.tick import FollowupSpec, tick
+    from outerloop.tick import FollowupSpec, tick
 
     class G:
         def get_file_content(self, repo, path, ref):
@@ -917,7 +917,7 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
 def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
     """Healthy path must actually run the lanes: the report fields are only
     populated by the github branch, so the test provides one."""
-    from autoresearch.tick import FollowupSpec, tick
+    from outerloop.tick import FollowupSpec, tick
 
     fetched = []
 
@@ -949,7 +949,7 @@ def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
 
 
 def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 0.0) -> None:
-    from autoresearch.runstate import IMPLEMENTING
+    from outerloop.runstate import IMPLEMENTING
 
     save_record(
         root,
@@ -976,7 +976,7 @@ def test_killed_climb_is_ended_after_first_seen_grace(tmp_path: Path) -> None:
     # the stamp is a SIDECAR, never a record write: the record is untouched
     stamped = load_record(tmp_path, "r-killed")
     assert stamped.state == "implementing" and stamped.terminal_seen == 0.0
-    from autoresearch.tick import _kill_stamp
+    from outerloop.tick import _kill_stamp
 
     assert _kill_stamp(tmp_path, "r-killed").exists()
 
@@ -985,7 +985,7 @@ def test_killed_climb_is_ended_after_first_seen_grace(tmp_path: Path) -> None:
     record = load_record(tmp_path, "r-killed")
     assert record.state == ENDED and record.ending == "aborted"
     assert "ended TIMEOUT without a verdict" in record.ending_note
-    from autoresearch.runstate import run_dir as _run_dir
+    from outerloop.runstate import run_dir as _run_dir
 
     assert "aborted" in (_run_dir(tmp_path, "r-killed") / "report.md").read_text()
 
@@ -1019,7 +1019,7 @@ def test_slurm_outage_never_reads_as_dead_climb(tmp_path: Path) -> None:
     _implementing_run(tmp_path, "r-out", job_id="77", age_s=GRACE + 60)
     report, _ = run_tick(tmp_path, FakeSlurm(states={"77": "!"}))
     assert report.implementing_ended == ()
-    from autoresearch.tick import _kill_stamp
+    from outerloop.tick import _kill_stamp
 
     assert not _kill_stamp(tmp_path, "r-out").exists()
 
@@ -1027,7 +1027,7 @@ def test_slurm_outage_never_reads_as_dead_climb(tmp_path: Path) -> None:
 def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
     """A climb killed AFTER writing its report keeps that report; the sweep
     only fills the gap when none exists."""
-    from autoresearch.runstate import run_dir as _run_dir
+    from outerloop.runstate import run_dir as _run_dir
 
     _implementing_run(tmp_path, "r-rep", job_id="77", age_s=3600)
     (_run_dir(tmp_path, "r-rep") / "report.md").write_text("# the climb's own words\n")
@@ -1040,7 +1040,7 @@ def test_sweep_never_clobbers_a_report_the_climb_wrote(tmp_path: Path) -> None:
 def test_legacy_record_without_job_id_ends_only_past_deadline(tmp_path: Path) -> None:
     """No Slurm evidence -> only the 24h run deadline authors an ending; the
     stranded window frees the picker lane but never writes verdicts."""
-    from autoresearch.tick import STRANDED_IMPLEMENTING_S
+    from outerloop.tick import STRANDED_IMPLEMENTING_S
 
     _implementing_run(tmp_path, "r-old", job_id="", age_s=25 * 3600)
     _implementing_run(tmp_path, "r-stranded", job_id="", age_s=STRANDED_IMPLEMENTING_S + 60)
@@ -1054,8 +1054,8 @@ def test_self_initiated_carries_contract_limits_into_the_job(tmp_path: Path) -> 
     """The submitted climb job wears the contract's (clamped) limits: Slurm
     walltime from attempt_job_minutes, and the climb argv carries the session
     knobs plus its own walltime for the self-deadline."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, service_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, service_self_initiated
 
     contract = load_contract(
         """
@@ -1113,8 +1113,8 @@ def test_followup_jobs_carry_the_session_turn_budget(tmp_path: Path) -> None:
     """The 40-turn CLI default silently starved a live steward follow-up
     ($6 of session, zero output): the tick now passes --max-turns
     explicitly, clamped by the contract's session_max_turns."""
-    from autoresearch.followup import REPLY_MARKER  # noqa: F401 (import sanity)
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.followup import REPLY_MARKER  # noqa: F401 (import sanity)
+    from outerloop.tick import FollowupSpec, service_in_review
 
     save_record(
         tmp_path,
@@ -1204,7 +1204,7 @@ def _git_home(tmp_path: Path) -> Path:
 def test_flight_snapshot_survives_a_deploy_reset(tmp_path: Path) -> None:
     """A submitted job runs the tree that SUBMITTED it: the shared checkout
     is reset --hard at every deploy, and the flight must not move with it."""
-    from autoresearch.tick import _flight_command, flight_checkout
+    from outerloop.tick import _flight_command, flight_checkout
 
     home = _git_home(tmp_path)
     cmd = _flight_command(home, "climb-tsp", NOW, ["echo", "hi"])
@@ -1239,7 +1239,7 @@ def test_flight_snapshot_survives_a_deploy_reset(tmp_path: Path) -> None:
 
 
 def test_reap_flights_removes_only_expired(tmp_path: Path) -> None:
-    from autoresearch.tick import FLIGHT_TTL_S, flight_checkout, reap_flights
+    from outerloop.tick import FLIGHT_TTL_S, flight_checkout, reap_flights
 
     home = _git_home(tmp_path)
     import os as _os
@@ -1264,7 +1264,7 @@ def test_reap_clears_non_worktree_debris(tmp_path: Path) -> None:
     away instead of warning forever."""
     import os as _os
 
-    from autoresearch.tick import FLIGHT_TTL_S, reap_flights
+    from outerloop.tick import FLIGHT_TTL_S, reap_flights
 
     home = _git_home(tmp_path)
     debris = home.parent / "flights" / "climb-x-123"
@@ -1276,7 +1276,7 @@ def test_reap_clears_non_worktree_debris(tmp_path: Path) -> None:
 
 
 def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None:
-    from autoresearch.tick import flight_checkout
+    from outerloop.tick import flight_checkout
 
     home = _git_home(tmp_path)
     made = [flight_checkout(home, "same", NOW) for _ in range(7)]
@@ -1287,7 +1287,7 @@ def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None
 def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> None:
     """Three consecutive failures open ONE issue on the target; recovery
     comments and closes it. State loss must not spawn duplicates."""
-    from autoresearch.tick import CONTRACT_ALARM_MARKER, contract_alarm
+    from outerloop.tick import CONTRACT_ALARM_MARKER, contract_alarm
 
     class G:
         def __init__(self):
@@ -1344,7 +1344,7 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
     """A failed close must not orphan the open alarm: state survives so
     the next healthy tick retries — and a lost issue number is recovered
     by the marker search."""
-    from autoresearch.tick import contract_alarm
+    from outerloop.tick import contract_alarm
 
     class G:
         def __init__(self):
@@ -1418,7 +1418,7 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
 def test_contract_alarm_redacts_and_fences_the_error(tmp_path: Path) -> None:
     """Transport errors can echo request material; loader errors echo
     contract content. Neither may leak a token or escape the fence."""
-    from autoresearch.tick import contract_alarm
+    from outerloop.tick import contract_alarm
 
     class Auth:
         def token(self):
@@ -1460,9 +1460,9 @@ def test_contract_alarm_redacts_and_fences_the_error(tmp_path: Path) -> None:
 def test_shape_followup_spec_clamps_strictly_downward() -> None:
     """The clamp itself, against untrusted contract values (round-1
     finding: the argv test alone left the tick's clamp unverified)."""
-    from autoresearch.contract import load_contract
-    from autoresearch.limits import effective_limits
-    from autoresearch.tick import FollowupSpec, shape_followup_spec
+    from outerloop.contract import load_contract
+    from outerloop.limits import effective_limits
+    from outerloop.tick import FollowupSpec, shape_followup_spec
 
     base = """
 benchmarks:
@@ -1503,8 +1503,8 @@ roadmap: docs/roadmap.md
 def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
     """Strictly-downward holds against the OPERATOR's spec too: a contract
     asking for more follow-up walltime than the spec grants gets the spec."""
-    from autoresearch.contract import load_contract
-    from autoresearch.limits import effective_limits
+    from outerloop.contract import load_contract
+    from outerloop.limits import effective_limits
 
     contract = load_contract(
         """
@@ -1525,10 +1525,10 @@ def test_outage_latch_pauses_spawning_lanes_but_not_endings(tmp_path: Path) -> N
     """A stamped outage sits every session-spawning lane out for the
     cooldown — steward claims, self-initiated climbs, follow-up
     submissions — while PR-state transitions (endings) keep running."""
-    from autoresearch.contract import load_contract
-    from autoresearch.limits import effective_limits
-    from autoresearch.runstate import stamp_outage
-    from autoresearch.tick import (
+    from outerloop.contract import load_contract
+    from outerloop.limits import effective_limits
+    from outerloop.runstate import stamp_outage
+    from outerloop.tick import (
         FollowupSpec,
         service_in_review,
         service_self_initiated,
@@ -1618,9 +1618,9 @@ roadmap: docs/roadmap.md
 def test_steward_lane_gates_on_key_and_contract_scope(tmp_path: Path) -> None:
     """Off without the steward's own key; off without a contract steward
     section; claims + submits when both exist."""
-    from autoresearch.contract import load_contract
-    from autoresearch.limits import effective_limits
-    from autoresearch.tick import FollowupSpec, service_steward
+    from outerloop.contract import load_contract
+    from outerloop.limits import effective_limits
+    from outerloop.tick import FollowupSpec, service_steward
 
     base_contract = """
 benchmarks:
@@ -1709,7 +1709,7 @@ roadmap: docs/roadmap.md
     out = service_steward(tmp_path, github, compute, spec("/k"), NOW, with_steward, limits)
     assert out == ("steward-issue-21", "321")
     # the queue window is bridged: pending marker written, second pass no-ops
-    from autoresearch.tick import read_pending
+    from outerloop.tick import read_pending
 
     marker = read_pending(tmp_path, "org/pilot")  # steward lane: legacy marker
     assert marker is not None and marker["benchmark"] == "steward:tsp"
@@ -1718,7 +1718,7 @@ roadmap: docs/roadmap.md
     )
     assert github.comments_posted and "Claimed by the steward" in github.comments_posted[0][1]
     wrap = submitted[0][-1]
-    assert "autoresearch.steward" in wrap
+    assert "outerloop.steward" in wrap
     assert "--key-file /k" in wrap
     assert "--job-minutes 120" in wrap
 
@@ -1728,8 +1728,8 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
     (solver) follow-up threads NO key — it resolves its key per the run's backend
     from env (config-driven). Without a steward key the steward record is skipped
     while solver servicing continues."""
-    from autoresearch.runstate import IN_REVIEW
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.runstate import IN_REVIEW
+    from outerloop.tick import FollowupSpec, service_in_review
 
     for run_id, agent in (("tsp-r1", "agent-01"), ("steward-tsp-r1", "steward-01")):
         save_record(
@@ -1808,7 +1808,7 @@ def test_followup_key_routing_by_role(tmp_path: Path) -> None:
 def test_panel_spec_disables_and_reconfigures_the_climb_argv(tmp_path: Path) -> None:
     """An empty panel spec drops the flags; a custom panel and key file ride
     into the climb argv verbatim."""
-    from autoresearch.tick import FollowupSpec, _climb_panel_argv
+    from outerloop.tick import FollowupSpec, _climb_panel_argv
 
     def make(panel: str = "verify,review", panel_key_file: str = "") -> FollowupSpec:
         return FollowupSpec(
@@ -1836,7 +1836,7 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     """AUTORESEARCH_PANEL/AUTORESEARCH_PANEL_KEY_FILE reach the FollowupSpec
     through the chain environment, and empty AUTORESEARCH_PANEL turns the
     panel off (not back to the default)."""
-    from autoresearch.tick import _followup_spec_from_env
+    from outerloop.tick import _followup_spec_from_env
 
     image = tmp_path / "agent.sif"
     image.write_text("")
@@ -1851,7 +1851,7 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
         "AUTORESEARCH_PANEL": "verify",
         "AUTORESEARCH_PANEL_KEY_FILE": "/keys/verifier",
     }
-    import autoresearch.tick as tick_mod
+    import outerloop.tick as tick_mod
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
     _github, spec = _followup_spec_from_env(tmp_path)
@@ -1878,7 +1878,7 @@ def test_author_config_preflight_blocks_before_side_effects(
     """A codex misconfig (backend=codex, no non-claude model) is caught on the
     tick host BEFORE self-initiated submits or intake claims — the same
     strand-safety the panel preflight has, now for the config-driven author."""
-    from autoresearch.tick import FollowupSpec, _author_config_error, service_self_initiated
+    from outerloop.tick import FollowupSpec, _author_config_error, service_self_initiated
 
     # a VALID panel key, so the panel preflight passes and the AUTHOR gate is what
     # blocks below (else "submits nothing" could be the panel preflight, not us)
@@ -1926,7 +1926,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     preflight reads through FileTokenProvider so its acceptance rules ARE
     the climb's; a 0600 non-empty key or a disabled panel passes, and a
     ~ path expands (operator env values arrive verbatim)."""
-    from autoresearch.tick import (
+    from outerloop.tick import (
         FollowupSpec,
         _panel_preflight_error,
         service_intake,
@@ -2045,7 +2045,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
 
     # a failed submit RELEASES the claim (pick_issue skips claimed issues,
     # so without the release the issue would be stranded forever)
-    from autoresearch.intake import RELEASE_MARKER
+    from outerloop.intake import RELEASE_MARKER
 
     def failing_runner(argv, timeout_s):
         return CommandResult(1, "", "sbatch: error")
@@ -2060,8 +2060,8 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     # the walltime allowance exists exactly when the panel does — and the
     # panel-augmented total clamps at the 6h partition cap (sbatch would
     # REJECT a longer request outright, grounding every climb)
-    from autoresearch.limits import effective_limits
-    from autoresearch.tick import MAX_ATTEMPT_JOB_MINUTES, _panel_job_minutes
+    from outerloop.limits import effective_limits
+    from outerloop.tick import MAX_ATTEMPT_JOB_MINUTES, _panel_job_minutes
 
     limits = effective_limits()  # defaults: 120-min job, 90-min session
     assert _panel_job_minutes(make(panel=""), limits) == 0
@@ -2085,7 +2085,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
         submitted_low.append(" ".join(argv))
         return CommandResult(0, "88\n", "")
 
-    from autoresearch.tick import clear_pending
+    from outerloop.tick import clear_pending
 
     clear_pending(tmp_path, "org/pilot")
     clear_pending(tmp_path, "org/pilot", "agent-01")
@@ -2101,7 +2101,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     clear_pending(tmp_path, "org/pilot", "agent-01")
 
     ok2 = make(panel_key_file=str(good))
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     default_contract = load_contract(
         """
@@ -2125,8 +2125,8 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     # the production WakeDispatcher: a wake becomes a Slurm job that runs the
     # wake CLI (`climb --resume <run_id>`), depending on the eval jobs so it
     # fires when they finish.
-    from autoresearch.runstate import RunRecord
-    from autoresearch.tick import FollowupSpec, JobWakeDispatcher
+    from outerloop.runstate import RunRecord
+    from outerloop.tick import FollowupSpec, JobWakeDispatcher
 
     submits = []
 
@@ -2148,7 +2148,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     )
     # isolate the dispatcher's job spec from flight_checkout's git dependency
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
     record = RunRecord(
         run_id="tsp-1",
@@ -2162,7 +2162,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert job_id == "9001"  # async: the wake job now owns the lease
     argv = submits[0]
     joined = " ".join(argv)
-    assert "autoresearch.attempt" in joined and "--resume tsp-1" in joined
+    assert "outerloop.attempt" in joined and "--resume tsp-1" in joined
     assert "--dependency=afterany:501:502" in argv  # runs after the eval jobs
     assert "--panel verify,review" in joined  # the wake runs the verification panel
     assert "--account=acct" in argv and "--partition=cpu_short" in argv
@@ -2171,7 +2171,7 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
 def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
     # dispatched climbing must NOT deliver wakes unless the operator flips the
     # explicit on-switch AND the chain env is complete.
-    from autoresearch.tick import (
+    from outerloop.tick import (
         DISPATCH_WAKE_SENTINEL,
         FollowupSpec,
         JobWakeDispatcher,
@@ -2215,8 +2215,8 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
 def test_job_wake_dispatcher_walltime_includes_the_panel(tmp_path, monkeypatch):
     # the wake now runs the verification panel, so its Slurm walltime must be
     # more than the bare read+PR base when a panel is configured.
-    from autoresearch.runstate import RunRecord
-    from autoresearch.tick import FollowupSpec, JobWakeDispatcher, _wake_panel_minutes
+    from outerloop.runstate import RunRecord
+    from outerloop.tick import FollowupSpec, JobWakeDispatcher, _wake_panel_minutes
 
     times = []
 
@@ -2229,7 +2229,7 @@ def test_job_wake_dispatcher_walltime_includes_the_panel(tmp_path, monkeypatch):
         raise AssertionError(argv)
 
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
     record = RunRecord(
         run_id="tsp-1", target="o/r", task_title="t", benchmark="tsp", state="waiting", stage={}
@@ -2248,10 +2248,10 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
     # an author-sleep wake resumes a FULL author session, so its Slurm job must
     # fit the session (+ overhead) and pass --session-minutes, not the short
     # candidate-wake budget (terra #135 r3).
-    from autoresearch.limits import ATTEMPT_OVERHEAD_MINUTES
-    from autoresearch.roles import author_spec
-    from autoresearch.runstate import RunRecord
-    from autoresearch.tick import FollowupSpec, JobWakeDispatcher
+    from outerloop.limits import ATTEMPT_OVERHEAD_MINUTES
+    from outerloop.roles import author_spec
+    from outerloop.runstate import RunRecord
+    from outerloop.tick import FollowupSpec, JobWakeDispatcher
 
     times: list[int] = []
     joined_argv: list[str] = []
@@ -2266,7 +2266,7 @@ def test_author_sleep_wake_gets_a_full_session_walltime(tmp_path, monkeypatch):
         raise AssertionError(argv)
 
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
     spec = FollowupSpec(
         account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path, panel=""
@@ -2318,7 +2318,7 @@ class LedgerGitHub:
 
 
 def _ended_run(root: Path, run_id: str, saved_at: float = NOW, **over) -> None:
-    from autoresearch.runstate import run_dir as _rd
+    from outerloop.runstate import run_dir as _rd
 
     base = dict(
         run_id=run_id,
@@ -2334,7 +2334,7 @@ def _ended_run(root: Path, run_id: str, saved_at: float = NOW, **over) -> None:
 
 
 def _spec(target="org/yolo"):
-    from autoresearch.tick import FollowupSpec
+    from outerloop.tick import FollowupSpec
 
     return FollowupSpec(
         account="a",
@@ -2347,7 +2347,7 @@ def _spec(target="org/yolo"):
 
 
 def test_research_log_first_pass_adopts_history_silently(tmp_path: Path) -> None:
-    from autoresearch.tick import _ledger_marker, service_research_log
+    from outerloop.tick import _ledger_marker, service_research_log
 
     _ended_run(tmp_path, "old-1", saved_at=NOW - 100)
     # a run that went terminal DURING the first pass is new work, not history
@@ -2359,7 +2359,7 @@ def test_research_log_first_pass_adopts_history_silently(tmp_path: Path) -> None
 
 
 def test_research_log_publishes_once_and_routes_to_the_order_issue(tmp_path: Path) -> None:
-    from autoresearch.tick import _ledger_since, service_research_log
+    from outerloop.tick import _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")  # past first pass
     _ended_run(tmp_path, "r-1")
@@ -2374,7 +2374,7 @@ def test_research_log_publishes_once_and_routes_to_the_order_issue(tmp_path: Pat
 
 
 def test_research_log_archive_failure_defers_pointer_and_retries(tmp_path: Path) -> None:
-    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+    from outerloop.tick import _ledger_marker, _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-2")
@@ -2387,7 +2387,7 @@ def test_research_log_archive_failure_defers_pointer_and_retries(tmp_path: Path)
 
 
 def test_research_log_rolling_issue_created_once_via_cache(tmp_path: Path) -> None:
-    from autoresearch.tick import _ledger_since, service_research_log
+    from outerloop.tick import _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-3", benchmark="tsp")
@@ -2399,7 +2399,7 @@ def test_research_log_rolling_issue_created_once_via_cache(tmp_path: Path) -> No
 
 
 def test_research_log_claimed_issue_gets_no_duplicate_pointer(tmp_path: Path) -> None:
-    from autoresearch.tick import _ledger_since, service_research_log
+    from outerloop.tick import _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-5", issue_number=15)
@@ -2412,7 +2412,7 @@ def test_research_log_pointer_failure_retries_pointer_only(tmp_path: Path) -> No
     """terra #170 r3: a comment failure after a successful archive must NOT
     be treated as posted — the staged marker ("archived") makes the next
     pass retry the POINTER without re-putting the archive, then mark done."""
-    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+    from outerloop.tick import _ledger_marker, _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-6")
@@ -2441,7 +2441,7 @@ def test_research_log_lost_marker_duplicates_at_most_once(tmp_path: Path) -> Non
     """If the marker FILE is lost after full success, the retry re-posts one
     pointer — the bounded duplicate is the accepted price of never silently
     losing a pointer (the r2/r3 trade, documented in the publisher)."""
-    from autoresearch.tick import _ledger_marker, _ledger_since, service_research_log
+    from outerloop.tick import _ledger_marker, _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-7")
@@ -2460,8 +2460,8 @@ def test_research_log_unwritable_marker_stalls_without_posting(tmp_path: Path) -
     write is the license to post."""
     import os
 
-    from autoresearch.runstate import run_dir as _rd
-    from autoresearch.tick import _ledger_since, service_research_log
+    from outerloop.runstate import run_dir as _rd
+    from outerloop.tick import _ledger_since, service_research_log
 
     _ledger_since(tmp_path, "org/yolo").write_text("1")
     _ended_run(tmp_path, "r-8")
@@ -2483,7 +2483,7 @@ def test_research_log_stale_cached_issue_self_heals(tmp_path: Path) -> None:
     """terra #170 r5: a cached rolling-issue number that no longer accepts
     comments (locked/deleted) must not stall delivery forever — the failed
     comment drops the cache, and the next pass re-creates."""
-    from autoresearch.tick import (
+    from outerloop.tick import (
         _ledger_issue_cache,
         _ledger_since,
         service_research_log,
@@ -2511,7 +2511,7 @@ def test_research_log_stale_cached_issue_self_heals(tmp_path: Path) -> None:
 def test_research_log_lost_cache_rediscovers_instead_of_duplicating(tmp_path: Path) -> None:
     """A failed/lost cache write must not spawn a second rolling issue: the
     marker scan is the source of truth, the cache only a fast path."""
-    from autoresearch.tick import (
+    from outerloop.tick import (
         RESEARCH_LOG_MARKER,
         _ledger_issue_cache,
         _ledger_since,
@@ -2531,8 +2531,8 @@ def test_cooldown_dial_zero_redispatches_immediately(tmp_path: Path) -> None:
     """The RSI-era dial: attempt_cooldown_minutes: 0 re-dispatches
     back-to-back (runs_per_week is the spend guard); unset keeps the 6h
     default for standard research repos."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import pick_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import pick_self_initiated
 
     base = """
 benchmarks:
@@ -2559,8 +2559,8 @@ def test_zero_cooldown_keeps_the_dead_launch_backoff(tmp_path: Path) -> None:
     """terra #172: a launch that died before writing a record is invisible
     to runs_per_week, so even a zero-cooldown contract backs it off by the
     dead-launch floor instead of resubmitting every tick."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import DEAD_LAUNCH_BACKOFF_S, pick_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import DEAD_LAUNCH_BACKOFF_S, pick_self_initiated
 
     hot = load_contract(
         """
@@ -2585,8 +2585,8 @@ def test_dead_launch_tombstones_are_per_benchmark(tmp_path: Path) -> None:
     """terra #172 r2/r3: crash memory is a per-benchmark tombstone that a
     SECOND benchmark's launch cannot erase, persists across ticks inside its
     window, and prunes itself after."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import (
+    from outerloop.contract import load_contract
+    from outerloop.tick import (
         DEAD_LAUNCH_BACKOFF_S,
         pick_self_initiated,
         read_tombstones,
@@ -2626,8 +2626,8 @@ def test_width_dial_runs_two_slots_and_caps(tmp_path: Path) -> None:
     """WIDTH-V1: max_active_attempts: 2 dispatches two concurrent attempts
     with distinct agent identities (branch/ledger uniqueness), refuses a
     third while both slots are occupied, and frees slots as runs land+end."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, service_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, service_self_initiated
 
     contract = load_contract(
         """
@@ -2693,7 +2693,7 @@ roadmap: docs/roadmap.md
     assert "--agent-id agent-01" in submitted[2]
     # the landed check is SLOT-SCOPED: agent-01's record must not have
     # cleared agent-02's still-live marker (terra #173 r1)
-    from autoresearch.tick import read_pending
+    from outerloop.tick import read_pending
 
     assert read_pending(tmp_path, "org/pilot", "agent-02") is not None
 
@@ -2704,7 +2704,7 @@ def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
     file that isn't a width-slot name (terra #173 r1), nor the LEGACY
     marker of a repo literally named pilot__agent-01 — "_" is legal in
     repo names, which is why the slot separator is "@" (terra #173 r2)."""
-    from autoresearch.tick import list_pendings, read_pending, write_pending
+    from outerloop.tick import list_pendings, read_pending, write_pending
 
     write_pending(tmp_path, "org/pilot", "tsp", "1", NOW, agent="agent-01")
     write_pending(tmp_path, "org/pilotx", "tsp", "2", NOW)
@@ -2720,8 +2720,8 @@ def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
 def test_width_queued_slots_count_toward_weekly_budget(tmp_path: Path) -> None:
     """With one run left in runs_per_week, a width-2 target must not submit
     two attempts in the pre-record queue window (terra #173 r2)."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, service_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, service_self_initiated
 
     contract = load_contract(
         """
@@ -2766,8 +2766,8 @@ roadmap: docs/roadmap.md
 def test_width_never_launches_beside_a_steward_run(tmp_path: Path) -> None:
     """Width applies AMONG self-initiated slots; an active stewardship keeps
     its pre-width one-run-per-target exclusivity (terra #173 r1)."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, service_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, service_self_initiated
 
     contract = load_contract(
         """
@@ -2810,8 +2810,8 @@ def test_steward_waits_for_a_queued_width_slot(tmp_path: Path) -> None:
     """A slotted pending marker (width launch queued, record not written yet)
     blocks the steward lane the same way an active run does (terra #173 r1
     parity: the lane used to read only the legacy un-suffixed marker)."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, effective_limits, service_steward, write_pending
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, effective_limits, service_steward, write_pending
 
     contract = load_contract(
         """
@@ -2868,8 +2868,8 @@ def test_gpu_benchmark_refused_without_a_gpu_lane(tmp_path: Path) -> None:
     """A contract asking for GPUs on a deployment with no GPU lane must not
     launch: its evals would queue into jobs that can never run. With a lane,
     the launch proceeds and the climb job carries the lane coordinates."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, service_self_initiated
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, service_self_initiated
 
     contract = load_contract(
         """
@@ -2921,8 +2921,8 @@ roadmap: docs/roadmap.md
 def test_gpu_benchmark_is_not_stewarded(tmp_path: Path) -> None:
     """A stewardship validates its rewrite in-job, inside the CPU work job:
     a GPU benchmark cannot be stewarded yet, lane or no lane (terra #174 r2)."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, effective_limits, service_steward
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, effective_limits, service_steward
 
     contract = load_contract(
         """
@@ -2984,8 +2984,8 @@ roadmap: docs/roadmap.md
 def test_gpu_sibling_needs_the_lane_even_for_a_cpu_climb(tmp_path: Path) -> None:
     """The suite gate measures siblings: a CPU benchmark's climb on a
     contract with a GPU sibling still needs the GPU lane (terra #174 r3)."""
-    from autoresearch.contract import load_contract
-    from autoresearch.tick import FollowupSpec, _gpu_lane_error
+    from outerloop.contract import load_contract
+    from outerloop.tick import FollowupSpec, _gpu_lane_error
 
     contract = load_contract(
         """
@@ -3015,7 +3015,7 @@ roadmap: docs/roadmap.md
 
 
 def _wake_spec(tmp_path: Path):
-    from autoresearch.tick import FollowupSpec
+    from outerloop.tick import FollowupSpec
 
     return FollowupSpec(
         account="acct", partition="cpu_short", run_root=tmp_path, image="/img/a.sif", home=tmp_path
@@ -3041,10 +3041,10 @@ def test_arm_wake_submits_the_dependent_wake_and_hands_it_the_lease(
     on — the same job and lease the sweep would use, only ~30 minutes
     (cadence + grace + cadence) earlier; arming is not a redelivery, so the
     stuck counter does not move."""
-    from autoresearch.tick import JobWakeDispatcher, arm_wake
+    from outerloop.tick import JobWakeDispatcher, arm_wake
 
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
     record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": "afterany:501:502"})
     submits, compute = _sbatch_capture()
@@ -3060,10 +3060,10 @@ def test_arm_wake_submits_the_dependent_wake_and_hands_it_the_lease(
 def test_arm_wake_hands_over_its_own_lease_and_leaves_another_holder_alone(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from autoresearch.tick import JobWakeDispatcher, arm_wake
+    from outerloop.tick import JobWakeDispatcher, arm_wake
 
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
     submits, compute = _sbatch_capture()
     dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
@@ -3111,12 +3111,12 @@ def test_sweep_reaps_an_armed_wake_slurm_will_never_start(tmp_path: Path) -> Non
 def test_sweep_gives_a_dependency_pending_wake_the_grace_window(tmp_path: Path) -> None:
     """Dependencies all terminal but the wake still pending on them: the grace
     window runs from when the sweep first saw that, then it is redelivered."""
-    from autoresearch.tick import tick as tick_fn
+    from outerloop.tick import tick as tick_fn
 
     waiting_run(tmp_path, terminal_seen=0.0)
     acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
     slurm = FakeSlurm(states={"100": "COMPLETED", "55": "PENDING"}, reasons={"55": "Dependency"})
-    from autoresearch.tick import RecordingDispatcher as RD
+    from outerloop.tick import RecordingDispatcher as RD
 
     d = RD()
     tick_fn(tmp_path, slurm.compute(), d, now=NOW, min_tick_s=0)
@@ -3127,7 +3127,7 @@ def test_sweep_gives_a_dependency_pending_wake_the_grace_window(tmp_path: Path) 
 
 
 def test_wake_spec_round_trips_and_is_absent_when_wakes_are_dry(tmp_path: Path) -> None:
-    from autoresearch.tick import load_wake_spec, remove_wake_spec, write_wake_spec
+    from outerloop.tick import load_wake_spec, remove_wake_spec, write_wake_spec
 
     assert load_wake_spec(tmp_path) is None
     spec = _wake_spec(tmp_path)
@@ -3142,10 +3142,10 @@ def test_wake_spec_round_trips_and_is_absent_when_wakes_are_dry(tmp_path: Path) 
 def test_arm_wake_skips_a_park_with_nothing_to_depend_on(tmp_path: Path, monkeypatch) -> None:
     """A checkpoint sleep or blind park has no jobs: an armed wake would run
     at once instead of at the deadline floor, so nothing is armed."""
-    from autoresearch.tick import JobWakeDispatcher, arm_wake
+    from outerloop.tick import JobWakeDispatcher, arm_wake
 
     monkeypatch.setattr(
-        "autoresearch.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
+        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
     record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": ""})
     submits, compute = _sbatch_capture()
@@ -3172,7 +3172,7 @@ def test_sweep_keeps_a_wake_it_could_not_cancel(tmp_path: Path) -> None:
 def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
     import pytest
 
-    from autoresearch.compute import SlurmQueryError
+    from outerloop.compute import SlurmQueryError
 
     def runner(argv, timeout_s):
         return CommandResult(1, "", "slurmctld down")
@@ -3182,7 +3182,7 @@ def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
 
 
 def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch) -> None:
-    from autoresearch.tick import dispatch_wake_armed
+    from outerloop.tick import dispatch_wake_armed
 
     monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
     assert not dispatch_wake_armed(tmp_path)
@@ -3196,9 +3196,9 @@ def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch)
 def test_service_in_review_wakes_a_conflicted_pr_without_comments(tmp_path: Path) -> None:
     """A DIRTY PR is its own wake condition: no comments, job still submitted;
     a record already woken for this head is skipped."""
-    from autoresearch.compute import CommandResult
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     save_record(
         tmp_path,
@@ -3271,7 +3271,7 @@ def test_service_in_review_wakes_a_conflicted_pr_without_comments(tmp_path: Path
 def test_sync_is_serviced_even_without_followup_servicing(tmp_path: Path, monkeypatch) -> None:
     """service_syncs runs from the tick when followup_spec is set, regardless
     of github/contract — the gate the review flagged."""
-    import autoresearch.tick as tick_mod
+    import outerloop.tick as tick_mod
 
     calls = []
     monkeypatch.setattr(
@@ -3303,9 +3303,9 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     done stamp; ended runs and unrequested workspaces are untouched."""
     import subprocess
 
-    from autoresearch.runstate import RunRecord, run_dir, save_record
-    from autoresearch.syscall import SYSCALL_DIR, sync_requested
-    from autoresearch.tick import service_syncs
+    from outerloop.runstate import RunRecord, run_dir, save_record
+    from outerloop.syscall import SYSCALL_DIR, sync_requested
+    from outerloop.tick import service_syncs
 
     def _g(cwd, *args):
         return subprocess.run(
@@ -3343,7 +3343,7 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     _g(mover, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "moves")
     _g(mover, "push", "-q", "origin", "main")
 
-    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda t: str(bare))
+    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda t: str(bare))
 
     class Spec:
         pat_file = ""
@@ -3358,7 +3358,7 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
     """Under AUTORESEARCH_COMPUTE=local the followup service comes up without
     account/partition (subprocess jobs have no placement); Slurm mode still
     requires them."""
-    from autoresearch.tick import _followup_spec_from_env
+    from outerloop.tick import _followup_spec_from_env
 
     image = tmp_path / "agent.sif"
     image.write_text("")
@@ -3369,7 +3369,7 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
         "AUTORESEARCH_IMAGE": str(image),
         "AUTORESEARCH_HOME": str(tmp_path),
     }
-    import autoresearch.tick as tick_mod
+    import outerloop.tick as tick_mod
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
     _github, spec = _followup_spec_from_env(tmp_path)
@@ -3392,7 +3392,7 @@ def test_local_mode_waives_placement_at_the_attempt_gates(
 
     import pytest
 
-    import autoresearch.attempt as attempt_mod
+    import outerloop.attempt as attempt_mod
 
     image = tmp_path / "agent.sif"
     image.write_text("")
@@ -3431,7 +3431,7 @@ def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> 
     """LocalCompute's job-env scrub passes AUTORESEARCH_*/REVIEW_HERMES_*
     through as a prefix rule — a locally submitted wake must arrive still in
     local mode (terra #223), and enumerated names are how flags die."""
-    from autoresearch.compute import LocalCompute
+    from outerloop.compute import LocalCompute
 
     monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
     monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
@@ -3442,7 +3442,7 @@ def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> 
     monkeypatch.setenv("AUTORESEARCH_PANEL_KEY", "sk-ant-secret")
     monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/keys/codex")
     out = tmp_path / "env.txt"
-    from autoresearch.compute import JobSpec
+    from outerloop.compute import JobSpec
 
     LocalCompute().submit(
         JobSpec(
@@ -3472,7 +3472,7 @@ def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
     non-positive values to the env knob."""
     import math
 
-    from autoresearch.tick import _loop_cadence_s
+    from outerloop.tick import _loop_cadence_s
 
     monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "45")
     for raw, expect in ((math.inf, 24 * 3600.0), (0.0001, 60.0), (30.0, 1800.0)):
@@ -3491,9 +3491,9 @@ def test_service_auto_arms_a_clean_panel_backed_auto_pr(tmp_path: Path) -> None:
     in the sync push) survives a crash between push and arm."""
     from types import SimpleNamespace
 
-    from autoresearch.compute import LocalCompute
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.compute import LocalCompute
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     spec = FollowupSpec(
         account="a",
@@ -3676,10 +3676,10 @@ def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path)
     steward's follow-up never carries one."""
     import os
 
-    from autoresearch.compute import CommandResult
-    from autoresearch.panel import panel_read_minutes
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.compute import CommandResult
+    from outerloop.panel import panel_read_minutes
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     key = tmp_path / "verifier_key"
     key.write_text("sk-panel\n")
@@ -3776,9 +3776,9 @@ def test_a_pending_panel_wake_submits_a_followup_and_holds_off_the_arm(tmp_path:
     for the author on the PR's current head: the tick submits a follow-up
     (never arms, whatever the blessing says). A stale wake (head moved) is
     nothing to service."""
-    from autoresearch.compute import CommandResult
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     class G:
         def __init__(self, head: str) -> None:
@@ -3858,7 +3858,7 @@ def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_pat
     reaped, redelivered onto the right partition — in the same tick."""
     from dataclasses import replace as dc_replace
 
-    from autoresearch.tick import write_wake_spec
+    from outerloop.tick import write_wake_spec
 
     waiting_run(tmp_path)
     acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
@@ -3916,7 +3916,7 @@ def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_pat
 def test_moved_off_partition_matches_lists_by_membership(tmp_path: Path) -> None:
     from dataclasses import replace as dc_replace
 
-    from autoresearch.tick import _moved_off_partition, write_wake_spec
+    from outerloop.tick import _moved_off_partition, write_wake_spec
 
     write_wake_spec(
         tmp_path, dc_replace(_wake_spec(tmp_path), partition="cpu_short,cpu_prem", job_partition="")
@@ -3932,9 +3932,9 @@ def test_moved_off_partition_matches_lists_by_membership(tmp_path: Path) -> None
 def test_a_parked_remeasure_is_polled_then_finished_by_a_followup(tmp_path: Path) -> None:
     """While the dispatched eval runs: no follow-up, no arm, comments wait.
     Once its jobs are terminal: a follow-up is submitted to finish it."""
-    from autoresearch.compute import CommandResult
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import FollowupSpec, service_in_review
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
 
     class G:
         def __init__(self) -> None:
@@ -4021,9 +4021,9 @@ def test_a_parked_remeasure_is_polled_then_finished_by_a_followup(tmp_path: Path
 def test_a_blind_parked_remeasure_waits_its_floor_before_a_followup_is_sent(tmp_path: Path) -> None:
     """No job ids to poll (the measurer could not read the queue): the eval
     walltime plus the queue slack is the floor — never a follow-up per tick."""
-    from autoresearch.compute import CommandResult
-    from autoresearch.runstate import IN_REVIEW, RunRecord, save_record
-    from autoresearch.tick import BLIND_PARK_SLACK_MIN, FollowupSpec, service_in_review
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, RunRecord, save_record
+    from outerloop.tick import BLIND_PARK_SLACK_MIN, FollowupSpec, service_in_review
 
     class G:
         def get_pull_request(self, repo, number):

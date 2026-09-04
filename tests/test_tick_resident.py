@@ -299,7 +299,7 @@ def test_the_tick_runs_the_installed_environment_without_resyncing(tmp_path: Pat
     assert proc.returncode == 0, proc.stderr
     runs = [ln for ln in (shimlog / "uv").read_text().splitlines() if ln.startswith("run ")]
     assert runs, "no tick was run"
-    assert all(ln.startswith("run --no-sync python -m autoresearch.tick") for ln in runs), runs
+    assert all(ln.startswith("run --no-sync python -m outerloop.tick") for ln in runs), runs
 
 
 def test_a_failed_sync_rolls_back_when_dependencies_changed(tmp_path: Path) -> None:

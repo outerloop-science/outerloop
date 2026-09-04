@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.review import REVIEW_LENSES, build_agent_brief, build_summarizer_brief
-from autoresearch.review_agent import _emit
+from outerloop.review import REVIEW_LENSES, build_agent_brief, build_summarizer_brief
+from outerloop.review_agent import _emit
 
 
 def _pr():
-    from autoresearch.review import PullRequest
+    from outerloop.review import PullRequest
 
     return PullRequest(
         repo="org/r", number=7, title="t", body="b", author="dev", diff="--- a\n+++ b\n"
@@ -51,7 +51,7 @@ def _envelope(tmp_path: Path, name: str, **kw) -> None:
 
 
 def _run_summarize(tmp_path: Path, monkeypatch) -> dict:
-    from autoresearch.review_summarize_cli import main
+    from outerloop.review_summarize_cli import main
 
     out = tmp_path / "merged.json"
     monkeypatch.setenv("PR_REPO", "org/r")
@@ -129,14 +129,14 @@ def test_two_real_opinions_run_the_summarizer_session(tmp_path, monkeypatch) -> 
         captured["spec"] = spec
         return FakeRoleResult()
 
-    import autoresearch.review_summarize_cli as mod
+    import outerloop.review_summarize_cli as mod
 
     monkeypatch.setattr(mod, "run_role", fake_run_role)
     monkeypatch.setattr(
-        "autoresearch.review_agent_cli.resolve_reviewer_harness",
+        "outerloop.review_agent_cli.resolve_reviewer_harness",
         lambda spec: (object(), "", "hermes"),
     )
-    monkeypatch.setattr("autoresearch.review_agent.backend_id", lambda h: "hermes/terra")
+    monkeypatch.setattr("outerloop.review_agent.backend_id", lambda h: "hermes/terra")
     _envelope(tmp_path, "c", kind="skip-stub", detail="model gone", lens="coverage")
     merged = _run_summarize(tmp_path, monkeypatch)
     assert merged["kind"] == "findings"
@@ -154,7 +154,7 @@ def test_prose_lens_reviews_human_facing_text_against_the_house_style():
     """The prose lens is the one sanctioned style reviewer: it carries the
     house style, asks for a rewrite per finding, stays advisory, and the
     shared rubric names it as the exception to "no style findings"."""
-    from autoresearch.style import PLAIN_STYLE
+    from outerloop.style import PLAIN_STYLE
 
     lens = REVIEW_LENSES["prose"]
     assert PLAIN_STYLE in lens and "rewrite" in lens and "advisory" in lens

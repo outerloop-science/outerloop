@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.followup import (
+from outerloop.followup import (
     REPLY_MARKER,
     qualifying_comments,
     respond_once,
 )
-from autoresearch.harness import SessionResult
-from autoresearch.review import MARKER as ADVISORY_MARKER
-from autoresearch.runstate import (
+from outerloop.harness import SessionResult
+from outerloop.review import MARKER as ADVISORY_MARKER
+from outerloop.runstate import (
     IN_REVIEW,
     RunRecord,
     load_record,
@@ -23,8 +23,8 @@ from autoresearch.runstate import (
     run_dir,
     save_record,
 )
-from autoresearch.steward import RELEASE_MARKER
-from autoresearch.verifier import VERIFY_MARKER
+from outerloop.steward import RELEASE_MARKER
+from outerloop.verifier import VERIFY_MARKER
 
 CONTRACT = """\
 benchmarks:
@@ -179,7 +179,7 @@ def review_run(tmp_path: Path, monkeypatch):
         last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
-    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
     return root, bare
 
 
@@ -425,7 +425,7 @@ def test_out_of_scope_response_is_reverted_not_pushed(review_run) -> None:
 
 
 def test_eval_failure_reverts_and_reports(review_run) -> None:
-    from autoresearch.orchestrator import EvalError
+    from outerloop.orchestrator import EvalError
 
     root, _ = review_run
     github = FakeGitHub(comments=[member(101, "tweak it")])
@@ -472,7 +472,7 @@ def test_inline_review_comments_also_wake(review_run) -> None:
 
 
 def test_concurrent_responder_noops_on_held_lease(review_run) -> None:
-    from autoresearch.runstate import acquire_lease
+    from outerloop.runstate import acquire_lease
 
     root, _ = review_run
     acquire_lease(root, "tsp-r1", holder="other", holder_job_id="", now=NOW)
@@ -639,7 +639,7 @@ def steward_review_run(tmp_path: Path, monkeypatch):
         last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
-    monkeypatch.setattr("autoresearch.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
     return root, bare
 
 
@@ -749,7 +749,7 @@ def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
         last_comment_id=100,
     )
     github2 = FakeGitHub(comments=[verifier_comment])
-    from autoresearch.followup import has_new_comments
+    from outerloop.followup import has_new_comments
 
     assert not has_new_comments(fresh, github2, BOT)  # type: ignore[arg-type]
 
@@ -815,7 +815,7 @@ def test_read_only_spec_is_refused(review_run) -> None:
     # the responder edits and replies; a non-executing spec here is a
     # deployment bug — contained per-lane like any responder failure (cursor
     # un-advanced), so one bad deployment cannot crash the tick's other lanes
-    from autoresearch.rolespec import Execution, RoleSpec, SessionBudget
+    from outerloop.rolespec import Execution, RoleSpec, SessionBudget
 
     read_only = RoleSpec(
         name="reviewer",
@@ -851,14 +851,14 @@ def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
     after GitHub confirms auto-merge is disarmed; a failed disarm withholds
     the change (workspace cleaned, the reply says so) instead of pushing an
     un-gated head at an armed PR."""
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     auto_contract = CONTRACT.replace("roadmap:", "merge: auto\nroadmap:")
     contract = load_contract(auto_contract, "org/pilot")
     assert contract.merge == "auto"
     # the behavior is pinned at the unit seam: disable_auto_merge False =>
     # no push. (Integration plumbing exercised by the respond tests above.)
-    from autoresearch.github import GitHubClient, GitHubError
+    from outerloop.github import GitHubClient, GitHubError
 
     class _Tok:
         def token(self) -> str:
@@ -953,7 +953,7 @@ def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
 
 
 def test_conflict_wake_action_lifecycle(review_run) -> None:
-    from autoresearch.followup import conflict_wake_action
+    from outerloop.followup import conflict_wake_action
 
     root, _ = review_run
     record = load_record(root, "tsp-r1")
@@ -1231,7 +1231,7 @@ def test_sync_needed_with_failed_fetch_services_nothing(review_run, monkeypatch)
     serviced at all this pass — qualifying comments included (terra #224
     r3: the comment path measured and pushed against no current base while
     the PR stayed behind)."""
-    from autoresearch.github import Workspace
+    from outerloop.github import Workspace
 
     root, _bare = review_run
 
@@ -1650,7 +1650,7 @@ def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
     to any of them re-measures instead of skipping (terra #226 r1). The
     signature is built by EXCLUSION, so a future Benchmark field joins it by
     default."""
-    from autoresearch.contract import load_contract
+    from outerloop.contract import load_contract
 
     base = load_contract(CONTRACT, "o/r").benchmarks[0]
     for mutation in (
@@ -1715,7 +1715,7 @@ def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
     # the approval-like name must hit the same scrub as every reply line
     assert "sk-x" not in note
     assert "[redacted]" in note
-    from autoresearch.review import APPROVAL_PATTERN
+    from outerloop.review import APPROVAL_PATTERN
 
     tail = note.split("Changed paths:")[1]
     assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))
@@ -1756,7 +1756,7 @@ def _set_contract(root: Path, text: str, leader: float | None = 10.5) -> None:
     """Commit a contract (and the PR's own measured ledger row) onto the PR
     branch so the follow-up sees both as the tree's own, not as a change the
     session made."""
-    from autoresearch.progress import load_leader, update_leader, write_progress
+    from outerloop.progress import load_leader, update_leader, write_progress
 
     ws = run_dir(root, "tsp-r1") / "ws"
     (ws / ".autoresearch.yaml").write_text(text)
@@ -1824,7 +1824,7 @@ def _verdict(
     degraded=False,
     transcript="**Verification round 1**\n- `claude` (verify): 0 blocking, 0 advisory",
 ):
-    from autoresearch.panel import PanelVerdict, _render_wake
+    from outerloop.panel import PanelVerdict, _render_wake
 
     return PanelVerdict(
         blocking=tuple(blocking),
@@ -1836,7 +1836,7 @@ def _verdict(
 
 
 def _finding(summary="unjustified constant"):
-    from autoresearch.review import Finding
+    from outerloop.review import Finding
 
     return Finding(
         file="src/pilot/solvers/tsp.py",
@@ -2028,7 +2028,7 @@ def test_a_reread_needs_a_trusted_base(review_run, monkeypatch) -> None:
     have moved."""
     root, _bare = review_run
     _set_contract(root, AUTO_CONTRACT)
-    from autoresearch.github import Workspace
+    from outerloop.github import Workspace
 
     def broken_fetch(self):
         raise RuntimeError("network down")
@@ -2111,7 +2111,7 @@ def test_a_read_that_cannot_fit_the_job_is_posted_as_a_skip(review_run) -> None:
 def test_the_judges_rules_come_from_the_trusted_base_only(review_run, monkeypatch) -> None:
     """A base whose contract cannot be read is a non-read: the panel never
     falls back to the workspace copy, which the pushed tree controls."""
-    from autoresearch.github import GitError, Workspace
+    from outerloop.github import GitError, Workspace
 
     root, _bare = review_run
     _set_contract(root, AUTO_CONTRACT)
@@ -2144,7 +2144,7 @@ def test_a_blocking_reread_records_a_panel_wake_for_the_pushed_head(review_run) 
     """Findings (not a degraded lens) on a head that is still the pushed one
     go back to the author: the record carries the fenced findings and the
     head they were read on, the thread says a revision is asked."""
-    from autoresearch.followup import PANEL_WAKE_CAP
+    from outerloop.followup import PANEL_WAKE_CAP
 
     root, _bare = review_run
     _set_contract(root, AUTO_CONTRACT)
@@ -2177,7 +2177,7 @@ def test_a_blocking_reread_records_a_panel_wake_for_the_pushed_head(review_run) 
 def test_a_capped_out_or_degraded_reread_leaves_the_findings_to_a_human(review_run) -> None:
     from dataclasses import replace as dc_replace
 
-    from autoresearch.followup import PANEL_WAKE_CAP
+    from outerloop.followup import PANEL_WAKE_CAP
 
     root, _bare = review_run
     _set_contract(root, AUTO_CONTRACT)
@@ -2361,7 +2361,7 @@ class FakeMeasurer:
     calls: list = field(default_factory=list)
 
     def results(self, measures):
-        from autoresearch.measure import EvalError, MeasurementPending
+        from outerloop.measure import EvalError, MeasurementPending
 
         self.calls.append(measures)
         if self.error:
@@ -2968,7 +2968,7 @@ def test_a_resume_that_died_after_its_push_completes_on_the_next_follow_up(
     """The commit about to be pushed is recorded before the push; a retry that
     finds it as the PR head finishes the bookkeeping instead of abandoning a
     change that already landed (terra #241 r5)."""
-    import autoresearch.followup as fu
+    import outerloop.followup as fu
 
     root, bare = review_run
     _gpu_run(root)

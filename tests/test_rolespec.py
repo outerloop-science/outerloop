@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from autoresearch.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
+from outerloop.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
 
 
 def _author() -> RoleSpec:
@@ -80,7 +80,7 @@ def test_empty_tools_rejected() -> None:
 def test_judge_may_not_hold_a_write_scope() -> None:
     import pytest
 
-    from autoresearch.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
+    from outerloop.rolespec import Execution, RoleSpec, RoleSpecError, SessionBudget
 
     with pytest.raises(RoleSpecError, match="never edits"):
         RoleSpec(

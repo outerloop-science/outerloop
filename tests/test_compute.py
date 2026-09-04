@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from autoresearch.compute import (
+from outerloop.compute import (
     GONE,
     CommandResult,
     JobSpec,
@@ -130,7 +130,7 @@ def test_compute_from_env_selects_the_backend(monkeypatch) -> None:
     """AUTORESEARCH_COMPUTE=local is the monolith switch; anything else —
     unset, empty, or a typo — stays Slurm (fail toward the real scheduler,
     never silently toward subprocesses)."""
-    from autoresearch.compute import LocalCompute, SlurmCompute, compute_from_env, local_mode
+    from outerloop.compute import LocalCompute, SlurmCompute, compute_from_env, local_mode
 
     monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
     assert isinstance(compute_from_env(), SlurmCompute) and not local_mode()

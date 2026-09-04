@@ -1,0 +1,1901 @@
+"""Orchestrator v1: one climb attempt on one benchmark of one target.
+
+Deliberately narrow: `attempt_once` runs a single
+implement→evaluate→verify→PR cycle for the configured benchmark. Task
+selection across benchmarks, the planner, experiment sbatch + wakes, and
+notebook reports grow from here — each behind a seam that already exists.
+
+The verification stance is the architecture's: the agent's claim is never
+trusted. The orchestrator re-runs the benchmark command itself — baseline at
+the pre-session tree, candidate after — and only a direction-consistent,
+threshold-clearing delta opens a PR.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import subprocess
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
+from fractions import Fraction
+from pathlib import Path
+from secrets import randbits
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from outerloop.measure import Measure
+
+from outerloop.brief import BriefInputs, BudgetState, Task, build_brief, render
+from outerloop.contract import (
+    Benchmark,
+    Contract,
+    _fold,
+    load_contract,
+    normalize_path,
+    path_is_forbidden,
+)
+from outerloop.harness import Harness, SessionResult, budget_exhausted, outage, redact
+from outerloop.panel import PanelVerdict
+from outerloop.role_runner import run_role
+from outerloop.roles import author_spec
+from outerloop.rolespec import RoleSpec
+from outerloop.syscall import (
+    SyscallError,
+    SyscallRequest,
+    evals_gpu_hours,
+    launches_gpu_hours,
+)
+from outerloop.syscall import budget_error as syscall_budget_error
+from outerloop.syscall import read_request as read_syscall_request
+from outerloop.syscall import render_refusal as render_syscall_refusal
+
+log = logging.getLogger(__name__)
+
+EVAL_TIMEOUT_S = 1800
+MAX_REPORT_BODY = 20_000
+
+
+# Environment keys the evaluator manages itself; a contract's seed_env may
+# never name one (validated at load; filtered again at injection).
+PROTECTED_EVAL_ENV = frozenset(
+    {
+        "HOME",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "VIRTUAL_ENV",
+        # interpreter/loader steering: a random-integer value cannot carry a
+        # payload, but a contract naming one of these would silently break
+        # every eval in a way that reads as measurement failure
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+    }
+)
+# ...and whole families: any UV_* steers uv's env/cache resolution, and any
+# APPTAINERENV_* is translated into the CONTAINER's environment by apptainer
+# (APPTAINERENV_HOME becomes HOME inside), so exact-name checks cannot
+# enumerate them.
+# APPTAINER_* configures the HOST-side apptainer CLI (bind paths, home,
+# containment) — same family logic, different side of the boundary.
+# LD_/DYLD_ steer the dynamic loader; GIT_ redirects repo resolution.
+# (PYTHONHASHSEED stays allowed — it IS a seed, and a legitimate seed_env.)
+PROTECTED_ENV_PREFIXES = ("UV_", "APPTAINERENV_", "APPTAINER_", "LD_", "DYLD_", "GIT_")
+
+
+def managed_eval_env(name: str) -> bool:
+    """True when injecting `name` could disturb the eval's own isolation."""
+    return name in PROTECTED_EVAL_ENV or name.startswith(PROTECTED_ENV_PREFIXES)
+
+
+class EvalError(RuntimeError):
+    """The benchmark command failed or produced no readable metric."""
+
+
+class RunParked(Exception):
+    """A dispatched climb submitted its measures and must hibernate until they
+    finish. `attempt_once` raises it (a park is an exceptional exit); the caller,
+    which owns the run record and git, persists the fields below as the WAITING
+    stage — `afterany` among them, the dependency set the wake waits on — and
+    ends the run's turn, keeping the candidate snapshot alive so the wake can
+    read it. `phase` is WHICH park: `candidate` (after the session — the wake
+    decides) or `author-sleep` (the author launched work and slept). The caller
+    fills in the candidate snapshot ref (which it holds) when writing the
+    stage."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+        afterany: str,
+        base_sha: str,
+        seed: int,
+        suite_seed: int,
+        candidate_sha: str = "",
+        session: SessionResult | None = None,
+        syscall: SyscallRequest | None = None,
+        launches_used: int = 0,
+        sleeps_used: int = 0,
+        submitted: bool = False,
+        gpu_hours_used: float = 0.0,
+        eval_minutes: int | None = None,
+        judged: tuple[str, AttemptResult] | None = None,
+        launch_afterany: str = "",
+    ):
+        self.phase = phase
+        # the author's launch jobs alone (a candidate park's `afterany` also
+        # carries the gate's evals): the wake reconciles their charge
+        self.launch_afterany = launch_afterany
+        # the gate's last negative and the tree it judged, carried across an
+        # author-sleep so a wake ending on that tree reuses the verdict
+        self.judged = judged
+        self.afterany = afterany
+        self.base_sha = base_sha
+        self.seed = seed
+        self.suite_seed = suite_seed
+        self.candidate_sha = candidate_sha
+        self.session = session
+        # GPU-hours drawn so far (launches + gate evals), and the eval
+        # walltime the author declared at submit — the wake re-parks and
+        # re-floors on the same numbers
+        self.gpu_hours_used = gpu_hours_used
+        self.eval_minutes = eval_minutes
+        # Syscall parks (an author-sleep, or a SUBMITTED candidate — Phase B):
+        # the request the wake gathers results for, and the budget counts AFTER
+        # this park. `submitted` marks a candidate park raised by `submit`: the
+        # wake delivers gate + panel results back to the AUTHOR instead of
+        # deciding by policy.
+        self.syscall = syscall
+        self.launches_used = launches_used
+        self.sleeps_used = sleeps_used
+        self.submitted = submitted
+        super().__init__(f"climb parked at {phase} on {afterany or '(no dep)'}")
+
+
+class Evaluator(Protocol):
+    """Runs a benchmark command in a workspace, returns the metric value."""
+
+    def evaluate(
+        self, workspace: Path, command: str, metric: str, extra_env: dict[str, str] | None = None
+    ) -> float: ...
+
+
+@dataclass
+class SubprocessEvaluator:
+    """Runs the contract's benchmark command and reads `metric` from its
+    JSON output (the contract requires commands to print their metrics).
+
+    The command executes AGENT-WRITTEN code — it is session-grade untrusted
+    execution and gets session-grade containment: with `container_image` set
+    (the production configuration), the command runs under `apptainer exec
+    --containall` seeing only the workspace, a throwaway tmpfs HOME, and no
+    host environment. Uncontained mode exists for tests and non-cluster dev,
+    with a scrubbed env that NEVER includes the real HOME (the orchestrator
+    account holds the bot PAT under it)."""
+
+    timeout_s: int = EVAL_TIMEOUT_S
+    container_image: str = ""
+    apptainer_binary: str = "apptainer"
+
+    def evaluate(
+        self, workspace: Path, command: str, metric: str, extra_env: dict[str, str] | None = None
+    ) -> float:
+
+        # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
+        # (it shelters the PAT), and never the workspace — eval cache/state
+        # artifacts must not masquerade as agent edits in the diff. The
+        # CONTAINED eval needs it too (--home): apptainer's tmpfs home is
+        # size-capped and uv blows it extracting wheels.
+        # Fresh per-EVAL home (never reused): baseline and candidate cannot
+        # see each other's writes, and nothing survives to any later run.
+        import os
+        import tempfile
+
+        try:
+            eval_home = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{workspace.name}-eval-home-", dir=workspace.resolve().parent
+                )
+            )
+        except OSError as exc:
+            raise EvalError(f"could not create eval home: {exc}") from exc
+        # per-EVAL cache on node-local scratch: local IO (NFS caches flake),
+        # no state crossing evals (agent code runs during the candidate eval
+        # and must not poison later baselines), and only THIS directory is
+        # bound into the container — never the whole host /tmp.
+        try:
+            cache_dir = Path(
+                tempfile.mkdtemp(prefix="uv-cache-", dir=os.environ.get("TMPDIR", "/tmp"))
+            )
+        except OSError as exc:
+            import shutil
+
+            shutil.rmtree(eval_home, ignore_errors=True)
+            raise EvalError(f"could not create eval cache dir: {exc}") from exc
+        try:
+            return self._measure(workspace, command, metric, eval_home, cache_dir, extra_env)
+        finally:
+            # bounded disk: each eval's home AND cache die with it
+            # (re-downloading wheels per eval is the accepted isolation cost)
+            import shutil
+
+            shutil.rmtree(eval_home, ignore_errors=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    def _measure(
+        self,
+        workspace: Path,
+        command: str,
+        metric: str,
+        eval_home: Path,
+        cache_dir: Path,
+        extra_env: dict[str, str] | None = None,
+    ) -> float:
+        return self._parse_measured(
+            self._run(workspace, command, eval_home, cache_dir, extra_env), metric
+        )
+
+    def _run(
+        self,
+        workspace: Path,
+        command: str,
+        eval_home: Path,
+        cache_dir: Path,
+        extra_env: dict[str, str] | None = None,
+    ) -> str:
+        import os
+        import signal
+
+        if self.container_image:
+            # per evaluation, and gone with the cache dir the caller removes
+            workdir = cache_dir / "work"
+            workdir.mkdir(parents=True, exist_ok=True)
+            argv = [
+                self.apptainer_binary,
+                "exec",
+                "--containall",
+                "--cleanenv",
+                "--bind",
+                f"{workspace}:{workspace}",
+                "--home",
+                f"{eval_home}:{eval_home}",
+                # node-local scratch for uv's cache: the container's own /tmp
+                # is a size-capped tmpfs, and shared-FS caches flake (NFS)
+                "--bind",
+                f"{cache_dir}:{cache_dir}",
+                "--pwd",
+                str(workspace),
+                # /tmp inside the jail on this evaluation's own scratch, not
+                # apptainer's tmpfs (the dispatched job script does the same)
+                "--workdir",
+                str(workdir),
+                self.container_image,
+                "sh",
+                "-c",
+                command,
+            ]
+        else:
+            argv = ["sh", "-c", command]
+        env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR") if k in os.environ}
+        # uv's cache does heavy small-file IO; on shared filesystems (NFS)
+        # that flakes with stale-handle/copy errors. Keep the cache on
+        # node-local scratch and copy across filesystems.
+        env["UV_CACHE_DIR"] = str(cache_dir)
+        env["UV_LINK_MODE"] = "copy"
+        # PRIVATE project env per eval: the session builds ws/.venv for its
+        # own use, and a second process consuming a venv another process
+        # just wrote races NFS close-to-open consistency. The eval builds
+        # its own environment from the LOCKFILE on NODE-LOCAL scratch (beside the
+        # uv cache: fast IO, zero NFS in the venv path, dies with the
+        # eval) — no shared mutable state, and the orchestrator never
+        # executes session-authored entrypoints.
+        env["UV_PROJECT_ENVIRONMENT"] = str(cache_dir / "venv")
+        if self.container_image:
+            # --cleanenv drops the host env; APPTAINERENV_* survives it
+            env["APPTAINERENV_UV_CACHE_DIR"] = env["UV_CACHE_DIR"]
+            env["APPTAINERENV_UV_LINK_MODE"] = "copy"
+            env["APPTAINERENV_UV_PROJECT_ENVIRONMENT"] = env["UV_PROJECT_ENVIRONMENT"]
+        env["HOME"] = str(eval_home)
+        if extra_env:
+            # explicit injections only (the base env is a scrubbed
+            # allowlist): today this carries the benchmark's run seed.
+            # Managed keys are dropped, never overwritten — the contract
+            # validator already rejects them, this is defense in depth
+            # (an injected HOME/UV_* would defeat per-eval isolation)
+            for key, value in extra_env.items():
+                if managed_eval_env(key):
+                    log.warning("refusing extra_env override of managed %s", key)
+                    continue
+                env[key] = value
+                if self.container_image:
+                    env[f"APPTAINERENV_{key}"] = value
+        try:
+            # process group, like the harness: a timed-out eval must not
+            # leave orphans mutating a workspace that later gets committed
+            process = subprocess.Popen(
+                argv,
+                cwd=workspace,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise EvalError(f"eval could not start: {exc}") from exc
+        try:
+            stdout, stderr = process.communicate(timeout=self.timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            import contextlib
+
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.communicate(timeout=5)
+            raise EvalError(f"eval timed out after {self.timeout_s}s") from exc
+        if process.returncode != 0:
+            raise EvalError(f"eval failed ({process.returncode}): {stderr[-500:]}")
+        return stdout
+
+    def check(self, workspace: Path, command: str) -> None:
+        """Run `command` with eval-grade containment, requiring only exit 0.
+
+        The steward's validation suite (pytest, per-benchmark smoke runs)
+        executes STEWARD-written env code — same trust level as agent
+        code, same containment, no metric parsed."""
+        import shutil
+        import tempfile
+
+        try:
+            eval_home = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{workspace.name}-check-home-", dir=workspace.resolve().parent
+                )
+            )
+        except OSError as exc:
+            raise EvalError(f"could not create check home: {exc}") from exc
+        cache_dir = Path(tempfile.mkdtemp(prefix="autoresearch-check-cache-"))
+        try:
+            self._run(workspace, command, eval_home, cache_dir)
+        finally:
+            shutil.rmtree(eval_home, ignore_errors=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    def _parse_measured(self, stdout: str, metric: str) -> float:
+        value = _metric_from_output(stdout, metric)
+        if value is None:
+            raise EvalError(f"metric {metric!r} not found in eval output")
+        if not math.isfinite(value):
+            raise EvalError(f"metric {metric!r} is not finite: {value}")
+        return value
+
+
+def _metric_from_output(stdout: str, metric: str) -> float | None:
+    """The metric from the LAST single-line JSON object that carries it.
+
+    No regex fallback: a fuzzy match that reads the wrong number (a progress
+    line, a prefixed metric name) is worse than a clean failure — the
+    contract requires eval commands to print their metrics as JSON."""
+    for line in reversed(stdout.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and metric in data:
+                try:
+                    return float(data[metric])
+                except (TypeError, ValueError):
+                    return None
+            # the {"metric": <name>, "value": <v>} shape (what the pilot's
+            # eval actually prints)
+            if isinstance(data, dict) and data.get("metric") == metric and "value" in data:
+                try:
+                    return float(data["value"])
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def _bot_login_default() -> str:
+    """RunConfig's login default, resolved at construction from the one env
+    knob; github is imported here on purpose — this module's import graph
+    stays free of it."""
+    from outerloop.github import bot_login_from_env
+
+    return bot_login_from_env()
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    target: str  # owner/repo
+    benchmark: str  # the ONE benchmark this loop works on
+    agent_id: str = "agent-01"
+    # Commits are AUTHORED as the bot account (a real GitHub identity):
+    # a bare "agent-01" noreply address links to whoever owns that login.
+    # The agent id lives in a commit trailer instead.
+    bot_login: str = field(default_factory=_bot_login_default)
+    # relative improvement below this is noise, not a PR (ε is contract-
+    # configurable later; this is the loop-side floor)
+    min_relative_improvement: float = 0.005
+    budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 1))
+
+    @property
+    def branch_prefix(self) -> str:
+        # derived, never stored: every call site passed agent_id but left the
+        # old field at its default, so every PR branch said agent-01. An id
+        # that cannot shape a ref — empty, or a malformed value an old CLI
+        # accepted into a record — keeps the old spelling rather than
+        # handing git an invalid branch name at publish.
+        import re
+
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", self.agent_id or ""):
+            return f"feat/auto/{self.agent_id}"
+        return "feat/auto/agent-01"
+
+
+@dataclass(frozen=True)
+class SuiteMeasurement:
+    """One sibling benchmark's paired measurement from the suite gate."""
+
+    name: str
+    baseline: float
+    candidate: float
+    regressed: bool
+    display_digits: int | None = None
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    """What one attempt produced — the raw material of the run report."""
+
+    # improved | no-improvement | session-error | session-budget |
+    # session-outage | eval-error | scope-violation | suite-regression
+    outcome: str
+    baseline: float | None = None
+    candidate: float | None = None
+    branch: str = ""
+    # the exact paths that were scope-checked and then measured — the caller
+    # must refuse to commit anything beyond this set
+    measured_paths: tuple[str, ...] = ()
+    # the sealed candidate snapshot this result was measured on (set on
+    # `improved`); a caller can publish THIS tree (the wake path does,
+    # attempt.py) and a depth loop can select the best across passes by it.
+    # "" on non-improved outcomes.
+    candidate_sha: str = ""
+    session: SessionResult | None = None
+    note: str = ""
+    # the seed both measurements ran under (0 = benchmark has no seed_env):
+    # recorded in the ledger row so the number is re-derivable
+    run_seed: int = 0
+    # sibling measurements when the suite gate ran (shared paths touched);
+    # empty when the diff was env-specific or no shared paths are declared
+    suite: tuple[SuiteMeasurement, ...] = ()
+    # the seed every seeded sibling's pair ran under (0 = gate did not run)
+    suite_seed: int = 0
+    # the pre-PR panel's record: per-round transcript for the PR body, how
+    # many reads ran, whether blocking findings were still open at the cap,
+    # and whether the FINAL read was degraded (a lens with no verdict, an
+    # unsanitizable tree). Either flag means the caller opens a DRAFT PR
+    # and never arms auto-merge.
+    panel_transcript: str = ""
+    panel_rounds: int = 0
+    panel_blocking_open: bool = False
+    panel_degraded: bool = False
+
+    def report(self, config: RunConfig, redact_secrets: tuple[str, ...] = ()) -> str:
+        lines = [
+            f"# Run report — {config.target} / {config.benchmark}",
+            f"Outcome: **{self.outcome}**",
+        ]
+        if self.baseline is not None:
+            lines.append(f"Baseline: {self.baseline}")
+        if self.candidate is not None:
+            lines.append(f"Candidate: {self.candidate}")
+        for row in self.suite:
+            verdict = "REGRESSED" if row.regressed else "ok"
+            lines.append(f"Suite {row.name}: {row.baseline} -> {row.candidate} ({verdict})")
+        if self.panel_rounds:
+            if self.panel_blocking_open:
+                state = "blocking findings OPEN at the cap"
+            elif self.panel_degraded:
+                state = "DEGRADED final read (a lens produced no verdict)"
+            else:
+                state = "clean"
+            lines.append(f"Panel: {self.panel_rounds} read(s), {state}")
+        if self.note:
+            lines.append(f"Note: {self.note}")
+        if self.session is not None:
+            lines += [
+                f"Session: cost=${self.session.cost_usd:.2f}, "
+                f"turns={self.session.num_turns}, stop={self.session.stop_reason}",
+                "",
+                "## Agent's report",
+                # redact BEFORE truncating: a secret straddling the cut would
+                # otherwise survive as an unmatchable prefix
+                redact(self.session.final_text, redact_secrets)[:MAX_REPORT_BODY],
+            ]
+        return redact("\n".join(lines), redact_secrets)
+
+
+def _benchmark(contract: Contract, name: str):
+    for bench in contract.benchmarks:
+        if bench.name == name:
+            return bench
+    raise ValueError(
+        f"benchmark {name!r} not in contract ({[b.name for b in contract.benchmarks]})"
+    )
+
+
+def out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
+    """Changed paths the contract does not allow the agent to touch.
+
+    Checked BEFORE the candidate eval: an out-of-scope edit could be to the
+    eval harness itself, and measuring a doctored ruler would turn "CI
+    re-verifies independently" into re-running the fraud."""
+    allowed = [normalize_path(entry) for entry in contract.scope.allowed]
+    violations = []
+    for path in paths:
+        if path_is_forbidden(path, contract):
+            violations.append(path)
+            continue
+        try:
+            candidate = normalize_path(path)
+        except Exception:
+            violations.append(path)
+            continue
+        if not any(candidate == a or a in candidate.parents for a in allowed):
+            violations.append(path)
+    return violations
+
+
+def shared_touched(paths: Sequence[str], contract: Contract) -> list[str]:
+    """Changed paths under `scope.shared` — the suite-gate trigger. Runs on
+    paths that already passed `out_of_scope`, so unparseable entries are
+    simply not shared (they were rejected upstream). Case-folded like the
+    forbidden/steward checks: a `Model/` spelling must not dodge the gate."""
+    shared = [_fold(normalize_path(entry)) for entry in contract.scope.shared]
+    hits = []
+    for path in paths:
+        try:
+            candidate = _fold(normalize_path(path))
+        except Exception:
+            continue
+        if any(candidate == s or s in candidate.parents for s in shared):
+            hits.append(path)
+    return hits
+
+
+def steward_out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
+    """Changed paths the STEWARD may not touch.
+
+    The inversion of `out_of_scope`: the steward edits the env/ruler
+    territory (`contract.steward.allowed`) and may NEVER touch the solver's
+    territory (`contract.scope.allowed`) — the roles' separation is what
+    makes verifier-checked stewardship trustworthy. The always-forbidden
+    set (contract, `.github/`, roadmap) binds here too. No steward section
+    in the contract means everything is out of scope.
+    """
+    if contract.steward is None:
+        return list(paths)
+    allowed = [_fold(normalize_path(entry)) for entry in contract.steward.allowed]
+    solver = [_fold(normalize_path(entry)) for entry in contract.scope.allowed]
+    violations = []
+    for path in paths:
+        if path_is_forbidden(path, contract):
+            violations.append(path)
+            continue
+        try:
+            candidate = _fold(normalize_path(path))
+        except Exception:
+            violations.append(path)
+            continue
+        # case-folded both directions, like path_is_forbidden: on a
+        # case-insensitive checkout, Solvers/ IS solvers/
+        if any(candidate == sp or sp in candidate.parents for sp in solver):
+            violations.append(path)  # solver territory: never the steward's
+            continue
+        if not any(candidate == a or a in candidate.parents for a in allowed):
+            violations.append(path)
+    return violations
+
+
+def draw_run_seed() -> int:
+    """A fresh measurement seed, never 0 — zero is the ledger's "no seed
+    recorded" sentinel, and the injection guards key off truthiness."""
+    return 1 + randbits(30)
+
+
+def benchmark_floor(
+    prior_best: float, min_delta: float | None, min_delta_rel: float | None
+) -> float:
+    """The effective absolute cross-seed floor for a comparison against the
+    recorded best. The larger of the absolute floor and the relative floor
+    scaled to the level, so a benchmark that sets both gets the more
+    conservative one. Returns 0.0 when no floor is declared.
+
+    A relative-only floor scales to 0 at a recorded level of 0, which means
+    no floor. That is a real limit of a relative floor, not a bug: a metric
+    that can sit at 0 should pair min_delta_rel with a small absolute
+    min_delta as a backstop. Unbounded metrics that use a relative floor
+    (wall-clock timing) do not reach 0."""
+    floors = []
+    if min_delta:
+        floors.append(min_delta)
+    if min_delta_rel and math.isfinite(prior_best):
+        floors.append(min_delta_rel * abs(prior_best))
+    return max(floors) if floors else 0.0
+
+
+def reaches_floor(
+    prior: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None,
+    min_delta_rel: float | None,
+) -> bool:
+    """Inclusive floor test in exact decimal arithmetic. Metric values and
+    floors arrive as decimal text (eval JSON, the contract's YAML), so the
+    comparison is made on the decimals that were written, not on their
+    binary approximations: 0.3 - 0.2 is exactly 0.1 here, and there is no
+    tolerance for a short delta to hide in at any scale. Non-finite inputs
+    fail closed: an infinite floor (`min_delta: .inf` is valid YAML) is
+    never reached, and a NaN anywhere is not a measurement. The caller's
+    float floor is only for messages."""
+    if not all(math.isfinite(v) for v in (prior, candidate, min_delta or 0, min_delta_rel or 0)):
+        return False
+    p, c = Fraction(repr(prior)), Fraction(repr(candidate))
+    delta = c - p if direction == "max" else p - c
+    floors = []
+    if min_delta:
+        floors.append(Fraction(repr(min_delta)))
+    if min_delta_rel:
+        floors.append(Fraction(repr(min_delta_rel)) * abs(p))
+    return delta >= max(floors) if floors else True
+
+
+def clears_min_delta(
+    prior_best: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None,
+    min_delta_rel: float | None = None,
+) -> bool:
+    """Cross-seed comparisons on a resampled pool must reach the
+    benchmark's noise floor: the recorded best was measured under a
+    different seed, so a delta below the floor is pool luck, not progress.
+    The floor is INCLUSIVE — a delta equal to it is credited: the contract
+    declares the smallest movement it calls real, and on a quantized metric
+    (a step count measured every N steps) the floor IS a reachable value,
+    so a strict bar silently demands the next quantum (gpt-speedrun,
+    2026-09-03: three candidates measured exactly one floor better than the
+    base were all discarded). Same-seed paired comparisons never call this."""
+    if not (min_delta or min_delta_rel):
+        return True  # no floor declared
+    if not (math.isfinite(prior_best) and math.isfinite(candidate)):
+        return False  # a declared floor with non-finite inputs fails closed
+    return reaches_floor(prior_best, candidate, direction, min_delta, min_delta_rel)
+
+
+def suite_regressed(
+    baseline: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None = None,
+    min_delta_rel: float | None = None,
+) -> bool:
+    """Did a sibling benchmark move the WRONG way beyond its own floor?
+
+    Both sides are same-seed paired, so with no floor declared any wrong-way
+    move counts (paired noise is ~0 by construction); a declared floor gives
+    a stochastic eval its honest tolerance. Non-finite values fail closed —
+    an unmeasurable sibling must never read as "no regression"."""
+    if not (math.isfinite(baseline) and math.isfinite(candidate)):
+        return True
+    drop = baseline - candidate if direction == "max" else candidate - baseline
+    if drop <= 0:
+        return False
+    return drop > benchmark_floor(baseline, min_delta, min_delta_rel)
+
+
+def improved(baseline: float, candidate: float, direction: str, min_rel: float) -> bool:
+    """Direction-aware, threshold-clearing improvement. Non-finite values
+    never count (the evaluator rejects them; this is defense in depth)."""
+    if not (math.isfinite(baseline) and math.isfinite(candidate)):
+        return False
+    if baseline == 0:
+        # no relative scale exists: apply the threshold absolutely
+        return candidate >= min_rel if direction == "max" else candidate <= -min_rel
+    rel = (candidate - baseline) / abs(baseline)
+    return rel >= min_rel if direction == "max" else rel <= -min_rel
+
+
+def make_task(
+    contract: Contract, benchmark_name: str, baseline: float | None, hypothesis: str = ""
+) -> Task:
+    bench = _benchmark(contract, benchmark_name)
+    better = "lower" if bench.direction == "min" else "higher"
+    suite_gated = bool(contract.scope.shared) and len(contract.benchmarks) > 1
+    # ORIENTATION, not direction: the brief states the current score and how
+    # the metric reads as FACTS, and leaves the goal and the finish to the
+    # author (research-loop.md, author-directed). The GATE — never the brief —
+    # is the real bar: it re-measures both sides after the session, so a
+    # missing baseline (a benchmark's first run) just drops the reference
+    # number. Naming a target here would only invite optimizing that number.
+    current = f"currently {baseline}" if baseline is not None else "no score recorded yet"
+    return Task(
+        hypothesis=hypothesis
+        or (
+            f"The {bench.name} solver can be improved: study the current "
+            f"implementation and the evaluation, form ONE concrete hypothesis "
+            f"for why it underperforms, and implement it."
+        ),
+        benchmark=bench.name,
+        # a fact about the metric, not a target to chase
+        expected_effect=f"{bench.metric} ({better} is better), {current}",
+        # the finish is the AUTHOR's call; the gate decides what publishes
+        done_criteria=(
+            "You decide when your result is worth publishing — and a negative "
+            "result reported clearly is a success. The orchestrator re-measures "
+            f"`{bench.command}` on a private seed to verify any improvement "
+            "claim, and the PR's CI runs the repository tests"
+            + (
+                "; changes touching shared paths are suite-gated, so no sibling "
+                "benchmark may regress beyond its floor"
+                if suite_gated
+                else ""
+            )
+            + "."
+        ),
+    )
+
+
+class Measurer(Protocol):
+    """Obtains a climb's measurements. `results` returns every measure's value
+    keyed by its name, or — for a dispatched backend — raises
+    `MeasurementPending` after submitting the not-yet-done jobs, for the caller
+    to park on. `measure.DispatchedMeasurer` runs each measure as a job on a
+    fresh checkout of its committed sha — on the cluster, or synchronously via
+    `LocalCompute`; the seam is what lets `measure_and_decide` be re-enterable
+    without knowing which."""
+
+    def results(self, measures: list[Measure]) -> dict[str, float]: ...
+
+
+@dataclass(frozen=True)
+class MeasureOK:
+    """A credited measurement: the candidate cleared the improvement threshold
+    and, when the diff touched shared code, no sibling regressed. The caller's
+    panel/PR path proceeds from here."""
+
+    baseline: float
+    candidate: float
+    suite: tuple[SuiteMeasurement, ...] = ()
+    suite_seed: int = 0
+    # how the baseline number was obtained when it was NOT measured beside
+    # this candidate (`baseline: cached`) — surfaces on the credited result
+    baseline_note: str = ""
+
+
+def measure_and_decide(
+    contract: Contract,
+    bench: Benchmark,
+    *,
+    base_sha: str,
+    candidate_sha: str,
+    seed: int,
+    suite_seed: int,
+    measured_paths: Sequence[str],
+    measurer: Measurer,
+    min_relative_improvement: float,
+) -> AttemptResult | MeasureOK:
+    """The post-session decision as a PURE function of committed shas and a
+    `Measurer` — the re-enterable core a wake reconstructs from the record.
+
+    Measures baseline@base_sha and candidate@candidate_sha (paired on `seed`,
+    common random numbers) and, when the diff touches shared code, each
+    sibling's paired base/cand (on the sibling's OWN seed var, all sharing the
+    single `suite_seed`), then applies the improvement threshold and the suite
+    gate. Returns a TERMINAL `AttemptResult` on any stop (scope-violation,
+    eval-error, no-improvement, suite-regression), or a `MeasureOK` carrying
+    the credited values. No session and no git: the same shas rebuild the same
+    plan and read cached results, so a wake re-enters here unchanged. A
+    dispatched measurer's `MeasurementPending` propagates untouched, for the
+    caller to write the waiting record and park on.
+
+    `suite_seed` is an INPUT, not drawn here: a wake must reproduce the seed the
+    first pass used, so the caller draws it once and persists it. And because
+    the baseline is a committed sha rather than a live pre-session workspace,
+    the gate can always measure its siblings.
+    """
+    # deferred like contract.py's managed_eval_env import: measure -> dispatch
+    # -> orchestrator for the eval primitives, so orchestrator imports measure
+    # at call time to keep the module graph acyclic.
+    from outerloop.measure import (
+        SiblingSpec,
+        plan_measures,
+        read_baseline_cache,
+        write_baseline_cache,
+    )
+
+    # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
+    # because the out-of-scope edit could be to the ruler itself.
+    violations = out_of_scope(list(measured_paths), contract)
+    if violations:
+        return AttemptResult(
+            outcome="scope-violation",
+            note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+            run_seed=seed,
+        )
+
+    seed_env = bench.seed_env or ""
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    # Both seed guards fire UP FRONT, before any (expensive) measurement: a
+    # seed of 0 — the "no seed recorded" sentinel — would run a pair UNPAIRED,
+    # each side drawing its own internal seed, so eval noise could read as
+    # improvement. The caller must draw a real seed (and persist it, for the
+    # wake to reuse) whenever a benchmark or a sibling declares seed_env; a
+    # seeded sibling's suite_seed is a caller-contract precondition even on a
+    # diff that won't touch shared code (the next diff might).
+    if seed_env and not seed:
+        raise ValueError(
+            f"benchmark {bench.name!r} declares seed_env {seed_env!r} but seed is 0: "
+            "a seeded benchmark needs a drawn seed, or baseline and candidate run unpaired"
+        )
+    # only when the suite gate is STRUCTURALLY possible: a contract with an
+    # empty scope.shared can never trigger it (shared_touched always empty), so
+    # a missing suite_seed there is not a misconfiguration — do not over-reject.
+    if contract.scope.shared and any(b.seed_env for b in siblings) and not suite_seed:
+        raise ValueError(
+            "a seeded sibling needs a nonzero suite_seed (drawn once, persisted for the wake); "
+            "suite_seed 0 would run the sibling pair unpaired"
+        )
+
+    # PHASE 1 — baseline + candidate only. Siblings are NOT measured until the
+    # candidate has cleared the threshold: a non-improving candidate must never
+    # burn the (expensive) sibling evals, matching attempt_once's lazy order.
+    # `baseline: cached` — the base tree is measured ONCE per (benchmark, base
+    # sha) into the target's cache and reused by every attempt on that base;
+    # only the candidate runs. Unpaired, so the contract's floor carries the
+    # cross-seed noise (the loader requires one). A miss measures both and
+    # records the baseline for the next attempt.
+    cache_dir = getattr(measurer, "baseline_cache", None)
+    image = str(getattr(measurer, "image", ""))
+    cached = (
+        read_baseline_cache(
+            cache_dir,
+            bench.name,
+            base_sha,
+            image=image,
+            command=bench.command,
+            metric=bench.metric,
+            seed_env=bench.seed_env or "",
+            gpus=bench.gpus,
+        )
+        if bench.baseline == "cached" and cache_dir is not None
+        else None
+    )
+    plan = plan_measures(
+        bench.command,
+        bench.metric,
+        base_sha,
+        candidate_sha,
+        seed_env,
+        seed,
+        gpus=bench.gpus,
+    )
+    if cached is not None:
+        plan = [m for m in plan if m.name != "baseline"]
+    try:
+        main = measurer.results(plan)
+    except EvalError as exc:
+        return AttemptResult(outcome="eval-error", note=str(exc), run_seed=seed)
+
+    baseline_note = ""
+    if cached is not None:
+        baseline = float(cached["value"])
+        baseline_note = (
+            f"baseline {baseline} reused from the cache (measured at seed "
+            f"{cached.get('seed')} by run {cached.get('run')}); candidate at seed {seed}"
+        )
+    else:
+        baseline = main["baseline"]
+        if bench.baseline == "cached" and cache_dir is not None:
+            write_baseline_cache(
+                cache_dir,
+                bench.name,
+                base_sha,
+                value=baseline,
+                seed=seed,
+                run_tag=str(getattr(measurer, "run_tag", "")),
+                image=image,
+                command=bench.command,
+                metric=bench.metric,
+                seed_env=bench.seed_env or "",
+                gpus=bench.gpus,
+            )
+    candidate = main["candidate"]
+    if not improved(baseline, candidate, bench.direction, min_relative_improvement):
+        return AttemptResult(
+            outcome="no-improvement",
+            baseline=baseline,
+            candidate=candidate,
+            run_seed=seed,
+        )
+    # The contract's OWN significance floor, when the benchmark declares one.
+    # Same-seed pairing removes pool noise but not training stochasticity —
+    # a benchmark whose eval trains models calibrates min_delta to its
+    # cross-run sd, and the gate must speak that language too (yolo#16
+    # published at +0.0379 against a declared 0.04 floor because only the
+    # followup path read it). No declared floor -> the relative default
+    # above remains the whole bar.
+    floor = benchmark_floor(baseline, bench.min_delta, bench.min_delta_rel)
+    if floor:
+        delta = (candidate - baseline) if bench.direction == "max" else (baseline - candidate)
+        # INCLUSIVE, matching clears_min_delta: the floor is the smallest
+        # movement the contract calls real, so a delta equal to it clears
+        if not reaches_floor(
+            baseline, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
+        ):
+            return AttemptResult(
+                outcome="no-improvement",
+                note=(
+                    f"delta {delta:+.6g} is inside the contract's significance "
+                    f"floor ({floor:g}): real movement, not creditable progress"
+                ),
+                baseline=baseline,
+                candidate=candidate,
+                run_seed=seed,
+            )
+
+    # PHASE 2 — suite gate, only for a credited candidate whose diff touched
+    # shared code. A second measure set (a second park for a dispatched
+    # backend): an extra CPU wake, never a wasted GPU sibling eval.
+    if not (siblings and shared_touched(measured_paths, contract)):
+        return MeasureOK(baseline=baseline, candidate=candidate, baseline_note=baseline_note)
+
+    # every seeded sibling runs its pair under the ONE suite_seed, read through
+    # its own seed var (mirrors the in-job gate).
+    sib_specs = tuple(
+        SiblingSpec(
+            b.name,
+            b.command,
+            b.metric,
+            seed_env=b.seed_env or "",
+            seed=suite_seed,
+            gpus=b.gpus,  # each sibling on ITS lane, not the climbed benchmark's
+        )
+        for b in siblings
+    )
+    sib_plan = [
+        m
+        for m in plan_measures(
+            bench.command,
+            bench.metric,
+            base_sha,
+            candidate_sha,
+            seed_env,
+            seed,
+            siblings=sib_specs,
+            gpus=bench.gpus,
+        )
+        if m.name.startswith("sib-")  # baseline/candidate already measured (phase 1)
+    ]
+    try:
+        vals = measurer.results(sib_plan)
+    except EvalError as exc:
+        # phase 1 already credited the main pair — carry it into the report.
+        return AttemptResult(
+            outcome="eval-error",
+            baseline=baseline,
+            candidate=candidate,
+            note=str(exc),
+            run_seed=seed,
+        )
+
+    suite_rows: list[SuiteMeasurement] = []
+    for b in siblings:
+        sib_base = vals[f"sib-{b.name}-base"]
+        sib_cand = vals[f"sib-{b.name}-cand"]
+        suite_rows.append(
+            SuiteMeasurement(
+                name=b.name,
+                baseline=sib_base,
+                candidate=sib_cand,
+                regressed=suite_regressed(
+                    sib_base, sib_cand, b.direction, b.min_delta, b.min_delta_rel
+                ),
+                display_digits=b.display_digits,
+            )
+        )
+    suite = tuple(suite_rows)
+    regressed = [r for r in suite if r.regressed]
+    if regressed:
+        named = ", ".join(f"{r.name} {r.baseline} -> {r.candidate}" for r in regressed)
+        return AttemptResult(
+            outcome="suite-regression",
+            baseline=baseline,
+            candidate=candidate,
+            note=f"shared-path diff regressed sibling benchmark(s): {named}",
+            run_seed=seed,
+            suite=suite,
+            suite_seed=suite_seed,
+        )
+
+    return MeasureOK(
+        baseline=baseline,
+        candidate=candidate,
+        suite=suite,
+        suite_seed=suite_seed,  # reached only on the suite path
+        baseline_note=baseline_note,
+    )
+
+
+def resume_attempt(
+    contract: Contract,
+    bench: Benchmark,
+    *,
+    base_sha: str,
+    candidate_sha: str,
+    seed: int,
+    suite_seed: int,
+    measured_paths: Sequence[str],
+    session: SessionResult,
+    measurer: Measurer,
+    min_relative_improvement: float,
+) -> AttemptResult:
+    """Re-enter a parked climb's post-session decision — the WAKE side of a
+    dispatched candidate park. The candidate is already committed (its sha is in
+    the record), so the session does NOT re-run: its edits are captured in
+    `candidate_sha` and it was reconstructed by the caller from the record
+    (`session.final_text` is the saved write-up, and its cost/turns the saved
+    spend) so the PR body and panel claim need no live session. `measured_paths`
+    is the caller's re-derivation of the `base_sha..candidate_sha` diff.
+
+    The measurer reads the cached eval results and this returns the decision, OR
+    the decision needs a measure not yet done — the suite pairs after an
+    improving candidate, "another round of experiments" — and it re-parks by
+    raising `RunParked`, exactly as the first pass did.
+
+    This is the re-entry seam the depth axis (docs/design/research-loop.md)
+    builds on.
+    """
+    from outerloop.measure import MeasurementPending
+
+    try:
+        outcome = measure_and_decide(
+            contract,
+            bench,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            seed=seed,
+            suite_seed=suite_seed,
+            measured_paths=measured_paths,
+            measurer=measurer,
+            min_relative_improvement=min_relative_improvement,
+        )
+    except MeasurementPending as pending:
+        # a measure is not done yet (the suite pairs this wake just dispatched):
+        # re-park on the new afterany set, same shape as the first candidate park
+        raise RunParked(
+            phase="candidate",
+            afterany=pending.afterany(),
+            base_sha=base_sha,
+            seed=seed,
+            suite_seed=suite_seed,
+            candidate_sha=candidate_sha,
+            session=session,
+        ) from None
+    if isinstance(outcome, AttemptResult):
+        # a terminal measurement outcome (no-improvement / suite-regression /
+        # eval-error): carry the reconstructed session, and give a bare
+        # no-improvement the same framing the in-job path sets (a clear
+        # negative is a success), so a resumed negative does not end note-less.
+        note = outcome.note
+        if outcome.outcome == "no-improvement" and not note:
+            # only a BARE negative gets the generic framing — a specific
+            # reason (e.g. inside the contract's significance floor) must
+            # survive to the record and report
+            note = "a negative result reported clearly is a success"
+        return dc_replace(outcome, session=session, note=note)
+    # credited: candidate cleared the threshold and no sibling regressed. The
+    # caller sets `branch` when it opens the PR.
+    return AttemptResult(
+        outcome="improved",
+        baseline=outcome.baseline,
+        candidate=outcome.candidate,
+        session=session,
+        measured_paths=tuple(measured_paths),
+        run_seed=seed,
+        suite=outcome.suite,
+        suite_seed=outcome.suite_seed,
+        candidate_sha=candidate_sha,
+        note=outcome.baseline_note,
+    )
+
+
+def _merge_afterany(*parts: str) -> str:
+    """Join afterany dependency strings ("afterany:1:2") into one; "" parts
+    drop out. A submit's park waits on the gate's evals AND its sibling
+    launches together."""
+    ids = [t for part in parts for t in part.split(":")[1:] if t]
+    return "afterany:" + ":".join(ids) if ids else ""
+
+
+def attempt_once(
+    config: RunConfig,
+    contract_text: str,
+    workspace: Path,
+    harness: Harness,
+    measurer: Measurer,
+    base_sha: str,
+    snapshot: Callable[[], str],
+    ruler: str,
+    changed_paths: Callable[[], Sequence[str]],
+    lessons: str = "",
+    recent_reports: tuple[str, ...] = (),
+    report_archive: bool = False,
+    created: str = "",
+    task_hypothesis: str = "",
+    spec: RoleSpec | None = None,
+    panel_runner: Callable[[float, float, str], PanelVerdict] | None = None,
+    brief_baseline: float | None = None,
+    line_ref: str = "",
+    line_memory: str = "",
+    line_divergence: str = "",
+    resume_session_id: str = "",
+    improve_prompt: str = "",
+    launcher: Callable[[str, SyscallRequest], str] | None = None,
+    launches_used: int = 0,
+    sleeps_used: int = 0,
+    gpu_hours_used: float = 0.0,
+    tree_of: Callable[[str], str] | None = None,
+    judged: tuple[str, AttemptResult] | None = None,
+) -> AttemptResult:
+    """One implement→evaluate→verify cycle in an existing clean workspace.
+
+    The caller owns the git side (clone before, diff/commit/push/PR after) —
+    same split as the harness: this function owns the science loop only. It
+    measures through a `Measurer` over committed shas: `base_sha` is the
+    pre-session tree, and `snapshot()` — a caller callback, since snapshotting
+    is git — commits the session's current workspace and returns its
+    `candidate_sha`. The caller registers each sha's worktree with the measurer
+    and owns the snapshot ref lifecycle. `changed_paths` reports every path the
+    session touched (the caller wires it to `git add -A` + staged paths); scope
+    is enforced on it BEFORE the candidate eval runs.
+
+    The session runs as the author role on the role-runner (`spec` defaults
+    to `author_spec`; the caller that built the harness passes its spec so
+    manifest and harness agree). Scope enforcement stays HERE, on the
+    contract — the spec's scope is the manifest copy, filled from the same
+    contract.
+
+    With `panel_runner` (docs/design/orchestrator-verify.md), a credited
+    claim is read by the verification panel BEFORE it can become a PR. On a
+    SUBMITTED claim (the author's `submit` syscall), blocking findings and the
+    gate result go back to the AUTHOR — it revises and resubmits, or concludes
+    (research-loop-buildout.md Phase B); on a plain finish, blocking findings
+    set `panel_blocking_open` (the caller posts a DRAFT PR carrying them).
+    The caller supplies the runner because the panel's checkouts are git work
+    (this function owns no git).
+
+    With `launcher` (author syscalls, research-loop-buildout.md Phase A), a
+    session that ends having asked to launch-and-sleep parks this climb as
+    `author-sleep` instead of measuring: the tree is sealed via `snapshot()`,
+    the launcher submits the jobs (caller-owned — it is compute work), and the
+    RunParked carries the request plus the budget counts. A `submit` rides
+    the same request: the gate (and any sibling launches) run on the sealed
+    tree — a dispatched gate parks as a `candidate` with the `submitted`
+    marker, an inline gate feeds back in-session. `launches_used` /
+    `sleeps_used` are the counts so far (a wake passes them from the stage);
+    the budgets come from the benchmark's `depth_k` / `sleep_k`.
+    """
+    contract = load_contract(contract_text, config.target)
+    bench = _benchmark(contract, config.benchmark)
+    spec = spec or author_spec()
+    if not spec.execution.can_execute:
+        raise ValueError("attempt_once runs an editing role; the spec must allow execution")
+    if not spec.scope:
+        spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
+
+    # the resume-entry (cumulative depth) is a COUPLED pair: it needs both a
+    # session to resume and an instruction to resume with. Reject either alone
+    # loudly — a lone improve_prompt would be silently discarded by the fresh-brief
+    # branch (a depth pass turning into a fresh attempt behind the caller's back),
+    # a lone session id would burn a promptless turn. And reject a resume on a
+    # no-resume backend rather than let the climb end as `session-error`. The depth
+    # loop (caller) owns WHEN to resume; this validates that choice — it never
+    # silently falls back to a fresh brief.
+    if bool(resume_session_id) != bool(improve_prompt):
+        raise ValueError("resume_session_id and improve_prompt must be given together")
+    if resume_session_id and not getattr(harness, "supports_resume", True):
+        # same optional-attr idiom as the panel policy
+        raise ValueError("resume_session_id given but the harness does not support resume")
+    if resume_session_id and (
+        task_hypothesis
+        or lessons
+        or recent_reports
+        or report_archive
+        or created
+        or line_ref
+        or line_memory
+        or line_divergence
+        or brief_baseline is not None
+    ):
+        # a resume skips build_brief entirely (the session already carries this
+        # context from its first pass), so these brief-only inputs would be
+        # silently dropped — the same silent-discard hazard the coupling check
+        # above prevents. Reject them loudly; a resume pass is lean by design.
+        # This is the EXHAUSTIVE set of OPTIONAL brief-only params: a new one added
+        # to build_brief must be added here too. Required params that also feed only
+        # the brief are NOT guarded because a caller cannot omit them — `ruler`, and
+        # the brief-only fields of the required `config` (e.g. `config.budget`) — so
+        # they are unavoidably passed and simply ignored on a resume. `contract_text`
+        # is NOT brief-only — scope/gate use it either way.
+        raise ValueError(
+            "resume_session_id resumes an existing session (no fresh brief); the brief-only "
+            "inputs (task_hypothesis/lessons/recent_reports/report_archive/created/"
+            "line_ref/line_memory/line_divergence/brief_baseline) have no effect on a "
+            "resume — omit them"
+        )
+
+    # deferred like measure_and_decide's import (measure -> dispatch ->
+    # orchestrator for the eval primitives).
+    from outerloop.measure import MeasurementPending
+
+    run_seed = draw_run_seed() if bench.seed_env else 0
+    siblings = [b for b in contract.benchmarks if b.name != bench.name]
+    # ONE suite_seed for the whole climb, fixed up front so a wake reproduces it
+    # (never a re-draw), and only when a seeded sibling could gate. It REUSES the
+    # climbed benchmark's run_seed when there is one (as the in-job gate did),
+    # drawing a fresh seed only for an unseeded benchmark.
+    suite_seed = (
+        (run_seed or draw_run_seed())
+        if contract.scope.shared and any(b.seed_env for b in siblings)
+        else 0
+    )
+
+    # The baseline is NOT measured before the session — it is measured by the
+    # GATE (`measure_and_decide`, base_sha vs candidate_sha) after the session,
+    # so a dispatched climb has ONE park (the candidate), never a pre-session
+    # baseline park. `brief_baseline` is the last-known score from the ledger,
+    # for orienting the brief only ("improve from ~13.8"); it is None on a
+    # benchmark's first run, and the gate re-measures either way.
+    baseline: float | None = brief_baseline
+    if resume_session_id:
+        # a cumulative depth pass (research-loop-buildout.md, Phase 2a): resume the
+        # prior session with the improve prompt instead of a fresh brief, so the
+        # author builds on — and sees the measured result of — its own last pass.
+        role_result = run_role(
+            spec, harness, improve_prompt, workspace, resume_session_id=resume_session_id
+        )
+    else:
+        task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
+        brief = build_brief(
+            BriefInputs(
+                task=task,
+                contract_text=contract_text,
+                ruler=ruler,
+                lessons=lessons,
+                recent_reports=recent_reports,
+                report_archive=report_archive,
+                budget=config.budget,
+                # the launch/sleep tool is advertised ONLY when it is wired
+                # (never a tool the author cannot actually call)
+                launch_budget=bench.depth_k if launcher is not None else 0,
+                sleep_budget=bench.sleep_k if launcher is not None else 0,
+                # GPU benchmarks: the compute meter the author budgets against
+                gpu_hour_budget=(
+                    contract.budgets.gpu_hours_per_run
+                    if launcher is not None and bench.gpus
+                    else 0.0
+                ),
+                eval_minutes_default=bench.eval_minutes or 0,
+                line_ref=line_ref,
+                memory=line_memory,
+                line_divergence=line_divergence,
+            ),
+            created=created,
+        )
+        role_result = run_role(spec, harness, render(brief), workspace)
+    session = role_result.session
+    if not role_result.ok:
+        # the role-runner's verdict, not just the raw session flag (for a
+        # schema-less role they coincide today, but any failure the runner
+        # learns to report must not slip through as a clean run).
+        # Our caps running out is a budget ending, not a malfunction; the
+        # API refusing us is an outage — neither is the run's own failure.
+        if outage(session):
+            kind = "session-outage"
+        elif budget_exhausted(session):
+            kind = "session-budget"
+        else:
+            kind = "session-error"
+        return AttemptResult(
+            outcome=kind,
+            baseline=baseline,
+            session=session,
+            note=role_result.error or session.error_detail or session.stop_reason,
+        )
+
+    # --- the decision loop (research-loop.md, "one syscall"; buildout A+B) ---
+    # Each pass: honor the session's syscall request, then measure the tree.
+    # An enabled author (the caller wired a `launcher`) may end its session —
+    # or a resumed leg of it — having asked to LAUNCH work outside the sandbox
+    # and SLEEP on it (seal the tree, submit through the launcher, park; the
+    # wake re-enters THIS function through the resume-entry so the whole tail
+    # composes unchanged), and/or to SUBMIT its candidate: the gate and any
+    # sibling launches run on the sealed tree — a dispatched gate parks as a
+    # `candidate` with the `submitted` marker (the wake delivers gate + panel
+    # back to the author), an inline gate feeds back in-session and the loop
+    # re-reads the author's next move. Over budget: wake the author ONCE with
+    # a refusal so it can conclude honestly; a session that over-asks again
+    # proceeds to measurement with the tree as it stands (bounded, never an
+    # endless refuse/re-ask loop). With no launcher the feature is off and a
+    # stray request file is just an untracked file (excluded from the diff
+    # either way).
+    panel_reads = 0
+    panel_sections: list[str] = []
+    panel_blocking_open = False
+    panel_degraded = False
+    candidate: float | None = baseline
+    suite: tuple[SuiteMeasurement, ...] = ()
+    suite_seed_ran = 0
+    baseline_note = ""
+    measured: tuple[str, ...] = ()
+    refused_once = False
+    # the gate's last negative and the sealed tree it judged: sealing the same
+    # content again (the author concluded, or resubmitted untouched) reuses
+    # that verdict rather than paying for a second, identical measurement
+    # (`judged` is the wake's: the parked candidate the gate turned down)
+    failed_gate: tuple[str, AttemptResult] | None = judged
+    tree = tree_of or (lambda sha: sha)
+
+    def _resume(prompt: str) -> AttemptResult | None:
+        """Resume the author session with `prompt`: None on success (session
+        advanced), else the terminal AttemptResult for the failed resume."""
+        nonlocal session
+        wake_result = run_role(
+            spec, harness, prompt, workspace, resume_session_id=session.session_id
+        )
+        session = wake_result.session
+        if wake_result.ok:
+            return None
+        if outage(session):
+            kind = "session-outage"
+        elif budget_exhausted(session):
+            kind = "session-budget"
+        else:
+            kind = "session-error"
+        return AttemptResult(
+            outcome=kind,
+            baseline=baseline,
+            candidate=candidate,
+            session=session,
+            note=wake_result.error or session.error_detail or session.stop_reason,
+            run_seed=run_seed,
+            panel_transcript="\n\n".join(panel_sections),
+            panel_rounds=panel_reads,
+        )
+
+    def _can_resume() -> bool:
+        return bool(session.session_id) and getattr(harness, "supports_resume", True)
+
+    def _budgets_line() -> str:
+        gpu = (
+            f", {max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used):.1f} GPU-hours"
+            if bench.gpus
+            else ""
+        )
+        return (
+            f"Budgets: {max(0, bench.depth_k - launches_used)} launches and "
+            f"{max(0, bench.sleep_k - sleeps_used)} sleeps{gpu} remaining."
+        )
+
+    def _not_run_note(request: SyscallRequest | None) -> str:
+        # inline gates never dispatch a submit's sibling launches (nothing
+        # would gather them) — tell the author; their budget was not spent
+        if request is None or not request.launches:
+            return ""
+        return (
+            "Your sibling launches did NOT run (the gate completed inline); "
+            "stage them again if still needed. "
+        )
+
+    while True:
+        # the syscall request the session's last leg left, if any
+        submitted: SyscallRequest | None = None
+        evals_charge = 0.0  # GPU-hours this pass took for gate evals
+        presealed = ""  # a seal taken early to compare against the judged tree
+        while launcher is not None:
+            try:
+                request = read_syscall_request(workspace)
+            except SyscallError as exc:
+                # loud, never silent: the author meant something by the file
+                return AttemptResult(
+                    outcome="session-error",
+                    baseline=baseline,
+                    session=session,
+                    note=f"unhonorable syscall request: {exc}",
+                )
+            if request is None:
+                break
+            # suite siblings' paired evals are charged as if measured (the
+            # suite phase decides at measurement; a budget over-charges)
+            suite_gpus = tuple(b.gpus for b in contract.benchmarks if b.name != bench.name)
+            # a `baseline: cached` gate with a warm cache runs ONE main eval
+            # (the candidate); charge what will actually run (terra #178)
+            main_evals = 2
+            if request.submit and bench.baseline == "cached":
+                from outerloop.measure import read_baseline_cache
+
+                cache_dir = getattr(measurer, "baseline_cache", None)
+                if cache_dir is not None and read_baseline_cache(
+                    cache_dir,
+                    bench.name,
+                    base_sha,
+                    image=str(getattr(measurer, "image", "")),
+                    command=bench.command,
+                    metric=bench.metric,
+                    seed_env=bench.seed_env or "",
+                    gpus=bench.gpus,
+                ):
+                    main_evals = 1
+            if request.submit and failed_gate is not None:
+                # a resubmit of the tree the gate already turned down: nothing
+                # to budget or charge — the verdict is reused below (the sleep
+                # still counts, so unchanged resubmits stay bounded). An eval
+                # that ERRORED is the exception: resubmitting is how the author
+                # retries it (with more minutes, say), so that one runs. The
+                # early seal keeps the later seal's guards: scope first, and a
+                # failed snapshot is the eval error it always was.
+                violations = out_of_scope(list(changed_paths()), contract)
+                if violations:
+                    return AttemptResult(
+                        outcome="scope-violation",
+                        baseline=baseline,
+                        session=session,
+                        note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                        run_seed=run_seed,
+                        panel_transcript="\n\n".join(panel_sections),
+                        panel_rounds=panel_reads,
+                    )
+                try:
+                    presealed = snapshot()
+                except EvalError as exc:
+                    return AttemptResult(
+                        outcome="eval-error",
+                        baseline=baseline,
+                        session=session,
+                        note=f"snapshot: {exc}",
+                        run_seed=run_seed,
+                        panel_transcript="\n\n".join(panel_sections),
+                        panel_rounds=panel_reads,
+                    )
+                if failed_gate[1].outcome != "eval-error" and tree(failed_gate[0]) == tree(
+                    presealed
+                ):
+                    submitted = request
+                    sleeps_used += 1
+                    break
+            problem = syscall_budget_error(
+                request,
+                launches_used=launches_used,
+                launch_budget=bench.depth_k,
+                sleeps_used=sleeps_used,
+                sleep_budget=bench.sleep_k,
+                gpu_hours_used=gpu_hours_used,
+                gpu_hour_budget=contract.budgets.gpu_hours_per_run,
+                gpus=bench.gpus,
+                eval_minutes_default=bench.eval_minutes or 0,
+                suite_gpus=suite_gpus,
+                main_evals=main_evals,
+            )
+            if not problem:
+                if request.submit:
+                    # a submit rides the measurement below on the SEALED tree —
+                    # "a launch whose job is the gate" (buildout Phase B). The
+                    # sleep it rides on is counted now; sibling launches are
+                    # dispatched (and counted, and CHARGED) only if the gate
+                    # parks — an inline gate must never orphan launch jobs no
+                    # wake would gather. The gate's evals are charged here, at
+                    # the walltime THIS submit declares (else the contract's):
+                    # a resubmit without a declaration reverts to the default,
+                    # never inheriting a prior park's.
+                    submitted = request
+                    sleeps_used += 1
+                    evals_charge = evals_gpu_hours(
+                        request,
+                        gpus=bench.gpus,
+                        eval_minutes_default=bench.eval_minutes or 0,
+                        suite_gpus=suite_gpus,
+                        main_evals=main_evals,
+                    )
+                    gpu_hours_used += evals_charge
+                    if hasattr(measurer, "eval_minutes"):
+                        measurer.eval_minutes = request.eval_minutes or bench.eval_minutes or 0
+                    break
+                # a launch park: its launches are dispatched right below, so
+                # they are charged now
+                gpu_hours_used += launches_gpu_hours(request, gpus=bench.gpus)
+                # Scope BEFORE the snapshot, same invariant as the candidate
+                # path below: an out-of-scope tree is never snapshotted OR
+                # executed — the out-of-scope edit could be to the ruler
+                # itself, and a launch runs code from this tree in an external
+                # job. Same ending as the candidate path.
+                violations = out_of_scope(list(changed_paths()), contract)
+                if violations:
+                    return AttemptResult(
+                        outcome="scope-violation",
+                        baseline=baseline,
+                        session=session,
+                        note=(
+                            f"out-of-scope paths at launch: {', '.join(sorted(violations)[:10])}"
+                        ),
+                        run_seed=run_seed,
+                    )
+                sha = snapshot()
+                launch_afterany = launcher(sha, request)
+                raise RunParked(
+                    phase="author-sleep",
+                    judged=failed_gate,
+                    afterany=launch_afterany,
+                    launch_afterany=launch_afterany,
+                    base_sha=base_sha,
+                    seed=run_seed,
+                    suite_seed=suite_seed,
+                    candidate_sha=sha,
+                    session=session,
+                    syscall=request,
+                    launches_used=launches_used + len(request.launches),
+                    sleeps_used=sleeps_used + 1,
+                    gpu_hours_used=gpu_hours_used,
+                )
+            if refused_once or not _can_resume():
+                log.warning("syscall request dropped after refusal (%s); measuring as-is", problem)
+                break
+            # the refusal burns no count (nothing was launched, nothing woke a
+            # job); the refused_once bound is what stops a refuse/re-ask loop.
+            refused_once = True
+            presealed = ""  # the refused author may edit the tree again
+            failed = _resume(
+                render_syscall_refusal(
+                    problem,
+                    launches_remaining=max(0, bench.depth_k - launches_used),
+                    sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
+                )
+            )
+            if failed is not None:
+                return failed
+        measured = tuple(changed_paths())
+        # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
+        # OR measured — the out-of-scope edit could be to the ruler itself. This
+        # early exit keeps the snapshot off a rejected tree; measure_and_decide
+        # re-checks as the authoritative gate on every entry (including a wake,
+        # which re-enters it directly).
+        violations = out_of_scope(list(measured), contract)
+        if violations:
+            return AttemptResult(
+                outcome="scope-violation",
+                baseline=baseline,
+                session=session,
+                note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
+                run_seed=run_seed,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
+        # Snapshot the session's current output to a committed sha the measurer
+        # keys on; the caller (which owns git) registers its worktree and the
+        # ref. A revision re-snapshots -> a NEW candidate_sha -> a fresh eval. A
+        # snapshot failure is an eval failure (the session ran, the tree just
+        # could not be captured), not a climb crash — same as a candidate eval
+        # that raises.
+        try:
+            candidate_sha = presealed or snapshot()
+        except EvalError as exc:
+            return AttemptResult(
+                outcome="eval-error",
+                baseline=baseline,
+                session=session,
+                note=f"snapshot: {exc}",
+                run_seed=run_seed,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
+        # the tree the gate already judged, sealed again: the verdict stands
+        # when the author concluded, or resubmitted an unchanged tree after a
+        # real negative. After an ERRORED eval only a resubmit runs it again.
+        unchanged = (
+            failed_gate is not None
+            and tree(failed_gate[0]) == tree(candidate_sha)
+            and not (failed_gate[1].outcome == "eval-error" and submitted is not None)
+        )
+        try:
+            if unchanged:
+                assert failed_gate is not None
+                gpu_hours_used -= evals_charge  # nothing ran
+                outcome: AttemptResult | MeasureOK = failed_gate[1]
+            elif not measured:
+                # nothing to measure: no paths changed against base, so the
+                # gate would compare base against itself (any benchmark,
+                # metered or not; a SUBMIT of the unchanged tree feeds back
+                # to the author below like any failed gate, charge refunded)
+                gpu_hours_used -= evals_charge
+                outcome = AttemptResult(
+                    outcome="no-improvement",
+                    baseline=baseline,
+                    session=session,
+                    note="unmeasured: the sealed tree is unchanged from base",
+                    run_seed=run_seed,
+                    panel_transcript="\n\n".join(panel_sections),
+                    panel_rounds=panel_reads,
+                )
+            elif (
+                submitted is None
+                and launcher is not None  # feature off = the gate IS the measurement
+                and bench.depth_k > 0
+                and bench.gpus > 0
+                and float(contract.budgets.gpu_hours_per_run or 0) > 0
+            ):
+                # a METERED finish without a submit is panel-only, launches or
+                # not: the author chose not to claim, and a human scientist
+                # does not spend the full experimental budget re-verifying
+                # their own negative before writing it in the notebook. (With
+                # zero launches this also closes the refuse-twice bypass —
+                # dropping a repeated bare submit must not buy the very
+                # measurement the refusal denied.)
+                outcome = AttemptResult(
+                    outcome="no-improvement",
+                    baseline=baseline,
+                    session=session,
+                    note=(
+                        "unmeasured finish: no submit was made, so the metered "
+                        "gate did not run (panel only)"
+                    ),
+                    run_seed=run_seed,
+                    panel_transcript="\n\n".join(panel_sections),
+                    panel_rounds=panel_reads,
+                )
+            else:
+                outcome = measure_and_decide(
+                    contract,
+                    bench,
+                    base_sha=base_sha,
+                    candidate_sha=candidate_sha,
+                    seed=run_seed,
+                    suite_seed=suite_seed,
+                    measured_paths=measured,
+                    measurer=measurer,
+                    min_relative_improvement=config.min_relative_improvement,
+                )
+        except MeasurementPending as pending:
+            # PARK 2 (dispatched candidate/suite, after the session): the wake
+            # reads the cached results and decides — or, on a SUBMITTED park,
+            # delivers them back to the author. Carries the candidate sha
+            # and the session so the caller persists the snapshot ref (drop at
+            # the terminal state) and the resume session id. A submit's sibling
+            # launches ride the SAME park, dispatched only HERE — once the gate
+            # has proven dispatched — on the sealed sha (scope was checked
+            # above, so a launch never runs out-of-scope code).
+            launch_afterany = ""
+            if submitted is not None and submitted.launches:
+                assert launcher is not None  # a submit only arrives through it
+                launch_afterany = launcher(candidate_sha, submitted)
+                launches_used += len(submitted.launches)
+                gpu_hours_used += launches_gpu_hours(submitted, gpus=bench.gpus)
+            raise RunParked(
+                phase="candidate",
+                afterany=_merge_afterany(pending.afterany(), launch_afterany),
+                launch_afterany=launch_afterany,
+                base_sha=base_sha,
+                seed=run_seed,
+                suite_seed=suite_seed,
+                candidate_sha=candidate_sha,
+                session=session,
+                syscall=submitted,
+                launches_used=launches_used,
+                sleeps_used=sleeps_used,
+                submitted=submitted is not None,
+                gpu_hours_used=gpu_hours_used,
+                eval_minutes=submitted.eval_minutes if submitted is not None else None,
+            ) from None
+        if isinstance(outcome, AttemptResult):
+            if (
+                submitted is not None
+                and outcome.outcome in ("no-improvement", "suite-regression", "eval-error")
+                and _can_resume()
+                and not (unchanged and sleeps_used > bench.sleep_k)
+            ):
+                # a submitted candidate that failed the gate — including an
+                # eval that errored — is FEEDBACK to the author: it revises and
+                # resubmits, or concludes honestly (buildout Phase B) — never a
+                # silent terminal. Rounds stay bounded by sleep_k.
+                failed_gate = (candidate_sha, outcome)
+                verdict_text = (
+                    f"{outcome.note or outcome.outcome} "
+                    f"(baseline {outcome.baseline}, candidate {outcome.candidate})."
+                )
+                if unchanged:
+                    lead = (
+                        "Your `submit` sealed a tree identical to the candidate the gate "
+                        "already measured, so nothing was run or paid; that verdict "
+                        f"stands: {verdict_text} "
+                    )
+                else:
+                    lead = f"Your `submit` did NOT clear the gate: {verdict_text} "
+                failed = _resume(
+                    f"{lead}{_not_run_note(submitted)}{_budgets_line()} "
+                    "Revise and submit again, run more "
+                    "experiments, or finish with an honest negative report."
+                )
+                if failed is not None:
+                    return failed
+                continue
+            # a terminal measurement outcome (scope-violation / eval-error /
+            # no-improvement / suite-regression): add the session + panel
+            # context this function owns. The baseline stays whatever the GATE
+            # measured (None when it never got that far, e.g. scope-violation),
+            # never overwritten with the ledger's brief number.
+            note = outcome.note
+            if outcome.outcome == "no-improvement" and not note:
+                # only a BARE negative gets generic framing — a specific
+                # reason (e.g. inside the contract's significance floor)
+                # must survive to the record and report
+                note = (
+                    "the revision addressing panel findings lost the improvement"
+                    if panel_reads
+                    else "a negative result reported clearly is a success"
+                )
+            return dc_replace(
+                outcome,
+                session=session,
+                note=note,
+                panel_transcript="\n\n".join(panel_sections),
+                panel_rounds=panel_reads,
+            )
+        # credited: candidate cleared the threshold and no sibling regressed.
+        baseline = outcome.baseline
+        candidate = outcome.candidate
+        suite = outcome.suite
+        suite_seed_ran = outcome.suite_seed
+        baseline_note = outcome.baseline_note  # cached-baseline provenance, to the report
+
+        if panel_runner is None:
+            break
+        # the panel reads the CREDITED claim: improvement + suite gate passed
+        panel_reads += 1
+        verdict = panel_runner(baseline, candidate, session.final_text)
+        panel_sections.append(verdict.transcript)
+        # only the FINAL read's degradation matters: an earlier outage that a
+        # later clean read supersedes is history, not state
+        panel_degraded = verdict.degraded
+        if verdict.blocking and submitted is not None and _can_resume():
+            # blocking findings on a SUBMITTED claim go back to the AUTHOR —
+            # it revises and resubmits, runs more experiments, or concludes
+            # (buildout Phase B: the author drives the depth axis). The loop
+            # then re-reads its next syscall; the revision re-measures from
+            # scratch.
+            failed = _resume(f"{verdict.wake_text}\n\n{_not_run_note(submitted)}{_budgets_line()}")
+            if failed is not None:
+                return failed
+            continue
+        # a plain finish (or an unresumable session): blocking findings stay
+        # open — the caller drafts the PR for a human to triage.
+        panel_blocking_open = bool(verdict.blocking)
+        break
+
+    return AttemptResult(
+        outcome="improved",
+        baseline=baseline,
+        candidate=candidate,
+        session=session,
+        branch=f"{config.branch_prefix}/{config.benchmark}",
+        measured_paths=measured,
+        candidate_sha=candidate_sha,
+        run_seed=run_seed,
+        suite=suite,
+        suite_seed=suite_seed_ran,
+        note=baseline_note,
+        panel_transcript="\n\n".join(panel_sections),
+        panel_rounds=panel_reads,
+        panel_blocking_open=panel_blocking_open,
+        panel_degraded=panel_degraded,
+    )
+
+
+def pr_body(
+    result: AttemptResult,
+    config: RunConfig,
+    redact_secrets: tuple[str, ...],
+    display_digits: int | None = None,
+) -> str:
+    """The PR body for an improved run: results table + the agent's report.
+
+    Human surfaces render at the benchmark's conventional precision;
+    full precision lives only in results/leader.json, and every
+    comparison runs on full floats.
+    """
+    from outerloop.progress import fmt_metric
+
+    if result.outcome != "improved" or result.baseline is None or result.candidate is None:
+        raise ValueError("pr_body requires an improved result with both measurements")
+    suite_lines: list[str] = []
+    if result.suite:
+        suite_lines = [
+            "",
+            "Shared code was touched, so every sibling benchmark was re-measured "
+            "on both sides (paired seed): none regressed beyond its floor.",
+            "",
+            "| suite benchmark | baseline | candidate |",
+            "| --- | --- | --- |",
+        ] + [
+            f"| {row.name} | {fmt_metric(row.baseline, row.display_digits)} "
+            f"| {fmt_metric(row.candidate, row.display_digits)} |"
+            for row in result.suite
+        ]
+    if result.panel_blocking_open:
+        banner = [
+            "> **Draft — the verification panel capped out with blocking "
+            "findings still open.** They are listed under Pre-PR "
+            "verification below; the human decides.",
+            "",
+        ]
+    elif result.panel_degraded:
+        banner = [
+            "> **Draft — the final panel read was degraded (a lens produced "
+            "no verdict).** Not a certified pass; see Pre-PR verification "
+            "below.",
+            "",
+        ]
+    else:
+        banner = []
+    panel_section = (
+        ["", "## Pre-PR verification", "", result.panel_transcript[:MAX_REPORT_BODY]]
+        if result.panel_transcript
+        else []
+    )
+    body = "\n".join(
+        [
+            *banner,
+            f"Automated improvement attempt on `{config.benchmark}` "
+            f"(agent `{config.agent_id}`, one hypothesis per PR).",
+            "",
+            "| | value |",
+            "| --- | --- |",
+            f"| baseline ({config.benchmark}) | {fmt_metric(result.baseline, display_digits)} |",
+            f"| candidate | {fmt_metric(result.candidate, display_digits)} |",
+            *suite_lines,
+            "",
+            "Both numbers were measured by the orchestrator re-running the "
+            "contract's eval command — not taken from the session. CI "
+            "re-verifies independently.",
+            "",
+            "## Research report",
+            "",
+            (
+                "*This report came from the previous session in this line — no "
+                "agent session ran for this attempt. It was written before the "
+                "orchestrator measured; the table above contains the measured "
+                "results.*"
+                if result.session and result.session.stop_reason == "resumed"
+                else "*Session prose, written before the orchestrator measured; "
+                "the table above contains the measured results.*"
+            ),
+            "",
+            (
+                redact(result.session.final_text, redact_secrets)[:MAX_REPORT_BODY]
+                if result.session
+                else ""
+            ),
+            *panel_section,
+        ]
+    )
+    return redact(body, redact_secrets)

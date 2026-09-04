@@ -265,7 +265,7 @@ jobs:
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
           REVIEW_LENS: ${{ inputs.lens }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
-        run: uv run python -m autoresearch.review_agent_cli
+        run: uv run python -m outerloop.review_agent_cli
       - name: Backstop envelope
         # Runs only when the CLI exited 0 (default step semantics): a
         # reviewer_ref pinned BEFORE envelope-on-every-outcome writes nothing
@@ -345,4 +345,4 @@ jobs:
           AUTORESEARCH_BOT_ALIASES: ${{ inputs.bot_aliases }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
           REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
-        run: uv run python -m autoresearch.review_post_cli
+        run: uv run python -m outerloop.review_post_cli

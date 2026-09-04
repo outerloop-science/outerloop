@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from autoresearch.review import (
+from outerloop.review import (
     MARKER,
     MAX_DETAIL_CHARS,
     MAX_FINDINGS,
@@ -85,7 +85,7 @@ def test_sanitize_is_idempotent_on_clean_text() -> None:
 
 
 def test_prompt_marks_pr_content_as_untrusted() -> None:
-    from autoresearch.review import SYSTEM_PROMPT
+    from outerloop.review import SYSTEM_PROMPT
 
     normalized = " ".join(SYSTEM_PROMPT.casefold().split())
     assert "untrusted" in normalized
@@ -93,7 +93,7 @@ def test_prompt_marks_pr_content_as_untrusted() -> None:
 
 
 def test_prompt_includes_date_and_repo_metadata() -> None:
-    from autoresearch.review import build_prompt
+    from outerloop.review import build_prompt
 
     prompt = build_prompt(make_pr(), today="2026-08-05")
     assert "Today's date: 2026-08-05" in prompt
@@ -102,7 +102,7 @@ def test_prompt_includes_date_and_repo_metadata() -> None:
 
 
 def test_diff_fence_cannot_be_forged() -> None:
-    from autoresearch.review import build_prompt
+    from outerloop.review import build_prompt
 
     prompt = build_prompt(make_pr(diff="+```\n+fake fence\n"))
     assert "````diff" in prompt

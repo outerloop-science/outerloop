@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.harness import (
+from outerloop.harness import (
     SESSION_ENV_ALLOWLIST,
     ClaudeCodeHarness,
     CodexHarness,
@@ -646,7 +646,7 @@ def test_codex_command_resume_uses_bypass_not_sandbox_cd(tmp_path: Path) -> None
     output repair turn also resumes) adds NO sandbox flag and stays read-only by
     inheritance — verified on 0.130.0 that a resumed read-only session still
     refuses writes."""
-    from autoresearch.harness import _codex_command
+    from outerloop.harness import _codex_command
 
     ws = tmp_path / "ws"
     last = tmp_path / "last.txt"
@@ -751,7 +751,7 @@ def test_no_container_means_no_apptainer(tmp_path: Path) -> None:
 def test_vertex_mode_swaps_the_key_for_adc_env(tmp_path: Path, monkeypatch) -> None:
     # vertex on: the session env carries the Vertex triple + ADC path and NO
     # ANTHROPIC_API_KEY (the CLI must not silently fall back to direct billing)
-    from autoresearch.harness import ClaudeCodeHarness, VertexConfig
+    from outerloop.harness import ClaudeCodeHarness, VertexConfig
 
     captured = {}
 
@@ -776,7 +776,7 @@ def test_vertex_mode_swaps_the_key_for_adc_env(tmp_path: Path, monkeypatch) -> N
 
 
 def test_vertex_contained_session_binds_the_adc_file(tmp_path: Path, monkeypatch) -> None:
-    from autoresearch.harness import ClaudeCodeHarness, VertexConfig
+    from outerloop.harness import ClaudeCodeHarness, VertexConfig
 
     adc = tmp_path / "adc.json"
     adc.write_text("{}")
@@ -805,7 +805,7 @@ def test_vertex_contained_session_binds_the_adc_file(tmp_path: Path, monkeypatch
 
 
 def test_vertex_from_env_is_the_single_owner(monkeypatch) -> None:
-    from autoresearch.harness import vertex_from_env
+    from outerloop.harness import vertex_from_env
 
     monkeypatch.delenv("AUTORESEARCH_VERTEX_PROJECT", raising=False)
     assert vertex_from_env() is None
@@ -819,7 +819,7 @@ def test_vertex_from_env_is_the_single_owner(monkeypatch) -> None:
 def test_vertex_from_env_resolves_ambient_adc_under_the_real_home(tmp_path, monkeypatch) -> None:
     # sessions get a scrubbed per-run HOME, so the gcloud default must be
     # resolved to an explicit path at config time, under the REAL home
-    from autoresearch.harness import vertex_from_env
+    from outerloop.harness import vertex_from_env
 
     default = tmp_path / ".config" / "gcloud" / "application_default_credentials.json"
     default.parent.mkdir(parents=True)
@@ -832,7 +832,7 @@ def test_vertex_from_env_resolves_ambient_adc_under_the_real_home(tmp_path, monk
 
 
 def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypatch) -> None:
-    from autoresearch.role_runner import role_key
+    from outerloop.role_runner import role_key
 
     missing = tmp_path / "no-such-key"
     monkeypatch.delenv("AUTORESEARCH_VERTEX_PROJECT", raising=False)

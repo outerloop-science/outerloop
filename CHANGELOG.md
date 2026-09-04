@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Renamed the Python package `autoresearch` → `outerloop` (and the console
+  command `autoresearch` → `outerloop`) ahead of the public Outerloop release —
+  `import outerloop`, `outerloop start`. Scoped to what is imported or executed
+  (src, tests, scripts, workflows, pyproject); the `AUTORESEARCH_*` env vars, the
+  `.autoresearch/` syscall channel, the `autoresearch:` labels/markers, and
+  `docs/design` prose are intentionally unchanged here — those are
+  deployment/ABI/branding conventions renamed in a separate coordinated pass.
+
+### Changed
+
 - Relicensed from MIT to Apache-2.0 (added `LICENSE` and `NOTICE`) ahead of the
   public Outerloop release; copyright stays with the Agentic Learning AI Lab at NYU.
 

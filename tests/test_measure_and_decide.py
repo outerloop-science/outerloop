@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from autoresearch.contract import load_contract
-from autoresearch.harness import SessionResult
-from autoresearch.measure import Measure, MeasurementPending
-from autoresearch.orchestrator import (
+from outerloop.contract import load_contract
+from outerloop.harness import SessionResult
+from outerloop.measure import Measure, MeasurementPending
+from outerloop.orchestrator import (
     EvalError,
     MeasureOK,
     RunParked,
@@ -361,7 +361,7 @@ def test_cached_baseline_measures_the_base_once_then_only_candidates(tmp_path):
     records the baseline; the next attempt on the same base measures ONLY its
     candidate and compares against the cache, saying so on the credited
     result. A different base misses the cache."""
-    from autoresearch.measure import read_baseline_cache
+    from outerloop.measure import read_baseline_cache
 
     contract = load_contract(CACHED_CONTRACT, "x/y")
     bench = _benchmark(contract, "main")
@@ -421,7 +421,7 @@ def test_cached_baseline_requires_a_floor():
 def test_cached_baseline_is_keyed_by_image_and_command(tmp_path):
     """A cache entry measured under another eval image or contract command
     is stale, not a baseline (terra #178): the gate misses and re-measures."""
-    from autoresearch.measure import read_baseline_cache, write_baseline_cache
+    from outerloop.measure import read_baseline_cache, write_baseline_cache
 
     d = tmp_path / "baselines"
     write_baseline_cache(

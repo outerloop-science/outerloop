@@ -1,5 +1,5 @@
 def test_fmt_metric_renders_at_convention() -> None:
-    from autoresearch.progress import fmt_metric
+    from outerloop.progress import fmt_metric
 
     assert fmt_metric(13.879999999999999) == "13.88"  # default 6 sig figs
     assert fmt_metric(13.879999999999999, 3) == "13.9"
@@ -8,7 +8,7 @@ def test_fmt_metric_renders_at_convention() -> None:
 
 
 def test_render_markdown_honors_per_benchmark_digits() -> None:
-    from autoresearch.progress import LeaderEntry, render_markdown
+    from outerloop.progress import LeaderEntry, render_markdown
 
     entries = {
         "tsp": LeaderEntry(
@@ -32,7 +32,7 @@ def test_run_seed_round_trips_and_old_rows_load(tmp_path) -> None:
     before the field existed load with 0 (fixed pool / none recorded)."""
     import json as _json
 
-    from autoresearch.progress import LEADER_FILE, load_leader, update_leader, write_progress
+    from outerloop.progress import LEADER_FILE, load_leader, update_leader, write_progress
 
     entries = update_leader(
         {},

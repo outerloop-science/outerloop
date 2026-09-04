@@ -139,7 +139,7 @@ while :; do
         echo "$(date -u +%FT%TZ) tick skipped: checkout and environment inconsistent after a failed deploy (resident)"
     else
     (cd "$AUTORESEARCH_HOME" && timeout --kill-after=60s "$tick_timeout" \
-        uv run --no-sync python -m autoresearch.tick --root "$AUTORESEARCH_ROOT")
+        uv run --no-sync python -m outerloop.tick --root "$AUTORESEARCH_ROOT")
     fi
     rc=$?
     [ "$rc" -ne 0 ] && echo "resident: tick exited $rc; the loop continues"

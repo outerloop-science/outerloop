@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from autoresearch.contract_cli import main as contract_main
+from outerloop.contract_cli import main as contract_main
 
 GOOD = """
 benchmarks:

@@ -164,7 +164,7 @@ jobs:
           # The parent of the two checkouts (pr-head/ and base/).
           VERIFY_CHECKOUT: ${{ github.workspace }}
           VERIFY_EMIT_FILE: ${{ runner.temp }}/verdict.json
-        run: uv run python -m autoresearch.verify_agent_cli
+        run: uv run python -m outerloop.verify_agent_cli
       - name: Backstop envelope
         # Runs only when the CLI exited 0: a verifier_ref pinned before the
         # tokenless split writes nothing on a clean skip, which would hard-fail
@@ -240,4 +240,4 @@ jobs:
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           AUTORESEARCH_BOT_ALIASES: ${{ inputs.bot_aliases }}
           VERIFY_EMIT_FILE: ${{ runner.temp }}/verdict.json
-        run: uv run python -m autoresearch.verify_post_cli
+        run: uv run python -m outerloop.verify_post_cli
