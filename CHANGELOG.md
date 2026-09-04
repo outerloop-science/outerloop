@@ -23,6 +23,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A launched experiment that the scheduler SIGKILLs (out-of-memory, a hard
+  walltime kill, a node failure) left no exit code, so the woken author saw
+  only "exit code: none (job failure)" with empty output and could not tell
+  why. The wake now surfaces the job's terminal scheduler state
+  (`OUT_OF_MEMORY` / `TIMEOUT` / `NODE_FAIL`) with a one-line reading, using
+  the state the backend already knows, so the author can see why the launch
+  died and adjust, instead of retrying a config that will fail the same way.
 - A wake no longer crashes into an `attempt-error` when a session emptied the
   workspace's object store behind a symbolic ref. The `.git` integrity guard
   now follows a symbolic loose ref (`HEAD -> refs/heads/link -> refs/heads/main`)

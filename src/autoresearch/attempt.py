@@ -677,7 +677,12 @@ def _wake_author_sleep(
     author to act on; `sleep_ref` is whichever snapshot ref this park holds
     (the sleep seal, or the submitted candidate)."""
     from autoresearch.syscall import Launch as SyscallLaunch
-    from autoresearch.syscall import gather_results, render_wake, write_budget
+    from autoresearch.syscall import (
+        annotate_launch_states,
+        gather_results,
+        render_wake,
+        write_budget,
+    )
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         # a terminal from the resumed climb: report, ending record, issue note —
@@ -751,6 +756,15 @@ def _wake_author_sleep(
         for item in _stage_launches(record)
     )
     results = gather_results(run_dir, workspace, launches)
+    # A launch that left no exit code was SIGKILL'd before its wrapper ran (the
+    # cgroup OOM killer, a hard walltime kill, a node failure). The scheduler
+    # still knows which; surface it so the author reads "OOM"/"timeout" instead
+    # of a blank "job failure". The park's launch job ids align positionally
+    # with the results (same launch/array order). Best-effort — the wake never
+    # blocks on the scheduler query.
+    status_of = getattr(dispatch.compute, "status", None)
+    if status_of is not None:
+        results = annotate_launch_states(results, _stage_launch_job_ids(record), status_of)
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
     gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches)
