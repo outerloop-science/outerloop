@@ -1124,12 +1124,27 @@ def _read_small_regular(path: Path, limit: int = 512) -> str | None:
         raise _altered(f"{path.name} is unreadable ({exc.strerror})") from None
 
 
-def _ref_sha(git_dir: Path, ref: str) -> str | None:
-    """A ref's sha from its loose file (inside .git only) or packed-refs."""
+def _ref_sha(git_dir: Path, ref: str, _depth: int = 0) -> str | None:
+    """A ref's sha from its loose file (inside .git only) or packed-refs,
+    following a symbolic loose ref (`ref: refs/...`) the way git resolves it.
+    Without the chain, a HEAD -> refs/heads/X -> refs/heads/real symref left the
+    object unverified (the non-sha loose file read as unborn), so an emptied
+    object store behind `real` slipped past the guard and only failed later at a
+    raw `git reset` ("Could not parse object 'HEAD'"). A too-deep chain is a
+    cycle git never writes: tampering, not a state to resolve."""
+    if _depth > 8:
+        raise _altered("a ref symref chain is too deep (a cycle?)")
     loose = _read_small_regular(git_dir / ref)
     if loose is not None:
         value = loose.strip()
-        return value if _SHA_RE.fullmatch(value) else None
+        if _SHA_RE.fullmatch(value):
+            return value
+        if value.startswith("ref: "):
+            target = value[5:].strip()
+            if not _REF_RE.fullmatch(target) or ".." in target.split("/"):
+                raise _altered("a ref names a target outside refs/")
+            return _ref_sha(git_dir, target, _depth + 1)
+        return None  # neither a sha nor a symref: an unborn/placeholder ref
     packed = _read_small_regular(git_dir / "packed-refs", limit=PACKED_REFS_MAX_BYTES) or ""
     for line in packed.splitlines():
         if line.endswith(" " + ref) and _SHA_RE.fullmatch(line.split(" ", 1)[0]):

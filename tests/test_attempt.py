@@ -2394,6 +2394,35 @@ def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     assert github.prs[0]["draft"] is False
 
 
+def test_resume_routes_tamper_in_publish_to_a_refused_wake(tmp_path, monkeypatch) -> None:
+    # a tamper-class GitError raised inside the publish block (a concurrent
+    # object-store removal) must END the run as a refused wake, ABORTED with the
+    # tamper as its note — never masked as a publish-error.
+    from autoresearch.github import GitError
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = FakeGitHub()
+
+    def boom(*a, **k):
+        raise GitError("fatal: packed object ab0123 is corrupt")
+
+    monkeypatch.setattr(github, "create_pull", boom)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == "attempt-error"  # refused wake, not "publish-error"
+    rec = load_record(state, run_id)
+    assert rec.state == "ended" and rec.ending == "aborted"
+    assert "corrupt" in rec.ending_note
+
+
 def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, monkeypatch):
     # a no-progress re-park (blind: empty afterany) must KEEP wake_attempts so
     # the stuck cap still bites; a productive re-park (a NEW job set) resets it.
@@ -4847,3 +4876,55 @@ def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> No
     runner(13.0, 12.0, "report")
     assert "train.py" in seen["diff"]
     assert "AGENT_MEMORY" not in seen["diff"] and "agent_memory" not in seen["diff"]
+
+
+def test_guard_follows_a_symbolic_loose_ref_to_verify_heads_object(tmp_path) -> None:
+    """A HEAD -> refs/heads/link -> refs/heads/main symref chain must be
+    followed to verify HEAD's object. Before the fix the non-sha loose ref read
+    as unborn and the guard fell back to some OTHER present ref, so an emptied
+    object store behind HEAD slipped past and only failed later at a raw
+    `git reset` ("Could not parse object 'HEAD'")."""
+    from autoresearch.github import GitError, ensure_regular_git_dir
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "train.py").write_text("v1\n")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    git_dir = root / ".git"
+    # a real, present-object ref for the old fallback to (wrongly) bless
+    _git(root, "update-ref", "refs/remotes/origin/real", base)
+    ensure_regular_git_dir(root)  # clean, HEAD born on main
+
+    # HEAD now resolves through a symbolic loose ref to a branch whose object
+    # is gone, while origin/real still has a present object.
+    (git_dir / "refs" / "heads" / "link").write_text("ref: refs/heads/main\n")
+    (git_dir / "HEAD").write_text("ref: refs/heads/link\n")
+    (git_dir / "refs" / "heads" / "main").write_text("0" * 40 + "\n")  # object absent
+    with pytest.raises(GitError, match="object store was emptied or moved"):
+        ensure_regular_git_dir(root)
+
+    # pointed back at the real object, the chain resolves and the guard passes
+    (git_dir / "refs" / "heads" / "main").write_text(base + "\n")
+    ensure_regular_git_dir(root)
+
+    # a symref cycle is tampering, not a state to resolve
+    (git_dir / "refs" / "heads" / "main").write_text("ref: refs/heads/link\n")
+    with pytest.raises(GitError, match="too deep"):
+        ensure_regular_git_dir(root)
+
+
+def test_is_git_tamper_classifies_object_store_damage_not_ordinary_failures() -> None:
+    from autoresearch.attempt import _is_git_tamper
+    from autoresearch.github import GitError
+
+    assert _is_git_tamper(GitError("workspace .git altered by the session: HEAD is empty"))
+    assert _is_git_tamper(GitError("git reset failed: fatal: Could not parse object 'HEAD'."))
+    assert _is_git_tamper(GitError("fatal: bad tree object 1234"))
+    assert _is_git_tamper(GitError("error: inflate: data stream error (incorrect header)"))
+    assert _is_git_tamper(GitError("fatal: packed object ab0123 (stored in .git/...) is corrupt"))
+    # ordinary git failures a wake should NOT treat as tamper
+    assert not _is_git_tamper(GitError("git push failed: ! [rejected] (non-fast-forward)"))
+    assert not _is_git_tamper(GitError("git fetch failed: could not resolve host"))
