@@ -148,7 +148,7 @@ def render_markdown(
         )
     lines += [
         "",
-        "_Written by [autoresearch](https://github.com/agentic-learning-ai-lab/autoresearch);",
+        "_Written by [autoresearch](https://github.com/outerloop-science/outerloop);",
         "do not edit by hand — agent edits to this file end the run._",
         "",
     ]

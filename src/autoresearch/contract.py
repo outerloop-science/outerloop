@@ -20,7 +20,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SELF_REPO = "agentic-learning-ai-lab/autoresearch"
+SELF_REPO = "outerloop-science/outerloop"
 ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", ".autoresearch.yaml")
 MAX_CONTRACT_BYTES = 64 * 1024
 _GLOB_CHARS = set("*?[]!")

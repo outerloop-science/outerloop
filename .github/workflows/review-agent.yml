@@ -101,6 +101,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
-          REVIEW_BOT_LOGIN: agentic-learning-bot
+          REVIEW_BOT_LOGIN: 'outerloop-science[bot]'
           REVIEW_CHECKOUT: ${{ github.workspace }}/pr-head
         run: uv run python -m autoresearch.review_agent_cli

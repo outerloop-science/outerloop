@@ -64,12 +64,12 @@ def test_forbidden_matches_are_component_wise() -> None:
 @pytest.mark.parametrize(
     "spelling",
     [
-        "agentic-learning-ai-lab/autoresearch",
-        "Agentic-Learning-AI-Lab/AutoResearch",
-        "agentic-learning-ai-lab/autoresearch.git",
-        "agentic-learning-ai-lab/autoresearch/",
-        "https://github.com/agentic-learning-ai-lab/autoresearch",
-        "git@github.com:agentic-learning-ai-lab/autoresearch.git",
+        "outerloop-science/outerloop",
+        "OuterLoop-Science/OuterLoop",
+        "outerloop-science/outerloop.git",
+        "outerloop-science/outerloop/",
+        "https://github.com/outerloop-science/outerloop",
+        "git@github.com:outerloop-science/outerloop.git",
     ],
 )
 def test_self_target_spellings_refused(spelling: str) -> None:
@@ -344,13 +344,13 @@ def test_ref_is_url_encoded(provider: FileTokenProvider) -> None:
 @pytest.mark.parametrize(
     "spelling",
     [
-        "ssh://git@github.com/agentic-learning-ai-lab/autoresearch.git",
-        "github.com/agentic-learning-ai-lab/autoresearch",
-        "www.github.com/agentic-learning-ai-lab/autoresearch",
-        "git://github.com/agentic-learning-ai-lab/autoresearch",
-        "https://x-access-token:tok@github.com/agentic-learning-ai-lab/autoresearch",
-        "https://github.com//agentic-learning-ai-lab/autoresearch",
-        "  agentic-learning-ai-lab/autoresearch\n",
+        "ssh://git@github.com/outerloop-science/outerloop.git",
+        "github.com/outerloop-science/outerloop",
+        "www.github.com/outerloop-science/outerloop",
+        "git://github.com/outerloop-science/outerloop",
+        "https://x-access-token:tok@github.com/outerloop-science/outerloop",
+        "https://github.com//outerloop-science/outerloop",
+        "  outerloop-science/outerloop\n",
     ],
 )
 def test_self_target_url_spellings_refused(spelling: str) -> None:

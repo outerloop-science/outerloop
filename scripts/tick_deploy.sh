@@ -20,7 +20,7 @@ if [ -n "${AUTORESEARCH_PAT_FILE:-}" ] && [ -r "$AUTORESEARCH_PAT_FILE" ]; then
     printf '#!/bin/sh\ncat "%s"\n' "$AUTORESEARCH_PAT_FILE" > "$ASKPASS"
     DEPLOY_PREV=$(git -C "$AUTORESEARCH_HOME" rev-parse HEAD 2>/dev/null || echo "")
     if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -C "$AUTORESEARCH_HOME" fetch --quiet \
-        "https://x-access-token@github.com/agentic-learning-ai-lab/autoresearch.git" main; then
+        "https://x-access-token@github.com/outerloop-science/outerloop.git" main; then
         git -C "$AUTORESEARCH_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
     else
         echo "deploy: fetch failed; running previous code"
