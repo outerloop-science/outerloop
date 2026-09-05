@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.appauth import API, build_app_jwt, signer_from_private_key
+from outerloop.paths import write_private
 
 # The hosted helper page: it auto-POSTs the manifest to GitHub, then displays the
 # returned code. It is also the manifest's redirect_url, so GitHub sends the code
@@ -136,10 +137,10 @@ def save_app_creds(
     config_dir.mkdir(parents=True, exist_ok=True)
     slug = str(conversion["slug"])
     pem_path = config_dir / f"{slug}-app.pem"
-    pem_path.write_text(str(conversion["pem"]))
-    pem_path.chmod(0o600)
+    write_private(pem_path, str(conversion["pem"]))
     app_json = config_dir / f"github_app.{slug}.json"
-    app_json.write_text(
+    write_private(
+        app_json,
         json.dumps(
             {
                 "app_id": int(conversion["id"]),
@@ -148,9 +149,8 @@ def save_app_creds(
             },
             indent=2,
         )
-        + "\n"
+        + "\n",
     )
-    app_json.chmod(0o600)
     return pem_path, app_json
 
 
@@ -194,5 +194,4 @@ def set_installation_id(app_json: Path, installation_id: int) -> None:
     """Fill the installation id into an already-written github_app.<slug>.json."""
     data = json.loads(app_json.read_text())
     data["installation_id"] = int(installation_id)
-    app_json.write_text(json.dumps(data, indent=2) + "\n")
-    app_json.chmod(0o600)
+    write_private(app_json, json.dumps(data, indent=2) + "\n")

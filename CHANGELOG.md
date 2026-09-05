@@ -6,6 +6,24 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- `outerloop init` asks for the author's model API key (hidden) and writes it to
+  `~/.config/outerloop/<backend>_key` (0600), or takes `--author-key-file` for an
+  existing file (checked to exist, stored absolute); the `.env` records it as
+  `OUTERLOOP_<BACKEND>_KEY_FILE`. The key lands in the config dir in use:
+  `~/.config/outerloop/`, or `~/.config/autoresearch/` on a machine set up
+  before the rename. The focused `--github-app` run still asks nothing about
+  the author. Every secret `init` writes (keys, PAT, App PEM and JSON, `.env`)
+  is now created 0600 in one step rather than written and then tightened.
+
+### Changed
+
+- The Claude author's key follows the same rule as Codex's: the file is
+  `~/.config/outerloop/claude_key` and the setting `OUTERLOOP_CLAUDE_KEY_FILE`.
+  The pre-rename `harness_key` file and `*_HARNESS_KEY_FILE` setting are still
+  read (the new name wins when both exist), so an existing setup keeps working.
+
 ### Changed
 
 - The syscall channel dir in a workspace is now `.outerloop/` (the tool, the

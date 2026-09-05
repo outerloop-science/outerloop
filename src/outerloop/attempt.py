@@ -97,8 +97,11 @@ log = logging.getLogger(__name__)
 # tick preflights the panel key (and compares it against the author key —
 # role separation) before claiming/submitting.
 PANEL_KEY_DEFAULT = str(CONFIG_DIR / "verifier_key")
-HARNESS_KEY_DEFAULT = str(CONFIG_DIR / "harness_key")  # the claude author key
-CODEX_KEY_DEFAULT = str(CONFIG_DIR / "codex_key")  # the codex author key
+# One rule for author keys: ~/.config/outerloop/<backend>_key. `harness_key` is
+# the pre-rename name of the claude key; it is still read, never written.
+CLAUDE_KEY_DEFAULT = str(CONFIG_DIR / "claude_key")
+HARNESS_KEY_DEFAULT = str(CONFIG_DIR / "harness_key")  # legacy claude key
+CODEX_KEY_DEFAULT = str(CONFIG_DIR / "codex_key")
 
 
 def resolve_author_key_file(backend: str, explicit: str = "") -> str:
@@ -106,14 +109,27 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     codex's both on disk), selected by backend — so the author backend is a
     config choice, not a key swap, and an in-flight run of either backend can
     still be woken/serviced after a fleet flip. An explicit path always wins;
-    otherwise the per-backend env var, then the packaged default path. The result
-    is always ~-expanded, so every caller gets a real path (an env value like
-    "~/.config/..." must not reach the token provider verbatim)."""
+    otherwise the per-backend env var, then the default path. For claude the
+    legacy spellings (`AUTORESEARCH_HARNESS_KEY_FILE`, `harness_key`) are still
+    honored, so a machine set up before the rename keeps working; the new name
+    wins when both exist. The result is always ~-expanded, so every caller gets
+    a real path (an env value like "~/.config/..." must not reach the token
+    provider verbatim)."""
     if not explicit:
         if backend == "codex":
             explicit = os.environ.get("AUTORESEARCH_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
         else:
-            explicit = os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE") or HARNESS_KEY_DEFAULT
+            explicit = (
+                os.environ.get("AUTORESEARCH_CLAUDE_KEY_FILE")
+                or os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE")
+                or ""
+            )
+            if not explicit:
+                explicit = CLAUDE_KEY_DEFAULT
+                if not os.path.exists(os.path.expanduser(explicit)) and os.path.exists(
+                    os.path.expanduser(HARNESS_KEY_DEFAULT)
+                ):
+                    explicit = HARNESS_KEY_DEFAULT
     return os.path.expanduser(explicit)
 
 
@@ -3211,7 +3227,7 @@ def main() -> int:
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
-        "AUTORESEARCH_HARNESS_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
+        "AUTORESEARCH_CLAUDE_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
     )
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(

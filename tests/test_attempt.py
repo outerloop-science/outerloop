@@ -845,26 +845,36 @@ def test_codex_author_config_error() -> None:
     assert "unknown author backend" in codex_author_config_error("hermes", "m", "img.sif")
 
 
-def test_resolve_author_key_file(monkeypatch) -> None:
+def test_resolve_author_key_file(monkeypatch, tmp_path) -> None:
     """Per-backend author keys COEXIST and are selected by backend; an explicit
-    path wins, else the per-backend env var, else the packaged default."""
+    path wins, else the per-backend env var, else the default file. The claude
+    key's legacy spellings (HARNESS env var, harness_key file) are still read,
+    and the new name wins whenever both exist."""
     import os
 
-    from outerloop.attempt import (
-        CODEX_KEY_DEFAULT,
-        HARNESS_KEY_DEFAULT,
-        resolve_author_key_file,
-    )
+    from outerloop import attempt
+    from outerloop.attempt import CODEX_KEY_DEFAULT, resolve_author_key_file
 
-    monkeypatch.delenv("AUTORESEARCH_HARNESS_KEY_FILE", raising=False)
+    for var in ("AUTORESEARCH_CLAUDE_KEY_FILE", "AUTORESEARCH_HARNESS_KEY_FILE"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv("AUTORESEARCH_CODEX_KEY_FILE", raising=False)
+    new, legacy = tmp_path / "claude_key", tmp_path / "harness_key"
+    monkeypatch.setattr(attempt, "CLAUDE_KEY_DEFAULT", str(new))
+    monkeypatch.setattr(attempt, "HARNESS_KEY_DEFAULT", str(legacy))
+
     assert resolve_author_key_file("codex", "/x/key") == "/x/key"  # explicit wins
-    assert resolve_author_key_file("claude") == os.path.expanduser(HARNESS_KEY_DEFAULT)
     assert resolve_author_key_file("codex") == os.path.expanduser(CODEX_KEY_DEFAULT)
+    assert resolve_author_key_file("claude") == str(new)  # neither file: the new name
+    legacy.write_text("k")
+    assert resolve_author_key_file("claude") == str(legacy)  # pre-rename machine
+    new.write_text("k")
+    assert resolve_author_key_file("claude") == str(new)  # both: new wins
     monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "/h-key")
-    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/c-key")
-    assert resolve_author_key_file("claude") == "/h-key"
-    assert resolve_author_key_file("codex") == "/c-key"
+    assert resolve_author_key_file("claude") == "/h-key"  # legacy env still honored
+    monkeypatch.setenv("AUTORESEARCH_CLAUDE_KEY_FILE", "/c-key")
+    assert resolve_author_key_file("claude") == "/c-key"  # new env wins over legacy
+    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/x-key")
+    assert resolve_author_key_file("codex") == "/x-key"
 
 
 def test_snapshot_refs_are_dropped_after_a_climb(tmp_path, target_repo) -> None:

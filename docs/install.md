@@ -14,7 +14,7 @@ minutes and needs no bot account, no cluster, and no GPU. Do that first.
 An automated reviewer comments on your pull requests. It never approves, never
 blocks a merge, and never fails your build.
 
-**You need:** an Anthropic API key. That's it.
+**You need:** an API key for the reviewer's model. Anthropic by default; the OpenAI and OpenRouter variants are below. That's it.
 
 **Step 1 — add the key as a repository secret.** Repo → Settings → Secrets and
 variables → Actions → New repository secret. Name it `ANTHROPIC_REVIEWER_KEY`.
@@ -187,7 +187,7 @@ add it to a team — teams grant more than it needs and inherit future grants.
 The quickest path is the guided setup:
 
 ```bash
-outerloop init      # asks for compute, target repo, placement, and auth
+outerloop init      # asks for compute, target repo, placement, auth, and the author's model key
 outerloop start
 ```
 
@@ -226,8 +226,11 @@ comma-separated partition list lets Slurm start each job wherever it fits
 first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`, its key file
-`OUTERLOOP_HARNESS_KEY_FILE` (Claude) or `OUTERLOOP_CODEX_KEY_FILE`
-(Codex). Evals run inside the
+`OUTERLOOP_<BACKEND>_KEY_FILE` (`OUTERLOOP_CLAUDE_KEY_FILE`,
+`OUTERLOOP_CODEX_KEY_FILE`; `init` writes the key to
+`~/.config/outerloop/<backend>_key`, 0600, and a pre-rename `harness_key` is
+still read). A Codex author always runs contained, so it also needs the image
+(`OUTERLOOP_IMAGE`) and a Codex model in `OUTERLOOP_AUTHOR_MODEL`. Evals run inside the
 Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and

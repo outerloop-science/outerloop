@@ -1989,7 +1989,7 @@ def main() -> int:
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
-        "AUTORESEARCH_HARNESS_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
+        "AUTORESEARCH_CLAUDE_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
     )
     parser.add_argument(
         "--panel",
