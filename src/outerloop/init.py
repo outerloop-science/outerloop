@@ -2,7 +2,7 @@
 
 Collects placement (Slurm or local), the target repo, and bot auth, then writes
 `~/.config/outerloop/.env` (plus the credential files), so a new adopter never
-hand-edits config or reasons about which `AUTORESEARCH_*` keys to set. Flags fill
+hand-edits config or reasons about which `OUTERLOOP_*` keys to set. Flags fill
 answers non-interactively; anything left out is prompted for (a secret via
 getpass, never echoed). Auth is the adopter's own GitHub App by default —
 `--github-app`, one click via the manifest flow in `appmanifest.py` — with a PAT
@@ -49,21 +49,21 @@ def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str
     the file stays minimal and every line means something. Ordered placement →
     target → auth → author to read top-to-bottom like the setup itself. Auth is
     an App file (`--github-app`) or a PAT file, never both."""
-    lines = [f"AUTORESEARCH_COMPUTE={a.compute}"]
+    lines = [f"OUTERLOOP_COMPUTE={a.compute}"]
     if a.compute == "slurm":
-        lines.append(f"AUTORESEARCH_ROOT={a.root}")
-        lines.append(f"AUTORESEARCH_ACCOUNT={a.account}")
+        lines.append(f"OUTERLOOP_ROOT={a.root}")
+        lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
         if a.partition:  # optional: unset lets Slurm pick its default partition
-            lines.append(f"AUTORESEARCH_PARTITION={a.partition}")
-    lines.append(f"AUTORESEARCH_TARGET={a.target}")
+            lines.append(f"OUTERLOOP_PARTITION={a.partition}")
+    lines.append(f"OUTERLOOP_TARGET={a.target}")
     if app_file:
-        lines.append(f"AUTORESEARCH_GITHUB_APP_FILE={app_file}")
+        lines.append(f"OUTERLOOP_GITHUB_APP_FILE={app_file}")
     elif pat_file:
-        lines.append(f"AUTORESEARCH_PAT_FILE={pat_file}")
+        lines.append(f"OUTERLOOP_PAT_FILE={pat_file}")
     if a.author_backend:
-        lines.append(f"AUTORESEARCH_AUTHOR_BACKEND={a.author_backend}")
+        lines.append(f"OUTERLOOP_AUTHOR_BACKEND={a.author_backend}")
     if a.author_model:
-        lines.append(f"AUTORESEARCH_AUTHOR_MODEL={a.author_model}")
+        lines.append(f"OUTERLOOP_AUTHOR_MODEL={a.author_model}")
     return "\n".join(lines) + "\n"
 
 
@@ -308,6 +308,6 @@ def main(argv: list[str] | None = None) -> int:
         problem = validate_pat(effective_pat, answers.target)
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
-        print("  no PAT set — add AUTORESEARCH_PAT_FILE before the agents can open PRs")
+        print("  no PAT set — add OUTERLOOP_PAT_FILE before the agents can open PRs")
     print("next: outerloop start")
     return 0

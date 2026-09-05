@@ -8,6 +8,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Configuration is now `OUTERLOOP_*` (`OUTERLOOP_TARGET`, `OUTERLOOP_ACCOUNT`, …):
+  `outerloop init` writes these names and the docs use them. The pre-rename
+  `AUTORESEARCH_*` names are still accepted everywhere: the `.env` reader and the
+  chain's deploy take either spelling, and both the Python package (on import)
+  and the chain scripts (at entry) bridge `OUTERLOOP_*` into the internal names.
+
+### Changed
+
 - The operator config dir is now **`~/.config/outerloop/`** (`.env`, token or App
   file, role keys). `~/.config/autoresearch/` is still honored: the code and the
   chain's deploy resolve the new dir if present, else the pre-rename one, so a

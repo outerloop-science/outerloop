@@ -213,21 +213,22 @@ Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.
 
-The deployment is configured by environment. Placement and paths are set
-when the chain is started: `AUTORESEARCH_ACCOUNT`/`AUTORESEARCH_PARTITION`
-place the CPU jobs (ticks, author sessions), `AUTORESEARCH_HOME`/
-`AUTORESEARCH_ROOT` locate the checkout and the state, `AUTORESEARCH_IMAGE`
+The deployment is configured by environment (`OUTERLOOP_*`; the pre-rename
+`AUTORESEARCH_*` names are still accepted everywhere). Placement and paths are set
+when the chain is started: `OUTERLOOP_ACCOUNT`/`OUTERLOOP_PARTITION`
+place the CPU jobs (ticks, author sessions), `OUTERLOOP_HOME`/
+`OUTERLOOP_ROOT` locate the checkout and the state, `OUTERLOOP_IMAGE`
 the container. The rest is re-read from `~/.config/outerloop/.env` each
-tick, so changes take effect at the next cadence: `AUTORESEARCH_TARGET`
-names the repo being climbed; `AUTORESEARCH_GPU_PARTITION` (optionally
-`AUTORESEARCH_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
+tick, so changes take effect at the next cadence: `OUTERLOOP_TARGET`
+names the repo being climbed; `OUTERLOOP_GPU_PARTITION` (optionally
+`OUTERLOOP_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
 comma-separated partition list lets Slurm start each job wherever it fits
-first; `AUTORESEARCH_PANEL` names the verify/review lenses (with
-`AUTORESEARCH_PANEL_*_KEY_FILE` for their keys); the author backend is
-`AUTORESEARCH_AUTHOR_BACKEND`/`AUTORESEARCH_AUTHOR_MODEL`, its key file
-`AUTORESEARCH_HARNESS_KEY_FILE` (Claude) or `AUTORESEARCH_CODEX_KEY_FILE`
+first; `OUTERLOOP_PANEL` names the verify/review lenses (with
+`OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is
+`OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`, its key file
+`OUTERLOOP_HARNESS_KEY_FILE` (Claude) or `OUTERLOOP_CODEX_KEY_FILE`
 (Codex). Evals run inside the
-Apptainer image at `AUTORESEARCH_IMAGE` (default
+Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
 GPU jobs are requested per node (`--gpus-per-node`).
@@ -241,9 +242,9 @@ backend) can run on Claude-in-Vertex instead of an Anthropic API key —
 useful when GCP credits are the budget. Config-driven, one env owner:
 
 ```bash
-AUTORESEARCH_VERTEX_PROJECT=your-gcp-project   # presence flips vertex ON
-AUTORESEARCH_VERTEX_REGION=global              # optional (default: global)
-AUTORESEARCH_VERTEX_ADC=~/.config/outerloop/vertex_adc.json  # ADC file
+OUTERLOOP_VERTEX_PROJECT=your-gcp-project   # presence flips vertex ON
+OUTERLOOP_VERTEX_REGION=global              # optional (default: global)
+OUTERLOOP_VERTEX_ADC=~/.config/outerloop/vertex_adc.json  # ADC file
 ```
 
 Enable the Claude models in the project's Model Garden, mint ADC

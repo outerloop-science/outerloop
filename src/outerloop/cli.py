@@ -94,6 +94,8 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
             continue
         key, value = line.split("=", 1)
         key = key.strip()
+        if key.startswith("OUTERLOOP_"):  # the public name; `keys` are canonical
+            key = "AUTORESEARCH_" + key[len("OUTERLOOP_") :]
         if key not in keys:
             continue
         value = value.strip()

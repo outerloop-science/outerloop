@@ -37,6 +37,13 @@
 # NO set -u before the top-up: a config mistake must fail loudly AFTER the
 # chain has secured its successors, not break the chain silently. Required
 # vars are checked by hand instead.
+# Accept the new OUTERLOOP_* names at the boundary: copy each into its
+# AUTORESEARCH_* twin (when the twin is unset) so the chain's internals, which
+# still read AUTORESEARCH_* during the rename, see one name. The Python side does
+# the same on import. Removed with the final internal flip.
+for _ov in $(env | sed -n 's/^OUTERLOOP_\([A-Z_][A-Z0-9_]*\)=.*/\1/p'); do
+    eval "[ -n \"\${AUTORESEARCH_${_ov}:-}\" ] || export AUTORESEARCH_${_ov}=\"\${OUTERLOOP_${_ov}}\""
+done
 CADENCE_MIN="${AUTORESEARCH_CADENCE_MIN:-30}"
 JOB_NAME="autoresearch-tick"
 RESIDENT_JOB_NAME="autoresearch-resident"
