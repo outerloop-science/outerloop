@@ -35,7 +35,7 @@ non-interactive use):
   A pre-existing PAT path is accepted as the alternative for orgs that
   prefer it.
 - **Collect the author key.** One path prompt per configured backend
-  (`AUTORESEARCH_HARNESS_KEY_FILE` / codex equivalent), mode-600 enforced.
+  (`OUTERLOOP_HARNESS_KEY_FILE` / codex equivalent), mode-600 enforced.
 - **Write `~/.config/outerloop/.env`** — only keys the operator chose;
   the tick chain's allowlist is the contract for what matters.
 - **Doctor.** Re-run every check the tick already preflights, plus the
@@ -59,9 +59,9 @@ the tick preflights with, so the doctor and the tick cannot disagree
 The `Compute` protocol already has both implementations; onboarding adds
 **selection** and a **local chain**, nothing more.
 
-- `AUTORESEARCH_COMPUTE=slurm` (default) — unchanged: the self-resubmitting
+- `OUTERLOOP_COMPUTE=slurm` (default) — unchanged: the self-resubmitting
   sbatch chain, every role its own job.
-- `AUTORESEARCH_COMPUTE=local` — `LocalCompute` at the two construction
+- `OUTERLOOP_COMPUTE=local` — `LocalCompute` at the two construction
   sites (tick, attempt). Jobs run as subprocesses of the tick process,
   **synchronously**: `submit` returns with the job already terminal.
 
@@ -94,7 +94,7 @@ swapped, nothing else different.
 ## Stages
 
 1. **Kernel enablement** (this note's PR series, part 1):
-   `AUTORESEARCH_COMPUTE` selection at the two `SlurmCompute()` sites,
+   `OUTERLOOP_COMPUTE` selection at the two `SlurmCompute()` sites,
    `tick --loop`, local-mode wake-arming skip, per-mode required-env
    relaxation (no account/partition in local mode), and the one launch
    command `autoresearch start` (`src/autoresearch/cli.py`). Done.

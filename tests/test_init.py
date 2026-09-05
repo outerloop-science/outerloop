@@ -21,26 +21,26 @@ def test_render_env_slurm_full() -> None:
         author_model="opus",
     )
     env = render_env(a, "/home/me/.config/autoresearch/bot_pat")
-    assert "AUTORESEARCH_COMPUTE=slurm" in env
-    assert "AUTORESEARCH_ROOT=/scratch/r" in env
-    assert "AUTORESEARCH_ACCOUNT=acct" in env
-    assert "AUTORESEARCH_PARTITION=cpu,gpu" in env  # comma-list preserved verbatim
-    assert "AUTORESEARCH_TARGET=o/r" in env
-    assert "AUTORESEARCH_PAT_FILE=/home/me/.config/autoresearch/bot_pat" in env
-    assert "AUTORESEARCH_AUTHOR_BACKEND=claude" in env
+    assert "OUTERLOOP_COMPUTE=slurm" in env
+    assert "OUTERLOOP_ROOT=/scratch/r" in env
+    assert "OUTERLOOP_ACCOUNT=acct" in env
+    assert "OUTERLOOP_PARTITION=cpu,gpu" in env  # comma-list preserved verbatim
+    assert "OUTERLOOP_TARGET=o/r" in env
+    assert "OUTERLOOP_PAT_FILE=/home/me/.config/autoresearch/bot_pat" in env
+    assert "OUTERLOOP_AUTHOR_BACKEND=claude" in env
 
 
 def test_render_env_omits_the_optional_keys() -> None:
     env = render_env(InitAnswers(compute="slurm", target="o/r", root="/r", account="a"), "")
-    assert "AUTORESEARCH_PARTITION" not in env  # optional -> Slurm default
-    assert "AUTORESEARCH_PAT_FILE" not in env
-    assert "AUTORESEARCH_AUTHOR_BACKEND" not in env
+    assert "OUTERLOOP_PARTITION" not in env  # optional -> Slurm default
+    assert "OUTERLOOP_PAT_FILE" not in env
+    assert "OUTERLOOP_AUTHOR_BACKEND" not in env
 
 
 def test_render_env_local_has_no_slurm_placement() -> None:
     env = render_env(InitAnswers(compute="local", target="o/r"), "")
-    assert "AUTORESEARCH_COMPUTE=local" in env
-    assert "AUTORESEARCH_ROOT" not in env and "AUTORESEARCH_ACCOUNT" not in env
+    assert "OUTERLOOP_COMPUTE=local" in env
+    assert "OUTERLOOP_ROOT" not in env and "OUTERLOOP_ACCOUNT" not in env
 
 
 def test_write_config_writes_env_and_pat_0600(tmp_path: Path) -> None:
@@ -51,7 +51,7 @@ def test_write_config_writes_env_and_pat_0600(tmp_path: Path) -> None:
     assert pat_path.read_text() == "ghp_secrettoken"  # no trailing newline
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(pat_path.stat().st_mode) == 0o600
-    assert f"AUTORESEARCH_PAT_FILE={pat_path}" in env_path.read_text()
+    assert f"OUTERLOOP_PAT_FILE={pat_path}" in env_path.read_text()
 
 
 def test_write_config_no_token_keeps_the_given_pat_file(tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_write_config_no_token_keeps_the_given_pat_file(tmp_path: Path) -> None:
         InitAnswers(compute="local", target="o/r"), "", "/existing/pat", config_dir=tmp_path
     )
     assert pat_path is None
-    assert "AUTORESEARCH_PAT_FILE=/existing/pat" in env_path.read_text()
+    assert "OUTERLOOP_PAT_FILE=/existing/pat" in env_path.read_text()
 
 
 def test_validate_pat_read_errors(tmp_path: Path) -> None:
@@ -122,9 +122,9 @@ def test_main_yes_writes_config(tmp_path: Path, monkeypatch, capsys) -> None:
     )
     assert rc == 0
     env = (tmp_path / ".env").read_text()
-    assert "AUTORESEARCH_TARGET=o/r" in env
-    assert "AUTORESEARCH_PARTITION=cpu,gpu" in env  # comma-list survives the wizard
-    assert "AUTORESEARCH_PAT_FILE=/some/pat" in env
+    assert "OUTERLOOP_TARGET=o/r" in env
+    assert "OUTERLOOP_PARTITION=cpu,gpu" in env  # comma-list survives the wizard
+    assert "OUTERLOOP_PAT_FILE=/some/pat" in env
 
 
 def test_main_yes_requires_target(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -172,8 +172,8 @@ def test_render_env_app_file_wins_over_pat() -> None:
     env = render_env(
         InitAnswers(compute="local", target="o/r"), "some-pat", app_file="/c/github_app.x.json"
     )
-    assert "AUTORESEARCH_GITHUB_APP_FILE=/c/github_app.x.json" in env
-    assert "AUTORESEARCH_PAT_FILE" not in env
+    assert "OUTERLOOP_GITHUB_APP_FILE=/c/github_app.x.json" in env
+    assert "OUTERLOOP_PAT_FILE" not in env
 
 
 def test_main_github_app_writes_app_env(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -190,11 +190,11 @@ def test_main_github_app_writes_app_env(tmp_path: Path, monkeypatch, capsys) -> 
     app_json = tmp_path / "github_app.sl.json"
     assert json.loads(app_json.read_text())["installation_id"] == 999
     env = (tmp_path / ".env").read_text()
-    assert f"AUTORESEARCH_GITHUB_APP_FILE={app_json}" in env
-    assert "AUTORESEARCH_PAT_FILE" not in env
+    assert f"OUTERLOOP_GITHUB_APP_FILE={app_json}" in env
+    assert "OUTERLOOP_PAT_FILE" not in env
 
 
-KEEP = "AUTORESEARCH_TARGET=keep/me\n"
+KEEP = "OUTERLOOP_TARGET=keep/me\n"
 
 
 def test_init_refuses_to_overwrite_an_existing_env_non_interactively(
@@ -216,7 +216,7 @@ def test_init_force_overwrites_an_existing_env(tmp_path: Path, monkeypatch) -> N
         ["--yes", "--force", "--compute", "local", "--target", "o/r", "--pat-file", "/p"]
     )
     assert rc == 0
-    assert "AUTORESEARCH_TARGET=o/r" in (tmp_path / ".env").read_text()
+    assert "OUTERLOOP_TARGET=o/r" in (tmp_path / ".env").read_text()
 
 
 def test_init_interactive_declined_overwrite_keeps_the_config(tmp_path: Path, monkeypatch) -> None:
