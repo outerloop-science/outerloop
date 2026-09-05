@@ -37,15 +37,18 @@ themselves.
 
 ## Get started
 
-Four commands and one file. You need a repo with a benchmark command, a model
-API key, and a Slurm cluster or one machine with a GPU.
+Three commands and two files: your model key and the contract. You need a repo
+with a benchmark command, a model API key (Anthropic by default), and a Slurm
+cluster or one machine with a GPU.
 
 ```bash
 pip install outerloop-science
-outerloop init     # asks for your model key and compute, sets up your GitHub bot, writes the config
+outerloop init     # where the loop runs, which repo, your GitHub bot; writes the config
 ```
 
-Then add one file, `.outerloop.yaml`, to the repo you want improved:
+Put your Anthropic API key in `~/.config/outerloop/harness_key`: one line,
+readable only by you (`chmod 600`). Then add one file, `.outerloop.yaml`, to
+the repo you want improved:
 
 ```yaml
 benchmarks:
@@ -55,16 +58,20 @@ benchmarks:
     direction: max
 budgets:
   gpu_hours_per_run: 8
+  runs_per_week: 10
 scope:
   allowed: [src/]        # the only paths an agent may change
+roadmap: docs/roadmap.md # what the agents read for direction; never written
 ```
 
 ```bash
 outerloop start    # on a Slurm login node this submits the loop; without Slurm it runs in the foreground
 ```
 
-Step by step: [docs/install.md](https://github.com/outerloop-science/outerloop/blob/main/docs/install.md). Everything the contract can
-say: [docs/contract.md](https://github.com/outerloop-science/outerloop/blob/main/docs/contract.md).
+Step by step, other model backends included:
+[docs/install.md](https://github.com/outerloop-science/outerloop/blob/main/docs/install.md).
+Everything the contract can say:
+[docs/contract.md](https://github.com/outerloop-science/outerloop/blob/main/docs/contract.md).
 
 ## Only want pull request reviews?
 
