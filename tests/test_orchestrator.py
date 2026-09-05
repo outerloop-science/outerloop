@@ -245,7 +245,7 @@ def test_direction_min_regression_is_no_improvement(tmp_path: Path) -> None:
 def _write_syscall(tmp_path: Path, payload: dict) -> None:
     import json
 
-    d = tmp_path / ".autoresearch"
+    d = tmp_path / ".outerloop"
     d.mkdir(exist_ok=True)
     # the tool tags every sleep with its syscall type; mirror that here
     (d / "syscall.json").write_text(json.dumps({"type": "sleep", **payload}))
@@ -638,7 +638,7 @@ def test_syscalls_are_ignored_without_a_launcher(tmp_path: Path) -> None:
     _write_syscall(tmp_path, {"launches": [{"name": "probe", "command": "x"}]})
     result, _, _ = run_climb(tmp_path, [13.876, 13.10])
     assert result.outcome == "improved"
-    assert (tmp_path / ".autoresearch" / "syscall.json").exists()  # not even consumed
+    assert (tmp_path / ".outerloop" / "syscall.json").exists()  # not even consumed
 
 
 def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> None:
@@ -677,8 +677,8 @@ def test_author_sleep_refuses_an_out_of_scope_tree_before_launching(tmp_path: Pa
 
 
 def test_malformed_syscall_request_is_a_loud_error(tmp_path: Path) -> None:
-    (tmp_path / ".autoresearch").mkdir()
-    (tmp_path / ".autoresearch" / "syscall.json").write_text("{broken")
+    (tmp_path / ".outerloop").mkdir()
+    (tmp_path / ".outerloop" / "syscall.json").write_text("{broken")
     result, _, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]))
     assert result.outcome == "session-error"
     assert "unhonorable syscall request" in result.note
@@ -1480,7 +1480,7 @@ class _SeqHarness:
         if len(self.resumes) in self.submit_on:
             import json as _json
 
-            d = workspace / ".autoresearch"
+            d = workspace / ".outerloop"
             d.mkdir(exist_ok=True)
             (d / "syscall.json").write_text(
                 _json.dumps({"type": "sleep", "launches": [], "note": "", "submit": True})

@@ -51,7 +51,7 @@ def test_launch_then_sleep_commits_the_abi(tmp_path: Path, capsys) -> None:
     assert req.launches[0].minutes == 90
     assert req.launches[0].artifacts == ("results/curve.json",)
     # staging is cleared by the commit
-    assert not (tmp_path / ".autoresearch" / "request.json").exists()
+    assert not (tmp_path / ".outerloop" / "request.json").exists()
 
 
 def test_quoted_command_args_survive_to_the_abi(tmp_path: Path, capsys) -> None:
@@ -166,7 +166,7 @@ def test_installed_tool_is_standalone(tmp_path: Path) -> None:
     from outerloop.syscall import install_tool
 
     install_tool(tmp_path)
-    tool = tmp_path / ".autoresearch" / "syscall"
+    tool = tmp_path / ".outerloop" / "syscall"
     assert tool.exists()
     r = subprocess.run(
         [sys.executable, "-I", str(tool), "launch", "--name", "solo", "--", "echo", "ok"],
@@ -180,7 +180,7 @@ def test_installed_tool_is_standalone(tmp_path: Path) -> None:
         [sys.executable, "-I", str(tool), "sleep"], cwd=tmp_path, capture_output=True, text=True
     )
     assert r.returncode == 0 and "END YOUR TURN" in r.stdout
-    abi = json.loads((tmp_path / ".autoresearch" / "syscall.json").read_text())
+    abi = json.loads((tmp_path / ".outerloop" / "syscall.json").read_text())
     assert abi["type"] == "sleep"
     assert abi["launches"][0]["name"] == "solo"
 
@@ -242,7 +242,7 @@ def test_findings_then_conclude_round_trip_through_the_reader(tmp_path: Path, ca
         "kind": "change",
     }
     assert verdict["findings"][1]["line"] is None  # --line omitted -> null
-    assert not (tmp_path / ".autoresearch" / "request.json").exists()  # staging cleared
+    assert not (tmp_path / ".outerloop" / "request.json").exists()  # staging cleared
 
 
 def test_conclude_with_no_findings_is_a_clean_verdict(tmp_path: Path) -> None:
@@ -342,7 +342,7 @@ def test_installed_tool_roots_at_its_install_location_not_cwd(tmp_path: Path) ->
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     install_tool(ws)
-    tool = ws / ".autoresearch" / "syscall"
+    tool = ws / ".outerloop" / "syscall"
     r = subprocess.run(
         [sys.executable, "-I", str(tool), "conclude", "--notes", "clean"],
         cwd=elsewhere,  # NOT the workspace
@@ -350,7 +350,7 @@ def test_installed_tool_roots_at_its_install_location_not_cwd(tmp_path: Path) ->
         text=True,
     )
     assert r.returncode == 0, r.stderr
-    assert not (elsewhere / ".autoresearch").exists()  # nothing lands at cwd
+    assert not (elsewhere / ".outerloop").exists()  # nothing lands at cwd
     assert read_verdict(ws) == {"findings": [], "notes": "clean"}  # kernel finds it
 
 
@@ -361,11 +361,11 @@ def test_tool_command_is_absolute(tmp_path: Path) -> None:
 
     cmd = tool_command(tmp_path / "ws")
     assert cmd.startswith("python /")  # absolute, resolves from any cwd
-    assert cmd.endswith("/ws/.autoresearch/syscall")
+    assert cmd.endswith("/ws/.outerloop/syscall")
 
 
 def test_reports_summary_and_full_views(tmp_path: Path, capsys) -> None:
-    root = tmp_path / ".autoresearch"
+    root = tmp_path / ".outerloop"
     archive = root / "reports"
     archive.mkdir(parents=True)
     (archive / "2026-08-28-speedrun-a.md").write_text(
@@ -390,7 +390,7 @@ def test_reports_summary_and_full_views(tmp_path: Path, capsys) -> None:
     assert run(root, "reports", "../budget.json", capsys=capsys) != 0
     capsys.readouterr()
     # no archive yet: a plain explanation, not an error
-    bare = tmp_path / "bare" / ".autoresearch"
+    bare = tmp_path / "bare" / ".outerloop"
     bare.mkdir(parents=True)
     assert run(bare, "reports", capsys=capsys) == 0
     assert "no report archive" in capsys.readouterr().out

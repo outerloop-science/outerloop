@@ -290,7 +290,7 @@ def build_verify_prompt(
 # Prepended to the shared rubric for the agent-session verifier: TWO
 # checkouts — the PR head (the change under review) and the BASE branch
 # (the trusted contract and ruler — the solver cannot have shaped it).
-DEFAULT_SYSCALL_CMD = "python .autoresearch/syscall"
+DEFAULT_SYSCALL_CMD = "python .outerloop/syscall"
 
 
 def _agent_verify_investigation(syscall_cmd: str) -> str:

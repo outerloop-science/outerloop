@@ -202,7 +202,7 @@ def run_role(
     check, so there is no repair loop — a missing verdict (the judge never
     concluded) or a malformed one is a failure the caller surfaces (a skip
     stub), never a clean read (silence is never endorsement). Installing the
-    tool BEFORE the session force-owns the `.autoresearch/` channel, so a
+    tool BEFORE the session force-owns the `.outerloop/` channel, so a
     pre-planted or stale ABI never survives into the read — a resumed (revise)
     session likewise starts from a clean channel and commits a fresh verdict.
     """

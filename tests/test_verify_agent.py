@@ -50,7 +50,7 @@ class _Harness:
                 for f in payload.get("findings", []):
                     if isinstance(f, dict):
                         f.setdefault("kind", "note")  # the tool's own default
-                d = Path(workspace) / ".autoresearch"
+                d = Path(workspace) / ".outerloop"
                 d.mkdir(exist_ok=True)
                 (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(
@@ -171,7 +171,7 @@ def test_brief_directs_ruler_reads_at_base() -> None:
     assert "Read the ruler source" in brief
     assert "`base/`" in brief and "`pr-head/`" in brief
     assert "contract: yes" in brief  # fenced from base, orchestrator-vouched
-    assert "python .autoresearch/syscall finding" in brief  # the emit path
+    assert "python .outerloop/syscall finding" in brief  # the emit path
     assert "do not modify" in brief.lower()
 
 

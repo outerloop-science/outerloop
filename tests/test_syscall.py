@@ -175,7 +175,7 @@ def test_siblings_command_reads_the_fleet_snapshot(tmp_path: Path) -> None:
     assert "agent-02 (waiting/candidate): compose embedding decay" in out
     assert "agent-03 (implementing)" in out
     assert "prefer a direction no sibling" in out
-    (tmp_path / ".autoresearch" / "siblings.json").write_text("not json")
+    (tmp_path / ".outerloop" / "siblings.json").write_text("not json")
     assert cmd_siblings(tmp_path, None) == "no sibling activity known."
 
 
@@ -249,7 +249,7 @@ def test_wake_text_fences_results_and_reports_budgets() -> None:
         exit_code=0,
         stdout_tail="loss: 0.42\n``` pretend fence ```",
         stderr_tail="",
-        delivered=(".autoresearch/results/train-lr3/results/curve.json",),
+        delivered=(".outerloop/results/train-lr3/results/curve.json",),
         skipped=("skipped (over 5000000 bytes): big.ckpt",),
     )
     text = render_wake(
@@ -584,12 +584,12 @@ def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
     train, crashed = results
     assert train.exit_code == 0 and "loss: 0.4" in train.stdout_tail
     assert set(train.delivered) == {
-        ".autoresearch/results/train/curve.json",
-        ".autoresearch/results/train/sub/extra.txt",
+        ".outerloop/results/train/curve.json",
+        ".outerloop/results/train/sub/extra.txt",
     }
     assert train.skipped == ("skipped (over 5000000 bytes): big.ckpt",)
     # the files really landed in the excluded channel
-    assert (ws / ".autoresearch" / "results" / "train" / "curve.json").read_text() == "{}"
+    assert (ws / ".outerloop" / "results" / "train" / "curve.json").read_text() == "{}"
     # a job with no exit-code file surfaces as None (infra failure), not a skip
     assert crashed.exit_code is None and "OOM" in crashed.stderr_tail
 
@@ -610,9 +610,9 @@ def test_gather_results_refuses_symlinked_destination_channel(tmp_path) -> None:
     escape = tmp_path / "ESCAPE"
     escape.mkdir()
     (escape / "out.json").write_text("ORIGINAL")
-    # .autoresearch/results -> the escape dir
-    (ws / ".autoresearch").mkdir(parents=True)
-    (ws / ".autoresearch" / "results").symlink_to(escape, target_is_directory=True)
+    # .outerloop/results -> the escape dir
+    (ws / ".outerloop").mkdir(parents=True)
+    (ws / ".outerloop" / "results").symlink_to(escape, target_is_directory=True)
 
     (r,) = gather_results(run_dir, ws, (Launch("probe", "c", 30, ("out.json",)),))
     assert r.delivered == ()  # nothing delivered through the symlink
@@ -858,17 +858,17 @@ def test_array_launch_fans_out_and_gathers_per_index(tmp_path: Path) -> None:
     assert [r.name for r in results] == ["sweep.0", "sweep.1"]
     assert [r.exit_code for r in results] == [0, 1]
     assert results[1].stdout_tail.strip() == "result 1"
-    assert results[1].delivered == (".autoresearch/results/sweep/1/out/curve.json",)
-    first = ws / ".autoresearch" / "results" / "sweep" / "0" / "out" / "curve.json"
+    assert results[1].delivered == (".outerloop/results/sweep/1/out/curve.json",)
+    first = ws / ".outerloop" / "results" / "sweep" / "0" / "out" / "curve.json"
     assert first.read_text() == "[0]"
     # whatever the author left at the group path — a plain file here — is
     # replaced, not written through or tripped over (terra #181 round 2)
     import shutil as _shutil
 
-    _shutil.rmtree(ws / ".autoresearch" / "results" / "sweep")
-    (ws / ".autoresearch" / "results" / "sweep").write_text("not a dir")
+    _shutil.rmtree(ws / ".outerloop" / "results" / "sweep")
+    (ws / ".outerloop" / "results" / "sweep").write_text("not a dir")
     again = gather_results(run_dir, ws, (Launch(name="sweep", command="x", minutes=10, array=2),))
-    assert again[0].delivered == (".autoresearch/results/sweep/0/out/curve.json",)
+    assert again[0].delivered == (".outerloop/results/sweep/0/out/curve.json",)
     assert first.read_text() == "[0]"
 
 
@@ -1013,7 +1013,7 @@ def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
     ws = tmp_path
     outside = ws / "outside"
     outside.mkdir()
-    (ws / ".autoresearch").symlink_to(outside)  # channel is a symlink
+    (ws / ".outerloop").symlink_to(outside)  # channel is a symlink
     assert sync_requested(ws) is None
     import contextlib
 

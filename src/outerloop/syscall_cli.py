@@ -6,27 +6,27 @@ role, gated by RoleSpec").
 A syscall is TYPED, and the kernel dispatches by type. The AUTHOR's syscalls run
 experiments and hibernate:
 
-    python .autoresearch/syscall launch --name train --minutes 90 \\
+    python .outerloop/syscall launch --name train --minutes 90 \\
         --artifact results/curve.json -- uv run python train.py --lr 3e-4
-    python .autoresearch/syscall note "compare with the lr sweep"
-    python .autoresearch/syscall submit      # seal + gate + panel on this tree
-    python .autoresearch/syscall sleep       # then END YOUR TURN to hibernate
+    python .outerloop/syscall note "compare with the lr sweep"
+    python .outerloop/syscall submit      # seal + gate + panel on this tree
+    python .outerloop/syscall sleep       # then END YOUR TURN to hibernate
 
 The JUDGE's syscalls record a verdict and exit — `conclude` is the judge's
 `exit()`, carrying its findings:
 
-    python .autoresearch/syscall finding --file solver.py --line 42 \\
+    python .outerloop/syscall finding --file solver.py --line 42 \\
         --confidence high --summary "off-by-one" --detail "skips last index" --blocking
-    python .autoresearch/syscall conclude --notes "one blocking defect; rest clean"
+    python .outerloop/syscall conclude --notes "one blocking defect; rest clean"
 
 Which verbs a role may use is set by its RoleSpec (the brief tells the role
-which). Every verb STAGES into `.autoresearch/request.json`; the committing
-verbs (`sleep`, `conclude`) write the typed ABI to `.autoresearch/syscall.json`
+which). Every verb STAGES into `.outerloop/request.json`; the committing
+verbs (`sleep`, `conclude`) write the typed ABI to `.outerloop/syscall.json`
 (what the kernel reads after the session ends) — so building a request and
 committing it are separate acts.
 
 This file is STANDALONE by contract: the kernel copies its source into the
-sandbox at `.autoresearch/syscall` (the target repo does not have autoresearch
+sandbox at `.outerloop/syscall` (the target repo does not have autoresearch
 installed), so it imports only the stdlib. The validation here is for FAST,
 IN-SESSION feedback only; the kernel re-validates every field authoritatively
 when it reads the ABI (`syscall.py`) — this tool is a convenience layer, never a
@@ -46,7 +46,7 @@ from pathlib import Path
 # Mirror of syscall.py's bounds for local feedback. syscall.py is authoritative;
 # keep these in sync (a drift only makes the tool's warning stale, never unsafe —
 # the kernel still enforces the real limits).
-DIR = ".autoresearch"
+DIR = ".outerloop"  # default; the installed tool roots at its own location
 REQUEST = "request.json"  # staging (tool-owned)
 ABI = "syscall.json"  # committed syscall the kernel reads
 BUDGET = "budget.json"  # kernel-written: remaining counts, for `status`
@@ -405,7 +405,7 @@ def cmd_sync(root: Path, args) -> str:
     (kernel counterparts live in outerloop.syscall)."""
     import time
 
-    channel = root / ".autoresearch"
+    channel = root / DIR
     done = channel / "sync-done"
     request = channel / "sync-request"
     request.touch()

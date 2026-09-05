@@ -91,13 +91,13 @@ def test_render_has_every_section_in_order() -> None:
 
 
 def test_render_tells_launches_where_artifacts_live() -> None:
-    """An author once wrote its experiment log into .autoresearch/results/,
+    """An author once wrote its experiment log into .outerloop/results/,
     which does not exist in the jailed job, and paid a full walltime for a
     launch that died on its first line. The brief pins the rule; without a
     launch budget the paragraph is absent."""
     text = render(build_brief(make_inputs(launch_budget=3, sleep_budget=2), created="t"))
     assert "anywhere under the repo tree" in text
-    assert "`.autoresearch/` channel does not exist in the job" in text
+    assert "`.outerloop/` channel does not exist in the job" in text
     off = render(build_brief(make_inputs(), created="t"))
     assert "--artifact" not in off
 

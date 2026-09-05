@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The syscall channel dir in a workspace is now `.outerloop/` (the tool, the
+  request/verdict ABI, `results/`, `reports/`). `.autoresearch/` is still honored:
+  `syscall.channel_dir(workspace)` resolves the existing dir (new name first), so a
+  run parked before the rename keeps its `.autoresearch/` channel and its resumed
+  session — which only receives a short wake note, not a fresh brief — still finds
+  the path it was told. Fresh runs install `.outerloop/`; the author-syscall
+  pre-check refuses a target that ships either name.
+
+### Changed
+
 - Configuration is now `OUTERLOOP_*` (`OUTERLOOP_TARGET`, `OUTERLOOP_ACCOUNT`, …):
   `outerloop init` writes these names and the docs use them. The pre-rename
   `AUTORESEARCH_*` names are still accepted everywhere: the `.env` reader and the

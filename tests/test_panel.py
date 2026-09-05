@@ -55,7 +55,7 @@ class _Judge:
                 for f in payload.get("findings", []):
                     if isinstance(f, dict):
                         f.setdefault("kind", "note")  # the tool's own default
-                d = Path(workspace) / ".autoresearch"
+                d = Path(workspace) / ".outerloop"
                 d.mkdir(exist_ok=True)
                 (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(

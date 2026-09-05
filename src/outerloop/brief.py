@@ -21,6 +21,11 @@ from dataclasses import asdict, dataclass, field
 
 from outerloop.style import PLAIN_STYLE
 
+# The syscall channel dir named in the author brief. Must equal
+# syscall.CHANNEL_DIR_NAMES[0]; a fresh run (the only kind render() serves) always
+# installs the new default channel. Asserted in test_channel_dir.
+_CHANNEL = ".outerloop"
+
 # Bounds are part of the brief's contract: a brief that grows without limit
 # stops being an experiment variable and starts being noise.
 MAX_LESSONS_CHARS = 8_000
@@ -353,7 +358,7 @@ def render(brief: SessionBrief) -> str:
             "settle, do not repeat unchanged; build on it, or contradict it "
             "with a reason."
             + (
-                " The full archive: `python .autoresearch/syscall reports` "
+                f" The full archive: `python {_CHANNEL}/syscall reports` "
                 "lists every report one line each; add names to read full "
                 "reports, several in one call."
                 if brief.report_archive
@@ -379,19 +384,19 @@ def render(brief: SessionBrief) -> str:
             "anything that will not finish inside this session) runs OUTSIDE "
             "it. To run something and get its result, use the tool, then END "
             "YOUR TURN — you will be woken in this same session with the "
-            "output and any artifacts delivered under .autoresearch/results/. "
+            f"output and any artifacts delivered under {_CHANNEL}/results/. "
             "Your git remote refs (origin/*) are refreshed at every wake, so "
             "after a sleep you can read the current state of the base branch "
             "and sibling branches locally; `sync` refreshes them mid-session "
             "instead, waiting for the kernel's next cycle (up to ~35 min) "
             "inside your own session time — it costs no budget:",
             "",
-            "    python .autoresearch/syscall launch --name <handle> "
+            f"    python {_CHANNEL}/syscall launch --name <handle> "
             "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",
-            "    python .autoresearch/syscall submit [--minutes <N>]",
-            "    python .autoresearch/syscall siblings",
-            "    python .autoresearch/syscall sync",
-            "    python .autoresearch/syscall sleep",
+            f"    python {_CHANNEL}/syscall submit [--minutes <N>]",
+            f"    python {_CHANNEL}/syscall siblings",
+            f"    python {_CHANNEL}/syscall sync",
+            f"    python {_CHANNEL}/syscall sleep",
             "",
             *(
                 [
@@ -416,7 +421,7 @@ def render(brief: SessionBrief) -> str:
             "`status` shows staged launches and remaining budget; `note ...` "
             "leaves a reminder echoed back to you on wake. `--artifact` must "
             "name a file your command actually writes, anywhere under the repo "
-            "tree — the `.autoresearch/` channel does not exist in the job, so "
+            f"tree — the `{_CHANNEL}/` channel does not exist in the job, so "
             "never write there (stdout/stderr are captured regardless). Bad "
             "arguments fail "
             "immediately — fix and retry before sleeping. You may launch "
@@ -424,7 +429,7 @@ def render(brief: SessionBrief) -> str:
             "more, revise, or finish. `--array K` runs one command as K jobs "
             "(a sweep): each job sees SWEEP_INDEX=0..K-1 in its environment and "
             "returns its own result, with artifacts under "
-            ".autoresearch/results/<name>/<i>/; it counts as one launch. "
+            f"{_CHANNEL}/results/<name>/<i>/; it counts as one launch. "
             "Budgets this run: "
             f"{brief.launch_budget} experiment launches, {brief.sleep_budget} "
             "sleeps (a `sleep` with nothing staged is a checkpoint that "
