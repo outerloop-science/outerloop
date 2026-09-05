@@ -37,6 +37,12 @@ dev = [
     "pre-commit>=4",
 ]
 
+[project.urls]
+Homepage = "https://outerloop.science"
+Repository = "https://github.com/outerloop-science/outerloop"
+Changelog = "https://github.com/outerloop-science/outerloop/blob/main/CHANGELOG.md"
+Issues = "https://github.com/outerloop-science/outerloop/issues"
+
 [tool.hatch.version]
 path = "src/outerloop/__init__.py"
 
@@ -68,3 +74,6 @@ markers = [
     "llm: calls a paid LLM API; manual only, never CI",
     "slurm: needs a Slurm cluster; manual only, never CI",
 ]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/web"]
