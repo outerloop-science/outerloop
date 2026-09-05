@@ -79,8 +79,8 @@ class _Resp:
     def __enter__(self) -> _Resp:
         return self
 
-    def __exit__(self, *a: object) -> bool:
-        return False
+    def __exit__(self, *a: object) -> None:
+        return None
 
 
 def test_validate_pat_ok_and_no_push(tmp_path: Path, monkeypatch) -> None:
