@@ -371,7 +371,7 @@ wheels = [
 ]
 
 [[package]]
-name = "outerloop"
+name = "outerloop-science"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

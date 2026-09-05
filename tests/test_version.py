@@ -4,4 +4,4 @@ import outerloop
 
 
 def test_installed_metadata_matches_package_version() -> None:
-    assert version("outerloop") == outerloop.__version__
+    assert version("outerloop-science") == outerloop.__version__

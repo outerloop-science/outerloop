@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "outerloop"
+name = "outerloop-science"
 dynamic = ["version"]
 description = "Autonomous research agent that co-develops the lab's benchmark-bearing repos"
 readme = "README.md"
