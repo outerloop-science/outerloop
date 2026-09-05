@@ -137,3 +137,58 @@ def test_main_yes_slurm_requires_root_and_account(tmp_path: Path, monkeypatch, c
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
     assert init.main(["--yes", "--compute", "slurm", "--target", "o/r"]) == 2
     assert "Slurm needs --root and --account" in capsys.readouterr().err
+
+
+def test_github_app_run_asks_nothing_about_the_author(tmp_path: Path, monkeypatch) -> None:
+    """A focused --github-app run is about auth; it must not prompt for the author."""
+    from outerloop import appmanifest
+
+    asked: list[str] = []
+
+    def fake_ask(prompt: str, *a: object, **k: object) -> str:
+        asked.append(prompt)
+        return ""
+
+    monkeypatch.setattr(init, "_ask", fake_ask)
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "c")
+    monkeypatch.setattr(
+        appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
+    )
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
+    assert asked == []  # no author (or any other) prompt on the way
+
+
+def test_main_yes_rejects_an_unknown_author_backend(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    rc = init.main(["--yes", "--compute", "local", "--target", "o/r", "--author-backend", "hermes"])
+    assert rc == 2
+    assert "author backend must be one of claude, codex" in capsys.readouterr().err
+
+
+def test_render_env_app_file_wins_over_pat() -> None:
+    env = render_env(
+        InitAnswers(compute="local", target="o/r"), "some-pat", app_file="/c/github_app.x.json"
+    )
+    assert "AUTORESEARCH_GITHUB_APP_FILE=/c/github_app.x.json" in env
+    assert "AUTORESEARCH_PAT_FILE" not in env
+
+
+def test_main_github_app_writes_app_env(tmp_path: Path, monkeypatch, capsys) -> None:
+    from outerloop import appmanifest
+
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    conv = {"id": 42, "slug": "sl", "pem": "PEMDATA"}
+    monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "code123")
+    monkeypatch.setattr(appmanifest, "convert_manifest", lambda code, **k: conv)
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 999)
+    monkeypatch.setattr("builtins.input", lambda *a: "")  # author prompts + the install-Enter
+    rc = init.main(["--github-app", "--compute", "local", "--target", "o/r"])
+    assert rc == 0
+    app_json = tmp_path / "github_app.sl.json"
+    assert json.loads(app_json.read_text())["installation_id"] == 999
+    env = (tmp_path / ".env").read_text()
+    assert f"AUTORESEARCH_GITHUB_APP_FILE={app_json}" in env
+    assert "AUTORESEARCH_PAT_FILE" not in env

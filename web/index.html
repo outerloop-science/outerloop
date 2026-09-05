@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outerloop — create your GitHub App</title>
+<!--
+  The helper page for `outerloop init --github-app`. It has two jobs, decided
+  entirely client-side (nothing here is sent to any server of ours):
+
+  1. CREATE: the CLI opens this page with the manifest packed into the URL
+     *fragment* (#<base64>). A fragment never leaves the browser, so the manifest
+     is not logged anywhere. We decode it and auto-POST it to GitHub's App-create
+     form. GitHub creates the App and redirects back here with a one-time ?code=.
+
+  2. DISPLAY: on the ?code= redirect, we show the code for the adopter to copy
+     and paste into the terminal, then strip it from the address bar. The code is
+     single-use and short-lived (GitHub invalidates it on first use / ~1h); the
+     CLI exchanges it immediately.
+
+  No frameworks, no external requests — read the whole thing before trusting it.
+-->
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a2e; --bg: #fbfbfd; --accent: #3b5bdb; --muted: #6b7280; --card: #fff; --border: #e5e7eb; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8ef; --bg: #14141c; --accent: #91a7ff; --muted: #9aa0aa; --card: #1e1e28; --border: #2c2c38; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px; }
+  main { width: 100%; max-width: 30rem; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 28px 26px; }
+  h1 { font-size: 1.15rem; margin: 0 0 .5rem; letter-spacing: -0.01em; }
+  p { margin: .5rem 0; color: var(--muted); }
+  .code { display: flex; gap: 8px; margin: 16px 0 4px; }
+  .code input { flex: 1; font: 15px ui-monospace, "SF Mono", Menlo, monospace; padding: 12px 14px; border: 1px solid var(--border);
+                border-radius: 10px; background: var(--bg); color: var(--fg); }
+  button { font: inherit; font-weight: 600; padding: 12px 16px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer; }
+  button:hover { filter: brightness(1.05); }
+  .spin { color: var(--muted); }
+  .err { color: #dc2626; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+</style>
+</head>
+<body>
+<main id="app">
+  <h1>Outerloop</h1>
+  <p class="spin" id="status">Loading…</p>
+</main>
+<form id="ghform" method="post" hidden><input type="hidden" name="manifest" id="manifest"></form>
+<script>
+(function () {
+  var statusEl = document.getElementById("status");
+  var appEl = document.getElementById("app");
+  var params = new URLSearchParams(location.search);
+
+  // --- DISPLAY mode: GitHub redirected back with the one-time code ---
+  if (params.get("code")) {
+    var code = params.get("code");
+    // strip the code from the address bar / history right away
+    try { history.replaceState({}, "", location.pathname); } catch (e) {}
+    appEl.innerHTML =
+      '<h1>App created ✅</h1>' +
+      '<p>Copy this code and paste it into your terminal:</p>' +
+      '<div class="code"><input id="c" readonly><button id="copy">Copy</button></div>' +
+      '<p>Then return to <code>outerloop init</code>. This code is single-use.</p>';
+    document.getElementById("c").value = code;
+    document.getElementById("copy").onclick = function () {
+      var el = document.getElementById("c"); el.select();
+      navigator.clipboard && navigator.clipboard.writeText(code);
+      this.textContent = "Copied";
+    };
+    return;
+  }
+
+  // --- CREATE mode: the CLI packed the manifest into the fragment ---
+  var frag = location.hash.slice(1);
+  if (!frag) {
+    statusEl.className = "";
+    statusEl.innerHTML = "This page is used by <code>outerloop init --github-app</code>. " +
+      "Run that command; it will open the right link.";
+    return;
+  }
+  try {
+    var payload = JSON.parse(atob(frag.replace(/-/g, "+").replace(/_/g, "/")));
+    var manifest = payload.manifest, state = payload.state || "", org = payload.org || "";
+    var action = org
+      ? "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new"
+      : "https://github.com/settings/apps/new";
+    var form = document.getElementById("ghform");
+    form.action = action + "?state=" + encodeURIComponent(state);
+    document.getElementById("manifest").value = JSON.stringify(manifest);
+    statusEl.innerHTML = "Taking you to GitHub to create your App… " +
+      'if nothing happens, <a href="#" id="go">click here</a>.';
+    document.getElementById("go") && (document.getElementById("go").onclick = function (e) { e.preventDefault(); form.submit(); });
+    form.submit();
+  } catch (e) {
+    statusEl.className = "err";
+    statusEl.textContent = "Could not read the setup link. Re-run outerloop init --github-app.";
+  }
+})();
+</script>
+</body>
+</html>

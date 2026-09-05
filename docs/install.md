@@ -185,14 +185,19 @@ add it to a team — teams grant more than it needs and inherit future grants.
 The quickest path is the guided setup:
 
 ```bash
-outerloop init      # asks for compute, target repo, Slurm account/partition, a token
+outerloop init      # asks for compute, target repo, placement, and auth
 outerloop start
 ```
 
-`init` writes `~/.config/autoresearch/.env` and the token file (both `0600`) —
-everything the prose below otherwise sets by hand — and checks the token can
-reach your target repo. The rest of this section documents what it writes, for
-when you'd rather set it directly.
+For auth, `init` recommends creating **your own GitHub App** in one click
+(`--github-app`, or pick `app` at the prompt): it prints one URL, you open it in
+any browser (works from a headless cluster too — no localhost, no tunnel), click
+**Create GitHub App**, and paste back the code the page shows. init writes the
+App's key + `github_app.<slug>.json`, helps you install it, and verifies it can
+reach your repo. A **PAT** is the fallback (`--pat-file`, or paste one at the
+prompt). Either way, `init` writes `~/.config/autoresearch/.env` (all `0600`) —
+everything the prose below otherwise sets by hand. The rest of this section
+documents what it writes, for when you'd rather set it directly.
 
 The orchestrator is CPU-only and makes outbound connections only. Anywhere
 that can reach GitHub and your LLM provider works.

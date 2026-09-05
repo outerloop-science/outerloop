@@ -28,6 +28,8 @@ from outerloop.cli import ENV_FILE
 CONFIG_DIR = ENV_FILE.parent
 DEFAULT_PAT_FILE = CONFIG_DIR / "bot_pat"
 API = "https://api.github.com"
+# The climbing author's harnesses (attempt.py's --author-backend choices).
+AUTHOR_BACKENDS = ("claude", "codex")
 
 
 @dataclass
@@ -41,10 +43,11 @@ class InitAnswers:
     author_model: str = ""  # optional
 
 
-def render_env(a: InitAnswers, pat_file: str) -> str:
+def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str:
     """The `.env` body for these answers — only the keys that have a value, so
     the file stays minimal and every line means something. Ordered placement →
-    target → auth → author to read top-to-bottom like the setup itself."""
+    target → auth → author to read top-to-bottom like the setup itself. Auth is
+    an App file (`--github-app`) or a PAT file, never both."""
     lines = [f"AUTORESEARCH_COMPUTE={a.compute}"]
     if a.compute == "slurm":
         lines.append(f"AUTORESEARCH_ROOT={a.root}")
@@ -52,7 +55,9 @@ def render_env(a: InitAnswers, pat_file: str) -> str:
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"AUTORESEARCH_PARTITION={a.partition}")
     lines.append(f"AUTORESEARCH_TARGET={a.target}")
-    if pat_file:
+    if app_file:
+        lines.append(f"AUTORESEARCH_GITHUB_APP_FILE={app_file}")
+    elif pat_file:
         lines.append(f"AUTORESEARCH_PAT_FILE={pat_file}")
     if a.author_backend:
         lines.append(f"AUTORESEARCH_AUTHOR_BACKEND={a.author_backend}")
@@ -83,16 +88,9 @@ def write_config(
     return env_path, written_pat
 
 
-def validate_pat(pat_file: str, target: str) -> str:
-    """Best-effort: can this token read the target repo? Returns "" on success,
-    else a short reason. Never raises — a check failure is a warning, not a
-    reason to abandon a written config."""
-    try:
-        token = Path(pat_file).expanduser().read_text().strip()
-    except OSError as exc:
-        return f"could not read {pat_file}: {exc}"
-    if not token:
-        return f"{pat_file} is empty"
+def _check_repo_access(token: str, target: str) -> str:
+    """Can this token write the target repo? "" on success, else a short reason.
+    Never raises — a check failure is a warning, not a reason to abandon config."""
     req = urllib.request.Request(
         f"{API}/repos/{target}",
         headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
@@ -102,7 +100,7 @@ def validate_pat(pat_file: str, target: str) -> str:
             body = json.loads(resp.read())
         perms = body.get("permissions") or {}
         if not perms.get("push"):
-            return f"the token reads {target} but lacks write access (it opens PRs)"
+            return f"reaches {target} but lacks write access (it opens PRs)"
         return ""
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -110,6 +108,17 @@ def validate_pat(pat_file: str, target: str) -> str:
         return f"GitHub returned {exc.code} for {target}"
     except urllib.error.URLError as exc:
         return f"could not reach GitHub: {exc.reason}"
+
+
+def validate_pat(pat_file: str, target: str) -> str:
+    """Best-effort: can the PAT in `pat_file` write the target repo?"""
+    try:
+        token = Path(pat_file).expanduser().read_text().strip()
+    except OSError as exc:
+        return f"could not read {pat_file}: {exc}"
+    if not token:
+        return f"{pat_file} is empty"
+    return _check_repo_access(token, target)
 
 
 def _ask(prompt: str, default: str = "", *, required: bool = False) -> str:
@@ -139,10 +148,15 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         partition = args.partition or (
             _ask("Slurm partition (blank = Slurm default; a,b for a list)") if interactive else ""
         )
+    # Author config is part of the full setup, not the focused --github-app run
+    # (that one is about auth). When asked, offer the fixed set, not a blank.
+    ask_author = interactive and not args.github_app
     backend = args.author_backend or (
-        _ask("Author backend (blank to set later)") if interactive else ""
+        _ask("Author backend (claude or codex)", "claude") if ask_author else ""
     )
-    model = args.author_model or (_ask("Author model (blank to set later)") if interactive else "")
+    model = args.author_model or (
+        _ask("Author model (blank = the backend's default)") if ask_author else ""
+    )
     answers = InitAnswers(
         compute=compute,
         target=target,
@@ -153,6 +167,55 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         author_model=model,
     )
     return answers, (args.pat_file or "")
+
+
+def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
+    """The `--github-app` path: create the adopter's own App via the manifest
+    flow, write its creds, help install it, then point the .env at the App file.
+    Interactive by nature (a browser click + install), so no `--yes` variant."""
+    from outerloop import appmanifest
+
+    owner = org or answers.target.split("/")[0]
+    name = app_name or f"outerloop-{owner}"[:34]  # GitHub caps App names at 34
+    code = appmanifest.request_manifest_code(
+        name, "https://github.com/outerloop-science/outerloop", org
+    )
+    if not code:
+        print("outerloop init: no code entered — nothing created", file=sys.stderr)
+        return 1
+    try:
+        conversion = appmanifest.convert_manifest(code)
+    except ValueError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 1
+    pem_path, app_json = appmanifest.save_app_creds(conversion, CONFIG_DIR)
+    print(f"created App '{conversion['slug']}' — wrote {app_json} and {pem_path} (0600)")
+    print(f"install it on {answers.target}: {appmanifest.install_url(conversion)}")
+    input("press Enter once you've installed the App… ")
+    iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
+    if iid:
+        appmanifest.set_installation_id(app_json, iid)
+        print(f"  installation id {iid} recorded")
+        # Self-verify end to end: mint a real installation token and check it can
+        # write the target — this is what confirms the whole flow actually worked.
+        from outerloop.appauth import app_provider_from_file
+
+        try:
+            token = app_provider_from_file(app_json).token()
+            problem = _check_repo_access(token, answers.target)
+            print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+        except Exception as exc:  # a check failure is a warning, never fails setup
+            print(f"  auth check: WARNING — could not mint a token: {exc}")
+    else:
+        print(
+            f"  no installation found yet — install the App, then set installation_id in {app_json}"
+        )
+    env_path = CONFIG_DIR / ENV_FILE.name
+    env_path.write_text(render_env(answers, app_file=str(app_json)))
+    env_path.chmod(0o600)
+    print(f"wrote {env_path}")
+    print("next: outerloop start")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -169,6 +232,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pat-file", dest="pat_file", help="path to an existing file holding a PAT"
     )
+    parser.add_argument(
+        "--github-app",
+        dest="github_app",
+        action="store_true",
+        help="create your own GitHub App in a browser (one click) instead of a PAT",
+    )
+    parser.add_argument("--app-name", dest="app_name", help="name for the created GitHub App")
+    parser.add_argument("--org", help="create the App under this org (default: your account)")
     parser.add_argument("--author-backend", dest="author_backend", help="climbing author's backend")
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
     parser.add_argument(
@@ -184,6 +255,24 @@ def main(argv: list[str] | None = None) -> int:
     if answers.compute == "slurm" and not (answers.root and answers.account):
         print("outerloop init: Slurm needs --root and --account", file=sys.stderr)
         return 2
+    if answers.author_backend and answers.author_backend not in AUTHOR_BACKENDS:
+        print(
+            f"outerloop init: author backend must be one of {', '.join(AUTHOR_BACKENDS)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The App is the recommended credential (scoped, revocable, no plaintext
+    # token); the PAT is the fallback. Offer it first when interactive.
+    if not args.github_app and not pat_file and interactive:
+        choice = _ask(
+            "Auth — [app] create your own GitHub App (recommended) or [pat] paste a token",
+            "app",
+        ).lower()
+        if choice.startswith("a"):
+            args.github_app = True
+    if args.github_app:
+        return _github_app_setup(answers, args.app_name or "", args.org or "")
 
     token = ""
     if not pat_file and interactive:
