@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from outerloop.contract import CONTRACT_NAMES, find_contract
+
 DEFAULT_BOT_LOGIN = "agentic-learning-bot"
 
 
@@ -1460,3 +1462,21 @@ class Workspace:
         # remote.origin.url, and "origin" would follow it.
         target = self.url or self.remote_url()
         self.git_network("push", target, "--", f"{branch}:{branch}")
+
+
+def contract_at(ws: Any, sha: str) -> str:
+    """The target's contract text at `sha` — `.outerloop.yaml`, else the legacy
+    `.autoresearch.yaml`. `ws` is a Workspace (anything with `.git(*args)`); a
+    missing path is a git failure, which is the fallback signal. Raises GitError
+    when the commit has neither, naming both candidates."""
+
+    def read(name: str) -> str | None:
+        try:
+            return ws.git("show", f"{sha}:{name}")
+        except GitError:
+            return None
+
+    found = find_contract(read)
+    if found is None:
+        raise GitError(f"no contract at {sha} ({' or '.join(CONTRACT_NAMES)})")
+    return found[1]

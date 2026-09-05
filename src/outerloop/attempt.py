@@ -28,7 +28,7 @@ from typing import Any, cast
 from outerloop.appauth import resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
 from outerloop.compute import LocalCompute, local_mode
-from outerloop.contract import Benchmark, Contract, load_contract
+from outerloop.contract import Benchmark, Contract, contract_text_in_tree, load_contract
 from outerloop.dispatch import (
     Snapshot,
     afterany_ids,
@@ -41,6 +41,7 @@ from outerloop.github import (
     GitHubClient,
     TokenProvider,
     Workspace,
+    contract_at,
     ensure_regular_git_dir,
 )
 from outerloop.harness import Harness, SessionResult, redact
@@ -1492,8 +1493,8 @@ def resume_run(
     # The contract gates scope and names the eval command, so read it from the
     # BASE commit (the tree the run started on), NOT the working tree the
     # session left dirty — a session that widened its own scope in
-    # `.autoresearch.yaml` must not have the wake gate on the doctored rules.
-    contract_text = ws.git("show", f"{base_sha}:.autoresearch.yaml")
+    # its contract must not have the wake gate on the doctored rules.
+    contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
     config = RunConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
@@ -2409,7 +2410,7 @@ def live_attempt(
         # A missing base branch fails loudly as attempt-error.
         ws.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
         _exclude_merge_artifacts(workspace)
-        contract_text = (workspace / ".autoresearch.yaml").read_text()
+        contract_text = contract_text_in_tree(workspace)
         contract = load_contract(contract_text, config.target)
         # Load the brief budget from the contract and run state: callers do
         # not supply it (the dataclass default rendered "0.0 GPU-hours" and

@@ -35,7 +35,7 @@ from outerloop.attempt import (
     arm_self_deadline,
     arm_sigterm_containment,
 )
-from outerloop.contract import Contract, load_contract
+from outerloop.contract import Contract, contract_text_in_tree, load_contract
 from outerloop.github import (
     GitHubClient,
     TokenProvider,
@@ -468,7 +468,7 @@ def live_steward(
     tree_hashes: list[str] = []
     try:
         ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
-        contract_text = (workspace / ".autoresearch.yaml").read_text()
+        contract_text = contract_text_in_tree(workspace)
         contract = load_contract(contract_text, config.target)
         if contract.steward is None:
             raise ValueError(

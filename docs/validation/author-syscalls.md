@@ -16,7 +16,7 @@ Enablement is contract-driven; a one-off validation climb just needs:
 - **Dispatch coords** (`--image` + account/partition): launches are jailed
   Slurm jobs, so without them nothing launches (and the tool is not offered).
 - **A launch budget**: `depth_k` (default 10) caps launches; `depth_k: 0` in
-  the target's `.autoresearch.yaml` opts that benchmark out.
+  the target's `.outerloop.yaml` opts that benchmark out.
 
 Then run one climb by hand (not via the tick):
 
@@ -71,7 +71,7 @@ The lifecycle to confirm, in order:
 
 ## Kill switch
 
-Per-benchmark: `depth_k: 0` in the target's `.autoresearch.yaml`; per-deployment:
+Per-benchmark: `depth_k: 0` in the target's `.outerloop.yaml`; per-deployment:
 remove the dispatch coords. A parked run with no wake ends with a named
 `session-error`, never a silent stuck loop.
 

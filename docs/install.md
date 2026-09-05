@@ -107,8 +107,9 @@ improves. This needs a bot identity and somewhere to run experiments.
 
 ### 2a. Write a contract
 
-`.autoresearch.yaml` at your repo root declares what "better" means and where
-the agent may write:
+`.outerloop.yaml` at your repo root declares what "better" means and where
+the agent may write (a repo set up before the rename can keep `.autoresearch.yaml` —
+the kernel reads either, new name first):
 
 ```yaml
 benchmarks:
@@ -127,7 +128,7 @@ roadmap: docs/roadmap.md
 **Check it before you push:**
 
 ```bash
-uv run python -m outerloop.contract_cli .autoresearch.yaml
+uv run python -m outerloop.contract_cli .outerloop.yaml
 ```
 
 It prints what the agent would be allowed to do, or exactly what is wrong.

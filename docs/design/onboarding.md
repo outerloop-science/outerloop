@@ -8,7 +8,7 @@ honest when it says three steps:
 
 1. **`init`** — one wizard mints the GitHub App, writes the config, and
    validates the host (two browser clicks and one paste).
-2. **A contract** — add `.autoresearch.yaml` + an eval ruler to the target
+2. **A contract** — add `.outerloop.yaml` + an eval ruler to the target
    repo.
 3. **Start** — one `sbatch` (cluster) or one foreground process
    (workstation).
