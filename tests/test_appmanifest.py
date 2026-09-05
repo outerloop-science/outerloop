@@ -10,10 +10,13 @@ import pytest
 
 from outerloop import appmanifest
 from outerloop.appmanifest import (
+    SETUP_URL,
     build_manifest,
+    build_setup_url,
     capture_installation_id,
     convert_manifest,
     install_url,
+    request_manifest_code,
     save_app_creds,
     set_installation_id,
 )
@@ -26,10 +29,10 @@ CONVERSION = {
 
 
 def test_build_manifest_declares_least_privilege() -> None:
-    m = build_manifest("my-app", "https://example.com", "http://127.0.0.1:5000/callback")
+    m = build_manifest("my-app", "https://example.com")
     assert m["name"] == "my-app"
     assert m["public"] is False
-    assert m["redirect_url"] == "http://127.0.0.1:5000/callback"
+    assert m["redirect_url"] == SETUP_URL  # GitHub returns the code to the hosted page
     assert m["default_permissions"] == {
         "contents": "write",
         "issues": "write",
@@ -90,9 +93,20 @@ def test_capture_installation_id_matches_owner(tmp_path: Path, monkeypatch) -> N
     assert capture_installation_id(1, pem, "x", transport=lambda req: []) == 0
 
 
-def test_create_page_carries_manifest_state_and_action() -> None:
-    page = appmanifest._create_page(build_manifest("n", "u", "r"), "st8", "my-org").decode()
-    assert "my-org/settings/apps/new?state=st8" in page
-    assert "contents" in page and "pull_requests" in page  # the manifest is embedded
-    page_user = appmanifest._create_page(build_manifest("n", "u", "r"), "st8", "").decode()
-    assert "settings/apps/new?state=st8" in page_user and "organizations" not in page_user
+def test_build_setup_url_packs_the_manifest_in_the_fragment() -> None:
+    import base64
+
+    url = build_setup_url(build_manifest("n", "u"), "st8", "my-org")
+    assert url.startswith(SETUP_URL + "#")
+    payload = json.loads(base64.urlsafe_b64decode(url.split("#", 1)[1]))
+    assert payload["state"] == "st8" and payload["org"] == "my-org"
+    assert payload["manifest"]["default_permissions"]["contents"] == "write"
+
+
+def test_request_manifest_code_prints_url_and_reads_code() -> None:
+    printed: list[str] = []
+    code = request_manifest_code(
+        "n", "https://h", "", print_fn=printed.append, input_fn=lambda _: "  code42  "
+    )
+    assert code == "code42"  # stripped
+    assert any(SETUP_URL in line for line in printed)  # the adopter is shown the URL

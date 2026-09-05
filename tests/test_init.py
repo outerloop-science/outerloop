@@ -152,7 +152,7 @@ def test_main_github_app_writes_app_env(tmp_path: Path, monkeypatch, capsys) -> 
 
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
     conv = {"id": 42, "slug": "sl", "pem": "PEMDATA"}
-    monkeypatch.setattr(appmanifest, "run_manifest_flow", lambda *a, **k: "code123")
+    monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "code123")
     monkeypatch.setattr(appmanifest, "convert_manifest", lambda code, **k: conv)
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 999)
     monkeypatch.setattr("builtins.input", lambda *a: "")  # author prompts + the install-Enter

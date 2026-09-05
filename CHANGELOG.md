@@ -8,13 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
-- `outerloop init --github-app` — one-click creation of the adopter's own GitHub
-  App via the App Manifest flow, instead of a hand-made PAT: a browser page POSTs
-  a manifest with the fleet's exact permissions, GitHub returns the app id + key,
-  and init writes `github_app.<slug>.json` + the PEM (both `0600`), helps install
-  the App, records the installation id, and points `.env` at
-  `AUTORESEARCH_GITHUB_APP_FILE`. Runs where a browser can reach localhost (a
-  laptop); copy the two files to a headless cluster. The PAT path stays the default.
+- `outerloop init --github-app` — the **recommended** auth path: one-click
+  creation of the adopter's own GitHub App via the App Manifest flow, instead of a
+  hand-made PAT. init prints one URL to a hosted helper page
+  (`outerloop.science/app-setup`, in `web/app-setup/`) that carries the manifest
+  in its URL fragment; the adopter opens it in any browser (works headless — no
+  localhost, no tunnel), clicks Create, and pastes back the code the page shows.
+  init exchanges it, writes `github_app.<slug>.json` + the PEM (both `0600`), helps
+  install the App, records the installation id, self-checks the token reaches the
+  target, and points `.env` at `AUTORESEARCH_GITHUB_APP_FILE`. The PAT stays the
+  fallback.
 
 ### Added
 

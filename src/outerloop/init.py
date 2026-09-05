@@ -86,16 +86,9 @@ def write_config(
     return env_path, written_pat
 
 
-def validate_pat(pat_file: str, target: str) -> str:
-    """Best-effort: can this token read the target repo? Returns "" on success,
-    else a short reason. Never raises — a check failure is a warning, not a
-    reason to abandon a written config."""
-    try:
-        token = Path(pat_file).expanduser().read_text().strip()
-    except OSError as exc:
-        return f"could not read {pat_file}: {exc}"
-    if not token:
-        return f"{pat_file} is empty"
+def _check_repo_access(token: str, target: str) -> str:
+    """Can this token write the target repo? "" on success, else a short reason.
+    Never raises — a check failure is a warning, not a reason to abandon config."""
     req = urllib.request.Request(
         f"{API}/repos/{target}",
         headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
@@ -105,7 +98,7 @@ def validate_pat(pat_file: str, target: str) -> str:
             body = json.loads(resp.read())
         perms = body.get("permissions") or {}
         if not perms.get("push"):
-            return f"the token reads {target} but lacks write access (it opens PRs)"
+            return f"reaches {target} but lacks write access (it opens PRs)"
         return ""
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -113,6 +106,17 @@ def validate_pat(pat_file: str, target: str) -> str:
         return f"GitHub returned {exc.code} for {target}"
     except urllib.error.URLError as exc:
         return f"could not reach GitHub: {exc.reason}"
+
+
+def validate_pat(pat_file: str, target: str) -> str:
+    """Best-effort: can the PAT in `pat_file` write the target repo?"""
+    try:
+        token = Path(pat_file).expanduser().read_text().strip()
+    except OSError as exc:
+        return f"could not read {pat_file}: {exc}"
+    if not token:
+        return f"{pat_file} is empty"
+    return _check_repo_access(token, target)
 
 
 def _ask(prompt: str, default: str = "", *, required: bool = False) -> str:
@@ -166,15 +170,11 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
 
     owner = org or answers.target.split("/")[0]
     name = app_name or f"outerloop-{owner}"[:34]  # GitHub caps App names at 34
-    code = appmanifest.run_manifest_flow(
+    code = appmanifest.request_manifest_code(
         name, "https://github.com/outerloop-science/outerloop", org
     )
     if not code:
-        print(
-            "outerloop init: no manifest code received (the browser flow timed out "
-            "or was cancelled)",
-            file=sys.stderr,
-        )
+        print("outerloop init: no code entered — nothing created", file=sys.stderr)
         return 1
     try:
         conversion = appmanifest.convert_manifest(code)
@@ -189,6 +189,16 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
     if iid:
         appmanifest.set_installation_id(app_json, iid)
         print(f"  installation id {iid} recorded")
+        # Self-verify end to end: mint a real installation token and check it can
+        # write the target — this is what confirms the whole flow actually worked.
+        from outerloop.appauth import app_provider_from_file
+
+        try:
+            token = app_provider_from_file(app_json).token()
+            problem = _check_repo_access(token, answers.target)
+            print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+        except Exception as exc:  # a check failure is a warning, never fails setup
+            print(f"  auth check: WARNING — could not mint a token: {exc}")
     else:
         print(
             f"  no installation found yet — install the App, then set installation_id in {app_json}"
@@ -239,6 +249,15 @@ def main(argv: list[str] | None = None) -> int:
         print("outerloop init: Slurm needs --root and --account", file=sys.stderr)
         return 2
 
+    # The App is the recommended credential (scoped, revocable, no plaintext
+    # token); the PAT is the fallback. Offer it first when interactive.
+    if not args.github_app and not pat_file and interactive:
+        choice = _ask(
+            "Auth — [app] create your own GitHub App (recommended) or [pat] paste a token",
+            "app",
+        ).lower()
+        if choice.startswith("a"):
+            args.github_app = True
     if args.github_app:
         return _github_app_setup(answers, args.app_name or "", args.org or "")
 

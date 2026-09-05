@@ -1,34 +1,40 @@
 """GitHub App Manifest flow for `outerloop init --github-app`.
 
-Creates the adopter's OWN GitHub App in one click instead of a hand-rolled PAT:
-init serves a one-shot local page that POSTs a manifest (our exact permissions)
-to GitHub; the adopter clicks Create; GitHub redirects back with a code; init
-exchanges it for the app id + private key, writes `github_app.<slug>.json` + the
-PEM (both 0600), then points them at the install page and captures the
-installation id.
+Creates the adopter's OWN GitHub App in one click instead of a hand-rolled PAT.
+Because the bot runs on the adopter's own compute (self-hosted), the App's
+private key must live there — a shared App would mean either we run the fleet or
+we hand out a master key — so each adopter owns their App. GitHub's manifest flow
+makes that a click: a pre-filled create page, then a code we exchange for the key.
 
-This needs a browser on the same machine (the redirect lands on localhost). On a
-headless cluster, run it on your laptop and copy the two written files to
-`~/.config/autoresearch/` there. The written files are what `resolve_bot_auth`
-reads via `AUTORESEARCH_GITHUB_APP_FILE` — the same path `outerloop start` uses.
+The flow is paste-based and hostless on the adopter's side: init prints ONE URL
+to the hosted helper page (`outerloop.science/app-setup`), which carries the
+manifest in its URL *fragment* (never sent to any server). The adopter opens it
+in any browser — laptop or, for a headless cluster, anywhere — clicks Create,
+and GitHub redirects back to that page with a one-time code the page displays.
+The adopter pastes the code here; we exchange it for the app id + key, write
+`github_app.<slug>.json` + the PEM (both 0600), help install the App, and capture
+the installation id. The written files are what `resolve_bot_auth` reads via
+`AUTORESEARCH_GITHUB_APP_FILE`, the same path `outerloop start` uses.
 """
 
 from __future__ import annotations
 
-import html
-import http.server
+import base64
 import json
 import secrets
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
-import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from outerloop.appauth import API, build_app_jwt, signer_from_private_key
+
+# The hosted helper page: it auto-POSTs the manifest to GitHub, then displays the
+# returned code. It is also the manifest's redirect_url, so GitHub sends the code
+# straight back to it. One static page under the org's domain.
+SETUP_URL = "https://outerloop.science/app-setup"
 
 # The App's fine-grained permissions — exactly what the fleet exercises: contents
 # to push commits, pull_requests to open/label PRs, issues for the courtesy note
@@ -45,9 +51,10 @@ DEFAULT_PERMISSIONS = {
 Transport = Callable[[urllib.request.Request], Any]
 
 
-def build_manifest(name: str, url: str, redirect_url: str) -> dict:
+def build_manifest(name: str, url: str, redirect_url: str = SETUP_URL) -> dict:
     """The manifest GitHub creates the App from: our permissions, no webhook,
-    installable only on the creating account (`public=false`)."""
+    installable only on the creating account (`public=false`). `redirect_url` is
+    where GitHub returns the code — the hosted helper page by default."""
     return {
         "name": name,
         "url": url,
@@ -56,6 +63,34 @@ def build_manifest(name: str, url: str, redirect_url: str) -> dict:
         "default_permissions": dict(DEFAULT_PERMISSIONS),
         "hook_attributes": {"active": False, "url": url},
     }
+
+
+def build_setup_url(manifest: dict, state: str, org: str = "") -> str:
+    """The one URL the adopter opens: the hosted helper page with the manifest,
+    state, and org packed into the URL *fragment* (base64) — a fragment stays in
+    the browser and is never sent to any server, so the manifest isn't logged."""
+    payload = json.dumps({"manifest": manifest, "state": state, "org": org})
+    encoded = base64.urlsafe_b64encode(payload.encode()).decode()
+    return f"{SETUP_URL}#{encoded}"
+
+
+def request_manifest_code(
+    name: str,
+    homepage_url: str,
+    org: str = "",
+    *,
+    print_fn: Callable[[str], None] = print,
+    input_fn: Callable[[str], str] = input,
+) -> str:
+    """Print the setup URL and read back the code the hosted page shows. Works
+    anywhere a browser can reach the internet — no localhost, no callback."""
+    state = secrets.token_urlsafe(16)
+    manifest = build_manifest(name, homepage_url)
+    url = build_setup_url(manifest, state, org)
+    print_fn("Create your GitHub App — open this URL in a browser (any machine):")
+    print_fn(f"\n  {url}\n")
+    print_fn("Click 'Create GitHub App', then copy the code the page shows.")
+    return input_fn("Paste the code here: ").strip()
 
 
 def _default_transport(request: urllib.request.Request) -> Any:
@@ -158,78 +193,3 @@ def set_installation_id(app_json: Path, installation_id: int) -> None:
     data["installation_id"] = int(installation_id)
     app_json.write_text(json.dumps(data, indent=2) + "\n")
     app_json.chmod(0o600)
-
-
-def _create_page(manifest: dict, state: str, org: str) -> bytes:
-    """A one-shot page that auto-POSTs the manifest to GitHub's App-create form.
-    GitHub reads the App settings from the `manifest` field and the redirect from
-    inside it; `state` comes back on the redirect so we can reject a stray hit."""
-    action = (
-        f"https://github.com/organizations/{urllib.parse.quote(org)}/settings/apps/new"
-        if org
-        else "https://github.com/settings/apps/new"
-    )
-    action = f"{action}?state={urllib.parse.quote(state)}"
-    field = html.escape(json.dumps(manifest), quote=True)
-    return (
-        "<!doctype html><meta charset=utf-8><body>"
-        f'<form id=f method=post action="{html.escape(action, quote=True)}">'
-        f'<input type=hidden name=manifest value="{field}"></form>'
-        "<script>document.getElementById('f').submit()</script>"
-        "Creating your GitHub App — if nothing happens, "
-        f'<a href="{html.escape(action, quote=True)}">continue here</a>.</body>'
-    ).encode()
-
-
-def run_manifest_flow(
-    name: str,
-    homepage_url: str,
-    org: str = "",
-    *,
-    open_browser: bool = True,
-    timeout_s: int = 300,
-) -> str:
-    """Serve the create page on localhost, open a browser to it, and return the
-    one-time manifest `code` GitHub redirects back with (or "" on timeout/state
-    mismatch). Browser-and-localhost bound: run it where a browser can reach
-    127.0.0.1. The caller converts the code and writes the creds."""
-    state = secrets.token_urlsafe(16)
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args: Any) -> None:  # keep the terminal quiet
-            pass
-
-        def _reply(self, body: bytes) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self) -> None:
-            parsed = urllib.parse.urlparse(self.path)
-            server: Any = self.server
-            if parsed.path == "/callback":
-                q = urllib.parse.parse_qs(parsed.query)
-                if (q.get("state") or [""])[0] == state:
-                    server.code = (q.get("code") or [""])[0]
-                self._reply(
-                    b"<!doctype html>App created \xe2\x80\x94 return to the terminal; "
-                    b"you can close this tab."
-                )
-            else:
-                self._reply(_create_page(server.manifest, state, org))
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    port = server.server_address[1]
-    redirect = f"http://127.0.0.1:{port}/callback"
-    server.manifest = build_manifest(name, homepage_url, redirect)  # type: ignore[attr-defined]
-    server.code = ""  # type: ignore[attr-defined]
-    server.timeout = timeout_s
-    url = f"http://127.0.0.1:{port}/"
-    print(f"Opening {url} to create your GitHub App (state {state[:6]}…).")
-    if open_browser:
-        webbrowser.open(url)
-    deadline = time.time() + timeout_s
-    while not server.code and time.time() < deadline:  # type: ignore[attr-defined]
-        server.handle_request()  # one request per loop (the page load, then the redirect)
-    return str(server.code)  # type: ignore[attr-defined]
