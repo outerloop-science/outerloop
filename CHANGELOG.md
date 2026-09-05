@@ -14,6 +14,14 @@ Versions follow [SemVer](https://semver.org).
   inherited environment (`sbatch --export=ALL`) instead of a comma-joined
   `--export=K=V,…` list, so a comma in a value no longer corrupts the delimiter.
 
+### Fixed
+
+- The tick no longer logs `unreadable run record` for non-run directories under
+  `runs/` (e.g. the `baselines` eval cache): `list_runs` skips entries with no
+  record file, and still warns on a record that exists but fails to parse.
+- A run whose PR was deleted (GitHub 404) now ends cleanly instead of the
+  in-review service re-fetching the missing PR and logging a failure every tick.
+
 ### Added
 
 - PyPI release via Trusted Publishing: a tag-triggered `release.yml` builds and

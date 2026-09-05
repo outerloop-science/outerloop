@@ -252,6 +252,12 @@ def list_runs(root: Path) -> list[RunRecord]:
     if not runs_root.is_dir():
         return []
     for directory in sorted(runs_root.iterdir()):
+        # Skip entries that are not runs (no record file) — e.g. the `baselines`
+        # eval cache lives under runs/ but has no state.json and is not a run.
+        # A dir that HAS a record which fails to parse still logs below: a
+        # corrupt run is a real signal; a missing record is not.
+        if not (directory / RECORD_NAME).is_file():
+            continue
         try:
             records.append(load_record(root, directory.name))
         except (OSError, ValueError, TypeError, KeyError) as exc:
