@@ -14,7 +14,7 @@ minutes and needs no bot account, no cluster, and no GPU. Do that first.
 An automated reviewer comments on your pull requests. It never approves, never
 blocks a merge, and never fails your build.
 
-**You need:** an Anthropic API key. That's it.
+**You need:** an API key for the reviewer's model. Anthropic by default; the OpenAI and OpenRouter variants are below. That's it.
 
 **Step 1 — add the key as a repository secret.** Repo → Settings → Secrets and
 variables → Actions → New repository secret. Name it `ANTHROPIC_REVIEWER_KEY`.

@@ -37,18 +37,18 @@ themselves.
 
 ## Get started
 
-Three commands and two files: your model key and the contract. You need a repo
-with a benchmark command, a model API key (Anthropic by default), and a Slurm
-cluster or one machine with a GPU.
+Three commands and two files: a model key and the contract. You need a repo
+with a benchmark command, an API key for the model that will write the code
+(Claude or Codex today), and a Slurm cluster or one machine with a GPU.
 
 ```bash
 pip install outerloop-science
 outerloop init     # where the loop runs, which repo, your GitHub bot; writes the config
 ```
 
-Put your Anthropic API key in `~/.config/outerloop/harness_key`: one line,
-readable only by you (`chmod 600`). Then add one file, `.outerloop.yaml`, to
-the repo you want improved:
+Put that key in a file only you can read (`chmod 600`), one line:
+`~/.config/outerloop/harness_key` for Claude, `~/.config/outerloop/codex_key`
+for Codex. Then add one file, `.outerloop.yaml`, to the repo you want improved:
 
 ```yaml
 benchmarks:
