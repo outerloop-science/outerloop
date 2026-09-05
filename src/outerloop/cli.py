@@ -112,33 +112,44 @@ class StartPlan:
     resident_minutes: int = DEFAULT_RESIDENT_MINUTES
     pat_file: str = ""
 
+    def export_env(self) -> dict[str, str]:
+        """The knobs the resident job needs. They ride the inherited environment
+        (sbatch `--export=ALL`), NOT a comma-joined `--export=K=V,K=V` list — so a
+        value may itself contain a comma (e.g. a multi-partition `a,b`, which Slurm
+        reads as "whichever frees up first") without corrupting the export
+        delimiter. start() merges these into the environment it hands sbatch."""
+        env = {
+            "AUTORESEARCH_RESIDENT": "1",
+            "AUTORESEARCH_HOME": str(self.home),
+            "AUTORESEARCH_ROOT": str(self.root),
+            "AUTORESEARCH_ACCOUNT": self.account,
+            "AUTORESEARCH_RESIDENT_MINUTES": str(self.resident_minutes),  # successors reuse it
+        }
+        if self.partition:
+            env["AUTORESEARCH_PARTITION"] = self.partition
+        if self.cadence_min:
+            env["AUTORESEARCH_CADENCE_MIN"] = self.cadence_min
+        if self.pat_file:
+            env["AUTORESEARCH_PAT_FILE"] = self.pat_file
+        return env
+
     def command(self) -> list[str]:
         if self.mode == "local":
             return [sys.executable, "-m", "outerloop.tick", "--root", str(self.root), "--loop"]
-        exports = [
-            "ALL",
-            "AUTORESEARCH_RESIDENT=1",
-            f"AUTORESEARCH_HOME={self.home}",
-            f"AUTORESEARCH_ROOT={self.root}",
-            f"AUTORESEARCH_ACCOUNT={self.account}",
-            f"AUTORESEARCH_PARTITION={self.partition}",
-            f"AUTORESEARCH_RESIDENT_MINUTES={self.resident_minutes}",  # successors reuse it
-        ]
-        if self.cadence_min:
-            exports.append(f"AUTORESEARCH_CADENCE_MIN={self.cadence_min}")
-        if self.pat_file:
-            exports.append(f"AUTORESEARCH_PAT_FILE={self.pat_file}")
-        return [
+        argv = [
             "sbatch",
             "--parsable",
             "--dependency=singleton",  # two starts can both submit; only one ever runs
             f"--time={self.resident_minutes}",
             f"--job-name={RESIDENT_JOB_NAME}",
             f"--account={self.account}",
-            f"--partition={self.partition}",
-            "--export=" + ",".join(exports),
-            str(self.home / "scripts" / "tick_chain.sbatch"),
         ]
+        if self.partition:  # unset lets Slurm choose its default partition
+            argv.append(f"--partition={self.partition}")
+        # --export=ALL carries export_env() from the inherited environment; a
+        # comma-joined K=V list here would break on any value containing a comma.
+        argv += ["--export=ALL", str(self.home / "scripts" / "tick_chain.sbatch")]
+        return argv
 
 
 def _setting(key: str, flag: str, environ: dict[str, str], from_file: dict[str, str]) -> str:
@@ -210,16 +221,10 @@ def plan_start(
         )
     acc = _setting("AUTORESEARCH_ACCOUNT", account, environ, from_file)
     part = _setting("AUTORESEARCH_PARTITION", partition, environ, from_file)
-    missing = [
-        name
-        for name, value in (
-            ("--account / AUTORESEARCH_ACCOUNT", acc),
-            ("--partition / AUTORESEARCH_PARTITION", part),
-        )
-        if not value
-    ]
-    if missing:
-        raise StartError("Slurm mode needs " + " and ".join(missing))
+    # Partition is optional: left unset, Slurm places the job on its default
+    # partition. Account stays required (clusters bill by it).
+    if not acc:
+        raise StartError("Slurm mode needs --account / AUTORESEARCH_ACCOUNT")
     minutes_s = _setting("AUTORESEARCH_RESIDENT_MINUTES", "", environ, from_file)
     try:
         minutes = int(minutes_s) if minutes_s else DEFAULT_RESIDENT_MINUTES
@@ -229,6 +234,9 @@ def plan_start(
         ) from None
     if minutes <= 0:
         raise StartError("AUTORESEARCH_RESIDENT_MINUTES must be positive")
+    # These ride the inherited environment (sbatch --export=ALL), so a comma is
+    # safe now (a multi-partition `a,b` is valid) — only a newline would corrupt
+    # the environment or the sbatch argv.
     for name, value in (
         ("root", root_s),
         ("account", acc),
@@ -237,10 +245,8 @@ def plan_start(
         ("PAT file", pat),
         ("checkout path", str(home)),
     ):
-        if "," in value or any(c.isspace() for c in value):
-            raise StartError(
-                f"{name} {value!r} cannot contain commas or whitespace: it rides in sbatch --export"
-            )
+        if "\n" in value or "\r" in value:
+            raise StartError(f"{name} {value!r} cannot contain a newline")
     return StartPlan(
         mode="slurm",
         root=Path(root_s).expanduser(),
@@ -349,7 +355,10 @@ def start(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 0
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # sbatch --export=ALL carries these to the resident job from the environment
+    # we hand it here (so a comma in a value never breaks a --export delimiter).
+    submit_env = {**os.environ, **plan.export_env()}
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=submit_env)
     if proc.returncode != 0:
         print(
             f"outerloop start: sbatch failed: {(proc.stderr or proc.stdout).strip()}",

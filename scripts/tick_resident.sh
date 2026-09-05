@@ -41,11 +41,14 @@ submit_successor() {
     # singleton keeps two residents from ever running together
     local dep="singleton"
     [ -n "$self" ] && dep="afterany:${self},singleton"
+    # Partition is optional (unset -> Slurm's default); pass it only when set.
+    local part_arg=""
+    [ -n "${AUTORESEARCH_PARTITION:-}" ] && part_arg="--partition=${AUTORESEARCH_PARTITION}"
     local out="" attempt
     for attempt in 1 2 3; do
         if out=$(sbatch --parsable --dependency="$dep" --time="$resident_minutes" \
                     --job-name="$RESIDENT_JOB_NAME" --export=ALL \
-                    --account="${AUTORESEARCH_ACCOUNT:-}" --partition="${AUTORESEARCH_PARTITION:-}" \
+                    --account="${AUTORESEARCH_ACCOUNT:-}" ${part_arg:+"$part_arg"} \
                     "$shim" 2>/dev/null); then
             printf '%s' "${out%%;*}"
             return 0

@@ -46,6 +46,13 @@ def test_submit_parses_job_id() -> None:
     assert "--wrap=echo hi" in argv
 
 
+def test_partition_is_optional_in_the_argv() -> None:
+    with_part = JobSpec(job_name="j", account="a", partition="cpu,gpu", time_minutes=1, command="x")
+    assert "--partition=cpu,gpu" in with_part.to_argv()  # comma-list passes through
+    without = JobSpec(job_name="j", account="a", partition="", time_minutes=1, command="x")
+    assert not any(a.startswith("--partition") for a in without.to_argv())
+
+
 def test_submit_parses_cluster_suffixed_id() -> None:
     runner = FakeRunner([CommandResult(0, "12345;torch\n", "")])
     assert SlurmCompute(runner=runner).submit(SPEC) == "12345"
