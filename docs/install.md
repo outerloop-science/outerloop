@@ -127,7 +127,7 @@ roadmap: docs/roadmap.md
 **Check it before you push:**
 
 ```bash
-uv run python -m autoresearch.contract_cli .autoresearch.yaml
+uv run python -m outerloop.contract_cli .autoresearch.yaml
 ```
 
 It prints what the agent would be allowed to do, or exactly what is wrong.
@@ -138,7 +138,7 @@ The optional knobs — paired seeding and the significance floor
 (`depth_k`, `sleep_k`), width and pacing (`max_active_attempts`,
 `attempt_cooldown_minutes`), a stewardship scope, and `merge: manual|auto` —
 are listed in the README's contract table; the schema's own docstrings
-(`src/autoresearch/contract.py`) are the reference. A GPU benchmark needs a
+(`src/outerloop/contract.py`) are the reference. A GPU benchmark needs a
 dispatched eval (`eval_minutes` above the in-job threshold) and a cached
 baseline needs a positive floor — the validator says so — and for GPU
 benchmarks `gpu_hours_per_run` is a real meter: launches and evals draw on
@@ -181,6 +181,18 @@ Add the bot as a direct collaborator (**Write**) on each opted-in repo. Don't
 add it to a team — teams grant more than it needs and inherit future grants.
 
 ### 2c. Run the loop
+
+The quickest path is the guided setup:
+
+```bash
+outerloop init      # asks for compute, target repo, Slurm account/partition, a token
+outerloop start
+```
+
+`init` writes `~/.config/autoresearch/.env` and the token file (both `0600`) —
+everything the prose below otherwise sets by hand — and checks the token can
+reach your target repo. The rest of this section documents what it writes, for
+when you'd rather set it directly.
 
 The orchestrator is CPU-only and makes outbound connections only. Anywhere
 that can reach GitHub and your LLM provider works.
