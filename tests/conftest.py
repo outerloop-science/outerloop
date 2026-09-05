@@ -4,8 +4,9 @@
   `pytest` is the unit tier. This lives here rather than in `addopts` because a
   `-m` in addopts disables pytest-testmon's change-based selection.
 - serial tests inspect the process table and cannot run beside other workers'
-  git processes. They are deselected while xdist is distributing and run alone
-  with `pytest -n0 -m serial` (CI does both).
+  git processes. They are deselected while xdist is distributing, and a `-m`
+  that names the tier turns distribution off, so `pytest -m serial` runs them
+  alone whatever addopts says (CI does both runs).
 """
 
 from __future__ import annotations
@@ -14,6 +15,14 @@ import pytest
 
 TIERS = ("slow", "llm", "slurm")
 SERIAL = "serial"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Asking for the serial tier means running serially: switch xdist off
+    before it starts workers (xdist's own configure hook runs last)."""
+    if SERIAL in (config.getoption("-m") or ""):
+        config.option.numprocesses = 0
+        config.option.dist = "no"
 
 
 def _distributing(config: pytest.Config) -> bool:

@@ -12,8 +12,8 @@ Versions follow [SemVer](https://semver.org).
   faster locally; `pytest --testmon` runs only the tests affected by your edits
   (pytest-testmon). Tier selection moved from `addopts` into `tests/conftest.py`
   (a `-m` in `addopts` disables testmon), and a `serial` tier holds the tests
-  that inspect the process table: skipped while workers run, run alone by
-  `pytest -n0 -m serial` as CI's second test step.
+  that inspect the process table: skipped while workers run, and `pytest -m
+  serial` turns workers off, so the tier always runs alone (CI's second step).
 
 ### Changed
 
