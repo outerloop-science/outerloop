@@ -73,6 +73,18 @@ def test_list_runs_skips_corrupt_records(tmp_path: Path, caplog) -> None:
     assert "unreadable" in caplog.text
 
 
+def test_list_runs_skips_non_run_dirs(tmp_path: Path, caplog) -> None:
+    save_record(tmp_path, make_record(run_id="good"), now=1.0)
+    # A dir under runs/ with no state.json is not a run (e.g. the baselines
+    # eval cache); it must be skipped silently, not warned about every sweep.
+    cache = run_dir(tmp_path, "baselines")
+    cache.mkdir(parents=True)
+    (cache / "speedrun@abc.json").write_text("{}")
+    records = list_runs(tmp_path)
+    assert [r.run_id for r in records] == ["good"]
+    assert "unreadable" not in caplog.text
+
+
 def test_lease_exactly_one_winner(tmp_path: Path) -> None:
     assert acquire_lease(tmp_path, "r1", "tick:a", "", now=1.0)
     assert not acquire_lease(tmp_path, "r1", "tick:b", "", now=2.0)
