@@ -11,7 +11,7 @@ Versions follow [SemVer](https://semver.org).
 - `outerloop init --github-app` — the **recommended** auth path: one-click
   creation of the adopter's own GitHub App via the App Manifest flow, instead of a
   hand-made PAT. init prints one URL to a hosted helper page
-  (`outerloop.science/app-setup`, in `web/app-setup/`) that carries the manifest
+  (`outerloop.science/setup`, in `web/setup/`) that carries the manifest
   in its URL fragment; the adopter opens it in any browser (works headless — no
   localhost, no tunnel), clicks Create, and pastes back the code the page shows.
   init exchanges it, writes `github_app.<slug>.json` + the PEM (both `0600`), helps
