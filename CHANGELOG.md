@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `outerloop init --github-app` — one-click creation of the adopter's own GitHub
+  App via the App Manifest flow, instead of a hand-made PAT: a browser page POSTs
+  a manifest with the fleet's exact permissions, GitHub returns the app id + key,
+  and init writes `github_app.<slug>.json` + the PEM (both `0600`), helps install
+  the App, records the installation id, and points `.env` at
+  `AUTORESEARCH_GITHUB_APP_FILE`. Runs where a browser can reach localhost (a
+  laptop); copy the two files to a headless cluster. The PAT path stays the default.
+
+### Added
+
 - `outerloop init` — a guided setup that collects placement (Slurm or local),
   the target repo, and a bot token, then writes `~/.config/autoresearch/.env`
   and the token file (both `0600`) and checks the token can reach the target.

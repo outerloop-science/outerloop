@@ -137,3 +137,29 @@ def test_main_yes_slurm_requires_root_and_account(tmp_path: Path, monkeypatch, c
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
     assert init.main(["--yes", "--compute", "slurm", "--target", "o/r"]) == 2
     assert "Slurm needs --root and --account" in capsys.readouterr().err
+
+
+def test_render_env_app_file_wins_over_pat() -> None:
+    env = render_env(
+        InitAnswers(compute="local", target="o/r"), "some-pat", app_file="/c/github_app.x.json"
+    )
+    assert "AUTORESEARCH_GITHUB_APP_FILE=/c/github_app.x.json" in env
+    assert "AUTORESEARCH_PAT_FILE" not in env
+
+
+def test_main_github_app_writes_app_env(tmp_path: Path, monkeypatch, capsys) -> None:
+    from outerloop import appmanifest
+
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    conv = {"id": 42, "slug": "sl", "pem": "PEMDATA"}
+    monkeypatch.setattr(appmanifest, "run_manifest_flow", lambda *a, **k: "code123")
+    monkeypatch.setattr(appmanifest, "convert_manifest", lambda code, **k: conv)
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 999)
+    monkeypatch.setattr("builtins.input", lambda *a: "")  # author prompts + the install-Enter
+    rc = init.main(["--github-app", "--compute", "local", "--target", "o/r"])
+    assert rc == 0
+    app_json = tmp_path / "github_app.sl.json"
+    assert json.loads(app_json.read_text())["installation_id"] == 999
+    env = (tmp_path / ".env").read_text()
+    assert f"AUTORESEARCH_GITHUB_APP_FILE={app_json}" in env
+    assert "AUTORESEARCH_PAT_FILE" not in env

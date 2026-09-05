@@ -41,10 +41,11 @@ class InitAnswers:
     author_model: str = ""  # optional
 
 
-def render_env(a: InitAnswers, pat_file: str) -> str:
+def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str:
     """The `.env` body for these answers — only the keys that have a value, so
     the file stays minimal and every line means something. Ordered placement →
-    target → auth → author to read top-to-bottom like the setup itself."""
+    target → auth → author to read top-to-bottom like the setup itself. Auth is
+    an App file (`--github-app`) or a PAT file, never both."""
     lines = [f"AUTORESEARCH_COMPUTE={a.compute}"]
     if a.compute == "slurm":
         lines.append(f"AUTORESEARCH_ROOT={a.root}")
@@ -52,7 +53,9 @@ def render_env(a: InitAnswers, pat_file: str) -> str:
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"AUTORESEARCH_PARTITION={a.partition}")
     lines.append(f"AUTORESEARCH_TARGET={a.target}")
-    if pat_file:
+    if app_file:
+        lines.append(f"AUTORESEARCH_GITHUB_APP_FILE={app_file}")
+    elif pat_file:
         lines.append(f"AUTORESEARCH_PAT_FILE={pat_file}")
     if a.author_backend:
         lines.append(f"AUTORESEARCH_AUTHOR_BACKEND={a.author_backend}")
@@ -155,6 +158,49 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     return answers, (args.pat_file or "")
 
 
+def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
+    """The `--github-app` path: create the adopter's own App via the manifest
+    flow, write its creds, help install it, then point the .env at the App file.
+    Interactive by nature (a browser click + install), so no `--yes` variant."""
+    from outerloop import appmanifest
+
+    owner = org or answers.target.split("/")[0]
+    name = app_name or f"outerloop-{owner}"[:34]  # GitHub caps App names at 34
+    code = appmanifest.run_manifest_flow(
+        name, "https://github.com/outerloop-science/outerloop", org
+    )
+    if not code:
+        print(
+            "outerloop init: no manifest code received (the browser flow timed out "
+            "or was cancelled)",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        conversion = appmanifest.convert_manifest(code)
+    except ValueError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 1
+    pem_path, app_json = appmanifest.save_app_creds(conversion, CONFIG_DIR)
+    print(f"created App '{conversion['slug']}' — wrote {app_json} and {pem_path} (0600)")
+    print(f"install it on {answers.target}: {appmanifest.install_url(conversion)}")
+    input("press Enter once you've installed the App… ")
+    iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
+    if iid:
+        appmanifest.set_installation_id(app_json, iid)
+        print(f"  installation id {iid} recorded")
+    else:
+        print(
+            f"  no installation found yet — install the App, then set installation_id in {app_json}"
+        )
+    env_path = CONFIG_DIR / ENV_FILE.name
+    env_path.write_text(render_env(answers, app_file=str(app_json)))
+    env_path.chmod(0o600)
+    print(f"wrote {env_path}")
+    print("next: outerloop start")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="outerloop init", description="guided setup for outerloop"
@@ -169,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pat-file", dest="pat_file", help="path to an existing file holding a PAT"
     )
+    parser.add_argument(
+        "--github-app",
+        dest="github_app",
+        action="store_true",
+        help="create your own GitHub App in a browser (one click) instead of a PAT",
+    )
+    parser.add_argument("--app-name", dest="app_name", help="name for the created GitHub App")
+    parser.add_argument("--org", help="create the App under this org (default: your account)")
     parser.add_argument("--author-backend", dest="author_backend", help="climbing author's backend")
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
     parser.add_argument(
@@ -184,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     if answers.compute == "slurm" and not (answers.root and answers.account):
         print("outerloop init: Slurm needs --root and --account", file=sys.stderr)
         return 2
+
+    if args.github_app:
+        return _github_app_setup(answers, args.app_name or "", args.org or "")
 
     token = ""
     if not pat_file and interactive:
