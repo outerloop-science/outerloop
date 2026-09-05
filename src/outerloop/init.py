@@ -1,8 +1,9 @@
 """`outerloop init` — the guided setup.
 
-Collects placement (Slurm or local), the target repo, and bot auth, then writes
-`~/.config/outerloop/.env` (plus the credential files), so a new adopter never
-hand-edits config or reasons about which `OUTERLOOP_*` keys to set. Flags fill
+Collects placement (Slurm or local), the target repo, bot auth, and the
+author's model key, then writes `~/.config/outerloop/.env` (plus the credential
+files), so a new adopter never hand-edits config or reasons about which
+`OUTERLOOP_*` keys to set. Flags fill
 answers non-interactively; anything left out is prompted for (a secret via
 getpass, never echoed). Auth is the adopter's own GitHub App by default —
 `--github-app`, one click via the manifest flow in `appmanifest.py` — with a PAT
@@ -42,6 +43,7 @@ class InitAnswers:
     partition: str = ""  # Slurm partition (optional; unset -> Slurm default)
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
+    author_key_file: str = ""  # the author's model key file, when known
 
 
 def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str:
@@ -64,7 +66,31 @@ def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str
         lines.append(f"OUTERLOOP_AUTHOR_BACKEND={a.author_backend}")
     if a.author_model:
         lines.append(f"OUTERLOOP_AUTHOR_MODEL={a.author_model}")
+    if a.author_key_file:
+        lines.append(f"{author_key_env(a.author_backend)}={a.author_key_file}")
     return "\n".join(lines) + "\n"
+
+
+def author_key_env(backend: str) -> str:
+    """The `.env` key naming `backend`'s model-key file: one rule for every
+    backend (`OUTERLOOP_CLAUDE_KEY_FILE`, `OUTERLOOP_CODEX_KEY_FILE`)."""
+    return f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_KEY_FILE"
+
+
+def author_key_path(backend: str, *, config_dir: Path = CONFIG_DIR) -> Path:
+    """Where `backend`'s model key lives by default: `<config dir>/<backend>_key`,
+    the same rule `attempt.resolve_author_key_file` reads."""
+    return config_dir / f"{backend or AUTHOR_BACKENDS[0]}_key"
+
+
+def write_author_key(backend: str, key: str, *, config_dir: Path = CONFIG_DIR) -> Path:
+    """Write a pasted model key to its default file, owner-only (0600), no
+    trailing newline. Returns the path."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = author_key_path(backend, config_dir=config_dir)
+    path.write_text(key)
+    path.chmod(0o600)
+    return path
 
 
 def write_config(
@@ -215,6 +241,7 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
     env_path.write_text(render_env(answers, app_file=str(app_json)))
     env_path.chmod(0o600)
     print(f"wrote {env_path}")
+    _author_key_hint(answers)
     print("next: outerloop start")
     return 0
 
@@ -243,6 +270,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--org", help="create the App under this org (default: your account)")
     parser.add_argument("--author-backend", dest="author_backend", help="climbing author's backend")
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
+    parser.add_argument(
+        "--author-key-file",
+        dest="author_key_file",
+        help="path to an existing file holding the author's model API key",
+    )
     parser.add_argument(
         "--yes", "-y", action="store_true", help="non-interactive: use flags, do not prompt"
     )
@@ -280,6 +312,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+    # The author's model key: an existing file by flag, or (on the full
+    # interactive run, never the focused --github-app one) a hidden paste written
+    # to <config>/<backend>_key. Collected after the overwrite check so a
+    # declined run never asks for a secret.
+    answers.author_key_file = args.author_key_file or ""
+    if not answers.author_key_file and interactive and not args.github_app:
+        pasted = getpass.getpass(
+            f"API key for the {answers.author_backend or AUTHOR_BACKENDS[0]} author "
+            "(hidden; blank to set later): "
+        ).strip()
+        if pasted:
+            key_path = write_author_key(answers.author_backend, pasted, config_dir=CONFIG_DIR)
+            answers.author_key_file = str(key_path)
+            print(f"wrote {key_path} (0600)")
+
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.
     if not args.github_app and not pat_file and interactive:
@@ -309,5 +356,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
         print("  no PAT set — add OUTERLOOP_PAT_FILE before the agents can open PRs")
+    _author_key_hint(answers)
     print("next: outerloop start")
     return 0
+
+
+def _author_key_hint(answers: InitAnswers) -> None:
+    if not answers.author_key_file:
+        print(
+            "  no author key set — put it in "
+            f"{author_key_path(answers.author_backend, config_dir=CONFIG_DIR)} "
+            "before the first climb"
+        )

@@ -37,20 +37,17 @@ themselves.
 
 ## Get started
 
-Three commands and two files: a model key and the contract. You need a repo
-with a benchmark command, an API key for the model that will write the code,
-and a Slurm cluster or one machine with a GPU.
+Three commands and one file. You need a repo with a benchmark command, an API
+key for the model that will write the code, and a Slurm cluster or one machine
+with a GPU.
 
 ```bash
 pip install outerloop-science
-outerloop init     # where the loop runs, which repo, your GitHub bot; writes the config
+outerloop init     # where the loop runs, which repo, which model and its key, your GitHub bot
 ```
 
-Put that key in a file only you can read (`chmod 600`), one line in
-`~/.config/outerloop/harness_key`. That is the default author, Claude; other
-backends and what each needs are in
-[docs/install.md](https://github.com/outerloop-science/outerloop/blob/main/docs/install.md).
-Then add one file, `.outerloop.yaml`, to the repo you want improved:
+The wizard writes the config and the key file; nothing to edit by hand. Then
+add one file, `.outerloop.yaml`, to the repo you want improved:
 
 ```yaml
 benchmarks:

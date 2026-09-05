@@ -34,8 +34,9 @@ non-interactive use):
   discovers the installation id itself (App JWT → `GET /app/installations`).
   A pre-existing PAT path is accepted as the alternative for orgs that
   prefer it.
-- **Collect the author key.** One path prompt per configured backend
-  (`OUTERLOOP_HARNESS_KEY_FILE` / codex equivalent), mode-600 enforced.
+- **Collect the author key.** A hidden paste for the configured backend,
+  written to `~/.config/outerloop/<backend>_key` (0600) and recorded as
+  `OUTERLOOP_<BACKEND>_KEY_FILE`; `--author-key-file` for an existing file.
 - **Write `~/.config/outerloop/.env`** — only keys the operator chose;
   the tick chain's allowlist is the contract for what matters.
 - **Doctor.** Re-run every check the tick already preflights, plus the

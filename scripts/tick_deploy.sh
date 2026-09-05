@@ -96,7 +96,7 @@ if [ -r "$ENV_FILE" ]; then
     if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
         for _k in AUTORESEARCH_AUTHOR_BACKEND AUTORESEARCH_AUTHOR_MODEL \
                   AUTORESEARCH_CODEX_BIN AUTORESEARCH_CODEX_KEY_FILE \
-                  AUTORESEARCH_HARNESS_KEY_FILE \
+                  AUTORESEARCH_CLAUDE_KEY_FILE AUTORESEARCH_HARNESS_KEY_FILE \
                   AUTORESEARCH_VERTEX_PROJECT AUTORESEARCH_VERTEX_REGION \
                   AUTORESEARCH_VERTEX_ADC \
                   AUTORESEARCH_TARGET \

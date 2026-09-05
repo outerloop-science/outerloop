@@ -7,7 +7,14 @@ import stat
 from pathlib import Path
 
 from outerloop import init
-from outerloop.init import InitAnswers, render_env, validate_pat, write_config
+from outerloop.init import (
+    InitAnswers,
+    author_key_env,
+    render_env,
+    validate_pat,
+    write_author_key,
+    write_config,
+)
 
 
 def test_render_env_slurm_full() -> None:
@@ -240,3 +247,124 @@ def test_init_interactive_declined_overwrite_keeps_the_config(tmp_path: Path, mo
     )
     assert rc == 1
     assert (tmp_path / ".env").read_text() == KEEP
+
+
+def test_render_env_names_the_key_file_per_backend() -> None:
+    """One rule for every backend: OUTERLOOP_<BACKEND>_KEY_FILE; blank backend is claude."""
+    claude = InitAnswers(compute="local", target="o/r", author_key_file="/k/claude_key")
+    assert "OUTERLOOP_CLAUDE_KEY_FILE=/k/claude_key" in render_env(claude, "")
+    codex = InitAnswers(
+        compute="local", target="o/r", author_backend="codex", author_key_file="/k/codex_key"
+    )
+    assert "OUTERLOOP_CODEX_KEY_FILE=/k/codex_key" in render_env(codex, "")
+    assert "KEY_FILE" not in render_env(InitAnswers(compute="local", target="o/r"), "")
+    assert author_key_env("") == "OUTERLOOP_CLAUDE_KEY_FILE"
+
+
+def test_write_author_key_is_owner_only_and_per_backend(tmp_path: Path) -> None:
+    path = write_author_key("codex", "sk-secret", config_dir=tmp_path / "cfg")
+    assert path == tmp_path / "cfg" / "codex_key"
+    assert path.read_text() == "sk-secret"  # no trailing newline
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert write_author_key("", "k", config_dir=tmp_path).name == "claude_key"
+
+
+def test_main_yes_author_key_file_flag_lands_in_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    rc = init.main(
+        [
+            "--yes",
+            "--compute",
+            "local",
+            "--target",
+            "o/r",
+            "--pat-file",
+            "/p",
+            "--author-backend",
+            "codex",
+            "--author-key-file",
+            "/keys/codex",
+        ]
+    )
+    assert rc == 0
+    assert "OUTERLOOP_CODEX_KEY_FILE=/keys/codex" in (tmp_path / ".env").read_text()
+
+
+def test_interactive_pasted_key_is_written_and_recorded(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The full interactive run asks for the key once (hidden), writes
+    <config>/<backend>_key 0600, and points .env at it."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    prompts: list[str] = []
+
+    def fake_getpass(prompt: str) -> str:
+        prompts.append(prompt)
+        return "sk-ant-pasted\n"
+
+    monkeypatch.setattr(init.getpass, "getpass", fake_getpass)
+    rc = init.main(
+        [
+            "--compute",
+            "local",
+            "--target",
+            "o/r",
+            "--pat-file",
+            "/p",
+            "--author-backend",
+            "claude",
+            "--author-model",
+            "claude-opus-5",
+        ]
+    )
+    assert rc == 0
+    assert len(prompts) == 1 and "claude author" in prompts[0]
+    key = tmp_path / "claude_key"
+    assert key.read_text() == "sk-ant-pasted"
+    assert stat.S_IMODE(key.stat().st_mode) == 0o600
+    assert f"OUTERLOOP_CLAUDE_KEY_FILE={key}" in (tmp_path / ".env").read_text()
+    assert "no author key set" not in capsys.readouterr().out
+
+
+def test_interactive_blank_key_leaves_a_hint(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    monkeypatch.setattr(init.getpass, "getpass", lambda prompt: "")
+    rc = init.main(
+        [
+            "--compute",
+            "local",
+            "--target",
+            "o/r",
+            "--pat-file",
+            "/p",
+            "--author-backend",
+            "claude",
+            "--author-model",
+            "claude-opus-5",
+        ]
+    )
+    assert rc == 0
+    assert not (tmp_path / "claude_key").exists()
+    assert "KEY_FILE" not in (tmp_path / ".env").read_text()
+    assert f"no author key set — put it in {tmp_path / 'claude_key'}" in capsys.readouterr().out
+
+
+def test_github_app_run_never_asks_for_the_key(tmp_path: Path, monkeypatch) -> None:
+    from outerloop import appmanifest
+
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "c")
+    monkeypatch.setattr(
+        appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
+    )
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+
+    def boom(prompt: str) -> str:
+        raise AssertionError("the focused --github-app run must not ask for a key")
+
+    monkeypatch.setattr(init.getpass, "getpass", boom)
+    assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
