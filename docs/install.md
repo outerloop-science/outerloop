@@ -1,6 +1,6 @@
 # Install
 
-autoresearch is **self-hosted**. You run it, with your keys, on your compute,
+Outerloop is **self-hosted**. You run it, with your keys, on your compute,
 against your repos. Nothing reports back to us and there is no service to sign
 up for.
 
@@ -139,7 +139,7 @@ The optional knobs — paired seeding and the significance floor
 (`eval_minutes`, `gpus`), `baseline: paired|cached`, the depth budgets
 (`depth_k`, `sleep_k`), width and pacing (`max_active_attempts`,
 `attempt_cooldown_minutes`), a stewardship scope, and `merge: manual|auto` —
-are listed in the README's contract table; the schema's own docstrings
+are listed in [docs/contract.md](contract.md); the schema's own docstrings
 (`src/outerloop/contract.py`) are the reference. A GPU benchmark needs a
 dispatched eval (`eval_minutes` above the in-job threshold) and a cached
 baseline needs a positive floor — the validator says so — and for GPU
