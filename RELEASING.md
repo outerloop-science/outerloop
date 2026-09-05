@@ -9,7 +9,9 @@
 ## Cutting a release
 
 1. PR: bump `__version__` and move the `[Unreleased]` entries under the new
-   version. A dev or rc pre-release skips both; `[Unreleased]` stays.
+   version. A dev or rc pre-release still bumps the version (PyPI never
+   accepts a version twice, so the next one is `.dev1`, `rc2`, ...) but leaves
+   `[Unreleased]` in place until the final release.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow builds
    and publishes `outerloop-science` to PyPI through Trusted Publishing; the
    one-time PyPI setup is described at the top of
