@@ -41,10 +41,14 @@ CADENCE_MIN="${AUTORESEARCH_CADENCE_MIN:-30}"
 JOB_NAME="autoresearch-tick"
 RESIDENT_JOB_NAME="autoresearch-resident"
 missing=""
-for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT AUTORESEARCH_PARTITION; do
+for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT; do
     eval "val=\${$var:-}"
     [ -z "$val" ] && missing="$missing $var"
 done
+# Partition is optional: unset lets Slurm place the job on its default
+# partition. When set (including a comma-list like "a,b"), pass it through.
+part_arg=""
+[ -n "${AUTORESEARCH_PARTITION:-}" ] && part_arg="--partition=${AUTORESEARCH_PARTITION}"
 
 # --- 0. the resident tick: hand the whole job to the loop ---
 # A resident job has no queued successor to protect yet, so a misconfigured
@@ -95,7 +99,7 @@ while [ "$i" -le "$need" ]; do
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
         if sbatch --dependency=singleton --begin="$begin" \
-                  --account="${AUTORESEARCH_ACCOUNT:-}" --partition="${AUTORESEARCH_PARTITION:-}" \
+                  --account="${AUTORESEARCH_ACCOUNT:-}" ${part_arg:+"$part_arg"} \
                   "${AUTORESEARCH_HOME:-}/scripts/tick_chain.sbatch"; then
             break
         fi

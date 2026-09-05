@@ -156,13 +156,20 @@ def test_slurm_composes_the_resident_submit(tmp_path: Path) -> None:
         f"--job-name={RESIDENT_JOB_NAME}",
         "--account=pr_1_general",
         "--partition=cpu_short",
-        "--export=ALL,AUTORESEARCH_RESIDENT=1,"
-        f"AUTORESEARCH_HOME={home},AUTORESEARCH_ROOT=/scratch/me/ar,"
-        "AUTORESEARCH_ACCOUNT=pr_1_general,AUTORESEARCH_PARTITION=cpu_short,"
-        f"AUTORESEARCH_RESIDENT_MINUTES={DEFAULT_RESIDENT_MINUTES},"
-        "AUTORESEARCH_CADENCE_MIN=20,AUTORESEARCH_PAT_FILE=/home/me/.config/autoresearch/bot_pat",
+        "--export=ALL",
         str(home / "scripts" / "tick_chain.sbatch"),
     ]
+    # The knobs ride the inherited environment, not a comma-joined --export list.
+    assert p.export_env() == {
+        "AUTORESEARCH_RESIDENT": "1",
+        "AUTORESEARCH_HOME": str(home),
+        "AUTORESEARCH_ROOT": "/scratch/me/ar",
+        "AUTORESEARCH_ACCOUNT": "pr_1_general",
+        "AUTORESEARCH_RESIDENT_MINUTES": str(DEFAULT_RESIDENT_MINUTES),
+        "AUTORESEARCH_PARTITION": "cpu_short",
+        "AUTORESEARCH_CADENCE_MIN": "20",
+        "AUTORESEARCH_PAT_FILE": "/home/me/.config/autoresearch/bot_pat",
+    }
 
 
 def test_precedence_is_flag_then_environment_then_file(tmp_path: Path) -> None:
@@ -195,23 +202,28 @@ def test_home_from_env_or_cwd_and_must_be_a_checkout_in_both_modes(tmp_path: Pat
         plan(tmp_path, cwd=tmp_path, local=True)
 
 
-def test_slurm_requires_root_account_and_partition(tmp_path: Path) -> None:
+def test_slurm_requires_root_and_account_but_partition_is_optional(tmp_path: Path) -> None:
     with pytest.raises(StartError, match="state root"):
         plan(tmp_path)
-    with pytest.raises(
-        StartError,
-        match="--account / AUTORESEARCH_ACCOUNT and --partition / AUTORESEARCH_PARTITION",
-    ):
+    with pytest.raises(StartError, match="--account / AUTORESEARCH_ACCOUNT"):
         plan(tmp_path, root="/r")
-    with pytest.raises(StartError, match="--partition / AUTORESEARCH_PARTITION"):
-        plan(tmp_path, root="/r", account="a")
+    # partition unset is fine: Slurm places on its default, and neither the
+    # sbatch command nor export_env carries an AUTORESEARCH_PARTITION.
+    p = plan(tmp_path, root="/r", account="a")
+    assert p.partition == ""
+    assert not any(a.startswith("--partition=") for a in p.command())
+    assert "AUTORESEARCH_PARTITION" not in p.export_env()
 
 
-def test_slurm_rejects_values_that_would_break_export(tmp_path: Path) -> None:
-    with pytest.raises(StartError, match="commas or whitespace"):
-        plan(tmp_path, root="/r", account="a,b", partition="p")
-    with pytest.raises(StartError, match="commas or whitespace"):
-        plan(tmp_path, root="/my root", account="a", partition="p")
+def test_slurm_accepts_a_comma_list_partition(tmp_path: Path) -> None:
+    # a multi-partition "a,b" now rides the inherited env, not the --export
+    # delimiter, so it is accepted and passed through verbatim.
+    p = plan(tmp_path, root="/r", account="a", partition="cpu_short,cpu_long")
+    assert p.export_env()["AUTORESEARCH_PARTITION"] == "cpu_short,cpu_long"
+    assert "--partition=cpu_short,cpu_long" in p.command()
+    # a newline would still corrupt the environment / sbatch argv.
+    with pytest.raises(StartError, match="newline"):
+        plan(tmp_path, root="/r", account="a", partition="cpu\nlong")
 
 
 @pytest.mark.parametrize("bad", ["0", "-5", "30m", ""])
@@ -238,7 +250,7 @@ def test_slurm_resident_minutes_must_be_a_positive_integer(tmp_path: Path) -> No
     p = plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "240"})
     assert p.resident_minutes == 240
     assert "--time=240" in p.command()
-    assert any("AUTORESEARCH_RESIDENT_MINUTES=240" in a for a in p.command())  # successors keep it
+    assert p.export_env()["AUTORESEARCH_RESIDENT_MINUTES"] == "240"  # successors keep it
     with pytest.raises(StartError, match="whole number"):
         plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "4h"})
     with pytest.raises(StartError, match="positive"):
@@ -322,7 +334,14 @@ def test_slurm_start_submits_once_and_reports(
     bin_dir = clean_env / "bin"
     bin_dir.mkdir()
     log = clean_env / "sbatch.log"
-    shim(bin_dir, "sbatch", f'printf "%s\\n" "$@" > {log}\necho "4242;torch"\n')
+    envlog = clean_env / "sbatch.env"
+    shim(
+        bin_dir,
+        "sbatch",
+        f'printf "%s\\n" "$@" > {log}\n'
+        f'printf "%s:%s" "$AUTORESEARCH_RESIDENT" "$AUTORESEARCH_HOME" > {envlog}\n'
+        'echo "4242;torch"\n',
+    )
     shim(bin_dir, "squeue", "exit 0\n")
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.chdir(home)
@@ -335,10 +354,8 @@ def test_slurm_start_submits_once_and_reports(
     argv = log.read_text().split("\n")
     assert argv[0] == "--parsable" and f"--job-name={RESIDENT_JOB_NAME}" in argv
     assert "--dependency=singleton" in argv
-    assert any(
-        a.startswith("--export=ALL,AUTORESEARCH_RESIDENT=1,") and f"AUTORESEARCH_HOME={home}" in a
-        for a in argv
-    )
+    assert "--export=ALL" in argv  # the knobs ride the inherited env, asserted next
+    assert envlog.read_text() == f"1:{home}"  # export_env reached sbatch's environment
     assert argv[-2] == str(home / "scripts" / "tick_chain.sbatch")
 
 

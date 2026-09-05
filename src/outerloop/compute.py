@@ -105,12 +105,13 @@ class JobSpec:
             "--parsable",
             f"--job-name={self.job_name}",
             f"--account={self.account}",
-            f"--partition={self.partition}",
             f"--time={self.time_minutes}",
             f"--cpus-per-task={self.cpus}",
             f"--mem={self.mem}",
             f"--output={self.output}",
         ]
+        if self.partition:  # unset lets Slurm pick its default partition
+            argv.append(f"--partition={self.partition}")
         if self.gpus:
             # per-NODE, not per-job (--gpus): every job here is single-node,
             # and Slurm submit plugins commonly classify a job by its

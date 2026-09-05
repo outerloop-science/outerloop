@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- `AUTORESEARCH_PARTITION` is now **optional** — leave it unset and Slurm places
+  jobs on its default partition. It also accepts a **comma-separated list**
+  (`a,b` = "whichever frees up first"): the resident's knobs now ride the
+  inherited environment (`sbatch --export=ALL`) instead of a comma-joined
+  `--export=K=V,…` list, so a comma in a value no longer corrupts the delimiter.
+
 ### Fixed
 
 - The tick no longer logs `unreadable run record` for non-run directories under
