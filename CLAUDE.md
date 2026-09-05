@@ -8,7 +8,7 @@ Scaffold phase — `docs/roadmap.md` says what exists vs. planned;
 
 ```bash
 uv sync
-uv run pytest                                    # slow/llm/slurm excluded by default
+uv run pytest                                    # all cores; --testmon = only tests affected by your edits
 uv run ruff check --fix . && uv run ruff format .
 uv run mypy
 uv run pre-commit run --all-files

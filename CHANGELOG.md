@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The test suite runs on all cores by default (pytest-xdist), about four times
+  faster locally; `pytest --testmon` runs only the tests affected by your edits
+  (pytest-testmon). Tier selection moved from `addopts` into `tests/conftest.py`
+  (a `-m` in `addopts` disables testmon), and a `serial` tier holds the tests
+  that inspect the process table: skipped while workers run, run alone by
+  `pytest -n0 -m serial` as CI's second test step.
+
+### Changed
+
 - The syscall channel dir in a workspace is now `.outerloop/` (the tool, the
   request/verdict ABI, `results/`, `reports/`). `.autoresearch/` is still honored:
   `syscall.channel_dir(workspace)` resolves the existing dir (new name first), so a

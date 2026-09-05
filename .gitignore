@@ -31,3 +31,6 @@ outputs/
 
 # Cloudflare wrangler local cache (setup page deploys)
 .wrangler/
+
+# pytest-testmon's change-tracking database
+.testmondata
