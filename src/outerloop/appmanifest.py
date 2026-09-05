@@ -7,7 +7,7 @@ we hand out a master key — so each adopter owns their App. GitHub's manifest f
 makes that a click: a pre-filled create page, then a code we exchange for the key.
 
 The flow is paste-based and hostless on the adopter's side: init prints ONE URL
-to the hosted helper page (`outerloop.science/setup`), which carries the
+to the hosted helper page (`setup.outerloop.science`), which carries the
 manifest in its URL *fragment* (never sent to any server). The adopter opens it
 in any browser — laptop or, for a headless cluster, anywhere — clicks Create,
 and GitHub redirects back to that page with a one-time code the page displays.
@@ -34,9 +34,10 @@ from outerloop.appauth import API, build_app_jwt, signer_from_private_key
 
 # The hosted helper page: it auto-POSTs the manifest to GitHub, then displays the
 # returned code. It is also the manifest's redirect_url, so GitHub sends the code
-# straight back to it. One static page under the org's domain. `OUTERLOOP_SETUP_URL`
-# overrides it — for a staging/pages.dev test, or a self-hoster serving their own.
-SETUP_URL = os.environ.get("OUTERLOOP_SETUP_URL") or "https://outerloop.science/setup"
+# straight back to it. Its own subdomain (the apex is the landing page), served
+# from web/ in this repo so the page and the CLI stay versioned together.
+# `OUTERLOOP_SETUP_URL` overrides it — a staging copy, or a self-hoster's own.
+SETUP_URL = os.environ.get("OUTERLOOP_SETUP_URL") or "https://setup.outerloop.science"
 
 # The App's fine-grained permissions — exactly what the fleet exercises: contents
 # to push commits, pull_requests to open/label PRs, issues for the courtesy note
