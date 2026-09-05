@@ -28,6 +28,8 @@ from outerloop.cli import ENV_FILE
 CONFIG_DIR = ENV_FILE.parent
 DEFAULT_PAT_FILE = CONFIG_DIR / "bot_pat"
 API = "https://api.github.com"
+# The climbing author's harnesses (attempt.py's --author-backend choices).
+AUTHOR_BACKENDS = ("claude", "codex")
 
 
 @dataclass
@@ -146,10 +148,15 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         partition = args.partition or (
             _ask("Slurm partition (blank = Slurm default; a,b for a list)") if interactive else ""
         )
+    # Author config is part of the full setup, not the focused --github-app run
+    # (that one is about auth). When asked, offer the fixed set, not a blank.
+    ask_author = interactive and not args.github_app
     backend = args.author_backend or (
-        _ask("Author backend (blank to set later)") if interactive else ""
+        _ask("Author backend (claude or codex)", "claude") if ask_author else ""
     )
-    model = args.author_model or (_ask("Author model (blank to set later)") if interactive else "")
+    model = args.author_model or (
+        _ask("Author model (blank = the backend's default)") if ask_author else ""
+    )
     answers = InitAnswers(
         compute=compute,
         target=target,
@@ -247,6 +254,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if answers.compute == "slurm" and not (answers.root and answers.account):
         print("outerloop init: Slurm needs --root and --account", file=sys.stderr)
+        return 2
+    if answers.author_backend and answers.author_backend not in AUTHOR_BACKENDS:
+        print(
+            f"outerloop init: author backend must be one of {', '.join(AUTHOR_BACKENDS)}",
+            file=sys.stderr,
+        )
         return 2
 
     # The App is the recommended credential (scoped, revocable, no plaintext
