@@ -1,0 +1,40 @@
+# Publish to PyPI on a version tag via Trusted Publishing (OIDC) — no API
+# token is stored anywhere; PyPI verifies the workflow's identity directly.
+# Setup (one-time, on PyPI): add a pending publisher for project
+# `outerloop-science`, owner `outerloop-science`, repo `outerloop`, workflow
+# `release.yml`, environment `pypi`. Then push a tag: `git tag vX.Y.Z && git
+# push origin vX.Y.Z` (the version comes from src/outerloop/__init__.py).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment gates the OIDC identity PyPI trusts; create it in repo
+    # Settings → Environments and name it in the PyPI pending publisher.
+    environment: pypi
+    permissions:
+      id-token: write # mint the OIDC token Trusted Publishing exchanges
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

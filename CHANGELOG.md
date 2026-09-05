@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- PyPI release via Trusted Publishing: a tag-triggered `release.yml` builds and
+  publishes on `v*` tags with no stored token (OIDC, `id-token: write`). The
+  distribution is named `outerloop-science` (PyPI's `outerloop` is taken); the
+  import package and console command stay `outerloop` — `pip install
+  outerloop-science`, then `import outerloop`.
+
 ### Changed
 
 - Renamed the Python package `autoresearch` → `outerloop` (and the console
