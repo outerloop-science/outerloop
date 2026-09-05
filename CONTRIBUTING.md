@@ -63,6 +63,13 @@ uv run pre-commit install
 | slow | `slow` | nightly / manual |
 | llm | `llm` | manual only — paid APIs |
 | slurm | `slurm` | manual only — needs a cluster |
+| serial | `serial` | CI, as a second step: `pytest -m serial` (never distributed) |
+
+`pytest` runs the unit tier on all cores (pytest-xdist). While editing,
+`pytest --testmon` runs only the tests affected by what you changed; `pytest -n0`
+runs everything serially. A test that inspects the process table (the git-lock
+sweep) is marked `serial`: it is skipped while workers are running, and
+`pytest -m serial` switches workers off so the tier always runs alone.
 
 ## Dependencies
 

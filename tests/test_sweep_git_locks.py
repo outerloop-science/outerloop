@@ -7,8 +7,15 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sweep_git_locks.sh"
 HOUR_AGO = time.time() - 3600
+
+
+# The sweep treats any git process of ours it cannot place as live, so these
+# tests need a quiet process table: the serial tier (see tests/conftest.py).
+pytestmark = pytest.mark.serial
 
 
 def _git(cwd: Path, *args: str) -> str:

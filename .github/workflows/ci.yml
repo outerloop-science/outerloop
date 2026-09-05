@@ -33,6 +33,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest
+      - run: uv run pytest -n0 -m serial  # the process-table tests, alone
       # Pinned CLI binary instead of gitleaks/gitleaks-action: the action
       # requires a paid GITLEAKS_LICENSE for org repos; the CLI is free (MIT).
       - name: gitleaks over full history

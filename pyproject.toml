@@ -35,6 +35,8 @@ dev = [
     "mypy>=1.13",
     "pytest>=8",
     "pre-commit>=4",
+    "pytest-xdist>=3",
+    "pytest-testmon>=2",
 ]
 
 [project.urls]
@@ -68,11 +70,15 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers -m 'not slow and not llm and not slurm'"
+# parallel by default; tests/conftest.py applies the tiers (slow/llm/slurm off,
+# serial off while distributing). `-n0` runs serially, `--testmon` runs only
+# the tests affected by your edits.
+addopts = "-ra --strict-markers -n auto"
 markers = [
     "slow: long-running; nightly/manual only",
     "llm: calls a paid LLM API; manual only, never CI",
     "slurm: needs a Slurm cluster; manual only, never CI",
+    "serial: inspects the process table; runs alone via `pytest -n0 -m serial`",
 ]
 
 [tool.hatch.build.targets.sdist]
