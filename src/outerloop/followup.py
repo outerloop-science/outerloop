@@ -30,6 +30,7 @@ from outerloop.contract import load_contract
 from outerloop.github import (
     GitError,
     GitHubClient,
+    GitHubError,
     NothingToCommit,
     Workspace,
     bot_login_from_env,
@@ -293,7 +294,16 @@ def _end_run(
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
     """End the run if its PR is merged/closed. Returns the ending or ""."""
     number = _pr_number(record.pr_url)
-    pr = github.get_pull_request(record.target, number)
+    try:
+        pr = github.get_pull_request(record.target, number)
+    except GitHubError as exc:
+        if exc.status == 404:
+            # The PR was deleted out from under us — nothing left to review or
+            # merge. End the run (state transition + a courtesy note on the
+            # issue, not the gone PR) rather than re-fetching a 404 every tick.
+            _end_run(run_root, record, github, REJECTED, "PR no longer exists", now)
+            return REJECTED
+        raise
     if pr.get("merged") or pr.get("merged_at"):
         _end_run(run_root, record, github, MERGED, "", now)
         return MERGED

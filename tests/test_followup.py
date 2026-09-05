@@ -5,14 +5,17 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from outerloop.followup import (
     REPLY_MARKER,
+    close_if_done,
     qualifying_comments,
     respond_once,
 )
+from outerloop.github import GitHubClient, GitHubError
 from outerloop.harness import SessionResult
 from outerloop.review import MARKER as ADVISORY_MARKER
 from outerloop.runstate import (
@@ -207,6 +210,21 @@ def test_closed_pr_ends_rejected(review_run) -> None:
     root, _ = review_run
     outcome = respond(root, FakeGitHub(pr={"state": "closed", "merged": False}))
     assert outcome.action == "ended-rejected"
+    assert load_record(root, "tsp-r1").ending == "rejected"
+
+
+def test_deleted_pr_404_ends_rejected(review_run) -> None:
+    root, _ = review_run
+
+    class GonePR(FakeGitHub):
+        def get_pull_request(self, repo, number):
+            raise GitHubError(404, f"/repos/{repo}/pulls/{number}", "Not Found")
+
+    # close_if_done is what the tick calls every cycle; a deleted PR (404) is
+    # terminal — end the run rather than re-fetching a 404 forever.
+    record = load_record(root, "tsp-r1")
+    ending = close_if_done(root, record, cast(GitHubClient, GonePR()), NOW)
+    assert ending == "rejected"
     assert load_record(root, "tsp-r1").ending == "rejected"
 
 
