@@ -197,7 +197,7 @@ any browser (works from a headless cluster too — no localhost, no tunnel), cli
 **Create GitHub App**, and paste back the code the page shows. init writes the
 App's key + `github_app.<slug>.json`, helps you install it, and verifies it can
 reach your repo. A **PAT** is the fallback (`--pat-file`, or paste one at the
-prompt). Either way, `init` writes `~/.config/autoresearch/.env` (all `0600`) —
+prompt). Either way, `init` writes `~/.config/outerloop/.env` (all `0600`) —
 everything the prose below otherwise sets by hand. The rest of this section
 documents what it writes, for when you'd rather set it directly.
 
@@ -217,7 +217,7 @@ The deployment is configured by environment. Placement and paths are set
 when the chain is started: `AUTORESEARCH_ACCOUNT`/`AUTORESEARCH_PARTITION`
 place the CPU jobs (ticks, author sessions), `AUTORESEARCH_HOME`/
 `AUTORESEARCH_ROOT` locate the checkout and the state, `AUTORESEARCH_IMAGE`
-the container. The rest is re-read from `~/.config/autoresearch/.env` each
+the container. The rest is re-read from `~/.config/outerloop/.env` each
 tick, so changes take effect at the next cadence: `AUTORESEARCH_TARGET`
 names the repo being climbed; `AUTORESEARCH_GPU_PARTITION` (optionally
 `AUTORESEARCH_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
@@ -243,7 +243,7 @@ useful when GCP credits are the budget. Config-driven, one env owner:
 ```bash
 AUTORESEARCH_VERTEX_PROJECT=your-gcp-project   # presence flips vertex ON
 AUTORESEARCH_VERTEX_REGION=global              # optional (default: global)
-AUTORESEARCH_VERTEX_ADC=~/.config/autoresearch/vertex_adc.json  # ADC file
+AUTORESEARCH_VERTEX_ADC=~/.config/outerloop/vertex_adc.json  # ADC file
 ```
 
 Enable the Claude models in the project's Model Garden, mint ADC

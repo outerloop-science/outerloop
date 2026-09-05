@@ -59,6 +59,7 @@ from outerloop.orchestrator import (
     resume_attempt,
 )
 from outerloop.panel import PanelLens, PanelVerdict, run_panel
+from outerloop.paths import CONFIG_DIR
 from outerloop.progress import (
     PROGRESS_PATHS,
     load_leader,
@@ -95,9 +96,9 @@ log = logging.getLogger(__name__)
 # Where a climb job reads its keys unless the CLI flags say otherwise. The
 # tick preflights the panel key (and compares it against the author key —
 # role separation) before claiming/submitting.
-PANEL_KEY_DEFAULT = "~/.config/autoresearch/verifier_key"
-HARNESS_KEY_DEFAULT = "~/.config/autoresearch/harness_key"  # the claude author key
-CODEX_KEY_DEFAULT = "~/.config/autoresearch/codex_key"  # the codex author key
+PANEL_KEY_DEFAULT = str(CONFIG_DIR / "verifier_key")
+HARNESS_KEY_DEFAULT = str(CONFIG_DIR / "harness_key")  # the claude author key
+CODEX_KEY_DEFAULT = str(CONFIG_DIR / "codex_key")  # the codex author key
 
 
 def resolve_author_key_file(backend: str, explicit: str = "") -> str:
@@ -3190,7 +3191,7 @@ def main() -> int:
         default=120.0,
         help="how long before the walltime the self-deadline fires (floor 60)",
     )
-    parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
+    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
         default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),

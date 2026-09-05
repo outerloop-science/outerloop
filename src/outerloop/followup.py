@@ -48,6 +48,7 @@ from outerloop.orchestrator import (
     steward_out_of_scope,
 )
 from outerloop.orchestrator import improved as orch_improved
+from outerloop.paths import CONFIG_DIR
 from outerloop.progress import (
     PROGRESS_PATHS,
     fmt_metric,
@@ -1977,7 +1978,7 @@ def main() -> int:
         default=0,
         help="this job's Slurm walltime; arms the self-deadline (0 = off)",
     )
-    parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
+    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
         default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),

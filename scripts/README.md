@@ -2,7 +2,7 @@
 
 Operational scripts, always committed. Start the loop with `autoresearch start`:
 it submits `tick_chain.sbatch` as the resident tick where `sbatch` exists and
-runs the local loop elsewhere, reading placement from `~/.config/autoresearch/.env`.
+runs the local loop elsewhere, reading placement from `~/.config/outerloop/.env`.
 
 | Script | Purpose |
 | --- | --- |

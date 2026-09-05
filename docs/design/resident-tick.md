@@ -79,7 +79,7 @@ resident job (cpu_short, --time=06:00:00 passed at start, singleton)
 
 Starting it is `autoresearch start` (`src/autoresearch/cli.py`): it fills in the
 walltime, job name, placement, and exports from flags, the environment, or
-`~/.config/autoresearch/.env`, and refuses to submit beside a live resident.
+`~/.config/outerloop/.env`, and refuses to submit beside a live resident.
 
 ## What it does not fix
 

@@ -53,6 +53,7 @@ from outerloop.intake import (
 )
 from outerloop.markers import has_label, has_marker, marker
 from outerloop.orchestrator import draw_run_seed, steward_out_of_scope
+from outerloop.paths import CONFIG_DIR
 from outerloop.progress import (
     PROGRESS_PATHS,
     LeaderEntry,
@@ -773,7 +774,7 @@ def main() -> int:
     parser.add_argument("--session-minutes", type=int, default=60)
     parser.add_argument("--job-minutes", type=int, default=0)
     parser.add_argument("--deadline-margin-s", type=float, default=120.0)
-    parser.add_argument("--pat-file", default=os.path.expanduser("~/.config/autoresearch/bot_pat"))
+    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
         default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
@@ -782,7 +783,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--key-file",
-        default=os.path.expanduser("~/.config/autoresearch/steward_key"),
+        default=str(CONFIG_DIR / "steward_key"),
         help="the STEWARD'S OWN key — never the solver harness key",
     )
     parser.add_argument("--issue", type=int, default=0)

@@ -236,7 +236,7 @@ Research findings sync through GitHub; job state never leaves its cluster.
       never arms auto-merge; the transcript rides in the PR body. DEPLOYED
       in code: the tick passes --panel verify,review to every climb job by
       default (off-switch AUTORESEARCH_PANEL=""). Cluster prerequisite: the
-      verifier key file at ~/.config/autoresearch/verifier_key on the tick
+      verifier key file at ~/.config/outerloop/verifier_key on the tick
       account — a missing key fails climbs LOUDLY by design. GitHub-side
       verify.yml thins per target after the pilot runs clean
 - [ ] jepa-agent as the first research target: `.outerloop.yaml` + bot Write
