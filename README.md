@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-dark.svg">
-  <img alt="Outerloop" src="docs/assets/icon-light.svg" width="132">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/outerloop-science/outerloop/main/docs/assets/icon-dark.svg">
+  <img alt="Outerloop" src="https://raw.githubusercontent.com/outerloop-science/outerloop/main/docs/assets/icon-light.svg" width="132">
 </picture>
 
 # Outerloop
@@ -41,7 +41,7 @@ Four commands and one file. You need a repo with a benchmark command, a model
 API key, and a Slurm cluster or one machine with a GPU.
 
 ```bash
-pip install git+https://github.com/outerloop-science/outerloop   # on PyPI as outerloop-science from the first release
+pip install outerloop-science
 outerloop init     # asks for your model key and compute, sets up your GitHub bot, writes the config
 ```
 
@@ -63,15 +63,15 @@ scope:
 outerloop start    # on a Slurm login node this submits the loop; without Slurm it runs in the foreground
 ```
 
-Step by step: [docs/install.md](docs/install.md). Everything the contract can
-say: [docs/contract.md](docs/contract.md).
+Step by step: [docs/install.md](https://github.com/outerloop-science/outerloop/blob/main/docs/install.md). Everything the contract can
+say: [docs/contract.md](https://github.com/outerloop-science/outerloop/blob/main/docs/contract.md).
 
 ## Only want pull request reviews?
 
 The reviewer works on its own. One workflow file and an API key, about five
 minutes, no bot account and no cluster. It comments on pull requests with
 concrete findings and never approves, blocks, or fails your build. See
-[docs/reviewer.md](docs/reviewer.md).
+[docs/reviewer.md](https://github.com/outerloop-science/outerloop/blob/main/docs/reviewer.md).
 
 ## Where it runs
 
@@ -80,7 +80,7 @@ chain of short jobs that resubmit themselves, so nothing listens and no inbound
 SSH is needed. Experiments and evaluations run inside your container image with
 no credentials, and GPU-hours are metered against the contract's budget. A
 single machine with a GPU works too, for cheap benchmarks. Details:
-[docs/compute.md](docs/compute.md).
+[docs/compute.md](https://github.com/outerloop-science/outerloop/blob/main/docs/compute.md).
 
 ## Safety by design
 
@@ -96,8 +96,8 @@ single machine with a GPU works too, for cheap benchmarks. Details:
 - **No model lock-in.** Claude Code, Codex, and hermes-agent are wired today;
   backends are swappable.
 
-Full design: [docs/design/architecture.md](docs/design/architecture.md) ·
-Roadmap: [docs/roadmap.md](docs/roadmap.md)
+Full design: [docs/design/architecture.md](https://github.com/outerloop-science/outerloop/blob/main/docs/design/architecture.md) ·
+Roadmap: [docs/roadmap.md](https://github.com/outerloop-science/outerloop/blob/main/docs/roadmap.md)
 
 ## Developing
 
@@ -116,4 +116,4 @@ uv run pytest
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0 — see [LICENSE](https://github.com/outerloop-science/outerloop/blob/main/LICENSE) and [NOTICE](https://github.com/outerloop-science/outerloop/blob/main/NOTICE).
