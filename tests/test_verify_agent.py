@@ -119,7 +119,7 @@ def test_bot_pr_is_verified_and_posts_issue_comment() -> None:
     assert label is not None
     assert len(client.comments) == 1
     body = client.comments[0]
-    assert "autoresearch:verification-review" in body
+    assert "outerloop:verification-review" in body
     assert "ruler-fishing" in body or "constant matched" in body
     # the brief carried the two-tree instruction and the base-branch contract
     assert "pr-head/" in harness.briefs[0] and "base/" in harness.briefs[0]
@@ -226,7 +226,7 @@ def test_tokenless_split_emits_then_posts(tmp_path: Path) -> None:
     round_label = post_from_file(post_client, "org/repo", 9, BOT, emit)  # type: ignore[arg-type]
     assert round_label is not None
     assert len(post_client.comments) == 1
-    assert "autoresearch:verification-review" in post_client.comments[0]
+    assert "outerloop:verification-review" in post_client.comments[0]
 
 
 def test_post_from_file_refuses_a_mismatched_pr(tmp_path: Path) -> None:

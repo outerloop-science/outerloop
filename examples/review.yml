@@ -21,7 +21,7 @@ jobs:
   review:
     if: >-
       github.event.action != 'labeled'
-      || github.event.label.name == 'autoresearch:review'
+      || github.event.label.name == 'outerloop:review'
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v1
     with:
       # PRs authored by this login are never reviewed (so the bot never

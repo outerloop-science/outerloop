@@ -29,9 +29,9 @@ That's it. Open a PR and the reviewer posts a round.
 ## Using it
 
 - **First round** runs automatically when a PR opens.
-- **Re-review** after you push fixes by (re)applying the `autoresearch:review` label
+- **Re-review** after you push fixes by (re)applying the `outerloop:review` label
   — the round stamp increments so you can follow the fix→review→fix loop.
-- Findings are **advisory**: the code owner decides. The `autoresearch:no-review`
+- Findings are **advisory**: the code owner decides. The `outerloop:no-review`
   label opts a PR out entirely.
 
 ## Backends

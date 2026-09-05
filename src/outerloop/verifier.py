@@ -23,6 +23,7 @@ import logging
 from typing import Any
 
 from outerloop.github import GitHubClient, is_own_login
+from outerloop.markers import has_label, marker
 from outerloop.review import (
     CONFIDENCES,
     MAX_DETAIL_CHARS,
@@ -41,7 +42,7 @@ from outerloop.review import (
 
 log = logging.getLogger(__name__)
 
-VERIFY_MARKER = "<!-- autoresearch:verification-review -->"
+VERIFY_MARKER = marker("verification-review")
 VERIFY_HEADER = (
     "*Integrity read of this bot PR (gaming, leakage, unsupported claims). "
     "Findings are leads for the code owner — a clean read does not certify "
@@ -231,7 +232,7 @@ def verify_skip_reason(pr: PullRequest, bot_login: str) -> str | None:
         return "bot login unknown: cannot identify bot-authored PRs (fail closed)"
     if not is_own_login(pr.author, bot_login):
         return "human-authored PR: integrity verification covers bot PRs only"
-    if any(label.casefold() == OPT_OUT_LABEL for label in pr.labels):
+    if has_label(pr.labels, "no-review"):
         return f"opted out via the {OPT_OUT_LABEL} label"
     if not pr.diff.strip():
         return "empty diff"

@@ -1,7 +1,7 @@
 """The benchmark steward: keeps rulers discriminating, never touches solvers.
 
 One live stewardship, end to end: a maintainer files a work-order issue
-(labeled `autoresearch:steward`, e.g. "denoise: the frozen clean signal was
+(labeled `outerloop:steward`, e.g. "denoise: the frozen clean signal was
 reverse-engineered — make it a generator"), the tick claims it, and this
 glue runs a session whose territory is the INVERSE of the solver's —
 `contract.steward.allowed` (env generators, eval harness, tests), with the
@@ -47,11 +47,11 @@ from outerloop.harness import Harness, budget_exhausted, outage, redact
 from outerloop.intake import (
     CLAIM_MARKER,
     RELEASE_MARKER,
-    STEWARD_LABEL,
     IssueTask,
     infer_benchmark,
     qualifying_issue,
 )
+from outerloop.markers import has_label, has_marker, marker
 from outerloop.orchestrator import draw_run_seed, steward_out_of_scope
 from outerloop.progress import (
     PROGRESS_PATHS,
@@ -82,7 +82,7 @@ log = logging.getLogger(__name__)
 # claim is released AND does not count toward MAX_STEWARD_ATTEMPTS — the
 # API being down is the orchestrator's failure, not the work order's.
 # (RELEASE_MARKER itself lives in intake.py, next to CLAIM_MARKER.)
-OUTAGE_MARKER = "<!-- autoresearch:outage-release -->"
+OUTAGE_MARKER = marker("outage-release")
 # TOTAL claims after which the lane stops retrying a work order: a
 # persistently-failing order must not become a paid retry loop — three
 # sessions is the escalate-to-a-human point
@@ -246,7 +246,7 @@ def pick_steward_issue(
             for label in issue.get("labels", [])
             if isinstance(label, dict)
         }
-        if STEWARD_LABEL not in labels:
+        if not has_label(labels, "steward"):
             continue
         if not qualifying_issue(issue, bot_login):
             continue
@@ -268,12 +268,12 @@ def pick_steward_issue(
             if not is_own_login(author, bot_login):
                 continue
             body = str(c.get("body", ""))
-            if CLAIM_MARKER in body:
+            if has_marker(body, "claimed"):
                 claimed = True
                 attempts += 1
-            if RELEASE_MARKER in body:
+            if has_marker(body, "claim-released"):
                 claimed = False
-                if OUTAGE_MARKER in body:
+                if has_marker(body, "outage-release"):
                     # an API outage is our failure, not the order's: the
                     # claim it released does not count toward the cap —
                     # but outage releases have their OWN cap, or a
@@ -330,7 +330,7 @@ def release_orphaned_claims(
             for label in issue.get("labels", [])
             if isinstance(label, dict)
         }
-        if STEWARD_LABEL not in labels:
+        if not has_label(labels, "steward"):
             continue
         number = int(issue.get("number", 0))
         claimed = False
@@ -340,10 +340,10 @@ def release_orphaned_claims(
             if not is_own_login(author, bot_login):
                 continue  # same identity gate as pick_steward_issue
             body = str(c.get("body", ""))
-            if CLAIM_MARKER in body:
+            if has_marker(body, "claimed"):
                 claimed = True
                 claim_time = str(c.get("created_at", ""))
-            if RELEASE_MARKER in body:
+            if has_marker(body, "claim-released"):
                 claimed = False
         if not claimed:
             continue
@@ -491,7 +491,7 @@ def live_steward(
 
         if issue_number:
             already = any(
-                CLAIM_MARKER in str(c.get("body", ""))
+                has_marker(str(c.get("body", "")), "claimed")
                 for c in github.list_comments(config.target, issue_number)
             )
             if not already:

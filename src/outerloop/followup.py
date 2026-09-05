@@ -38,6 +38,7 @@ from outerloop.github import (
     is_own_login,
 )
 from outerloop.harness import Harness, outage, redact
+from outerloop.markers import has_marker, marker
 from outerloop.orchestrator import (
     Evaluator,
     benchmark_floor,
@@ -82,7 +83,7 @@ PANEL_WAKE_CAP = 2
 MAX_COMMENTS_PER_WAKE = 5
 MAX_REPLY_CHARS = 20_000
 
-REPLY_MARKER = "<!-- autoresearch:followup -->"
+REPLY_MARKER = marker("followup")
 
 
 @dataclass(frozen=True)
@@ -206,7 +207,7 @@ def qualifying_comments(
         body = str(comment.get("body") or "")
         if not body.strip():
             continue  # e.g. a review submission with no text
-        if REPLY_MARKER in body or "autoresearch:advisory-review" in body:
+        if has_marker(body, "followup") or has_marker(body, "advisory-review"):
             continue
         if str(comment.get("author_association", "")) not in QUALIFYING_ASSOCIATIONS:
             continue

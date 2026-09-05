@@ -17,20 +17,21 @@ from outerloop.brief import MAX_TASK_CHARS, _cap, _fence
 from outerloop.contract import Contract
 from outerloop.followup import QUALIFYING_ASSOCIATIONS
 from outerloop.github import is_own_login
+from outerloop.markers import has_label, has_marker, label_name, marker
 
 log = logging.getLogger(__name__)
 
-CLAIM_MARKER = "<!-- autoresearch:claimed -->"
+CLAIM_MARKER = marker("claimed")
 # Posted (by the bot only) to undo a claim whose run never started — a failed
 # submit must not strand the issue, since the claim scan skips claimed issues.
-RELEASE_MARKER = "<!-- autoresearch:claim-released -->"
+RELEASE_MARKER = marker("claim-released")
 # Claim attempts per issue before intake gives up on it: a durable submit
 # failure must not claim/release (and comment) forever. Same idea as the
 # steward lane's MAX_STEWARD_ATTEMPTS.
 MAX_INTAKE_ATTEMPTS = 3
 # steward work orders carry this label; they are the STEWARD lane's,
 # never the solver's (a solver climb cannot touch env paths anyway)
-STEWARD_LABEL = "autoresearch:steward"
+STEWARD_LABEL = label_name("steward")
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
             for label in issue.get("labels", [])
             if isinstance(label, dict)
         }
-        if STEWARD_LABEL in labels:
+        if has_label(labels, "steward"):
             continue  # the steward lane's, never the solver's
         if not qualifying_issue(issue, bot_login):
             continue
@@ -87,10 +88,10 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
             if not is_own_login(author, bot_login):
                 continue  # only the bot's own markers count — no forged releases
             body = str(c.get("body", ""))
-            if CLAIM_MARKER in body:
+            if has_marker(body, "claimed"):
                 claimed = True
                 attempts += 1
-            if RELEASE_MARKER in body:
+            if has_marker(body, "claim-released"):
                 claimed = False
         if claimed:
             continue  # already claimed by a run

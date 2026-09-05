@@ -6,7 +6,7 @@ standalone GitHub-side workflow; the verifier is the second half of the climb
 transaction and lives in the orchestrator. This note settles a narrower
 question that one left open: *where the reviewer's runner physically executes.*
 The trigger stays a GitHub workflow (`pull_request_target` + the
-`autoresearch:review` label); what can move is the compute behind it.
+`outerloop:review` label); what can move is the compute behind it.
 Pairs with `reviewer-infra.md` (the seams and the threat model) and
 `dispatcher.md` (the containment this reuses).
 

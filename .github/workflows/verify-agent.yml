@@ -105,7 +105,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.gate.outputs.bot_authored == 'true' &&
       (github.event.action != 'labeled' ||
-       (github.event.label.name == 'autoresearch:review' &&
+       ((github.event.label.name == 'outerloop:review' || github.event.label.name == 'autoresearch:review') &&
         github.event.sender.login != github.event.pull_request.user.login))
     # Read-only: the session (and its shell judge) runs here, so its token must
     # not be worth stealing — the write token lives in the post job.
@@ -199,7 +199,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.gate.outputs.bot_authored == 'true' &&
       (github.event.action != 'labeled' ||
-       (github.event.label.name == 'autoresearch:review' &&
+       ((github.event.label.name == 'outerloop:review' || github.event.label.name == 'autoresearch:review') &&
         github.event.sender.login != github.event.pull_request.user.login))
     continue-on-error: true
     timeout-minutes: 15

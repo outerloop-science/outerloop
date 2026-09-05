@@ -62,7 +62,7 @@ jobs:
 
   # --- convergence rounds: one full-rubric session, label-triggered ---
   review:
-    if: github.event.action == 'labeled' && github.event.label.name == 'autoresearch:review'
+    if: github.event.action == 'labeled' && (github.event.label.name == 'outerloop:review' || github.event.label.name == 'autoresearch:review')
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: 'outerloop-science[bot]'
