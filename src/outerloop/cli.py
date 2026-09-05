@@ -412,7 +412,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print the command and exit")
     sub.add_parser("tick", help="one tick, or --loop; the chain's own entry", add_help=False)
     sub.add_parser(
-        "init", help="guided setup: write ~/.config/autoresearch/.env and the PAT file",
+        "init",
+        help="guided setup: write ~/.config/autoresearch/.env and the PAT file",
         add_help=False,
     )
     argv = sys.argv[1:] if argv is None else list(argv)
