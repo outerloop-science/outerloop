@@ -227,7 +227,8 @@ first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`, its key file
 `OUTERLOOP_HARNESS_KEY_FILE` (Claude) or `OUTERLOOP_CODEX_KEY_FILE`
-(Codex). Evals run inside the
+(Codex). A Codex author always runs contained, so it also needs the image
+(`OUTERLOOP_IMAGE`) and a Codex model in `OUTERLOOP_AUTHOR_MODEL`. Evals run inside the
 Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
