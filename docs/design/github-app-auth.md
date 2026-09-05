@@ -1,7 +1,7 @@
 # GitHub App auth: installation tokens replace the bot PAT
 
 The kernel authenticates to GitHub as a bot account holding a long-lived
-fine-grained PAT (`FileTokenProvider` over `~/.config/autoresearch/bot_pat`).
+fine-grained PAT (`FileTokenProvider` over `~/.config/outerloop/bot_pat`).
 This note designs its replacement by a **GitHub App**: the kernel mints
 short-lived installation tokens from the App's private key. It is the concrete
 form of the identity seam in [external.md](external.md) ("an App
@@ -112,7 +112,7 @@ Swapping the live fleet's identity mid-campaign is an ops event:
 
 ```json
 {"app_id": 1234, "installation_id": 5678,
- "private_key": "~/.config/autoresearch/outerloop-app.pem"}
+ "private_key": "~/.config/outerloop/outerloop-app.pem"}
 ```
 
 — and rides the rails the PAT already rides: role CLIs default their

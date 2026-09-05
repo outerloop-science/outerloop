@@ -8,6 +8,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The operator config dir is now **`~/.config/outerloop/`** (`.env`, token or App
+  file, role keys). `~/.config/autoresearch/` is still honored: the code and the
+  chain's deploy resolve the new dir if present, else the pre-rename one, so a
+  machine set up before the rename keeps working untouched; `outerloop init` on a
+  fresh machine creates the new dir.
+
+### Changed
+
 - Labels and body markers are now `outerloop:*` (`outerloop:review`,
   `outerloop:no-review`, `outerloop:steward`; `<!-- outerloop:advisory-review -->`
   and the other markers the kernel writes). The `autoresearch:*` forms are still

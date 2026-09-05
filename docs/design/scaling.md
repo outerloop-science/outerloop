@@ -219,7 +219,7 @@ headless auth two ways: an API key (today's path, works), or a long-lived
 OAuth token minted by `claude setup-token` from a subscription seat —
 designed for CI, no browser on the cluster needed. Proposed flow: a maintainer runs
 `setup-token` locally once per seat, the token lands in
-`~/.config/autoresearch/agents/<agent-id>/credential` (0600) on Torch, and
+`~/.config/outerloop/agents/<agent-id>/credential` (0600) on Torch, and
 the harness's existing env-injection seam passes it as
 `CLAUDE_CODE_OAUTH_TOKEN` instead of `ANTHROPIC_API_KEY` — a per-agent
 config switch, no code restructuring. Seat limits then meter per-agent by

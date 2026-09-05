@@ -28,7 +28,7 @@ non-interactive use):
   one-time code, the operator pastes it back; the wizard exchanges the code —
   **the conversion response carries the App ID and the private key in-band**,
   so the wizard writes `github_app.json` + the PEM straight to
-  `~/.config/autoresearch/` (0600) on the host that will use them. No browser
+  `~/.config/outerloop/` (0600) on the host that will use them. No browser
   download, no file shuffling between machines. It then prints the install
   URL; after the operator installs the App on their repos, the wizard
   discovers the installation id itself (App JWT → `GET /app/installations`).
@@ -36,7 +36,7 @@ non-interactive use):
   prefer it.
 - **Collect the author key.** One path prompt per configured backend
   (`AUTORESEARCH_HARNESS_KEY_FILE` / codex equivalent), mode-600 enforced.
-- **Write `~/.config/autoresearch/.env`** — only keys the operator chose;
+- **Write `~/.config/outerloop/.env`** — only keys the operator chose;
   the tick chain's allowlist is the contract for what matters.
 - **Doctor.** Re-run every check the tick already preflights, plus the
   wizard-level ones, and print a pass/fail table: git reachable with the

@@ -4,7 +4,7 @@ With `sbatch` on PATH it submits the resident tick
 (docs/design/resident-tick.md) and returns; without it, or with
 AUTORESEARCH_COMPUTE=local, it runs the local loop in the foreground.
 Settings come from flags, then the process environment, then
-~/.config/autoresearch/.env, read once here at launch. The running chain
+~/.config/outerloop/.env, read once here at launch. The running chain
 never takes identity or placement from that file (tick_deploy.sh reads an
 allowlist of author knobs per tick), so editing it later cannot move a chain.
 """
@@ -21,10 +21,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from outerloop import paths
+
 RESIDENT_JOB_NAME = "autoresearch-resident"
 DEFAULT_RESIDENT_MINUTES = 360  # cpu_short's ceiling on Torch; the loop hands over to itself
 DEFAULT_LOCAL_ROOT = Path.home() / ".autoresearch"
-ENV_FILE = Path.home() / ".config" / "autoresearch" / ".env"
+ENV_FILE = paths.ENV_FILE  # ~/.config/outerloop/.env, or the pre-rename dir (see paths.py)
 
 # What start itself decides from: mode, placement, root, cadence, walltime.
 START_KEYS = (
@@ -217,7 +219,7 @@ def plan_start(
     if not root_s:
         raise StartError(
             "Slurm mode needs the state root on the shared filesystem: "
-            "--root, AUTORESEARCH_ROOT, or AUTORESEARCH_ROOT= in ~/.config/autoresearch/.env"
+            "--root, AUTORESEARCH_ROOT, or AUTORESEARCH_ROOT= in ~/.config/outerloop/.env"
         )
     acc = _setting("AUTORESEARCH_ACCOUNT", account, environ, from_file)
     part = _setting("AUTORESEARCH_PARTITION", partition, environ, from_file)
@@ -413,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("tick", help="one tick, or --loop; the chain's own entry", add_help=False)
     sub.add_parser(
         "init",
-        help="guided setup: write ~/.config/autoresearch/.env and the PAT file",
+        help="guided setup: write ~/.config/outerloop/.env and the PAT file",
         add_help=False,
     )
     argv = sys.argv[1:] if argv is None else list(argv)

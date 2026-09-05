@@ -1,7 +1,7 @@
 """`outerloop init` — the guided setup.
 
 Collects placement (Slurm or local), the target repo, and bot auth, then writes
-`~/.config/autoresearch/.env` (plus the credential files), so a new adopter never
+`~/.config/outerloop/.env` (plus the credential files), so a new adopter never
 hand-edits config or reasons about which `AUTORESEARCH_*` keys to set. Flags fill
 answers non-interactively; anything left out is prompted for (a secret via
 getpass, never echoed). Auth is the adopter's own GitHub App by default —

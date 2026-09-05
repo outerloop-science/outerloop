@@ -24,7 +24,7 @@
 #                             --export=ALL,AUTORESEARCH_RESIDENT=1,...`. The
 #                             per-cadence chain drains itself once a resident
 #                             job exists. Unset = the per-cadence chain below.
-# Further config also loads from ~/.config/autoresearch/.env (0600) each tick, so
+# Further config also loads from ~/.config/outerloop/.env (0600) each tick, so
 # a live config change (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex + its key file)
 # needs no chain restart — just an edit to that file.
 #

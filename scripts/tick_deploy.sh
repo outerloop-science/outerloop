@@ -87,7 +87,9 @@ export AUTORESEARCH_DEPLOY_BROKEN
 # config and can never hijack the chain's identity or scheduling. And only from a
 # file that is ours and not group/world-writable (a writable one could still
 # inject a malicious VALUE, e.g. a bad codex binary path).
-ENV_FILE="$HOME/.config/autoresearch/.env"
+# the operator's config dir: ~/.config/outerloop (new) or ~/.config/autoresearch (pre-rename)
+ENV_FILE="$HOME/.config/outerloop/.env"
+[ -r "$ENV_FILE" ] || ENV_FILE="$HOME/.config/autoresearch/.env"
 if [ -r "$ENV_FILE" ]; then
     perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
     owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
