@@ -45,6 +45,7 @@ from outerloop.github import (
     ensure_regular_git_dir,
 )
 from outerloop.harness import Harness, SessionResult, redact
+from outerloop.markers import has_marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
     AttemptResult,
@@ -2554,7 +2555,7 @@ def live_attempt(
             from outerloop.intake import CLAIM_MARKER
 
             already = any(
-                CLAIM_MARKER in str(c.get("body", ""))
+                has_marker(str(c.get("body", "")), "claimed")
                 for c in github.list_comments(config.target, issue_number)
             )
             if not already:  # manual CLI runs claim here; tick runs claimed at submit

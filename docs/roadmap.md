@@ -204,7 +204,7 @@ Research findings sync through GitHub; job state never leaves its cluster.
       steward agent does env work, not hand edits): separate identity
       (`steward-01`, own key), territory = the contract's `steward.allowed`
       with the solver's scope forbidden in code, work orders =
-      standing-gated `autoresearch:steward` issues, validation ruler run by
+      standing-gated `outerloop:steward` issues, validation ruler run by
       the orchestrator (suite + re-measure + orchestrator-written record
       resets), verifier reads its PRs adversarially. DEPLOY pending:
       steward key + pilot contract `steward:` section + the four work-order
@@ -299,7 +299,7 @@ Roles/flow reference for this whole section: design/roles.md.
 ## Actions economy (decided 2026-08-07)
 
 - [x] Single `ci` job (job-minute rounding was 5x the real usage); advisory
-      review on open + `autoresearch:review` label, never per push
+      review on open + `outerloop:review` label, never per push
 - [ ] Same consolidation on the target repos' workflows
 - [ ] Mid-term: self-hosted runner on the lab workstation (outbound-only
       polling; frees private-repo minutes entirely). When repos go public,

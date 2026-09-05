@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Labels and body markers are now `outerloop:*` (`outerloop:review`,
+  `outerloop:no-review`, `outerloop:steward`; `<!-- outerloop:advisory-review -->`
+  and the other markers the kernel writes). The `autoresearch:*` forms are still
+  **recognized** everywhere they are read (`markers.has_marker` / `has_label`), so
+  existing labelled issues, PRs, and the kernel's own earlier comments keep working —
+  a reviewer never duplicates a review it posted before the rename.
+
+### Changed
+
 - The contract file is now **`.outerloop.yaml`** (docs, `contract_cli`, the
   author's brief). `.autoresearch.yaml` is still read: every read site — GitHub
   API, `git show <sha>:…`, working tree — goes through `find_contract`, which

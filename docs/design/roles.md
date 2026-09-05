@@ -192,7 +192,7 @@ flowchart LR
     BPR["PR by the bot"] --> VF["verifier<br/>(gaming lens) - deploy pending"]
     AR --> HM{human merges}
     VF --> HM
-    L["autoresearch:review label<br/>= one fresh round on the head"] --> AR
+    L["outerloop:review label<br/>= one fresh round on the head"] --> AR
     L -->|"on bot PRs (once deployed)"| VF
 ```
 

@@ -44,6 +44,7 @@ from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from outerloop.harness import DEFAULT_MAX_TURNS, redact
 from outerloop.housekeeping import shed_ended_workspaces
 from outerloop.limits import EffectiveLimits, effective_limits
+from outerloop.markers import has_marker, marker
 from outerloop.runstate import (
     ABORTED,
     ENDED,
@@ -355,7 +356,7 @@ def reap_flights(
     return reaped
 
 
-CONTRACT_ALARM_MARKER = "<!-- autoresearch:contract-alarm -->"
+CONTRACT_ALARM_MARKER = marker("contract-alarm")
 CONTRACT_ALARM_AFTER = 3  # consecutive failing ticks (~1.5 h) before alarming
 
 
@@ -421,7 +422,7 @@ def contract_alarm(
         try:
             number = _find_alarm_issue(github, target, bot_login) or github.create_issue(
                 target,
-                "autoresearch: launch lanes are paused",
+                "outerloop: launch lanes are paused",
                 f"{CONTRACT_ALARM_MARKER}\nThe orchestrator's launch lanes "
                 f"(intake, steward, self-initiated) have sat out {count} "
                 f"consecutive ticks. The error below names the cause — a "
@@ -476,7 +477,7 @@ def _find_alarm_issue(github: Any, target: str, bot_login: str) -> int:
         (
             int(issue.get("number", 0))
             for issue in github.list_open_issues(target, max_pages=10)
-            if CONTRACT_ALARM_MARKER in str(issue.get("body", ""))
+            if has_marker(str(issue.get("body", "")), "contract-alarm")
             and is_own_login(str((issue.get("user") or {}).get("login", "")), bot_login)
         ),
         0,
@@ -1124,7 +1125,7 @@ def sweep(
 
 
 RESEARCH_LOG_BRANCH = "research-log"
-RESEARCH_LOG_MARKER = "<!-- autoresearch:research-log -->"
+RESEARCH_LOG_MARKER = marker("research-log")
 RESEARCH_LOG_PER_TICK = 3
 
 
@@ -1260,7 +1261,7 @@ def _publish_ledger_entry(
         if bench:
             for issue in github.list_open_issues(target):
                 text = f"{issue.get('title', '')}\n{issue.get('body') or ''}"
-                if RESEARCH_LOG_MARKER in text or issue.get("pull_request"):
+                if has_marker(text, "research-log") or issue.get("pull_request"):
                     continue
                 if bench in text.casefold():
                     github.comment(target, int(issue["number"]), line)
@@ -1278,7 +1279,7 @@ def _publish_ledger_entry(
                 # (terra #170 r5: a failed cache write must not duplicate
                 # the rolling issue)
                 for issue in github.list_open_issues(target):
-                    if RESEARCH_LOG_MARKER in str(issue.get("body") or ""):
+                    if has_marker(str(issue.get("body") or ""), "research-log"):
                         log_issue = int(issue.get("number", 0))
                         break
             if not log_issue:

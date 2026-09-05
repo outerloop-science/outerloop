@@ -33,8 +33,8 @@ permissions:
   pull-requests: write
 jobs:
   advisory:
-    # a labeled event only runs for the autoresearch:review label (manual re-review)
-    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
+    # a labeled event only runs for the outerloop:review label (manual re-review)
+    if: github.event.action != 'labeled' || github.event.label.name == 'outerloop:review'
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: my-bot            # PRs by this login are never reviewed
@@ -54,7 +54,7 @@ same reusable, different backend. Each opinion posts its own labeled round:
 
 ```yaml
   second-opinion:
-    if: github.event.action != 'labeled' || github.event.label.name == 'autoresearch:review'
+    if: github.event.action != 'labeled' || github.event.label.name == 'outerloop:review'
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
     with:
       bot_login: my-bot
@@ -89,7 +89,8 @@ That's the whole setup. Notes:
   `with:` — otherwise your fork's changes never run.
 - **Pin the version in production**: `reviewer_ref: v0.1.0` (or a commit SHA).
   The default `main` moves.
-- Silence it on one PR with the `autoresearch:no-review` label.
+- Silence it on one PR with the `outerloop:no-review` label. (A repo that already
+  uses the `autoresearch:*` labels keeps working — both prefixes are recognized.)
 - Fork PRs are skipped by design: they must not reach your API key.
 - Nothing from the pull request is ever executed. The workflow checks out the
   reviewer, not your PR's code.

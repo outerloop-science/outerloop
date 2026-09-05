@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from outerloop.contract import CONTRACT_NAMES, find_contract
+from outerloop.markers import legacy_marker, marker
 
 DEFAULT_BOT_LOGIN = "agentic-learning-bot"
 
@@ -317,7 +318,7 @@ class GitHubClient:
                     return item
         return None
 
-    BODY_EDIT_MARKER = "<!-- autoresearch:body-edit -->"
+    BODY_EDIT_MARKER = marker("body-edit")
     # the orchestrator-owned candidate row in pr_body's results table
     # \r-tolerant: a human web-UI edit can normalize the body to CRLF
     _CANDIDATE_ROW = re.compile(r"^\| candidate \| .* \|(\r?)$", re.MULTILINE)
@@ -378,9 +379,12 @@ class GitHubClient:
         # string (it is public), and splitting on it blindly would truncate
         # the frozen report — the history this method exists to preserve.
         base = current
-        idx = current.rfind(self.BODY_EDIT_MARKER)
-        if idx != -1 and current[idx + len(self.BODY_EDIT_MARKER) :].lstrip().startswith("---"):
-            base = current[:idx].rstrip()
+        # a previous addendum of ours may carry the pre-rename marker
+        for old in (self.BODY_EDIT_MARKER, legacy_marker("body-edit")):
+            idx = current.rfind(old)
+            if idx != -1 and current[idx + len(old) :].lstrip().startswith("---"):
+                base = current[:idx].rstrip()
+                break
         self._request("PATCH", path, {"body": f"{base}\n\n{self.BODY_EDIT_MARKER}\n{addendum}"})
 
     def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:

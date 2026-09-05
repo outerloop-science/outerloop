@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from outerloop.markers import marker
 from outerloop.runstate import ENDED, list_runs, run_dir
 
 log = logging.getLogger("outerloop.climbboard")
@@ -262,7 +263,7 @@ def render_md(
     """CLIMB.md: per benchmark, the headline numbers and the attempts table
     (newest first). Plain markdown; the chart lives in index.html."""
     lines = [
-        "<!-- autoresearch:climb-board -->",
+        marker("climb-board"),
         f"# Climb — {target}",
         "",
         "Written by the kernel when runs end. Data: `climb/data/<benchmark>.json`;",

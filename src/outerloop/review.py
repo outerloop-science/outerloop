@@ -23,12 +23,13 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from outerloop.github import is_own_login
+from outerloop.markers import has_label, label_name, marker
 from outerloop.style import PLAIN_STYLE
 
 log = logging.getLogger(__name__)
 
-MARKER = "<!-- autoresearch:advisory-review -->"
-OPT_OUT_LABEL = "autoresearch:no-review"
+MARKER = marker("advisory-review")
+OPT_OUT_LABEL = label_name("no-review")
 
 # One calm line: the mechanical defense against forged endorsements is the
 # approval-language redaction in sanitize(), not header volume.
@@ -172,7 +173,7 @@ def skip_reason(pr: PullRequest, bot_login: str) -> str | None:
     suppresses review on any PR."""
     if is_own_login(pr.author, bot_login):
         return "bot-authored PR: the reviewer never comments on its own work"
-    if any(label.casefold() == OPT_OUT_LABEL for label in pr.labels):
+    if has_label(pr.labels, "no-review"):
         return f"opted out via the {OPT_OUT_LABEL} label"
     if not pr.diff.strip():
         return "empty diff"

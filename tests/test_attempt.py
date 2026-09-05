@@ -1145,7 +1145,7 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
     assert outcome.outcome == "improved"
     assert "Addresses #42." in github.prs[0]["body"]
     claim, report = github.issue_comments[0], github.issue_comments[-1]
-    assert claim[0] == 42 and "autoresearch:claimed" in claim[1]
+    assert claim[0] == 42 and "outerloop:claimed" in claim[1]
     assert report[0] == 42 and "finished (improved)" in report[1]
     assert "pull/1" in report[1]
     record = load_record(tmp_path / "state", "tsp-iss")

@@ -12,6 +12,7 @@ import logging
 
 from outerloop.github import GitHubClient, GitHubError
 from outerloop.harness import redact
+from outerloop.markers import marker
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def post_round_review(
     return round_label
 
 
-SKIP_MARKER = "<!-- autoresearch:round-skipped -->"
+SKIP_MARKER = marker("round-skipped")
 
 
 def post_skip_stub(

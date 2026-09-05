@@ -77,7 +77,7 @@ workflow files of the repo being flipped, not on memory of them):
    env, so no write token may be there); the separate post JOB holds
    `pull-requests: write` and runs no session. Verify per-job `permissions:`,
    not just top-level.
-4. Labels that trigger privileged runs (`autoresearch:review`): GitHub
+4. Labels that trigger privileged runs (`outerloop:review`): GitHub
    allows label application at TRIAGE, not write — so GitHub's own
    permission model is NOT sufficient gating on a public repo with triage
    grants. Verify the code-side provenance check (labeler permission via
