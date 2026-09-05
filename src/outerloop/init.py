@@ -1,12 +1,13 @@
 """`outerloop init` — the guided setup.
 
 Collects placement (Slurm or local), the target repo, and bot auth, then writes
-`~/.config/autoresearch/.env` (and the PAT file), so a new adopter never
+`~/.config/autoresearch/.env` (plus the credential files), so a new adopter never
 hand-edits config or reasons about which `AUTORESEARCH_*` keys to set. Flags fill
 answers non-interactively; anything left out is prompted for (a secret via
-getpass, never echoed). The App-manifest auth path — one-click creation of the
-adopter's own GitHub App — is a later stage; today init writes a PAT you paste or
-point at, and `resolve_bot_auth` reads it exactly as `outerloop start` does.
+getpass, never echoed). Auth is the adopter's own GitHub App by default —
+`--github-app`, one click via the manifest flow in `appmanifest.py` — with a PAT
+as the fallback; either way `resolve_bot_auth` reads the result exactly as
+`outerloop start` does. An existing `.env` is never overwritten without asking.
 
 The config location is `cli.ENV_FILE`, the same file `start` reads — one source
 of truth, so a rename of the config dir moves both together.
@@ -245,6 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--yes", "-y", action="store_true", help="non-interactive: use flags, do not prompt"
     )
+    parser.add_argument(
+        "--force", action="store_true", help="overwrite an existing config without asking"
+    )
     args = parser.parse_args(sys.argv[2:] if argv is None else argv)
     interactive = not args.yes
 
@@ -261,6 +265,20 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Never clobber a working setup silently: a re-run of init on a configured
+    # machine must ask (or be told --force). Checked before any App is created.
+    env_path = CONFIG_DIR / ENV_FILE.name
+    if env_path.exists() and not args.force:
+        if not interactive:
+            print(f"outerloop init: {env_path} exists; pass --force to overwrite", file=sys.stderr)
+            return 1
+        if not _ask(f"{env_path} exists — overwrite it? (y/N)", "n").lower().startswith("y"):
+            print(
+                "outerloop init: kept the existing config (--force skips this check)",
+                file=sys.stderr,
+            )
+            return 1
 
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.
