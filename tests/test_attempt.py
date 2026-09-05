@@ -317,13 +317,13 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     ensure_excluded(ws_dir)
     install_tool(ws_dir)
     _install_report_archive(ws_dir, [*reports, ("../escape.md", "nope")])
-    assert (ws_dir / ".autoresearch" / "syscall").exists()  # both survive
-    archive = ws_dir / ".autoresearch" / "reports"
+    assert (ws_dir / ".outerloop" / "syscall").exists()  # both survive
+    archive = ws_dir / ".outerloop" / "reports"
     assert sorted(f.name for f in archive.iterdir()) == [
         "2026-08-28-run-a.md",
         "2026-08-29-run-b.md",
     ]
-    assert not (ws_dir / ".autoresearch" / "escape.md").exists()
+    assert not (ws_dir / ".outerloop" / "escape.md").exists()
     assert not (ws_dir / "escape.md").exists()
 
 
@@ -1670,7 +1670,7 @@ def _panel_judge(texts):
                 for f in payload.get("findings", []):
                     if isinstance(f, dict):
                         f.setdefault("kind", "note")  # the tool's own default
-                d = Path(workspace) / ".autoresearch"
+                d = Path(workspace) / ".outerloop"
                 d.mkdir(exist_ok=True)
                 (d / "syscall.json").write_text(json_mod.dumps({"type": "verdict", **payload}))
             return SessionResult(
@@ -1825,7 +1825,7 @@ def test_syscalls_arm_by_default_with_dispatch_and_resume(tmp_path, target_repo_
         target_repo_syscalls,
         edits={
             "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
-            ".autoresearch/syscall.json": json_mod.dumps(
+            ".outerloop/syscall.json": json_mod.dumps(
                 {"type": "sleep", "launches": [{"name": "probe", "command": "uv run probe.py"}]}
             ),
         },
@@ -1848,7 +1848,7 @@ def test_depth_k_zero_opts_the_benchmark_out(tmp_path, target_repo_optout) -> No
         target_repo_optout,
         edits={
             "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
-            ".autoresearch/syscall.json": json_mod.dumps({"type": "sleep", "launches": []}),
+            ".outerloop/syscall.json": json_mod.dumps({"type": "sleep", "launches": []}),
         },
         values=[],  # scope refuses before any measurement
         dispatch=_fake_dispatch(),
@@ -1871,7 +1871,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
         target_repo_syscalls,
         edits={
             "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
-            ".autoresearch/syscall.json": json_mod.dumps(
+            ".outerloop/syscall.json": json_mod.dumps(
                 {
                     "type": "sleep",
                     "launches": [
@@ -1905,8 +1905,8 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     import json as _json
 
     ws = tmp_path / "state" / "runs" / "tsp-1" / "ws"
-    assert (ws / ".autoresearch" / "syscall").exists()
-    budget = _json.loads((ws / ".autoresearch" / "budget.json").read_text())
+    assert (ws / ".outerloop" / "syscall").exists()
+    budget = _json.loads((ws / ".outerloop" / "budget.json").read_text())
     assert budget == {"launches_remaining": 3, "sleeps_remaining": 20}
     # the job is the eval jail on the sealed tree; the author's command travels
     # via command.txt (never shell-interpolated into the script)
@@ -1925,7 +1925,7 @@ def test_symlinked_channel_disables_syscalls_and_never_writes_through_it(
     seed = tmp_path / "seed"
     escape = tmp_path / "ESCAPE"
     escape.mkdir()
-    (seed / ".autoresearch").symlink_to(escape, target_is_directory=True)
+    (seed / ".outerloop").symlink_to(escape, target_is_directory=True)
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "trap")
     _git(seed, "push", "-q", str(tmp_path / "origin.git"), "main")
@@ -1951,8 +1951,8 @@ def test_tracked_request_file_disables_syscalls_for_the_run(tmp_path, monkeypatc
 
     target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
     seed = tmp_path / "seed"
-    (seed / ".autoresearch").mkdir()
-    (seed / ".autoresearch" / "syscall.json").write_text(
+    (seed / ".outerloop").mkdir()
+    (seed / ".outerloop" / "syscall.json").write_text(
         json_mod.dumps({"launches": [{"name": "steal", "command": "mine coins"}]})
     )
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -2002,14 +2002,14 @@ def test_configured_image_contains_local_evals_without_cluster_coords(
 
 def test_syscalls_off_without_dispatch_treats_stray_files_as_edits(tmp_path, target_repo) -> None:
     # with the feature OFF (no dispatch coords -> no launcher), the
-    # `.autoresearch/` name is NOT magic: an untracked file there is staged
+    # `.outerloop/` name is NOT magic: an untracked file there is staged
     # and judged like any other agent edit (here: out of scope) (terra #132 r2).
     outcome, _ = run_live(
         tmp_path,
         target_repo,
         edits={
             "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
-            ".autoresearch/junk.txt": "leftover",
+            ".outerloop/junk.txt": "leftover",
         },
         values=[],  # scope refuses before any measurement
     )
@@ -2025,7 +2025,7 @@ def test_armed_syscalls_exclude_the_channel_from_the_candidate(tmp_path, target_
         target_repo,
         edits={
             "src/pilot/solvers/tsp.py": "def solve(): return 'better'\n",
-            ".autoresearch/notes.txt": "scratch",
+            ".outerloop/notes.txt": "scratch",
         },
         values=[13.876, 13.1],
         dispatch=_fake_dispatch(),
@@ -2065,7 +2065,7 @@ def test_author_sleep_partial_submit_failure_cancels_earlier_jobs(
         tmp_path,
         target_repo_syscalls,
         edits={
-            ".autoresearch/syscall.json": json_mod.dumps(
+            ".outerloop/syscall.json": json_mod.dumps(
                 {
                     "type": "sleep",
                     "launches": [
@@ -2284,7 +2284,7 @@ def test_author_sleep_live_array_launch_submits_one_job_per_index(
         target_repo_syscalls,
         edits={
             "src/pilot/solvers/tsp.py": "def solve(): return 'probe'\n",
-            ".autoresearch/syscall.json": json_mod.dumps(
+            ".outerloop/syscall.json": json_mod.dumps(
                 {
                     "type": "sleep",
                     "launches": [
@@ -3166,9 +3166,9 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     assert "tail improvement: 0.7" in wake_text  # the job's stdout, delivered
     assert "compare against the sweep" in wake_text  # the author's note, echoed
     assert "2 launches and 19 sleeps remaining" in wake_text  # budgets visible
-    assert ".autoresearch/results/probe/out.json" in wake_text
+    assert ".outerloop/results/probe/out.json" in wake_text
     # the artifact really landed in the excluded channel
-    assert (wsroot / ".autoresearch" / "results" / "probe" / "out.json").read_text() == (
+    assert (wsroot / ".outerloop" / "results" / "probe" / "out.json").read_text() == (
         '{"metric": 0.7}'
     )
     # exactly ONE snapshot ref survives (the new candidate); the sleep ref is gone
@@ -3186,8 +3186,8 @@ def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
 
     class SleepyHarness(ScriptedHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            (workspace / ".autoresearch").mkdir(exist_ok=True)
-            (workspace / ".autoresearch" / "syscall.json").write_text(
+            (workspace / ".outerloop").mkdir(exist_ok=True)
+            (workspace / ".outerloop" / "syscall.json").write_text(
                 json_mod.dumps(
                     {"type": "sleep", "launches": [{"name": "second", "command": "run again"}]}
                 )

@@ -51,7 +51,7 @@ class _Harness:
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
         if self._verdict is not None:
-            d = Path(workspace) / ".autoresearch"
+            d = Path(workspace) / ".outerloop"
             d.mkdir(exist_ok=True)
             (d / "syscall.json").write_text(json.dumps({"type": "verdict", **self._verdict}))
         return SessionResult(

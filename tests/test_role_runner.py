@@ -114,9 +114,9 @@ class _VerdictHarness:
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         # the tool was installed before run (we assert the dir exists); simulate
         # the judge committing a verdict syscall (type-tagged, as the tool does)
-        self.installed = (Path(workspace) / ".autoresearch" / "syscall").exists()
+        self.installed = (Path(workspace) / ".outerloop" / "syscall").exists()
         if self.verdict is not None:
-            d = Path(workspace) / ".autoresearch"
+            d = Path(workspace) / ".outerloop"
             d.mkdir(exist_ok=True)
             (d / "syscall.json").write_text(json.dumps({"type": "verdict", **self.verdict}))
         return _session("(verdict via tool)")

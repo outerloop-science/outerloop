@@ -2,8 +2,8 @@
 (research-loop.md, "one syscall"; role-cli.md, "one CLI per role").
 
 Every role talks to the kernel through ONE tool (`syscall_cli.py`, installed at
-`.autoresearch/syscall`); a syscall is TYPED and the kernel dispatches by type.
-This module is the KERNEL side — `.autoresearch/syscall.json` is the internal
+`.outerloop/syscall`); a syscall is TYPED and the kernel dispatches by type.
+This module is the KERNEL side — `.outerloop/syscall.json` is the internal
 ABI the tool commits, and the readers here are its authoritative validators
 (never trusting the tool, which is agent-controlled once dropped):
 
@@ -19,7 +19,7 @@ ABI the tool commits, and the readers here are its authoritative validators
   A judge that commits no verdict fails its round loudly (the caller posts
   a skip stub) — there is no parse fallback.
 
-The `.autoresearch/` directory is kernel-excluded from the diff via
+The `.outerloop/` directory is kernel-excluded from the diff via
 `.git/info/exclude` (repo-local, never a tracked edit), so requests and
 delivered results never pollute the candidate, the scope check, or the drift
 fingerprints.
@@ -45,19 +45,35 @@ from typing import Any
 from outerloop.brief import _fence
 from outerloop.compute import GONE
 
-SYSCALL_DIR = ".autoresearch"
+# The syscall channel dir in the workspace. New runs install `.outerloop/`;
+# `.outerloop/` (a run parked before the rename) is kept — its persisted
+# workspace and the session's own memory of the path both predate the rename.
+# `channel_dir(ws)` resolves per workspace: existing dir (new name first), else
+# the new default. Every site keys off it, so a resumed run finds its own path.
+CHANNEL_DIR_NAMES: tuple[str, ...] = (".outerloop", ".autoresearch")
+SYSCALL_DIR = CHANNEL_DIR_NAMES[0]  # the new default (a fresh clone installs this)
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
+
+
+def channel_dir(workspace: Path) -> str:
+    """The channel dir name for this workspace: an existing one (new name first),
+    else the new default. A fresh clone gets `.outerloop`; a workspace parked
+    before the rename keeps its `.autoresearch`."""
+    for name in CHANNEL_DIR_NAMES:
+        if (workspace / name).exists():
+            return name
+    return CHANNEL_DIR_NAMES[0]
 
 
 def tool_command(workspace: Path) -> str:
     """The command a role runs to invoke the installed tool, as an ABSOLUTE
     path so it resolves from ANY working directory — not every backend's cwd is
     the workspace (hermes runs from its per-run home, so a workspace-relative
-    `.autoresearch/syscall` would not be found). The tool itself roots its
+    `.outerloop/syscall` would not be found). The tool itself roots its
     channel at its own location, so an absolute invocation still writes into
     this workspace's channel where `read_verdict` looks."""
-    return f"python {(workspace / SYSCALL_DIR / 'syscall').resolve()}"
+    return f"python {(workspace / channel_dir(workspace) / 'syscall').resolve()}"
 
 
 # Per-request bounds (the budget is separate: depth_k / sleep_k).
@@ -173,7 +189,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     finished; today's path). Malformed or over per-request bounds ->
     SyscallError. The file is consumed even on error so a bad request can
     never re-park a later run."""
-    req_file = workspace / SYSCALL_DIR / SYSCALL_FILE
+    req_file = workspace / channel_dir(workspace) / SYSCALL_FILE
     try:
         # size-cap the read: the file is agent-controlled, so a giant request
         # must not exhaust orchestrator memory before the field checks run. Read
@@ -352,7 +368,7 @@ def read_verdict(workspace: Path) -> dict[str, Any] | None:
     a bad one can never re-park a later run), the verdict is read once at session
     end and not consumed here; `install_tool` force-owns the channel, so no stale
     ABI from the untrusted checkout survives into this read."""
-    path = workspace / SYSCALL_DIR / SYSCALL_FILE
+    path = workspace / channel_dir(workspace) / SYSCALL_FILE
     try:
         with path.open("rb") as fh:
             head = fh.read(MAX_VERDICT_BYTES + 1)
@@ -444,11 +460,11 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
 
 
 def ensure_excluded(workspace: Path) -> None:
-    """Exclude `.autoresearch/` from the diff via .git/info/exclude —
+    """Exclude `.outerloop/` from the diff via .git/info/exclude —
     repo-local (never a tracked edit), idempotent, and effective for
     `git add -A`, so requests/results never enter candidates or fingerprints."""
     exclude = workspace / ".git" / "info" / "exclude"
-    line = f"/{SYSCALL_DIR}/"
+    line = f"/{channel_dir(workspace)}/"
     try:
         existing = exclude.read_text()
     except FileNotFoundError:
@@ -462,12 +478,12 @@ def ensure_excluded(workspace: Path) -> None:
 
 def install_tool(workspace: Path) -> None:
     """Drop the agent-facing syscall tool into the workspace at
-    `.autoresearch/syscall`. A verbatim copy of `syscall_cli.py` (standalone by
+    `.outerloop/syscall`. A verbatim copy of `syscall_cli.py` (standalone by
     contract: stdlib-only, since the target repo does not have autoresearch
     installed), living inside the excluded channel dir so it never enters diffs,
     scope, or fingerprints.
 
-    The `.autoresearch/` channel must be KERNEL-OWNED. A judge's workspace is an
+    The `.outerloop/` channel must be KERNEL-OWNED. A judge's workspace is an
     untrusted (author-authored) checkout, which could ship `.autoresearch` as a
     symlink to a host path so `write_text` writes through it, or a pre-planted
     `syscall.json` a non-concluding judge's `read_verdict` would then read as a
@@ -484,7 +500,7 @@ def install_tool(workspace: Path) -> None:
     # the source lives in (a deployment mistake), the rmtree below must not be
     # able to destroy the source before it was read
     source = Path(syscall_cli.__file__).read_text()
-    channel = workspace / SYSCALL_DIR
+    channel = workspace / channel_dir(workspace)
     if channel.is_symlink() or (channel.exists() and not channel.is_dir()):
         channel.unlink()
     elif channel.is_dir():
@@ -504,7 +520,7 @@ def write_budget(
 ) -> None:
     """Kernel-written budget the tool's `status` shows. Informational for the
     author's planning only — enforcement stays in `budget_error`."""
-    d = workspace / SYSCALL_DIR
+    d = workspace / channel_dir(workspace)
     d.mkdir(exist_ok=True)
     budget: dict[str, Any] = {
         "launches_remaining": launches_remaining,
@@ -519,7 +535,7 @@ def write_siblings(workspace: Path, entries: list[dict[str, Any]]) -> None:
     """Kernel-written fleet snapshot the tool's `siblings` shows: what the
     OTHER agents were working on as of this session's start. Informational,
     author-pulled — never pushed into the brief."""
-    d = workspace / SYSCALL_DIR
+    d = workspace / channel_dir(workspace)
     d.mkdir(exist_ok=True)
     (d / "siblings.json").write_text(json.dumps(entries))
 
@@ -597,7 +613,7 @@ def gather_results(
     Reads `<run_dir>/eval-launch-<name>/` — exit-code, stdout/stderr (tails),
     and the copy-out the job script already validated (`artifacts/` for
     delivered files, `artifacts.log` for skips). The kernel COPIES those files
-    into `<workspace>/.autoresearch/results/<name>/` — inside the excluded
+    into `<workspace>/.outerloop/results/<name>/` — inside the excluded
     channel, so they never enter the candidate, scope, or drift fingerprints;
     the author reads them there. A missing exit-code file means the job died
     before its wrapper ran (infra failure) — surfaced as `exit_code=None`, never
@@ -638,11 +654,11 @@ def gather_results(
 def _deliver_artifacts(
     src: Path, workspace: Path, name: str, index: int | None = None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Copy a launch's delivered artifacts into `.autoresearch/results/<name>/`
+    """Copy a launch's delivered artifacts into `.outerloop/results/<name>/`
     (`results/<name>/<index>/` for one member of an array launch; the first
     member clears the group so the tree is entirely kernel-created).
 
-    The author controls `.autoresearch/` in its sandbox, so the DESTINATION is
+    The author controls `.outerloop/` in its sandbox, so the DESTINATION is
     hostile too: a symlinked channel dir or output path would
     make `shutil.copy` write through it to an arbitrary host path with the wake
     process's permissions. Defenses: refuse if any channel ANCESTOR is a symlink;
@@ -654,10 +670,11 @@ def _deliver_artifacts(
 
     # a symlinked channel ancestor compromises every write under it — deliver
     # nothing rather than follow it (the author still sees exit code + output).
-    channel = workspace / SYSCALL_DIR
+    chan = channel_dir(workspace)
+    channel = workspace / chan
     results_root = channel / RESULTS_SUBDIR
     if channel.is_symlink() or results_root.is_symlink():
-        return (), (f"artifacts not delivered: {SYSCALL_DIR} channel is a symlink (refused)",)
+        return (), (f"artifacts not delivered: {chan} channel is a symlink (refused)",)
 
     # an earlier delivery under this name goes first, even when this job wrote
     # nothing, so a re-used name never shows stale results beside fresh ones
@@ -689,7 +706,7 @@ def _deliver_artifacts(
             continue
         try:
             shutil.copy(f, out)
-            delivered.append(str(Path(SYSCALL_DIR) / RESULTS_SUBDIR / rel_dest / rel))
+            delivered.append(str(Path(chan) / RESULTS_SUBDIR / rel_dest / rel))
         except OSError as exc:
             skips.append(f"deliver failed: {rel} ({exc})")
     return tuple(delivered), tuple(skips)
@@ -897,7 +914,7 @@ def _channel_fd(workspace: Path) -> int:
     """A dir fd for the syscall channel, opened O_NOFOLLOW so a session that
     replaced .autoresearch with a symlink cannot escape the workspace — all
     marker IO is then relative to this fd, never a re-resolved path."""
-    return os.open(workspace / SYSCALL_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    return os.open(workspace / channel_dir(workspace), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
 
 def _read_done(dirfd: int) -> float:

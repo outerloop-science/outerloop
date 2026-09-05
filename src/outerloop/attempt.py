@@ -84,7 +84,7 @@ from outerloop.runstate import (
     save_record,
     stamp_outage,
 )
-from outerloop.syscall import MAX_ARTIFACT_BYTES, SYSCALL_DIR, SyscallRequest
+from outerloop.syscall import CHANNEL_DIR_NAMES, MAX_ARTIFACT_BYTES, SyscallRequest, channel_dir
 from outerloop.syscall import ensure_excluded as syscall_excluded
 from outerloop.syscall import install_tool as syscall_install_tool
 from outerloop.syscall import write_budget as syscall_write_budget
@@ -1344,9 +1344,9 @@ def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
 
 def _install_report_archive(workspace: Path, reports: list[tuple[str, str]]) -> None:
     """Materialize the fetched reports under the kernel-owned channel
-    (`.autoresearch/reports/`) so the session can read and search the full
+    (`.outerloop/reports/`) so the session can read and search the full
     texts with its own tools; the brief inlines only the newest few."""
-    dest = workspace / SYSCALL_DIR / "reports"
+    dest = workspace / channel_dir(workspace) / "reports"
     dest.mkdir(parents=True, exist_ok=True)
     for name, text in reports:
         if Path(name).name != name:  # branch content is remote-controlled
@@ -2454,9 +2454,9 @@ def live_attempt(
         # armed whenever the deployment can deliver them — dispatch coords (the
         # launches and the gate run as Slurm jobs) and a resumable backend (the
         # wake resumes the SAME session) — and the benchmark has not opted out
-        # (`depth_k: 0`). With the channel (`.autoresearch/`) armed it never
+        # (`depth_k: 0`). With the channel (`.outerloop/`) armed it never
         # enters diffs or scope — repo-local exclude. With the feature off, an
-        # untracked `.autoresearch/` file must be staged and judged like any
+        # untracked `.outerloop/` file must be staged and judged like any
         # other agent edit, not silently hidden by a magic dir name (the off
         # state stays byte-identical).
         _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
@@ -2508,25 +2508,34 @@ def live_attempt(
             and _bench is not None
             and _bench.depth_k > 0
         )
-        # The `.autoresearch/` channel must be KERNEL-OWNED. In a fresh clone,
+        # The `.outerloop/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
         # (install would write through it to a host path with our permissions),
         # a tracked request (free cluster compute), or
         # any other booby trap. If the path pre-exists in ANY form, disable the
         # feature for the run, loudly; otherwise we create a dir we own.
-        channel = workspace / SYSCALL_DIR
-        if author_syscalls and (channel.is_symlink() or channel.exists()):
+        # A target must not ship EITHER channel name (both are booby-trap risks:
+        # a symlink install writes through, a planted request steals compute).
+        shipped = next(
+            (
+                n
+                for n in CHANNEL_DIR_NAMES
+                if (workspace / n).is_symlink() or (workspace / n).exists()
+            ),
+            "",
+        )
+        if author_syscalls and shipped:
             log.warning(
                 "target ships a %s path (symlink=%s); author syscalls disabled for this run",
-                SYSCALL_DIR,
-                channel.is_symlink(),
+                shipped,
+                (workspace / shipped).is_symlink(),
             )
             author_syscalls = False
         reports = _fetch_research_reports(ws, MAX_ARCHIVED_REPORTS)
         if author_syscalls:
             assert _bench is not None
             syscall_excluded(workspace)
-            # the author's interface is the TOOL (`python .autoresearch/syscall
+            # the author's interface is the TOOL (`python .outerloop/syscall
             # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
             # install it plus the informational budget its `status` shows.
             syscall_install_tool(workspace)

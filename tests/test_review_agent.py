@@ -63,7 +63,7 @@ class _Harness:
                 for f in payload.get("findings", []):
                     if isinstance(f, dict):
                         f.setdefault("kind", "note")  # the tool's own default
-                d = Path(workspace) / ".autoresearch"
+                d = Path(workspace) / ".outerloop"
                 d.mkdir(exist_ok=True)
                 (d / "syscall.json").write_text(json.dumps({"type": "verdict", **payload}))
         return SessionResult(
@@ -133,7 +133,7 @@ def test_clean_review_posts_inline() -> None:
     # path is absolute here — run_agent_review passes the workspace so it
     # resolves from any backend's cwd)
     assert "checked out in your working directory" in harness.briefs[0]
-    assert ".autoresearch/syscall finding" in harness.briefs[0]
+    assert ".outerloop/syscall finding" in harness.briefs[0]
 
 
 def test_null_labels_do_not_crash() -> None:
@@ -205,7 +205,7 @@ def test_build_agent_brief_reuses_rubric_and_diff() -> None:
     assert "input_gain" in brief  # the diff is embedded
     assert "2026-08-13" in brief
     # the emit path is the syscall tool, not a JSON reply
-    assert "python .autoresearch/syscall finding" in brief
+    assert "python .outerloop/syscall finding" in brief
     assert "conclude" in brief
 
 

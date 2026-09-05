@@ -209,7 +209,7 @@ def _fence(text: str) -> str:
 # (workspace-relative) is for callers/tests that don't. `syscall.tool_command`
 # renders the absolute form — needed because not every backend's cwd is the
 # workspace (hermes runs from its per-run home).
-DEFAULT_SYSCALL_CMD = "python .autoresearch/syscall"
+DEFAULT_SYSCALL_CMD = "python .outerloop/syscall"
 
 
 def _agent_investigation(syscall_cmd: str) -> str:
