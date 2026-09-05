@@ -6,6 +6,12 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- `outerloop init` no longer overwrites an existing `~/.config/autoresearch/.env`
+  silently: interactively it asks; with `--yes` it refuses unless `--force` is
+  passed. The check runs before any GitHub App is created.
+
 ### Added
 
 - `outerloop init --github-app` — the **recommended** auth path: one-click

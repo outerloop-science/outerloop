@@ -192,3 +192,51 @@ def test_main_github_app_writes_app_env(tmp_path: Path, monkeypatch, capsys) -> 
     env = (tmp_path / ".env").read_text()
     assert f"AUTORESEARCH_GITHUB_APP_FILE={app_json}" in env
     assert "AUTORESEARCH_PAT_FILE" not in env
+
+
+KEEP = "AUTORESEARCH_TARGET=keep/me\n"
+
+
+def test_init_refuses_to_overwrite_an_existing_env_non_interactively(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    (tmp_path / ".env").write_text(KEEP)
+    rc = init.main(["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p"])
+    assert rc == 1
+    assert "exists; pass --force" in capsys.readouterr().err
+    assert (tmp_path / ".env").read_text() == KEEP  # untouched
+
+
+def test_init_force_overwrites_an_existing_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    (tmp_path / ".env").write_text(KEEP)
+    rc = init.main(
+        ["--yes", "--force", "--compute", "local", "--target", "o/r", "--pat-file", "/p"]
+    )
+    assert rc == 0
+    assert "AUTORESEARCH_TARGET=o/r" in (tmp_path / ".env").read_text()
+
+
+def test_init_interactive_declined_overwrite_keeps_the_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    (tmp_path / ".env").write_text(KEEP)
+    # every other answer comes from flags, so the overwrite question is the one prompt
+    monkeypatch.setattr(init, "_ask", lambda *a, **k: "n")
+    rc = init.main(
+        [
+            "--compute",
+            "local",
+            "--target",
+            "o/r",
+            "--pat-file",
+            "/p",
+            "--author-backend",
+            "claude",
+            "--author-model",
+            "m",
+        ]
+    )
+    assert rc == 1
+    assert (tmp_path / ".env").read_text() == KEEP
