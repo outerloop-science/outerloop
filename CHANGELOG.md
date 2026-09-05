@@ -10,8 +10,12 @@ Versions follow [SemVer](https://semver.org).
 
 - `outerloop init` asks for the author's model API key (hidden) and writes it to
   `~/.config/outerloop/<backend>_key` (0600), or takes `--author-key-file` for an
-  existing file; the `.env` records it as `OUTERLOOP_<BACKEND>_KEY_FILE`. The
-  focused `--github-app` run still asks nothing about the author.
+  existing file (checked to exist, stored absolute); the `.env` records it as
+  `OUTERLOOP_<BACKEND>_KEY_FILE`. The key lands in the config dir in use:
+  `~/.config/outerloop/`, or `~/.config/autoresearch/` on a machine set up
+  before the rename. The focused `--github-app` run still asks nothing about
+  the author. Every secret `init` writes (keys, PAT, App PEM and JSON, `.env`)
+  is now created 0600 in one step rather than written and then tightened.
 
 ### Changed
 

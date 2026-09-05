@@ -272,6 +272,8 @@ def test_write_author_key_is_owner_only_and_per_backend(tmp_path: Path) -> None:
 def test_main_yes_author_key_file_flag_lands_in_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "codex").write_text("sk")
     rc = init.main(
         [
             "--yes",
@@ -284,11 +286,12 @@ def test_main_yes_author_key_file_flag_lands_in_env(tmp_path: Path, monkeypatch)
             "--author-backend",
             "codex",
             "--author-key-file",
-            "/keys/codex",
+            str(tmp_path / "keys" / "codex"),
         ]
     )
     assert rc == 0
-    assert "OUTERLOOP_CODEX_KEY_FILE=/keys/codex" in (tmp_path / ".env").read_text()
+    env = (tmp_path / ".env").read_text()
+    assert f"OUTERLOOP_CODEX_KEY_FILE={tmp_path / 'keys' / 'codex'}" in env
 
 
 def test_interactive_pasted_key_is_written_and_recorded(
@@ -368,3 +371,43 @@ def test_github_app_run_never_asks_for_the_key(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setattr(init.getpass, "getpass", boom)
     assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
+
+
+def test_write_private_never_widens(tmp_path: Path, monkeypatch) -> None:
+    """A secret file is 0600 from creation even under a permissive umask, and an
+    existing wider file is tightened before the write."""
+    import os
+
+    from outerloop.paths import write_private
+
+    old = os.umask(0o000)
+    try:
+        fresh = tmp_path / "fresh"
+        write_private(fresh, "s")
+        assert stat.S_IMODE(fresh.stat().st_mode) == 0o600
+        wide = tmp_path / "wide"
+        wide.write_text("old")
+        wide.chmod(0o644)
+        write_private(wide, "new")
+        assert wide.read_text() == "new"
+        assert stat.S_IMODE(wide.stat().st_mode) == 0o600
+    finally:
+        os.umask(old)
+
+
+def test_author_key_file_flag_must_be_readable_and_is_stored_absolute(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p"]
+    assert init.main([*base, "--author-key-file", str(tmp_path / "missing")]) == 2
+    assert "not a readable file" in capsys.readouterr().err
+    assert not (tmp_path / ".env").exists()  # nothing written on a bad flag
+    key = tmp_path / "k" / "codex_key"
+    key.parent.mkdir()
+    key.write_text("sk")
+    monkeypatch.chdir(tmp_path)
+    rc = init.main([*base, "--author-backend", "codex", "--author-key-file", "k/codex_key"])
+    assert rc == 0
+    assert f"OUTERLOOP_CODEX_KEY_FILE={key}" in (tmp_path / ".env").read_text()  # absolute

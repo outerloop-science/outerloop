@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -26,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from outerloop.cli import ENV_FILE
+from outerloop.paths import write_private
 
 CONFIG_DIR = ENV_FILE.parent
 DEFAULT_PAT_FILE = CONFIG_DIR / "bot_pat"
@@ -86,10 +88,8 @@ def author_key_path(backend: str, *, config_dir: Path = CONFIG_DIR) -> Path:
 def write_author_key(backend: str, key: str, *, config_dir: Path = CONFIG_DIR) -> Path:
     """Write a pasted model key to its default file, owner-only (0600), no
     trailing newline. Returns the path."""
-    config_dir.mkdir(parents=True, exist_ok=True)
     path = author_key_path(backend, config_dir=config_dir)
-    path.write_text(key)
-    path.chmod(0o600)
+    write_private(path, key)
     return path
 
 
@@ -105,13 +105,11 @@ def write_config(
         pat_path = config_dir / DEFAULT_PAT_FILE.name
         # printf-style: no trailing newline — the deploy `cat`s this file into
         # the git credential, and a trailing newline rides along and breaks auth.
-        pat_path.write_text(token)
-        pat_path.chmod(0o600)
+        write_private(pat_path, token)
         written_pat = pat_path
         pat_file = str(pat_path)
     env_path = config_dir / ENV_FILE.name
-    env_path.write_text(render_env(a, pat_file))
-    env_path.chmod(0o600)
+    write_private(env_path, render_env(a, pat_file))
     return env_path, written_pat
 
 
@@ -238,8 +236,7 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
             f"  no installation found yet — install the App, then set installation_id in {app_json}"
         )
     env_path = CONFIG_DIR / ENV_FILE.name
-    env_path.write_text(render_env(answers, app_file=str(app_json)))
-    env_path.chmod(0o600)
+    write_private(env_path, render_env(answers, app_file=str(app_json)))
     print(f"wrote {env_path}")
     _author_key_hint(answers)
     print("next: outerloop start")
@@ -316,7 +313,16 @@ def main(argv: list[str] | None = None) -> int:
     # interactive run, never the focused --github-app one) a hidden paste written
     # to <config>/<backend>_key. Collected after the overwrite check so a
     # declined run never asks for a secret.
-    answers.author_key_file = args.author_key_file or ""
+    if args.author_key_file:
+        key_file = Path(args.author_key_file).expanduser()
+        if not key_file.is_file() or not os.access(key_file, os.R_OK):
+            print(
+                f"outerloop init: --author-key-file {key_file} is not a readable file",
+                file=sys.stderr,
+            )
+            return 2
+        # absolute: climb jobs read the key from their own flight directory
+        answers.author_key_file = str(key_file.absolute())
     if not answers.author_key_file and interactive and not args.github_app:
         pasted = getpass.getpass(
             f"API key for the {answers.author_backend or AUTHOR_BACKENDS[0]} author "
