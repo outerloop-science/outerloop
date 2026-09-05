@@ -76,4 +76,4 @@ markers = [
 ]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/.github", "/web"]
+exclude = ["/.github", "/web", "/.wrangler"]
