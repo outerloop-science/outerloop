@@ -39,12 +39,10 @@ def test_wheel_is_the_package_and_its_licenses(dist: Path) -> None:
         names = zf.namelist()
         (meta,) = [n for n in names if n.endswith("METADATA")]
         metadata = zf.read(meta).decode()
+        entry_points = zf.read(meta.replace("METADATA", "entry_points.txt")).decode()
     assert all(n.startswith(("outerloop/", "outerloop_science-")) for n in names)
     assert "outerloop/cli.py" in names
     assert "Name: outerloop-science" in metadata
     assert "Project-URL: Repository, https://github.com/outerloop-science/outerloop" in metadata
     assert "License-File: LICENSE" in metadata and "License-File: NOTICE" in metadata
-    assert (
-        "outerloop = outerloop.cli:main"
-        in zf.read(meta.replace("METADATA", "entry_points.txt")).decode()
-    )
+    assert "outerloop = outerloop.cli:main" in entry_points
