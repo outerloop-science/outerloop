@@ -411,6 +411,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="print the command and exit")
     sub.add_parser("tick", help="one tick, or --loop; the chain's own entry", add_help=False)
+    sub.add_parser(
+        "init", help="guided setup: write ~/.config/autoresearch/.env and the PAT file",
+        add_help=False,
+    )
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["tick"]:
         # the tick entry owns its own parser; hand it the rest untouched
@@ -418,6 +422,11 @@ def main(argv: list[str] | None = None) -> int:
 
         sys.argv = ["outerloop tick", *argv[1:]]
         return tick.main()
+    if argv[:1] == ["init"]:
+        # init owns its own parser too; hand it the args after "init"
+        from outerloop import init
+
+        return init.main(argv[1:])
     return start(parser.parse_args(argv))
 
 

@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- `outerloop init` — a guided setup that collects placement (Slurm or local),
+  the target repo, and a bot token, then writes `~/.config/autoresearch/.env`
+  and the token file (both `0600`) and checks the token can reach the target.
+  Flags fill answers non-interactively (`--yes`); a pasted token is read via
+  getpass, never echoed. Replaces hand-editing `.env` for a new adopter.
+
 ### Changed
 
 - `AUTORESEARCH_PARTITION` is now **optional** — leave it unset and Slurm places
