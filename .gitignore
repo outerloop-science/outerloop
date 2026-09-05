@@ -28,3 +28,6 @@ outputs/
 # local credentials (reviewer key lives here on dev machines)
 .env*
 !.env.example
+
+# Cloudflare wrangler local cache (setup page deploys)
+.wrangler/

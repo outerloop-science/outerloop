@@ -2,28 +2,28 @@
 
 ## Versioning
 
-- SemVer 0.x; single source `src/autoresearch/__init__.py`; tags `vX.Y.Z`;
-  Keep-a-Changelog.
+- SemVer 0.x; single source `src/outerloop/__init__.py`; tags `vX.Y.Z`;
+  Keep-a-Changelog. Pre-releases use PEP 440 suffixes (`0.1.0.dev0`,
+  `0.1.0rc1`) and are tagged the same way (`v0.1.0.dev0`).
 
 ## Cutting a release
 
-1. PR: bump `__version__`, move `[Unreleased]` entries under the new version.
-2. `git tag vX.Y.Z && git push origin vX.Y.Z`, then `gh release create`.
+1. PR: bump `__version__` and move the `[Unreleased]` entries under the new
+   version. A dev or rc pre-release still bumps the version (PyPI never
+   accepts a version twice, so the next one is `.dev1`, `rc2`, ...) but leaves
+   `[Unreleased]` in place until the final release.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow builds
+   and publishes `outerloop-science` to PyPI through Trusted Publishing; the
+   one-time PyPI setup is described at the top of
+   `.github/workflows/release.yml`.
+3. `gh release create vX.Y.Z --generate-notes`, with `--prerelease` for a dev
+   or rc tag.
+4. `pip install outerloop-science==X.Y.Z` in a fresh venv, then `outerloop --help`.
 
-## If this repo goes public
+## Public repo
 
-Plausible with a code white paper. Before flipping:
-
-1. Freeze merges; move any non-releasable branches to a private mirror first —
-   the flip publishes every branch and tag.
-2. Full-history audit on a fresh mirror clone: `gitleaks git .`, large-object
-   scan, manual greps for tokens/netids/home paths. This repo handles bot and
-   API credentials — the audit is load-bearing.
-3. Editorial pass: remove the private banner, internal links, target-repo
-   specifics that aren't public yet.
-4. Add `CITATION.cff`; cut the release; `gh repo edit --visibility public`.
-5. Post-flip: enable secret scanning + push protection; re-run
-   `scripts/setup_branch_protection.sh`.
-
-History is immutable after the flip; prevention (gitleaks in pre-commit + CI) is
-the real defense.
+Public since 2026-09-05. Secret scanning and push protection are on, and
+`main` is protected by `scripts/setup_branch_protection.sh` (pull request
+required, the `ci` check, conversations resolved, no force-push, admins
+included). History is immutable now; prevention (gitleaks in pre-commit and
+CI, push protection) is the real defense. `CITATION.cff` is still owed.
