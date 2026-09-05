@@ -239,7 +239,7 @@ Research findings sync through GitHub; job state never leaves its cluster.
       verifier key file at ~/.config/autoresearch/verifier_key on the tick
       account — a missing key fails climbs LOUDLY by design. GitHub-side
       verify.yml thins per target after the pilot runs clean
-- [ ] jepa-agent as the first research target: `.autoresearch.yaml` + bot Write
+- [ ] jepa-agent as the first research target: `.outerloop.yaml` + bot Write
       grant + token scope, once its benchmark harness lands and the pilot's
       PR-quality bar is met
 - [ ] egolearn as second research target; second harness backend if volume warrants

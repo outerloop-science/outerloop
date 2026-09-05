@@ -1,6 +1,6 @@
-"""Validate a `.autoresearch.yaml` before you push it.
+"""Validate a contract file (`.outerloop.yaml`) before you push it.
 
-    uv run python -m outerloop.contract_cli .autoresearch.yaml
+    uv run python -m outerloop.contract_cli .outerloop.yaml
 
 Prints what the agent would be allowed to do, or exactly what is wrong.
 """
@@ -10,12 +10,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from outerloop.contract import ContractError, forbidden_paths, load_contract
+from outerloop.contract import (
+    CONTRACT_NAME,
+    CONTRACT_NAMES,
+    ContractError,
+    forbidden_paths,
+    load_contract,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    path = Path(args[0]) if args else Path(".autoresearch.yaml")
+    # no arg: whichever contract name the cwd has, new name first
+    path = (
+        Path(args[0])
+        if args
+        else next((Path(n) for n in CONTRACT_NAMES if Path(n).is_file()), Path(CONTRACT_NAME))
+    )
     repo = args[1] if len(args) > 1 else "your-org/your-repo"
 
     if not path.is_file():

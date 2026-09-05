@@ -37,7 +37,7 @@ correction — interventions-per-accepted-step is measured per mode), under a
    val loss, frozen arch/data/batch (modded-nanogpt track 3 rules). Direct
    comparability with Prime Intellect's agent record (2,930 steps vs the
    2,990 human baseline; ~14k H200-hours; ~100 human interventions) without
-   requiring identical hardware. New target repo with an `.autoresearch.yaml`
+   requiring identical hardware. New target repo with an `.outerloop.yaml`
    contract; wall-clock track is a stretch goal pending Torch's GPU shape
    (OPEN: H100s per node, burnable budget).
 2. **Comparability — the RSI exam.** A slice of AI4AI-Bench (frozen research

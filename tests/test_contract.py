@@ -70,7 +70,12 @@ def test_self_target_refused_case_insensitive() -> None:
 
 def test_forbidden_paths_include_roadmap() -> None:
     contract = load_contract(PILOT_CONTRACT, "x/y")
-    assert set(forbidden_paths(contract)) == {".github", ".autoresearch.yaml", "README.md"}
+    assert set(forbidden_paths(contract)) == {
+        ".github",
+        ".outerloop.yaml",
+        ".autoresearch.yaml",
+        "README.md",
+    }
 
 
 @pytest.mark.parametrize(

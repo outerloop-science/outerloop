@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from outerloop.measure import DispatchSettings
 
 from outerloop.brief import render_review_wake
-from outerloop.contract import load_contract
+from outerloop.contract import CONTRACT_NAME, contract_in_tree, contract_text_in_tree, load_contract
 from outerloop.github import (
     GitError,
     GitHubClient,
@@ -34,6 +34,7 @@ from outerloop.github import (
     NothingToCommit,
     Workspace,
     bot_login_from_env,
+    contract_at,
     is_own_login,
 )
 from outerloop.harness import Harness, outage, redact
@@ -520,7 +521,7 @@ def _respond(
     from outerloop.attempt import _target_clone_url
 
     ws = Workspace(root=workspace, auth=github.auth, url=_target_clone_url(record.target))
-    contract_text = (workspace / ".autoresearch.yaml").read_text()
+    contract_text = contract_text_in_tree(workspace)
     contract = load_contract(contract_text, record.target)
     bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
     if bench is None:
@@ -754,7 +755,8 @@ def _respond(
     # the sync-skip comparison, the scope check, the re-measure's bench —
     # must see the tree's contract, not the one loaded before the session
     # ran. An unparsable merged contract withholds the response outright.
-    contract_path = ".autoresearch.yaml"
+    found_contract = contract_in_tree(workspace)
+    contract_path = found_contract[0] if found_contract else CONTRACT_NAME
     post_contract = contract
     contract_broken = False
     if contract_path in changed:
@@ -1315,7 +1317,7 @@ def _reread_pushed_change(
                 lines = bool(getattr(bench, "lines", False))
                 # the judges' rules come from the TRUSTED base only — never the
                 # workspace copy, which the pushed tree controls (terra #229 r1)
-                contract_text = ws.git("show", f"{base}:.autoresearch.yaml")
+                contract_text = contract_at(ws, base)
                 runner = (panel_builder or build_panel_runner)(
                     ws,
                     run_dir(run_root, run_id),
@@ -1688,7 +1690,7 @@ def _resume_measure(
     # measured — never the live workspace file, which can change during the
     # wait (terra #241 r1)
     try:
-        contract_text = ws.git("show", f"{candidate_sha}:.autoresearch.yaml")
+        contract_text = contract_at(ws, candidate_sha)
     except GitError as exc:
         return FollowupOutcome(run_id, "error", f"sealed contract unreadable: {exc}")
     contract = load_contract(contract_text, record.target)

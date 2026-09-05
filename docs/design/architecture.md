@@ -21,7 +21,7 @@ reports weekly. Humans keep the merge button.
 
 ## Target-repo contract
 
-A repo opts in with two things: bot access, and `.autoresearch.yaml` at its root.
+A repo opts in with two things: bot access, and `.outerloop.yaml` at its root.
 Target repos never import this repo.
 
 ```yaml
@@ -282,7 +282,7 @@ grep + recency + distillation until that provably fails.
 
 | Module | Job |
 | --- | --- |
-| `contract` | Schema + loader for `.autoresearch.yaml`, incl. the hard-coded invariants |
+| `contract` | Schema + loader for `.outerloop.yaml`, incl. the hard-coded invariants |
 | `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys; per-run HOME, fresh per run; brief on stdin, never argv); capture transcript and cost (the orchestrator captures the diff); secret-scan transcripts before storage. See "Harness and context engineering" below |
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
@@ -305,7 +305,7 @@ exactly what any given agent saw, and a bad run can be replayed from its brief:
 | Section | Source | Budgeted |
 | --- | --- | --- |
 | Task: one hypothesis, expected metric movement, done-criteria | task selection | fixed |
-| Contract: benchmarks, scope, budgets (verbatim) | `.autoresearch.yaml` | fixed |
+| Contract: benchmarks, scope, budgets (verbatim) | `.outerloop.yaml` | fixed |
 | Ruler: how the metric is computed, how claims get re-verified | target repo docs | fixed |
 | Lessons: distilled, bounded per-target lessons file | notebook `lessons/<target>.md` | hard cap |
 | Recent history: last N run reports for this target (incl. failures) | notebook `runs/<target>/` | hard cap, newest first |

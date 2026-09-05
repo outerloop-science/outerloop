@@ -125,7 +125,7 @@ class BudgetState:
 @dataclass(frozen=True)
 class SessionBrief:
     task: Task
-    contract_text: str  # the target's .autoresearch.yaml, verbatim
+    contract_text: str  # the target's contract file, verbatim
     ruler: str  # how the metric is computed and how claims get re-verified
     lessons: str  # distilled per-target lessons, already bounded
     recent_reports: tuple[str, ...]  # newest first, already bounded
@@ -286,7 +286,7 @@ def render(brief: SessionBrief) -> str:
         f"Metric: {brief.task.expected_effect}",
         f"Finishing: {brief.task.done_criteria}",
         "",
-        "# Contract (.autoresearch.yaml — the scope and budget rules that bind you)",
+        "# Contract (the scope and budget rules that bind you)",
         brief.contract_text,
         "",
         "# Ruler (how the metric is computed and how your claim gets re-verified)",

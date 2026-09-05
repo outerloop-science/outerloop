@@ -26,7 +26,7 @@ Nothing reports back to us.
 - **Advisory PR reviews** — comments on pull requests with concrete findings.
   It never approves, never blocks, and never fails your CI. Five minutes to
   set up.
-- **Benchmark climbing** — given a contract (`.autoresearch.yaml`) declaring
+- **Benchmark climbing** — given a contract (`.outerloop.yaml`) declaring
   what "better" means and where the agent may write, authors propose changes
   and the orchestrator measures them itself: the base tree and the candidate
   are evaluated on your cluster (under one fresh shared seed when the
@@ -107,7 +107,7 @@ draw on it, and the author sets how long its final eval may run
 is never the metric. CPU benchmarks are not metered.
 
 ```bash
-uv run python -m outerloop.contract_cli .autoresearch.yaml   # validate before you push
+uv run python -m outerloop.contract_cli .outerloop.yaml   # validate before you push
 ```
 
 ## Getting started

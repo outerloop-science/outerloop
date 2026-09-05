@@ -1,4 +1,4 @@
-"""Contract schema and loader for a target repo's `.autoresearch.yaml`.
+"""Contract schema and loader for a target repo's contract file (`.outerloop.yaml`).
 
 The contract is the opt-in declaration: benchmarks, budgets, scope. The loader
 enforces invariants no YAML can override (see the threat model in
@@ -14,16 +14,48 @@ from __future__ import annotations
 
 import posixpath
 import re
-from pathlib import PurePosixPath
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SELF_REPO = "outerloop-science/outerloop"
-ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", ".autoresearch.yaml")
+# The contract's filename in the target repo. New adopters write `.outerloop.yaml`;
+# `.autoresearch.yaml` (targets written before the rename) is still honored. Every
+# read goes through `find_contract`, which tries the new name first. Neither is
+# ever a writable path for the agent.
+CONTRACT_NAMES: tuple[str, ...] = (".outerloop.yaml", ".autoresearch.yaml")
+CONTRACT_NAME = CONTRACT_NAMES[0]  # what the docs and new contracts use
+ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", *CONTRACT_NAMES)
 MAX_CONTRACT_BYTES = 64 * 1024
 _GLOB_CHARS = set("*?[]!")
+
+
+def find_contract(read: Callable[[str], str | None]) -> tuple[str, str] | None:
+    """(name, text) of the first contract file `read` yields, new name first; None
+    when the target has neither. `read(name)` returns the file's text, or None when
+    that name is absent — wrap a reader that raises instead."""
+    for name in CONTRACT_NAMES:
+        text = read(name)
+        if text is not None:
+            return name, text
+    return None
+
+
+def contract_in_tree(tree: Path) -> tuple[str, str] | None:
+    """The contract in a checked-out tree: (name, text), or None."""
+    return find_contract(lambda n: (tree / n).read_text() if (tree / n).is_file() else None)
+
+
+def contract_text_in_tree(tree: Path) -> str:
+    """The contract's text in a checked-out tree; raises FileNotFoundError (as a
+    direct read did) naming both candidates when the tree has neither."""
+    found = contract_in_tree(tree)
+    if found is None:
+        raise FileNotFoundError(f"no contract in {tree} ({' or '.join(CONTRACT_NAMES)})")
+    return found[1]
 
 
 class ContractError(ValueError):

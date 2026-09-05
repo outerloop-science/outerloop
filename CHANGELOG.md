@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- The contract file is now **`.outerloop.yaml`** (docs, `contract_cli`, the
+  author's brief). `.autoresearch.yaml` is still read: every read site — GitHub
+  API, `git show <sha>:…`, working tree — goes through `find_contract`, which
+  resolves whichever name the target has, new name first. No target has to
+  rename anything to keep working, and neither name is ever a writable path.
+
 ### Fixed
 
 - `outerloop init` no longer overwrites an existing `~/.config/autoresearch/.env`

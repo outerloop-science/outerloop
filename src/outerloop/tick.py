@@ -452,6 +452,15 @@ def _client_secrets(github: Any) -> tuple[str, ...]:
     return ()
 
 
+def _contract_text(github: Any, target: str, ref: str) -> str | None:
+    """The target's contract at `ref` — `.outerloop.yaml`, else the legacy
+    `.autoresearch.yaml` — or None when it has neither."""
+    from outerloop.contract import find_contract
+
+    found = find_contract(lambda name: github.get_file_content(target, name, ref))
+    return found[1] if found else None
+
+
 def _fence(content: str) -> str:
     longest = max((len(run) for run in re.findall(r"`+", content)), default=0)
     return "`" * max(3, longest + 1)
@@ -505,7 +514,7 @@ def _base_dial(
     try:
         from outerloop.contract import load_contract
 
-        raw = github.get_file_content(target, ".autoresearch.yaml", base_ref)
+        raw = _contract_text(github, target, base_ref)
         if raw is None:
             return "manual"
         return str(getattr(load_contract(raw, target), "merge", "manual"))
@@ -1705,7 +1714,7 @@ def tick(
             try:
                 from outerloop.contract import load_contract
 
-                raw = github.get_file_content(followup_spec.target, ".autoresearch.yaml", "main")
+                raw = _contract_text(github, followup_spec.target, "main")
                 if raw is not None:
                     contract = load_contract(raw, followup_spec.target)
                     contract_error = None
@@ -2640,7 +2649,7 @@ def service_intake(
         return None
     try:
         if contract is None:
-            contract_raw = github.get_file_content(target, ".autoresearch.yaml", "main")
+            contract_raw = _contract_text(github, target, "main")
             if contract_raw is None:
                 return None
             contract = load_contract(contract_raw, target)

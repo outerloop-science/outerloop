@@ -16,6 +16,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from outerloop.contract import find_contract
 from outerloop.github import GitHubClient
 from outerloop.harness import Harness, backend_id, budget_exhausted, outage
 from outerloop.posting import EXPECTED_FAILURES, post_round, post_skip_stub
@@ -41,7 +42,8 @@ def _base_contract(client: GitHubClient, repo: str, pr_data: dict) -> str:
     base = pr_data.get("base")
     base_ref = str(base.get("ref", "")) if isinstance(base, dict) else ""
     try:
-        return client.get_file_content(repo, ".autoresearch.yaml", base_ref or "HEAD") or ""
+        found = find_contract(lambda n: client.get_file_content(repo, n, base_ref or "HEAD"))
+        return found[1] if found else ""
     except EXPECTED_FAILURES as exc:
         log.warning("verifying without the contract: %s", exc)
         return ""
