@@ -1,6 +1,6 @@
 # Install
 
-autoresearch is **self-hosted**. You run it, with your keys, on your compute,
+Outerloop is **self-hosted**. You run it, with your keys, on your compute,
 against your repos. Nothing reports back to us and there is no service to sign
 up for.
 
