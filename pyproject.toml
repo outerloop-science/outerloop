@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "outerloop-science"
 dynamic = ["version"]
-description = "Autonomous research agent that co-develops the lab's benchmark-bearing repos"
+description = "Autonomous research agents that improve the benchmark you point them at, one verified pull request at a time"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

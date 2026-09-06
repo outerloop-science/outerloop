@@ -4174,3 +4174,30 @@ def test_jobs_run_the_installed_interpreter_outside_a_checkout(tmp_path: Path) -
     assert _interpreter(tmp_path) == [sys.executable]
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
     assert _interpreter(tmp_path) == ["uv", "run", "python"]
+
+
+def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path: Path) -> None:
+    """A laptop has no Apptainer image. Under AUTORESEARCH_COMPUTE=local the
+    servicing spec still comes up, with an empty image, and the job argv says
+    --uncontained; Slurm mode without the image stays disabled (#289)."""
+    from outerloop.tick import _containment, _followup_spec_from_env
+
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "AUTORESEARCH_PAT_FILE": str(pat),
+        "AUTORESEARCH_IMAGE": str(tmp_path / "missing.sif"),
+        "AUTORESEARCH_HOME": str(tmp_path),
+        "AUTORESEARCH_TARGET": "org/repo",
+        "AUTORESEARCH_ACCOUNT": "a",
+        "AUTORESEARCH_PARTITION": "p",
+    }
+    import outerloop.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    assert _followup_spec_from_env(tmp_path) == (None, None)  # slurm: image required
+    env["AUTORESEARCH_COMPUTE"] = "local"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None and spec.image == ""
+    assert _containment(spec.image) == ["--uncontained"]
+    assert _containment("/img/a.sif") == ["--image", "/img/a.sif"]
