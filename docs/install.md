@@ -216,7 +216,8 @@ runner, a cloud backend, or a hardware rig plugs in the same way.
 The deployment is configured by environment (`OUTERLOOP_*`; the pre-rename
 `AUTORESEARCH_*` names are still accepted everywhere). Placement and paths are set
 when the chain is started: `OUTERLOOP_ACCOUNT`/`OUTERLOOP_PARTITION`
-place the CPU jobs (ticks, author sessions), `OUTERLOOP_HOME`/
+place the CPU jobs (ticks, author sessions; the partition is optional, unset
+lets Slurm choose), `OUTERLOOP_HOME`/
 `OUTERLOOP_ROOT` locate the checkout and the state, `OUTERLOOP_IMAGE`
 the container. The rest is re-read from `~/.config/outerloop/.env` each
 tick, so changes take effect at the next cadence: `OUTERLOOP_TARGET`
