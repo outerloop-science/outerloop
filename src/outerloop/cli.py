@@ -340,6 +340,7 @@ def start(args: argparse.Namespace) -> int:
         env["AUTORESEARCH_COMPUTE"] = "local"
         env["AUTORESEARCH_ROOT"] = str(plan.root)
         env["AUTORESEARCH_HOME"] = str(plan.home)
+        plan.home.mkdir(parents=True, exist_ok=True)  # <root>/home when there is no checkout
         if plan.cadence_min:
             env["AUTORESEARCH_CADENCE_MIN"] = plan.cadence_min
         if plan.pat_file:
