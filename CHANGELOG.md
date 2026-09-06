@@ -8,6 +8,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `climb/status.json` carries the fleet's queue: the kernel's own Slurm jobs
+  (tick chain, sessions, wakes, evals, launches), each attributed to an agent,
+  with state, elapsed time, partition and submit time. Jobs on the account
+  that are not the kernel's never appear. The strip republishes when a job
+  appears, leaves, or changes state, not on elapsed drift.
+
+### Added
+
 - `outerloop init` asks for the author's model API key (hidden) and writes it to
   `~/.config/outerloop/<backend>_key` (0600), or takes `--author-key-file` for an
   existing file (checked to exist, stored absolute); the `.env` records it as

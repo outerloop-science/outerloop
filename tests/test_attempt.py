@@ -624,6 +624,9 @@ class QueueCompute:
     def active_job_names(self) -> list:
         return []
 
+    def queue_snapshot(self) -> list[dict[str, str]]:
+        return []
+
     def job_id_for_name(self, name: str) -> str:
         return ""
 

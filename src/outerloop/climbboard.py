@@ -784,6 +784,72 @@ def render_html(
 
 
 STATUS_PATH = "climb/status.json"
+# The queue view shows the kernel's own jobs only: the tick chain, sessions,
+# wakes, evals, and launches. Anything else on the account is the operator's.
+KERNEL_JOB_PREFIXES = (
+    "autoresearch-",
+    "outerloop-",
+    "climb-",
+    "followup-",
+    "wake-",
+    "steward-",
+    "eval-",
+)
+_AGENT_RE = re.compile(r"agent-\d+")
+
+
+def is_kernel_job(name: str) -> bool:
+    return name.startswith(KERNEL_JOB_PREFIXES) or "-launch-" in name
+
+
+def eval_job_owners(root: Path, target: str) -> dict[str, tuple[str, str]]:
+    """Slurm job id -> (run_id, agent) for every eval a live run of `target`
+    has dispatched: the measurer leaves the id in eval-*/submitted. Eval job
+    names are liveness hashes with no agent in them, so this is how the queue
+    view knows whose eval is whose."""
+    out: dict[str, tuple[str, str]] = {}
+    for record in list_runs(root):
+        if record.target != target or record.state == ENDED:
+            continue
+        for submitted in run_dir(root, record.run_id).glob("eval-*/submitted"):
+            try:
+                job_id = submitted.read_text().strip()
+            except OSError:
+                continue
+            if job_id:
+                out[job_id] = (record.run_id, record.agent_id)
+    return out
+
+
+def queue_rows(root: Path, target: str, snapshot: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The published queue: kernel jobs from a `Compute.queue_snapshot()`,
+    each attributed to an agent (by eval marker, else by the agent id every
+    other kernel job carries in its name)."""
+    owners = eval_job_owners(root, target)
+    rows: list[dict[str, str]] = []
+    for job in snapshot:
+        name = str(job.get("name", ""))
+        if not is_kernel_job(name):
+            continue
+        run_id, agent = owners.get(str(job.get("id", "")), ("", ""))
+        if not agent:
+            found = _AGENT_RE.search(name)
+            agent = found.group(0) if found else ""
+        rows.append(
+            {
+                "id": str(job.get("id", "")),
+                "name": name,
+                "state": str(job.get("state", "")),
+                "elapsed": str(job.get("elapsed", "")),
+                "partition": str(job.get("partition", "")),
+                "submitted": str(job.get("submitted", "")),
+                "agent": agent,
+                "run_id": run_id,
+            }
+        )
+    return rows
+
+
 _LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
 
 
@@ -823,7 +889,13 @@ def _experiment_progress(root: Path, record: Any) -> tuple[int, int, int]:
     return (done, len(names), minutes)
 
 
-def collect_status(root: Path, target: str, now: float, contract: Any = None) -> dict[str, Any]:
+def collect_status(
+    root: Path,
+    target: str,
+    now: float,
+    contract: Any = None,
+    queue: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     """The fleet's live picture for `target`: one entry per non-terminal run.
     Timestamps, not durations — the page computes elapsed time client-side,
     so the strip feels live between pushes."""
@@ -878,15 +950,25 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
             }
         )
     runs.sort(key=lambda r: str(r.get("run_id")))
-    return {"target": target, "published": now, "runs": runs}
+    status: dict[str, Any] = {"target": target, "published": now, "runs": runs}
+    if queue is not None:  # a snapshot was taken (Slurm); the local loop has no queue
+        status["queue"] = queue_rows(root, target, queue)
+    return status
 
 
-def service_status(root: Path, github: Any, target: str, now: float, contract: Any = None) -> bool:
+def service_status(
+    root: Path,
+    github: Any,
+    target: str,
+    now: float,
+    contract: Any = None,
+    queue: list[dict[str, str]] | None = None,
+) -> bool:
     """Publish the strip when the fleet's SHAPE changed — a run appearing,
     leaving, or changing state/phase — never on every tick: the page shows
     elapsed time client-side, so timestamp-only drift is not worth a commit.
     Advisory like the board; True when a write happened."""
-    status = collect_status(root, target, now, contract)
+    status = collect_status(root, target, now, contract, queue)
     try:
         existing_raw: str | None = github.get_file(target, STATUS_PATH, BOARD_BRANCH)
     except Exception as exc:
@@ -920,10 +1002,14 @@ def service_status(root: Path, github: Any, target: str, now: float, contract: A
                 "sleep_k",
             )
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
+            # the queue's shape is which jobs exist and their state; elapsed
+            # time drifts every tick and the page shows it from `submitted`
+            qshape = lambda q: [(j.get("id"), j.get("state")) for j in (q or [])]
             if (
                 isinstance(existing, dict)
                 and isinstance(existing.get("runs"), list)
                 and shape(existing["runs"]) == shape(status["runs"])
+                and qshape(existing.get("queue")) == qshape(status.get("queue"))
             ):
                 return False
         except (ValueError, TypeError, AttributeError):

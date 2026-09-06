@@ -133,6 +133,9 @@ class JobSpec:
         return argv
 
 
+QUEUE_FIELDS = ("id", "name", "state", "elapsed", "partition", "submitted")
+
+
 class Compute(Protocol):
     """The verbs every compute backend implements. Callers (the measurer, the
     launcher, the wake dispatcher) depend on this, never on a backend."""
@@ -142,6 +145,7 @@ class Compute(Protocol):
     def pending_reason(self, job_id: str) -> str: ...
     def job_partition(self, job_id: str) -> str: ...
     def active_job_names(self) -> list[str]: ...
+    def queue_snapshot(self) -> list[dict[str, str]]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
 
@@ -256,6 +260,26 @@ class SlurmCompute:
         if result.returncode != 0:
             raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def queue_snapshot(self) -> list[dict[str, str]]:
+        """This user's PENDING and RUNNING jobs as rows of QUEUE_FIELDS — what
+        a queue view needs, nothing a caller acts on. Raises SlurmQueryError
+        on failure, like active_job_names."""
+        try:
+            result = self.runner(
+                ["squeue", "--me", "--noheader", "-o", "%i|%j|%T|%M|%P|%V"],
+                self.command_timeout_s,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"squeue did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"squeue failed ({result.returncode}): {result.stderr.strip()}")
+        rows: list[dict[str, str]] = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split("|")
+            if len(parts) == len(QUEUE_FIELDS) and parts[0]:
+                rows.append(dict(zip(QUEUE_FIELDS, parts, strict=True)))
+        return rows
 
     def job_id_for_name(self, name: str) -> str:
         """The id of this user's PENDING/RUNNING job with exactly `name`, or
@@ -435,6 +459,9 @@ class LocalCompute:
 
     def active_job_names(self) -> list[str]:
         return []  # synchronous: nothing is ever pending or running
+
+    def queue_snapshot(self) -> list[dict[str, str]]:
+        return []
 
     def job_id_for_name(self, name: str) -> str:
         return ""
