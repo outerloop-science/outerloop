@@ -88,6 +88,32 @@ DEFAULT_GRACE_S = 15 * 60
 # a blind park (no job ids to poll) waits its eval walltime plus this queue
 # slack before a follow-up is sent to look for the result
 BLIND_PARK_SLACK_MIN = 12 * 60
+
+# Slurm pending reasons that mean "the job will run when its turn comes": the
+# queue is busy, a reservation or dependency is ahead of it, or the account's
+# OWN jobs hold a per-user/per-account/group cap that clears as they finish. A
+# job in this state keeps accruing priority age; cancelling and resubmitting
+# would put it at the back of the queue behind itself. Per-job limits
+# (`...PerJob...`), a dependency that can never be satisfied, an invalid
+# account/QOS or a held job are NOT waits: those never clear on their own.
+QUEUE_WAIT_REASONS = frozenset(
+    {"Priority", "Resources", "Reservation", "Dependency", "ReqNodeNotAvail"}
+)
+
+
+def is_queue_wait(reason: str) -> bool:
+    """Whether a squeue pending reason describes a healthy wait (see
+    QUEUE_WAIT_REASONS). Reasons arrive as `Name` or `Name, detail...`."""
+    head = reason.strip().split(",")[0].split(" ")[0].strip()
+    if not head:
+        return False
+    if head in QUEUE_WAIT_REASONS:
+        return True
+    if "PerJob" in head:
+        return False
+    return any(tag in head for tag in ("PerUser", "PerAccount", "Grp"))
+
+
 # A held lease is stale after the session timeout plus slack.
 DEFAULT_LEASE_TTL_S = 3600 + 15 * 60
 # Coalesce guard: skip a tick's work if another ran within this window. Under
@@ -1612,6 +1638,32 @@ def _sweep_one(
             if now - record.terminal_seen >= grace_s:
                 wake(record, f"experiment {state}", state)
         elif any(is_pending(s) for s in states) and record.deadline > 0 and now > record.deadline:
+            # Past the deadline with a job still queued. Ask Slurm WHY before
+            # calling it unschedulable: a busy queue or the account's own cap is
+            # a wait a scientist would sit out, so the deadline moves out by one
+            # slack window instead (Torch 2026-09-06: four launches pending on
+            # QOSMaxGRESPerUser were about to be cancelled and re-launched into
+            # the same cap). Local compute has no queue and no reasons.
+            pending = [j for j, s in zip(job_ids, states, strict=True) if is_pending(s)]
+            reason_of = getattr(compute, "pending_reason", None)
+            reasons: dict[str, str] = {}
+            if reason_of is not None:
+                try:
+                    reasons = {j: str(reason_of(j)) for j in pending}
+                except SlurmQueryError:
+                    deferred.append(record.run_id)  # unknown is never "cancel"
+                    return
+            if reasons and all(is_queue_wait(r) for r in reasons.values()):
+                extended = now + BLIND_PARK_SLACK_MIN * 60
+                if not dry_run:
+                    save_record(root, replace(record, deadline=extended), now)
+                log.info(
+                    "sweep: %s waits in the queue (%s); deadline extended by %d min",
+                    record.run_id,
+                    ", ".join(f"{j}={r}" for j, r in reasons.items()),
+                    BLIND_PARK_SLACK_MIN,
+                )
+                return
             # Unschedulable in practice: cancel every non-terminal job
             # (best-effort — scancel trouble must not abort the sweep), then
             # wake with that fact.
