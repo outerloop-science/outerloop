@@ -11,7 +11,8 @@
 # `sbatch --export=...` when starting the chain; successors inherit):
 #   AUTORESEARCH_HOME  checkout to run from        (required)
 #   AUTORESEARCH_ROOT  state root on the shared FS (required)
-#   AUTORESEARCH_ACCOUNT / AUTORESEARCH_PARTITION  slurm placement (required)
+#   AUTORESEARCH_ACCOUNT / AUTORESEARCH_PARTITION  slurm placement (optional;
+#                             unset uses Slurm's default association/partition)
 #   AUTORESEARCH_CADENCE_MIN  tick cadence, default 30
 #   AUTORESEARCH_PAT_FILE     bot PAT for the deploy pull (optional; no file
 #                             means run whatever code is already deployed)
@@ -48,12 +49,15 @@ CADENCE_MIN="${AUTORESEARCH_CADENCE_MIN:-30}"
 JOB_NAME="autoresearch-tick"
 RESIDENT_JOB_NAME="autoresearch-resident"
 missing=""
-for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT AUTORESEARCH_ACCOUNT; do
+for var in AUTORESEARCH_HOME AUTORESEARCH_ROOT; do
     eval "val=\${$var:-}"
     [ -z "$val" ] && missing="$missing $var"
 done
-# Partition is optional: unset lets Slurm place the job on its default
-# partition. When set (including a comma-list like "a,b"), pass it through.
+# Account and partition are optional: unset, Slurm bills the default
+# association and places the job on its default partition. When set (a
+# partition may be a comma-list like "a,b"), pass them through.
+acct_arg=""
+[ -n "${AUTORESEARCH_ACCOUNT:-}" ] && acct_arg="--account=${AUTORESEARCH_ACCOUNT}"
 part_arg=""
 [ -n "${AUTORESEARCH_PARTITION:-}" ] && part_arg="--partition=${AUTORESEARCH_PARTITION}"
 
@@ -106,7 +110,7 @@ while [ "$i" -le "$need" ]; do
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
         if sbatch --dependency=singleton --begin="$begin" \
-                  --account="${AUTORESEARCH_ACCOUNT:-}" ${part_arg:+"$part_arg"} \
+                  ${acct_arg:+"$acct_arg"} ${part_arg:+"$part_arg"} \
                   "${AUTORESEARCH_HOME:-}/scripts/tick_chain.sbatch"; then
             break
         fi

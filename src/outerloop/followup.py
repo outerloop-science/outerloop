@@ -2043,11 +2043,10 @@ def main() -> int:
     )
     from outerloop.panel import panel_read_minutes
 
-    # cluster coordinates (the climb's own resolver): a GPU benchmark's
-    # re-measure is dispatched to the GPU lane; with none, evals run inline
-    dispatch = (
-        _dispatch_settings(args) if (args.account or args.partition or args.gpu_partition) else None
-    )
+    # cluster coordinates (the climb's own resolver, the climb's own rule):
+    # a real image dispatches evals, a GPU benchmark's to the GPU lane; with
+    # no image, evals run inline. Account and partition are optional (#300).
+    dispatch = _dispatch_settings(args) if (args.image and Path(args.image).is_file()) else None
 
     # a follow-up services ONE run: reproduce THAT run's author (the persisted
     # (backend, model) PAIR), not the current fleet default, so a codex-authored

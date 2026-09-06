@@ -27,7 +27,7 @@ from typing import Any, cast
 
 from outerloop.appauth import resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
-from outerloop.compute import LocalCompute, local_mode
+from outerloop.compute import LocalCompute
 from outerloop.contract import Benchmark, Contract, contract_text_in_tree, load_contract
 from outerloop.dispatch import (
     Snapshot,
@@ -3144,9 +3144,10 @@ def main() -> int:
     parser.add_argument("--base-branch", default="main")
     # All three default from the chain env the tick sets on the climb job, so
     # a contained run with AUTORESEARCH_{IMAGE,ACCOUNT,PARTITION} set selects
-    # dispatched measurement without extra flags. The image also containers the
-    # session + inline eval; absent any of the three, measurement stays inline
-    # regardless of the benchmark's eval hint.
+    # dispatched measurement without extra flags. Only the image is required
+    # for dispatch (it also contains the session + inline eval); without it,
+    # measurement stays inline regardless of the benchmark's eval hint. Empty
+    # account/partition use Slurm's defaults.
     parser.add_argument(
         "--image",
         default=os.environ.get("AUTORESEARCH_IMAGE", ""),
@@ -3262,12 +3263,11 @@ def main() -> int:
     # and re-enter the decision. The wake job the WakeDispatcher submits runs
     # exactly this.
     if args.resume:
-        placed = bool(args.account and args.partition) or local_mode()
-        if not (placed and args.image and Path(args.image).is_file()):
+        if not (args.image and Path(args.image).is_file()):
             parser.error(
-                "--resume needs the cluster triple (--account/--partition/--image) "
-                "to rebuild the dispatched measurer (local compute waives the "
-                "account/partition pair, never the image)"
+                "--resume needs --image to rebuild the dispatched measurer "
+                "(account and partition are optional: empty ones use Slurm's "
+                "defaults, and local compute has no placement)"
             )
         from outerloop.runstate import load_record
 
@@ -3432,13 +3432,12 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    # Dispatched measurement needs the full cluster triple AND a real image
-    # file to bind against; missing any, the climb measures inline (the tick
-    # sets these on the climb job's env, a bare CLI run leaves them empty).
+    # Dispatched measurement needs a real image file to bind against; without
+    # one the climb measures inline. Account and partition are optional: empty
+    # ones use Slurm's defaults (the tick sets them on the climb job's env from
+    # the chain's), and local compute has no placement.
     dispatch: DispatchSettings | None = None
-    if (bool(args.account and args.partition) or local_mode()) and (
-        args.image and Path(args.image).is_file()
-    ):
+    if args.image and Path(args.image).is_file():
         dispatch = _dispatch_settings(args)
     try:
         try:

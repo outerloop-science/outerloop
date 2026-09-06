@@ -46,11 +46,13 @@ def test_submit_parses_job_id() -> None:
     assert "--wrap=echo hi" in argv
 
 
-def test_partition_is_optional_in_the_argv() -> None:
-    with_part = JobSpec(job_name="j", account="a", partition="cpu,gpu", time_minutes=1, command="x")
-    assert "--partition=cpu,gpu" in with_part.to_argv()  # comma-list passes through
-    without = JobSpec(job_name="j", account="a", partition="", time_minutes=1, command="x")
-    assert not any(a.startswith("--partition") for a in without.to_argv())
+def test_account_and_partition_are_optional_in_the_argv() -> None:
+    with_both = JobSpec(job_name="j", account="a", partition="cpu,gpu", time_minutes=1, command="x")
+    assert "--account=a" in with_both.to_argv()
+    assert "--partition=cpu,gpu" in with_both.to_argv()  # comma-list passes through
+    # unset: Slurm bills the default association and picks the default partition
+    bare = JobSpec(job_name="j", account="", partition="", time_minutes=1, command="x")
+    assert not any(a.startswith(("--account", "--partition")) for a in bare.to_argv())
 
 
 def test_submit_parses_cluster_suffixed_id() -> None:

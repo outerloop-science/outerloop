@@ -206,17 +206,20 @@ def test_home_is_a_checkout_on_slurm_and_optional_for_the_local_loop(tmp_path: P
         plan(tmp_path, cwd=tmp_path, local=True, environ={"AUTORESEARCH_HOME": str(tmp_path)})
 
 
-def test_slurm_requires_root_and_account_but_partition_is_optional(tmp_path: Path) -> None:
+def test_slurm_requires_root_but_account_and_partition_are_optional(tmp_path: Path) -> None:
     with pytest.raises(StartError, match="state root"):
         plan(tmp_path)
-    with pytest.raises(StartError, match="--account / AUTORESEARCH_ACCOUNT"):
-        plan(tmp_path, root="/r")
-    # partition unset is fine: Slurm places on its default, and neither the
-    # sbatch command nor export_env carries an AUTORESEARCH_PARTITION.
-    p = plan(tmp_path, root="/r", account="a")
-    assert p.partition == ""
-    assert not any(a.startswith("--partition=") for a in p.command())
+    # account and partition unset are fine (#300): Slurm bills the default
+    # association and places on its default partition, and the sbatch command
+    # carries neither flag.
+    p = plan(tmp_path, root="/r")
+    assert p.account == "" and p.partition == ""
+    assert not any(a.startswith(("--account=", "--partition=")) for a in p.command())
+    assert "AUTORESEARCH_ACCOUNT" not in p.export_env()
     assert "AUTORESEARCH_PARTITION" not in p.export_env()
+    p = plan(tmp_path, root="/r", account="a")
+    assert "--account=a" in p.command()
+    assert not any(a.startswith("--partition=") for a in p.command())
 
 
 def test_slurm_accepts_a_comma_list_partition(tmp_path: Path) -> None:

@@ -3361,10 +3361,11 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     assert _g(ws, "show", "origin/main:docs/b.md").strip() == "new"
 
 
-def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -> None:
-    """Under AUTORESEARCH_COMPUTE=local the followup service comes up without
-    account/partition (subprocess jobs have no placement); Slurm mode still
-    requires them."""
+def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path: Path) -> None:
+    """The followup service comes up without account/partition in both modes
+    (#300): on Slurm, empty ones use the cluster's default association and
+    partition, as `start` already allows; under AUTORESEARCH_COMPUTE=local
+    subprocess jobs have no placement at all. Set, the account passes through."""
     from outerloop.tick import _followup_spec_from_env
 
     image = tmp_path / "agent.sif"
@@ -3381,21 +3382,26 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
     _github, spec = _followup_spec_from_env(tmp_path)
-    assert spec is None  # slurm mode: placement required
+    assert spec is not None  # slurm mode, no account, no partition
+    assert spec.account == "" and spec.partition == ""
+    env["AUTORESEARCH_ACCOUNT"] = "acct"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None
+    assert spec.account == "acct" and spec.partition == ""
+    del env["AUTORESEARCH_ACCOUNT"]
     env["AUTORESEARCH_COMPUTE"] = "local"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None
     assert spec.account == "" and spec.partition == ""
 
 
-def test_local_mode_waives_placement_at_the_attempt_gates(
-    monkeypatch: Any, tmp_path: Path, capsys: Any
-) -> None:
+def test_resume_gate_needs_only_the_image(monkeypatch: Any, tmp_path: Path, capsys: Any) -> None:
     """The resume gate accepts empty account/partition under
     AUTORESEARCH_COMPUTE=local (terra #223: locally dispatched wakes died at
-    the parser). Proof of admission: the CLI proceeds far enough to complain
-    about the missing parked run, not about the cluster triple — and without
-    local mode the same argv still trips the triple."""
+    the parser) and on Slurm (#300: the cluster's defaults apply). Proof of
+    admission: the CLI proceeds far enough to complain about the missing
+    parked run, not about the placement. Only the image is required: without
+    it the same argv trips the gate."""
     import sys
 
     import pytest
@@ -3427,12 +3433,103 @@ def test_local_mode_waives_placement_at_the_attempt_gates(
     # fails THERE (no parked run in this tmp root) — proof of admission
     with pytest.raises(FileNotFoundError, match=r"state\.json"):
         attempt_mod.main()
-    assert "cluster triple" not in capsys.readouterr().err
+    assert "needs --image" not in capsys.readouterr().err
 
+    # Slurm mode, no account, no partition: admitted the same way
     monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
+    with pytest.raises(FileNotFoundError, match=r"state\.json"):
+        attempt_mod.main()
+    assert "needs --image" not in capsys.readouterr().err
+
+    # the image is the one thing the gate needs
+    # a path that is not a file: past the parser's own --image check, but not
+    # the gate
+    missing = str(tmp_path / "missing.sif")
+    monkeypatch.setattr(sys, "argv", [(missing if a == str(image) else a) for a in argv])
     with pytest.raises(SystemExit):
         attempt_mod.main()
-    assert "cluster triple" in capsys.readouterr().err
+    assert "needs --image" in capsys.readouterr().err
+
+
+def test_fresh_climb_dispatches_without_account_or_partition(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The fresh climb's dispatch gate needs only the image (#300): with no
+    --account and no --partition the measurer is still dispatched and the
+    settings carry the empty placement (JobSpec then omits both flags, Slurm
+    applies its defaults); a set account passes through; without an image the
+    climb measures inline (dispatch=None). main() is halted right past the
+    gate with a BaseException, which the run's `except Exception`
+    containment does not swallow."""
+    import sys
+
+    import pytest
+
+    import outerloop.attempt as attempt_mod
+
+    class _Stop(BaseException):
+        pass
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    for name in ("pat", "key"):
+        f = tmp_path / name
+        f.write_text("t")
+        f.chmod(0o600)
+    argv = [
+        "attempt",
+        "--target",
+        "org/repo",
+        "--benchmark",
+        "b",
+        "--run-root",
+        str(tmp_path),
+        "--image",
+        str(image),
+        "--pat-file",
+        str(tmp_path / "pat"),
+        "--key-file",
+        str(tmp_path / "key"),
+        "--min-free-gb",
+        "0",
+    ]
+    for name in ("AUTORESEARCH_COMPUTE", "AUTORESEARCH_ACCOUNT", "AUTORESEARCH_PARTITION"):
+        monkeypatch.delenv(name, raising=False)
+    seen: dict[str, Any] = {}
+
+    def fake_dispatch_settings(args: Any) -> Any:
+        seen["dispatch_args"] = (args.account, args.partition)
+        raise _Stop
+
+    def fake_live_attempt(**kwargs: Any) -> Any:
+        seen["live_dispatch"] = kwargs["dispatch"]
+        raise _Stop
+
+    monkeypatch.setattr(attempt_mod, "_dispatch_settings", fake_dispatch_settings)
+    monkeypatch.setattr(attempt_mod, "live_attempt", fake_live_attempt)
+    monkeypatch.setattr(attempt_mod, "build_harness", lambda *a, **k: None)
+
+    # no account, no partition: dispatched with the empty placement
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(_Stop):
+        attempt_mod.main()
+    assert seen.pop("dispatch_args") == ("", "")
+    assert "live_dispatch" not in seen
+
+    # a set account passes through
+    monkeypatch.setattr(sys, "argv", [*argv, "--account", "acct"])
+    with pytest.raises(_Stop):
+        attempt_mod.main()
+    assert seen.pop("dispatch_args") == ("acct", "")
+
+    # no image: measured inline
+    # a path that is not a file: past the parser's own --image check, but not
+    # the gate
+    missing = str(tmp_path / "missing.sif")
+    monkeypatch.setattr(sys, "argv", [(missing if a == str(image) else a) for a in argv])
+    with pytest.raises(_Stop):
+        attempt_mod.main()
+    assert seen == {"live_dispatch": None}
 
 
 def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:

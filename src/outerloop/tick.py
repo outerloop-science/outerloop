@@ -3035,9 +3035,9 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
     )
     home = os.environ.get("AUTORESEARCH_HOME", "")
-    # Local compute runs jobs as subprocesses: Slurm placement is meaningless
-    # there, so account/partition are only required when a cluster is in play.
-    placed = bool(account and partition) or local_mode()
+    # Account and partition are optional on Slurm: empty ones leave the billing
+    # association and the partition to Slurm's defaults, as `start` already
+    # does for the resident. Local compute has no placement at all.
     target = os.environ.get("AUTORESEARCH_TARGET", "")
     image_ok = Path(image).is_file()
     panel = os.environ.get("AUTORESEARCH_PANEL", "verify,review")
@@ -3065,7 +3065,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         # the jobs must not inherit a path to an image that is not there
         os.environ.pop("AUTORESEARCH_IMAGE", None)
         image, image_ok = "", True
-    if (pat_file or app_file) and placed and home and target and image_ok:
+    if (pat_file or app_file) and home and target and image_ok:
         from outerloop.appauth import resolve_bot_auth
         from outerloop.github import GitHubClient
 
@@ -3096,8 +3096,6 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         name
         for name, value in [
             ("AUTORESEARCH_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
-            ("AUTORESEARCH_ACCOUNT", account or ("-" if local_mode() else "")),
-            ("AUTORESEARCH_PARTITION", partition or ("-" if local_mode() else "")),
             ("AUTORESEARCH_HOME", home),
             ("AUTORESEARCH_TARGET", target),
         ]

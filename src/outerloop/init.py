@@ -43,7 +43,7 @@ class InitAnswers:
     compute: str  # "slurm" | "local"
     target: str  # "owner/repo"
     root: str = ""  # Slurm state root on the shared filesystem
-    account: str = ""  # Slurm account (required for Slurm)
+    account: str = ""  # Slurm account (optional; unset -> the default association)
     partition: str = ""  # Slurm partition (optional; unset -> Slurm default)
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
@@ -60,7 +60,8 @@ def render_env(
     lines = [f"OUTERLOOP_COMPUTE={a.compute}"]
     if a.compute == "slurm":
         lines.append(f"OUTERLOOP_ROOT={a.root}")
-        lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
+        if a.account:  # optional: unset bills the caller's default association
+            lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"OUTERLOOP_PARTITION={a.partition}")
     lines.append(f"OUTERLOOP_TARGET={a.target}")
@@ -226,7 +227,9 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         root = args.root or (
             _ask("Slurm state root (shared filesystem)", required=True) if interactive else ""
         )
-        account = args.account or (_ask("Slurm account", required=True) if interactive else "")
+        account = args.account or (
+            _ask("Slurm account (blank = your default association)") if interactive else ""
+        )
         partition = args.partition or (
             _ask("Slurm partition (blank = Slurm default; a,b for a list)") if interactive else ""
         )
@@ -347,7 +350,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compute", choices=["slurm", "local"], help="where the loop runs")
     parser.add_argument("--target", help="the repo the agents work on, owner/repo")
     parser.add_argument("--root", help="Slurm state root on the shared filesystem")
-    parser.add_argument("--account", help="Slurm account")
+    parser.add_argument(
+        "--account", help="Slurm account (optional; unset bills your default association)"
+    )
     parser.add_argument(
         "--partition", help="Slurm partition (optional; blank = default; a,b = list)"
     )
@@ -382,8 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     if not answers.target:
         print("outerloop init: a target repo is required (--target owner/repo)", file=sys.stderr)
         return 2
-    if answers.compute == "slurm" and not (answers.root and answers.account):
-        print("outerloop init: Slurm needs --root and --account", file=sys.stderr)
+    if answers.compute == "slurm" and not answers.root:
+        # the account and the partition are optional: Slurm's defaults apply
+        print("outerloop init: Slurm needs --root", file=sys.stderr)
         return 2
     if answers.author_backend and answers.author_backend not in AUTHOR_BACKENDS:
         print(
