@@ -50,7 +50,9 @@ class InitAnswers:
     author_key_file: str = ""  # the author's model key file, when known
 
 
-def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str:
+def render_env(
+    a: InitAnswers, pat_file: str = "", *, app_file: str = "", bot_login: str = ""
+) -> str:
     """The `.env` body for these answers — only the keys that have a value, so
     the file stays minimal and every line means something. Ordered placement →
     target → auth → author to read top-to-bottom like the setup itself. Auth is
@@ -66,6 +68,10 @@ def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str
         lines.append(f"OUTERLOOP_GITHUB_APP_FILE={app_file}")
     elif pat_file:
         lines.append(f"OUTERLOOP_PAT_FILE={pat_file}")
+    if bot_login:
+        # every own-comment filter and own-PR scan keys on this login; without
+        # it the kernel assumes a default that is not this adopter's identity
+        lines.append(f"OUTERLOOP_BOT_LOGIN={bot_login}")
     if a.author_backend:
         lines.append(f"OUTERLOOP_AUTHOR_BACKEND={a.author_backend}")
     if a.author_model:
@@ -320,7 +326,10 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
             f"Settings > Installations), then run outerloop start."
         )
     env_path = CONFIG_DIR / ENV_FILE.name
-    write_private(env_path, render_env(answers, app_file=str(app_json)))
+    write_private(
+        env_path,
+        render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+    )
     print(f"wrote {env_path}")
     _author_key_hint(answers)
     print("next: outerloop start")

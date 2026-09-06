@@ -166,6 +166,8 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
     monkeypatch.setattr(init, "_owner_is_user", lambda owner: False)
     monkeypatch.setattr("builtins.input", lambda *a: "")
     assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
+    written = (tmp_path / ".env").read_text()
+    assert "OUTERLOOP_BOT_LOGIN=s[bot]" in written  # the login it recognizes itself by
     # the organization question is the only prompt; nothing about the author
     assert asked == [init.ORG_PROMPT]
 
