@@ -829,9 +829,18 @@ def run_job_names(root: Path, target: str) -> dict[str, tuple[str, str, bool]]:
         if record.target != target:
             continue
         rid, agent = record.run_id, record.agent_id
-        for exact in (f"wake-{rid}", f"followup-{rid}"):
-            out[exact[:JOB_NAME_LIMIT]] = (rid, agent, False)
-        out[f"{rid}-launch-"[:JOB_NAME_LIMIT]] = (rid, agent, True)
+        for name, prefix in (
+            (f"wake-{rid}", False),
+            (f"followup-{rid}", False),
+            (f"{rid}-launch-", True),
+        ):
+            key = name[:JOB_NAME_LIMIT]
+            if key in out and out[key][0] != rid:
+                # two runs whose names collide under the cut: the job is still
+                # the kernel's, but nobody can say whose, so it is claimed by none
+                out[key] = ("", "", prefix)
+            else:
+                out[key] = (rid, agent, prefix)
     return out
 
 
