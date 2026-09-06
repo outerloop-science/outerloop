@@ -147,3 +147,27 @@ def test_compute_from_env_selects_the_backend(monkeypatch) -> None:
     assert isinstance(compute_from_env(), LocalCompute)
     monkeypatch.setenv("AUTORESEARCH_COMPUTE", "lokal")
     assert isinstance(compute_from_env(), SlurmCompute)
+
+
+def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
+    from outerloop.compute import LocalCompute
+
+    out = (
+        "101|eval-speedrun-2-cand-ab12|RUNNING|1:02:03|gpu|2026-09-05T20:00:00\n"
+        "102|wake-run|PENDING|0:00|cpu|2026-09-05T20:01:00\n"
+    )
+    runner = FakeRunner([CommandResult(0, out, "")])
+    rows = SlurmCompute(runner=runner).queue_snapshot()
+    assert runner.seen[0][:3] == ["squeue", "--me", "--noheader"]
+    assert rows[0] == {
+        "id": "101",
+        "name": "eval-speedrun-2-cand-ab12",
+        "state": "RUNNING",
+        "elapsed": "1:02:03",
+        "partition": "gpu",
+        "submitted": "2026-09-05T20:00:00",
+    }
+    assert rows[1]["state"] == "PENDING" and len(rows) == 2
+    with pytest.raises(SlurmQueryError):
+        SlurmCompute(runner=FakeRunner([CommandResult(1, "", "slurmctld down")])).queue_snapshot()
+    assert LocalCompute.queue_snapshot(None) == []  # type: ignore[arg-type]  # no queue in the monolith

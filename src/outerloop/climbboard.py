@@ -773,6 +773,18 @@ def render_html(
         "    now.append(card);\n"
         "  }\n"
         "  if (!strip.runs.length) now.textContent = 'no active runs';\n"
+        "  // the kernel's own Slurm jobs, as squeue would list them (when published)\n"
+        "  if (Array.isArray(strip.queue) && strip.queue.length) {\n"
+        "    const ST = {RUNNING: 'R', PENDING: 'PD', COMPLETING: 'CG', CONFIGURING: 'CF'};\n"
+        "    const pad = (s, n) => String(s ?? '').padEnd(n).slice(0, n);\n"
+        "    const q = document.createElement('pre'); q.className = 'queue';\n"
+        "    const head = pad('JOBID', 10) + pad('NAME', 28)\n"
+        "      + pad('ST', 4) + pad('TIME', 11) + 'AGENT';\n"
+        "    const row = j => pad(j.id, 10) + pad(j.name, 28) + pad(ST[j.state] || j.state, 4)\n"
+        "      + pad(j.elapsed, 11) + (j.agent || '');\n"
+        "    q.textContent = [head, ...strip.queue.map(row)].join('\\n');\n"
+        "    now.append(q);\n"
+        "  }\n"
         "};\n"
         "refresh();\n"
         "// the strip re-FETCHES every few minutes (new/left/changed runs) and\n"
@@ -784,6 +796,110 @@ def render_html(
 
 
 STATUS_PATH = "climb/status.json"
+# The queue view shows the kernel's own jobs only. Fixed-name jobs (the tick
+# chain, issue sessions, climb sessions) are matched by shape; per-run jobs
+# (wake, followup, launch) are matched against the names the kernel itself
+# derives from this target's run ids, with the same 60-character cut Slurm
+# forces on them; an eval's name is a liveness hash and is claimed only
+# through its run's marker. Anything else on the account is the operator's
+# and never leaves the cluster.
+JOB_NAME_LIMIT = 60
+FIXED_JOB_PATTERNS = tuple(
+    re.compile(p)
+    for p in (
+        r"^(autoresearch|outerloop)-(resident|tick)$",
+        r"^climb-[\w.-]+-agent-\d+$",
+        r"^(steward|climb)-issue-\d+$",
+    )
+)
+_AGENT_RE = re.compile(r"agent-\d+")
+
+
+def is_fixed_kernel_job(name: str) -> bool:
+    return any(p.match(name) for p in FIXED_JOB_PATTERNS)
+
+
+def run_job_names(root: Path, target: str) -> dict[str, tuple[str, str, bool]]:
+    """Expected per-run job names for `target`: name -> (run_id, agent,
+    is_prefix). Exact for wake and followup; a prefix for launches, whose
+    names end in the experiment's own label. Every run of the target counts,
+    ended ones too: a finishing job can outlive its record's state."""
+    out: dict[str, tuple[str, str, bool]] = {}
+    for record in list_runs(root):
+        if record.target != target:
+            continue
+        rid, agent = record.run_id, record.agent_id
+        for name, prefix in (
+            (f"wake-{rid}", False),
+            (f"followup-{rid}", False),
+            (f"{rid}-launch-", True),
+        ):
+            key = name[:JOB_NAME_LIMIT]
+            if key in out and out[key][0] != rid:
+                # two runs whose names collide under the cut: the job is still
+                # the kernel's, but nobody can say whose, so it is claimed by none
+                out[key] = ("", "", prefix)
+            else:
+                out[key] = (rid, agent, prefix)
+    return out
+
+
+def eval_job_owners(root: Path, target: str) -> dict[str, tuple[str, str]]:
+    """Slurm job id -> (run_id, agent) for every eval a live run of `target`
+    has dispatched: the measurer leaves the id in eval-*/submitted. Eval job
+    names are liveness hashes with no agent in them, so this is how the queue
+    view knows whose eval is whose."""
+    out: dict[str, tuple[str, str]] = {}
+    for record in list_runs(root):
+        if record.target != target or record.state == ENDED:
+            continue
+        for submitted in run_dir(root, record.run_id).glob("eval-*/submitted"):
+            try:
+                job_id = submitted.read_text().strip()
+            except OSError:
+                continue
+            if job_id:
+                out[job_id] = (record.run_id, record.agent_id)
+    return out
+
+
+def queue_rows(root: Path, target: str, snapshot: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The published queue: kernel jobs from a `Compute.queue_snapshot()`,
+    each attributed to an agent (by eval marker, else by the agent id every
+    other kernel job carries in its name)."""
+    owners = eval_job_owners(root, target)
+    expected = run_job_names(root, target)
+    rows: list[dict[str, str]] = []
+    for job in snapshot:
+        name = str(job.get("name", ""))
+        job_id = str(job.get("id", ""))
+        run_id = agent = ""
+        if job_id in owners:  # an eval of one of this target's live runs
+            run_id, agent = owners[job_id]
+        elif name in expected and not expected[name][2]:  # wake / followup, exact
+            run_id, agent = expected[name][:2]
+        elif any(name.startswith(k) for k, v in expected.items() if v[2]):  # a launch
+            run_id, agent = next(v[:2] for k, v in expected.items() if v[2] and name.startswith(k))
+        elif is_fixed_kernel_job(name):
+            found = _AGENT_RE.search(name)
+            agent = found.group(0) if found else ""
+        else:
+            continue  # an eval whose marker is not written yet, or the operator's own job
+        rows.append(
+            {
+                "id": str(job.get("id", "")),
+                "name": name,
+                "state": str(job.get("state", "")),
+                "elapsed": str(job.get("elapsed", "")),
+                "partition": str(job.get("partition", "")),
+                "submitted": str(job.get("submitted", "")),
+                "agent": agent,
+                "run_id": run_id,
+            }
+        )
+    return rows
+
+
 _LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
 
 
@@ -823,7 +939,13 @@ def _experiment_progress(root: Path, record: Any) -> tuple[int, int, int]:
     return (done, len(names), minutes)
 
 
-def collect_status(root: Path, target: str, now: float, contract: Any = None) -> dict[str, Any]:
+def collect_status(
+    root: Path,
+    target: str,
+    now: float,
+    contract: Any = None,
+    queue: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     """The fleet's live picture for `target`: one entry per non-terminal run.
     Timestamps, not durations — the page computes elapsed time client-side,
     so the strip feels live between pushes."""
@@ -878,15 +1000,25 @@ def collect_status(root: Path, target: str, now: float, contract: Any = None) ->
             }
         )
     runs.sort(key=lambda r: str(r.get("run_id")))
-    return {"target": target, "published": now, "runs": runs}
+    status: dict[str, Any] = {"target": target, "published": now, "runs": runs}
+    if queue is not None:  # a snapshot was taken (Slurm); the local loop has no queue
+        status["queue"] = queue_rows(root, target, queue)
+    return status
 
 
-def service_status(root: Path, github: Any, target: str, now: float, contract: Any = None) -> bool:
+def service_status(
+    root: Path,
+    github: Any,
+    target: str,
+    now: float,
+    contract: Any = None,
+    queue: list[dict[str, str]] | None = None,
+) -> bool:
     """Publish the strip when the fleet's SHAPE changed — a run appearing,
     leaving, or changing state/phase — never on every tick: the page shows
     elapsed time client-side, so timestamp-only drift is not worth a commit.
     Advisory like the board; True when a write happened."""
-    status = collect_status(root, target, now, contract)
+    status = collect_status(root, target, now, contract, queue)
     try:
         existing_raw: str | None = github.get_file(target, STATUS_PATH, BOARD_BRANCH)
     except Exception as exc:
@@ -920,10 +1052,30 @@ def service_status(root: Path, github: Any, target: str, now: float, contract: A
                 "sleep_k",
             )
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
+            # the queue's shape is which jobs exist, their state, partition and
+            # attribution (an eval claimed by its marker one tick later must
+            # republish); elapsed time drifts every tick and is left out
+            # an absent queue (no snapshot) and an empty one (nothing running)
+            # are different shapes: recovering from a blind tick must publish
+            qshape = lambda q: (
+                None
+                if q is None
+                else [
+                    (
+                        j.get("id"),
+                        j.get("state"),
+                        j.get("partition"),
+                        j.get("agent"),
+                        j.get("run_id"),
+                    )
+                    for j in q
+                ]
+            )
             if (
                 isinstance(existing, dict)
                 and isinstance(existing.get("runs"), list)
                 and shape(existing["runs"]) == shape(status["runs"])
+                and qshape(existing.get("queue")) == qshape(status.get("queue"))
             ):
                 return False
         except (ValueError, TypeError, AttributeError):

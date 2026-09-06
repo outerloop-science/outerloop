@@ -1790,7 +1790,7 @@ def tick(
                 log.warning("self-initiated selection failed: %s", exc)
         # AFTER the launch block: a run started this tick is on the strip
         # this tick, not the next one
-        service_boards(root, github, spec.target, contract, now)
+        service_boards(root, github, spec.target, contract, now, compute)
         report = replace_report(
             report,
             ended,
@@ -1844,10 +1844,13 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
             log.warning("sync failed for %s: %s", record.run_id, exc)
 
 
-def service_boards(root: Path, github: Any, target: str, contract: Any, now: float) -> None:
+def service_boards(
+    root: Path, github: Any, target: str, contract: Any, now: float, compute: Any = None
+) -> None:
     """The climb board and the live strip, together and advisory: the views
     publish from the first tick (before any run ends), and a failure never
-    stops the tick."""
+    stops the tick. With a compute backend, the strip also carries the
+    kernel's queue (its own Slurm jobs, attributed to agents)."""
     try:
         from outerloop.climbboard import contract_directions, service_climb_board
 
@@ -1857,7 +1860,13 @@ def service_boards(root: Path, github: Any, target: str, contract: Any, now: flo
     try:
         from outerloop.climbboard import service_status
 
-        service_status(root, github, target, now, contract)
+        queue = None
+        if compute is not None:
+            try:
+                queue = compute.queue_snapshot()
+            except Exception as exc:  # blind this tick: the strip publishes without a queue
+                log.warning("queue snapshot failed: %s", exc)
+        service_status(root, github, target, now, contract, queue=queue)
     except Exception as exc:  # each is advisory ALONE: one failing never mutes the other
         log.warning("status strip service failed: %s", exc)
 

@@ -475,6 +475,8 @@ def test_html_carries_the_live_strip() -> None:
     assert "setInterval(refresh, 180000)" in html and "setInterval(render, 30000)" in html
     # a 404 page or malformed body never poisons the strip's render loop
     assert "r.ok ? r.json() : null" in html and "Array.isArray(s.runs)" in html
+    # the page lists the kernel's Slurm jobs when the strip carries them
+    assert "Array.isArray(strip.queue)" in html and "'JOBID'" in html
 
 
 def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_path: Path) -> None:
@@ -1107,3 +1109,104 @@ def test_run_base_renders_as_markers_not_a_line() -> None:
     block = html[html.index("'run base'") :][:400]
     assert "showLine: false" in block and "crossRot" in block
     assert "borderColor: css('--base')" in block  # the legend swatch color
+
+
+def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) -> None:
+    """The strip publishes the kernel's own Slurm jobs: an eval is attributed
+    to its run through the measurer's marker, other kernel jobs through the
+    agent id in their name, and the operator's unrelated jobs never appear.
+    Job appearing/finishing is a shape change; elapsed drift is not."""
+    from outerloop.climbboard import collect_status, service_status
+    from outerloop.runstate import run_dir
+
+    gh = _BoardGitHub()
+    record = RunRecord(
+        run_id="speedrun-20260905-063328-agent-01",
+        target="org/repo",
+        task_title="t",
+        state="waiting",
+        benchmark="speedrun",
+        agent_id="agent-01",
+        created=1.0,
+        updated=2.0,
+        stage={},
+    )
+    save_record(tmp_path, record, 2.0)
+    marker = run_dir(tmp_path, record.run_id) / "eval-slot" / "submitted"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("777\n")
+
+    def job(id_: str, name: str, state: str, elapsed: str, partition: str) -> dict[str, str]:
+        return {
+            "id": id_,
+            "name": name,
+            "state": state,
+            "elapsed": elapsed,
+            "partition": partition,
+            "submitted": "s",
+        }
+
+    # a second run: a hyphenated benchmark whose derived names hit Slurm's 60-char cut
+    long_id = "my-very-long-benchmark-name-that-keeps-going-20260905-070000-agent-04"
+    other = dc_replace(
+        record,
+        run_id=long_id,
+        agent_id="agent-04",
+        benchmark="my-very-long-benchmark-name-that-keeps-going",
+    )
+    save_record(tmp_path, other, 2.5)
+    assert len(f"wake-{long_id}") > 60  # the cut bites the derived names
+    snap = [
+        job("777", "eval-speedrun-2-cand-ab12", "RUNNING", "0:10", "gpu"),
+        job("778", "speedrun-20260905-063328-agent-01-launch-sweep", "PENDING", "0:00", "gpu"),
+        job("779", "my-own-notebook", "RUNNING", "5:00", "cpu"),
+        job("780", "autoresearch-resident", "RUNNING", "4:00:00", "cpu"),
+        job("781", "eval-my-model-please-ignore", "RUNNING", "0:01", "gpu"),  # the operator's
+        job("782", "rocket-launch-sim", "RUNNING", "0:01", "cpu"),  # -launch- alone is nobody's
+        job("783", f"wake-{long_id}"[:60], "PENDING", "0:00", "cpu"),  # cut as the kernel cuts
+        job("784", f"{long_id}-launch-lr-sweep"[:60], "RUNNING", "0:30", "gpu"),
+        job(
+            "785",
+            "climb-my-very-long-benchmark-name-that-keeps-going-agent-04",
+            "RUNNING",
+            "0:05",
+            "cpu",
+        ),
+        job("786", "wake-speedrun-20260905-063328-agent-09", "PENDING", "0:00", "cpu"),  # not ours
+    ]
+    body = collect_status(tmp_path, "org/repo", 3.0, queue=snap)
+    q = {j["id"]: j for j in body["queue"]}
+    assert set(q) == {"777", "778", "780", "783", "784", "785"}
+    assert q["777"]["agent"] == "agent-01" and q["777"]["run_id"] == record.run_id
+    assert q["778"]["agent"] == "agent-01" and q["778"]["run_id"] == record.run_id
+    assert q["780"]["agent"] == "" and q["785"]["agent"] == "agent-04"
+    assert q["783"]["run_id"] == long_id and q["784"]["run_id"] == long_id
+    # two runs whose derived names collide under the cut: the job stays, attributed to no one
+    from outerloop.climbboard import run_job_names
+
+    twin = dc_replace(other, run_id=long_id[:-1] + "9", agent_id="agent-09")
+    save_record(tmp_path, twin, 2.6)
+    names = run_job_names(tmp_path, "org/repo")
+    assert names[f"wake-{long_id}"[:60]] == ("", "", False)
+    assert names[f"wake-{record.run_id}"] == (record.run_id, "agent-01", False)
+    assert "queue" not in collect_status(tmp_path, "org/repo", 3.0)  # no snapshot: no key
+    assert service_status(tmp_path, gh, "org/repo", 4.0, queue=snap) is True
+    drift = [dict(j, elapsed="9:59") for j in snap]
+    assert service_status(tmp_path, gh, "org/repo", 5.0, queue=drift) is False
+    # a job finishing, a partition move, and an eval claimed by a marker written later all republish
+    assert service_status(tmp_path, gh, "org/repo", 6.0, queue=snap[1:]) is True
+    moved = [dict(j, partition="gpu_prem") if j["id"] == "778" else j for j in snap[1:]]
+    assert service_status(tmp_path, gh, "org/repo", 7.0, queue=moved) is True
+    late = run_dir(tmp_path, record.run_id) / "eval-late" / "submitted"
+    late.parent.mkdir()
+    late.write_text("790\n")
+    with_eval = [*moved, job("790", "eval-speedrun-2-base-ff00", "RUNNING", "0:02", "gpu")]
+    assert service_status(tmp_path, gh, "org/repo", 8.0, queue=with_eval) is True
+    assert {j["id"]: j["agent"] for j in json.loads(gh.files["climb/status.json"])["queue"]}[
+        "790"
+    ] == "agent-01"
+    # a blind tick publishes without the key; the next good, empty snapshot must publish
+    assert service_status(tmp_path, gh, "org/repo", 9.0, queue=None) is True
+    assert "queue" not in json.loads(gh.files["climb/status.json"])
+    assert service_status(tmp_path, gh, "org/repo", 10.0, queue=[]) is True
+    assert json.loads(gh.files["climb/status.json"])["queue"] == []
