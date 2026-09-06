@@ -234,6 +234,11 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
     uncommitted hand-edits in the shared checkout do not fly — only
     deployed code does. Failures fall back to the shared checkout — a
     snapshot must never ground the fleet."""
+    if not (home / ".git").exists():
+        # not a checkout (the local loop on an installed package): nothing to
+        # pin, the job runs from the home directory itself
+        home.mkdir(parents=True, exist_ok=True)
+        return home
     flights = home.parent / "flights"
     try:
         flights.mkdir(parents=True, exist_ok=True)

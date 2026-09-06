@@ -166,19 +166,23 @@ def _setting(key: str, flag: str, environ: dict[str, str], from_file: dict[str, 
     return from_file.get(key, "")
 
 
-def _home(environ: dict[str, str], cwd: Path) -> Path:
-    """The checkout the loop runs from: AUTORESEARCH_HOME, else the current
-    directory when it is one. Both modes need it; the tick's launch lanes
-    and GitHub servicing switch off without it."""
-    home = (
-        Path(environ["AUTORESEARCH_HOME"]).expanduser() if environ.get("AUTORESEARCH_HOME") else cwd
+def _home(environ: dict[str, str], cwd: Path, *, local: bool, root: Path) -> Path:
+    """The directory the loop runs from. On Slurm it must be a source
+    checkout (AUTORESEARCH_HOME, else the current directory): the chain
+    deploys from it and every job runs from a flight snapshot of its HEAD.
+    The local loop has no deploy step and runs the installed package, so it
+    uses a checkout when one is at hand and otherwise a `home` directory
+    under the state root, where flights and logs land."""
+    named = environ.get("AUTORESEARCH_HOME")
+    home = Path(named).expanduser() if named else cwd
+    if (home / "scripts" / "tick_chain.sbatch").is_file():
+        return home
+    if local and not named:
+        return root / "home"
+    raise StartError(
+        f"{home} is not a source checkout (no scripts/tick_chain.sbatch); "
+        "run start from a clone of the kernel, or set OUTERLOOP_HOME to one"
     )
-    if not (home / "scripts" / "tick_chain.sbatch").is_file():
-        raise StartError(
-            f"{home} is not an autoresearch checkout (no scripts/tick_chain.sbatch); "
-            "run start from the checkout the chain should deploy from, or set AUTORESEARCH_HOME"
-        )
-    return home
 
 
 def plan_start(
@@ -208,13 +212,15 @@ def plan_start(
                 f"AUTORESEARCH_CADENCE_MIN must be a positive number of minutes, got {cadence!r}"
             )
     pat = _setting("AUTORESEARCH_PAT_FILE", "", environ, from_file)
-    # both modes run from a checkout: the tick's launch lanes and GitHub
-    # servicing switch off without AUTORESEARCH_HOME
-    home = _home(environ, cwd)
+    # Slurm runs from a checkout; the local loop runs the installed package
+    # and needs only a directory (the launch lanes and GitHub servicing
+    # switch off without AUTORESEARCH_HOME, so one is always set)
+    local_root = Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT
+    home = _home(environ, cwd, local=(mode == "local"), root=local_root)
     if mode == "local":
         return StartPlan(
             mode="local",
-            root=Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT,
+            root=local_root,
             home=home,
             cadence_min=cadence,
             pat_file=pat,
