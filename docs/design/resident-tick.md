@@ -97,7 +97,7 @@ covers it.
    resident chain is STARTED with an explicit walltime and its own job name:
 
    ```
-   sbatch --time=360 --job-name=autoresearch-resident --dependency=singleton \
+   sbatch --time=360 --job-name=outerloop-resident --dependency=singleton \
      --account=… --partition=cpu_short \
      --export=ALL,OUTERLOOP_RESIDENT=1,OUTERLOOP_HOME=…,OUTERLOOP_ROOT=…,\
    OUTERLOOP_ACCOUNT=…,OUTERLOOP_PARTITION=cpu_short,OUTERLOOP_PAT_FILE=… \

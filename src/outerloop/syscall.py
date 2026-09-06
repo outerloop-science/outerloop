@@ -50,6 +50,7 @@ from outerloop.compute import GONE
 # workspace and the session's own memory of the path both predate the rename.
 # `channel_dir(ws)` resolves per workspace: existing dir (new name first), else
 # the new default. Every site keys off it, so a resumed run finds its own path.
+# The pre-rename name is dropped in the release after 0.1.
 CHANNEL_DIR_NAMES: tuple[str, ...] = (".outerloop", ".autoresearch")
 SYSCALL_DIR = CHANNEL_DIR_NAMES[0]  # the new default (a fresh clone installs this)
 SYSCALL_FILE = "syscall.json"

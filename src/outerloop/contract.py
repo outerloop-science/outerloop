@@ -26,6 +26,7 @@ SELF_REPO = "outerloop-science/outerloop"
 # `.autoresearch.yaml` (targets written before the rename) is still honored. Every
 # read goes through `find_contract`, which tries the new name first. Neither is
 # ever a writable path for the agent.
+# The pre-rename name is dropped in the release after 0.1.
 CONTRACT_NAMES: tuple[str, ...] = (".outerloop.yaml", ".autoresearch.yaml")
 CONTRACT_NAME = CONTRACT_NAMES[0]  # what the docs and new contracts use
 ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", *CONTRACT_NAMES)

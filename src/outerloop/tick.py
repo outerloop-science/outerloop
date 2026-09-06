@@ -3022,6 +3022,15 @@ def _min_tick_s_from_env() -> float:
     return seconds
 
 
+def _default_image() -> str:
+    """~/outerloop-images/agent-py312.sif, or the pre-rename ~/autoresearch-images
+    path when only that one exists. The fallback is dropped in the release after
+    0.1."""
+    new = os.path.expanduser("~/outerloop-images/agent-py312.sif")
+    old = os.path.expanduser("~/autoresearch-images/agent-py312.sif")
+    return old if (not os.path.isfile(new) and os.path.isfile(old)) else new
+
+
 def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     """GitHub client + FollowupSpec from the chain environment, or Nones when
     the environment is incomplete (the tick then runs without in-review
@@ -3030,10 +3039,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     app_file = os.environ.get("OUTERLOOP_GITHUB_APP_FILE", "")
     account = os.environ.get("OUTERLOOP_ACCOUNT", "")
     partition = os.environ.get("OUTERLOOP_PARTITION", "")
-    image = os.environ.get(
-        "OUTERLOOP_IMAGE",
-        os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
-    )
+    image = os.environ.get("OUTERLOOP_IMAGE", _default_image())
     home = os.environ.get("OUTERLOOP_HOME", "")
     # Account and partition are optional on Slurm: empty ones leave the billing
     # association and the partition to Slurm's defaults, as `start` already

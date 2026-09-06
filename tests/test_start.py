@@ -111,6 +111,61 @@ def plan(tmp_path: Path, **kw: Any) -> StartPlan:
     return plan_start(**args)
 
 
+def test_default_local_root_honors_a_pre_rename_state_dir(tmp_path: Path) -> None:
+    """~/.outerloop is the default; an existing ~/.autoresearch is used only while
+    no ~/.outerloop exists (state is never moved); no HOME means the plain
+    default."""
+    from outerloop.cli import default_local_root
+
+    env = {"HOME": str(tmp_path)}
+    assert default_local_root(env) == tmp_path / ".outerloop"
+    (tmp_path / ".autoresearch").mkdir()
+    assert default_local_root(env) == tmp_path / ".autoresearch"
+    (tmp_path / ".outerloop").mkdir()
+    assert default_local_root(env) == tmp_path / ".outerloop"
+    assert default_local_root({}) == DEFAULT_LOCAL_ROOT
+
+
+def test_resident_lookup_asks_for_both_names(monkeypatch: Any) -> None:
+    """A resident submitted before the rename must still block `start`: the
+    singleton serializes by name, so two names would mean two residents."""
+    import subprocess
+
+    from outerloop import cli as cli_mod
+
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="900\n777\n", stderr="")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    assert cli_mod._resident_jobs() == ["777", "900"]
+    assert "--name=outerloop-resident,autoresearch-resident" in seen[0]
+
+
+def test_default_image_falls_back_only_to_a_usable_legacy_file(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The pre-rename image is used while the new path is not a FILE (absent, or
+    a stray directory); a real new image always wins."""
+    from outerloop.tick import _default_image
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    new = tmp_path / "outerloop-images" / "agent-py312.sif"
+    old = tmp_path / "autoresearch-images" / "agent-py312.sif"
+    assert _default_image() == str(new)  # neither exists: the new default
+    old.parent.mkdir()
+    old.write_text("")
+    assert _default_image() == str(old)
+    new.parent.mkdir()
+    new.mkdir()  # a directory at the new path is not an image
+    assert _default_image() == str(old)
+    new.rmdir()
+    new.write_text("")
+    assert _default_image() == str(new)
+
+
 def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
     p = plan(tmp_path, sbatch_on_path=False)
     assert p.mode == "local"
