@@ -128,6 +128,10 @@ Versions follow [SemVer](https://semver.org).
 - `outerloop init` no longer overwrites an existing `~/.config/autoresearch/.env`
   silently: interactively it asks; with `--yes` it refuses unless `--force` is
   passed. The check runs before any GitHub App is created.
+- The partition is optional everywhere, as `outerloop start` already allowed:
+  the tick's in-review servicing and the attempt's resume and dispatch gates
+  need only the account on Slurm, and every sbatch the kernel builds passes
+  `--partition` only when one is set, so Slurm chooses (#300).
 
 ### Added
 

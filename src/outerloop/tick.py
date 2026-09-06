@@ -3035,9 +3035,10 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
     )
     home = os.environ.get("AUTORESEARCH_HOME", "")
-    # Local compute runs jobs as subprocesses: Slurm placement is meaningless
-    # there, so account/partition are only required when a cluster is in play.
-    placed = bool(account and partition) or local_mode()
+    # Local compute runs jobs as subprocesses, so the account is only required
+    # when a cluster is in play. The partition is optional everywhere: empty
+    # leaves the choice to Slurm, as `start` already does for the resident.
+    placed = bool(account) or local_mode()
     target = os.environ.get("AUTORESEARCH_TARGET", "")
     image_ok = Path(image).is_file()
     panel = os.environ.get("AUTORESEARCH_PANEL", "verify,review")
@@ -3097,7 +3098,6 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         for name, value in [
             ("AUTORESEARCH_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
             ("AUTORESEARCH_ACCOUNT", account or ("-" if local_mode() else "")),
-            ("AUTORESEARCH_PARTITION", partition or ("-" if local_mode() else "")),
             ("AUTORESEARCH_HOME", home),
             ("AUTORESEARCH_TARGET", target),
         ]

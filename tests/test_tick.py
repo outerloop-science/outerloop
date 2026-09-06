@@ -3363,8 +3363,9 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
 
 def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -> None:
     """Under AUTORESEARCH_COMPUTE=local the followup service comes up without
-    account/partition (subprocess jobs have no placement); Slurm mode still
-    requires them."""
+    account/partition (subprocess jobs have no placement). Slurm mode still
+    requires the account, and only the account: an empty partition leaves
+    the choice to Slurm, as `start` already allows (#300)."""
     from outerloop.tick import _followup_spec_from_env
 
     image = tmp_path / "agent.sif"
@@ -3381,7 +3382,12 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
     _github, spec = _followup_spec_from_env(tmp_path)
-    assert spec is None  # slurm mode: placement required
+    assert spec is None  # slurm mode: the account is required
+    env["AUTORESEARCH_ACCOUNT"] = "acct"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None  # ... and the partition is not
+    assert spec.account == "acct" and spec.partition == ""
+    del env["AUTORESEARCH_ACCOUNT"]
     env["AUTORESEARCH_COMPUTE"] = "local"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None
@@ -3393,9 +3399,10 @@ def test_local_mode_waives_placement_at_the_attempt_gates(
 ) -> None:
     """The resume gate accepts empty account/partition under
     AUTORESEARCH_COMPUTE=local (terra #223: locally dispatched wakes died at
-    the parser). Proof of admission: the CLI proceeds far enough to complain
-    about the missing parked run, not about the cluster triple — and without
-    local mode the same argv still trips the triple."""
+    the parser), and an account with no partition on Slurm (#300: Slurm
+    picks the partition). Proof of admission: the CLI proceeds far enough to
+    complain about the missing parked run, not about the placement — and
+    without local mode or an account the same argv still trips the gate."""
     import sys
 
     import pytest
@@ -3427,12 +3434,18 @@ def test_local_mode_waives_placement_at_the_attempt_gates(
     # fails THERE (no parked run in this tmp root) — proof of admission
     with pytest.raises(FileNotFoundError, match=r"state\.json"):
         attempt_mod.main()
-    assert "cluster triple" not in capsys.readouterr().err
+    assert "needs --account" not in capsys.readouterr().err
 
     monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
     with pytest.raises(SystemExit):
         attempt_mod.main()
-    assert "cluster triple" in capsys.readouterr().err
+    assert "needs --account" in capsys.readouterr().err
+
+    # Slurm mode with an account and no partition: admitted the same way
+    monkeypatch.setattr(sys, "argv", [*argv, "--account", "acct"])
+    with pytest.raises(FileNotFoundError, match=r"state\.json"):
+        attempt_mod.main()
+    assert "needs --account" not in capsys.readouterr().err
 
 
 def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:

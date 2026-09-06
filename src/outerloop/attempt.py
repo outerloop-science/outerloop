@@ -3262,12 +3262,12 @@ def main() -> int:
     # and re-enter the decision. The wake job the WakeDispatcher submits runs
     # exactly this.
     if args.resume:
-        placed = bool(args.account and args.partition) or local_mode()
+        placed = bool(args.account) or local_mode()
         if not (placed and args.image and Path(args.image).is_file()):
             parser.error(
-                "--resume needs the cluster triple (--account/--partition/--image) "
-                "to rebuild the dispatched measurer (local compute waives the "
-                "account/partition pair, never the image)"
+                "--resume needs --account and --image to rebuild the dispatched "
+                "measurer (local compute waives the account, never the image; "
+                "an empty --partition leaves the choice to Slurm)"
             )
         from outerloop.runstate import load_record
 
@@ -3432,13 +3432,12 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    # Dispatched measurement needs the full cluster triple AND a real image
-    # file to bind against; missing any, the climb measures inline (the tick
-    # sets these on the climb job's env, a bare CLI run leaves them empty).
+    # Dispatched measurement needs an account (or local compute) AND a real
+    # image file to bind against; missing either, the climb measures inline
+    # (the tick sets these on the climb job's env, a bare CLI run leaves them
+    # empty). The partition is optional: empty lets Slurm choose.
     dispatch: DispatchSettings | None = None
-    if (bool(args.account and args.partition) or local_mode()) and (
-        args.image and Path(args.image).is_file()
-    ):
+    if (bool(args.account) or local_mode()) and (args.image and Path(args.image).is_file()):
         dispatch = _dispatch_settings(args)
     try:
         try:
