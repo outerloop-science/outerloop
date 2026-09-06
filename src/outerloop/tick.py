@@ -291,6 +291,15 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
     return ""
 
 
+_UNCONTAINED_WARNED = False  # the local-mode warning is said once per process
+
+
+def _containment(image: str) -> list[str]:
+    """The job's containment flags: the image when there is one, else the
+    explicit uncontained flag every entry point requires in its absence."""
+    return ["--image", image] if image else ["--uncontained"]
+
+
 def _interpreter(home: Path) -> list[str]:
     """How a job runs Python. From a source checkout, `uv run python` resolves
     the project's own environment, as the cluster's flights do. From a plain
@@ -768,8 +777,7 @@ def service_in_review(
                 str(spec.run_root),
                 "--run-id",
                 record.run_id,
-                "--image",
-                spec.image,
+                *_containment(spec.image),
                 "--bot-login",
                 spec.bot_login,
                 "--job-minutes",
@@ -2493,8 +2501,7 @@ def service_self_initiated(
             benchmark,
             "--run-root",
             str(spec.run_root),
-            "--image",
-            spec.image,
+            *_containment(spec.image),
             "--agent-id",
             slot_agent,
             *_climb_limit_argv(limits, job_minutes),
@@ -2620,8 +2627,7 @@ def service_steward(
             task.benchmark,
             "--run-root",
             str(spec.run_root),
-            "--image",
-            spec.image,
+            *_containment(spec.image),
             "--issue",
             str(task.number),
             "--work-order-b64",
@@ -2760,8 +2766,7 @@ def service_intake(
             task.benchmark,
             "--run-root",
             str(spec.run_root),
-            "--image",
-            spec.image,
+            *_containment(spec.image),
             "--issue",
             str(task.number),
             "--hypothesis-b64",
@@ -2840,8 +2845,7 @@ class JobWakeDispatcher:
             record.run_id,
             "--run-root",
             str(self.spec.run_root),
-            "--image",
-            self.spec.image,
+            *_containment(self.spec.image),
             "--account",
             self.spec.account,
             "--partition",
@@ -3035,7 +3039,33 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     # there, so account/partition are only required when a cluster is in play.
     placed = bool(account and partition) or local_mode()
     target = os.environ.get("AUTORESEARCH_TARGET", "")
-    if (pat_file or app_file) and placed and home and target and Path(image).is_file():
+    image_ok = Path(image).is_file()
+    panel = os.environ.get("AUTORESEARCH_PANEL", "verify,review")
+    if not image_ok and local_mode():
+        # The local loop on a machine with no container: sessions run under
+        # the harness's own sandbox and evaluations run bare, on the
+        # operator's own machine with the operator's own keys. The panel is
+        # off unless the operator opts in, because an uncontained judge holds
+        # a shell next to its own key file. Said once per process. Contained
+        # local mode needs apptainer and the image (docs/install.md).
+        global _UNCONTAINED_WARNED
+        if not _UNCONTAINED_WARNED:
+            _UNCONTAINED_WARNED = True
+            log.warning(
+                "local mode: no container image at %s; sessions run under the harness "
+                "sandbox and evaluations run bare on this machine; the panel is %s; a "
+                "codex author needs the image (docs/install.md, local mode)",
+                image,
+                "on by AUTORESEARCH_PANEL_UNCONTAINED=1"
+                if os.environ.get("AUTORESEARCH_PANEL_UNCONTAINED") == "1"
+                else "off (AUTORESEARCH_PANEL_UNCONTAINED=1 turns it on)",
+            )
+        if os.environ.get("AUTORESEARCH_PANEL_UNCONTAINED") != "1":
+            panel = ""
+        # the jobs must not inherit a path to an image that is not there
+        os.environ.pop("AUTORESEARCH_IMAGE", None)
+        image, image_ok = "", True
+    if (pat_file or app_file) and placed and home and target and image_ok:
         from outerloop.appauth import resolve_bot_auth
         from outerloop.github import GitHubClient
 
@@ -3051,7 +3081,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 github_app_file=app_file,
                 target=target,
                 steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
-                panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
+                panel=panel,
                 panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
                 job_partition=os.environ.get("AUTORESEARCH_JOB_PARTITION", ""),
                 gpu_partition=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""),
@@ -3073,7 +3103,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         ]
         if not value
     ]
-    if not Path(image).is_file():
+    if not image_ok:
         absent.append(f"image:{image}")
     log.info("in-review servicing disabled (missing: %s)", ", ".join(absent))
     return None, None

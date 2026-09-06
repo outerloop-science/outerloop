@@ -2195,6 +2195,12 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
         else:
             lens_key = panel_key
         try:
+            if not args.image:
+                log.warning(
+                    "panel lens %s runs uncontained (local mode, no image): the judge "
+                    "shares this machine with the operator's keys",
+                    backend,
+                )
             judge = build_harness(
                 lens_key,
                 reviewer_spec(),
