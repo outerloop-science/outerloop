@@ -153,6 +153,14 @@ Versions follow [SemVer](https://semver.org).
   need only the image, and every sbatch the kernel builds passes `--account`
   and `--partition` only when set, so Slurm bills the caller's default
   association and picks its default partition.
+- A launch still queued past its deadline is no longer cancelled and woken as
+  "unschedulable" when Slurm's pending reason is a wait: a busy queue
+  (Priority, Resources), a reservation or dependency, or the account's own
+  per-user/per-account/group cap (`QOSMaxGRESPerUser` and kin). The sweep
+  extends the deadline by one slack window and logs the reasons; a queued job
+  keeps its priority age, where a re-launch would start over at the back.
+  Reasons that never clear (a dependency that cannot be satisfied, per-job
+  limits, an invalid account or QOS, a held job) still cancel and wake.
 
 ### Added
 

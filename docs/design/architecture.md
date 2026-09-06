@@ -371,8 +371,12 @@ failure can strand a run:
    `deadline = submit_time + walltime + slack` (recomputed from `start_time`
    once the job starts, so late scheduling never truncates a healthy run).
    Past the deadline the sweep consults `sacct` and acts on what it finds:
-   still PENDING → the experiment is unschedulable in practice; cancel it and
-   wake the run with that fact. No record on a *successful* query → the job
+   still PENDING → ask squeue why: a wait (Priority/Resources, a reservation
+   or dependency, the account's own per-user/group cap such as
+   `QOSMaxGRESPerUser`) moves the deadline out by one slack window, since a
+   queued job keeps its priority age and a re-launch would start over; any
+   other reason means unschedulable in practice — cancel it and wake the
+   run with that fact. No record on a *successful* query → the job
    vanished; wake with that fact. Query failed or timed out → that is
    "Slurm unknown", never "job gone" — defer to the next tick, and only a
    sustained outage (its own alert via the watchdog) escalates. A fail-safe

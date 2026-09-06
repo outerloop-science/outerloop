@@ -62,6 +62,8 @@ class FakeSlurm:
                 jid = argv[argv.index("-j") + 1]
                 table = self.partitions if "%P" in argv else self.reasons
                 value = table.get(jid, "")
+                if value == "!":
+                    return CommandResult(1, "", "squeue down")
                 return CommandResult(0, value + "\n" if value else "", "")
             return CommandResult(0, "", "")  # no live jobs
         raise AssertionError(f"unexpected command {argv}")
@@ -406,6 +408,67 @@ def test_pending_past_deadline_cancels_then_wakes(tmp_path: Path) -> None:
     report, _dispatcher = run_tick(tmp_path, slurm)
     assert slurm.cancelled == ["100"]
     assert report.woken == (("r1", "unschedulable"),)
+
+
+def test_pending_past_deadline_on_a_queue_wait_extends_instead(tmp_path: Path) -> None:
+    """A launch pending on a busy queue or on the account's own GPU cap is a
+    wait, not an unschedulable job: no cancel, no wake, the deadline moves out
+    by one slack window (Torch 2026-09-06, four launches on QOSMaxGRESPerUser)."""
+    from outerloop.tick import BLIND_PARK_SLACK_MIN
+
+    for reason in ("QOSMaxGRESPerUser", "Priority", "Resources", "AssocGrpGRES"):
+        root = tmp_path / reason  # one root per case: ticks on one root coalesce
+        waiting_run(root, deadline=NOW - 1)
+        slurm = FakeSlurm(states={"100": "PENDING"}, reasons={"100": reason})
+        report, dispatcher = run_tick(root, slurm)
+        assert slurm.cancelled == [], reason
+        assert report.woken == () and dispatcher.dispatched == [], reason
+        assert load_record(root, "r1").deadline == NOW + BLIND_PARK_SLACK_MIN * 60, reason
+    # reasons that never clear on their own still cancel and wake
+    for reason in ("DependencyNeverSatisfied", "QOSMaxWallDurationPerJobLimit", "InvalidAccount"):
+        root = tmp_path / reason
+        waiting_run(root, deadline=NOW - 1)
+        slurm = FakeSlurm(states={"100": "PENDING"}, reasons={"100": reason})
+        report, _dispatcher = run_tick(root, slurm)
+        assert slurm.cancelled == ["100"], reason
+        assert report.woken == (("r1", "unschedulable"),), reason
+
+
+def test_pending_past_deadline_reason_query_failure_defers(tmp_path: Path) -> None:
+    """squeue failing on the reason is 'Slurm unknown': neither cancel nor wake."""
+    waiting_run(tmp_path, deadline=NOW - 1)
+    slurm = FakeSlurm(states={"100": "PENDING"}, reasons={"100": "!"})
+    report, _dispatcher = run_tick(tmp_path, slurm)
+    assert slurm.cancelled == [] and report.woken == ()
+    assert report.deferred == ("r1",)
+
+
+def test_is_queue_wait_classifies_slurm_reasons() -> None:
+    from outerloop.tick import is_queue_wait
+
+    waits = [
+        "Priority",
+        "Resources",
+        "Dependency",
+        "QOSMaxGRESPerUser",
+        "QOSMaxJobsPerUserLimit",
+        "AssocGrpGRES",
+        "QOSGrpCpuLimit",
+        "ReqNodeNotAvail, UnavailableNodes:gpu-01",
+    ]
+    nevers = [
+        "",
+        "DependencyNeverSatisfied",
+        "QOSMaxWallDurationPerJobLimit",
+        "QOSMaxGRESPerJob",
+        "InvalidAccount",
+        "InvalidQOS",
+        "PartitionDown",
+        "JobHeldUser",
+        "BadConstraints",
+    ]
+    assert [r for r in waits if not is_queue_wait(r)] == []
+    assert [r for r in nevers if is_queue_wait(r)] == []
 
 
 def test_pending_before_deadline_is_left_alone(tmp_path: Path) -> None:
