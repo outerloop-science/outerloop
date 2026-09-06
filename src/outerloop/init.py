@@ -21,10 +21,12 @@ import getpass
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from outerloop.cli import ENV_FILE
 from outerloop.paths import write_private
@@ -135,6 +137,48 @@ def _check_repo_access(token: str, target: str) -> str:
         return f"could not reach GitHub: {exc.reason}"
 
 
+def _check_app_access(provider: Any, target: str) -> str:
+    """Can this App write the target repo? "" on success, else a short reason.
+
+    An installation token does not populate a repository's `permissions`
+    object, so the PAT check above reads all-false for an App that can push.
+    The App is asked the two questions that decide it: is the target among
+    the repositories its installation covers, and does the installation carry
+    write on contents and pull requests. Never raises."""
+    from outerloop.appauth import build_app_jwt
+
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        token = provider.token()
+        req = urllib.request.Request(
+            f"{API}/installation/repositories",
+            headers={**headers, "Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            repos = json.loads(resp.read()).get("repositories") or []
+        names = {str(r.get("full_name", "")).lower() for r in repos}
+        if target.lower() not in names:
+            listed = ", ".join(sorted(names)) or "no repositories"
+            return f"the App is installed on {listed}, not on {target}; install it there"
+        jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
+        req = urllib.request.Request(
+            f"{API}/app/installations/{provider.installation_id}",
+            headers={**headers, "Authorization": f"Bearer {jwt}"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            perms = json.loads(resp.read()).get("permissions") or {}
+        missing = [k for k in ("contents", "pull_requests") if perms.get(k) != "write"]
+        if missing:
+            return f"the App lacks write on {', '.join(missing)} (it pushes branches and opens PRs)"
+        return ""
+    except urllib.error.HTTPError as exc:
+        return f"GitHub returned {exc.code} while checking the App"
+    except urllib.error.URLError as exc:
+        return f"could not reach GitHub: {exc.reason}"
+    except Exception as exc:  # a check failure is a warning, never fails setup
+        return f"could not check the App: {exc}"
+
+
 def validate_pat(pat_file: str, target: str) -> str:
     """Best-effort: can the PAT in `pat_file` write the target repo?"""
     try:
@@ -238,11 +282,10 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
         from outerloop.appauth import app_provider_from_file
 
         try:
-            token = app_provider_from_file(app_json).token()
-            problem = _check_repo_access(token, answers.target)
-            print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+            problem = _check_app_access(app_provider_from_file(app_json), answers.target)
         except Exception as exc:  # a check failure is a warning, never fails setup
-            print(f"  auth check: WARNING — could not mint a token: {exc}")
+            problem = f"could not read the App credentials: {exc}"
+        print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
         print(
             f"  no installation found yet. Install the App on {answers.target} (the link above), "

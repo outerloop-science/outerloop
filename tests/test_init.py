@@ -412,3 +412,48 @@ def test_author_key_file_flag_must_be_readable_and_is_stored_absolute(
     rc = init.main([*base, "--author-backend", "codex", "--author-key-file", "k/codex_key"])
     assert rc == 0
     assert f"OUTERLOOP_CODEX_KEY_FILE={key}" in (tmp_path / ".env").read_text()  # absolute
+
+
+def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -> None:
+    """An installation token leaves a repository's `permissions` object all
+    false even when the App can push, so the App check reads the installation's
+    repository list and its granted permissions instead."""
+    import io
+    import json as _json
+
+    class Provider:
+        app_id = 1
+        installation_id = 2
+
+        def _sign(self, data: bytes) -> bytes:
+            return b"sig"
+
+        def token(self) -> str:
+            return "tok"
+
+    answers = {
+        "installation/repositories": {"repositories": [{"full_name": "o/r"}]},
+        "app/installations/2": {"permissions": {"contents": "write", "pull_requests": "write"}},
+    }
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        for suffix, body in answers.items():
+            if req.full_url.endswith(suffix):
+                return Resp(_json.dumps(body).encode())
+        raise AssertionError(req.full_url)
+
+    monkeypatch.setattr(init.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
+    assert init._check_app_access(Provider(), "o/r") == ""
+    answers["installation/repositories"] = {"repositories": [{"full_name": "o/other"}]}
+    assert "not on o/r" in init._check_app_access(Provider(), "o/r")
+    answers["installation/repositories"] = {"repositories": [{"full_name": "o/r"}]}
+    answers["app/installations/2"] = {"permissions": {"contents": "read", "pull_requests": "write"}}
+    assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")

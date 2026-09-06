@@ -94,6 +94,10 @@ Versions follow [SemVer](https://semver.org).
   App on the repository, and that the last step checks write access. It also
   asks whether to create the App under your account or an organization,
   which before needed the undocumented `--org` flag.
+- The App flow's final write check asked GitHub a question installation
+  tokens cannot answer, so it warned about a missing push permission on Apps
+  that could push. It now checks the installation's repository list and its
+  granted permissions.
 - The local loop launches attempts without a container image. On a machine
   with no Apptainer image, `AUTORESEARCH_COMPUTE=local` now brings up
   servicing with an empty image, logs once that sessions run under the
