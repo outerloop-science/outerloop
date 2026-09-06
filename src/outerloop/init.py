@@ -350,7 +350,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compute", choices=["slurm", "local"], help="where the loop runs")
     parser.add_argument("--target", help="the repo the agents work on, owner/repo")
     parser.add_argument("--root", help="Slurm state root on the shared filesystem")
-    parser.add_argument("--account", help="Slurm account")
+    parser.add_argument(
+        "--account", help="Slurm account (optional; unset bills your default association)"
+    )
     parser.add_argument(
         "--partition", help="Slurm partition (optional; blank = default; a,b = list)"
     )

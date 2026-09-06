@@ -416,8 +416,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--root", help="state root (shared filesystem on Slurm; default ~/.autoresearch locally)"
     )
-    p.add_argument("--account", help="Slurm account")
-    p.add_argument("--partition", help="Slurm partition for the tick")
+    p.add_argument(
+        "--account", help="Slurm account (optional; unset bills your default association)"
+    )
+    p.add_argument(
+        "--partition",
+        help="Slurm partition for the tick (optional; unset lets Slurm choose; a,b = list)",
+    )
     p.add_argument(
         "--local", action="store_true", help="run the local loop even where sbatch exists"
     )
