@@ -194,6 +194,12 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     return answers, (args.pat_file or "")
 
 
+ORG_PROMPT = (
+    "Create the App under your own account, or under an organization? "
+    "(organization name, or Enter for your account)"
+)
+
+
 def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
     """The `--github-app` path: create the adopter's own App via the manifest
     flow, write its creds, help install it, then point the .env at the App file.
@@ -214,9 +220,15 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 1
     pem_path, app_json = appmanifest.save_app_creds(conversion, CONFIG_DIR)
-    print(f"created App '{conversion['slug']}' — wrote {app_json} and {pem_path} (0600)")
-    print(f"install it on {answers.target}: {appmanifest.install_url(conversion)}")
-    input("press Enter once you've installed the App… ")
+    repo = answers.target.split("/", 1)[-1]
+    print(f"  created App '{conversion['slug']}'; credentials in {app_json} and {pem_path} (0600)")
+    print()
+    print(f"Step 2 of 3: install the App on {answers.target}.")
+    print(f"  Open {appmanifest.install_url(conversion)}")
+    print(f"  choose 'Only select repositories', pick '{repo}', and click 'Install'.")
+    input("Press Enter here once GitHub shows the App as installed… ")
+    print()
+    print(f"Step 3 of 3: checking that the App can write {answers.target}.")
     iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
     if iid:
         appmanifest.set_installation_id(app_json, iid)
@@ -233,7 +245,8 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
             print(f"  auth check: WARNING — could not mint a token: {exc}")
     else:
         print(
-            f"  no installation found yet — install the App, then set installation_id in {app_json}"
+            f"  no installation found yet. Install the App on {answers.target} (the link above), "
+            f"then run init again, or set installation_id in {app_json} by hand."
         )
     env_path = CONFIG_DIR / ENV_FILE.name
     write_private(env_path, render_env(answers, app_file=str(app_json)))
@@ -343,7 +356,10 @@ def main(argv: list[str] | None = None) -> int:
         if choice.startswith("a"):
             args.github_app = True
     if args.github_app:
-        return _github_app_setup(answers, args.app_name or "", args.org or "")
+        org = args.org or ""
+        if not org and interactive:
+            org = _ask(ORG_PROMPT, "").strip()
+        return _github_app_setup(answers, args.app_name or "", org)
 
     token = ""
     if not pat_file and interactive:

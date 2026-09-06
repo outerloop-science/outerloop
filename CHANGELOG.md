@@ -89,6 +89,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `outerloop init --github-app` says what to do at each step: which page
+  opens, which button to click, where the code appears, how to install the
+  App on the repository, and that the last step checks write access. It also
+  asks whether to create the App under your account or an organization,
+  which before needed the undocumented `--org` flag.
 - The local loop launches attempts without a container image. On a machine
   with no Apptainer image, `AUTORESEARCH_COMPUTE=local` now brings up
   servicing with an empty image, logs once that sessions run under the

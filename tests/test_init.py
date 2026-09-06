@@ -146,7 +146,7 @@ def test_main_yes_slurm_requires_root_and_account(tmp_path: Path, monkeypatch, c
     assert "Slurm needs --root and --account" in capsys.readouterr().err
 
 
-def test_github_app_run_asks_nothing_about_the_author(tmp_path: Path, monkeypatch) -> None:
+def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypatch) -> None:
     """A focused --github-app run is about auth; it must not prompt for the author."""
     from outerloop import appmanifest
 
@@ -165,7 +165,8 @@ def test_github_app_run_asks_nothing_about_the_author(tmp_path: Path, monkeypatc
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
     monkeypatch.setattr("builtins.input", lambda *a: "")
     assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
-    assert asked == []  # no author (or any other) prompt on the way
+    # the organization question is the only prompt; nothing about the author
+    assert asked == [init.ORG_PROMPT]
 
 
 def test_main_yes_rejects_an_unknown_author_backend(tmp_path: Path, monkeypatch, capsys) -> None:

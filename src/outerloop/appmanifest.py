@@ -91,10 +91,14 @@ def request_manifest_code(
     state = secrets.token_urlsafe(16)
     manifest = build_manifest(name, homepage_url)
     url = build_setup_url(manifest, state, org)
-    print_fn("Create your GitHub App — open this URL in a browser (any machine):")
+    where = f"the {org} organization" if org else "your account"
+    print_fn("Step 1 of 3: create the GitHub App.")
+    print_fn("  Open this link in a browser where you are signed in to GitHub (any machine):")
     print_fn(f"\n  {url}\n")
-    print_fn("Click 'Create GitHub App', then copy the code the page shows.")
-    return input_fn("Paste the code here: ").strip()
+    print_fn(f"  GitHub shows a page titled 'Create GitHub App' under {where}. Click the")
+    print_fn("  green 'Create GitHub App' button. GitHub then sends you to")
+    print_fn("  setup.outerloop.science, which shows a one-time code.")
+    return input_fn("Paste that code here: ").strip()
 
 
 def _default_transport(request: urllib.request.Request) -> Any:
