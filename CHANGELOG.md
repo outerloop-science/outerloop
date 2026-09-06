@@ -89,6 +89,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `outerloop init --github-app` says what to do at each step: which page
+  opens, which button to click, where the code appears, how to install the
+  App on the repository, and that the last step checks write access. It also
+  asks whether to create the App under your account or an organization,
+  which before needed the undocumented `--org` flag.
+- The App flow's final write check asked GitHub a question installation
+  tokens cannot answer, so it warned about a missing push permission on Apps
+  that could push. It now checks the installation's repository list and its
+  granted permissions.
+- `init --github-app` records the App's login (`<slug>[bot]`) as
+  `OUTERLOOP_BOT_LOGIN`. Without it the kernel fell back to a built-in
+  default that is not the adopter's identity and did not recognize its own
+  pull requests.
 - The local loop launches attempts without a container image. On a machine
   with no Apptainer image, `AUTORESEARCH_COMPUTE=local` now brings up
   servicing with an empty image, logs once that sessions run under the

@@ -21,10 +21,12 @@ import getpass
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from outerloop.cli import ENV_FILE
 from outerloop.paths import write_private
@@ -48,7 +50,9 @@ class InitAnswers:
     author_key_file: str = ""  # the author's model key file, when known
 
 
-def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str:
+def render_env(
+    a: InitAnswers, pat_file: str = "", *, app_file: str = "", bot_login: str = ""
+) -> str:
     """The `.env` body for these answers — only the keys that have a value, so
     the file stays minimal and every line means something. Ordered placement →
     target → auth → author to read top-to-bottom like the setup itself. Auth is
@@ -64,6 +68,10 @@ def render_env(a: InitAnswers, pat_file: str = "", *, app_file: str = "") -> str
         lines.append(f"OUTERLOOP_GITHUB_APP_FILE={app_file}")
     elif pat_file:
         lines.append(f"OUTERLOOP_PAT_FILE={pat_file}")
+    if bot_login:
+        # every own-comment filter and own-PR scan keys on this login; without
+        # it the kernel assumes a default that is not this adopter's identity
+        lines.append(f"OUTERLOOP_BOT_LOGIN={bot_login}")
     if a.author_backend:
         lines.append(f"OUTERLOOP_AUTHOR_BACKEND={a.author_backend}")
     if a.author_model:
@@ -135,6 +143,55 @@ def _check_repo_access(token: str, target: str) -> str:
         return f"could not reach GitHub: {exc.reason}"
 
 
+def _check_app_access(provider: Any, target: str) -> str:
+    """Can this App write the target repo? "" on success, else a short reason.
+
+    An installation token does not populate a repository's `permissions`
+    object, so the PAT check above reads all-false for an App that can push.
+    The App is asked the two questions that decide it: is the target among
+    the repositories its installation covers, and does the installation carry
+    write on contents and pull requests. Never raises."""
+    from outerloop.appauth import build_app_jwt
+
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        # Asked as the App itself: GitHub answers with the installation that
+        # covers this repository, permissions included, or 404. A public
+        # repository would answer a plain read for any token, and the
+        # installation's repository list paginates, so neither is asked.
+        jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
+        req = urllib.request.Request(
+            f"{API}/repos/{target}/installation",
+            headers={**headers, "Authorization": f"Bearer {jwt}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                installation = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return f"the App is not installed on {target}; install it there"
+            raise
+        if int(installation.get("id", 0)) != int(provider.installation_id):
+            return (
+                f"the App is installed on {target} under installation "
+                f"{installation.get('id')}, but the App file records {provider.installation_id}"
+            )
+        perms = installation.get("permissions") or {}
+        missing = [k for k in ("contents", "issues", "pull_requests") if perms.get(k) != "write"]
+        if missing:
+            return (
+                f"the App lacks write on {', '.join(missing)} "
+                "(it pushes branches, opens PRs, and files and closes issues)"
+            )
+        return ""
+    except urllib.error.HTTPError as exc:
+        return f"GitHub returned {exc.code} while checking the App"
+    except urllib.error.URLError as exc:
+        return f"could not reach GitHub: {exc.reason}"
+    except Exception as exc:  # a check failure is a warning, never fails setup
+        return f"could not check the App: {exc}"
+
+
 def validate_pat(pat_file: str, target: str) -> str:
     """Best-effort: can the PAT in `pat_file` write the target repo?"""
     try:
@@ -194,6 +251,26 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     return answers, (args.pat_file or "")
 
 
+ORG_PROMPT = (
+    "Create the App under which account? (the repository's owner is the only one "
+    "the App can then be installed on; Enter to accept)"
+)
+
+
+def _owner_type(owner: str) -> str:
+    """ "User" or "Organization" for a GitHub account, or "" when the lookup
+    fails. GitHub creates Apps at different pages for the two, and a wrong
+    guess sends the adopter to a page that cannot create the App."""
+    req = urllib.request.Request(
+        f"{API}/users/{owner}", headers={"Accept": "application/vnd.github+json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return str(json.loads(resp.read()).get("type", ""))
+    except Exception:
+        return ""
+
+
 def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
     """The `--github-app` path: create the adopter's own App via the manifest
     flow, write its creds, help install it, then point the .env at the App file.
@@ -214,10 +291,26 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 1
     pem_path, app_json = appmanifest.save_app_creds(conversion, CONFIG_DIR)
-    print(f"created App '{conversion['slug']}' — wrote {app_json} and {pem_path} (0600)")
-    print(f"install it on {answers.target}: {appmanifest.install_url(conversion)}")
-    input("press Enter once you've installed the App… ")
+    repo = answers.target.split("/", 1)[-1]
+    print(f"  created App '{conversion['slug']}'; credentials in {app_json} and {pem_path} (0600)")
+    print()
+    print(f"Step 2 of 3: install the App on {answers.target}.")
+    print(f"  Open {appmanifest.install_url(conversion)}")
+    print(f"  choose 'Only select repositories', pick '{repo}', and click 'Install'.")
+    input("Press Enter here once GitHub shows the App as installed… ")
+    print()
+    print(f"Step 3 of 3: checking that the App can write {answers.target}.")
     iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
+    for _ in range(2):
+        if iid:
+            break
+        # not installed yet: a rerun of init would stop at the existing config,
+        # so ask again here rather than sending the adopter around the loop
+        print(
+            f"  no installation found yet. Install the App at {appmanifest.install_url(conversion)}"
+        )
+        input("Press Enter once GitHub shows the App as installed… ")
+        iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
     if iid:
         appmanifest.set_installation_id(app_json, iid)
         print(f"  installation id {iid} recorded")
@@ -226,17 +319,21 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
         from outerloop.appauth import app_provider_from_file
 
         try:
-            token = app_provider_from_file(app_json).token()
-            problem = _check_repo_access(token, answers.target)
-            print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+            problem = _check_app_access(app_provider_from_file(app_json), answers.target)
         except Exception as exc:  # a check failure is a warning, never fails setup
-            print(f"  auth check: WARNING — could not mint a token: {exc}")
+            problem = f"could not read the App credentials: {exc}"
+        print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
         print(
-            f"  no installation found yet — install the App, then set installation_id in {app_json}"
+            f"  still no installation. When it is installed, put its id into {app_json} as "
+            f"installation_id (GitHub shows it in the URL of the App's page under "
+            f"Settings > Installations), then run outerloop start."
         )
     env_path = CONFIG_DIR / ENV_FILE.name
-    write_private(env_path, render_env(answers, app_file=str(app_json)))
+    write_private(
+        env_path,
+        render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+    )
     print(f"wrote {env_path}")
     _author_key_hint(answers)
     print("next: outerloop start")
@@ -343,7 +440,20 @@ def main(argv: list[str] | None = None) -> int:
         if choice.startswith("a"):
             args.github_app = True
     if args.github_app:
-        return _github_app_setup(answers, args.app_name or "", args.org or "")
+        org = args.org or ""
+        if not org and interactive:
+            # a private App installs only on the account that created it, so
+            # the target's owner is the only default that can work
+            owner = answers.target.split("/")[0]
+            org = _ask(ORG_PROMPT, owner).strip()
+        if org:
+            kind = _owner_type(org)
+            if not kind and interactive:
+                answer = _ask(f"Is '{org}' an organization or a user account? [org/user]", "org")
+                kind = "User" if answer.strip().lower().startswith("u") else "Organization"
+            if kind == "User":
+                org = ""  # a user account: GitHub's personal App page, not an org page
+        return _github_app_setup(answers, args.app_name or "", org)
 
     token = ""
     if not pat_file and interactive:

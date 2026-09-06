@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 from pathlib import Path
+from typing import Any
 
 from outerloop import init
 from outerloop.init import (
@@ -146,7 +147,7 @@ def test_main_yes_slurm_requires_root_and_account(tmp_path: Path, monkeypatch, c
     assert "Slurm needs --root and --account" in capsys.readouterr().err
 
 
-def test_github_app_run_asks_nothing_about_the_author(tmp_path: Path, monkeypatch) -> None:
+def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypatch) -> None:
     """A focused --github-app run is about auth; it must not prompt for the author."""
     from outerloop import appmanifest
 
@@ -163,9 +164,13 @@ def test_github_app_run_asks_nothing_about_the_author(tmp_path: Path, monkeypatc
         appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
     )
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
+    monkeypatch.setattr(init, "_owner_type", lambda owner: "Organization")
     monkeypatch.setattr("builtins.input", lambda *a: "")
     assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
-    assert asked == []  # no author (or any other) prompt on the way
+    written = (tmp_path / ".env").read_text()
+    assert "OUTERLOOP_BOT_LOGIN=s[bot]" in written  # the login it recognizes itself by
+    # the organization question is the only prompt; nothing about the author
+    assert asked == [init.ORG_PROMPT]
 
 
 def test_main_yes_rejects_an_unknown_author_backend(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -411,3 +416,57 @@ def test_author_key_file_flag_must_be_readable_and_is_stored_absolute(
     rc = init.main([*base, "--author-backend", "codex", "--author-key-file", "k/codex_key"])
     assert rc == 0
     assert f"OUTERLOOP_CODEX_KEY_FILE={key}" in (tmp_path / ".env").read_text()  # absolute
+
+
+def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -> None:
+    """An installation token leaves a repository's `permissions` object all
+    false even when the App can push, so the App check reads the installation's
+    repository list and its granted permissions instead."""
+    import io
+    import json as _json
+    import urllib.error
+
+    class Provider:
+        app_id = 1
+        installation_id = 2
+
+        def _sign(self, data: bytes) -> bytes:
+            return b"sig"
+
+        def token(self) -> str:
+            return "tok"
+
+    answers: dict[str, Any] = {
+        "repos/o/r/installation": {
+            "id": 2,
+            "permissions": {"contents": "write", "issues": "write", "pull_requests": "write"},
+        },
+    }
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        for suffix, body in answers.items():
+            if req.full_url.endswith(suffix):
+                if body is None:  # the installation does not cover it: GitHub 404s
+                    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+                return Resp(_json.dumps(body).encode())
+        raise AssertionError(req.full_url)
+
+    monkeypatch.setattr(init.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
+    assert init._check_app_access(Provider(), "o/r") == ""
+    answers["repos/o/r/installation"] = None  # not installed there: GitHub 404s, public or not
+    assert "not installed on o/r" in init._check_app_access(Provider(), "o/r")
+    answers["repos/o/r/installation"] = {
+        "id": 2,
+        "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"},
+    }
+    assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")
+    answers["repos/o/r/installation"] = {"id": 9, "permissions": {"contents": "write"}}
+    assert "installation 9" in init._check_app_access(Provider(), "o/r")
