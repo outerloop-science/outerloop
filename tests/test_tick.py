@@ -4199,5 +4199,10 @@ def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path
     env["AUTORESEARCH_COMPUTE"] = "local"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None and spec.image == ""
+    assert spec.panel == ""  # an uncontained judge is opt-in
+    assert "AUTORESEARCH_IMAGE" not in env  # the jobs do not inherit a missing image
     assert _containment(spec.image) == ["--uncontained"]
     assert _containment("/img/a.sif") == ["--image", "/img/a.sif"]
+    env["AUTORESEARCH_PANEL_UNCONTAINED"] = "1"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None and spec.panel == "verify,review"

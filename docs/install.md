@@ -230,11 +230,21 @@ first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_CODEX_KEY_FILE`; `init` writes the key to
 `~/.config/outerloop/<backend>_key`, 0600, and a pre-rename `harness_key` is
 still read). A Codex author always runs contained, so it also needs the image
-(`OUTERLOOP_IMAGE`) and a Codex model in `OUTERLOOP_AUTHOR_MODEL`. Evals run inside the
-Apptainer image at `OUTERLOOP_IMAGE` (default
+(`OUTERLOOP_IMAGE`) and a Codex model in `OUTERLOOP_AUTHOR_MODEL`. On a
+cluster, evals run inside the Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
 GPU jobs are requested per node (`--gpus-per-node`).
+
+**Local mode without an image.** On a machine with no Apptainer image,
+`OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own
+sandbox, evaluations run bare in a throwaway tree under an allowlisted
+environment, both on your machine with your keys, and the loop says so once
+at start. The verification panel is off in this mode unless you set
+`OUTERLOOP_PANEL_UNCONTAINED=1`, because an uncontained judge holds a shell
+next to its own key file; a pull request opened without a panel says so. A
+Codex author needs the image in every mode. Contained local mode, the
+default on Linux once the image is published, needs Apptainer and the image.
 
 ---
 

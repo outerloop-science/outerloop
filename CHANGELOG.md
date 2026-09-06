@@ -93,8 +93,9 @@ Versions follow [SemVer](https://semver.org).
   with no Apptainer image, `AUTORESEARCH_COMPUTE=local` now brings up
   servicing with an empty image, logs once that sessions run under the
   harness's own sandbox and evaluations run bare on that machine, and passes
-  `--uncontained` to its jobs. The panel says the same when it runs that way.
-  Slurm still requires the image (#289).
+  `--uncontained` to its jobs. The panel is off in that mode unless
+  `OUTERLOOP_PANEL_UNCONTAINED=1` opts in, and says so when it runs. Slurm
+  still requires the image, and so does a Codex author in every mode (#289).
 - The PyPI description no longer refers to the lab.
 - A base-synced re-measurement is finished instead of abandoned. The parked
   stage recorded the session's local merge of the moved base as its parent,
