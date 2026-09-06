@@ -127,9 +127,10 @@ class StartPlan:
             "AUTORESEARCH_RESIDENT": "1",
             "AUTORESEARCH_HOME": str(self.home),
             "AUTORESEARCH_ROOT": str(self.root),
-            "AUTORESEARCH_ACCOUNT": self.account,
             "AUTORESEARCH_RESIDENT_MINUTES": str(self.resident_minutes),  # successors reuse it
         }
+        if self.account:
+            env["AUTORESEARCH_ACCOUNT"] = self.account
         if self.partition:
             env["AUTORESEARCH_PARTITION"] = self.partition
         if self.cadence_min:
@@ -147,8 +148,9 @@ class StartPlan:
             "--dependency=singleton",  # two starts can both submit; only one ever runs
             f"--time={self.resident_minutes}",
             f"--job-name={RESIDENT_JOB_NAME}",
-            f"--account={self.account}",
         ]
+        if self.account:  # unset bills the caller's default Slurm association
+            argv.append(f"--account={self.account}")
         if self.partition:  # unset lets Slurm choose its default partition
             argv.append(f"--partition={self.partition}")
         # --export=ALL carries export_env() from the inherited environment; a
@@ -232,10 +234,8 @@ def plan_start(
         )
     acc = _setting("AUTORESEARCH_ACCOUNT", account, environ, from_file)
     part = _setting("AUTORESEARCH_PARTITION", partition, environ, from_file)
-    # Partition is optional: left unset, Slurm places the job on its default
-    # partition. Account stays required (clusters bill by it).
-    if not acc:
-        raise StartError("Slurm mode needs --account / AUTORESEARCH_ACCOUNT")
+    # Account and partition are both optional: left unset, Slurm bills the
+    # caller's default association and places the job on its default partition.
     minutes_s = _setting("AUTORESEARCH_RESIDENT_MINUTES", "", environ, from_file)
     try:
         minutes = int(minutes_s) if minutes_s else DEFAULT_RESIDENT_MINUTES

@@ -43,7 +43,7 @@ class InitAnswers:
     compute: str  # "slurm" | "local"
     target: str  # "owner/repo"
     root: str = ""  # Slurm state root on the shared filesystem
-    account: str = ""  # Slurm account (required for Slurm)
+    account: str = ""  # Slurm account (optional; unset -> the default association)
     partition: str = ""  # Slurm partition (optional; unset -> Slurm default)
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
@@ -60,7 +60,8 @@ def render_env(
     lines = [f"OUTERLOOP_COMPUTE={a.compute}"]
     if a.compute == "slurm":
         lines.append(f"OUTERLOOP_ROOT={a.root}")
-        lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
+        if a.account:  # optional: unset bills the caller's default association
+            lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"OUTERLOOP_PARTITION={a.partition}")
     lines.append(f"OUTERLOOP_TARGET={a.target}")
@@ -226,7 +227,9 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         root = args.root or (
             _ask("Slurm state root (shared filesystem)", required=True) if interactive else ""
         )
-        account = args.account or (_ask("Slurm account", required=True) if interactive else "")
+        account = args.account or (
+            _ask("Slurm account (blank = your default association)") if interactive else ""
+        )
         partition = args.partition or (
             _ask("Slurm partition (blank = Slurm default; a,b for a list)") if interactive else ""
         )

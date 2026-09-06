@@ -104,12 +104,13 @@ class JobSpec:
             "sbatch",
             "--parsable",
             f"--job-name={self.job_name}",
-            f"--account={self.account}",
             f"--time={self.time_minutes}",
             f"--cpus-per-task={self.cpus}",
             f"--mem={self.mem}",
             f"--output={self.output}",
         ]
+        if self.account:  # unset bills the caller's default Slurm association
+            argv.append(f"--account={self.account}")
         if self.partition:  # unset lets Slurm pick its default partition
             argv.append(f"--partition={self.partition}")
         if self.gpus:
