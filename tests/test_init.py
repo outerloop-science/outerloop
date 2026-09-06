@@ -163,7 +163,7 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
         appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
     )
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
-    monkeypatch.setattr(init, "_owner_is_user", lambda owner: False)
+    monkeypatch.setattr(init, "_owner_type", lambda owner: "Organization")
     monkeypatch.setattr("builtins.input", lambda *a: "")
     assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
     written = (tmp_path / ".env").read_text()
@@ -437,7 +437,9 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
 
     answers = {
         "repos/o/r": {"full_name": "o/r"},
-        "app/installations/2": {"permissions": {"contents": "write", "pull_requests": "write"}},
+        "app/installations/2": {
+            "permissions": {"contents": "write", "issues": "write", "pull_requests": "write"}
+        },
     }
 
     class Resp(io.BytesIO):
@@ -461,5 +463,7 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
     answers["repos/o/r"] = None
     assert "not installed on o/r" in init._check_app_access(Provider(), "o/r")
     answers["repos/o/r"] = {"full_name": "o/r"}
-    answers["app/installations/2"] = {"permissions": {"contents": "read", "pull_requests": "write"}}
+    answers["app/installations/2"] = {
+        "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"}
+    }
     assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")

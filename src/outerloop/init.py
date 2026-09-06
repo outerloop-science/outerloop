@@ -176,9 +176,12 @@ def _check_app_access(provider: Any, target: str) -> str:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             perms = json.loads(resp.read()).get("permissions") or {}
-        missing = [k for k in ("contents", "pull_requests") if perms.get(k) != "write"]
+        missing = [k for k in ("contents", "issues", "pull_requests") if perms.get(k) != "write"]
         if missing:
-            return f"the App lacks write on {', '.join(missing)} (it pushes branches and opens PRs)"
+            return (
+                f"the App lacks write on {', '.join(missing)} "
+                "(it pushes branches, opens PRs, and files and closes issues)"
+            )
         return ""
     except urllib.error.HTTPError as exc:
         return f"GitHub returned {exc.code} while checking the App"
@@ -253,18 +256,18 @@ ORG_PROMPT = (
 )
 
 
-def _owner_is_user(owner: str) -> bool:
-    """Whether `owner` is a user account rather than an organization. GitHub
-    creates Apps at different pages for the two. Best effort: unknown means
-    organization, which is the common case for a shared target."""
+def _owner_type(owner: str) -> str:
+    """ "User" or "Organization" for a GitHub account, or "" when the lookup
+    fails. GitHub creates Apps at different pages for the two, and a wrong
+    guess sends the adopter to a page that cannot create the App."""
     req = urllib.request.Request(
         f"{API}/users/{owner}", headers={"Accept": "application/vnd.github+json"}
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return str(json.loads(resp.read()).get("type", "")) == "User"
+            return str(json.loads(resp.read()).get("type", ""))
     except Exception:
-        return False
+        return ""
 
 
 def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
@@ -442,8 +445,13 @@ def main(argv: list[str] | None = None) -> int:
             # the target's owner is the only default that can work
             owner = answers.target.split("/")[0]
             org = _ask(ORG_PROMPT, owner).strip()
-        if org and _owner_is_user(org):
-            org = ""  # a user account: GitHub's personal App page, not an org page
+        if org:
+            kind = _owner_type(org)
+            if not kind and interactive:
+                answer = _ask(f"Is '{org}' an organization or a user account? [org/user]", "org")
+                kind = "User" if answer.strip().lower().startswith("u") else "Organization"
+            if kind == "User":
+                org = ""  # a user account: GitHub's personal App page, not an org page
         return _github_app_setup(answers, args.app_name or "", org)
 
     token = ""
