@@ -28,7 +28,8 @@ uv run pytest
 3. Run the same gate CI runs before you push:
 
    ```bash
-   uv run ruff check . && uv run ruff format --check .
+   uv run pre-commit run --all-files   # lint, formatting, secret scan
+   uv lock --check
    uv run mypy
    uv run pytest && uv run pytest -m serial
    ```
@@ -39,11 +40,14 @@ uv run pytest
 ## What happens to your pull request
 
 - CI must pass.
-- One of our agents reviews it within a few minutes and posts its findings as
-  a review. It never approves or blocks; a maintainer decides. Fix what is
-  right and reply to what is not; findings answered with a reason are fine.
-  After you push fixes, a maintainer re-applies the `outerloop:review` label
-  to run another round.
+- One of our agents reviews it and posts its findings as a review, usually
+  within the hour; no time is guaranteed. It never approves or blocks; a
+  maintainer decides. Fix what is right and reply to what is not; findings
+  answered with a reason are fine. After you push fixes, a maintainer removes
+  and re-adds the `outerloop:review` label to run another round.
+- The agent review runs only for branches in this repository. A pull request
+  from a fork gets CI but no agent review; a maintainer can push your branch
+  here to run one.
 - A maintainer merges with a merge commit. We do not squash or rebase, so the
   history of how a change came to be stays intact. Keep your branch current
   with `git merge main`, and never force-push a branch someone else has seen.
@@ -73,9 +77,11 @@ change; `uv run pytest -n0` runs everything serially.
 ## Pull requests from the agents
 
 Pull requests authored by `outerloop-science[bot]` are the system improving
-the repositories it works on. They appear on those target repositories, are
-gated by each target's own required review, and are skipped by the advisory
-reviewer by design. This document is about contributions to the kernel itself.
+the repositories it works on. They appear on those target repositories and are
+skipped by the advisory reviewer by design. What gates them is each target's
+own rules: its required human review, or, where a target's contract allows
+automatic merging, the measurement gate and review panel that ran before the
+PR opened. This document is about contributing to Outerloop, this repository.
 
 ## License
 
