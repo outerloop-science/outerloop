@@ -3003,7 +3003,8 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     # Local compute runs jobs as subprocesses: Slurm placement is meaningless
     # there, so account/partition are only required when a cluster is in play.
     placed = bool(account and partition) or local_mode()
-    if (pat_file or app_file) and placed and home and Path(image).is_file():
+    target = os.environ.get("AUTORESEARCH_TARGET", "")
+    if (pat_file or app_file) and placed and home and target and Path(image).is_file():
         from outerloop.appauth import resolve_bot_auth
         from outerloop.github import GitHubClient
 
@@ -3017,9 +3018,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 home=Path(home),
                 pat_file=pat_file,
                 github_app_file=app_file,
-                target=os.environ.get(
-                    "AUTORESEARCH_TARGET", "agentic-learning-ai-lab/autoresearch-pilot"
-                ),
+                target=target,
                 steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
                 panel=os.environ.get("AUTORESEARCH_PANEL", "verify,review"),
                 panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
@@ -3039,6 +3038,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
             ("AUTORESEARCH_ACCOUNT", account or ("-" if local_mode() else "")),
             ("AUTORESEARCH_PARTITION", partition or ("-" if local_mode() else "")),
             ("AUTORESEARCH_HOME", home),
+            ("AUTORESEARCH_TARGET", target),
         ]
         if not value
     ]
