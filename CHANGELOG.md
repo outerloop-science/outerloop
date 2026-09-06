@@ -43,6 +43,13 @@ Versions follow [SemVer](https://semver.org).
   (a `-m` in `addopts` disables testmon), and a `serial` tier holds the tests
   that inspect the process table: skipped while workers run, and `pytest -m
   serial` turns workers off, so the tier always runs alone (CI's second step).
+- The kernel reads `OUTERLOOP_*` everywhere: every internal read, log line,
+  chain script and test now uses the public names. The pre-rename
+  `AUTORESEARCH_*` names are still accepted for one release, bridged at the
+  process boundary, the `.env` file and the chain scripts, and will be
+  dropped in the release after 0.1. The review footer names `outerloop`, and
+  `outerloop --version` exists; `start`, `tick` and `init` describe themselves
+  and every flag in `--help`.
 
 ### Changed
 

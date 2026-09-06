@@ -66,7 +66,7 @@ orchestrator chooses per eval site, not per repo.
 launches alike: the JobSpec requests `--gpus=N`, and the jail adds `--nv` so
 the allocation is visible inside the container; nothing else about the
 containment changes. GPU jobs need their own lane, so the deployment names
-one — `AUTORESEARCH_GPU_PARTITION`, optionally `AUTORESEARCH_GPU_ACCOUNT`
+one — `OUTERLOOP_GPU_PARTITION`, optionally `OUTERLOOP_GPU_ACCOUNT`
 (default: the CPU account) — and a benchmark with `gpus > 0` on a deployment
 without a lane is REFUSED at launch (both attempt lanes), never queued into
 evals that can never run. GPUs exist only on DISPATCHED jobs: the contract
@@ -287,7 +287,7 @@ GPU benchmarks and portfolio climbs both multiply eval load; both were
 designed against this seam. Portfolio's N concurrent climbs become N
 waiting records with independent wakes — the serialization question stays
 in the picker, not the dispatcher. The tick's job-partition knobs
-(`AUTORESEARCH_JOB_PARTITION`) already route work jobs; per-benchmark
+(`OUTERLOOP_JOB_PARTITION`) already route work jobs; per-benchmark
 partition/GPU allocation fields are a phase-3 contract-schema change
 (`Benchmark` rejects unknown fields today, deliberately), validated and
 clamped by operator ceilings like every other budget.

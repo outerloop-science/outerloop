@@ -121,7 +121,7 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
             tmp_path, record, parked, "refs/dispatch/tok", None, 1000.0, dispatch=_fake_dispatch()
         )
 
-    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
     park("tsp-quiet")
     assert read_lease(tmp_path, "tsp-quiet") is None
     assert load_record(tmp_path, "tsp-quiet").wake_attempts == 0
@@ -806,8 +806,8 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
 
     from outerloop.attempt import resume_author
 
-    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "/h")
-    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/c")
+    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", "/h")
+    monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", "/c")
 
     legacy = SimpleNamespace(author_backend="", author_model="", author_key_file="")
     assert resume_author(legacy, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5", "/h")
@@ -858,9 +858,9 @@ def test_resolve_author_key_file(monkeypatch, tmp_path) -> None:
     from outerloop import attempt
     from outerloop.attempt import CODEX_KEY_DEFAULT, resolve_author_key_file
 
-    for var in ("AUTORESEARCH_CLAUDE_KEY_FILE", "AUTORESEARCH_HARNESS_KEY_FILE"):
+    for var in ("OUTERLOOP_CLAUDE_KEY_FILE", "OUTERLOOP_HARNESS_KEY_FILE"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("AUTORESEARCH_CODEX_KEY_FILE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_CODEX_KEY_FILE", raising=False)
     new, legacy = tmp_path / "claude_key", tmp_path / "harness_key"
     monkeypatch.setattr(attempt, "CLAUDE_KEY_DEFAULT", str(new))
     monkeypatch.setattr(attempt, "HARNESS_KEY_DEFAULT", str(legacy))
@@ -872,11 +872,11 @@ def test_resolve_author_key_file(monkeypatch, tmp_path) -> None:
     assert resolve_author_key_file("claude") == str(legacy)  # pre-rename machine
     new.write_text("k")
     assert resolve_author_key_file("claude") == str(new)  # both: new wins
-    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "/h-key")
+    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", "/h-key")
     assert resolve_author_key_file("claude") == "/h-key"  # legacy env still honored
-    monkeypatch.setenv("AUTORESEARCH_CLAUDE_KEY_FILE", "/c-key")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", "/c-key")
     assert resolve_author_key_file("claude") == "/c-key"  # new env wins over legacy
-    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/x-key")
+    monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", "/x-key")
     assert resolve_author_key_file("codex") == "/x-key"
 
 
@@ -3254,7 +3254,7 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
 
     from outerloop.attempt import _panel_lenses_from_args
 
-    monkeypatch.delenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", raising=False)
     args = argparse.Namespace(
         panel="review:codex:gpt-5.6-terra",
         panel_key_file="/dev/null",
@@ -3263,7 +3263,7 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
         image="/img.sif",
     )
     monkeypatch.setattr("outerloop.attempt.role_key", lambda *a, **k: "k")
-    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_CODEX_KEY_FILE"):
+    with pytest.raises(ValueError, match="OUTERLOOP_PANEL_CODEX_KEY_FILE"):
         _panel_lenses_from_args(args)
 
 
@@ -3276,7 +3276,7 @@ def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> N
     codex_key = tmp_path / "panel_codex_key"
     codex_key.write_text("sk-judge")
     codex_key.chmod(0o600)
-    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(codex_key))
+    monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(codex_key))
     args = argparse.Namespace(
         panel="review:codex:gpt-5.6-terra",
         panel_key_file=str(tmp_path / "no-such-anthropic-key"),  # absent, must not matter
@@ -3301,8 +3301,8 @@ def test_codex_panel_key_must_not_be_the_author_key(monkeypatch, tmp_path) -> No
     author_key = tmp_path / "codex_key"
     author_key.write_text("sk-author")
     author_key.chmod(0o600)
-    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(author_key))
-    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(author_key))
+    monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", str(author_key))
+    monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(author_key))
     args = argparse.Namespace(
         panel="review:codex:gpt-5.6-terra",
         panel_key_file="/dev/null",
@@ -3326,7 +3326,7 @@ def test_codex_panel_key_must_not_be_the_claude_panel_key(monkeypatch, tmp_path)
     shared = tmp_path / "verifier_key"
     shared.write_text("sk-ant")
     shared.chmod(0o600)
-    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(shared))
+    monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(shared))
     args = argparse.Namespace(
         panel="review:codex:gpt-5.6-terra",
         panel_key_file=str(shared),
@@ -3350,7 +3350,7 @@ def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> N
     judge_key = tmp_path / "panel_codex_key"
     judge_key.write_text("sk-judge")
     judge_key.chmod(0o600)
-    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge_key))
+    monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(judge_key))
     args = argparse.Namespace(
         panel="review:codex:gpt-5.6-terra",
         panel_key_file="/dev/null",
@@ -3380,20 +3380,20 @@ def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> 
             image=image,
         )
 
-    monkeypatch.delenv("AUTORESEARCH_PANEL_HERMES_KEY_FILE", raising=False)
-    with pytest.raises(ValueError, match="AUTORESEARCH_PANEL_HERMES_KEY_FILE"):
+    monkeypatch.delenv("OUTERLOOP_PANEL_HERMES_KEY_FILE", raising=False)
+    with pytest.raises(ValueError, match="OUTERLOOP_PANEL_HERMES_KEY_FILE"):
         _panel_lenses_from_args(args())
     judge = tmp_path / "panel_hermes_key"
     judge.write_text("sk-judge")
     judge.chmod(0o600)
-    monkeypatch.setenv("AUTORESEARCH_PANEL_HERMES_KEY_FILE", str(judge))
+    monkeypatch.setenv("OUTERLOOP_PANEL_HERMES_KEY_FILE", str(judge))
     with pytest.raises(ValueError, match="requires --image"):
         _panel_lenses_from_args(args(image=""))
     # author-key reuse refused (the codex author key is the OpenAI author key)
-    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", str(judge))
+    monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", str(judge))
     with pytest.raises(ValueError, match="role separation"):
         _panel_lenses_from_args(args())
-    monkeypatch.delenv("AUTORESEARCH_CODEX_KEY_FILE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_CODEX_KEY_FILE", raising=False)
     # a properly separated key builds the contained hermes judge
     repo = tmp_path / "hermes-agent"
     repo.mkdir()

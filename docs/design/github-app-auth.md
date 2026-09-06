@@ -108,7 +108,7 @@ Swapping the live fleet's identity mid-campaign is an ops event:
 
 ## The flag
 
-`AUTORESEARCH_GITHUB_APP_FILE` names a JSON config —
+`OUTERLOOP_GITHUB_APP_FILE` names a JSON config —
 
 ```json
 {"app_id": 1234, "installation_id": 5678,
@@ -117,13 +117,13 @@ Swapping the live fleet's identity mid-campaign is an ops event:
 
 — and rides the rails the PAT already rides: role CLIs default their
 `--github-app-file` from it (jobs inherit the tick's environment, the same
-way `AUTORESEARCH_AUTHOR_*` reaches them), and every bot-auth construction
+way `OUTERLOOP_AUTHOR_*` reaches them), and every bot-auth construction
 goes through one factory, `appauth.resolve_bot_auth(pat_file, app_file)`:
 App provider when the config is set, PAT otherwise. Revert = unset the env
 var. The ids are not secrets; the key path inside keeps PAT-file custody
 (600, never committed).
 
-The identity flips WITH the credential: `AUTORESEARCH_BOT_LOGIN` names the
+The identity flips WITH the credential: `OUTERLOOP_BOT_LOGIN` names the
 login the kernel now posts as (`<app-slug>[bot]`, e.g.
 `outerloop-autoresearch[bot]`), read by every role through one
 `github.bot_login_from_env()` default. Every own-comment filter, alarm-issue
@@ -135,10 +135,10 @@ Everything the kernel created BEFORE the flip carries the old login — the
 research-log issue, contract alarms, intake claims, its PRs. Recognition is
 keyed on login on purpose (the markers are public strings anyone can paste),
 so a flip must widen the set of our logins, not loosen the check:
-`AUTORESEARCH_BOT_ALIASES=agentic-learning-bot` names the former identity,
+`OUTERLOOP_BOT_ALIASES=agentic-learning-bot` names the former identity,
 and every "is this ours" gate goes through `github.is_own_login`. The
 reusable review and verify workflows take the same value as a `bot_aliases`
-input (exported as `AUTORESEARCH_BOT_ALIASES`; the verifier's author gate
+input (exported as `OUTERLOOP_BOT_ALIASES`; the verifier's author gate
 accepts an alias too), so a target repo passes `bot_login` = the App login and
 `bot_aliases` = the former account. Live lesson: without it, the first tick
 under the App claimed the kernel's own research-log issue as a research order.

@@ -278,7 +278,7 @@ class DispatchedMeasurer:
         if not self.gpu_partition:
             raise ValueError(
                 f"measure {m.name} needs {m.gpus} GPU(s) but no GPU lane is configured "
-                "(set AUTORESEARCH_GPU_PARTITION)"
+                "(set OUTERLOOP_GPU_PARTITION)"
             )
         return self.gpu_account or self.account, self.gpu_partition
 
@@ -494,7 +494,7 @@ class DispatchSettings:
         if not self.gpu_partition:
             raise ValueError(
                 f"benchmark needs {gpus} GPU(s) but no GPU lane is configured "
-                "(set AUTORESEARCH_GPU_PARTITION)"
+                "(set OUTERLOOP_GPU_PARTITION)"
             )
         return self.gpu_account or self.account, self.gpu_partition
 

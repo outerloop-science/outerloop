@@ -34,7 +34,7 @@ OPT_OUT_LABEL = label_name("no-review")
 # One calm line: the mechanical defense against forged endorsements is the
 # approval-language redaction in sanitize(), not header volume.
 ADVISORY_HEADER = (
-    "*Advisory findings from `autoresearch` — the code owner decides. "
+    "*Advisory findings from `outerloop` — the code owner decides. "
     f"Reply to disagree; the `{OPT_OUT_LABEL}` label opts this PR out.*"
 )
 MAX_DIFF_CHARS = 200_000

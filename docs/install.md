@@ -214,7 +214,7 @@ backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.
 
 The deployment is configured by environment (`OUTERLOOP_*`; the pre-rename
-`AUTORESEARCH_*` names are still accepted everywhere). Placement and paths are set
+`AUTORESEARCH_*` names are still accepted for one release). Placement and paths are set
 when the chain is started: `OUTERLOOP_ACCOUNT`/`OUTERLOOP_PARTITION`
 place the CPU jobs (ticks, author sessions; both are optional, unset lets
 Slurm bill the default association and pick the default partition),

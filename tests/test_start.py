@@ -49,18 +49,18 @@ def env_file(tmp_path: Path, text: str, mode: int = 0o600) -> Path:
 def test_env_file_values_reads_only_start_keys_last_wins_and_unquotes(tmp_path: Path) -> None:
     path = env_file(
         tmp_path,
-        "# comment\nAUTORESEARCH_ROOT=/old\nAUTORESEARCH_ROOT='/scratch/me/ar'\r\n"
-        'AUTORESEARCH_ACCOUNT="acct"\nAUTORESEARCH_PANEL=\nOTHER=x\n'
-        "AUTORESEARCH_CADENCE_MIN = 20\n",
+        "# comment\nAUTORESEARCH_ROOT=/old\nOUTERLOOP_ROOT='/scratch/me/ar'\r\n"
+        'OUTERLOOP_ACCOUNT="acct"\nOUTERLOOP_PANEL=\nOTHER=x\n'
+        "OUTERLOOP_CADENCE_MIN = 20\n",
     )
     got = env_file_values(path)
     assert got == {
-        "AUTORESEARCH_ROOT": "/scratch/me/ar",
-        "AUTORESEARCH_ACCOUNT": "acct",
-        "AUTORESEARCH_CADENCE_MIN": "20",
+        "OUTERLOOP_ROOT": "/scratch/me/ar",
+        "OUTERLOOP_ACCOUNT": "acct",
+        "OUTERLOOP_CADENCE_MIN": "20",
     }
     # the author-knob view of the same file: an empty value is PRESENT
-    assert env_file_values(path, TICK_ENV_KEYS) == {"AUTORESEARCH_PANEL": ""}
+    assert env_file_values(path, TICK_ENV_KEYS) == {"OUTERLOOP_PANEL": ""}
 
 
 def test_env_file_values_missing_file_is_empty(tmp_path: Path) -> None:
@@ -75,7 +75,7 @@ def test_env_file_values_unreadable_is_a_start_error(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("mode", [0o620, 0o602, 0o666])
 def test_env_file_values_refuses_a_writable_file(tmp_path: Path, mode: int) -> None:
-    path = env_file(tmp_path, "AUTORESEARCH_ROOT=/x\n", mode)
+    path = env_file(tmp_path, "OUTERLOOP_ROOT=/x\n", mode)
     if not path.stat().st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         pytest.skip("filesystem drops group/other write bits")
     with pytest.raises(StartError, match="refusing to read"):
@@ -128,8 +128,8 @@ def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
 
 def test_local_by_flag_or_env_or_file_even_with_sbatch(tmp_path: Path) -> None:
     assert plan(tmp_path, local=True).mode == "local"
-    assert plan(tmp_path, environ={"AUTORESEARCH_COMPUTE": "Local"}).mode == "local"
-    assert plan(tmp_path, from_file={"AUTORESEARCH_COMPUTE": "local"}).mode == "local"
+    assert plan(tmp_path, environ={"OUTERLOOP_COMPUTE": "Local"}).mode == "local"
+    assert plan(tmp_path, from_file={"OUTERLOOP_COMPUTE": "local"}).mode == "local"
     p = plan(tmp_path, local=True, root="~/state")
     assert p.root == Path("~/state").expanduser()
 
@@ -140,11 +140,11 @@ def test_slurm_composes_the_resident_submit(tmp_path: Path) -> None:
         tmp_path,
         cwd=home,
         from_file={
-            "AUTORESEARCH_ROOT": "/scratch/me/ar",
-            "AUTORESEARCH_ACCOUNT": "pr_1_general",
-            "AUTORESEARCH_PARTITION": "cpu_short",
-            "AUTORESEARCH_CADENCE_MIN": "20",
-            "AUTORESEARCH_PAT_FILE": "/home/me/.config/autoresearch/bot_pat",
+            "OUTERLOOP_ROOT": "/scratch/me/ar",
+            "OUTERLOOP_ACCOUNT": "pr_1_general",
+            "OUTERLOOP_PARTITION": "cpu_short",
+            "OUTERLOOP_CADENCE_MIN": "20",
+            "OUTERLOOP_PAT_FILE": "/home/me/.config/autoresearch/bot_pat",
         },
     )
     assert p.mode == "slurm"
@@ -161,14 +161,14 @@ def test_slurm_composes_the_resident_submit(tmp_path: Path) -> None:
     ]
     # The knobs ride the inherited environment, not a comma-joined --export list.
     assert p.export_env() == {
-        "AUTORESEARCH_RESIDENT": "1",
-        "AUTORESEARCH_HOME": str(home),
-        "AUTORESEARCH_ROOT": "/scratch/me/ar",
-        "AUTORESEARCH_ACCOUNT": "pr_1_general",
-        "AUTORESEARCH_RESIDENT_MINUTES": str(DEFAULT_RESIDENT_MINUTES),
-        "AUTORESEARCH_PARTITION": "cpu_short",
-        "AUTORESEARCH_CADENCE_MIN": "20",
-        "AUTORESEARCH_PAT_FILE": "/home/me/.config/autoresearch/bot_pat",
+        "OUTERLOOP_RESIDENT": "1",
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": "/scratch/me/ar",
+        "OUTERLOOP_ACCOUNT": "pr_1_general",
+        "OUTERLOOP_RESIDENT_MINUTES": str(DEFAULT_RESIDENT_MINUTES),
+        "OUTERLOOP_PARTITION": "cpu_short",
+        "OUTERLOOP_CADENCE_MIN": "20",
+        "OUTERLOOP_PAT_FILE": "/home/me/.config/autoresearch/bot_pat",
     }
 
 
@@ -177,14 +177,14 @@ def test_precedence_is_flag_then_environment_then_file(tmp_path: Path) -> None:
         tmp_path,
         partition="flagged",
         environ={
-            "AUTORESEARCH_ROOT": "/env/root",
-            "AUTORESEARCH_ACCOUNT": "envacct",
-            "AUTORESEARCH_PARTITION": "envpart",
+            "OUTERLOOP_ROOT": "/env/root",
+            "OUTERLOOP_ACCOUNT": "envacct",
+            "OUTERLOOP_PARTITION": "envpart",
         },
         from_file={
-            "AUTORESEARCH_ROOT": "/file/root",
-            "AUTORESEARCH_ACCOUNT": "fileacct",
-            "AUTORESEARCH_PARTITION": "filepart",
+            "OUTERLOOP_ROOT": "/file/root",
+            "OUTERLOOP_ACCOUNT": "fileacct",
+            "OUTERLOOP_PARTITION": "filepart",
         },
     )
     assert (str(p.root), p.account, p.partition) == ("/env/root", "envacct", "flagged")
@@ -192,8 +192,8 @@ def test_precedence_is_flag_then_environment_then_file(tmp_path: Path) -> None:
 
 def test_home_is_a_checkout_on_slurm_and_optional_for_the_local_loop(tmp_path: Path) -> None:
     home = checkout(tmp_path)
-    base = {"AUTORESEARCH_ROOT": "/r", "AUTORESEARCH_ACCOUNT": "a", "AUTORESEARCH_PARTITION": "p"}
-    with_home = {**base, "AUTORESEARCH_HOME": str(home)}
+    base = {"OUTERLOOP_ROOT": "/r", "OUTERLOOP_ACCOUNT": "a", "OUTERLOOP_PARTITION": "p"}
+    with_home = {**base, "OUTERLOOP_HOME": str(home)}
     assert plan(tmp_path, cwd=tmp_path, environ=with_home).home == home
     assert plan(tmp_path, cwd=tmp_path, local=True, environ=with_home).home == home
     # Slurm deploys from the checkout: none at hand is an error
@@ -203,7 +203,7 @@ def test_home_is_a_checkout_on_slurm_and_optional_for_the_local_loop(tmp_path: P
     assert plan(tmp_path, cwd=tmp_path, local=True, root="/r").home == Path("/r/home")
     # a NAMED home that is not a checkout is still an error, in either mode
     with pytest.raises(StartError, match="source checkout"):
-        plan(tmp_path, cwd=tmp_path, local=True, environ={"AUTORESEARCH_HOME": str(tmp_path)})
+        plan(tmp_path, cwd=tmp_path, local=True, environ={"OUTERLOOP_HOME": str(tmp_path)})
 
 
 def test_slurm_requires_root_but_account_and_partition_are_optional(tmp_path: Path) -> None:
@@ -215,8 +215,8 @@ def test_slurm_requires_root_but_account_and_partition_are_optional(tmp_path: Pa
     p = plan(tmp_path, root="/r")
     assert p.account == "" and p.partition == ""
     assert not any(a.startswith(("--account=", "--partition=")) for a in p.command())
-    assert "AUTORESEARCH_ACCOUNT" not in p.export_env()
-    assert "AUTORESEARCH_PARTITION" not in p.export_env()
+    assert "OUTERLOOP_ACCOUNT" not in p.export_env()
+    assert "OUTERLOOP_PARTITION" not in p.export_env()
     p = plan(tmp_path, root="/r", account="a")
     assert "--account=a" in p.command()
     assert not any(a.startswith("--partition=") for a in p.command())
@@ -226,7 +226,7 @@ def test_slurm_accepts_a_comma_list_partition(tmp_path: Path) -> None:
     # a multi-partition "a,b" now rides the inherited env, not the --export
     # delimiter, so it is accepted and passed through verbatim.
     p = plan(tmp_path, root="/r", account="a", partition="cpu_short,cpu_long")
-    assert p.export_env()["AUTORESEARCH_PARTITION"] == "cpu_short,cpu_long"
+    assert p.export_env()["OUTERLOOP_PARTITION"] == "cpu_short,cpu_long"
     assert "--partition=cpu_short,cpu_long" in p.command()
     # a newline would still corrupt the environment / sbatch argv.
     with pytest.raises(StartError, match="newline"):
@@ -236,32 +236,30 @@ def test_slurm_accepts_a_comma_list_partition(tmp_path: Path) -> None:
 @pytest.mark.parametrize("bad", ["0", "-5", "30m", ""])
 def test_cadence_must_be_a_positive_number_in_both_modes(tmp_path: Path, bad: str) -> None:
     if bad == "":
-        assert (
-            plan(tmp_path, local=True, environ={"AUTORESEARCH_CADENCE_MIN": ""}).cadence_min == ""
-        )
+        assert plan(tmp_path, local=True, environ={"OUTERLOOP_CADENCE_MIN": ""}).cadence_min == ""
         return
     with pytest.raises(StartError, match="positive number of minutes"):
-        plan(tmp_path, local=True, environ={"AUTORESEARCH_CADENCE_MIN": bad})
+        plan(tmp_path, local=True, environ={"OUTERLOOP_CADENCE_MIN": bad})
     with pytest.raises(StartError, match="positive number of minutes"):
         plan(
             tmp_path,
             root="/r",
             account="a",
             partition="p",
-            from_file={"AUTORESEARCH_CADENCE_MIN": bad},
+            from_file={"OUTERLOOP_CADENCE_MIN": bad},
         )
 
 
 def test_slurm_resident_minutes_must_be_a_positive_integer(tmp_path: Path) -> None:
     base = dict(root="/r", account="a", partition="p")
-    p = plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "240"})
+    p = plan(tmp_path, **base, environ={"OUTERLOOP_RESIDENT_MINUTES": "240"})
     assert p.resident_minutes == 240
     assert "--time=240" in p.command()
-    assert p.export_env()["AUTORESEARCH_RESIDENT_MINUTES"] == "240"  # successors keep it
+    assert p.export_env()["OUTERLOOP_RESIDENT_MINUTES"] == "240"  # successors keep it
     with pytest.raises(StartError, match="whole number"):
-        plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "4h"})
+        plan(tmp_path, **base, environ={"OUTERLOOP_RESIDENT_MINUTES": "4h"})
     with pytest.raises(StartError, match="positive"):
-        plan(tmp_path, **base, environ={"AUTORESEARCH_RESIDENT_MINUTES": "0"})
+        plan(tmp_path, **base, environ={"OUTERLOOP_RESIDENT_MINUTES": "0"})
 
 
 # ---------------------------------------------------------------- main
@@ -269,7 +267,7 @@ def test_slurm_resident_minutes_must_be_a_positive_integer(tmp_path: Path) -> No
 
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    for key in (*START_KEYS, *TICK_ENV_KEYS, "AUTORESEARCH_HOME"):
+    for key in (*START_KEYS, *TICK_ENV_KEYS, "OUTERLOOP_HOME"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(cli, "ENV_FILE", tmp_path / "absent.env")
     return tmp_path
@@ -300,11 +298,11 @@ def test_local_start_execs_the_loop_with_env_knobs(
         "ENV_FILE",
         env_file(
             clean_env,
-            "AUTORESEARCH_TARGET=o/r\nAUTORESEARCH_PANEL=\nAUTORESEARCH_CADENCE_MIN=15\n"
-            "AUTORESEARCH_PAT_FILE=/home/me/pat\n",
+            "OUTERLOOP_TARGET=o/r\nOUTERLOOP_PANEL=\nOUTERLOOP_CADENCE_MIN=15\n"
+            "OUTERLOOP_PAT_FILE=/home/me/pat\n",
         ),
     )
-    monkeypatch.setenv("AUTORESEARCH_TARGET", "shell/wins")
+    monkeypatch.setenv("OUTERLOOP_TARGET", "shell/wins")
     seen: dict[str, object] = {}
 
     def fake_exec(cmd: list[str], env: dict[str, str]) -> int:
@@ -325,13 +323,13 @@ def test_local_start_execs_the_loop_with_env_knobs(
     ]
     env = seen["env"]
     assert isinstance(env, dict)
-    assert env["AUTORESEARCH_COMPUTE"] == "local"
-    assert env["AUTORESEARCH_ROOT"] == str(clean_env / "state")
-    assert env["AUTORESEARCH_HOME"] == str(home)  # the tick's lanes need the checkout
-    assert env["AUTORESEARCH_TARGET"] == "shell/wins"  # the shell beats the file at launch
-    assert env["AUTORESEARCH_PANEL"] == ""  # an off-switch in the file still lands
-    assert env["AUTORESEARCH_CADENCE_MIN"] == "15"  # the loop's cadence comes from .env too
-    assert env["AUTORESEARCH_PAT_FILE"] == "/home/me/pat"
+    assert env["OUTERLOOP_COMPUTE"] == "local"
+    assert env["OUTERLOOP_ROOT"] == str(clean_env / "state")
+    assert env["OUTERLOOP_HOME"] == str(home)  # the tick's lanes need the checkout
+    assert env["OUTERLOOP_TARGET"] == "shell/wins"  # the shell beats the file at launch
+    assert env["OUTERLOOP_PANEL"] == ""  # an off-switch in the file still lands
+    assert env["OUTERLOOP_CADENCE_MIN"] == "15"  # the loop's cadence comes from .env too
+    assert env["OUTERLOOP_PAT_FILE"] == "/home/me/pat"
 
 
 def test_local_start_needs_no_checkout(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -339,7 +337,7 @@ def test_local_start_needs_no_checkout(clean_env: Path, monkeypatch: pytest.Monk
     installed package, so start must not demand one: home becomes a directory
     under the state root, where flights and logs land (#287)."""
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
-    monkeypatch.setattr(cli, "ENV_FILE", env_file(clean_env, "AUTORESEARCH_TARGET=o/r\n"))
+    monkeypatch.setattr(cli, "ENV_FILE", env_file(clean_env, "OUTERLOOP_TARGET=o/r\n"))
     seen: dict[str, object] = {}
 
     def fake_exec(cmd: list[str], env: dict[str, str]) -> int:
@@ -353,7 +351,7 @@ def test_local_start_needs_no_checkout(clean_env: Path, monkeypatch: pytest.Monk
     assert main(["start", "--root", str(clean_env / "state")]) == 0
     env = seen["env"]
     assert isinstance(env, dict)
-    assert env["AUTORESEARCH_HOME"] == str(clean_env / "state" / "home")
+    assert env["OUTERLOOP_HOME"] == str(clean_env / "state" / "home")
     assert (clean_env / "state" / "home").is_dir()  # jobs cd into it
 
 
@@ -386,7 +384,7 @@ def test_slurm_start_submits_once_and_reports(
         bin_dir,
         "sbatch",
         f'printf "%s\\n" "$@" > {log}\n'
-        f'printf "%s:%s" "$AUTORESEARCH_RESIDENT" "$AUTORESEARCH_HOME" > {envlog}\n'
+        f'printf "%s:%s" "$OUTERLOOP_RESIDENT" "$OUTERLOOP_HOME" > {envlog}\n'
         'echo "4242;torch"\n',
     )
     shim(bin_dir, "squeue", "exit 0\n")
@@ -498,7 +496,7 @@ def test_local_start_reads_the_env_file_once(
     clean_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
-    monkeypatch.setattr(cli, "ENV_FILE", env_file(clean_env, "AUTORESEARCH_TARGET=o/r\n"))
+    monkeypatch.setattr(cli, "ENV_FILE", env_file(clean_env, "OUTERLOOP_TARGET=o/r\n"))
     reads: list[tuple[str, ...]] = []
     real = cli.env_file_values
 
@@ -512,7 +510,7 @@ def test_local_start_reads_the_env_file_once(
     monkeypatch.chdir(checkout(clean_env))
     assert main(["start", "--root", str(clean_env / "s")]) == 0
     assert len(reads) == 1
-    assert seen["env"]["AUTORESEARCH_TARGET"] == "o/r"
+    assert seen["env"]["OUTERLOOP_TARGET"] == "o/r"
 
 
 def test_start_errors_are_exit_2_with_the_diagnosis(

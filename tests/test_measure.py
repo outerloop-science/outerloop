@@ -376,7 +376,7 @@ def test_dispatch_settings_place_gpu_jobs_on_the_gpu_lane(tmp_path):
         partition="cpu",
     )
     assert cpu_only.placement(0) == ("acct", "cpu")
-    with pytest.raises(ValueError, match="AUTORESEARCH_GPU_PARTITION"):
+    with pytest.raises(ValueError, match="OUTERLOOP_GPU_PARTITION"):
         cpu_only.placement(1)
     with_lane = DispatchSettings(
         compute=cpu_only.compute,

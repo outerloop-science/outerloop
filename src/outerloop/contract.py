@@ -126,8 +126,8 @@ class Benchmark(_StrictModel):
     eval_minutes: int | None = Field(default=None, ge=1)
     # GPUs for every dispatched job of this benchmark — gate measures and
     # author launches alike. 0 (default) = CPU. A GPU benchmark needs the
-    # deployment to name a GPU lane (AUTORESEARCH_GPU_PARTITION, optionally
-    # AUTORESEARCH_GPU_ACCOUNT); without one the tick refuses to launch
+    # deployment to name a GPU lane (OUTERLOOP_GPU_PARTITION, optionally
+    # OUTERLOOP_GPU_ACCOUNT); without one the tick refuses to launch
     # attempts on it rather than queue evals that can never run. Bounded at
     # one node's worth: multi-node evals are not a shape the jail supports.
     gpus: int = Field(default=0, ge=0, le=8)

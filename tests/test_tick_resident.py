@@ -65,14 +65,14 @@ def _env(home: Path, root: Path, bindir: Path, **extra: str) -> dict[str, str]:
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "USER": os.environ.get("USER", "u"),
-        "AUTORESEARCH_HOME": str(home),
-        "AUTORESEARCH_ROOT": str(root),
-        "AUTORESEARCH_ACCOUNT": "acct",
-        "AUTORESEARCH_PARTITION": "cpu_short",
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": str(root),
+        "OUTERLOOP_ACCOUNT": "acct",
+        "OUTERLOOP_PARTITION": "cpu_short",
         "HOME": str(home),  # no ~/.config/autoresearch/.env
     }
-    env.pop("AUTORESEARCH_PAT_FILE", None)
-    env.pop("AUTORESEARCH_RESIDENT", None)
+    env.pop("OUTERLOOP_PAT_FILE", None)
+    env.pop("OUTERLOOP_RESIDENT", None)
     env.update(extra)
     return env
 
@@ -112,9 +112,9 @@ def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_c
         home,
         root,
         bindir,
-        AUTORESEARCH_RESIDENT="1",
-        AUTORESEARCH_RESIDENT_CADENCE_S="1",
-        AUTORESEARCH_RESIDENT_MINUTES="360",
+        OUTERLOOP_RESIDENT="1",
+        OUTERLOOP_RESIDENT_CADENCE_S="1",
+        OUTERLOOP_RESIDENT_MINUTES="360",
         SLURM_JOB_ID="42",
     )
     proc = _run_chain(home, env)
@@ -157,9 +157,9 @@ def _resident_env(home: Path, root: Path, bindir: Path, **extra: str) -> dict[st
         home,
         root,
         bindir,
-        AUTORESEARCH_RESIDENT="1",
-        AUTORESEARCH_RESIDENT_CADENCE_S="1",
-        AUTORESEARCH_RESIDENT_MINUTES="360",
+        OUTERLOOP_RESIDENT="1",
+        OUTERLOOP_RESIDENT_CADENCE_S="1",
+        OUTERLOOP_RESIDENT_MINUTES="360",
         SLURM_JOB_ID="42",
         **extra,
     )
@@ -269,7 +269,7 @@ echo "$((500 + n))"
 """
     )
     proc = _run_chain(
-        home, _resident_env(home, root, bindir, AUTORESEARCH_RESIDENT_RETRY_S="0"), timeout=120
+        home, _resident_env(home, root, bindir, OUTERLOOP_RESIDENT_RETRY_S="0"), timeout=120
     )
     assert proc.returncode == 0, proc.stderr
     assert len((shimlog / "sbatch").read_text().splitlines()) == 5
@@ -283,10 +283,10 @@ def test_a_misconfigured_resident_start_fails_loudly_before_queuing_anything(
 ) -> None:
     home, root, bindir, shimlog = _install(tmp_path)
     env = _resident_env(home, root, bindir)
-    env.pop("AUTORESEARCH_ROOT")
+    env.pop("OUTERLOOP_ROOT")
     proc = _run_chain(home, env)
     assert proc.returncode == 1
-    assert "resident tick misconfigured; missing: AUTORESEARCH_ROOT" in proc.stderr
+    assert "resident tick misconfigured; missing: OUTERLOOP_ROOT" in proc.stderr
     assert not (shimlog / "sbatch").exists() and not (shimlog / "ticks").exists()
 
 
@@ -343,16 +343,16 @@ exit 0
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "AUTORESEARCH_HOME": str(home),
-        "AUTORESEARCH_ROOT": str(root),
-        "AUTORESEARCH_PAT_FILE": str(pat),
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": str(root),
+        "OUTERLOOP_PAT_FILE": str(pat),
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
         [
             "bash",
             "-c",
-            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$OUTERLOOP_DEPLOY_BROKEN"',
         ],
         env=env,
         capture_output=True,
@@ -369,7 +369,7 @@ exit 0
 
 def test_a_failed_rollback_marks_the_deploy_broken_so_no_tick_runs(tmp_path: Path) -> None:
     """When the sync fails AND the reset back to the previous commit fails,
-    the deploy exports AUTORESEARCH_DEPLOY_BROKEN=1 and the tick callers skip
+    the deploy exports OUTERLOOP_DEPLOY_BROKEN=1 and the tick callers skip
     the tick: new source must never run against the old environment."""
     home = tmp_path / "home"
     (home / "scripts").mkdir(parents=True)
@@ -399,16 +399,16 @@ exit 0
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "AUTORESEARCH_HOME": str(home),
-        "AUTORESEARCH_ROOT": str(root),
-        "AUTORESEARCH_PAT_FILE": str(pat),
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": str(root),
+        "OUTERLOOP_PAT_FILE": str(pat),
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
         [
             "bash",
             "-c",
-            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$OUTERLOOP_DEPLOY_BROKEN"',
         ],
         env=env,
         capture_output=True,
@@ -420,9 +420,9 @@ exit 0
     assert "BROKEN=1" in proc.stdout
     # and the chain honours it: no tick, successors untouched, clean exit
     shim = (ROOT / "scripts" / "tick_chain.sbatch").read_text()
-    assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in shim and "tick skipped" in shim
+    assert 'OUTERLOOP_DEPLOY_BROKEN:-}" = "1"' in shim and "tick skipped" in shim
     resident = (ROOT / "scripts" / "tick_resident.sh").read_text()
-    assert 'AUTORESEARCH_DEPLOY_BROKEN:-}" = "1"' in resident and "tick skipped" in resident
+    assert 'OUTERLOOP_DEPLOY_BROKEN:-}" = "1"' in resident and "tick skipped" in resident
 
 
 def test_a_failed_sync_with_unchanged_lock_keeps_ticking_on_the_current_env(tmp_path: Path) -> None:
@@ -459,16 +459,16 @@ exit 0
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "AUTORESEARCH_HOME": str(home),
-        "AUTORESEARCH_ROOT": str(root),
-        "AUTORESEARCH_PAT_FILE": str(pat),
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": str(root),
+        "OUTERLOOP_PAT_FILE": str(pat),
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
         [
             "bash",
             "-c",
-            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$AUTORESEARCH_DEPLOY_BROKEN"',
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$OUTERLOOP_DEPLOY_BROKEN"',
         ],
         env=env,
         capture_output=True,

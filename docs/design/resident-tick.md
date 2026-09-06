@@ -1,7 +1,7 @@
 # The resident tick
 
 *Design note, 2026-09-02. Status: built as the opt-in mode
-(`AUTORESEARCH_RESIDENT=1`, `scripts/tick_resident.sh`); the chain restarts of
+(`OUTERLOOP_RESIDENT=1`, `scripts/tick_resident.sh`); the chain restarts of
 2026-09-02 are the evidence.*
 
 ## The problem
@@ -91,7 +91,7 @@ covers it.
 
 ## Rollout
 
-1. Opt-in mode in `scripts/tick_chain.sbatch`: `AUTORESEARCH_RESIDENT=1` in
+1. Opt-in mode in `scripts/tick_chain.sbatch`: `OUTERLOOP_RESIDENT=1` in
    the chain's environment selects the loop; unset keeps the per-cadence
    chain. The walltime is fixed by Slurm before the script runs, so the
    resident chain is STARTED with an explicit walltime and its own job name:
@@ -99,8 +99,8 @@ covers it.
    ```
    sbatch --time=360 --job-name=autoresearch-resident --dependency=singleton \
      --account=… --partition=cpu_short \
-     --export=ALL,AUTORESEARCH_RESIDENT=1,AUTORESEARCH_HOME=…,AUTORESEARCH_ROOT=…,\
-   AUTORESEARCH_ACCOUNT=…,AUTORESEARCH_PARTITION=cpu_short,AUTORESEARCH_PAT_FILE=… \
+     --export=ALL,OUTERLOOP_RESIDENT=1,OUTERLOOP_HOME=…,OUTERLOOP_ROOT=…,\
+   OUTERLOOP_ACCOUNT=…,OUTERLOOP_PARTITION=cpu_short,OUTERLOOP_PAT_FILE=… \
      scripts/tick_chain.sbatch
    ```
 

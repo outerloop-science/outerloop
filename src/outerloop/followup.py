@@ -1966,13 +1966,11 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument(
         "--codex-bin",
-        default=os.path.expanduser(
-            os.environ.get("AUTORESEARCH_CODEX_BIN") or "~/.local/bin/codex"
-        ),
+        default=os.path.expanduser(os.environ.get("OUTERLOOP_CODEX_BIN") or "~/.local/bin/codex"),
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5",
+        default=os.environ.get("OUTERLOOP_AUTHOR_MODEL") or "claude-opus-5",
         help="fallback model only; a run's OWN (backend, model) from its record wins",
     )
     # No --author-backend: a follow-up services ONE run, whose backend+model are
@@ -1998,7 +1996,7 @@ def main() -> int:
     parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
-        default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
+        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
         help="GitHub App config (JSON: app_id, installation_id, private_key); "
         "when set, installation tokens replace the PAT",
     )
@@ -2006,7 +2004,7 @@ def main() -> int:
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
-        "AUTORESEARCH_CLAUDE_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
+        "OUTERLOOP_CLAUDE_KEY_FILE for claude, OUTERLOOP_CODEX_KEY_FILE for codex",
     )
     parser.add_argument(
         "--panel",
@@ -2015,10 +2013,10 @@ def main() -> int:
         "re-read a pushed code change; '' = no re-read, a changed PR stays human-merged",
     )
     parser.add_argument("--panel-key-file", default="", help="the claude panel lenses' key file")
-    parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
-    parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
-    parser.add_argument("--gpu-partition", default=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""))
-    parser.add_argument("--gpu-account", default=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""))
+    parser.add_argument("--account", default=os.environ.get("OUTERLOOP_ACCOUNT", ""))
+    parser.add_argument("--partition", default=os.environ.get("OUTERLOOP_PARTITION", ""))
+    parser.add_argument("--gpu-partition", default=os.environ.get("OUTERLOOP_GPU_PARTITION", ""))
+    parser.add_argument("--gpu-account", default=os.environ.get("OUTERLOOP_GPU_ACCOUNT", ""))
     parser.add_argument(
         "--panel-minutes",
         type=int,

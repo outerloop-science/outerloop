@@ -6,13 +6,13 @@ __version__ = "0.1.0.dev1"
 
 
 def _bridge_legacy_env() -> None:
-    """Accept the new `OUTERLOOP_*` names at the process boundary: copy each into
-    its `AUTORESEARCH_*` twin when the twin is unset, so the kernel's internals —
-    which still read `AUTORESEARCH_*` during the rename — see one name. The chain
-    scripts do the same in shell. Removed with the final internal flip."""
+    """Accept the pre-rename `AUTORESEARCH_*` names at the process boundary for
+    one release: copy each into its `OUTERLOOP_*` twin when the twin is unset,
+    so the kernel reads one name. The chain scripts do the same in shell.
+    Removed in the release after 0.1."""
     for key, value in list(os.environ.items()):
-        if key.startswith("OUTERLOOP_"):
-            os.environ.setdefault("AUTORESEARCH_" + key[len("OUTERLOOP_") :], value)
+        if key.startswith("AUTORESEARCH_"):
+            os.environ.setdefault("OUTERLOOP_" + key[len("AUTORESEARCH_") :], value)
 
 
 _bridge_legacy_env()

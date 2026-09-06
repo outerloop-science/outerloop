@@ -3,7 +3,7 @@
 `AppInstallationTokenProvider` satisfies the `TokenProvider` protocol used
 throughout `github.py`. Role CLIs construct bot auth through
 `resolve_bot_auth`, which selects this provider when an App config file is
-given (`--github-app-file` / `AUTORESEARCH_GITHUB_APP_FILE`) and falls back
+given (`--github-app-file` / `OUTERLOOP_GITHUB_APP_FILE`) and falls back
 to the PAT file otherwise — the cutover flag, revertible by unsetting the
 env. Each `token()` mints a short-lived JWT (RS256, signed by the App
 private key), exchanges it for a ~1h installation token scoped to the

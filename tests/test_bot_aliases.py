@@ -7,12 +7,12 @@ from outerloop.github import bot_aliases_from_env, is_own_login
 
 
 def test_aliases_parse_and_own_login_matches_any_identity(monkeypatch) -> None:
-    monkeypatch.delenv("AUTORESEARCH_BOT_ALIASES", raising=False)
+    monkeypatch.delenv("OUTERLOOP_BOT_ALIASES", raising=False)
     assert bot_aliases_from_env() == ()
     assert is_own_login("outerloop-autoresearch[bot]", "outerloop-autoresearch[bot]")
     assert not is_own_login("agentic-learning-bot", "outerloop-autoresearch[bot]")
     monkeypatch.setenv(
-        "AUTORESEARCH_BOT_ALIASES", " agentic-learning-bot, old-bot ,agentic-learning-bot"
+        "OUTERLOOP_BOT_ALIASES", " agentic-learning-bot, old-bot ,agentic-learning-bot"
     )
     assert bot_aliases_from_env() == ("agentic-learning-bot", "old-bot")
     assert is_own_login("Agentic-Learning-Bot", "outerloop-autoresearch[bot]")
@@ -38,9 +38,9 @@ def test_the_kernels_old_research_log_issue_is_never_an_order(monkeypatch) -> No
         "user": {"login": "agentic-learning-bot"},
         "author_association": "MEMBER",
     }
-    monkeypatch.delenv("AUTORESEARCH_BOT_ALIASES", raising=False)
+    monkeypatch.delenv("OUTERLOOP_BOT_ALIASES", raising=False)
     assert qualifying_issue(issue, "outerloop-autoresearch[bot]")  # the hole
-    monkeypatch.setenv("AUTORESEARCH_BOT_ALIASES", "agentic-learning-bot")
+    monkeypatch.setenv("OUTERLOOP_BOT_ALIASES", "agentic-learning-bot")
     assert not qualifying_issue(issue, "outerloop-autoresearch[bot]")
     # a maintainer's issue still qualifies
     theirs = {**issue, "user": {"login": "renmengye"}, "body": "try a wider model"}
@@ -51,7 +51,7 @@ def test_old_claims_alarms_and_comments_are_still_ours(monkeypatch) -> None:
     from outerloop.followup import qualifying_comments
     from outerloop.tick import CONTRACT_ALARM_MARKER, _find_alarm_issue
 
-    monkeypatch.setenv("AUTORESEARCH_BOT_ALIASES", "agentic-learning-bot")
+    monkeypatch.setenv("OUTERLOOP_BOT_ALIASES", "agentic-learning-bot")
     bot = "outerloop-autoresearch[bot]"
     # a comment the old account posted is the kernel's, not a maintainer's
     old = {
@@ -84,7 +84,7 @@ def test_old_claims_alarms_and_comments_are_still_ours(monkeypatch) -> None:
             ]
 
     assert _find_alarm_issue(G(), "org/repo", bot) == 7
-    monkeypatch.delenv("AUTORESEARCH_BOT_ALIASES")
+    monkeypatch.delenv("OUTERLOOP_BOT_ALIASES")
     assert _find_alarm_issue(G(), "org/repo", bot) == 0  # without the alias: not ours
 
 
@@ -110,7 +110,7 @@ def test_the_reusable_workflows_carry_the_aliases() -> None:
             for step in job.get("steps", []):
                 env = step.get("env") or {}
                 if "REVIEW_BOT_LOGIN" in env:
-                    assert env.get("AUTORESEARCH_BOT_ALIASES") == "${{ inputs.bot_aliases }}", (
+                    assert env.get("OUTERLOOP_BOT_ALIASES") == "${{ inputs.bot_aliases }}", (
                         name,
                         step.get("name"),
                     )

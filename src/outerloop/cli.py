@@ -2,7 +2,7 @@
 
 With `sbatch` on PATH it submits the resident tick
 (docs/design/resident-tick.md) and returns; without it, or with
-AUTORESEARCH_COMPUTE=local, it runs the local loop in the foreground.
+OUTERLOOP_COMPUTE=local, it runs the local loop in the foreground.
 Settings come from flags, then the process environment, then
 ~/.config/outerloop/.env, read once here at launch. The running chain
 never takes identity or placement from that file (tick_deploy.sh reads an
@@ -30,37 +30,37 @@ ENV_FILE = paths.ENV_FILE  # ~/.config/outerloop/.env, or the pre-rename dir (se
 
 # What start itself decides from: mode, placement, root, cadence, walltime.
 START_KEYS = (
-    "AUTORESEARCH_COMPUTE",
-    "AUTORESEARCH_ROOT",
-    "AUTORESEARCH_ACCOUNT",
-    "AUTORESEARCH_PARTITION",
-    "AUTORESEARCH_CADENCE_MIN",
-    "AUTORESEARCH_RESIDENT_MINUTES",
-    "AUTORESEARCH_PAT_FILE",
+    "OUTERLOOP_COMPUTE",
+    "OUTERLOOP_ROOT",
+    "OUTERLOOP_ACCOUNT",
+    "OUTERLOOP_PARTITION",
+    "OUTERLOOP_CADENCE_MIN",
+    "OUTERLOOP_RESIDENT_MINUTES",
+    "OUTERLOOP_PAT_FILE",
 )
 # The author knobs the chain's deploy step exports from .env every tick. The
 # local loop has no deploy step, so start exports them once at launch; a test
 # keeps this list identical to tick_deploy.sh's.
 TICK_ENV_KEYS = (
-    "AUTORESEARCH_AUTHOR_BACKEND",
-    "AUTORESEARCH_AUTHOR_MODEL",
-    "AUTORESEARCH_CODEX_BIN",
-    "AUTORESEARCH_CODEX_KEY_FILE",
-    "AUTORESEARCH_CLAUDE_KEY_FILE",
-    "AUTORESEARCH_HARNESS_KEY_FILE",
-    "AUTORESEARCH_VERTEX_PROJECT",
-    "AUTORESEARCH_VERTEX_REGION",
-    "AUTORESEARCH_VERTEX_ADC",
-    "AUTORESEARCH_TARGET",
-    "AUTORESEARCH_GITHUB_APP_FILE",
-    "AUTORESEARCH_BOT_LOGIN",
-    "AUTORESEARCH_BOT_ALIASES",
-    "AUTORESEARCH_GPU_PARTITION",
-    "AUTORESEARCH_GPU_ACCOUNT",
-    "AUTORESEARCH_PANEL",
-    "AUTORESEARCH_PANEL_KEY_FILE",
-    "AUTORESEARCH_PANEL_CODEX_KEY_FILE",
-    "AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+    "OUTERLOOP_AUTHOR_BACKEND",
+    "OUTERLOOP_AUTHOR_MODEL",
+    "OUTERLOOP_CODEX_BIN",
+    "OUTERLOOP_CODEX_KEY_FILE",
+    "OUTERLOOP_CLAUDE_KEY_FILE",
+    "OUTERLOOP_HARNESS_KEY_FILE",
+    "OUTERLOOP_VERTEX_PROJECT",
+    "OUTERLOOP_VERTEX_REGION",
+    "OUTERLOOP_VERTEX_ADC",
+    "OUTERLOOP_TARGET",
+    "OUTERLOOP_GITHUB_APP_FILE",
+    "OUTERLOOP_BOT_LOGIN",
+    "OUTERLOOP_BOT_ALIASES",
+    "OUTERLOOP_GPU_PARTITION",
+    "OUTERLOOP_GPU_ACCOUNT",
+    "OUTERLOOP_PANEL",
+    "OUTERLOOP_PANEL_KEY_FILE",
+    "OUTERLOOP_PANEL_CODEX_KEY_FILE",
+    "OUTERLOOP_PANEL_HERMES_KEY_FILE",
     "REVIEW_HERMES_REPO",
     "REVIEW_HERMES_PROVIDER",
 )
@@ -95,8 +95,8 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key.startswith("OUTERLOOP_"):  # the public name; `keys` are canonical
-            key = "AUTORESEARCH_" + key[len("OUTERLOOP_") :]
+        if key.startswith("AUTORESEARCH_"):  # the pre-rename name, accepted for one release
+            key = "OUTERLOOP_" + key[len("AUTORESEARCH_") :]
         if key not in keys:
             continue
         value = value.strip()
@@ -124,19 +124,19 @@ class StartPlan:
         reads as "whichever frees up first") without corrupting the export
         delimiter. start() merges these into the environment it hands sbatch."""
         env = {
-            "AUTORESEARCH_RESIDENT": "1",
-            "AUTORESEARCH_HOME": str(self.home),
-            "AUTORESEARCH_ROOT": str(self.root),
-            "AUTORESEARCH_RESIDENT_MINUTES": str(self.resident_minutes),  # successors reuse it
+            "OUTERLOOP_RESIDENT": "1",
+            "OUTERLOOP_HOME": str(self.home),
+            "OUTERLOOP_ROOT": str(self.root),
+            "OUTERLOOP_RESIDENT_MINUTES": str(self.resident_minutes),  # successors reuse it
         }
         if self.account:
-            env["AUTORESEARCH_ACCOUNT"] = self.account
+            env["OUTERLOOP_ACCOUNT"] = self.account
         if self.partition:
-            env["AUTORESEARCH_PARTITION"] = self.partition
+            env["OUTERLOOP_PARTITION"] = self.partition
         if self.cadence_min:
-            env["AUTORESEARCH_CADENCE_MIN"] = self.cadence_min
+            env["OUTERLOOP_CADENCE_MIN"] = self.cadence_min
         if self.pat_file:
-            env["AUTORESEARCH_PAT_FILE"] = self.pat_file
+            env["OUTERLOOP_PAT_FILE"] = self.pat_file
         return env
 
     def command(self) -> list[str]:
@@ -170,7 +170,7 @@ def _setting(key: str, flag: str, environ: dict[str, str], from_file: dict[str, 
 
 def _home(environ: dict[str, str], cwd: Path, *, local: bool, root: Path) -> Path:
     """The directory the loop runs from. On Slurm it must be a source
-    checkout (AUTORESEARCH_HOME, else the current directory): the chain
+    checkout (OUTERLOOP_HOME, else the current directory): the chain
     deploys from it and every job runs from a flight snapshot of its HEAD.
     The local loop has no deploy step and runs the installed package, so it
     uses a checkout when one is at hand and otherwise a `home` directory
@@ -198,10 +198,10 @@ def plan_start(
     sbatch_on_path: bool,
     cwd: Path,
 ) -> StartPlan:
-    compute = _setting("AUTORESEARCH_COMPUTE", "local" if local else "", environ, from_file)
+    compute = _setting("OUTERLOOP_COMPUTE", "local" if local else "", environ, from_file)
     mode = "local" if compute.strip().lower() == "local" or not sbatch_on_path else "slurm"
-    root_s = _setting("AUTORESEARCH_ROOT", root, environ, from_file)
-    cadence = _setting("AUTORESEARCH_CADENCE_MIN", "", environ, from_file)
+    root_s = _setting("OUTERLOOP_ROOT", root, environ, from_file)
+    cadence = _setting("OUTERLOOP_CADENCE_MIN", "", environ, from_file)
     if cadence:
         # the chain divides by it and the loop sleeps on it: a bad value would
         # only surface after the job started
@@ -211,12 +211,12 @@ def plan_start(
             cadence_ok = False
         if not cadence_ok:
             raise StartError(
-                f"AUTORESEARCH_CADENCE_MIN must be a positive number of minutes, got {cadence!r}"
+                f"OUTERLOOP_CADENCE_MIN must be a positive number of minutes, got {cadence!r}"
             )
-    pat = _setting("AUTORESEARCH_PAT_FILE", "", environ, from_file)
+    pat = _setting("OUTERLOOP_PAT_FILE", "", environ, from_file)
     # Slurm runs from a checkout; the local loop runs the installed package
     # and needs only a directory (the launch lanes and GitHub servicing
-    # switch off without AUTORESEARCH_HOME, so one is always set)
+    # switch off without OUTERLOOP_HOME, so one is always set)
     local_root = Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT
     home = _home(environ, cwd, local=(mode == "local"), root=local_root)
     if mode == "local":
@@ -230,21 +230,22 @@ def plan_start(
     if not root_s:
         raise StartError(
             "Slurm mode needs the state root on the shared filesystem: "
-            "--root, AUTORESEARCH_ROOT, or AUTORESEARCH_ROOT= in ~/.config/outerloop/.env"
+            "--root, OUTERLOOP_ROOT in the environment, or OUTERLOOP_ROOT= in "
+            "~/.config/outerloop/.env"
         )
-    acc = _setting("AUTORESEARCH_ACCOUNT", account, environ, from_file)
-    part = _setting("AUTORESEARCH_PARTITION", partition, environ, from_file)
+    acc = _setting("OUTERLOOP_ACCOUNT", account, environ, from_file)
+    part = _setting("OUTERLOOP_PARTITION", partition, environ, from_file)
     # Account and partition are both optional: left unset, Slurm bills the
     # caller's default association and places the job on its default partition.
-    minutes_s = _setting("AUTORESEARCH_RESIDENT_MINUTES", "", environ, from_file)
+    minutes_s = _setting("OUTERLOOP_RESIDENT_MINUTES", "", environ, from_file)
     try:
         minutes = int(minutes_s) if minutes_s else DEFAULT_RESIDENT_MINUTES
     except ValueError:
         raise StartError(
-            f"AUTORESEARCH_RESIDENT_MINUTES must be a whole number of minutes, got {minutes_s!r}"
+            f"OUTERLOOP_RESIDENT_MINUTES must be a whole number of minutes, got {minutes_s!r}"
         ) from None
     if minutes <= 0:
-        raise StartError("AUTORESEARCH_RESIDENT_MINUTES must be positive")
+        raise StartError("OUTERLOOP_RESIDENT_MINUTES must be positive")
     # These ride the inherited environment (sbatch --export=ALL), so a comma is
     # safe now (a multi-partition `a,b` is valid) — only a newline would corrupt
     # the environment or the sbatch argv.
@@ -337,14 +338,14 @@ def start(args: argparse.Namespace) -> int:
         for key, value in values.items():
             if key in TICK_ENV_KEYS:
                 env.setdefault(key, value)
-        env["AUTORESEARCH_COMPUTE"] = "local"
-        env["AUTORESEARCH_ROOT"] = str(plan.root)
-        env["AUTORESEARCH_HOME"] = str(plan.home)
+        env["OUTERLOOP_COMPUTE"] = "local"
+        env["OUTERLOOP_ROOT"] = str(plan.root)
+        env["OUTERLOOP_HOME"] = str(plan.home)
         plan.home.mkdir(parents=True, exist_ok=True)  # <root>/home when there is no checkout
         if plan.cadence_min:
-            env["AUTORESEARCH_CADENCE_MIN"] = plan.cadence_min
+            env["OUTERLOOP_CADENCE_MIN"] = plan.cadence_min
         if plan.pat_file:
-            env["AUTORESEARCH_PAT_FILE"] = plan.pat_file
+            env["OUTERLOOP_PAT_FILE"] = plan.pat_file
         print(
             f"local loop: state in {plan.root}; Ctrl-C stops it, the records resume it",
             file=sys.stderr,
@@ -406,12 +407,22 @@ def start(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from outerloop import __version__
+
     parser = argparse.ArgumentParser(
-        prog="outerloop", description="autonomous research agents in an outer loop"
+        prog="outerloop",
+        description="autonomous research agents in an outer loop",
+        epilog="Run `outerloop init` once, then `outerloop start`. Settings live in "
+        "~/.config/outerloop/.env; the install guide is docs/install.md.",
     )
+    parser.add_argument("--version", action="version", version=f"outerloop {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser(
-        "start", help="start the loop: the resident tick on Slurm, the local loop elsewhere"
+        "start",
+        help="start the loop: the resident tick on Slurm, the local loop elsewhere",
+        description="Submit the resident tick to Slurm, or run the local loop in the "
+        "foreground where there is no sbatch. Every flag defaults from "
+        "~/.config/outerloop/.env, written by `outerloop init`.",
     )
     p.add_argument(
         "--root", help="state root (shared filesystem on Slurm; default ~/.autoresearch locally)"

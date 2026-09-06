@@ -142,7 +142,7 @@ def _rmtree_at(dir_fd: int, name: str) -> None:
 class VertexConfig:
     """Claude-on-Vertex auth (ADC): set to bill Anthropic sessions to a GCP
     project instead of an Anthropic API key. The single owner of the
-    AUTORESEARCH_VERTEX_* env contract is `vertex_from_env`."""
+    OUTERLOOP_VERTEX_* env contract is `vertex_from_env`."""
 
     project: str
     region: str = "global"
@@ -166,12 +166,12 @@ class VertexConfig:
 
 def vertex_from_env() -> VertexConfig | None:
     """The deployment's Vertex coordinates, or None (Anthropic-direct). A live
-    flip needs only the env: set AUTORESEARCH_VERTEX_PROJECT to route every
+    flip needs only the env: set OUTERLOOP_VERTEX_PROJECT to route every
     claude session through Vertex; unset it to fall back to the API key."""
-    project = os.environ.get("AUTORESEARCH_VERTEX_PROJECT", "").strip()
+    project = os.environ.get("OUTERLOOP_VERTEX_PROJECT", "").strip()
     if not project:
         return None
-    adc = os.path.expanduser(os.environ.get("AUTORESEARCH_VERTEX_ADC", "").strip())
+    adc = os.path.expanduser(os.environ.get("OUTERLOOP_VERTEX_ADC", "").strip())
     if not adc:
         # resolve the gcloud default NOW, under the real HOME — the session's
         # HOME is a scrubbed per-run directory where ambient discovery would
@@ -181,7 +181,7 @@ def vertex_from_env() -> VertexConfig | None:
             adc = default
     return VertexConfig(
         project=project,
-        region=os.environ.get("AUTORESEARCH_VERTEX_REGION", "global").strip() or "global",
+        region=os.environ.get("OUTERLOOP_VERTEX_REGION", "global").strip() or "global",
         adc_file=adc,
     )
 

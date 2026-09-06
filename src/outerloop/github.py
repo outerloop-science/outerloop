@@ -43,21 +43,21 @@ DEFAULT_BOT_LOGIN = "agentic-learning-bot"
 def bot_login_from_env(default: str = DEFAULT_BOT_LOGIN) -> str:
     """The login the kernel posts and pushes as — the bot ACCOUNT under a PAT,
     the App's `<slug>[bot]` under App auth (docs/design/github-app-auth.md).
-    `AUTORESEARCH_BOT_LOGIN` sets it for every role at once (the tick exports
+    `OUTERLOOP_BOT_LOGIN` sets it for every role at once (the tick exports
     it, jobs inherit it); every own-comment filter, alarm-issue lookup and
     intake-claim scan keys on this string, so it must follow the credential."""
-    return os.environ.get("AUTORESEARCH_BOT_LOGIN", "").strip() or default
+    return os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip() or default
 
 
 def bot_aliases_from_env() -> tuple[str, ...]:
     """Former logins the kernel posted as (comma-separated
-    `AUTORESEARCH_BOT_ALIASES`). Every issue, claim, alarm and PR created
+    `OUTERLOOP_BOT_ALIASES`). Every issue, claim, alarm and PR created
     before an identity flip carries the OLD login; recognition stays keyed on
     login — never on the public markers, which anyone can paste — so the set
     of our logins is what a flip must widen (live: after the App flip the
     intake lane claimed the kernel's own research-log issue, authored by the
     PAT account)."""
-    raw = os.environ.get("AUTORESEARCH_BOT_ALIASES", "")
+    raw = os.environ.get("OUTERLOOP_BOT_ALIASES", "")
     return tuple(dict.fromkeys(a.strip() for a in raw.split(",") if a.strip()))
 
 

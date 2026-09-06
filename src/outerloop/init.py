@@ -345,7 +345,9 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="outerloop init", description="guided setup for outerloop"
+        prog="outerloop init",
+        description="Guided setup: asks for anything not given as a flag, checks the "
+        "credentials, and writes ~/.config/outerloop/.env.",
     )
     parser.add_argument("--compute", choices=["slurm", "local"], help="where the loop runs")
     parser.add_argument("--target", help="the repo the agents work on, owner/repo")
@@ -367,7 +369,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--app-name", dest="app_name", help="name for the created GitHub App")
     parser.add_argument("--org", help="create the App under this org (default: your account)")
-    parser.add_argument("--author-backend", dest="author_backend", help="climbing author's backend")
+    parser.add_argument(
+        "--author-backend",
+        dest="author_backend",
+        help=f"climbing author's backend ({' or '.join(AUTHOR_BACKENDS)}; default claude)",
+    )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
     parser.add_argument(
         "--author-key-file",

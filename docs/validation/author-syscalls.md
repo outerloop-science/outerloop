@@ -4,7 +4,7 @@
 > milestones green — the codex author launched + slept unprompted, the same
 > session resumed with its launch's post-hibernation results, and the run
 > reached an honest negative terminal. The `--author-syscalls` /
-> `AUTORESEARCH_AUTHOR_SYSCALLS` arming described by the original runbook has
+> `OUTERLOOP_AUTHOR_SYSCALLS` arming described by the original runbook has
 > since RETIRED: enablement is contract-driven (dispatch coords + a resumable
 > backend + `depth_k > 0`; `depth_k: 0` is a benchmark's opt-out). The steps
 > below are kept for re-validation after substrate changes.
