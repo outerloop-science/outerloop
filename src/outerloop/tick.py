@@ -683,12 +683,27 @@ def service_in_review(
                     continue  # unknown — do not stack another job
             # the wake-attempt counter caps follow-up retries too: a responder
             # that cannot advance its cursors must not burn a session per tick.
-            # A LANDED re-measure is exempt: the sessions that synced the base
-            # and dispatched it were progress, and the follow-up that pushes
-            # the sealed number is bounded by that GPU job, not by ticks —
-            # capping it here parks the result forever (speedrun agent-03,
-            # 2026-09-04: three syncs spent the cap, the measure completed,
-            # and the run idled for two days on this branch)
+            # A LANDED re-measure gets its own allowance: the sessions that
+            # synced the base and dispatched it were progress, and capping the
+            # follow-up that pushes the sealed number parks the result forever
+            # (speedrun agent-03, 2026-09-04: three syncs spent the cap, the
+            # measure completed, and the run idled for two days on this
+            # branch). The allowance is counted on the stage itself, so a
+            # finishing session that reverts and leaves the stage intact is
+            # retried MAX_WAKE_ATTEMPTS times, not once per tick; a stage that
+            # finishes is cleared, and with it the count.
+            finish_attempts = (
+                int(record.followup_stage.get("finish_attempts", 0) or 0)  # type: ignore[call-overload]
+                if measure_ready
+                else 0
+            )
+            if measure_ready and finish_attempts >= MAX_WAKE_ATTEMPTS:
+                log.warning(
+                    "run %s: %d follow-ups failed to finish the landed re-measure; parked",
+                    record.run_id,
+                    finish_attempts,
+                )
+                continue
             if record.wake_attempts >= MAX_WAKE_ATTEMPTS and not measure_ready:
                 log.warning(
                     "run %s: %d follow-up attempts without progress; not resubmitting",
@@ -783,11 +798,16 @@ def service_in_review(
             # read-modify-write on the FRESH record: the submitted job may
             # already be saving its own fields
             latest = load_record(root, record.run_id)
+            stage = latest.followup_stage
+            if measure_ready and stage:
+                # one finishing attempt billed against this landed measure
+                stage = {**stage, "finish_attempts": finish_attempts + 1}
             save_record(
                 root,
                 replace(
                     latest,
                     followup_job_id=job_id,
+                    followup_stage=stage,
                     wake_attempts=latest.wake_attempts + 1,
                 ),
                 now,

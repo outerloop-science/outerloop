@@ -4032,7 +4032,7 @@ def test_a_landed_remeasure_is_finished_even_at_the_wake_cap(tmp_path: Path) -> 
     the sealed number must still go out — otherwise the result parks forever
     (speedrun agent-03, 2026-09-04). Without a landed measure the cap holds."""
     from outerloop.compute import CommandResult
-    from outerloop.runstate import IN_REVIEW, MAX_WAKE_ATTEMPTS, RunRecord, save_record
+    from outerloop.runstate import IN_REVIEW, MAX_WAKE_ATTEMPTS, RunRecord, load_record, save_record
     from outerloop.tick import FollowupSpec, service_in_review
 
     class G:
@@ -4055,8 +4055,8 @@ def test_a_landed_remeasure_is_finished_even_at_the_wake_cap(tmp_path: Path) -> 
         def list_pr_review_comments(self, repo, number, max_pages=10):
             return []
 
-    def run(stage: dict) -> list:
-        root = tmp_path / f"root-{len(stage)}"
+    def run(stage: dict) -> tuple[list, dict]:
+        root = tmp_path / f"root-{len(stage)}-{stage.get('finish_attempts', 0)}"
         root.mkdir()
         save_record(
             root,
@@ -4087,12 +4087,20 @@ def test_a_landed_remeasure_is_finished_even_at_the_wake_cap(tmp_path: Path) -> 
             home=Path("/home/x/autoresearch"),
         )
         _ended, submitted = service_in_review(root, G(), SlurmCompute(runner=runner), spec, NOW)
-        return submitted
+        return submitted, load_record(root, "r-rev").followup_stage
 
-    # landed measure: finished despite the cap
-    assert run({"job_ids": ["9001"], "candidate_sha": "c" * 40}) == [("r-rev", "77")]
+    landed = {"job_ids": ["9001"], "candidate_sha": "c" * 40}
+    # landed measure: finished despite the cap, and the attempt is counted on the stage
+    submitted, stage = run(landed)
+    assert submitted == [("r-rev", "77")] and stage["finish_attempts"] == 1
+    # a finishing session that reverted and left the stage intact is retried...
+    submitted, stage = run({**landed, "finish_attempts": MAX_WAKE_ATTEMPTS - 1})
+    assert submitted == [("r-rev", "77")] and stage["finish_attempts"] == MAX_WAKE_ATTEMPTS
+    # ...a bounded number of times, never once per tick
+    submitted, stage = run({**landed, "finish_attempts": MAX_WAKE_ATTEMPTS})
+    assert submitted == [] and stage["finish_attempts"] == MAX_WAKE_ATTEMPTS
     # new comments only: the cap still holds
-    assert run({}) == []
+    assert run({})[0] == []
 
 
 def test_a_blind_parked_remeasure_waits_its_floor_before_a_followup_is_sent(tmp_path: Path) -> None:
