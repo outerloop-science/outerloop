@@ -385,8 +385,9 @@ def main(argv: list[str] | None = None) -> int:
     if not answers.target:
         print("outerloop init: a target repo is required (--target owner/repo)", file=sys.stderr)
         return 2
-    if answers.compute == "slurm" and not (answers.root and answers.account):
-        print("outerloop init: Slurm needs --root and --account", file=sys.stderr)
+    if answers.compute == "slurm" and not answers.root:
+        # the account and the partition are optional: Slurm's defaults apply
+        print("outerloop init: Slurm needs --root", file=sys.stderr)
         return 2
     if answers.author_backend and answers.author_backend not in AUTHOR_BACKENDS:
         print(

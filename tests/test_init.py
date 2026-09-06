@@ -141,10 +141,19 @@ def test_main_yes_requires_target(tmp_path: Path, monkeypatch, capsys) -> None:
     assert "target repo is required" in capsys.readouterr().err
 
 
-def test_main_yes_slurm_requires_root_and_account(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_main_yes_slurm_requires_root_only(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The state root is the one Slurm setting init insists on; account and
+    partition are optional (#300) and an accountless config is written
+    without either line, so Slurm's defaults apply."""
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
     assert init.main(["--yes", "--compute", "slurm", "--target", "o/r"]) == 2
-    assert "Slurm needs --root and --account" in capsys.readouterr().err
+    assert "Slurm needs --root" in capsys.readouterr().err
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    argv = ["--yes", "--compute", "slurm", "--target", "o/r", "--root", "/r"]
+    assert init.main([*argv, "--pat-file", "/some/pat"]) == 0
+    env = (tmp_path / ".env").read_text()
+    assert "OUTERLOOP_ROOT=/r" in env
+    assert "OUTERLOOP_ACCOUNT" not in env and "OUTERLOOP_PARTITION" not in env
 
 
 def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypatch) -> None:
