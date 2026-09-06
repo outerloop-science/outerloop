@@ -47,10 +47,11 @@ outerloop init     # where the loop runs, which repo, which model and its key, y
 ```
 
 The wizard asks for a GitHub identity for the agents to open pull requests
-as. Pick `app` and it creates a GitHub App under your account or org in one
-browser click, installs it on the repo, and checks that it can write there.
-Pick `pat` if you already have a token. It writes the config and the key
-files; nothing to edit by hand. Then
+as. Pick `app` and it walks you through creating a GitHub App, under your
+account or under an organization you name, and installing it on the repo:
+two browser pages and a code pasted back. It then checks that the App can
+write the repo and tells you if it cannot. Pick `pat` if you already have a
+token. It writes the config and the key files; nothing to edit by hand. Then
 add one file, `.outerloop.yaml`, to the repo you want improved:
 
 ```yaml
