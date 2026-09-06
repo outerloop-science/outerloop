@@ -3028,7 +3028,7 @@ def _default_image() -> str:
     0.1."""
     new = os.path.expanduser("~/outerloop-images/agent-py312.sif")
     old = os.path.expanduser("~/autoresearch-images/agent-py312.sif")
-    return old if (not os.path.exists(new) and os.path.isfile(old)) else new
+    return old if (not os.path.isfile(new) and os.path.isfile(old)) else new
 
 
 def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:

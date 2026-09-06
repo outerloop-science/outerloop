@@ -383,7 +383,7 @@ def start(args: argparse.Namespace) -> int:
         print(
             "outerloop start: could not ask the scheduler whether a resident tick "
             "exists (squeue failed); nothing submitted. Retry, or check "
-            f"`squeue --name {RESIDENT_JOB_NAME}`.",
+            f"`squeue --name {RESIDENT_JOB_NAME},{LEGACY_RESIDENT_JOB_NAME}`.",
             file=sys.stderr,
         )
         return 1

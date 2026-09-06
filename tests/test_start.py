@@ -144,6 +144,28 @@ def test_resident_lookup_asks_for_both_names(monkeypatch: Any) -> None:
     assert "--name=outerloop-resident,autoresearch-resident" in seen[0]
 
 
+def test_default_image_falls_back_only_to_a_usable_legacy_file(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The pre-rename image is used while the new path is not a FILE (absent, or
+    a stray directory); a real new image always wins."""
+    from outerloop.tick import _default_image
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    new = tmp_path / "outerloop-images" / "agent-py312.sif"
+    old = tmp_path / "autoresearch-images" / "agent-py312.sif"
+    assert _default_image() == str(new)  # neither exists: the new default
+    old.parent.mkdir()
+    old.write_text("")
+    assert _default_image() == str(old)
+    new.parent.mkdir()
+    new.mkdir()  # a directory at the new path is not an image
+    assert _default_image() == str(old)
+    new.rmdir()
+    new.write_text("")
+    assert _default_image() == str(new)
+
+
 def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
     p = plan(tmp_path, sbatch_on_path=False)
     assert p.mode == "local"
