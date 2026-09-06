@@ -155,27 +155,28 @@ def _check_app_access(provider: Any, target: str) -> str:
 
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     try:
-        token = provider.token()
-        # an installation token sees a repository only when the installation
-        # covers it, so one direct read answers "is it installed there"
-        # without paging through the installation's repository list
+        # Asked as the App itself: GitHub answers with the installation that
+        # covers this repository, permissions included, or 404. A public
+        # repository would answer a plain read for any token, and the
+        # installation's repository list paginates, so neither is asked.
+        jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
         req = urllib.request.Request(
-            f"{API}/repos/{target}", headers={**headers, "Authorization": f"Bearer {token}"}
+            f"{API}/repos/{target}/installation",
+            headers={**headers, "Authorization": f"Bearer {jwt}"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=15):
-                pass
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                installation = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return f"the App is not installed on {target}; install it there"
             raise
-        jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
-        req = urllib.request.Request(
-            f"{API}/app/installations/{provider.installation_id}",
-            headers={**headers, "Authorization": f"Bearer {jwt}"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            perms = json.loads(resp.read()).get("permissions") or {}
+        if int(installation.get("id", 0)) != int(provider.installation_id):
+            return (
+                f"the App is installed on {target} under installation "
+                f"{installation.get('id')}, but the App file records {provider.installation_id}"
+            )
+        perms = installation.get("permissions") or {}
         missing = [k for k in ("contents", "issues", "pull_requests") if perms.get(k) != "write"]
         if missing:
             return (

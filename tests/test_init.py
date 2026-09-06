@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 from pathlib import Path
+from typing import Any
 
 from outerloop import init
 from outerloop.init import (
@@ -435,10 +436,10 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
         def token(self) -> str:
             return "tok"
 
-    answers = {
-        "repos/o/r": {"full_name": "o/r"},
-        "app/installations/2": {
-            "permissions": {"contents": "write", "issues": "write", "pull_requests": "write"}
+    answers: dict[str, Any] = {
+        "repos/o/r/installation": {
+            "id": 2,
+            "permissions": {"contents": "write", "issues": "write", "pull_requests": "write"},
         },
     }
 
@@ -460,10 +461,12 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
     monkeypatch.setattr(init.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
     assert init._check_app_access(Provider(), "o/r") == ""
-    answers["repos/o/r"] = None
+    answers["repos/o/r/installation"] = None  # not installed there: GitHub 404s, public or not
     assert "not installed on o/r" in init._check_app_access(Provider(), "o/r")
-    answers["repos/o/r"] = {"full_name": "o/r"}
-    answers["app/installations/2"] = {
-        "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"}
+    answers["repos/o/r/installation"] = {
+        "id": 2,
+        "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"},
     }
     assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")
+    answers["repos/o/r/installation"] = {"id": 9, "permissions": {"contents": "write"}}
+    assert "installation 9" in init._check_app_access(Provider(), "o/r")
