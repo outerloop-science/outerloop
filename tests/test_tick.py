@@ -190,44 +190,44 @@ def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
     from outerloop.tick import _min_tick_s_from_env
 
     # default cadence (30 min) -> safe ceiling = half-cadence = 15 min = 900s
-    monkeypatch.delenv("AUTORESEARCH_CADENCE_MIN", raising=False)
-    monkeypatch.delenv("AUTORESEARCH_MIN_TICK_MINUTES", raising=False)
+    monkeypatch.delenv("OUTERLOOP_CADENCE_MIN", raising=False)
+    monkeypatch.delenv("OUTERLOOP_MIN_TICK_MINUTES", raising=False)
     assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S  # unset -> default (10 min < ceiling)
-    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "5")
+    monkeypatch.setenv("OUTERLOOP_MIN_TICK_MINUTES", "5")
     assert _min_tick_s_from_env() == 300.0
-    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "0")
+    monkeypatch.setenv("OUTERLOOP_MIN_TICK_MINUTES", "0")
     assert _min_tick_s_from_env() == 0.0  # disables
     for bad in ("inf", "nan", "-inf", "abc"):  # non-finite / non-numeric -> default
-        monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", bad)
+        monkeypatch.setenv("OUTERLOOP_MIN_TICK_MINUTES", bad)
         assert _min_tick_s_from_env() == DEFAULT_MIN_TICK_S
     # a window at/above half the cadence is clamped so normal ticks aren't coalesced
-    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "9999")
+    monkeypatch.setenv("OUTERLOOP_MIN_TICK_MINUTES", "9999")
     assert _min_tick_s_from_env() == 900.0  # clamped to the 15-min ceiling
-    monkeypatch.setenv("AUTORESEARCH_MIN_TICK_MINUTES", "25")  # > 15 (half of 30-min cadence)
+    monkeypatch.setenv("OUTERLOOP_MIN_TICK_MINUTES", "25")  # > 15 (half of 30-min cadence)
     assert _min_tick_s_from_env() == 900.0
-    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "10")  # ceiling tracks the cadence
+    monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "10")  # ceiling tracks the cadence
     assert _min_tick_s_from_env() == 300.0  # clamped to half of 10 min = 5 min
 
 
 def test_default_coalesce_window_scales_with_cadence(monkeypatch) -> None:
     from outerloop.tick import _default_min_tick_s, _min_tick_s_from_env
 
-    monkeypatch.delenv("AUTORESEARCH_MIN_TICK_MINUTES", raising=False)
+    monkeypatch.delenv("OUTERLOOP_MIN_TICK_MINUTES", raising=False)
     # no cadence set -> assume 30-min cadence -> min(10, 15) = 10 min
-    monkeypatch.delenv("AUTORESEARCH_CADENCE_MIN", raising=False)
+    monkeypatch.delenv("OUTERLOOP_CADENCE_MIN", raising=False)
     assert _default_min_tick_s() == DEFAULT_MIN_TICK_S
     # a SHORT cadence scales the window down (half-cadence), so the default can't
     # swallow every on-cadence tick
-    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "6")
+    monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "6")
     assert _default_min_tick_s() == 180.0  # 6-min cadence -> 3-min window
     # a long cadence stays capped at the ceiling
-    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "120")
+    monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "120")
     assert _default_min_tick_s() == DEFAULT_MIN_TICK_S
     # garbage cadence -> 30-min fallback -> 10 min
-    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "abc")
+    monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "abc")
     assert _default_min_tick_s() == DEFAULT_MIN_TICK_S
     # and the unset MIN_TICK path uses this cadence-aware default
-    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "6")
+    monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "6")
     assert _min_tick_s_from_env() == 180.0
 
 
@@ -1104,7 +1104,7 @@ roadmap: docs/roadmap.md
     assert "--job-minutes 325" in wrap  # the ACTUAL walltime, for the alarm
     assert "--panel verify,review" in wrap  # the pre-PR panel is ON by default
     # config-driven author: the tick threads neither the author key nor the
-    # backend — climb resolves them from AUTORESEARCH_AUTHOR_* env by backend.
+    # backend — climb resolves them from OUTERLOOP_AUTHOR_* env by backend.
     # (FollowupSpec has no author key_file field at all — the tick can't thread it.)
     assert "--key-file" not in wrap and "--author-backend" not in wrap
 
@@ -1833,8 +1833,8 @@ def test_panel_spec_disables_and_reconfigures_the_climb_argv(tmp_path: Path) -> 
 
 
 def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) -> None:
-    """AUTORESEARCH_PANEL/AUTORESEARCH_PANEL_KEY_FILE reach the FollowupSpec
-    through the chain environment, and empty AUTORESEARCH_PANEL turns the
+    """OUTERLOOP_PANEL/OUTERLOOP_PANEL_KEY_FILE reach the FollowupSpec
+    through the chain environment, and empty OUTERLOOP_PANEL turns the
     panel off (not back to the default)."""
     from outerloop.tick import _followup_spec_from_env
 
@@ -1843,14 +1843,14 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     pat = tmp_path / "pat"
     pat.write_text("t")
     env = {
-        "AUTORESEARCH_PAT_FILE": str(pat),
-        "AUTORESEARCH_ACCOUNT": "a",
-        "AUTORESEARCH_PARTITION": "p",
-        "AUTORESEARCH_IMAGE": str(image),
-        "AUTORESEARCH_HOME": str(tmp_path),
-        "AUTORESEARCH_TARGET": "org/repo",
-        "AUTORESEARCH_PANEL": "verify",
-        "AUTORESEARCH_PANEL_KEY_FILE": "/keys/verifier",
+        "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_ACCOUNT": "a",
+        "OUTERLOOP_PARTITION": "p",
+        "OUTERLOOP_IMAGE": str(image),
+        "OUTERLOOP_HOME": str(tmp_path),
+        "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_PANEL": "verify",
+        "OUTERLOOP_PANEL_KEY_FILE": "/keys/verifier",
     }
     import outerloop.tick as tick_mod
 
@@ -1860,21 +1860,21 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     assert spec.target == "org/repo"
     assert spec.panel == "verify" and spec.panel_key_file == "/keys/verifier"
     # no target, no servicing: there is no fallback repo to write to
-    without = {k: v for k, v in env.items() if k != "AUTORESEARCH_TARGET"}
+    without = {k: v for k, v in env.items() if k != "OUTERLOOP_TARGET"}
     monkeypatch.setattr(tick_mod.os, "environ", without)
     assert _followup_spec_from_env(tmp_path) == (None, None)
     monkeypatch.setattr(tick_mod.os, "environ", env)
-    env["AUTORESEARCH_PANEL"] = ""
+    env["OUTERLOOP_PANEL"] = ""
     _github, off = _followup_spec_from_env(tmp_path)
     assert off is not None and off.panel == ""
     # work jobs can ride a longer partition than the tick chain, with the
     # walltime cap raised in lockstep (clamped to the code-side ceiling)
-    env["AUTORESEARCH_JOB_PARTITION"] = "cpu48"
-    env["AUTORESEARCH_MAX_JOB_MINUTES"] = "480"
+    env["OUTERLOOP_JOB_PARTITION"] = "cpu48"
+    env["OUTERLOOP_MAX_JOB_MINUTES"] = "480"
     _github, longer = _followup_spec_from_env(tmp_path)
     assert longer is not None
     assert longer.job_partition == "cpu48" and longer.max_job_minutes == 480
-    env["AUTORESEARCH_MAX_JOB_MINUTES"] = "9000"  # above the ceiling
+    env["OUTERLOOP_MAX_JOB_MINUTES"] = "9000"  # above the ceiling
     _github, capped = _followup_spec_from_env(tmp_path)
     assert capped is not None and capped.max_job_minutes == 600
 
@@ -1905,11 +1905,11 @@ def test_author_config_preflight_blocks_before_side_effects(
             **kw,
         )
 
-    monkeypatch.delenv("AUTORESEARCH_AUTHOR_MODEL", raising=False)
+    monkeypatch.delenv("OUTERLOOP_AUTHOR_MODEL", raising=False)
     # claude (default) is always fine; codex with the claude default model is not
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "claude")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "claude")
     assert _author_config_error(make()) == ""
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
     assert _author_config_error(make()) != ""  # codex + default claude model
     # a codex fleet with no valid model submits NOTHING (no wasted job)
     contract = _self_contract()
@@ -1922,7 +1922,7 @@ def test_author_config_preflight_blocks_before_side_effects(
     out = service_self_initiated(tmp_path, SlurmCompute(runner=runner), make(), contract, NOW)
     assert out is None and submitted == []
     # once the model is set, codex is accepted
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", "gpt-5.6-terra")
     assert _author_config_error(make()) == ""
 
 
@@ -1982,7 +1982,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     judge = tmp_path / "panel_codex_key"
     judge.write_text("sk-judge")
     judge.chmod(0o600)
-    monkeypatch.setenv("AUTORESEARCH_PANEL_CODEX_KEY_FILE", str(judge))
+    monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(judge))
     no_image = FollowupSpec(
         target="org/pilot",
         account="a",
@@ -1997,15 +1997,15 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
     # role separation: the panel key must not BE the (resolved) author key. The
     # author key is now config-driven — resolved per the fleet backend from env —
-    # so the collision is set via AUTORESEARCH_HARNESS_KEY_FILE, not spec.key_file.
-    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", str(good))
+    # so the collision is set via OUTERLOOP_HARNESS_KEY_FILE, not spec.key_file.
+    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", str(good))
     assert "author key" in _panel_preflight_error(make(panel_key_file=str(good)))
     # ... and a RELATIVE author key path fails too (the climb resolves from a
     # flight dir): a relative env value survives ~-expansion as non-absolute
-    monkeypatch.setenv("AUTORESEARCH_HARNESS_KEY_FILE", "keys/author")
+    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", "keys/author")
     rel_err = _panel_preflight_error(make(panel_key_file=str(good)))
     assert "author key path" in rel_err and "relative" in rel_err
-    monkeypatch.delenv("AUTORESEARCH_HARNESS_KEY_FILE")
+    monkeypatch.delenv("OUTERLOOP_HARNESS_KEY_FILE")
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))
@@ -2192,12 +2192,12 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
     )
 
     # default: no env, no sentinel -> dry sweep, logging dispatcher
-    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
 
     # env on-switch + complete env -> live sweep, real dispatcher
-    monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
+    monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "1")
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
 
@@ -2206,7 +2206,7 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
 
     # sentinel file arms it too (mirrors PAUSE) — no env var needed
-    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
     (tmp_path / DISPATCH_WAKE_SENTINEL).touch()
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
@@ -3191,12 +3191,12 @@ def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
 def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch) -> None:
     from outerloop.tick import dispatch_wake_armed
 
-    monkeypatch.delenv("AUTORESEARCH_DISPATCH_WAKE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
     assert not dispatch_wake_armed(tmp_path)
     (tmp_path / "DISPATCH_WAKE").touch()
     assert dispatch_wake_armed(tmp_path)
     (tmp_path / "DISPATCH_WAKE").unlink()
-    monkeypatch.setenv("AUTORESEARCH_DISPATCH_WAKE", "1")
+    monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "1")
     assert dispatch_wake_armed(tmp_path)
 
 
@@ -3364,7 +3364,7 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
 def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path: Path) -> None:
     """The followup service comes up without account/partition in both modes
     (#300): on Slurm, empty ones use the cluster's default association and
-    partition, as `start` already allows; under AUTORESEARCH_COMPUTE=local
+    partition, as `start` already allows; under OUTERLOOP_COMPUTE=local
     subprocess jobs have no placement at all. Set, the account passes through."""
     from outerloop.tick import _followup_spec_from_env
 
@@ -3373,10 +3373,10 @@ def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path:
     pat = tmp_path / "pat"
     pat.write_text("t")
     env = {
-        "AUTORESEARCH_PAT_FILE": str(pat),
-        "AUTORESEARCH_IMAGE": str(image),
-        "AUTORESEARCH_HOME": str(tmp_path),
-        "AUTORESEARCH_TARGET": "org/repo",
+        "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_IMAGE": str(image),
+        "OUTERLOOP_HOME": str(tmp_path),
+        "OUTERLOOP_TARGET": "org/repo",
     }
     import outerloop.tick as tick_mod
 
@@ -3384,12 +3384,12 @@ def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path:
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None  # slurm mode, no account, no partition
     assert spec.account == "" and spec.partition == ""
-    env["AUTORESEARCH_ACCOUNT"] = "acct"
+    env["OUTERLOOP_ACCOUNT"] = "acct"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None
     assert spec.account == "acct" and spec.partition == ""
-    del env["AUTORESEARCH_ACCOUNT"]
-    env["AUTORESEARCH_COMPUTE"] = "local"
+    del env["OUTERLOOP_ACCOUNT"]
+    env["OUTERLOOP_COMPUTE"] = "local"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None
     assert spec.account == "" and spec.partition == ""
@@ -3397,7 +3397,7 @@ def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path:
 
 def test_resume_gate_needs_only_the_image(monkeypatch: Any, tmp_path: Path, capsys: Any) -> None:
     """The resume gate accepts empty account/partition under
-    AUTORESEARCH_COMPUTE=local (terra #223: locally dispatched wakes died at
+    OUTERLOOP_COMPUTE=local (terra #223: locally dispatched wakes died at
     the parser) and on Slurm (#300: the cluster's defaults apply). Proof of
     admission: the CLI proceeds far enough to complain about the missing
     parked run, not about the placement. Only the image is required: without
@@ -3424,11 +3424,11 @@ def test_resume_gate_needs_only_the_image(monkeypatch: Any, tmp_path: Path, caps
         "--pat-file",
         str(pat),
     ]
-    monkeypatch.delenv("AUTORESEARCH_ACCOUNT", raising=False)
-    monkeypatch.delenv("AUTORESEARCH_PARTITION", raising=False)
+    monkeypatch.delenv("OUTERLOOP_ACCOUNT", raising=False)
+    monkeypatch.delenv("OUTERLOOP_PARTITION", raising=False)
     monkeypatch.setattr(sys, "argv", argv)
 
-    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
     # past the placement gate, the resume proceeds to the record read and
     # fails THERE (no parked run in this tmp root) — proof of admission
     with pytest.raises(FileNotFoundError, match=r"state\.json"):
@@ -3436,7 +3436,7 @@ def test_resume_gate_needs_only_the_image(monkeypatch: Any, tmp_path: Path, caps
     assert "needs --image" not in capsys.readouterr().err
 
     # Slurm mode, no account, no partition: admitted the same way
-    monkeypatch.delenv("AUTORESEARCH_COMPUTE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
     with pytest.raises(FileNotFoundError, match=r"state\.json"):
         attempt_mod.main()
     assert "needs --image" not in capsys.readouterr().err
@@ -3493,7 +3493,7 @@ def test_fresh_climb_dispatches_without_account_or_partition(
         "--min-free-gb",
         "0",
     ]
-    for name in ("AUTORESEARCH_COMPUTE", "AUTORESEARCH_ACCOUNT", "AUTORESEARCH_PARTITION"):
+    for name in ("OUTERLOOP_COMPUTE", "OUTERLOOP_ACCOUNT", "OUTERLOOP_PARTITION"):
         monkeypatch.delenv(name, raising=False)
     seen: dict[str, Any] = {}
 
@@ -3533,19 +3533,19 @@ def test_fresh_climb_dispatches_without_account_or_partition(
 
 
 def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:
-    """LocalCompute's job-env scrub passes AUTORESEARCH_*/REVIEW_HERMES_*
+    """LocalCompute's job-env scrub passes OUTERLOOP_*/REVIEW_HERMES_*
     through as a prefix rule — a locally submitted wake must arrive still in
     local mode (terra #223), and enumerated names are how flags die."""
     from outerloop.compute import LocalCompute
 
-    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
-    monkeypatch.setenv("AUTORESEARCH_AUTHOR_BACKEND", "codex")
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
     monkeypatch.setenv("REVIEW_HERMES_REPO", "/x/hermes")
     monkeypatch.setenv("APPTAINERENV_EVIL", "1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-live")
-    monkeypatch.setenv("AUTORESEARCH_BOT_PAT", "github_pat_secret")
-    monkeypatch.setenv("AUTORESEARCH_PANEL_KEY", "sk-ant-secret")
-    monkeypatch.setenv("AUTORESEARCH_CODEX_KEY_FILE", "/keys/codex")
+    monkeypatch.setenv("OUTERLOOP_BOT_PAT", "github_pat_secret")
+    monkeypatch.setenv("OUTERLOOP_PANEL_KEY", "sk-ant-secret")
+    monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", "/keys/codex")
     out = tmp_path / "env.txt"
     from outerloop.compute import JobSpec
 
@@ -3560,15 +3560,15 @@ def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> 
         )
     )
     dumped = out.read_text()
-    assert "AUTORESEARCH_COMPUTE=local" in dumped
-    assert "AUTORESEARCH_AUTHOR_BACKEND=codex" in dumped
+    assert "OUTERLOOP_COMPUTE=local" in dumped
+    assert "OUTERLOOP_AUTHOR_BACKEND=codex" in dumped
     assert "REVIEW_HERMES_REPO=/x/hermes" in dumped
     assert "APPTAINERENV_EVIL" not in dumped  # would cross --cleanenv
     assert "OPENROUTER_API_KEY" not in dumped  # raw secrets never pass
     # secret-VALUED names under the prefix are excluded; path names survive
-    assert "AUTORESEARCH_BOT_PAT" not in dumped
-    assert "AUTORESEARCH_PANEL_KEY" not in dumped
-    assert "AUTORESEARCH_CODEX_KEY_FILE=/keys/codex" in dumped
+    assert "OUTERLOOP_BOT_PAT" not in dumped
+    assert "OUTERLOOP_PANEL_KEY" not in dumped
+    assert "OUTERLOOP_CODEX_KEY_FILE=/keys/codex" in dumped
 
 
 def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
@@ -3579,7 +3579,7 @@ def test_loop_cadence_is_clamped_finite(monkeypatch: Any) -> None:
 
     from outerloop.tick import _loop_cadence_s
 
-    monkeypatch.setenv("AUTORESEARCH_CADENCE_MIN", "45")
+    monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "45")
     for raw, expect in ((math.inf, 24 * 3600.0), (0.0001, 60.0), (30.0, 1800.0)):
         clamped = _loop_cadence_s(raw)
         assert clamped == expect
@@ -4274,7 +4274,7 @@ def test_jobs_run_the_installed_interpreter_outside_a_checkout(tmp_path: Path) -
 
 
 def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path: Path) -> None:
-    """A laptop has no Apptainer image. Under AUTORESEARCH_COMPUTE=local the
+    """A laptop has no Apptainer image. Under OUTERLOOP_COMPUTE=local the
     servicing spec still comes up, with an empty image, and the job argv says
     --uncontained; Slurm mode without the image stays disabled (#289)."""
     from outerloop.tick import _containment, _followup_spec_from_env
@@ -4282,24 +4282,24 @@ def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path
     pat = tmp_path / "pat"
     pat.write_text("t")
     env = {
-        "AUTORESEARCH_PAT_FILE": str(pat),
-        "AUTORESEARCH_IMAGE": str(tmp_path / "missing.sif"),
-        "AUTORESEARCH_HOME": str(tmp_path),
-        "AUTORESEARCH_TARGET": "org/repo",
-        "AUTORESEARCH_ACCOUNT": "a",
-        "AUTORESEARCH_PARTITION": "p",
+        "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_IMAGE": str(tmp_path / "missing.sif"),
+        "OUTERLOOP_HOME": str(tmp_path),
+        "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_ACCOUNT": "a",
+        "OUTERLOOP_PARTITION": "p",
     }
     import outerloop.tick as tick_mod
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
     assert _followup_spec_from_env(tmp_path) == (None, None)  # slurm: image required
-    env["AUTORESEARCH_COMPUTE"] = "local"
+    env["OUTERLOOP_COMPUTE"] = "local"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None and spec.image == ""
     assert spec.panel == ""  # an uncontained judge is opt-in
-    assert "AUTORESEARCH_IMAGE" not in env  # the jobs do not inherit a missing image
+    assert "OUTERLOOP_IMAGE" not in env  # the jobs do not inherit a missing image
     assert _containment(spec.image) == ["--uncontained"]
     assert _containment("/img/a.sif") == ["--image", "/img/a.sif"]
-    env["AUTORESEARCH_PANEL_UNCONTAINED"] = "1"
+    env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None and spec.panel == "verify,review"

@@ -238,7 +238,7 @@ Research findings sync through GitHub; job state never leaves its cluster.
       re-measured and re-gated); capped-out blocking opens a DRAFT PR and
       never arms auto-merge; the transcript rides in the PR body. DEPLOYED
       in code: the tick passes --panel verify,review to every climb job by
-      default (off-switch AUTORESEARCH_PANEL=""). Cluster prerequisite: the
+      default (off-switch OUTERLOOP_PANEL=""). Cluster prerequisite: the
       verifier key file at ~/.config/outerloop/verifier_key on the tick
       account — a missing key fails climbs LOUDLY by design. GitHub-side
       verify.yml thins per target after the pilot runs clean

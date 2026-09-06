@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The resident tick (docs/design/resident-tick.md), SOURCED by tick_chain.sbatch
-# when AUTORESEARCH_RESIDENT=1: one long-lived job that loops
+# when OUTERLOOP_RESIDENT=1: one long-lived job that loops
 #   deploy -> one tick as a child under a hard timeout -> sleep to the next slot
 # and keeps exactly ONE successor queued, dependent on its own end
 # (afterany:self + singleton), so the chain needs a handful of scheduling
@@ -10,20 +10,20 @@
 # batch scripts at submission). The tick itself is unchanged: records,
 # leases, markers and the coalescing guard make a late or repeated tick safe.
 #
-# Knobs (chain environment): AUTORESEARCH_RESIDENT_MINUTES (walltime the job
-# was started with; default 360 = cpu_short's maximum), AUTORESEARCH_CADENCE_MIN,
-# AUTORESEARCH_TICK_TIMEOUT (default 15m), AUTORESEARCH_RESIDENT_MARGIN_S
+# Knobs (chain environment): OUTERLOOP_RESIDENT_MINUTES (walltime the job
+# was started with; default 360 = cpu_short's maximum), OUTERLOOP_CADENCE_MIN,
+# OUTERLOOP_TICK_TIMEOUT (default 15m), OUTERLOOP_RESIDENT_MARGIN_S
 # (stop this many seconds before walltime; default 1200),
-# AUTORESEARCH_RESIDENT_CADENCE_S (tests: override the cadence in seconds).
+# OUTERLOOP_RESIDENT_CADENCE_S (tests: override the cadence in seconds).
 
-resident_minutes="${AUTORESEARCH_RESIDENT_MINUTES:-360}"
-cadence_s="${AUTORESEARCH_RESIDENT_CADENCE_S:-$((${AUTORESEARCH_CADENCE_MIN:-30} * 60))}"
-tick_timeout="${AUTORESEARCH_TICK_TIMEOUT:-15m}"
-margin_s="${AUTORESEARCH_RESIDENT_MARGIN_S:-1200}"
-retry_s="${AUTORESEARCH_RESIDENT_RETRY_S:-20}"  # backoff unit for submit retries (tests: 0)
+resident_minutes="${OUTERLOOP_RESIDENT_MINUTES:-360}"
+cadence_s="${OUTERLOOP_RESIDENT_CADENCE_S:-$((${OUTERLOOP_CADENCE_MIN:-30} * 60))}"
+tick_timeout="${OUTERLOOP_TICK_TIMEOUT:-15m}"
+margin_s="${OUTERLOOP_RESIDENT_MARGIN_S:-1200}"
+retry_s="${OUTERLOOP_RESIDENT_RETRY_S:-20}"  # backoff unit for submit retries (tests: 0)
 self="${SLURM_JOB_ID:-}"
-shim="$AUTORESEARCH_HOME/scripts/tick_chain.sbatch"
-sentinel="$AUTORESEARCH_ROOT/PAUSE"
+shim="$OUTERLOOP_HOME/scripts/tick_chain.sbatch"
+sentinel="$OUTERLOOP_ROOT/PAUSE"
 
 epoch_of() { date -d "$1" +%s 2>/dev/null || date -j -f %Y-%m-%dT%H:%M:%S "$1" +%s 2>/dev/null || echo ""; }
 
@@ -44,9 +44,9 @@ submit_successor() {
     # Account and partition are optional (unset -> Slurm's defaults); pass
     # them only when set.
     local acct_arg=""
-    [ -n "${AUTORESEARCH_ACCOUNT:-}" ] && acct_arg="--account=${AUTORESEARCH_ACCOUNT}"
+    [ -n "${OUTERLOOP_ACCOUNT:-}" ] && acct_arg="--account=${OUTERLOOP_ACCOUNT}"
     local part_arg=""
-    [ -n "${AUTORESEARCH_PARTITION:-}" ] && part_arg="--partition=${AUTORESEARCH_PARTITION}"
+    [ -n "${OUTERLOOP_PARTITION:-}" ] && part_arg="--partition=${OUTERLOOP_PARTITION}"
     local out="" attempt
     for attempt in 1 2 3; do
         if out=$(sbatch --parsable --dependency="$dep" --time="$resident_minutes" \
@@ -74,7 +74,7 @@ shim_checksum() { cksum "$shim" 2>/dev/null | cut -d' ' -f1; }
 
 successor=""
 successor_sum=""  # the shim checksum the queued successor was submitted under
-LOG_DIR="$AUTORESEARCH_ROOT/logs"
+LOG_DIR="$OUTERLOOP_ROOT/logs"
 mkdir -p "$LOG_DIR" || true
 while :; do
     # the log file rolls daily: reopen it every iteration
@@ -118,7 +118,7 @@ while :; do
         fi
     fi
     # deploy + operator knobs, fresh every iteration (exports reach the tick)
-    . "$AUTORESEARCH_HOME/scripts/tick_deploy.sh"
+    . "$OUTERLOOP_HOME/scripts/tick_deploy.sh"
     new_sum=$(shim_checksum)
     if [ -n "$successor" ] && [ "$new_sum" != "$successor_sum" ]; then
         # Slurm spooled the successor's script at submission: resubmit so
@@ -141,11 +141,11 @@ while :; do
         fi
     fi
     echo "=== tick $(date -Is) on $(hostname -s) job=${self:-none} (resident)"
-    if [ "${AUTORESEARCH_DEPLOY_BROKEN:-}" = "1" ]; then
+    if [ "${OUTERLOOP_DEPLOY_BROKEN:-}" = "1" ]; then
         echo "$(date -u +%FT%TZ) tick skipped: checkout and environment inconsistent after a failed deploy (resident)"
     else
-    (cd "$AUTORESEARCH_HOME" && timeout --kill-after=60s "$tick_timeout" \
-        uv run --no-sync python -m outerloop.tick --root "$AUTORESEARCH_ROOT")
+    (cd "$OUTERLOOP_HOME" && timeout --kill-after=60s "$tick_timeout" \
+        uv run --no-sync python -m outerloop.tick --root "$OUTERLOOP_ROOT")
     fi
     rc=$?
     [ "$rc" -ne 0 ] && echo "resident: tick exited $rc; the loop continues"

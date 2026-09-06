@@ -14,7 +14,7 @@ and GitHub redirects back to that page with a one-time code the page displays.
 The adopter pastes the code here; we exchange it for the app id + key, write
 `github_app.<slug>.json` + the PEM (both 0600), help install the App, and capture
 the installation id. The written files are what `resolve_bot_auth` reads via
-`AUTORESEARCH_GITHUB_APP_FILE`, the same path `outerloop start` uses.
+`OUTERLOOP_GITHUB_APP_FILE`, the same path `outerloop start` uses.
 """
 
 from __future__ import annotations

@@ -26,7 +26,7 @@ from typing import Any
 # work — session budgets sized for solver tweaks starve construction work.
 # floor = session floor + overhead + self-deadline margin: even at the
 # floors, a session must fit inside its job with the ending's runway.
-# Public: the tick's AUTORESEARCH_MAX_JOB_MINUTES knob floors here too.
+# Public: the tick's OUTERLOOP_MAX_JOB_MINUTES knob floors here too.
 ATTEMPT_JOB_MINUTES_FLOOR = 40
 
 # Public: the tick shrinks a capped job's session with the same floor the

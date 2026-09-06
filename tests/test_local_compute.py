@@ -259,20 +259,20 @@ def test_terminal_states_survive_across_instances(tmp_path, monkeypatch) -> None
     memory-only behavior is unchanged."""
     from outerloop.compute import GONE, JobSpec, LocalCompute
 
-    monkeypatch.setenv("AUTORESEARCH_ROOT", str(tmp_path))
+    monkeypatch.setenv("OUTERLOOP_ROOT", str(tmp_path))
     submitter = LocalCompute()
     job_id = submitter.submit(
         JobSpec(job_name="probe", account="", partition="", time_minutes=1, command="true")
     )
     poller = LocalCompute()  # a different process in real life
     assert poller.status(job_id) == "COMPLETED"
-    monkeypatch.delenv("AUTORESEARCH_ROOT")
+    monkeypatch.delenv("OUTERLOOP_ROOT")
     assert poller.status(job_id) == GONE  # no root -> memory-only, as before
 
 
 def test_gpu_contracts_pass_the_lane_check_under_local_mode(monkeypatch) -> None:
     """Local compute has no lanes: a contract with GPU benchmarks must not be
-    rejected for a missing AUTORESEARCH_GPU_PARTITION (terra #223)."""
+    rejected for a missing OUTERLOOP_GPU_PARTITION (terra #223)."""
     from types import SimpleNamespace
 
     from outerloop.tick import FollowupSpec, _gpu_lane_error
@@ -282,7 +282,7 @@ def test_gpu_contracts_pass_the_lane_check_under_local_mode(monkeypatch) -> None
     )
     contract = SimpleNamespace(benchmarks=[SimpleNamespace(name="speedrun", gpus=1)])
     assert "no GPU lane" in _gpu_lane_error(contract, "speedrun", spec)
-    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
     assert _gpu_lane_error(contract, "speedrun", spec) == ""
 
 
@@ -296,9 +296,9 @@ def test_local_mode_places_gpu_measures_without_a_lane(monkeypatch) -> None:
     settings = DispatchSettings(
         compute=LocalCompute(), image="", account="", partition="", gpu_partition=""
     )
-    monkeypatch.setenv("AUTORESEARCH_COMPUTE", "local")
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
     assert settings.placement(1) == ("", "")
-    monkeypatch.delenv("AUTORESEARCH_COMPUTE")
+    monkeypatch.delenv("OUTERLOOP_COMPUTE")
     import pytest
 
     with pytest.raises(ValueError, match="no GPU lane"):

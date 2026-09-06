@@ -61,7 +61,7 @@ monitoring agent + ~100 interventions; AIDE: in-process tree search). Ours is
 **decentralized on Slurm**: no resident daemon — a self-perpetuating chain of
 ~16 s stateless ticks; all state in typed records on the shared FS; every
 role (author session, eval, panel judge, wake) its own Slurm job — wake
-dispatch sits behind an operator flag (`AUTORESEARCH_DISPATCH_WAKE`, on in
+dispatch sits behind an operator flag (`OUTERLOOP_DISPATCH_WAKE`, on in
 our deployment since 2026-08-20; retiring the dark-launch flag to
 default-on is a listed cleanup); crash or preemption anywhere heals
 through the sweep into honest endings.

@@ -24,9 +24,9 @@ def test_successors_are_singleton_on_the_grid_without_a_deadline() -> None:
     assert '--begin="$begin"' in line
     assert "--deadline" not in line and "--deadline" not in CHAIN
     # partition is optional now: passed through only when set (part_arg is
-    # derived from AUTORESEARCH_PARTITION near the top of the chain).
+    # derived from OUTERLOOP_PARTITION near the top of the chain).
     assert '${part_arg:+"$part_arg"}' in line
-    assert 'part_arg="--partition=${AUTORESEARCH_PARTITION}"' in CHAIN
+    assert 'part_arg="--partition=${OUTERLOOP_PARTITION}"' in CHAIN
 
 
 def _grid(epoch_now: int, cadence_s: int, pending: int, i: int) -> int:

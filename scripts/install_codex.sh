@@ -9,7 +9,7 @@
 #
 # Usage: install_codex.sh [target_path]
 #   target_path  where to place the binary
-#                (default: $AUTORESEARCH_CODEX_BIN, else ~/.local/bin/codex)
+#                (default: $OUTERLOOP_CODEX_BIN, else ~/.local/bin/codex)
 set -euo pipefail
 
 # Pinned: 0.130.0 is harness-verified — it needs neither the code-mode-host helper
@@ -20,7 +20,7 @@ WANT="0.130.0"
 # release asset can never execute on the host (integrity, not self-reported
 # version). To bump WANT: fetch the new asset and `sha256sum` it, then update both.
 WANT_SHA256="16779e7b7857508a768a36d7d4e084eec336ec23946ed70a9b09489b8f861190"
-TARGET="${1:-${AUTORESEARCH_CODEX_BIN:-$HOME/.local/bin/codex}}"
+TARGET="${1:-${OUTERLOOP_CODEX_BIN:-$HOME/.local/bin/codex}}"
 
 have="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
 if [ "$have" = "$WANT" ]; then

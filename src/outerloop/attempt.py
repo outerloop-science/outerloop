@@ -110,18 +110,19 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     config choice, not a key swap, and an in-flight run of either backend can
     still be woken/serviced after a fleet flip. An explicit path always wins;
     otherwise the per-backend env var, then the default path. For claude the
-    legacy spellings (`AUTORESEARCH_HARNESS_KEY_FILE`, `harness_key`) are still
+    legacy spellings (`AUTORESEARCH_HARNESS_KEY_FILE`, read through its bridged
+    `OUTERLOOP_` twin, and `harness_key`) are still
     honored, so a machine set up before the rename keeps working; the new name
     wins when both exist. The result is always ~-expanded, so every caller gets
     a real path (an env value like "~/.config/..." must not reach the token
     provider verbatim)."""
     if not explicit:
         if backend == "codex":
-            explicit = os.environ.get("AUTORESEARCH_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
+            explicit = os.environ.get("OUTERLOOP_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
         else:
             explicit = (
-                os.environ.get("AUTORESEARCH_CLAUDE_KEY_FILE")
-                or os.environ.get("AUTORESEARCH_HARNESS_KEY_FILE")
+                os.environ.get("OUTERLOOP_CLAUDE_KEY_FILE")
+                or os.environ.get("OUTERLOOP_HARNESS_KEY_FILE")
                 or ""
             )
             if not explicit:
@@ -140,14 +141,14 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     a unit and never a fleet backend against a run's model. codex writes+executes,
     so it must be contained (--image) and needs a non-claude model."""
     if backend not in ("claude", "codex"):
-        # a typo'd AUTORESEARCH_AUTHOR_BACKEND passes the env DEFAULT silently
+        # a typo'd OUTERLOOP_AUTHOR_BACKEND passes the env DEFAULT silently
         # (argparse validates the flag, not its default) and the climb rejects it
         # at build_harness — catch it on the tick host so a claimed intake
         # issue never strands on it
         return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
     if backend == "claude":
         # symmetric to the codex check: a claude harness 404s on a non-claude
-        # model (e.g. AUTORESEARCH_AUTHOR_MODEL left on a codex id while the
+        # model (e.g. OUTERLOOP_AUTHOR_MODEL left on a codex id while the
         # backend is claude) — catch that misconfig before spend
         if model and not model.startswith("claude"):
             return f"author-backend claude needs a claude model (got {model!r})"
@@ -2171,7 +2172,7 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
         if backend == "codex":
             lens_key = _judge_lens_key(
                 backend="codex",
-                key_file_env="AUTORESEARCH_PANEL_CODEX_KEY_FILE",
+                key_file_env="OUTERLOOP_PANEL_CODEX_KEY_FILE",
                 author_backend="codex",
                 claude_panel_path=claude_panel_path,
                 image=args.image,
@@ -2185,7 +2186,7 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
             # separate against the codex author key.
             lens_key = _judge_lens_key(
                 backend="hermes",
-                key_file_env="AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+                key_file_env="OUTERLOOP_PANEL_HERMES_KEY_FILE",
                 author_backend="codex",
                 claude_panel_path=claude_panel_path,
                 image=args.image,
@@ -3143,22 +3144,22 @@ def main() -> int:
     )
     parser.add_argument("--base-branch", default="main")
     # All three default from the chain env the tick sets on the climb job, so
-    # a contained run with AUTORESEARCH_{IMAGE,ACCOUNT,PARTITION} set selects
+    # a contained run with OUTERLOOP_{IMAGE,ACCOUNT,PARTITION} set selects
     # dispatched measurement without extra flags. Only the image is required
     # for dispatch (it also contains the session + inline eval); without it,
     # measurement stays inline regardless of the benchmark's eval hint. Empty
     # account/partition use Slurm's defaults.
     parser.add_argument(
         "--image",
-        default=os.environ.get("AUTORESEARCH_IMAGE", ""),
+        default=os.environ.get("OUTERLOOP_IMAGE", ""),
         help="apptainer image for session+eval",
     )
-    parser.add_argument("--account", default=os.environ.get("AUTORESEARCH_ACCOUNT", ""))
-    parser.add_argument("--partition", default=os.environ.get("AUTORESEARCH_PARTITION", ""))
+    parser.add_argument("--account", default=os.environ.get("OUTERLOOP_ACCOUNT", ""))
+    parser.add_argument("--partition", default=os.environ.get("OUTERLOOP_PARTITION", ""))
     # the GPU lane for benchmarks with `gpus > 0` (evals + author launches);
     # empty = this deployment cannot place GPU jobs
-    parser.add_argument("--gpu-partition", default=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""))
-    parser.add_argument("--gpu-account", default=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""))
+    parser.add_argument("--gpu-partition", default=os.environ.get("OUTERLOOP_GPU_PARTITION", ""))
+    parser.add_argument("--gpu-account", default=os.environ.get("OUTERLOOP_GPU_ACCOUNT", ""))
     parser.add_argument(
         "--uncontained",
         action="store_true",
@@ -3168,21 +3169,19 @@ def main() -> int:
     parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
     parser.add_argument(
         "--codex-bin",
-        default=os.path.expanduser(
-            os.environ.get("AUTORESEARCH_CODEX_BIN") or "~/.local/bin/codex"
-        ),
+        default=os.path.expanduser(os.environ.get("OUTERLOOP_CODEX_BIN") or "~/.local/bin/codex"),
         help="host codex binary for the codex author; bind-mounted into apptainer "
         "(must be an absolute path).",
     )
     parser.add_argument(
-        "--model", default=os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
+        "--model", default=os.environ.get("OUTERLOOP_AUTHOR_MODEL") or "claude-opus-5"
     )
     parser.add_argument(
         "--author-backend",
         choices=("claude", "codex"),
-        default=os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude",
+        default=os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
         help="agent backend for the author/editor role (config-driven: default "
-        "from AUTORESEARCH_AUTHOR_BACKEND). codex runs contained (apptainer + "
+        "from OUTERLOOP_AUTHOR_BACKEND). codex runs contained (apptainer + "
         "--sandbox danger-full-access) and REQUIRES --image and a codex/openai "
         "--model (e.g. gpt-5.6-terra).",
     )
@@ -3226,7 +3225,7 @@ def main() -> int:
     parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
-        default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
+        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
         help="GitHub App config (JSON: app_id, installation_id, private_key); "
         "when set, installation tokens replace the PAT",
     )
@@ -3234,7 +3233,7 @@ def main() -> int:
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
-        "AUTORESEARCH_CLAUDE_KEY_FILE for claude, AUTORESEARCH_CODEX_KEY_FILE for codex",
+        "OUTERLOOP_CLAUDE_KEY_FILE for claude, OUTERLOOP_CODEX_KEY_FILE for codex",
     )
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(

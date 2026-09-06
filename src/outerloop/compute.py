@@ -152,12 +152,12 @@ class Compute(Protocol):
 
 
 def local_mode() -> bool:
-    """AUTORESEARCH_COMPUTE=local selects the monolith: every job a
+    """OUTERLOOP_COMPUTE=local selects the monolith: every job a
     synchronous subprocess of the caller (docs/design/onboarding.md) — the
     zero-cluster on-ramp and the paper's serialized-baseline ablation. Any
     other value (or none) is Slurm. This helper is the only reader of the
     env var, so mode checks cannot drift."""
-    return os.environ.get("AUTORESEARCH_COMPUTE", "").strip().lower() == "local"
+    return os.environ.get("OUTERLOOP_COMPUTE", "").strip().lower() == "local"
 
 
 def compute_from_env() -> SlurmCompute | LocalCompute:
@@ -319,7 +319,7 @@ def _local_state_dir() -> Path | None:
     attempts it spawns each hold their own LocalCompute): under the state
     root when the deployment names one, else nowhere (memory-only — tests).
     Local jobs are synchronous, so only TERMINAL states ever need sharing."""
-    root = os.environ.get("AUTORESEARCH_ROOT", "").strip()
+    root = os.environ.get("OUTERLOOP_ROOT", "").strip()
     return Path(root) / "local_jobs" if root else None
 
 
@@ -355,7 +355,7 @@ class LocalCompute:
         # the submitting process holds live keys (and any inherited
         # APPTAINERENV_* would cross --cleanenv into the container), so the
         # job script starts from a minimal environment and sets its own.
-        # AUTORESEARCH_* / REVIEW_HERMES_* pass through as a PREFIX rule:
+        # OUTERLOOP_* / REVIEW_HERMES_* pass through as a PREFIX rule:
         # Slurm jobs inherit the tick's whole environment, and local jobs
         # need the same config surface (compute mode, author backend, panel,
         # key-file PATHS). Enumerating allowed names is how a mode flag dies
@@ -369,7 +369,7 @@ class LocalCompute:
             k: v
             for k, v in os.environ.items()
             if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
-            or (k.startswith(("AUTORESEARCH_", "REVIEW_HERMES_")) and not _secret_name(k))
+            or (k.startswith(("OUTERLOOP_", "REVIEW_HERMES_")) and not _secret_name(k))
         }
         try:
             # the job runs in its OWN session (= process group), so the

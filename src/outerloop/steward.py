@@ -777,7 +777,7 @@ def main() -> int:
     parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
-        default=os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", ""),
+        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
         help="GitHub App config (JSON: app_id, installation_id, private_key); "
         "when set, installation tokens replace the PAT",
     )

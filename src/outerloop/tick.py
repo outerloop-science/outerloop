@@ -74,7 +74,7 @@ log = logging.getLogger(__name__)
 PAUSE_SENTINEL = "PAUSE"
 # Operator on-switch for dispatched-wake, mirroring PAUSE: a root-relative
 # sentinel an operator arms/disarms with a touch/rm — no chain restart, no
-# env-var surgery on a live tick. The AUTORESEARCH_DISPATCH_WAKE env var still
+# env-var surgery on a live tick. The OUTERLOOP_DISPATCH_WAKE env var still
 # works too (either arms it); the sentinel is the reversible, restart-free path.
 DISPATCH_WAKE_SENTINEL = "DISPATCH_WAKE"
 HEARTBEAT_NAME = "heartbeat.json"
@@ -95,7 +95,7 @@ DEFAULT_LEASE_TTL_S = 3600 + 15 * 60
 # (serialized by the singleton dependency), so they would run back-to-back and
 # redundantly re-sweep. The chain schedules ticks a full cadence apart by
 # begin-time, so only late-bunched pile-ups fall inside this window; keep it
-# well BELOW the cadence (default 30 min). 0 disables. Env: AUTORESEARCH_MIN_TICK_MINUTES.
+# well BELOW the cadence (default 30 min). 0 disables. Env: OUTERLOOP_MIN_TICK_MINUTES.
 DEFAULT_MIN_TICK_S = 10 * 60
 # Ceiling for the coalesce window: a value above this is almost certainly a typo
 # (a window near/over the cadence would coalesce every on-cadence tick and stall
@@ -154,8 +154,8 @@ class TickReport:
 # The submitted walltime must never exceed the job partition's MaxTime —
 # sbatch REJECTS a longer request outright, which would ground every climb.
 # The DEFAULT matches cpu_short (6 h); an operator moving work jobs to a
-# longer partition (AUTORESEARCH_JOB_PARTITION=cpu48) raises the cap with
-# AUTORESEARCH_MAX_JOB_MINUTES. Code-side ceiling: the cap must stay under
+# longer partition (OUTERLOOP_JOB_PARTITION=cpu48) raises the cap with
+# OUTERLOOP_MAX_JOB_MINUTES. Code-side ceiling: the cap must stay under
 # STRANDED_IMPLEMENTING_S or the picker declares live runs stranded — jobs
 # longer than 10 h need that window made spec-aware first (named gap). The
 # self-deadline arms at the CLAMPED value, so a job that wanted more time
@@ -181,12 +181,12 @@ class FollowupSpec:
     partition: str
     run_root: Path
     image: str
-    home: Path  # AUTORESEARCH_HOME: cwd for the submitted job
+    home: Path  # OUTERLOOP_HOME: cwd for the submitted job
     bot_login: str = field(default_factory=_bot_login_default)
     time_minutes: int = 90  # min()'d with the contract's followup_job_minutes
     max_turns: int = DEFAULT_MAX_TURNS  # session turn budget for follow-up jobs
     pat_file: str = ""  # forwarded to the job; "" = the followup CLI default
-    # GitHub App config path; jobs inherit AUTORESEARCH_GITHUB_APP_FILE from
+    # GitHub App config path; jobs inherit OUTERLOOP_GITHUB_APP_FILE from
     # the tick environment, so it is never threaded through argv
     github_app_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
@@ -194,7 +194,7 @@ class FollowupSpec:
     # until the operator provisions it
     steward_key_file: str = ""
     # Pre-PR verification panel for climb jobs (docs/design/orchestrator-verify.md).
-    # DEFAULT ON — the flip is code, the off-switch is AUTORESEARCH_PANEL="".
+    # DEFAULT ON — the flip is code, the off-switch is OUTERLOOP_PANEL="".
     # The climb CLI fails LOUDLY on a bad panel config (a configured gate must
     # never silently vanish); the tick preflights the same rules — lens
     # grammar AND key file — before claiming or submitting so nothing is
@@ -286,7 +286,7 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
     if gpu_benches:
         return (
             f"contract has GPU benchmarks ({', '.join(gpu_benches)}) but no GPU lane is "
-            "configured (set AUTORESEARCH_GPU_PARTITION)"
+            "configured (set OUTERLOOP_GPU_PARTITION)"
         )
     return ""
 
@@ -961,7 +961,7 @@ def dispatch_wake_armed(root: Path) -> bool:
     sentinel file (touch/rm, no chain restart). Read by the tick and by every
     park, so a disarm takes effect at once."""
     return (
-        bool(os.environ.get("AUTORESEARCH_DISPATCH_WAKE", "").strip())
+        bool(os.environ.get("OUTERLOOP_DISPATCH_WAKE", "").strip())
         or (root / DISPATCH_WAKE_SENTINEL).exists()
     )
 
@@ -2171,13 +2171,13 @@ def _climb_panel_argv(spec: FollowupSpec) -> list[str]:
 def _author_config_error(spec: FollowupSpec) -> str:
     """Why the config-driven author would die at the climb's startup ("" when it
     won't), checked on the tick host BEFORE a claim/submit so a codex misconfig
-    (e.g. AUTORESEARCH_AUTHOR_BACKEND=codex with no non-claude model) never
+    (e.g. OUTERLOOP_AUTHOR_BACKEND=codex with no non-claude model) never
     strands a claimed intake issue. Reads the fleet author config from env — the
     same source the climb defaults from — and the image the tick already knows."""
     from outerloop.attempt import codex_author_config_error
 
-    backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
-    model = os.environ.get("AUTORESEARCH_AUTHOR_MODEL") or "claude-opus-5"
+    backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL") or "claude-opus-5"
     return codex_author_config_error(backend, model, spec.image)
 
 
@@ -2208,8 +2208,8 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         # neither the author's nor the claude panel key + readable), and for
         # hermes its pinned clone.
         shelled = {
-            "codex": "AUTORESEARCH_PANEL_CODEX_KEY_FILE",
-            "hermes": "AUTORESEARCH_PANEL_HERMES_KEY_FILE",
+            "codex": "OUTERLOOP_PANEL_CODEX_KEY_FILE",
+            "hermes": "OUTERLOOP_PANEL_HERMES_KEY_FILE",
         }
         for lens_backend, key_env in shelled.items():
             if not any(backend == lens_backend for _, backend, _ in lenses):
@@ -2217,7 +2217,7 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
             if not spec.image or not Path(spec.image).is_file():
                 return (
                     f"a {lens_backend} panel lens requires a real container image "
-                    f"(AUTORESEARCH_IMAGE={spec.image!r})"
+                    f"(OUTERLOOP_IMAGE={spec.image!r})"
                 )
             key_raw = os.environ.get(key_env, "").strip()
             if not key_raw:
@@ -2273,7 +2273,7 @@ def _panel_preflight_error(spec: FollowupSpec) -> str:
         # (claude vs codex keys coexist), config-driven like the climb itself — so
         # the role-separation check compares the panel key against the RIGHT author
         # key, and a codex run is never judged by a stray Claude key.
-        fleet_backend = os.environ.get("AUTORESEARCH_AUTHOR_BACKEND") or "claude"
+        fleet_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
         author = Path(resolve_author_key_file(fleet_backend))
         if not author.is_absolute():
             # same rule as the panel key: the climb resolves paths from a
@@ -2462,7 +2462,7 @@ def service_self_initiated(
             # that would publish panel-less self-merging PRs (terra #171)
             log.error(
                 "attempt on %s not launched: contract sets merge:auto but "
-                "no panel is configured (set AUTORESEARCH_PANEL, or the "
+                "no panel is configured (set OUTERLOOP_PANEL, or the "
                 "contract back to merge:manual)",
                 benchmark,
             )
@@ -2474,7 +2474,7 @@ def service_self_initiated(
         if author_error:
             log.error(
                 "climb on %s not launched: author misconfigured — %s "
-                "(fix AUTORESEARCH_AUTHOR_BACKEND/_MODEL)",
+                "(fix OUTERLOOP_AUTHOR_BACKEND/_MODEL)",
                 benchmark,
                 author_error,
             )
@@ -2483,7 +2483,7 @@ def service_self_initiated(
         if panel_error:
             log.error(
                 "climb on %s not launched: panel misconfigured — %s "
-                "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                "(fix it, or set OUTERLOOP_PANEL='' to disable the panel)",
                 benchmark,
                 panel_error,
             )
@@ -2510,7 +2510,7 @@ def service_self_initiated(
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
         # config-driven author: climb resolves the author backend/model/key from
-        # AUTORESEARCH_AUTHOR_* env (inherited by the job), so the tick threads
+        # OUTERLOOP_AUTHOR_* env (inherited by the job), so the tick threads
         # neither the backend nor its key — a new backend needs zero tick change.
         job_id = compute.submit(
             JobSpec(
@@ -2714,7 +2714,7 @@ def service_intake(
             # that would publish panel-less self-merging PRs (terra #171)
             log.error(
                 "attempt on %s not launched: contract sets merge:auto but "
-                "no panel is configured (set AUTORESEARCH_PANEL, or the "
+                "no panel is configured (set OUTERLOOP_PANEL, or the "
                 "contract back to merge:manual)",
                 task.benchmark,
             )
@@ -2726,7 +2726,7 @@ def service_intake(
         if author_error:
             log.error(
                 "issue #%d not claimed: author misconfigured — %s "
-                "(fix AUTORESEARCH_AUTHOR_BACKEND/_MODEL)",
+                "(fix OUTERLOOP_AUTHOR_BACKEND/_MODEL)",
                 task.number,
                 author_error,
             )
@@ -2735,7 +2735,7 @@ def service_intake(
         if panel_error:
             log.error(
                 "issue #%d not claimed: panel misconfigured — %s "
-                "(fix it, or set AUTORESEARCH_PANEL='' to disable the panel)",
+                "(fix it, or set OUTERLOOP_PANEL='' to disable the panel)",
                 task.number,
                 panel_error,
             )
@@ -2777,7 +2777,7 @@ def service_intake(
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
         # config-driven author: climb resolves the author key from the
-        # AUTORESEARCH_AUTHOR_* env by backend; the tick does not thread it.
+        # OUTERLOOP_AUTHOR_* env by backend; the tick does not thread it.
         try:
             job_id = compute.submit(
                 JobSpec(
@@ -2921,7 +2921,7 @@ def _wake_dispatcher_from_env(
     """The wake delivery for this tick, behind an EXPLICIT on-switch so the
     dispatched-wake path lands DARK. Returns `(dispatcher, live)`:
 
-    * armed (the `AUTORESEARCH_DISPATCH_WAKE` env var OR a `<root>/DISPATCH_WAKE`
+    * armed (the `OUTERLOOP_DISPATCH_WAKE` env var OR a `<root>/DISPATCH_WAKE`
       sentinel file) AND the chain env carries what a wake job needs -> the real
       `JobWakeDispatcher` and a LIVE sweep;
     * otherwise -> the `LoggingDispatcher` and a DRY sweep.
@@ -2940,7 +2940,7 @@ def _wake_dispatcher_from_env(
 
 
 def _max_job_minutes_from_env() -> int:
-    """AUTORESEARCH_MAX_JOB_MINUTES, clamped into what the code can honor:
+    """OUTERLOOP_MAX_JOB_MINUTES, clamped into what the code can honor:
     at least the climb-job floor (an operator on a short-MaxTime partition
     must be able to LOWER the cap below cpu_short's 6h, or every submit is
     rejected), at most the ceiling the stranded window allows. A clamped
@@ -2948,24 +2948,24 @@ def _max_job_minutes_from_env() -> int:
     rejecting jobs for no reason."""
     from outerloop.limits import ATTEMPT_JOB_MINUTES_FLOOR
 
-    raw = os.environ.get("AUTORESEARCH_MAX_JOB_MINUTES", "").strip()
+    raw = os.environ.get("OUTERLOOP_MAX_JOB_MINUTES", "").strip()
     if not raw:
         return MAX_ATTEMPT_JOB_MINUTES
     try:
         value = int(raw)
     except ValueError:
-        log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
+        log.warning("OUTERLOOP_MAX_JOB_MINUTES=%r is not an integer; using default", raw)
         return MAX_ATTEMPT_JOB_MINUTES
     clamped = max(ATTEMPT_JOB_MINUTES_FLOOR, min(value, MAX_JOB_MINUTES_CEILING))
     if clamped != value:
-        log.warning("AUTORESEARCH_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
+        log.warning("OUTERLOOP_MAX_JOB_MINUTES=%d clamped to %d", value, clamped)
     return clamped
 
 
 def _cadence_s() -> float:
-    """The chain's tick cadence in seconds (AUTORESEARCH_CADENCE_MIN, the same
+    """The chain's tick cadence in seconds (OUTERLOOP_CADENCE_MIN, the same
     knob tick_chain.sbatch uses), defaulting to 30 min when unset/invalid."""
-    raw = os.environ.get("AUTORESEARCH_CADENCE_MIN", "").strip()
+    raw = os.environ.get("OUTERLOOP_CADENCE_MIN", "").strip()
     try:
         cadence_s = float(raw) * 60 if raw else 30 * 60
     except ValueError:
@@ -2975,7 +2975,7 @@ def _cadence_s() -> float:
 
 def _coalesce_ceiling_s() -> float:
     """The largest SAFE coalesce window, bounding both the default and an
-    explicit AUTORESEARCH_MIN_TICK_MINUTES: half the cadence (so an on-cadence
+    explicit OUTERLOOP_MIN_TICK_MINUTES: half the cadence (so an on-cadence
     tick is never coalesced even when the previous one ran a little late), and
     never above the absolute MAX_MIN_TICK_S. A window at/above the cadence would
     swallow every normal tick and stall the loop — this is what forbids it."""
@@ -2991,29 +2991,29 @@ def _default_min_tick_s() -> float:
 
 
 def _min_tick_s_from_env() -> float:
-    """AUTORESEARCH_MIN_TICK_MINUTES -> the coalesce window in seconds. Unset
+    """OUTERLOOP_MIN_TICK_MINUTES -> the coalesce window in seconds. Unset
     derives a cadence-aware default; non-numeric/non-finite also fall back to it;
     negative clamps to 0 (coalesce disabled); a value at/above the safe ceiling
     (half the cadence, capped at MAX_MIN_TICK_S) clamps down so it cannot stall
     the loop."""
-    raw = os.environ.get("AUTORESEARCH_MIN_TICK_MINUTES", "").strip()
+    raw = os.environ.get("OUTERLOOP_MIN_TICK_MINUTES", "").strip()
     if not raw:
         return _default_min_tick_s()
     try:
         minutes = float(raw)
     except ValueError:
-        log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not a number; using default", raw)
+        log.warning("OUTERLOOP_MIN_TICK_MINUTES=%r is not a number; using default", raw)
         return _default_min_tick_s()
     # reject inf/nan: an infinite window would coalesce every future tick and
     # freeze the loop (a finite elapsed time is always < inf)
     if not math.isfinite(minutes):
-        log.warning("AUTORESEARCH_MIN_TICK_MINUTES=%r is not finite; using default", raw)
+        log.warning("OUTERLOOP_MIN_TICK_MINUTES=%r is not finite; using default", raw)
         return _default_min_tick_s()
     seconds = max(0.0, minutes * 60)
     ceiling = _coalesce_ceiling_s()
     if seconds > ceiling:
         log.warning(
-            "AUTORESEARCH_MIN_TICK_MINUTES=%s exceeds the safe ceiling "
+            "OUTERLOOP_MIN_TICK_MINUTES=%s exceeds the safe ceiling "
             "(%.0f min, ~half the cadence); clamping so normal ticks are not coalesced",
             raw,
             ceiling / 60,
@@ -3026,21 +3026,21 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     """GitHub client + FollowupSpec from the chain environment, or Nones when
     the environment is incomplete (the tick then runs without in-review
     servicing, and logs what is absent)."""
-    pat_file = os.environ.get("AUTORESEARCH_PAT_FILE", "")
-    app_file = os.environ.get("AUTORESEARCH_GITHUB_APP_FILE", "")
-    account = os.environ.get("AUTORESEARCH_ACCOUNT", "")
-    partition = os.environ.get("AUTORESEARCH_PARTITION", "")
+    pat_file = os.environ.get("OUTERLOOP_PAT_FILE", "")
+    app_file = os.environ.get("OUTERLOOP_GITHUB_APP_FILE", "")
+    account = os.environ.get("OUTERLOOP_ACCOUNT", "")
+    partition = os.environ.get("OUTERLOOP_PARTITION", "")
     image = os.environ.get(
-        "AUTORESEARCH_IMAGE",
+        "OUTERLOOP_IMAGE",
         os.path.expanduser("~/autoresearch-images/agent-py312.sif"),
     )
-    home = os.environ.get("AUTORESEARCH_HOME", "")
+    home = os.environ.get("OUTERLOOP_HOME", "")
     # Account and partition are optional on Slurm: empty ones leave the billing
     # association and the partition to Slurm's defaults, as `start` already
     # does for the resident. Local compute has no placement at all.
-    target = os.environ.get("AUTORESEARCH_TARGET", "")
+    target = os.environ.get("OUTERLOOP_TARGET", "")
     image_ok = Path(image).is_file()
-    panel = os.environ.get("AUTORESEARCH_PANEL", "verify,review")
+    panel = os.environ.get("OUTERLOOP_PANEL", "verify,review")
     if not image_ok and local_mode():
         # The local loop on a machine with no container: sessions run under
         # the harness's own sandbox and evaluations run bare, on the
@@ -3056,14 +3056,14 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 "sandbox and evaluations run bare on this machine; the panel is %s; a "
                 "codex author needs the image (docs/install.md, local mode)",
                 image,
-                "on by AUTORESEARCH_PANEL_UNCONTAINED=1"
-                if os.environ.get("AUTORESEARCH_PANEL_UNCONTAINED") == "1"
-                else "off (AUTORESEARCH_PANEL_UNCONTAINED=1 turns it on)",
+                "on by OUTERLOOP_PANEL_UNCONTAINED=1"
+                if os.environ.get("OUTERLOOP_PANEL_UNCONTAINED") == "1"
+                else "off (OUTERLOOP_PANEL_UNCONTAINED=1 turns it on)",
             )
-        if os.environ.get("AUTORESEARCH_PANEL_UNCONTAINED") != "1":
+        if os.environ.get("OUTERLOOP_PANEL_UNCONTAINED") != "1":
             panel = ""
         # the jobs must not inherit a path to an image that is not there
-        os.environ.pop("AUTORESEARCH_IMAGE", None)
+        os.environ.pop("OUTERLOOP_IMAGE", None)
         image, image_ok = "", True
     if (pat_file or app_file) and home and target and image_ok:
         from outerloop.appauth import resolve_bot_auth
@@ -3080,12 +3080,12 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 pat_file=pat_file,
                 github_app_file=app_file,
                 target=target,
-                steward_key_file=os.environ.get("AUTORESEARCH_STEWARD_KEY_FILE", ""),
+                steward_key_file=os.environ.get("OUTERLOOP_STEWARD_KEY_FILE", ""),
                 panel=panel,
-                panel_key_file=os.environ.get("AUTORESEARCH_PANEL_KEY_FILE", ""),
-                job_partition=os.environ.get("AUTORESEARCH_JOB_PARTITION", ""),
-                gpu_partition=os.environ.get("AUTORESEARCH_GPU_PARTITION", ""),
-                gpu_account=os.environ.get("AUTORESEARCH_GPU_ACCOUNT", ""),
+                panel_key_file=os.environ.get("OUTERLOOP_PANEL_KEY_FILE", ""),
+                job_partition=os.environ.get("OUTERLOOP_JOB_PARTITION", ""),
+                gpu_partition=os.environ.get("OUTERLOOP_GPU_PARTITION", ""),
+                gpu_account=os.environ.get("OUTERLOOP_GPU_ACCOUNT", ""),
                 max_job_minutes=_max_job_minutes_from_env(),
             )
             return github, followup_spec
@@ -3095,9 +3095,9 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     absent = [
         name
         for name, value in [
-            ("AUTORESEARCH_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
-            ("AUTORESEARCH_HOME", home),
-            ("AUTORESEARCH_TARGET", target),
+            ("OUTERLOOP_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
+            ("OUTERLOOP_HOME", home),
+            ("OUTERLOOP_TARGET", target),
         ]
         if not value
     ]
@@ -3110,7 +3110,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
 def _loop_cadence_s(cadence_min: float) -> float:
     """The --loop sleep, clamped to [60s, 24h]: argparse accepts inf (which
     would OverflowError out of time.sleep) and sub-minute values would spin.
-    A non-positive argument defers to AUTORESEARCH_CADENCE_MIN."""
+    A non-positive argument defers to OUTERLOOP_CADENCE_MIN."""
     return min(24 * 3600.0, max(60.0, cadence_min * 60 if cadence_min > 0 else _cadence_s()))
 
 
@@ -3118,15 +3118,30 @@ def main() -> int:
     import argparse
     import time
 
-    parser = argparse.ArgumentParser(description="One tick of the autoresearch loop.")
+    parser = argparse.ArgumentParser(
+        prog="outerloop tick",
+        description="One tick of the loop: service the open runs, launch new work, wake "
+        "parked runs. The chain runs this every cadence; --loop does the same in the "
+        "foreground.",
+    )
     parser.add_argument("--root", required=True, type=Path, help="state root on the shared FS")
-    parser.add_argument("--grace-s", type=float, default=DEFAULT_GRACE_S)
-    parser.add_argument("--lease-ttl-s", type=float, default=DEFAULT_LEASE_TTL_S)
+    parser.add_argument(
+        "--grace-s",
+        type=float,
+        default=DEFAULT_GRACE_S,
+        help="seconds a finished experiment's delivery job gets before the sweep steps in",
+    )
+    parser.add_argument(
+        "--lease-ttl-s",
+        type=float,
+        default=DEFAULT_LEASE_TTL_S,
+        help="seconds after which a held run lease counts as stale",
+    )
     parser.add_argument(
         "--min-free-gb",
         type=float,
         default=DEFAULT_MIN_FREE_BYTES / 1024**3,
-        help="skip launching new work when the state filesystem has less free",
+        help="skip launching new work when the state filesystem has less than this many GB free",
     )
     parser.add_argument(
         "--loop",
@@ -3139,23 +3154,23 @@ def main() -> int:
         type=float,
         default=0.0,
         help="minutes between --loop ticks; unset defers to "
-        "AUTORESEARCH_CADENCE_MIN via the chain's own parser (default 30)",
+        "OUTERLOOP_CADENCE_MIN via the chain's own parser (default 30)",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     args.root.mkdir(parents=True, exist_ok=True)
     # The tick's --root is the authority; children (and this process's own
-    # LocalCompute) read AUTORESEARCH_ROOT, so a bare `tick --loop --root X`
+    # LocalCompute) read OUTERLOOP_ROOT, so a bare `tick --loop --root X`
     # must not split-brain them: local job states would land nowhere and
     # every finished job would read GONE until the park deadline.
     # RESOLVED: local jobs cd into flight checkouts, so a relative root
     # would scatter their state dirs across working directories
-    if os.environ.get("AUTORESEARCH_ROOT", "") != str(args.root.resolve()):
-        os.environ["AUTORESEARCH_ROOT"] = str(args.root.resolve())
+    if os.environ.get("OUTERLOOP_ROOT", "") != str(args.root.resolve()):
+        os.environ["OUTERLOOP_ROOT"] = str(args.root.resolve())
     # In-review servicing is LIVE when credentials + image are available in the
     # chain environment. The waiting-run sweep delivers real wakes only when the
-    # operator arms it — the AUTORESEARCH_DISPATCH_WAKE env var or a
+    # operator arms it — the OUTERLOOP_DISPATCH_WAKE env var or a
     # <root>/DISPATCH_WAKE sentinel — and the env is complete; by default it
     # stays dry with the LoggingDispatcher — dispatched climbing lands DARK.
     # ONE compute for the process: LocalCompute remembers its jobs' states
