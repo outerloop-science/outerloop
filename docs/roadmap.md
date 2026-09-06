@@ -100,6 +100,9 @@ standing instruction they supersede — a resumed agent honors stale constraints
 
 ## Phase 5 — Benchmark-climb pilot
 
+Retired 2026-09-06: the fleet has climbed gpt-speedrun since 2026-08-31 and the
+pilot repo is archived. Kept for the record.
+
 Target: [autoresearch-pilot](https://github.com/agentic-learning-ai-lab/autoresearch-pilot)
 — a non-research-bearing proving ground (tsp / denoise / speedup; deterministic,
 CPU-only, contract and baselines already committed). Decouples this roadmap from

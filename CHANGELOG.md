@@ -13,9 +13,6 @@ Versions follow [SemVer](https://semver.org).
   with state, elapsed time, partition and submit time. Jobs on the account
   that are not the kernel's never appear. The strip republishes when a job
   appears, leaves, or changes state, not on elapsed drift.
-
-### Added
-
 - `outerloop init` asks for the author's model API key (hidden) and writes it to
   `~/.config/outerloop/<backend>_key` (0600), or takes `--author-key-file` for an
   existing file (checked to exist, stored absolute); the `.env` records it as
@@ -31,9 +28,10 @@ Versions follow [SemVer](https://semver.org).
   `~/.config/outerloop/claude_key` and the setting `OUTERLOOP_CLAUDE_KEY_FILE`.
   The pre-rename `harness_key` file and `*_HARNESS_KEY_FILE` setting are still
   read (the new name wins when both exist), so an existing setup keeps working.
-
-### Changed
-
+- `AUTORESEARCH_TARGET` is required for in-review servicing (follow-ups, wakes,
+  the board). The kernel no longer falls back to the retired
+  `agentic-learning-ai-lab/autoresearch-pilot` repo when it is unset; the tick
+  logs the missing setting like any other.
 - The test suite runs on all cores by default (pytest-xdist), about four times
   faster locally; `pytest --testmon` runs only the tests affected by your edits
   (pytest-testmon). Tier selection moved from `addopts` into `tests/conftest.py`

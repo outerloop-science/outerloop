@@ -1848,6 +1848,7 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
         "AUTORESEARCH_PARTITION": "p",
         "AUTORESEARCH_IMAGE": str(image),
         "AUTORESEARCH_HOME": str(tmp_path),
+        "AUTORESEARCH_TARGET": "org/repo",
         "AUTORESEARCH_PANEL": "verify",
         "AUTORESEARCH_PANEL_KEY_FILE": "/keys/verifier",
     }
@@ -1856,7 +1857,13 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     monkeypatch.setattr(tick_mod.os, "environ", env)
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None
+    assert spec.target == "org/repo"
     assert spec.panel == "verify" and spec.panel_key_file == "/keys/verifier"
+    # no target, no servicing: there is no fallback repo to write to
+    without = {k: v for k, v in env.items() if k != "AUTORESEARCH_TARGET"}
+    monkeypatch.setattr(tick_mod.os, "environ", without)
+    assert _followup_spec_from_env(tmp_path) == (None, None)
+    monkeypatch.setattr(tick_mod.os, "environ", env)
     env["AUTORESEARCH_PANEL"] = ""
     _github, off = _followup_spec_from_env(tmp_path)
     assert off is not None and off.panel == ""
@@ -3368,6 +3375,7 @@ def test_local_mode_needs_no_slurm_placement(monkeypatch: Any, tmp_path: Path) -
         "AUTORESEARCH_PAT_FILE": str(pat),
         "AUTORESEARCH_IMAGE": str(image),
         "AUTORESEARCH_HOME": str(tmp_path),
+        "AUTORESEARCH_TARGET": "org/repo",
     }
     import outerloop.tick as tick_mod
 
