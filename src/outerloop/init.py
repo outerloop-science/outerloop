@@ -239,9 +239,23 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
 
 
 ORG_PROMPT = (
-    "Create the App under your own account, or under an organization? "
-    "(organization name, or Enter for your account)"
+    "Create the App under which account? (the repository's owner is the only one "
+    "the App can then be installed on; Enter to accept)"
 )
+
+
+def _owner_is_user(owner: str) -> bool:
+    """Whether `owner` is a user account rather than an organization. GitHub
+    creates Apps at different pages for the two. Best effort: unknown means
+    organization, which is the common case for a shared target."""
+    req = urllib.request.Request(
+        f"{API}/users/{owner}", headers={"Accept": "application/vnd.github+json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return str(json.loads(resp.read()).get("type", "")) == "User"
+    except Exception:
+        return False
 
 
 def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
@@ -274,6 +288,16 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
     print()
     print(f"Step 3 of 3: checking that the App can write {answers.target}.")
     iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
+    for _ in range(2):
+        if iid:
+            break
+        # not installed yet: a rerun of init would stop at the existing config,
+        # so ask again here rather than sending the adopter around the loop
+        print(
+            f"  no installation found yet. Install the App at {appmanifest.install_url(conversion)}"
+        )
+        input("Press Enter once GitHub shows the App as installed… ")
+        iid = appmanifest.capture_installation_id(int(conversion["id"]), pem_path, owner)
     if iid:
         appmanifest.set_installation_id(app_json, iid)
         print(f"  installation id {iid} recorded")
@@ -288,8 +312,9 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
         print(
-            f"  no installation found yet. Install the App on {answers.target} (the link above), "
-            f"then run init again, or set installation_id in {app_json} by hand."
+            f"  still no installation. When it is installed, put its id into {app_json} as "
+            f"installation_id (GitHub shows it in the URL of the App's page under "
+            f"Settings > Installations), then run outerloop start."
         )
     env_path = CONFIG_DIR / ENV_FILE.name
     write_private(env_path, render_env(answers, app_file=str(app_json)))
@@ -401,7 +426,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.github_app:
         org = args.org or ""
         if not org and interactive:
-            org = _ask(ORG_PROMPT, "").strip()
+            # a private App installs only on the account that created it, so
+            # the target's owner is the only default that can work
+            owner = answers.target.split("/")[0]
+            org = _ask(ORG_PROMPT, owner).strip()
+        if org and _owner_is_user(org):
+            org = ""  # a user account: GitHub's personal App page, not an org page
         return _github_app_setup(answers, args.app_name or "", org)
 
     token = ""

@@ -163,6 +163,7 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
         appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
     )
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
+    monkeypatch.setattr(init, "_owner_is_user", lambda owner: False)
     monkeypatch.setattr("builtins.input", lambda *a: "")
     assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
     # the organization question is the only prompt; nothing about the author

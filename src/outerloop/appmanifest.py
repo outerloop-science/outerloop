@@ -25,6 +25,7 @@ import os
 import secrets
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -96,8 +97,9 @@ def request_manifest_code(
     print_fn("  Open this link in a browser where you are signed in to GitHub (any machine):")
     print_fn(f"\n  {url}\n")
     print_fn(f"  GitHub shows a page titled 'Create GitHub App' under {where}. Click the")
+    host = urllib.parse.urlsplit(SETUP_URL).netloc or SETUP_URL
     print_fn("  green 'Create GitHub App' button. GitHub then sends you to")
-    print_fn("  setup.outerloop.science, which shows a one-time code.")
+    print_fn(f"  {host}, which shows a one-time code.")
     return input_fn("Paste that code here: ").strip()
 
 
