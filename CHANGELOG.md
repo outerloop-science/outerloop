@@ -84,6 +84,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A follow-up re-measurement that has landed is now finished even when the
+  run has spent its wake-attempt cap. The sessions that sync a stale PR onto
+  the moved base and dispatch the measurement each bill an attempt, so a
+  measurement could complete with nobody left to push its number; the run then
+  idled with "follow-up attempts without progress" every tick. The finishing
+  follow-up has its own allowance of `MAX_WAKE_ATTEMPTS`, counted on the
+  stage, so a session that fails to finish is retried a bounded number of
+  times; the cap still holds for follow-ups that have nothing landed to finish.
 - `outerloop init` no longer overwrites an existing `~/.config/autoresearch/.env`
   silently: interactively it asks; with `--yes` it refuses unless `--force` is
   passed. The check runs before any GitHub App is created.

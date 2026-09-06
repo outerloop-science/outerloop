@@ -4026,6 +4026,83 @@ def test_a_parked_remeasure_is_polled_then_finished_by_a_followup(tmp_path: Path
     assert "--account acct" in wrap and "--partition cpu_short" in wrap
 
 
+def test_a_landed_remeasure_is_finished_even_at_the_wake_cap(tmp_path: Path) -> None:
+    """The sessions that synced the base and dispatched the re-measure can
+    spend the whole wake cap before the eval lands. The follow-up that pushes
+    the sealed number must still go out — otherwise the result parks forever
+    (speedrun agent-03, 2026-09-04). Without a landed measure the cap holds."""
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, MAX_WAKE_ATTEMPTS, RunRecord, load_record, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False, "head": {"sha": "a" * 40}}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 9,
+                    "body": "explain",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def run(stage: dict) -> tuple[list, dict]:
+        root = tmp_path / f"root-{len(stage)}-{stage.get('finish_attempts', 0)}"
+        root.mkdir()
+        save_record(
+            root,
+            RunRecord(
+                run_id="r-rev",
+                target="org/pilot",
+                task_title="t",
+                state=IN_REVIEW,
+                pr_url="https://github.com/org/pilot/pull/9",
+                wake_attempts=MAX_WAKE_ATTEMPTS,
+                followup_stage=stage,
+            ),
+            now=NOW,
+        )
+
+        def runner(argv, timeout_s):
+            if argv[0] == "sbatch":
+                return CommandResult(0, "77\n", "")
+            if argv[0] == "sacct":
+                return CommandResult(0, "COMPLETED\n", "")
+            raise AssertionError(argv)
+
+        spec = FollowupSpec(
+            account="acct",
+            partition="cpu_short",
+            run_root=root,
+            image="/img/a.sif",
+            home=Path("/home/x/autoresearch"),
+        )
+        _ended, submitted = service_in_review(root, G(), SlurmCompute(runner=runner), spec, NOW)
+        return submitted, load_record(root, "r-rev").followup_stage
+
+    landed = {"job_ids": ["9001"], "candidate_sha": "c" * 40}
+    # landed measure: finished despite the cap, and the attempt is counted on the stage
+    submitted, stage = run(landed)
+    assert submitted == [("r-rev", "77")] and stage["finish_attempts"] == 1
+    # a finishing session that reverted and left the stage intact is retried...
+    submitted, stage = run({**landed, "finish_attempts": MAX_WAKE_ATTEMPTS - 1})
+    assert submitted == [("r-rev", "77")] and stage["finish_attempts"] == MAX_WAKE_ATTEMPTS
+    # ...a bounded number of times, never once per tick
+    submitted, stage = run({**landed, "finish_attempts": MAX_WAKE_ATTEMPTS})
+    assert submitted == [] and stage["finish_attempts"] == MAX_WAKE_ATTEMPTS
+    # new comments only: the cap still holds
+    assert run({})[0] == []
+
+
 def test_a_blind_parked_remeasure_waits_its_floor_before_a_followup_is_sent(tmp_path: Path) -> None:
     """No job ids to poll (the measurer could not read the queue): the eval
     walltime plus the queue slack is the floor — never a follow-up per tick."""

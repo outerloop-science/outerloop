@@ -236,7 +236,8 @@ which wakes any run whose job reads terminal after the grace period —
 plus GONE past the deadline (vanished) and PENDING past the deadline
 (cancel, then wake as unschedulable); a still-RUNNING job is deliberately
 left alone, bounded by its own walltime; wakes that fire without producing
-progress -> `stuck` at MAX_WAKE_ATTEMPTS. A moved base during the wait is
+progress -> `stuck` at MAX_WAKE_ATTEMPTS (a landed re-measure has its own
+allowance of MAX_WAKE_ATTEMPTS finishing follow-ups, counted on the stage). A moved base during the wait is
 review's to handle — the sealed candidate publishes as-is (research-loop.md:
 a stale PR is a re-wake, never an orchestrator auto-merge). Worktree cleanup has a named owner at every exit: the
 wake's own finally (primary, as in-job measures do today), the sweep's
