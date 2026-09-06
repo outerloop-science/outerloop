@@ -1146,25 +1146,32 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
             "submitted": "s",
         }
 
+    # a second run: a hyphenated benchmark whose derived names hit Slurm's 60-char cut
+    long_id = "my-long-benchmark-name-here-20260905-070000-agent-04"
+    other = dc_replace(
+        record, run_id=long_id, agent_id="agent-04", benchmark="my-long-benchmark-name-here"
+    )
+    save_record(tmp_path, other, 2.5)
+    assert len(f"wake-{long_id}") > 56  # the cut bites the derived names
     snap = [
         job("777", "eval-speedrun-2-cand-ab12", "RUNNING", "0:10", "gpu"),
         job("778", "speedrun-20260905-063328-agent-01-launch-sweep", "PENDING", "0:00", "gpu"),
         job("779", "my-own-notebook", "RUNNING", "5:00", "cpu"),
         job("780", "autoresearch-resident", "RUNNING", "4:00:00", "cpu"),
-        job(
-            "781", "eval-my-model-please-ignore", "RUNNING", "0:01", "gpu"
-        ),  # the operator's, not ours
-        job(
-            "782", "rocket-launch-sim", "RUNNING", "0:01", "cpu"
-        ),  # -launch- alone is not a kernel job
-        job("783", "wake-speedrun-20260905-063328-agent-04", "PENDING", "0:00", "cpu"),
+        job("781", "eval-my-model-please-ignore", "RUNNING", "0:01", "gpu"),  # the operator's
+        job("782", "rocket-launch-sim", "RUNNING", "0:01", "cpu"),  # -launch- alone is nobody's
+        job("783", f"wake-{long_id}"[:60], "PENDING", "0:00", "cpu"),  # cut as the kernel cuts
+        job("784", f"{long_id}-launch-lr-sweep"[:60], "RUNNING", "0:30", "gpu"),
+        job("785", "climb-my-long-benchmark-name-here-agent-04", "RUNNING", "0:05", "cpu"),
+        job("786", "wake-speedrun-20260905-063328-agent-09", "PENDING", "0:00", "cpu"),  # not ours
     ]
     body = collect_status(tmp_path, "org/repo", 3.0, queue=snap)
     q = {j["id"]: j for j in body["queue"]}
-    assert set(q) == {"777", "778", "780", "783"}
+    assert set(q) == {"777", "778", "780", "783", "784", "785"}
     assert q["777"]["agent"] == "agent-01" and q["777"]["run_id"] == record.run_id
-    assert q["778"]["agent"] == "agent-01" and q["778"]["run_id"] == ""
-    assert q["780"]["agent"] == "" and q["783"]["agent"] == "agent-04"
+    assert q["778"]["agent"] == "agent-01" and q["778"]["run_id"] == record.run_id
+    assert q["780"]["agent"] == "" and q["785"]["agent"] == "agent-04"
+    assert q["783"]["run_id"] == long_id and q["784"]["run_id"] == long_id
     assert "queue" not in collect_status(tmp_path, "org/repo", 3.0)  # no snapshot: no key
     assert service_status(tmp_path, gh, "org/repo", 4.0, queue=snap) is True
     drift = [dict(j, elapsed="9:59") for j in snap]

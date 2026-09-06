@@ -796,28 +796,43 @@ def render_html(
 
 
 STATUS_PATH = "climb/status.json"
-# The queue view shows the kernel's own jobs only. Every kernel job has one of
-# these exact name shapes (see tick.py / attempt.py / scripts/); an eval's name
-# is a liveness hash and is claimed only through its run's marker. Anything
-# else on the account is the operator's and never leaves the cluster.
-_RUN = r"[\w.]+-\d{8}-\d{6}-agent-\d+"  # a run id: <benchmark>-<stamp>-<agent>
-KERNEL_JOB_PATTERNS = tuple(
+# The queue view shows the kernel's own jobs only. Fixed-name jobs (the tick
+# chain, issue sessions, climb sessions) are matched by shape; per-run jobs
+# (wake, followup, launch) are matched against the names the kernel itself
+# derives from this target's run ids, with the same 60-character cut Slurm
+# forces on them; an eval's name is a liveness hash and is claimed only
+# through its run's marker. Anything else on the account is the operator's
+# and never leaves the cluster.
+JOB_NAME_LIMIT = 60
+FIXED_JOB_PATTERNS = tuple(
     re.compile(p)
     for p in (
         r"^(autoresearch|outerloop)-(resident|tick)$",
-        r"^climb-[\w.]+-agent-\d+$",
-        rf"^(followup|wake)-{_RUN}$",
-        rf"^{_RUN}-launch-",
+        r"^climb-[\w.-]+-agent-\d+$",
         r"^(steward|climb)-issue-\d+$",
     )
 )
 _AGENT_RE = re.compile(r"agent-\d+")
 
 
-def is_kernel_job(name: str) -> bool:
-    """A job the kernel submitted, by its exact name shape (evals excluded:
-    they are claimed by marker in queue_rows)."""
-    return any(p.match(name) for p in KERNEL_JOB_PATTERNS)
+def is_fixed_kernel_job(name: str) -> bool:
+    return any(p.match(name) for p in FIXED_JOB_PATTERNS)
+
+
+def run_job_names(root: Path, target: str) -> dict[str, tuple[str, str, bool]]:
+    """Expected per-run job names for `target`: name -> (run_id, agent,
+    is_prefix). Exact for wake and followup; a prefix for launches, whose
+    names end in the experiment's own label. Every run of the target counts,
+    ended ones too: a finishing job can outlive its record's state."""
+    out: dict[str, tuple[str, str, bool]] = {}
+    for record in list_runs(root):
+        if record.target != target:
+            continue
+        rid, agent = record.run_id, record.agent_id
+        for exact in (f"wake-{rid}", f"followup-{rid}"):
+            out[exact[:JOB_NAME_LIMIT]] = (rid, agent, False)
+        out[f"{rid}-launch-"[:JOB_NAME_LIMIT]] = (rid, agent, True)
+    return out
 
 
 def eval_job_owners(root: Path, target: str) -> dict[str, tuple[str, str]]:
@@ -844,15 +859,21 @@ def queue_rows(root: Path, target: str, snapshot: list[dict[str, str]]) -> list[
     each attributed to an agent (by eval marker, else by the agent id every
     other kernel job carries in its name)."""
     owners = eval_job_owners(root, target)
+    expected = run_job_names(root, target)
     rows: list[dict[str, str]] = []
     for job in snapshot:
         name = str(job.get("name", ""))
         job_id = str(job.get("id", ""))
+        run_id = agent = ""
         if job_id in owners:  # an eval of one of this target's live runs
             run_id, agent = owners[job_id]
-        elif is_kernel_job(name):
+        elif name in expected and not expected[name][2]:  # wake / followup, exact
+            run_id, agent = expected[name][:2]
+        elif any(name.startswith(k) for k, v in expected.items() if v[2]):  # a launch
+            run_id, agent = next(v[:2] for k, v in expected.items() if v[2] and name.startswith(k))
+        elif is_fixed_kernel_job(name):
             found = _AGENT_RE.search(name)
-            run_id, agent = "", (found.group(0) if found else "")
+            agent = found.group(0) if found else ""
         else:
             continue  # an eval whose marker is not written yet, or the operator's own job
         rows.append(
