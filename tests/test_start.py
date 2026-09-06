@@ -351,6 +351,13 @@ def test_local_start_needs_no_checkout(clean_env: Path, monkeypatch: pytest.Monk
     env = seen["env"]
     assert isinstance(env, dict)
     assert env["AUTORESEARCH_HOME"] == str(clean_env / "state" / "home")
+    assert (clean_env / "state" / "home").is_dir()  # jobs cd into it
+
+
+def test_outerloop_home_is_read_from_the_environment(clean_env: Path) -> None:
+    home = checkout(clean_env)
+    p = plan(clean_env, cwd=clean_env, local=True, root="/r", environ={"OUTERLOOP_HOME": str(home)})
+    assert p.home == home
 
 
 def test_slurm_start_still_needs_a_checkout(

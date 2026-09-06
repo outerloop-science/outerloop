@@ -21,6 +21,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -288,6 +289,16 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
             "configured (set AUTORESEARCH_GPU_PARTITION)"
         )
     return ""
+
+
+def _interpreter(home: Path) -> list[str]:
+    """How a job runs Python. From a source checkout, `uv run python` resolves
+    the project's own environment, as the cluster's flights do. From a plain
+    home directory (the local loop on an installed package) the job runs the
+    interpreter this tick runs under, which is where the package is."""
+    if (home / "pyproject.toml").is_file():
+        return ["uv", "run", "python"]
+    return [sys.executable]
 
 
 def _flight_command(home: Path, job_name: str, now: float, argv: list[str]) -> str:
@@ -750,9 +761,7 @@ def service_in_review(
             if panel_argv:
                 panel_argv = [*panel_argv, "--panel-minutes", str(job_minutes - author_minutes)]
             argv = [
-                "uv",
-                "run",
-                "python",
+                *_interpreter(spec.home),
                 "-m",
                 "outerloop.followup",
                 "--run-root",
@@ -2475,9 +2484,7 @@ def service_self_initiated(
             return (benchmark, "dry-run")
         job_minutes = _attempt_job_minutes(spec, limits)
         argv = [
-            "uv",
-            "run",
-            "python",
+            *_interpreter(spec.home),
             "-m",
             "outerloop.attempt",
             "--target",
@@ -2604,9 +2611,7 @@ def service_steward(
 
         work_order_b64 = _b64.b64encode(issue_hypothesis(task).encode()).decode()
         argv = [
-            "uv",
-            "run",
-            "python",
+            *_interpreter(spec.home),
             "-m",
             "outerloop.steward",
             "--target",
@@ -2746,9 +2751,7 @@ def service_intake(
 
         hypothesis_b64 = _b64.b64encode(issue_hypothesis(task).encode()).decode()
         argv = [
-            "uv",
-            "run",
-            "python",
+            *_interpreter(spec.home),
             "-m",
             "outerloop.attempt",
             "--target",
@@ -2830,9 +2833,7 @@ class JobWakeDispatcher:
 
     def dispatch(self, record: RunRecord, reason: str) -> str:
         argv = [
-            "uv",
-            "run",
-            "python",
+            *_interpreter(self.spec.home),
             "-m",
             "outerloop.attempt",
             "--resume",

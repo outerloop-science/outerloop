@@ -173,7 +173,7 @@ def _home(environ: dict[str, str], cwd: Path, *, local: bool, root: Path) -> Pat
     The local loop has no deploy step and runs the installed package, so it
     uses a checkout when one is at hand and otherwise a `home` directory
     under the state root, where flights and logs land."""
-    named = environ.get("AUTORESEARCH_HOME")
+    named = environ.get("OUTERLOOP_HOME") or environ.get("AUTORESEARCH_HOME")
     home = Path(named).expanduser() if named else cwd
     if (home / "scripts" / "tick_chain.sbatch").is_file():
         return home
