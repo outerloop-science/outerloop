@@ -21,7 +21,7 @@
 #                             sleep, with a single afterany:self successor.
 #                             `outerloop start` submits it (walltime,
 #                             name, and exports filled in); by hand:
-#                             `sbatch --time=360 --job-name=autoresearch-resident
+#                             `sbatch --time=360 --job-name=outerloop-resident
 #                             --export=ALL,OUTERLOOP_RESIDENT=1,...`. The
 #                             per-cadence chain drains itself once a resident
 #                             job exists. Unset = the per-cadence chain below.
