@@ -190,16 +190,20 @@ def test_precedence_is_flag_then_environment_then_file(tmp_path: Path) -> None:
     assert (str(p.root), p.account, p.partition) == ("/env/root", "envacct", "flagged")
 
 
-def test_home_from_env_or_cwd_and_must_be_a_checkout_in_both_modes(tmp_path: Path) -> None:
+def test_home_is_a_checkout_on_slurm_and_optional_for_the_local_loop(tmp_path: Path) -> None:
     home = checkout(tmp_path)
     base = {"AUTORESEARCH_ROOT": "/r", "AUTORESEARCH_ACCOUNT": "a", "AUTORESEARCH_PARTITION": "p"}
     with_home = {**base, "AUTORESEARCH_HOME": str(home)}
     assert plan(tmp_path, cwd=tmp_path, environ=with_home).home == home
     assert plan(tmp_path, cwd=tmp_path, local=True, environ=with_home).home == home
-    with pytest.raises(StartError, match="not an autoresearch checkout"):
+    # Slurm deploys from the checkout: none at hand is an error
+    with pytest.raises(StartError, match="source checkout"):
         plan(tmp_path, cwd=tmp_path, environ=base)
-    with pytest.raises(StartError, match="not an autoresearch checkout"):
-        plan(tmp_path, cwd=tmp_path, local=True)
+    # the local loop runs the installed package: home falls back under the root
+    assert plan(tmp_path, cwd=tmp_path, local=True, root="/r").home == Path("/r/home")
+    # a NAMED home that is not a checkout is still an error, in either mode
+    with pytest.raises(StartError, match="source checkout"):
+        plan(tmp_path, cwd=tmp_path, local=True, environ={"AUTORESEARCH_HOME": str(tmp_path)})
 
 
 def test_slurm_requires_root_and_account_but_partition_is_optional(tmp_path: Path) -> None:
@@ -325,6 +329,46 @@ def test_local_start_execs_the_loop_with_env_knobs(
     assert env["AUTORESEARCH_PANEL"] == ""  # an off-switch in the file still lands
     assert env["AUTORESEARCH_CADENCE_MIN"] == "15"  # the loop's cadence comes from .env too
     assert env["AUTORESEARCH_PAT_FILE"] == "/home/me/pat"
+
+
+def test_local_start_needs_no_checkout(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pip-installed adopter has no source checkout. The local loop runs the
+    installed package, so start must not demand one: home becomes a directory
+    under the state root, where flights and logs land (#287)."""
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli, "ENV_FILE", env_file(clean_env, "AUTORESEARCH_TARGET=o/r\n"))
+    seen: dict[str, object] = {}
+
+    def fake_exec(cmd: list[str], env: dict[str, str]) -> int:
+        seen["env"] = env
+        return 0
+
+    monkeypatch.setattr(cli, "_exec", fake_exec)
+    plain = clean_env / "somewhere"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    assert main(["start", "--root", str(clean_env / "state")]) == 0
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["AUTORESEARCH_HOME"] == str(clean_env / "state" / "home")
+    assert (clean_env / "state" / "home").is_dir()  # jobs cd into it
+
+
+def test_outerloop_home_is_read_from_the_environment(clean_env: Path) -> None:
+    home = checkout(clean_env)
+    p = plan(clean_env, cwd=clean_env, local=True, root="/r", environ={"OUTERLOOP_HOME": str(home)})
+    assert p.home == home
+
+
+def test_slurm_start_still_needs_a_checkout(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/sbatch")
+    plain = clean_env / "somewhere"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    assert main(["start", "--root", str(clean_env / "state"), "--account", "a"]) == 2
+    assert "source checkout" in capsys.readouterr().err
 
 
 def test_slurm_start_submits_once_and_reports(

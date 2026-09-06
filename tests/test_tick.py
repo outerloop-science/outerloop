@@ -4161,3 +4161,16 @@ def test_a_blind_parked_remeasure_waits_its_floor_before_a_followup_is_sent(tmp_
     assert run(NOW - (30 + BLIND_PARK_SLACK_MIN) * 60 - 1) == [
         ("r-rev", "78")
     ]  # floor passed: look
+
+
+def test_jobs_run_the_installed_interpreter_outside_a_checkout(tmp_path: Path) -> None:
+    """From a source checkout a job runs `uv run python`, which resolves the
+    project's environment. From the local loop's plain home there is no
+    project, so the job runs this interpreter, where the package is (#288)."""
+    import sys
+
+    from outerloop.tick import _interpreter
+
+    assert _interpreter(tmp_path) == [sys.executable]
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    assert _interpreter(tmp_path) == ["uv", "run", "python"]
