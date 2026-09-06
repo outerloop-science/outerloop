@@ -1149,15 +1149,33 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
         job("778", "speedrun-20260905-063328-agent-01-launch-sweep", "PENDING", "0:00", "gpu"),
         job("779", "my-own-notebook", "RUNNING", "5:00", "cpu"),
         job("780", "autoresearch-resident", "RUNNING", "4:00:00", "cpu"),
+        job(
+            "781", "eval-my-model-please-ignore", "RUNNING", "0:01", "gpu"
+        ),  # the operator's, not ours
+        job(
+            "782", "rocket-launch-sim", "RUNNING", "0:01", "cpu"
+        ),  # -launch- alone is not a kernel job
+        job("783", "wake-speedrun-20260905-063328-agent-04", "PENDING", "0:00", "cpu"),
     ]
     body = collect_status(tmp_path, "org/repo", 3.0, queue=snap)
     q = {j["id"]: j for j in body["queue"]}
-    assert set(q) == {"777", "778", "780"}
+    assert set(q) == {"777", "778", "780", "783"}
     assert q["777"]["agent"] == "agent-01" and q["777"]["run_id"] == record.run_id
     assert q["778"]["agent"] == "agent-01" and q["778"]["run_id"] == ""
-    assert q["780"]["agent"] == ""
+    assert q["780"]["agent"] == "" and q["783"]["agent"] == "agent-04"
     assert "queue" not in collect_status(tmp_path, "org/repo", 3.0)  # no snapshot: no key
     assert service_status(tmp_path, gh, "org/repo", 4.0, queue=snap) is True
     drift = [dict(j, elapsed="9:59") for j in snap]
     assert service_status(tmp_path, gh, "org/repo", 5.0, queue=drift) is False
+    # a job finishing, a partition move, and an eval claimed by a marker written later all republish
     assert service_status(tmp_path, gh, "org/repo", 6.0, queue=snap[1:]) is True
+    moved = [dict(j, partition="gpu_prem") if j["id"] == "778" else j for j in snap[1:]]
+    assert service_status(tmp_path, gh, "org/repo", 7.0, queue=moved) is True
+    late = run_dir(tmp_path, record.run_id) / "eval-late" / "submitted"
+    late.parent.mkdir()
+    late.write_text("790\n")
+    with_eval = [*moved, job("790", "eval-speedrun-2-base-ff00", "RUNNING", "0:02", "gpu")]
+    assert service_status(tmp_path, gh, "org/repo", 8.0, queue=with_eval) is True
+    assert {j["id"]: j["agent"] for j in json.loads(gh.files["climb/status.json"])["queue"]}[
+        "790"
+    ] == "agent-01"

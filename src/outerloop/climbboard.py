@@ -784,22 +784,28 @@ def render_html(
 
 
 STATUS_PATH = "climb/status.json"
-# The queue view shows the kernel's own jobs only: the tick chain, sessions,
-# wakes, evals, and launches. Anything else on the account is the operator's.
-KERNEL_JOB_PREFIXES = (
-    "autoresearch-",
-    "outerloop-",
-    "climb-",
-    "followup-",
-    "wake-",
-    "steward-",
-    "eval-",
+# The queue view shows the kernel's own jobs only. Every kernel job has one of
+# these exact name shapes (see tick.py / attempt.py / scripts/); an eval's name
+# is a liveness hash and is claimed only through its run's marker. Anything
+# else on the account is the operator's and never leaves the cluster.
+_RUN = r"[\w.]+-\d{8}-\d{6}-agent-\d+"  # a run id: <benchmark>-<stamp>-<agent>
+KERNEL_JOB_PATTERNS = tuple(
+    re.compile(p)
+    for p in (
+        r"^(autoresearch|outerloop)-(resident|tick)$",
+        r"^climb-[\w.]+-agent-\d+$",
+        rf"^(followup|wake)-{_RUN}$",
+        rf"^{_RUN}-launch-",
+        r"^(steward|climb)-issue-\d+$",
+    )
 )
 _AGENT_RE = re.compile(r"agent-\d+")
 
 
 def is_kernel_job(name: str) -> bool:
-    return name.startswith(KERNEL_JOB_PREFIXES) or "-launch-" in name
+    """A job the kernel submitted, by its exact name shape (evals excluded:
+    they are claimed by marker in queue_rows)."""
+    return any(p.match(name) for p in KERNEL_JOB_PATTERNS)
 
 
 def eval_job_owners(root: Path, target: str) -> dict[str, tuple[str, str]]:
@@ -829,12 +835,14 @@ def queue_rows(root: Path, target: str, snapshot: list[dict[str, str]]) -> list[
     rows: list[dict[str, str]] = []
     for job in snapshot:
         name = str(job.get("name", ""))
-        if not is_kernel_job(name):
-            continue
-        run_id, agent = owners.get(str(job.get("id", "")), ("", ""))
-        if not agent:
+        job_id = str(job.get("id", ""))
+        if job_id in owners:  # an eval of one of this target's live runs
+            run_id, agent = owners[job_id]
+        elif is_kernel_job(name):
             found = _AGENT_RE.search(name)
-            agent = found.group(0) if found else ""
+            run_id, agent = "", (found.group(0) if found else "")
+        else:
+            continue  # an eval whose marker is not written yet, or the operator's own job
         rows.append(
             {
                 "id": str(job.get("id", "")),
@@ -1002,9 +1010,13 @@ def service_status(
                 "sleep_k",
             )
             shape = lambda runs: [{k: r.get(k) for k in keys} for r in runs]
-            # the queue's shape is which jobs exist and their state; elapsed
-            # time drifts every tick and the page shows it from `submitted`
-            qshape = lambda q: [(j.get("id"), j.get("state")) for j in (q or [])]
+            # the queue's shape is which jobs exist, their state, partition and
+            # attribution (an eval claimed by its marker one tick later must
+            # republish); elapsed time drifts every tick and is left out
+            qshape = lambda q: [
+                (j.get("id"), j.get("state"), j.get("partition"), j.get("agent"), j.get("run_id"))
+                for j in (q or [])
+            ]
             if (
                 isinstance(existing, dict)
                 and isinstance(existing.get("runs"), list)
