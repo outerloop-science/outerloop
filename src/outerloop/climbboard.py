@@ -773,6 +773,18 @@ def render_html(
         "    now.append(card);\n"
         "  }\n"
         "  if (!strip.runs.length) now.textContent = 'no active runs';\n"
+        "  // the kernel's own Slurm jobs, as squeue would list them (when published)\n"
+        "  if (Array.isArray(strip.queue) && strip.queue.length) {\n"
+        "    const ST = {RUNNING: 'R', PENDING: 'PD', COMPLETING: 'CG', CONFIGURING: 'CF'};\n"
+        "    const pad = (s, n) => String(s ?? '').padEnd(n).slice(0, n);\n"
+        "    const q = document.createElement('pre'); q.className = 'queue';\n"
+        "    const head = pad('JOBID', 10) + pad('NAME', 28)\n"
+        "      + pad('ST', 4) + pad('TIME', 11) + 'AGENT';\n"
+        "    const row = j => pad(j.id, 10) + pad(j.name, 28) + pad(ST[j.state] || j.state, 4)\n"
+        "      + pad(j.elapsed, 11) + (j.agent || '');\n"
+        "    q.textContent = [head, ...strip.queue.map(row)].join('\\n');\n"
+        "    now.append(q);\n"
+        "  }\n"
         "};\n"
         "refresh();\n"
         "// the strip re-FETCHES every few minutes (new/left/changed runs) and\n"
@@ -1013,10 +1025,22 @@ def service_status(
             # the queue's shape is which jobs exist, their state, partition and
             # attribution (an eval claimed by its marker one tick later must
             # republish); elapsed time drifts every tick and is left out
-            qshape = lambda q: [
-                (j.get("id"), j.get("state"), j.get("partition"), j.get("agent"), j.get("run_id"))
-                for j in (q or [])
-            ]
+            # an absent queue (no snapshot) and an empty one (nothing running)
+            # are different shapes: recovering from a blind tick must publish
+            qshape = lambda q: (
+                None
+                if q is None
+                else [
+                    (
+                        j.get("id"),
+                        j.get("state"),
+                        j.get("partition"),
+                        j.get("agent"),
+                        j.get("run_id"),
+                    )
+                    for j in q
+                ]
+            )
             if (
                 isinstance(existing, dict)
                 and isinstance(existing.get("runs"), list)

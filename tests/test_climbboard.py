@@ -475,6 +475,8 @@ def test_html_carries_the_live_strip() -> None:
     assert "setInterval(refresh, 180000)" in html and "setInterval(render, 30000)" in html
     # a 404 page or malformed body never poisons the strip's render loop
     assert "r.ok ? r.json() : null" in html and "Array.isArray(s.runs)" in html
+    # the page lists the kernel's Slurm jobs when the strip carries them
+    assert "Array.isArray(strip.queue)" in html and "'JOBID'" in html
 
 
 def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_path: Path) -> None:
@@ -1179,3 +1181,8 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
     assert {j["id"]: j["agent"] for j in json.loads(gh.files["climb/status.json"])["queue"]}[
         "790"
     ] == "agent-01"
+    # a blind tick publishes without the key; the next good, empty snapshot must publish
+    assert service_status(tmp_path, gh, "org/repo", 9.0, queue=None) is True
+    assert "queue" not in json.loads(gh.files["climb/status.json"])
+    assert service_status(tmp_path, gh, "org/repo", 10.0, queue=[]) is True
+    assert json.loads(gh.files["climb/status.json"])["queue"] == []
