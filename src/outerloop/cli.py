@@ -18,14 +18,21 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from outerloop import paths
 
-RESIDENT_JOB_NAME = "autoresearch-resident"
+RESIDENT_JOB_NAME = "outerloop-resident"
+# A resident submitted before the rename. Slurm's singleton serializes jobs by
+# NAME, so `start` must refuse while one of these is queued or running (two
+# residents on one root is what the singleton prevents). Dropped in the
+# release after 0.1.
+LEGACY_RESIDENT_JOB_NAME = "autoresearch-resident"
 DEFAULT_RESIDENT_MINUTES = 360  # cpu_short's ceiling on Torch; the loop hands over to itself
-DEFAULT_LOCAL_ROOT = Path.home() / ".autoresearch"
+DEFAULT_LOCAL_ROOT = Path.home() / ".outerloop"
+LEGACY_LOCAL_ROOT_NAME = ".autoresearch"  # pre-rename; honored until the release after 0.1
 ENV_FILE = paths.ENV_FILE  # ~/.config/outerloop/.env, or the pre-rename dir (see paths.py)
 
 # What start itself decides from: mode, placement, root, cadence, walltime.
@@ -223,7 +230,7 @@ def plan_start(
     # Slurm runs from a checkout; the local loop runs the installed package
     # and needs only a directory (the launch lanes and GitHub servicing
     # switch off without OUTERLOOP_HOME, so one is always set)
-    local_root = Path(root_s).expanduser() if root_s else DEFAULT_LOCAL_ROOT
+    local_root = Path(root_s).expanduser() if root_s else default_local_root(environ)
     home = _home(environ, cwd, local=(mode == "local"), root=local_root)
     if mode == "local":
         return StartPlan(
@@ -277,16 +284,30 @@ def plan_start(
     )
 
 
+def default_local_root(environ: Mapping[str, str]) -> Path:
+    """The local-mode state root when none is given: ~/.outerloop, or the
+    pre-rename ~/.autoresearch when only that one exists (state is never moved
+    behind the operator's back). The home comes from `environ` so a caller
+    with no HOME gets the plain default."""
+    home_s = environ.get("HOME", "")
+    if not home_s:
+        return DEFAULT_LOCAL_ROOT
+    home = Path(home_s)
+    new, old = home / DEFAULT_LOCAL_ROOT.name, home / LEGACY_LOCAL_ROOT_NAME
+    return old if (not new.exists() and old.is_dir()) else new
+
+
 def _resident_jobs() -> list[str] | None:
-    """Ids of queued or running resident ticks, lowest first; None when the
-    scheduler could not be asked (a failed lookup must never read as 'none')."""
+    """Ids of queued or running resident ticks under either name, lowest first;
+    None when the scheduler could not be asked (a failed lookup must never
+    read as 'none')."""
     try:
         proc = subprocess.run(
             [
                 "squeue",
                 "-u",
                 os.environ.get("USER", ""),
-                f"--name={RESIDENT_JOB_NAME}",
+                f"--name={RESIDENT_JOB_NAME},{LEGACY_RESIDENT_JOB_NAME}",
                 "-h",
                 "-o",
                 "%i",
@@ -369,7 +390,7 @@ def start(args: argparse.Namespace) -> int:
     if existing:
         print(
             f"a resident tick is already queued or running (job {existing[0]}); nothing "
-            f"submitted. Stop it with `scancel --name {RESIDENT_JOB_NAME}`, or pause it "
+            f"submitted. Stop it with `scancel {existing[0]}`, or pause it "
             f"with `touch {plan.root}/PAUSE`.",
             file=sys.stderr,
         )
@@ -431,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         "~/.config/outerloop/.env, written by `outerloop init`.",
     )
     p.add_argument(
-        "--root", help="state root (shared filesystem on Slurm; default ~/.autoresearch locally)"
+        "--root", help="state root (shared filesystem on Slurm; default ~/.outerloop locally)"
     )
     p.add_argument(
         "--account", help="Slurm account (optional; unset bills your default association)"

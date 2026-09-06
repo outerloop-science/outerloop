@@ -361,7 +361,7 @@ class SubprocessEvaluator:
             )
         except OSError as exc:
             raise EvalError(f"could not create check home: {exc}") from exc
-        cache_dir = Path(tempfile.mkdtemp(prefix="autoresearch-check-cache-"))
+        cache_dir = Path(tempfile.mkdtemp(prefix="outerloop-check-cache-"))
         try:
             self._run(workspace, command, eval_home, cache_dir)
         finally:

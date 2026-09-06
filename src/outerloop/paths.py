@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-CONFIG_DIR_NAMES: tuple[str, ...] = ("outerloop", "autoresearch")  # new first
+# New name first; the pre-rename name is dropped in the release after 0.1.
+CONFIG_DIR_NAMES: tuple[str, ...] = ("outerloop", "autoresearch")
 
 
 def config_dir(home: Path | None = None) -> Path:

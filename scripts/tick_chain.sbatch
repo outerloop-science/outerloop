@@ -29,7 +29,7 @@
 # a live config change (e.g. OUTERLOOP_AUTHOR_BACKEND=codex + its key file)
 # needs no chain restart — just an edit to that file.
 #
-#SBATCH --job-name=autoresearch-tick
+#SBATCH --job-name=outerloop-tick
 #SBATCH --time=15
 #SBATCH --mem=4G
 #SBATCH --cpus-per-task=2
@@ -46,8 +46,10 @@ for _ov in $(env | sed -n 's/^AUTORESEARCH_\([A-Z_][A-Z0-9_]*\)=.*/\1/p'); do
     eval "[ -n \"\${OUTERLOOP_${_ov}+set}\" ] || export OUTERLOOP_${_ov}=\"\${AUTORESEARCH_${_ov}}\""
 done
 CADENCE_MIN="${OUTERLOOP_CADENCE_MIN:-30}"
-JOB_NAME="autoresearch-tick"
-RESIDENT_JOB_NAME="autoresearch-resident"
+JOB_NAME="outerloop-tick"
+RESIDENT_JOB_NAME="outerloop-resident"
+# a resident submitted before the rename; dropped in the release after 0.1
+LEGACY_RESIDENT_JOB_NAME="autoresearch-resident"
 missing=""
 for var in OUTERLOOP_HOME OUTERLOOP_ROOT; do
     eval "val=\${$var:-}"
@@ -77,7 +79,7 @@ fi
 # --- 1. keep two successors queued (singleton serializes same-name jobs) ---
 # A resident tick (design/resident-tick.md) supersedes this chain: while one
 # is queued or running, stop topping up so the per-cadence chain drains.
-if squeue -u "$USER" --name="$RESIDENT_JOB_NAME" -h 2>/dev/null | grep -q '[0-9]'; then
+if squeue -u "$USER" --name="$RESIDENT_JOB_NAME,$LEGACY_RESIDENT_JOB_NAME" -h 2>/dev/null | grep -q '[0-9]'; then
     echo "chain: a resident tick exists; not queuing successors (draining)"
     need=0
     pending=0

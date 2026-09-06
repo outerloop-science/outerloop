@@ -50,6 +50,18 @@ Versions follow [SemVer](https://semver.org).
   dropped in the release after 0.1. The review footer names `outerloop`, and
   `outerloop --version` exists; `start`, `tick` and `init` describe themselves
   and every flag in `--help`.
+- The on-disk and queue names follow the rename: the resident tick job is
+  `outerloop-resident` (the per-cadence chain `outerloop-tick`), the local
+  state root defaults to `~/.outerloop`, the default image path is
+  `~/outerloop-images/agent-py312.sif`. `outerloop start` refuses while a
+  pre-rename `autoresearch-resident` is queued or running, since Slurm's
+  singleton serializes by name; cancel it first. An existing `~/.autoresearch`
+  or `~/autoresearch-images/` is used while the new path does not exist. A
+  chain-mode deployment (manual `tick_chain.sbatch`) must be stopped with
+  `scancel --name autoresearch-tick` before deploying this version. Every
+  honored pre-rename name (`~/.config/autoresearch/`, `.autoresearch.yaml`, the
+  `.autoresearch` channel dir, the old root, image and job names) is dropped in
+  the release after 0.1; the comment marker keeps recognizing old comments.
 
 ### Changed
 

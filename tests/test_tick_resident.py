@@ -126,7 +126,7 @@ def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_c
     assert len(sbatch) == 2
     for line in sbatch:
         assert "--dependency=afterany:42,singleton" in line
-        assert "--time=360" in line and "--job-name=autoresearch-resident" in line
+        assert "--time=360" in line and "--job-name=outerloop-resident" in line
         assert "--export=ALL" in line and "--begin" not in line
     scancel = (shimlog / "scancel").read_text().split()
     assert scancel == ["501", "502"]  # the shim-change resubmit, then the pause
@@ -139,7 +139,8 @@ def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_c
 
 def test_per_cadence_chain_drains_when_a_resident_exists(tmp_path: Path) -> None:
     home, root, bindir, shimlog = _install(tmp_path)
-    # squeue reports a resident job of ours
+    # squeue reports a resident job of ours (a pre-rename one: the drain check
+    # asks for both names)
     (bindir / "squeue").write_text(
         '#!/bin/sh\ncase "$*" in *autoresearch-resident*) echo "777";; esac\nexit 0\n'
     )

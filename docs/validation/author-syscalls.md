@@ -36,17 +36,17 @@ the brief only when armed).
 
 The lifecycle to confirm, in order:
 
-1. **Tool installed:** `<run_dir>/ws/.autoresearch/syscall` exists, and
-   `.autoresearch/budget.json` shows `depth_k` / `sleep_k`.
+1. **Tool installed:** `<run_dir>/ws/.outerloop/syscall` exists, and
+   `.outerloop/budget.json` shows `depth_k` / `sleep_k`.
 2. **Author sleeps:** the session ends having written
-   `.autoresearch/syscall.json` (`type: "sleep"`, one+ launches).
+   `.outerloop/syscall.json` (`type: "sleep"`, one+ launches).
 3. **Park:** the run record is `waiting`, `stage.phase == "author-sleep"`, with
    `stage.afterany` naming the submitted launch job(s), `syscall_launches`, and
    `launches_used` / `sleeps_used` counts.
 4. **Launch job runs:** `<run_dir>/eval-launch-<name>/` fills with `exit-code`,
    `stdout`, `stderr`, and `artifacts/` (the declared files, copied out).
 5. **Wake:** the tick wakes the parked run; `gather_results` delivers artifacts
-   into `<ws>/.autoresearch/results/<name>/`, and the SAME session resumes
+   into `<ws>/.outerloop/results/<name>/`, and the SAME session resumes
    (`resume_session_id` unchanged) with the results data-fenced + the author's
    note echoed back.
 6. **Terminate:** the woken author either sleeps again (a fresh author-sleep

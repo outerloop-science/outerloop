@@ -234,7 +234,7 @@ first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 still read). A Codex author always runs contained, so it also needs the image
 (`OUTERLOOP_IMAGE`) and a Codex model in `OUTERLOOP_AUTHOR_MODEL`. On a
 cluster, evals run inside the Apptainer image at `OUTERLOOP_IMAGE` (default
-`~/autoresearch-images/agent-py312.sif`) in a jail that binds only the
+`~/outerloop-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
 GPU jobs are requested per node (`--gpus-per-node`).
 

@@ -40,7 +40,7 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    in the same PR — never two ways to say the same thing.
 4. **Verbs are RoleSpec-gated.** The RoleSpec already caps each role's
    tools/scope/key; the CLI's live verbs are part of that cap. It is ONE tool
-   (`.autoresearch/syscall`) whose verbs the brief exposes per role — an author
+   (`.outerloop/syscall`) whose verbs the brief exposes per role — an author
    uses `launch`/`sleep`, a judge uses `finding`/`conclude` — and a syscall is
    TYPED, so the kernel dispatches by type (a sleep parks + wakes; a verdict is
    read back). Every role runs the tool the same way: a shell in the jail. Roles
@@ -49,7 +49,7 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
 
 ## End-state
 
-One `.autoresearch/syscall` tool, its live verbs gated per role by RoleSpec:
+One `.outerloop/syscall` tool, its live verbs gated per role by RoleSpec:
 
 | Role | Verbs | Win | Installed where |
 | --- | --- | --- | --- |
@@ -70,7 +70,7 @@ lands with tests, and deletes what it replaces.
 ### Phase 0 — finish Phase A (in flight, prerequisite)
 
 The wake for `author-sleep` parks: gather each launch's results from the run
-dir, deliver declared artifacts into `.autoresearch/results/<name>/`, resume
+dir, deliver declared artifacts into `.outerloop/results/<name>/`, resume
 the **same session** through the climb's resume-entry (#129) with the results
 data-fenced, update the budget file. (The transitional `AUTHOR_SLEEP_WAKE_READY`
 constant and env-flag arming have since retired: enablement is contract-driven.) Plus
@@ -95,7 +95,7 @@ findings drafts the PR for a human. A submit costs the sleep it rides on.
 
 A verdict is not a second tool — it is a syscall TYPE on the one surface.
 Reviewer/verifier/panel stop emitting one schema-constrained final message.
-Instead: `python .autoresearch/syscall finding --file --line --confidence
+Instead: `python .outerloop/syscall finding --file --line --confidence
 --summary --detail [--blocking] [--kind] [--category]` per finding, then
 `... conclude --notes ...` to commit — each call validated on the spot, the
 verdict assembled kernel-side (`type: "verdict"`), well-formed by construction.

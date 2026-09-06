@@ -111,6 +111,39 @@ def plan(tmp_path: Path, **kw: Any) -> StartPlan:
     return plan_start(**args)
 
 
+def test_default_local_root_honors_a_pre_rename_state_dir(tmp_path: Path) -> None:
+    """~/.outerloop is the default; an existing ~/.autoresearch is used only while
+    no ~/.outerloop exists (state is never moved); no HOME means the plain
+    default."""
+    from outerloop.cli import default_local_root
+
+    env = {"HOME": str(tmp_path)}
+    assert default_local_root(env) == tmp_path / ".outerloop"
+    (tmp_path / ".autoresearch").mkdir()
+    assert default_local_root(env) == tmp_path / ".autoresearch"
+    (tmp_path / ".outerloop").mkdir()
+    assert default_local_root(env) == tmp_path / ".outerloop"
+    assert default_local_root({}) == DEFAULT_LOCAL_ROOT
+
+
+def test_resident_lookup_asks_for_both_names(monkeypatch: Any) -> None:
+    """A resident submitted before the rename must still block `start`: the
+    singleton serializes by name, so two names would mean two residents."""
+    import subprocess
+
+    from outerloop import cli as cli_mod
+
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="900\n777\n", stderr="")
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    assert cli_mod._resident_jobs() == ["777", "900"]
+    assert "--name=outerloop-resident,autoresearch-resident" in seen[0]
+
+
 def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
     p = plan(tmp_path, sbatch_on_path=False)
     assert p.mode == "local"
