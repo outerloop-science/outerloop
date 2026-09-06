@@ -34,6 +34,23 @@ def test_env_file_reads_either_spelling_canonically(tmp_path: Path) -> None:
     assert got == {"OUTERLOOP_ROOT": "/scratch/x", "OUTERLOOP_ACCOUNT": "acct"}
 
 
+def test_env_file_prefers_the_new_spelling_whatever_the_order(tmp_path: Path) -> None:
+    """A file edited across the rename can hold both spellings; the OUTERLOOP_
+    line wins even when the legacy line comes later (terra, #302). Among
+    lines of one spelling the last still wins."""
+    env = tmp_path / ".env"
+    env.write_text(
+        "OUTERLOOP_ROOT=/new\nAUTORESEARCH_ROOT=/old\n"
+        "AUTORESEARCH_ACCOUNT=old\nOUTERLOOP_ACCOUNT=new1\nOUTERLOOP_ACCOUNT=new2\n"
+        "AUTORESEARCH_PARTITION=p1\nAUTORESEARCH_PARTITION=p2\n"
+    )
+    env.chmod(0o600)
+    got = env_file_values(env, START_KEYS)
+    assert got["OUTERLOOP_ROOT"] == "/new"
+    assert got["OUTERLOOP_ACCOUNT"] == "new2"
+    assert got["OUTERLOOP_PARTITION"] == "p2"
+
+
 def _bridge_block() -> str:
     text = (SCRIPTS / "tick_chain.sbatch").read_text()
     m = re.search(r"^for _ov in .*?^done\n", text, re.S | re.M)
@@ -57,6 +74,10 @@ def test_shell_bridge_exports_new_twin_and_respects_an_explicit_one() -> None:
     assert run({}) == "unset"
 
 
-def test_deploy_allowlist_takes_either_spelling() -> None:
+def test_deploy_allowlist_takes_either_spelling_new_first() -> None:
     sh = (SCRIPTS / "tick_deploy.sh").read_text()
-    assert 'grep -E "^(${_k}|AUTORESEARCH_${_k#OUTERLOOP_})="' in sh
+    new = sh.index('_line=$(grep -E "^${_k}=" "$ENV_FILE"')
+    old = sh.index(
+        '[ -n "$_line" ] || _line=$(grep -E "^AUTORESEARCH_${_k#OUTERLOOP_}=" "$ENV_FILE"'
+    )
+    assert new < old  # the legacy grep only fills an absent canonical key

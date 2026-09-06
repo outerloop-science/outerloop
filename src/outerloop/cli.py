@@ -89,20 +89,26 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
     except OSError as e:
         raise StartError(f"cannot read {path}: {e}") from None
     out: dict[str, str] = {}
+    canonical: set[str] = set()  # keys set by their OUTERLOOP_ spelling
     for raw in text.splitlines():
         line = raw.rstrip("\r").strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key.startswith("AUTORESEARCH_"):  # the pre-rename name, accepted for one release
+        legacy = key.startswith("AUTORESEARCH_")  # the pre-rename name, one more release
+        if legacy:
             key = "OUTERLOOP_" + key[len("AUTORESEARCH_") :]
         if key not in keys:
             continue
+        if legacy and key in canonical:
+            continue  # the OUTERLOOP_ spelling wins whatever the file order
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
         out[key] = value
+        if not legacy:
+            canonical.add(key)
     return out
 
 

@@ -106,8 +106,10 @@ if [ -r "$ENV_FILE" ]; then
                   OUTERLOOP_PANEL_CODEX_KEY_FILE \
                   OUTERLOOP_PANEL_HERMES_KEY_FILE \
                   REVIEW_HERMES_REPO REVIEW_HERMES_PROVIDER; do
-            # either spelling: the canonical key or its pre-rename AUTORESEARCH_ twin
-            _line=$(grep -E "^(${_k}|AUTORESEARCH_${_k#OUTERLOOP_})=" "$ENV_FILE" 2>/dev/null | tail -1)
+            # either spelling, the canonical key first: a pre-rename AUTORESEARCH_
+            # twin counts only when the OUTERLOOP_ key is absent, whatever the order
+            _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
+            [ -n "$_line" ] || _line=$(grep -E "^AUTORESEARCH_${_k#OUTERLOOP_}=" "$ENV_FILE" 2>/dev/null | tail -1)
             # PRESENCE-based, not value-based: a key set to "" in .env is a
             # live OFF-SWITCH (OUTERLOOP_PANEL="" disables the panel,
             # VERTEX_PROJECT="" reverts to API-key billing) and must override
