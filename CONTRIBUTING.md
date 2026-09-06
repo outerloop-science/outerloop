@@ -1,82 +1,89 @@
 # Contributing
 
+Outerloop is developed in the open by the [Agentic Learning AI Lab](https://agenticlearning.ai)
+at NYU, and its own agents are regular contributors to it. Contributions from
+people are welcome too: bug reports, fixes, documentation, new compute
+backends, and benchmark contracts for your own repos.
+
+## Before you start
+
+- Look through the open issues. For anything larger than a small fix, open an
+  issue first so we can agree on the shape before you write code.
+- Security problems go to the contact in [SECURITY.md](SECURITY.md), not to a
+  public issue.
+
 ## Setup
 
 ```bash
 uv sync
 uv run pre-commit install
+uv run pytest
 ```
 
-## Branching and merging
+## Making a change
 
-- `main` is protected: all changes land via PR with green CI.
-- Branch off `main`: `feat/<topic>`, `fix/<topic>`. Agent-authored branches use
-  `feat/auto/<slug>`.
-- **Merge commits only** — squash and rebase merges are disabled at the repo level.
-- Keep branches fresh with `git merge main`, never rebase; never force-push a
-  shared branch.
+1. Branch from `main`: `fix/<topic>` or `feat/<topic>`.
+2. Keep the change focused. Add or update tests, and a line under
+   `[Unreleased]` in `CHANGELOG.md` for anything a user would notice.
+3. Run the same gate CI runs before you push:
 
-## Pull requests
+   ```bash
+   uv run pre-commit run --all-files   # lint, formatting, secret scan
+   uv lock --check
+   uv run mypy
+   uv run pytest && uv run pytest -m serial
+   ```
 
-- The `ci` check must pass (lint, types, tests, lock, and secret scan run
-  inside it as one job).
-- Solo phase: no required approvals yet; PI review by convention. Raise to 1
-  code-owner approval when a second owner joins
-  (`scripts/setup_branch_protection.sh <repo> 1`).
-- Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
-- **Review until quiet** (PI rule 2026-08-07): development PRs (human- or
-  assistant-authored) iterate adversarial review rounds. Mechanics: the
-  advisory workflow runs on open; to re-run after a fix commit, remove
-  then re-add the `autoresearch:review` label once the push has settled
-  (it fires on the labeled event; removal alone runs nothing). The
-  authorizing round must be the MOST RECENT one and run against the HEAD
-  commit — a quiet verdict on an older diff authorizes nothing. Findings
-  rejected on rationale get a reply on the PR thread, never silence.
-  Termination is judged, not literal — an eager reviewer can always find
-  one more wording nit, and prose never reaches literal quiescence:
-  - code PRs: iterate until a round yields no new medium-or-higher or
-    behavior-affecting findings; wording nits in an otherwise quiet round
-    are fixed or answered without another round;
-  - docs/process PRs: ONE round, its nits batched into a single fix or
-    reply;
-  - hard cap of 4 rounds: still finding mediums by then means the change
-    itself is the problem — stop and escalate to the PI, don't cycle.
-  The habit exists because rounds have repeatedly found real defects in
-  earlier rounds' own fixes. Bot improvement PRs sit outside this gate:
-  the advisory reviewer skips them by design, and their gate is the
-  TARGET repo's required human review — the publish step arms auto-merge
-  only when the target's branch protection requires a review (the arming
-  guard refuses otherwise, in code). The "no required approvals"
-  solo-phase note above is about THIS repo's protection; bot PRs land on
-  target repos, never here.
+4. Open a pull request against `main`. Say what changed, why, and how you
+   verified it.
 
-## Style
+## What happens to your pull request
 
-- `ruff` for lint + formatting (line 100); type hints encouraged; `mypy` must pass.
-- Imports are absolute (`from autoresearch...`); code works from an installed wheel.
+- CI must pass.
+- One of our agents reviews it and posts its findings as a review, usually
+  within the hour; no time is guaranteed. It never approves or blocks; a
+  maintainer decides. Fix what is right and reply to what is not; findings
+  answered with a reason are fine. After you push fixes, a maintainer removes
+  and re-adds the `outerloop:review` label to run another round.
+- The agent review runs only for branches in this repository. A pull request
+  from a fork gets CI but no agent review; a maintainer can push your branch
+  here to run one.
+- A maintainer merges with a merge commit. We do not squash or rebase, so the
+  history of how a change came to be stays intact. Keep your branch current
+  with `git merge main`, and never force-push a branch someone else has seen.
+
+## Conventions
+
+- Python 3.12, absolute imports (`from outerloop ...`), and code that works
+  from the installed wheel; no paths relative to a checkout.
+- `ruff` for lint and formatting (line length 100); `mypy` clean.
+- Dependencies go in the `pyproject.toml` group that owns them, then
+  `uv lock`; CI checks the lock.
+- Docs are plain prose. Short sentences, no metaphors, no internal jargon.
 
 ## Tests
 
 | Tier | Marker | Runs |
 | --- | --- | --- |
-| unit | *(none)* | CI, every PR |
-| slow | `slow` | nightly / manual |
-| llm | `llm` | manual only — paid APIs |
-| slurm | `slurm` | manual only — needs a cluster |
-| serial | `serial` | CI, as a second step: `pytest -m serial` (never distributed) |
+| unit | *(none)* | CI, every PR, on all cores |
+| serial | `serial` | CI, second step: `pytest -m serial` (inspects the process table) |
+| slow | `slow` | nightly or manual |
+| llm | `llm` | manual only, paid APIs |
+| slurm | `slurm` | manual only, needs a cluster |
 
-`pytest` runs the unit tier on all cores (pytest-xdist). While editing,
-`pytest --testmon` runs only the tests affected by what you changed; `pytest -n0`
-runs everything serially. A test that inspects the process table (the git-lock
-sweep) is marked `serial`: it is skipped while workers are running, and
-`pytest -m serial` switches workers off so the tier always runs alone.
+While editing, `uv run pytest --testmon` runs only the tests affected by your
+change; `uv run pytest -n0` runs everything serially.
 
-## Dependencies
+## Pull requests from the agents
 
-Deps go in with the code that needs them (see the comment in `pyproject.toml`);
-regenerate `uv.lock` (`uv lock`) — the lock step of `ci` enforces it.
+Pull requests authored by `outerloop-science[bot]` are the system improving
+the repositories it works on. They appear on those target repositories and are
+skipped by the advisory reviewer by design. What gates them is each target's
+own rules: its required human review, or, where a target's contract allows
+automatic merging, the measurement gate and review panel that ran before the
+PR opened. This document is about contributing to Outerloop, this repository.
 
-## Confidentiality
+## License
 
-See SECURITY.md. Transcripts and run artifacts contain target-repo code and are
-never committed.
+By contributing you agree that your contributions are licensed under the
+[Apache License 2.0](LICENSE), the same as the project.

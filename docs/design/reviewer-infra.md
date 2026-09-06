@@ -334,3 +334,27 @@ the same infrastructure the fork-PR phase needs.
 Re-test on version bumps: whether Claude's `Read` opens `/proc`, a hermes
 read-only toolset, a codex sandbox that hides `/proc`, or a runner that grants
 PID namespaces would each rewrite this section.
+
+## Maintainers: how many review rounds
+
+The advisory reviewer runs on open; a maintainer re-runs it after a fix by
+removing and re-adding the `outerloop:review` label once the push has
+settled (the workflow fires on the labeled event). Only the most recent round,
+run against the head commit, counts; a quiet verdict on an older diff
+authorizes nothing. Findings rejected on rationale get a reply on the thread.
+
+Termination is judged, not literal, because an eager reviewer can always find
+one more wording nit:
+
+- code PRs iterate until a round yields no new medium-or-higher or
+  behavior-affecting finding; wording nits in an otherwise quiet round are
+  fixed or answered without another round;
+- docs and process PRs get one round, its nits batched into one fix;
+- hard cap of four rounds: still finding mediums by then means the change is
+  the problem; stop and rethink rather than cycle.
+
+The habit exists because later rounds have repeatedly found real defects in
+earlier rounds' own fixes. Bot-authored improvement PRs sit outside this gate:
+the reviewer skips them by design, and their gate is the target repo's
+required human review (the publish step arms auto-merge only when the target's
+branch protection requires one).
