@@ -59,10 +59,12 @@ def _bridge_block() -> str:
 
 
 def test_shell_bridge_exports_new_twin_and_respects_an_explicit_one() -> None:
+    """An explicitly EMPTY new twin is an off-switch (OUTERLOOP_PANEL= disables
+    the panel) and must survive a non-empty legacy value (terra, #302)."""
     block = _bridge_block()
     run = lambda env: (
         subprocess.run(
-            ["bash", "-c", block + '\nprintf "%s" "${OUTERLOOP_ZZ_TEST:-unset}"'],
+            ["bash", "-c", block + '\nprintf "%s" "${OUTERLOOP_ZZ_TEST-unset}"'],
             env={**{"PATH": os.environ["PATH"]}, **env},
             capture_output=True,
             text=True,
@@ -71,6 +73,7 @@ def test_shell_bridge_exports_new_twin_and_respects_an_explicit_one() -> None:
     )
     assert run({"AUTORESEARCH_ZZ_TEST": "from-legacy"}) == "from-legacy"
     assert run({"AUTORESEARCH_ZZ_TEST": "old", "OUTERLOOP_ZZ_TEST": "keep"}) == "keep"
+    assert run({"AUTORESEARCH_ZZ_TEST": "verify", "OUTERLOOP_ZZ_TEST": ""}) == ""
     assert run({}) == "unset"
 
 
