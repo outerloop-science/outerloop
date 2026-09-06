@@ -24,6 +24,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The board's queue is a card in the live strip, not a preformatted dump: a
+  full-width table with running jobs first, state pills, elapsed time,
+  partition (first of several, the rest counted, all on hover), and the
+  owning agent in its color; long job names are cut with an ellipsis and
+  shown whole on hover.
 - The Claude author's key follows the same rule as Codex's: the file is
   `~/.config/outerloop/claude_key` and the setting `OUTERLOOP_CLAUDE_KEY_FILE`.
   The pre-rename `harness_key` file and `*_HARNESS_KEY_FILE` setting are still

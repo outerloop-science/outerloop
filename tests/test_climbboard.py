@@ -477,6 +477,7 @@ def test_html_carries_the_live_strip() -> None:
     assert "r.ok ? r.json() : null" in html and "Array.isArray(s.runs)" in html
     # the page lists the kernel's Slurm jobs when the strip carries them
     assert "Array.isArray(strip.queue)" in html and "'JOBID'" in html
+    assert "'run queue'" in html and "createTHead" in html  # a card with a table, not a <pre>
 
 
 def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_path: Path) -> None:
