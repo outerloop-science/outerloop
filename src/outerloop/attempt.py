@@ -3144,9 +3144,10 @@ def main() -> int:
     parser.add_argument("--base-branch", default="main")
     # All three default from the chain env the tick sets on the climb job, so
     # a contained run with AUTORESEARCH_{IMAGE,ACCOUNT,PARTITION} set selects
-    # dispatched measurement without extra flags. The image also containers the
-    # session + inline eval; absent any of the three, measurement stays inline
-    # regardless of the benchmark's eval hint.
+    # dispatched measurement without extra flags. Dispatched measurement needs
+    # the image and the account; an empty partition lets Slurm choose. The
+    # image also contains the session + inline eval; without it or the
+    # account, measurement stays inline regardless of the benchmark's eval hint.
     parser.add_argument(
         "--image",
         default=os.environ.get("AUTORESEARCH_IMAGE", ""),

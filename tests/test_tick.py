@@ -3448,6 +3448,78 @@ def test_local_mode_waives_placement_at_the_attempt_gates(
     assert "needs --account" not in capsys.readouterr().err
 
 
+def test_fresh_climb_dispatches_with_an_account_and_no_partition(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The fresh climb's dispatch gate needs the account and the image, not
+    the partition (#300): with --account and no --partition the measurer is
+    dispatched (Slurm picks the partition); without an account off local mode
+    the climb measures inline (dispatch=None). main() is halted right past
+    the gate with a BaseException, which the run's `except Exception`
+    containment does not swallow."""
+    import sys
+
+    import pytest
+
+    import outerloop.attempt as attempt_mod
+
+    class _Stop(BaseException):
+        pass
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    for name in ("pat", "key"):
+        f = tmp_path / name
+        f.write_text("t")
+        f.chmod(0o600)
+    argv = [
+        "attempt",
+        "--target",
+        "org/repo",
+        "--benchmark",
+        "b",
+        "--run-root",
+        str(tmp_path),
+        "--image",
+        str(image),
+        "--pat-file",
+        str(tmp_path / "pat"),
+        "--key-file",
+        str(tmp_path / "key"),
+        "--min-free-gb",
+        "0",
+    ]
+    for name in ("AUTORESEARCH_COMPUTE", "AUTORESEARCH_ACCOUNT", "AUTORESEARCH_PARTITION"):
+        monkeypatch.delenv(name, raising=False)
+    seen: dict[str, Any] = {}
+
+    def fake_dispatch_settings(args: Any) -> Any:
+        seen["dispatch_args"] = (args.account, args.partition)
+        raise _Stop
+
+    def fake_live_attempt(**kwargs: Any) -> Any:
+        seen["live_dispatch"] = kwargs["dispatch"]
+        raise _Stop
+
+    monkeypatch.setattr(attempt_mod, "_dispatch_settings", fake_dispatch_settings)
+    monkeypatch.setattr(attempt_mod, "live_attempt", fake_live_attempt)
+    monkeypatch.setattr(attempt_mod, "build_harness", lambda *a, **k: None)
+
+    # account, no partition: the gate passes and the settings carry the empty
+    # partition through (JobSpec then omits --partition, Slurm chooses)
+    monkeypatch.setattr(sys, "argv", [*argv, "--account", "acct"])
+    with pytest.raises(_Stop):
+        attempt_mod.main()
+    assert seen.pop("dispatch_args") == ("acct", "")
+    assert "live_dispatch" not in seen
+
+    # no account on Slurm: measured inline
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(_Stop):
+        attempt_mod.main()
+    assert seen == {"live_dispatch": None}
+
+
 def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:
     """LocalCompute's job-env scrub passes AUTORESEARCH_*/REVIEW_HERMES_*
     through as a prefix rule — a locally submitted wake must arrive still in
