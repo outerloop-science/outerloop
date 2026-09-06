@@ -150,16 +150,19 @@ def _check_app_access(provider: Any, target: str) -> str:
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     try:
         token = provider.token()
+        # an installation token sees a repository only when the installation
+        # covers it, so one direct read answers "is it installed there"
+        # without paging through the installation's repository list
         req = urllib.request.Request(
-            f"{API}/installation/repositories",
-            headers={**headers, "Authorization": f"Bearer {token}"},
+            f"{API}/repos/{target}", headers={**headers, "Authorization": f"Bearer {token}"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            repos = json.loads(resp.read()).get("repositories") or []
-        names = {str(r.get("full_name", "")).lower() for r in repos}
-        if target.lower() not in names:
-            listed = ", ".join(sorted(names)) or "no repositories"
-            return f"the App is installed on {listed}, not on {target}; install it there"
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                pass
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return f"the App is not installed on {target}; install it there"
+            raise
         jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
         req = urllib.request.Request(
             f"{API}/app/installations/{provider.installation_id}",

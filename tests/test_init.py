@@ -421,6 +421,7 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
     repository list and its granted permissions instead."""
     import io
     import json as _json
+    import urllib.error
 
     class Provider:
         app_id = 1
@@ -433,7 +434,7 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
             return "tok"
 
     answers = {
-        "installation/repositories": {"repositories": [{"full_name": "o/r"}]},
+        "repos/o/r": {"full_name": "o/r"},
         "app/installations/2": {"permissions": {"contents": "write", "pull_requests": "write"}},
     }
 
@@ -447,14 +448,16 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
     def fake_urlopen(req, timeout=0):
         for suffix, body in answers.items():
             if req.full_url.endswith(suffix):
+                if body is None:  # the installation does not cover it: GitHub 404s
+                    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
                 return Resp(_json.dumps(body).encode())
         raise AssertionError(req.full_url)
 
     monkeypatch.setattr(init.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
     assert init._check_app_access(Provider(), "o/r") == ""
-    answers["installation/repositories"] = {"repositories": [{"full_name": "o/other"}]}
-    assert "not on o/r" in init._check_app_access(Provider(), "o/r")
-    answers["installation/repositories"] = {"repositories": [{"full_name": "o/r"}]}
+    answers["repos/o/r"] = None
+    assert "not installed on o/r" in init._check_app_access(Provider(), "o/r")
+    answers["repos/o/r"] = {"full_name": "o/r"}
     answers["app/installations/2"] = {"permissions": {"contents": "read", "pull_requests": "write"}}
     assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")
