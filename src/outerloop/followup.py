@@ -958,6 +958,7 @@ def _respond(
                         changed=changed,
                         conflict_head=conflict_head if conflict_wake else "",
                         base_synced=base_synced,
+                        pr_head=str((pr.get("head") or {}).get("sha", "")),
                         panel_wake=panel_wake,
                         now=now,
                         secrets=secrets,
@@ -1593,6 +1594,7 @@ def _park_remeasure(
     changed: list[str],
     conflict_head: str,
     base_synced: bool,
+    pr_head: str,
     panel_wake: bool,
     now: float,
     secrets: tuple[str, ...],
@@ -1606,6 +1608,11 @@ def _park_remeasure(
         "candidate_sha": snap.commit,
         "candidate_ref": snap.ref,
         "parent": ws.git("rev-parse", "HEAD").strip(),
+        # the PR's head on GitHub at park. After a base sync `parent` is the
+        # session's local merge, which GitHub never saw: the resume compares
+        # the live head against THIS, not against parent (speedrun agent-03,
+        # 2026-09-06: every base-synced re-measure was abandoned as "moved")
+        "pr_head": pr_head,
         "job_ids": list(pend.job_ids),
         "afterany": pend.afterany(),
         "seed": run_seed,
@@ -1729,7 +1736,13 @@ def _resume_measure(
             ws.git("clean", "-fdq")
         drop_snapshot(ws, snapshot)
         github.comment(record.target, number, f"{REPLY_MARKER}\n{note}")
-        save_record(run_root, replace(load_record(run_root, run_id), followup_stage={}), now)
+        # the thread was told and invited to ask again: that next ask needs a
+        # follow-up, so the landed measure counts as progress for the cap
+        save_record(
+            run_root,
+            replace(load_record(run_root, run_id), followup_stage={}, wake_attempts=0),
+            now,
+        )
         return FollowupOutcome(run_id, "replied", "dispatched re-measure abandoned")
 
     try:
@@ -1764,12 +1777,16 @@ def _resume_measure(
             )
         return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
 
-    # the sealed commit is parented on the head the PR had at park: a push
-    # since (a maintainer's) makes it unpushable AND measured on a tree that
-    # is no longer the PR's — abandon honestly rather than force or rebuild
-    if head_now and parent and head_now != parent:
+    # the sealed commit descends from the head the PR had at park (directly,
+    # or through the session's local base-sync merge): a push since (a
+    # maintainer's) makes it unpushable AND measured on a tree that is no
+    # longer the PR's — abandon honestly rather than force or rebuild. Stages
+    # parked before `pr_head` was recorded fall back to conflict_head, then
+    # parent.
+    parked_head = str(stage.get("pr_head") or stage.get("conflict_head") or parent)
+    if head_now and parked_head and head_now != parked_head:
         return _abandon(
-            f"_(The PR's head moved while the re-measure ran (`{parent[:12]}` → "
+            f"_(The PR's head moved while the re-measure ran (`{parked_head[:12]}` → "
             f"`{head_now[:12]}`), so the measured change no longer applies to this "
             "branch and was not pushed. Ask again and it will be redone on the new head.)_"
         )

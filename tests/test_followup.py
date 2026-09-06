@@ -2694,6 +2694,8 @@ def test_a_moved_pr_head_abandons_the_parked_change_honestly(review_run) -> None
         secrets=("sk-x",),
         dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
     )
+    # the syncs before this park spent the wake cap
+    save_record(root, replace(load_record(root, "tsp-r1"), wake_attempts=3), NOW)
     # a maintainer pushed to the PR while the GPU job ran
     github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": "e" * 40}})
     out = respond_once(
@@ -2712,7 +2714,65 @@ def test_a_moved_pr_head_abandons_the_parked_change_honestly(review_run) -> None
     assert not _origin_has_branch(bare)
     rec = load_record(root, "tsp-r1")
     assert rec.followup_stage == {}
+    assert rec.wake_attempts == 0  # "ask again" needs a follow-up: the cap is released
     assert _git(run_dir(root, "tsp-r1") / "ws", "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_a_base_synced_park_is_finished_when_the_pr_head_did_not_move(review_run) -> None:
+    """A behind wake merges the moved base locally and seals a change on top;
+    the stage's `parent` is that local merge, which GitHub never saw. The
+    resume must judge "did the head move" against the head the PR had at
+    park, not against parent — otherwise every base-synced re-measure is
+    abandoned as moved (speedrun agent-03, 2026-09-06: a landed improvement
+    thrown away with the PR head unchanged for three days)."""
+    root, bare = review_run
+    _gpu_run(root)
+    # main moves cleanly: an out-of-scope doc lands upstream
+    seed2 = root.parent / "seed2f"
+    _git(root.parent, "clone", "-q", str(bare), str(seed2))
+    (seed2 / "docs" / "news.md").write_text("from main\n")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(seed2, "push", "-q", "origin", "main")
+    pr_head = _ws_head(root)
+    ws = run_dir(root, "tsp-r1") / "ws"
+    _git(ws, "fetch", "-q", "origin", "main")
+    github = AutoGitHub(pr=_behind_pr(head=pr_head), comments=[member(901, "tweak")])
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(merge_base=True, edits={"src/pilot/solvers/tsp.py": "v2 after sync\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    stage = load_record(root, "tsp-r1").followup_stage
+    assert stage["base_synced"] and stage["pr_head"] == pr_head
+    assert stage["parent"] != pr_head  # the local merge: GitHub never had this commit
+
+    # the measure lands; GitHub still reports the head the PR had at park
+    github2 = AutoGitHub(pr=_behind_pr(head=pr_head))
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "applied" in out.note
+    assert "Re-measured after this change" in github2.posted[0]
+    head = _origin_head(bare)
+    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2 after sync\n"
+    assert _git(ws, "show", f"{head}:docs/news.md") == "from main\n"  # the sync rode along
+    rec = load_record(root, "tsp-r1")
+    assert rec.followup_stage == {} and rec.wake_attempts == 0
 
 
 def test_a_resume_always_disarms_before_pushing(review_run) -> None:

@@ -84,6 +84,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A base-synced re-measurement is finished instead of abandoned. The parked
+  stage recorded the session's local merge of the moved base as its parent,
+  a commit GitHub never saw, so the resume judged the PR head as "moved" on
+  every base-synced park and threw the landed result away. The stage now
+  records the PR head at park and the resume compares against that. An
+  abandon also releases the wake-attempt cap, so the "ask again" it invites
+  can be served.
 - A follow-up re-measurement that has landed is now finished even when the
   run has spent its wake-attempt cap. The sessions that sync a stale PR onto
   the moved base and dispatch the measurement each bill an attempt, so a
