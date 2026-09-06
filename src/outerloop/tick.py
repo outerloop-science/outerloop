@@ -682,8 +682,14 @@ def service_in_review(
                 except SlurmQueryError:
                     continue  # unknown — do not stack another job
             # the wake-attempt counter caps follow-up retries too: a responder
-            # that cannot advance its cursors must not burn a session per tick
-            if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
+            # that cannot advance its cursors must not burn a session per tick.
+            # A LANDED re-measure is exempt: the sessions that synced the base
+            # and dispatched it were progress, and the follow-up that pushes
+            # the sealed number is bounded by that GPU job, not by ticks —
+            # capping it here parks the result forever (speedrun agent-03,
+            # 2026-09-04: three syncs spent the cap, the measure completed,
+            # and the run idled for two days on this branch)
+            if record.wake_attempts >= MAX_WAKE_ATTEMPTS and not measure_ready:
                 log.warning(
                     "run %s: %d follow-up attempts without progress; not resubmitting",
                     record.run_id,
