@@ -11,7 +11,8 @@
 # `sbatch --export=...` when starting the chain; successors inherit):
 #   AUTORESEARCH_HOME  checkout to run from        (required)
 #   AUTORESEARCH_ROOT  state root on the shared FS (required)
-#   AUTORESEARCH_ACCOUNT / AUTORESEARCH_PARTITION  slurm placement (required)
+#   AUTORESEARCH_ACCOUNT / AUTORESEARCH_PARTITION  slurm placement (optional;
+#                             unset uses Slurm's default association/partition)
 #   AUTORESEARCH_CADENCE_MIN  tick cadence, default 30
 #   AUTORESEARCH_PAT_FILE     bot PAT for the deploy pull (optional; no file
 #                             means run whatever code is already deployed)
