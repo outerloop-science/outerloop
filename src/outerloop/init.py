@@ -49,7 +49,8 @@ class InitAnswers:
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
     author_key_file: str = ""  # the author's model key file, when known
-    image: str = ""  # the agent image (OUTERLOOP_IMAGE); "" = uncontained
+    image: str = ""  # the agent image (OUTERLOOP_IMAGE)
+    uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
 
 
 def render_env(
@@ -68,6 +69,10 @@ def render_env(
             lines.append(f"OUTERLOOP_PARTITION={a.partition}")
     if a.image:
         lines.append(f"OUTERLOOP_IMAGE={a.image}")
+    elif a.uncontained:
+        # the empty value is the off-switch: without it the tick would still
+        # pick up an image already at the default path
+        lines.append("OUTERLOOP_IMAGE=")
     lines.append(f"OUTERLOOP_TARGET={a.target}")
     if app_file:
         lines.append(f"OUTERLOOP_GITHUB_APP_FILE={app_file}")
@@ -259,6 +264,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         author_backend=backend,
         author_model=model,
         image=image,
+        uncontained=bool(args.no_image) and not image,
     )
     return answers, (args.pat_file or "")
 
@@ -393,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
         "--no-image",
         dest="no_image",
         action="store_true",
-        help="do not download the image; runs stay uncontained",
+        help="no image at all: runs stay uncontained even if one is already on disk",
     )
     parser.add_argument(
         "--author-key-file",

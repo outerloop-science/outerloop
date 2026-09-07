@@ -250,7 +250,8 @@ Apptainer and the image: the published one lives at
 [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image),
 built from `containers/agent-py312.def`. On Linux with Apptainer installed,
 `outerloop init` downloads it to `~/outerloop-images/` and records it; `--image`
-points at your own, `--no-image` keeps runs uncontained.
+points at your own, `--no-image` keeps runs uncontained even when an image is already on disk (it
+writes `OUTERLOOP_IMAGE=`, the off-switch).
 
 ---
 

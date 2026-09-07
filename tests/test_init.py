@@ -155,6 +155,9 @@ def test_render_env_records_the_image_when_set() -> None:
     a = InitAnswers(compute="local", target="o/r", image="/img/agent-py312.sif")
     assert "OUTERLOOP_IMAGE=/img/agent-py312.sif" in render_env(a, "/p")
     assert "OUTERLOOP_IMAGE" not in render_env(InitAnswers(compute="local", target="o/r"), "/p")
+    # --no-image writes the off-switch, so an image already on disk is not picked up
+    off = InitAnswers(compute="local", target="o/r", uncontained=True)
+    assert "\nOUTERLOOP_IMAGE=\n" in render_env(off, "/p")
 
 
 def test_main_yes_records_a_given_image_and_no_image_skips(tmp_path: Path, monkeypatch) -> None:
@@ -174,7 +177,7 @@ def test_main_yes_records_a_given_image_and_no_image_skips(tmp_path: Path, monke
     assert f"OUTERLOOP_IMAGE={sif}" in (tmp_path / ".env").read_text()
     assert calls == []  # an explicit image is never re-fetched
     assert init.main([*base, "--no-image", "--force"]) == 0
-    assert "OUTERLOOP_IMAGE" not in (tmp_path / ".env").read_text()
+    assert "\nOUTERLOOP_IMAGE=\n" in (tmp_path / ".env").read_text()  # the off-switch
     assert calls == []
     assert init.main([*base, "--force"]) == 0
     assert calls and calls[0]["interactive"] is False  # the default asks the image module
