@@ -290,10 +290,19 @@ NodeName=localhost CPUs=64 RealMemory=250000 Gres=gpu:8 State=UNKNOWN
 PartitionName=gpu Nodes=localhost Default=YES MaxTime=INFINITE State=UP
 ```
 
-and `/etc/slurm/gres.conf`:
+`/etc/slurm/gres.conf`:
 
 ```
 NodeName=localhost Name=gpu File=/dev/nvidia[0-7]
+```
+
+and `/etc/slurm/cgroup.conf`, so a job allocated one GPU sees only that GPU
+(without `ConstrainDevices` every job sees all of them):
+
+```
+ConstrainCores=yes
+ConstrainRAMSpace=yes
+ConstrainDevices=yes
 ```
 
 `sudo systemctl enable --now munge slurmctld slurmd`, check with `sinfo` and
