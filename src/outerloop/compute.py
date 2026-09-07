@@ -95,10 +95,6 @@ class JobSpec:
     # Slurm scheduling controls
     dependency: str = ""  # e.g. "afterany:12345" or "singleton"
     begin: str = ""  # e.g. "now+30" or an absolute "YYYY-MM-DDTHH:MM:SS"
-    # submitted held (PENDING, reason JobHeldUser) until `release`: the
-    # tick's launch admission lets GPU launches into the queue in order,
-    # under the per-user cap, instead of queueing them all at once
-    hold: bool = False
     extra: tuple[str, ...] = ()
 
     def to_argv(self) -> list[str]:
@@ -125,8 +121,6 @@ class JobSpec:
             argv.append(f"--gpus-per-node={self.gpus}")
         if self.qos:
             argv.append(f"--qos={self.qos}")
-        if self.hold:
-            argv.append("--hold")
         if self.dependency:
             argv.append(f"--dependency={self.dependency}")
         if self.begin:
@@ -140,8 +134,8 @@ class JobSpec:
         return argv
 
 
-# `reason` and `gres` feed launch admission (why a job waits, how many GPUs it
-# asks for); the board reads the first six by key and ignores the rest
+# `reason` and `gres` feed launch admission (admission.queue_saturated: why a job
+# waits, whether it holds GPUs); the board reads the first six by key
 QUEUE_FIELDS = ("id", "name", "state", "elapsed", "partition", "submitted", "reason", "gres")
 
 
@@ -157,7 +151,6 @@ class Compute(Protocol):
     def queue_snapshot(self) -> list[dict[str, str]]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
-    def release(self, job_id: str) -> None: ...
 
 
 def local_mode() -> bool:
@@ -316,15 +309,6 @@ class SlurmCompute:
         result = self.runner(["scancel", job_id], self.command_timeout_s)
         if result.returncode != 0:
             log.warning("scancel %s: %s", job_id, result.stderr.strip())
-
-    def release(self, job_id: str) -> None:
-        """Release a job submitted with `hold` so the scheduler may start it.
-        Releasing a job that is not held is not an error."""
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
-        result = self.runner(["scontrol", "release", job_id], self.command_timeout_s)
-        if result.returncode != 0:
-            log.warning("scontrol release %s: %s", job_id, result.stderr.strip())
 
 
 # Local job ids start far above any real Slurm id so the two can never be
@@ -501,9 +485,6 @@ class LocalCompute:
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
         # already terminal; cancelling a finished job is not an error
-
-    def release(self, job_id: str) -> None:
-        """Local jobs run synchronously at submit; nothing is ever held."""
 
 
 def parse_elapsed(text: str) -> int | None:
