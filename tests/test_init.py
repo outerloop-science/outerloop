@@ -588,6 +588,22 @@ def test_a_credential_that_cannot_open_prs_fails_init(tmp_path: Path, monkeypatc
     assert init.main([*base, "--force"]) == 0
     captured = capsys.readouterr()
     assert "WARNING" in captured.out and "next: outerloop start" in captured.out
+    # the login is recorded only after a passing check: say so, or the tick
+    # silently skips the target for want of OUTERLOOP_BOT_LOGIN
+    assert "OUTERLOOP_BOT_LOGIN not recorded" in captured.out
+
+
+def test_pat_path_says_when_login_unreadable(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    monkeypatch.setattr(init, "_token_login", lambda token: "")
+    pat = tmp_path / "pat"
+    pat.write_text("ghp_x")
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", str(pat)]
+    assert init.main([*base, "--force"]) == 0
+    out = capsys.readouterr().out
+    assert "login could not be read" in out and "OUTERLOOP_BOT_LOGIN" in out
+    assert "OUTERLOOP_BOT_LOGIN=" not in (tmp_path / ".env").read_text()
 
 
 def test_pat_path_records_the_tokens_login(tmp_path: Path, monkeypatch) -> None:
