@@ -143,6 +143,14 @@ def _no_image_download(monkeypatch):
     monkeypatch.setattr(init, "ensure_image", lambda **kw: "")
 
 
+def test_the_image_reaches_the_tick() -> None:
+    """start exports OUTERLOOP_IMAGE from .env to the loop, and the chain's deploy
+    allowlist carries it every tick (a parity test keeps the two lists equal)."""
+    from outerloop.cli import TICK_ENV_KEYS
+
+    assert "OUTERLOOP_IMAGE" in TICK_ENV_KEYS
+
+
 def test_render_env_records_the_image_when_set() -> None:
     a = InitAnswers(compute="local", target="o/r", image="/img/agent-py312.sif")
     assert "OUTERLOOP_IMAGE=/img/agent-py312.sif" in render_env(a, "/p")

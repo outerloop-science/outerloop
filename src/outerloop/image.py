@@ -51,32 +51,37 @@ def download_image(
     report: Callable[[str], None] = print,
 ) -> Path:
     """Stream `url` to `dest` (default: the image dir), through a `.part`
-    file renamed into place at the end so a killed download never leaves a
-    half image where the tick would find it. Progress every 256 MiB."""
+    file renamed into place at the end; any failure or interruption removes
+    the part file. Progress every 256 MiB."""
     dest = dest or image_dir() / IMAGE_NAME
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
-    with opener(url, timeout=60) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
-        report(f"downloading {url}" + (f" ({total / (1 << 30):.1f} GB)" if total else ""))
-        done = 0
-        next_report = _REPORT_EVERY
-        with part.open("wb") as out:
-            while True:
-                chunk = resp.read(_CHUNK)
-                if not chunk:
-                    break
-                out.write(chunk)
-                done += len(chunk)
-                if done >= next_report:
-                    report(
-                        f"  {done / (1 << 30):.1f} GB"
-                        + (f" of {total / (1 << 30):.1f}" if total else "")
-                    )
-                    next_report += _REPORT_EVERY
-    if total and done != total:
+    try:
+        with opener(url, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            report(f"downloading {url}" + (f" ({total / (1 << 30):.1f} GB)" if total else ""))
+            done = 0
+            next_report = _REPORT_EVERY
+            with part.open("wb") as out:
+                while True:
+                    chunk = resp.read(_CHUNK)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    done += len(chunk)
+                    if done >= next_report:
+                        report(
+                            f"  {done / (1 << 30):.1f} GB"
+                            + (f" of {total / (1 << 30):.1f}" if total else "")
+                        )
+                        next_report += _REPORT_EVERY
+        if total and done != total:
+            raise OSError(f"short download: {done} of {total} bytes")
+    except BaseException:
+        # a failed or interrupted download never leaves a partial image where
+        # a later run would find it
         part.unlink(missing_ok=True)
-        raise OSError(f"short download: {done} of {total} bytes")
+        raise
     os.replace(part, dest)
     report(f"  saved {dest}")
     return dest

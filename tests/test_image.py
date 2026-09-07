@@ -50,6 +50,27 @@ def test_download_streams_through_a_part_file(tmp_path: Path) -> None:
     assert lines[0].startswith("downloading https://example/agent.sif")
 
 
+def test_interrupted_download_leaves_nothing_behind(tmp_path: Path) -> None:
+    """A read error after some bytes were written (network drop, Ctrl-C) removes
+    the .part file too (terra, #305)."""
+
+    class Dropping(_Resp):
+        def __init__(self) -> None:
+            super().__init__(b"y" * 4096, 1 << 20)
+            self.reads = 0
+
+        def read(self, n: int | None = -1) -> bytes:
+            self.reads += 1
+            if self.reads > 1:
+                raise ConnectionResetError("dropped")
+            return super().read(n)
+
+    dest = tmp_path / "agent-py312.sif"
+    with pytest.raises(ConnectionResetError):
+        img.download_image("u", dest, opener=lambda url, timeout: Dropping(), report=lambda s: None)
+    assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
+
+
 def test_short_download_leaves_nothing_behind(tmp_path: Path) -> None:
     dest = tmp_path / "agent-py312.sif"
     with pytest.raises(OSError, match="short download"):
