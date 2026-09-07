@@ -390,12 +390,13 @@ def main(argv: list[str] | None = None) -> int:
         help=f"climbing author's backend ({' or '.join(AUTHOR_BACKENDS)}; default claude)",
     )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
-    parser.add_argument(
+    image_flags = parser.add_mutually_exclusive_group()  # one or the other, never both
+    image_flags.add_argument(
         "--image",
         help="path to an Apptainer image to run sessions and evals in (default: the "
         "published one, downloaded on Linux when apptainer is installed)",
     )
-    parser.add_argument(
+    image_flags.add_argument(
         "--no-image",
         dest="no_image",
         action="store_true",

@@ -209,6 +209,10 @@ def test_main_checks_the_image_path_and_downloads_only_when_setup_proceeds(
     assert calls == []
     assert init.main([*base, "--target", "o/r", "--force"]) == 0
     assert len(calls) == 1
+    # the two flags contradict each other: argparse refuses the pair
+    with pytest.raises(SystemExit):
+        init.main([*base, "--target", "o/r", "--image", "/x.sif", "--no-image"])
+    assert "not allowed with" in capsys.readouterr().err
 
 
 def test_main_yes_requires_target(tmp_path: Path, monkeypatch, capsys) -> None:
