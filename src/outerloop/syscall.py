@@ -622,9 +622,10 @@ def refresh_tool(workspace: Path) -> None:
             st = None
         if st is not None and stat.S_ISDIR(st.st_mode):
             # a directory planted in the tool's place: rename cannot replace
-            # it; the channel fd was opened O_NOFOLLOW, so this path is the
-            # real directory and nothing else
-            shutil.rmtree(workspace / channel_dir(workspace) / "syscall")
+            # it. Removed RELATIVE TO THE CHANNEL FD, never by path — a path
+            # would be re-resolved, and a channel swapped for a symlink in
+            # between would send the removal outside the workspace
+            shutil.rmtree("syscall", dir_fd=dirfd)
         _write_channel(dirfd, "syscall", source, mode=0o755)
     finally:
         os.close(dirfd)
