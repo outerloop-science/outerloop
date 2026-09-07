@@ -34,6 +34,18 @@ Versions follow [SemVer](https://semver.org).
   download shows a progress bar with size, speed and ETA on a terminal, one
   line per 10% otherwise, and confirms the checksum. `docs/install.md` gains
   an "Installing Apptainer" section.
+- Launch admission: with `OUTERLOOP_MAX_LAUNCH_GPUS` set to the per-user GPU
+  cap, author launches are submitted held and the tick releases them
+  oldest-first while the user's GPU jobs fit under the cap, cancels held
+  launches of runs that have ended, and stops releasing when Slurm parks a
+  released launch on a per-user reason. `squeue` rows on the board carry the
+  pending reason and GRES. Unset, launches queue as before.
+- `docs/install.md` explains the multi-GPU workstation: local mode stays one job at
+  a time; a box with several GPUs runs Slurm as a single node and the kernel runs
+  in Slurm mode unchanged, with the minimal configuration to do it.
+
+### Changed
+
 - Launch admission, queue then stop: a sleep that asks for GPU launches is refused
   while any of this account's GPU jobs is pending on a cap reason
   (`QOSMaxGRESPerUser`, `QOSGrpGRES`, and kin), naming the blocking job; otherwise

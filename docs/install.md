@@ -258,6 +258,56 @@ your own, `--no-image` keeps runs uncontained even when an image is already on d
 run containers, init says so, prints the install steps for your system, and
 continues uncontained; run `outerloop init --force` after installing it.
 
+**One machine with several GPUs.** Local mode runs one job at a time and gives it
+the whole machine; on a laptop or a Mac mini there is nothing to schedule. To run
+jobs in parallel on a workstation, install Slurm on it; Outerloop then runs in
+Slurm mode with the workstation as its only node, and every feature (parallel
+launches, walltime kills, GPU allocation, the queue view) works unchanged.
+
+Ubuntu, once, as root:
+
+```bash
+sudo apt-get install -y slurm-wlm munge
+sudo slurmd -C            # prints this machine's NodeName line: name, CPUs, memory
+```
+
+Use the node name `slurmd -C` printed (below, `mybox`) in every file. In
+`/etc/slurm/slurm.conf`, the `NodeName` line is the printed one plus `Gres=gpu:N`:
+
+```
+ClusterName=onebox
+SlurmctldHost=mybox
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core_Memory
+GresTypes=gpu
+ProctrackType=proctrack/cgroup
+TaskPlugin=task/cgroup
+NodeName=mybox CPUs=64 RealMemory=250000 Gres=gpu:8 State=UNKNOWN
+PartitionName=gpu Nodes=mybox Default=YES MaxTime=INFINITE State=UP
+```
+
+`/etc/slurm/gres.conf`:
+
+```
+NodeName=mybox Name=gpu File=/dev/nvidia[0-7]
+```
+
+and `/etc/slurm/cgroup.conf`, so a job allocated one GPU sees only that GPU
+(without `ConstrainDevices` every job sees all of them):
+
+```
+ConstrainCores=yes
+ConstrainRAMSpace=yes
+ConstrainDevices=yes
+```
+
+`sudo systemctl enable --now munge slurmctld slurmd`, check with `sinfo` and
+`srun --gres=gpu:1 nvidia-smi -L`, then run `outerloop init --compute slurm` with
+`--root` on a local directory and `--partition gpu`. GPU benchmarks and author
+launches take their lane from `OUTERLOOP_GPU_PARTITION`, which init does not ask
+for: add `OUTERLOOP_GPU_PARTITION=gpu` to `~/.config/outerloop/.env`. Apptainer on
+the same machine is installed as described below.
+
 **Installing Apptainer (Linux, one time, needs root or an admin).** Apptainer runs
 sessions and evaluations in containers. Check for it
 with `apptainer exec docker://alpine:3.20 cat /etc/alpine-release`; a version number
