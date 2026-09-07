@@ -252,4 +252,19 @@ def test_array_rows_carry_the_launch_label_and_the_pace(tmp_path: Path) -> None:
     watcher.service()
     by_id = {j["id"]: j for j in _answered(ws, "queue")["jobs"]}
     assert by_id["555_[0-7%4]"]["why"] == "try lr 3e-4" and by_id["555_[0-7%4]"]["concurrency"] == 4
+    # a running task carries the pace from the ledger (the range is gone once
+    # only running tasks are left): this sweep recorded none, so the whole array
     assert by_id["555_3"]["why"] == "try lr 3e-4" and "concurrency" not in by_id["555_3"]
+    append_submitted(
+        run_dir(root, "r2"),
+        sleep=2,
+        launches=(Launch(name="wd", command="c", minutes=10, array=8, concurrency=4),),
+        job_ids=["777"],
+        at=6.0,
+    )
+    running = _Compute([_row("777_5", "r2-launch-wd", "RUNNING", "None")])
+    watcher = SessionWatcher(_ctx(root, ws, running))
+    _ask(ws, "queue", 60.0)
+    watcher.service()
+    row = _answered(ws, "queue")["jobs"][0]
+    assert row["concurrency"] == 4 and row["experiment"] == "wd"

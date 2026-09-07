@@ -157,8 +157,14 @@ class SessionWatcher:
                 r["experiment"] = name[len(prefix) :]
                 # the ledger keys the array's id; squeue shows `<id>_<k>` or `<id>_[...]`
                 base = job_id.split("_", 1)[0]
-                r["why"] = str(labels.get(base, {}).get("why", ""))[:MAX_WHY_CHARS]
+                label = labels.get(base, {})
+                r["why"] = str(label.get("why", ""))[:MAX_WHY_CHARS]
                 r["kind"] = "launch"
+                # the pace: the pending range says it; once only running tasks
+                # are left, the ledger does (the whole array when unset)
+                array = int(label.get("array") or 1)
+                if "concurrency" not in r and array > 1:
+                    r["concurrency"] = int(label.get("concurrency") or array)
             else:
                 r["experiment"] = ""
                 r["why"] = ""

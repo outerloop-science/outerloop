@@ -55,12 +55,14 @@ def test_history_joins_submits_with_their_ended_jobs(tmp_path: Path) -> None:
         ("sw.1", None, "TIMEOUT"),
     ]
     assert entries[2]["jobs"] == []  # not back yet
-    assert why_by_job(tmp_path) == {
-        "1": {"name": "a", "why": "probe a", "sleep": 1},
-        "2": {"name": "sw", "why": "sweep lr", "sleep": 1},
-        "3": {"name": "sw", "why": "sweep lr", "sleep": 1},
-        "4": {"name": "a", "why": "probe a", "sleep": 2},
+    labels = why_by_job(tmp_path)
+    assert {k: (v["name"], v["why"], v["sleep"]) for k, v in labels.items()} == {
+        "1": ("a", "probe a", 1),
+        "2": ("sw", "sweep lr", 1),
+        "3": ("sw", "sweep lr", 1),
+        "4": ("a", "probe a", 2),
     }
+    assert (labels["2"]["array"], labels["2"]["concurrency"]) == (2, 0)
 
 
 def test_ledger_tolerates_a_missing_file_and_a_torn_line(tmp_path: Path) -> None:

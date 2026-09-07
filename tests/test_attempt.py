@@ -90,7 +90,13 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     entries = history(ledger_dir)
     assert [(e["name"], e["job_ids"]) for e in entries] == [("a", ["201"]), ("sw", ["202", "203"])]
     assert entries[0]["why"] == "probe a" and entries[0]["sleep"] == 1 and entries[0]["jobs"] == []
-    assert why_by_job(ledger_dir)["203"] == {"name": "sw", "why": "", "sleep": 1}
+    assert why_by_job(ledger_dir)["203"] == {
+        "name": "sw",
+        "why": "",
+        "sleep": 1,
+        "array": 2,
+        "concurrency": 0,
+    }
     assert load_record(tmp_path, "tsp-7").stage["syscall_launches"] == [
         {"name": "a", "minutes": 5, "artifacts": [], "why": "probe a"},
         {"name": "sw", "minutes": 5, "artifacts": [], "array": 2},

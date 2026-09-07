@@ -352,6 +352,39 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     assert sha == "cand1" and request.launches[0].name == "probe"
 
 
+def test_a_submits_sibling_sweep_is_clamped_too(tmp_path: Path) -> None:
+    """The ceiling applies before either path: a submit's sibling launches are
+    dispatched from the candidate park with the clamped pace."""
+    from outerloop.orchestrator import RunParked
+
+    contract = DEEP_CONTRACT.replace(
+        "budgets: {gpu_hours_per_run: 1, runs_per_week: 10}",
+        "budgets: {gpu_hours_per_run: 1, runs_per_week: 10, max_concurrent_gpus: 3}",
+    )
+    _write_syscall(
+        tmp_path, {"launches": [{"name": "s", "command": "x", "array": 8}], "submit": True}
+    )
+    launched: list = []
+    with pytest.raises(RunParked) as exc:
+        attempt_once(
+            CONFIG,
+            contract,
+            tmp_path,
+            FakeHarness(result=ok_session()),
+            ParkingMeasurer(park_on_call=1),
+            "base",
+            _bare_snapshot(),
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            created="t",
+            launcher=_fake_launcher(launched),
+        )
+    assert exc.value.submitted
+    _sha, request = launched[0]
+    assert request.launches[0].concurrency == 3
+    assert exc.value.syscall is not None and exc.value.syscall.launches[0].concurrency == 3
+
+
 def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> None:
     """The refuse-twice bypass: after two bare submits are refused, the
     dropped request must not be measured at finish — a metered run with no

@@ -71,6 +71,7 @@ def append_submitted(
                 "why": launch.why,
                 "minutes": launch.minutes,
                 "array": launch.array,
+                "concurrency": launch.concurrency,
                 "job_ids": list(ids),
                 "at": at,
             }
@@ -166,5 +167,7 @@ def why_by_job(run_dir: Path) -> dict[str, dict[str, Any]]:
                 "name": row.get("name", ""),
                 "why": row.get("why", ""),
                 "sleep": row.get("sleep"),
+                "array": int(row.get("array") or 1),
+                "concurrency": int(row.get("concurrency") or 0),
             }
     return out

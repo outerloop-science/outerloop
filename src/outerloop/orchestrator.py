@@ -1510,6 +1510,12 @@ def attempt_once(
                 suite_gpus=suite_gpus,
                 main_evals=main_evals,
             )
+            # a sweep's pace is clamped to the contract's GPU ceiling here, once,
+            # before either path — an author-sleep launch or a submit's sibling
+            # launches — submits or records it; clamped, never refused
+            request = clamp_concurrency(
+                request, gpus=bench.gpus, max_concurrent_gpus=contract.budgets.max_concurrent_gpus
+            )
             if not problem:
                 if request.submit:
                     # a submit rides the measurement below on the SEALED tree —
@@ -1554,13 +1560,6 @@ def attempt_once(
                         run_seed=run_seed,
                     )
                 sha = snapshot()
-                # a sweep's pace is clamped to the contract's GPU ceiling
-                # before it is submitted or recorded; never refused
-                request = clamp_concurrency(
-                    request,
-                    gpus=bench.gpus,
-                    max_concurrent_gpus=contract.budgets.max_concurrent_gpus,
-                )
                 launch_afterany = launcher(sha, request)
                 raise RunParked(
                     phase="author-sleep",

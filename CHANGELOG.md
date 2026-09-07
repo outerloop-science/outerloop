@@ -8,13 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
-- Sweeps are Slurm job arrays. `launch --array N` submits one job
-  (`--array=0-N%K`) whose tasks derive their job dir and `SWEEP_INDEX` from
-  the array index, so the queue holds one entry per sweep and Slurm runs at
-  most K tasks at once; `--concurrency K` sets the pace and the contract's new
-  `budgets.max_concurrent_gpus` caps it in GPUs (K = ceiling / `gpus`), clamped
-  and said in the wake text, never refused. Local compute runs the tasks in
-  turn. The queue view shows a sweep's pace.
+- Sweeps are Slurm job arrays. `launch --array N` submits one job,
+  `--array=0-N%K`, and each task derives its job dir and `SWEEP_INDEX` from
+  its array index. The queue holds one entry per sweep. `--concurrency K`
+  sets how many tasks run at once. The contract's new
+  `budgets.max_concurrent_gpus` caps K in GPUs (K = ceiling / `gpus`); a
+  higher ask is clamped and the wake text says so, never refused. Local
+  compute runs the tasks in turn. The queue view shows a sweep's pace.
 - `docs/community.md`: the Discord channels and the GitHub webhooks that feed
   them, the X and Bluesky accounts and what gets posted where; the release
   checklist gains the announcement step.
