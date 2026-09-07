@@ -53,7 +53,9 @@ def test_account_and_partition_are_optional_in_the_argv() -> None:
     assert not any(a.startswith("--nice") for a in with_both.to_argv())  # 0 = not passed
     assert (
         "--nice=5000"
-        in JobSpec(job_name="l", account="", partition="", time_minutes=5, nice=5000).to_argv()
+        in JobSpec(
+            job_name="l", account="", partition="", time_minutes=5, command="x", nice=5000
+        ).to_argv()
     )
     # unset: Slurm bills the default association and picks the default partition
     bare = JobSpec(job_name="j", account="", partition="", time_minutes=1, command="x")
