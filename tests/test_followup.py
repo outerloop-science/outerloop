@@ -2435,8 +2435,7 @@ def test_a_gpu_change_is_sealed_and_parked_on_its_dispatched_measure(review_run)
     assert outcome.action == "parked" and "9001" in outcome.note
     # the author's reply went out now, with the parked note; nothing was pushed
     assert (
-        "addressed" in github.posted[0]
-        and "being re-measured on the GPU lane" in github.posted[0]
+        "addressed" in github.posted[0] and "being re-measured on the GPU lane" in github.posted[0]
     )
     assert not _origin_has_branch(bare)  # nothing pushed
     rec = load_record(root, "tsp-r1")
