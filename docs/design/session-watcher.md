@@ -102,13 +102,15 @@ the sweep the way Slurm wants it.
   how many tasks may run at once; unset, the kernel fills in a default. A
   sweep never has to be chunked across sleeps, and nothing is refused in the
   normal case.
-- **The kernel sets a lenient ceiling.** A contract budget,
-  `max_concurrency`, caps the concurrency any one launch may ask for. It is
-  deliberately not the cap divided by the agent count: agents rarely launch
-  at the same moment, and an idle share is wasted GPU. On Torch's 16-GPU
-  per-user cap the ceiling might be 12, so a lone sweep uses most of the
-  machine and a sibling's job can still get in. A request above the ceiling
-  is clamped to it, and the wake text says so.
+- **The kernel sets a lenient ceiling, in GPUs.** A contract budget,
+  `max_concurrent_gpus`, caps what one launch may hold at once; the task
+  concurrency it allows is that number divided by the benchmark's `gpus`, so
+  a two-GPU task gets half the tasks of a one-GPU task and the same share of
+  the machine. It is deliberately not the cap divided by the agent count:
+  agents rarely launch at the same moment, and an idle share is wasted GPU.
+  On Torch's 16-GPU per-user cap the ceiling might be 12, so a lone sweep
+  uses most of the machine and a sibling's job can still get in. A request
+  above the ceiling is clamped to it, and the wake text says so.
 - **Fairness follows from Slurm.** A sibling's job competes with `K` eligible
   tasks, not with the whole sweep, so no rule of ours orders anything.
 - **What changes in the launcher.** Arrays become a Slurm-backend concern.
@@ -243,7 +245,7 @@ There is no database, and none is needed at this scale:
 ## Open questions
 
 - The ceiling's default and the default concurrency when the author sets
-  none. Twelve of sixteen and "the whole array" respectively are starting
+  none. Twelve GPUs of sixteen and "the whole array" respectively are starting
   points; deriving either from the agent count is tempting and wrong when
   the cap is a group cap. Revisit after a month of data.
 - The `why` field is free text from one author that other agents read. It is
