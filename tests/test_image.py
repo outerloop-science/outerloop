@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
 from typing import Any
@@ -35,15 +36,31 @@ class _Resp(io.BytesIO):
         self.close()
 
 
+def _serving(payload: bytes, checksum: str | None = None, *, length: int | None = None) -> Any:
+    """An opener serving the image at any URL and its sha256 at <url>.sha256:
+    None = the right one, "" = none published, anything else verbatim."""
+    digest = checksum if checksum is not None else hashlib.sha256(payload).hexdigest()
+
+    def opener(url: str, timeout: int) -> _Resp:
+        if url.endswith(".sha256"):
+            if checksum == "":
+                raise OSError("404")
+            return _Resp(f"{digest}  agent-py312.sif\n".encode(), None)
+        return _Resp(payload, len(payload) if length is None else length)
+
+    return opener
+
+
+def quiet(s: str) -> None:
+    pass
+
+
 def test_download_streams_through_a_part_file(tmp_path: Path) -> None:
     payload = b"x" * (3 * (1 << 20) + 7)
     dest = tmp_path / "outerloop-images" / "agent-py312.sif"
     lines: list[str] = []
     got = img.download_image(
-        "https://example/agent.sif",
-        dest,
-        opener=lambda url, timeout: _Resp(payload, len(payload)),
-        report=lines.append,
+        "https://example/agent.sif", dest, opener=_serving(payload), report=lines.append
     )
     assert got == dest and dest.read_bytes() == payload
     assert not dest.with_name(dest.name + ".part").exists()
@@ -67,17 +84,34 @@ def test_interrupted_download_leaves_nothing_behind(tmp_path: Path) -> None:
 
     dest = tmp_path / "agent-py312.sif"
     with pytest.raises(ConnectionResetError):
-        img.download_image("u", dest, opener=lambda url, timeout: Dropping(), report=lambda s: None)
+        img.download_image("u", dest, opener=lambda url, timeout: Dropping(), report=quiet)
     assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
 
 
 def test_short_download_leaves_nothing_behind(tmp_path: Path) -> None:
     dest = tmp_path / "agent-py312.sif"
     with pytest.raises(OSError, match="short download"):
-        img.download_image(
-            "u", dest, opener=lambda url, timeout: _Resp(b"abc", 10), report=lambda s: None
-        )
+        img.download_image("u", dest, opener=_serving(b"abc", length=10), report=quiet)
     assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
+
+
+def test_download_rejects_a_checksum_mismatch(tmp_path: Path) -> None:
+    """The published sha256 gates installation: a replaced image never lands
+    where the tick would run it with the bound harness and the run's keys."""
+    dest = tmp_path / "agent-py312.sif"
+    with pytest.raises(OSError, match="checksum mismatch"):
+        img.download_image("u", dest, opener=_serving(b"abc", "0" * 64), report=quiet)
+    assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
+
+
+def test_download_requires_a_published_checksum(tmp_path: Path) -> None:
+    dest = tmp_path / "agent-py312.sif"
+    with pytest.raises(OSError, match="no checksum published"):
+        img.download_image("u", dest, opener=_serving(b"abc", ""), report=quiet)
+    assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
+    with pytest.raises(OSError, match="unreadable checksum"):
+        img.download_image("u", dest, opener=_serving(b"abc", "not-a-digest"), report=quiet)
+    assert not dest.with_name(dest.name + ".part").exists()
 
 
 def test_ensure_image_paths(tmp_path: Path, monkeypatch: Any) -> None:
@@ -88,9 +122,6 @@ def test_ensure_image_paths(tmp_path: Path, monkeypatch: Any) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("")
         return dest
-
-    def quiet(s: str) -> None:
-        pass
 
     # nothing to run it with: no download, no image
     monkeypatch.setattr(img, "containment_available", lambda: False)

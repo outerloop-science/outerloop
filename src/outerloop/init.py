@@ -246,10 +246,10 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
     )
-    # The image: an existing one, or the published one fetched now on a Linux
-    # machine with Apptainer (asked first when interactive). --image names
-    # one, --no-image keeps runs uncontained.
-    image = args.image or ("" if args.no_image else ensure_image(interactive=interactive))
+    # An explicit --image is recorded here (absolute: jobs read it from their
+    # own directory); the published one is fetched in main, after every check
+    # that could still end the run.
+    image = str(Path(args.image).expanduser().absolute()) if args.image else ""
     answers = InitAnswers(
         compute=compute,
         target=target,
@@ -423,6 +423,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if answers.image and not Path(answers.image).is_file():
+        # a typo here would surface as an uncontained loop later
+        print(f"outerloop init: --image {answers.image} is not a file", file=sys.stderr)
+        return 2
 
     # Never clobber a working setup silently: a re-run of init on a configured
     # machine must ask (or be told --force). Checked before any App is created.
@@ -461,6 +465,13 @@ def main(argv: list[str] | None = None) -> int:
             key_path = write_author_key(answers.author_backend, pasted, config_dir=CONFIG_DIR)
             answers.author_key_file = str(key_path)
             print(f"wrote {key_path} (0600)")
+
+    # The image, only now: every check that could still end the run has passed
+    # and the overwrite question is answered, so a download is never wasted.
+    # An existing image is used, else the published one is fetched on a machine
+    # that can run it (asked first when interactive); --no-image opts out.
+    if not answers.image and not args.no_image:
+        answers.image = ensure_image(interactive=interactive)
 
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.

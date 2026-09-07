@@ -6,6 +6,7 @@ without a hand step."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sys
@@ -49,13 +50,16 @@ def download_image(
     *,
     opener: Callable[..., Any] = urllib.request.urlopen,
     report: Callable[[str], None] = print,
+    checksum_url: str = "",
 ) -> Path:
     """Stream `url` to `dest` (default: the image dir), through a `.part`
-    file renamed into place at the end; any failure or interruption removes
-    the part file. Progress every 256 MiB."""
+    file renamed into place only after its sha256 matches the checksum the
+    build published beside it (`<url>.sha256`); any failure, mismatch or
+    interruption removes the part file. Progress every 256 MiB."""
     dest = dest or image_dir() / IMAGE_NAME
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
+    digest = hashlib.sha256()
     try:
         with opener(url, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
@@ -68,6 +72,7 @@ def download_image(
                     if not chunk:
                         break
                     out.write(chunk)
+                    digest.update(chunk)
                     done += len(chunk)
                     if done >= next_report:
                         report(
@@ -77,6 +82,14 @@ def download_image(
                         next_report += _REPORT_EVERY
         if total and done != total:
             raise OSError(f"short download: {done} of {total} bytes")
+        # the checksum the build published beside the image: an image that does
+        # not match it is never installed (it would run with the bound harness
+        # binary and the run's credentials)
+        expected = _published_checksum(checksum_url or url + ".sha256", opener)
+        if digest.hexdigest() != expected:
+            raise OSError(
+                f"checksum mismatch for {url}: expected {expected}, got {digest.hexdigest()}"
+            )
     except BaseException:
         # a failed or interrupted download never leaves a partial image where
         # a later run would find it
@@ -85,6 +98,20 @@ def download_image(
     os.replace(part, dest)
     report(f"  saved {dest}")
     return dest
+
+
+def _published_checksum(url: str, opener: Callable[..., Any]) -> str:
+    """The sha256 hex the build published at `url` (`<hex>  <file>` as sha256sum
+    writes it). No readable checksum means no image."""
+    try:
+        with opener(url, timeout=60) as resp:
+            text = resp.read(4096).decode("ascii", "replace")
+    except (OSError, urllib.error.URLError) as exc:
+        raise OSError(f"no checksum published at {url}: {exc}") from exc
+    token = text.split()[0].strip().lower() if text.split() else ""
+    if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
+        raise OSError(f"unreadable checksum at {url}")
+    return token
 
 
 def ensure_image(
