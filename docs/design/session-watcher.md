@@ -134,8 +134,10 @@ them for humans.
 
 - **Columns:** `agent`, `run` (short id), `experiment` (the launch name),
   `why`, `state` (`deferred`, `pending` with its reason, `running`, `done`),
-  `elapsed`, `limit`, and the Slurm job id once one exists. A launch's
-  identity is the name the author gave it; nothing new is minted.
+  `elapsed`, `limit`, and the Slurm job id once one exists. A launch is
+  named by the author, and the name is unique within one sleep; across
+  sleeps a launch is the pair (sleep index, name), which is how the history
+  ledger below keys it. Nothing new is minted.
 - **`why`** is a new optional field on `launch` (`--why "one line"`), stored
   on the request and shown in the view and the wake text, falling back to
   the run's hypothesis. It is the one protocol addition in this note.
@@ -153,28 +155,39 @@ them for humans.
 
 ## History
 
-`python .outerloop/syscall history` lists the run's past launches: name,
-`why`, minutes asked, job id, final state, elapsed, exit code. It reads the
-run directory, which the container cannot see, so it too goes through the
-watcher.
+`python .outerloop/syscall history` lists every launch the run has made:
+sleep index, name, `why`, minutes asked, job id, final state, elapsed, exit
+code. It reads the run directory, which the container cannot see, so it too
+goes through the watcher.
+
+The source is an **append-only ledger**, `launches.jsonl` in the run
+directory, one row per finished launch job, written by the wake before
+anything else touches the launch's directory. This matters because launch
+names are unique only within one sleep: the launcher reuses
+`eval-launch-<name>/` when a later sleep repeats a name and clears the old
+contents first, so the directory alone cannot carry history. The directory
+stays what it is, the latest outputs, which is also what the wake delivers
+to the author; the ledger is the record. It is written once per launch, never
+rewritten, and it is exactly the row store a later index would load.
 
 There is no database, and none is needed at this scale. The history already
 exists as files:
 
-- Each run's directory holds its record and one `eval-launch-<name>/`
-  directory per launch job: exit code, output tails, artifacts, and the
-  scheduler state the wake annotated. The board's ledger is built from these.
+- Each run's directory holds its record, the ledger, and one
+  `eval-launch-<name>/` directory per launch name: exit code, output tails,
+  artifacts, and the scheduler state the wake annotated. The board's ledger
+  is built from these.
 - The contract bounds the volume. A run has at most `depth_k` launches
   (default 10, at most 16), a sleep carries at most 8, a launch fans out to
-  at most 16 array jobs; the ceiling is 256 job rows per run and a typical
-  run has a dozen. Output tails are capped at 8,000 characters, artifacts
-  at 5 MB each and 8 per launch. Runs are bounded by `runs_per_week` per
-  agent; four agents at the example contract's 20 make about 4,000 runs a
-  year.
+  at most 16 array jobs; the ceiling is 256 ledger rows per run and a
+  typical run has a dozen. Output tails are capped at 8,000 characters,
+  artifacts at 5 MB each and 8 per launch. Runs are bounded by
+  `runs_per_week` per agent; four agents at the example contract's 20 make
+  about 4,000 runs a year.
 - Listing runs is a directory scan and one small JSON read each, which the
   board does every tick already. It is a second at thousands of runs. Around
   tens of thousands the scan becomes the slow part of a tick; that is when a
-  derived index, sqlite built from the same files and rebuildable from them,
+  derived index, sqlite built from the ledgers and rebuildable from them,
   pays for itself, and nothing the kernel writes would change.
 - Slurm's accounting keeps each job's elapsed time and final state for as
   long as the site retains it, months on Torch, joined on the job id.
