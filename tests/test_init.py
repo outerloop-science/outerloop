@@ -138,9 +138,13 @@ def test_main_yes_writes_config(tmp_path: Path, monkeypatch, capsys) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_image_download(monkeypatch):
-    """init never reaches the network in tests: no image is found or fetched."""
+def _no_image_download(monkeypatch, request):
+    """init never reaches the network in tests: no image is found or fetched, the
+    token's login is not looked up, and no harness binary is found on this machine."""
     monkeypatch.setattr(init, "ensure_image", lambda **kw: "")
+    monkeypatch.setattr(init, "_token_login", lambda token: "")
+    if not request.node.get_closest_marker("real_locate_harness"):
+        monkeypatch.setattr(init, "locate_harness", lambda backend: "")
 
 
 def test_the_image_reaches_the_tick() -> None:
@@ -559,3 +563,94 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
     assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")
     answers["repos/o/r/installation"] = {"id": 9, "permissions": {"contents": "write"}}
     assert "installation 9" in init._check_app_access(Provider(), "o/r")
+
+
+def test_a_credential_that_cannot_open_prs_fails_init(tmp_path: Path, monkeypatch, capsys) -> None:
+    """#285: a 401/403/404 or no write access exits 1 and never says
+    `next: outerloop start`; a network failure stays a warning."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/some/pat"]
+    for problem in (
+        "the token is invalid or expired (GitHub returned 401)",
+        "o/r not found, or the token cannot see it",
+        "reaches o/r but lacks write access (it opens PRs)",
+    ):
+        monkeypatch.setattr(init, "validate_pat", lambda pf, t, p=problem: p)
+        assert init.main([*base, "--force"]) == 1, problem
+        captured = capsys.readouterr()
+        assert "FAILED" in captured.err and "init --force" in captured.err
+        assert "next: outerloop start" not in captured.out
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "could not reach GitHub: timed out")
+    assert init.main([*base, "--force"]) == 0
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out and "next: outerloop start" in captured.out
+
+
+def test_pat_path_records_the_tokens_login(tmp_path: Path, monkeypatch) -> None:
+    """#298: the kernel posts as this token; its login is recorded so every
+    own-comment and own-PR filter keys on the adopter's identity, not the lab's."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    pat = tmp_path / "pat"
+    pat.write_text("ghp_x")
+    monkeypatch.setattr(init, "_token_login", lambda token: "someone" if token == "ghp_x" else "")
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", str(pat)]
+    assert init.main(base) == 0
+    assert "OUTERLOOP_BOT_LOGIN=someone" in (tmp_path / ".env").read_text()
+
+
+def test_init_records_the_harness_binary_or_says_how_to_install_it(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """#294: the author's CLI path is recorded (jobs have no login PATH); when it
+    is absent, init says so and how to install it instead of a later spawn-error."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/some/pat"]
+    monkeypatch.setattr(init, "locate_harness", lambda backend: f"/opt/bin/{backend or 'claude'}")
+    assert init.main([*base, "--author-backend", "codex"]) == 0
+    assert "OUTERLOOP_CODEX_BIN=/opt/bin/codex" in (tmp_path / ".env").read_text()
+    monkeypatch.setattr(init, "locate_harness", lambda backend: "")
+    assert init.main([*base, "--force"]) == 0
+    out = capsys.readouterr().out
+    assert "no `claude` binary" in out and "npm install -g @anthropic-ai/claude-code" in out
+    assert "OUTERLOOP_CLAUDE_BIN" not in (tmp_path / ".env").read_text()
+
+
+@pytest.mark.real_locate_harness
+def test_locate_harness_prefers_path_then_local_bin(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(init.shutil, "which", lambda name: None)
+    monkeypatch.setattr(init.Path, "home", classmethod(lambda cls: tmp_path))
+    assert init.locate_harness("claude") == ""
+    local = tmp_path / ".local" / "bin" / "claude"
+    local.parent.mkdir(parents=True)
+    local.write_text("#!/bin/sh\n")
+    local.chmod(0o755)
+    assert init.locate_harness("claude") == str(local)
+    monkeypatch.setattr(init.shutil, "which", lambda name: str(tmp_path / "onpath" / name))
+    (tmp_path / "onpath").mkdir()
+    (tmp_path / "onpath" / "claude").write_text("")
+    assert init.locate_harness("claude").endswith("onpath/claude")
+
+
+def test_repo_access_messages_name_the_cause(monkeypatch) -> None:
+    import email.message
+    import io
+    import urllib.error
+
+    def raising(code):
+        def urlopen(req, timeout=15):
+            raise urllib.error.HTTPError(
+                req.full_url, code, "x", email.message.Message(), io.BytesIO(b"")
+            )
+
+        return urlopen
+
+    monkeypatch.setattr(init.urllib.request, "urlopen", raising(401))
+    assert "invalid or expired" in init._check_repo_access("t", "o/r")
+    monkeypatch.setattr(init.urllib.request, "urlopen", raising(403))
+    assert "not allowed" in init._check_repo_access("t", "o/r")
+    assert init._auth_is_fatal("the token is invalid or expired (GitHub returned 401)")
+    assert not init._auth_is_fatal("could not reach GitHub: timeout")
+    assert not init._auth_is_fatal("could not read the App credentials: x")
+    assert not init._auth_is_fatal("")

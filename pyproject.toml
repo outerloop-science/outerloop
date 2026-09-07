@@ -12,6 +12,7 @@ license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 authors = [{ name = "Agentic Learning AI Lab, New York University" }]
 dependencies = [
+    "cryptography>=42",  # GitHub App auth (RS256 JWTs), the recommended identity
     "pydantic>=2",
     "pyyaml>=6",
 ]
@@ -24,9 +25,10 @@ dependencies = [
 outerloop = "outerloop.cli:main"
 
 [project.optional-dependencies]
-# GitHub App auth: RS256 signing for App JWTs (docs/design/github-app-auth.md).
-# Install where OUTERLOOP_GITHUB_APP_FILE is set; the PAT path needs nothing.
-app-auth = ["cryptography>=42"]
+# `cryptography` is a base dependency since 0.1.0.dev2 (the App identity init
+# recommends must work from a plain install, #293); the extra stays as a no-op so
+# `pip install "outerloop-science[app-auth]"` keeps working.
+app-auth = []
 
 [dependency-groups]
 dev = [
@@ -75,6 +77,7 @@ testpaths = ["tests"]
 # the tests affected by your edits.
 addopts = "-ra --strict-markers -n auto"
 markers = [
+    "real_locate_harness: exercises the real harness lookup (test_init fixture skips its patch)",
     "slow: long-running; nightly/manual only",
     "llm: calls a paid LLM API; manual only, never CI",
     "slurm: needs a Slurm cluster; manual only, never CI",

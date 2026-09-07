@@ -3166,7 +3166,11 @@ def main() -> int:
         help="run WITHOUT a container (dev only: sessions can then read "
         "same-user files, including credential files)",
     )
-    parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
+    parser.add_argument(
+        "--claude-bin",
+        default=os.path.expanduser(os.environ.get("OUTERLOOP_CLAUDE_BIN") or "~/.local/bin/claude"),
+        help="host claude binary for the claude author (OUTERLOOP_CLAUDE_BIN, which init records)",
+    )
     parser.add_argument(
         "--codex-bin",
         default=os.path.expanduser(os.environ.get("OUTERLOOP_CODEX_BIN") or "~/.local/bin/codex"),

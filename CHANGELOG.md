@@ -174,6 +174,21 @@ Versions follow [SemVer](https://semver.org).
   keeps its priority age, where a re-launch would start over at the back.
   Reasons that never clear (a dependency that cannot be satisfied, per-job
   limits, an invalid account or QOS, a held job) still cancel and wake.
+- `outerloop init` stops with exit 1 when the credential cannot open pull
+  requests on the target (401, 403, 404, or no write access) instead of
+  printing a warning and `next: outerloop start` (#285); a network failure stays
+  a warning. The PAT path records the token's login as `OUTERLOOP_BOT_LOGIN`,
+  and the tick warns when the login is unset and the lab default applies (#298).
+- `init` locates the author's CLI (`claude`/`codex`) on PATH or in
+  `~/.local/bin`, records it as `OUTERLOOP_CLAUDE_BIN`/`OUTERLOOP_CODEX_BIN`, and
+  says how to install it when absent; `attempt --claude-bin` honors that
+  setting; `start` refuses to launch when a recorded binary is missing; a
+  `spawn-error` names the binary and the OS error (#294).
+- Local jobs keep their combined stdout/stderr in `local_jobs/<id>.out` beside
+  the state file, and the log line names it when the job did not complete (#295).
+- `cryptography` is a base dependency, so the GitHub App identity works from a
+  plain `pip install`; the `app-auth` extra is now a no-op (#293). The `tick`
+  subcommand's help no longer uses lab-internal vocabulary (#286).
 
 ### Added
 

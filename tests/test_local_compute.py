@@ -303,3 +303,20 @@ def test_local_mode_places_gpu_measures_without_a_lane(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="no GPU lane"):
         settings.placement(1)  # slurm mode still refuses loudly
+
+
+def test_local_job_output_is_kept_beside_its_state(tmp_path: Path, monkeypatch) -> None:
+    """#295: a failed local job used to leave only COMPLETED/FAILED; its combined
+    stdout/stderr now lands in local_jobs/<id>.out."""
+    from outerloop.compute import JobSpec, LocalCompute
+
+    monkeypatch.setenv("OUTERLOOP_ROOT", str(tmp_path))
+    compute = LocalCompute()
+    job_id = compute.submit(
+        JobSpec(
+            job_name="j", account="", partition="", time_minutes=1, command="echo boom >&2; exit 3"
+        )
+    )
+    assert compute.status(job_id) == "FAILED"
+    out = tmp_path / "local_jobs" / f"{job_id}.out"
+    assert out.read_text().strip() == "boom"

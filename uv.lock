@@ -482,13 +482,9 @@ wheels = [
 name = "outerloop-science"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "pydantic" },
     { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-app-auth = [
-    { name = "cryptography" },
 ]
 
 [package.dev-dependencies]
@@ -504,7 +500,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cryptography", marker = "extra == 'app-auth'", specifier = ">=42" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6" },
 ]

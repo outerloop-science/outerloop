@@ -172,8 +172,8 @@ def signer_from_private_key(pem_path: Path) -> Signer:
         from cryptography.hazmat.primitives.asymmetric import padding, rsa
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
-            "GitHub App auth needs the 'app-auth' extra (cryptography); "
-            "install it before selecting the App token provider"
+            "GitHub App auth needs the cryptography package "
+            "(pip install cryptography), a base dependency since 0.1.0.dev2"
         ) from exc
 
     key = serialization.load_pem_private_key(pem_path.read_bytes(), password=None)

@@ -3097,6 +3097,16 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     # association and the partition to Slurm's defaults, as `start` already
     # does for the resident. Local compute has no placement at all.
     target = os.environ.get("OUTERLOOP_TARGET", "")
+    if not os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip():
+        # the default is the lab's bot account; under any other credential
+        # the kernel would not recognize its own comments and PRs (#298)
+        from outerloop.github import DEFAULT_BOT_LOGIN
+
+        log.warning(
+            "OUTERLOOP_BOT_LOGIN is not set; posting as the default %r. Set it to the "
+            "login the kernel posts as (init records it) unless that is your account.",
+            DEFAULT_BOT_LOGIN,
+        )
     image_ok = Path(image).is_file()
     panel = os.environ.get("OUTERLOOP_PANEL", "verify,review")
     if not image_ok and local_mode():

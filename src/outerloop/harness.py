@@ -609,7 +609,7 @@ class ClaudeCodeHarness:
             )
         except OSError as exc:
             log.warning("could not spawn %s: %s", self.binary, exc)
-            return _error_result("spawn-error")
+            return _error_result("spawn-error", detail=f"could not spawn {self.binary}: {exc}")
 
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
@@ -1061,7 +1061,7 @@ class CodexHarness:
         except OSError as exc:
             log.warning("could not spawn %s: %s", self.binary, exc)
             self._purge_auth(session_home)
-            return _error_result("spawn-error")
+            return _error_result("spawn-error", detail=f"could not spawn {self.binary}: {exc}")
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:

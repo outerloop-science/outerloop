@@ -589,3 +589,23 @@ def test_tick_subcommand_forwards_to_the_tick_entry(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(tick, "main", fake_main)
     assert main(["tick", "--root", "/r", "--loop"]) == 7
     assert seen[1:] == ["--root", "/r", "--loop"]
+
+
+def test_start_refuses_a_missing_recorded_harness_binary(tmp_path: Path) -> None:
+    """#294: init records the CLI path; if it is gone, every climb would end with
+    spawn-error, so start says so instead of launching."""
+    from outerloop.cli import missing_harness_binary
+
+    present = tmp_path / "claude"
+    present.write_text("")
+    assert missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": str(present)}, {}) == ""
+    assert missing_harness_binary({}, {}) == ""
+    problem = missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": str(tmp_path / "nope")}, {})
+    assert "OUTERLOOP_CLAUDE_BIN" in problem and "init --force" in problem
+    # the process environment wins over the file
+    assert (
+        missing_harness_binary(
+            {"OUTERLOOP_CODEX_BIN": str(tmp_path / "nope")}, {"OUTERLOOP_CODEX_BIN": str(present)}
+        )
+        == ""
+    )

@@ -370,6 +370,7 @@ def test_missing_binary_returns_spawn_error(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=str(tmp_path / "nope")).run("task", tmp_path)
     assert result.is_error
     assert result.stop_reason == "spawn-error"
+    assert "nope" in result.error_detail  # #294: the report names what failed to spawn
 
 
 def test_garbage_output_is_an_error_with_transcript(tmp_path: Path) -> None:
