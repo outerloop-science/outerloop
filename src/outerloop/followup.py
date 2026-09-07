@@ -941,7 +941,14 @@ def _respond(
                 # (LocalCompute) returns the value here; a cluster parks.
                 try:
                     sealed, sealed_snap = _seal_and_measure(
-                        ws, run_root, run_id, dispatch, bench, run_seed, workspace
+                        ws,
+                        run_root,
+                        run_id,
+                        dispatch,
+                        bench,
+                        run_seed,
+                        workspace,
+                        bot_login=bot_login,
                     )
                 except _RemeasureParked as pend:
                     return _park_remeasure(
@@ -1545,6 +1552,7 @@ def _seal_and_measure(
     bench: Any,
     run_seed: int,
     workspace: Path,
+    bot_login: str,
 ) -> tuple[float, Any]:
     """Seal the workspace's change as a commit on the PR's current head and
     measure it through the dispatched measurer. Returns (value, snapshot)
@@ -1557,7 +1565,9 @@ def _seal_and_measure(
     from outerloop.measure import MeasurementPending
 
     parent = ws.git("rev-parse", "HEAD").strip()
-    snap = snapshot_tree(ws, parent, exclude=LINE_MEMORY_PATHS if bench.lines else ())
+    snap = snapshot_tree(
+        ws, parent, exclude=LINE_MEMORY_PATHS if bench.lines else (), author=bot_login
+    )
     measurer = dispatch.measurer(
         run_dir(run_root, run_id),
         repo_root=workspace,
