@@ -27,6 +27,13 @@ Versions follow [SemVer](https://semver.org).
   agent-image on every recipe change, and `outerloop init` downloads it on
   Linux when Apptainer is installed, so local mode runs contained by default
   (`--image` names your own, `--no-image` opts out).
+- `outerloop init` checks that Apptainer can actually run a container before
+  downloading the image (on Ubuntu 24.04 a hand-installed Apptainer is on PATH
+  but cannot create user namespaces), and when it cannot, prints the install
+  steps for the machine's distribution and continues uncontained. The image
+  download shows a progress bar with size, speed and ETA on a terminal, one
+  line per 10% otherwise, and confirms the checksum. `docs/install.md` gains
+  an "Installing Apptainer" section.
 
 ### Changed
 

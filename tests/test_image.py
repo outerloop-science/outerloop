@@ -124,10 +124,12 @@ def test_ensure_image_paths(tmp_path: Path, monkeypatch: Any) -> None:
         return dest
 
     # nothing to run it with: no download, no image
-    monkeypatch.setattr(img, "containment_available", lambda: False)
+    monkeypatch.setattr(
+        img, "containment_check", lambda: "apptainer is not installed (not on PATH)"
+    )
     assert img.ensure_image(interactive=False, home=tmp_path, fetch=fake_fetch, report=quiet) == ""
     assert fetched == []
-    monkeypatch.setattr(img, "containment_available", lambda: True)
+    monkeypatch.setattr(img, "containment_check", lambda: "")
     # opted out
     assert (
         img.ensure_image(
@@ -154,7 +156,7 @@ def test_ensure_image_paths(tmp_path: Path, monkeypatch: Any) -> None:
 
 
 def test_ensure_image_download_failure_is_a_warning(tmp_path: Path, monkeypatch: Any) -> None:
-    monkeypatch.setattr(img, "containment_available", lambda: True)
+    monkeypatch.setattr(img, "containment_check", lambda: "")
     lines: list[str] = []
 
     def failing(url: str, dest: Path, *, report: Any) -> Path:
@@ -164,3 +166,89 @@ def test_ensure_image_download_failure_is_a_warning(tmp_path: Path, monkeypatch:
         img.ensure_image(interactive=False, home=tmp_path, fetch=failing, report=lines.append) == ""
     )
     assert any("download failed" in line for line in lines)
+
+
+class _Proc:
+    def __init__(self, rc: int, err: str = "") -> None:
+        self.returncode = rc
+        self.stderr = err
+
+
+def test_containment_check_runs_a_container_not_just_which(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Being on PATH is not enough (Ubuntu 24.04 strips capabilities from a
+    hand-installed apptainer's user namespace): the probe execs a container
+    and reads the failure."""
+    monkeypatch.setattr(img.sys, "platform", "linux")
+    monkeypatch.setattr(img.shutil, "which", lambda name: None)
+    assert "not installed" in img.containment_check()
+    monkeypatch.setattr(img.shutil, "which", lambda name: "/usr/bin/apptainer")
+    seen: list[list[str]] = []
+
+    def working(argv: list[str], **kw: Any) -> _Proc:
+        seen.append(argv)
+        return _Proc(0)
+
+    assert img.containment_check(runner=working) == ""
+    assert seen and seen[0][0] == "/usr/bin/apptainer" and seen[0][1] == "exec"
+    broken = _Proc(
+        255,
+        "ERROR  : Could not write info to setgroups: Permission denied\n"
+        "ERROR  : Error while waiting event for user namespace mappings: no event received",
+    )
+    problem = img.containment_check(runner=lambda argv, **kw: broken)
+    assert "cannot create containers" in problem and "user namespace" in problem
+    other = _Proc(255, "FATAL:   container creation failed: something else")
+    assert "apptainer exec failed" in img.containment_check(runner=lambda argv, **kw: other)
+    monkeypatch.setattr(img.sys, "platform", "darwin")
+    assert "macOS" in img.containment_check()
+
+
+def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
+    monkeypatch.setattr(img.sys, "platform", "linux")
+    monkeypatch.setattr(img, "_linux_flavor", lambda: ("ubuntu", "24.04"))
+    hint = img.install_hint()
+    assert "apt-get install" in hint and "AppArmor" in hint and "setgroups" in hint
+    assert "outerloop init --force" in hint
+    monkeypatch.setattr(img, "_linux_flavor", lambda: ("fedora", "40"))
+    assert "dnf install" in img.install_hint()
+    monkeypatch.setattr(img, "_linux_flavor", lambda: ("arch", ""))
+    assert "install-unprivileged.sh" in img.install_hint()
+    monkeypatch.setattr(img.sys, "platform", "darwin")
+    assert "macOS" in img.install_hint()
+
+
+def test_ensure_image_explains_why_runs_are_uncontained(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        img, "containment_check", lambda: "apptainer is not installed (not on PATH)"
+    )
+    monkeypatch.setattr(img, "install_hint", lambda: "INSTALL STEPS HERE")
+    lines: list[str] = []
+    assert img.ensure_image(interactive=False, home=tmp_path, report=lines.append) == ""
+    assert any("UNCONTAINED" in line and "not installed" in line for line in lines)
+    assert any("INSTALL STEPS HERE" in line for line in lines)
+
+
+def test_progress_reports_ten_percent_steps_off_a_terminal(monkeypatch: Any) -> None:
+    monkeypatch.setattr(img.sys.stdout, "isatty", lambda: False)
+    lines: list[str] = []
+    bar = img._Progress("u", lines.append)
+    bar.start(1000)
+    for done in (50, 250, 251, 999, 1000):
+        bar.update(done)
+    bar.finish(1000)
+    pct = [line.split("%")[0].strip() for line in lines if "%" in line]
+    assert pct == ["10", "20", "30", "40", "50", "60", "70", "80", "90", "100"]
+    assert lines[-1].startswith("  downloaded")
+
+
+def test_progress_draws_a_bar_on_a_terminal(monkeypatch: Any, capsys: Any) -> None:
+    monkeypatch.setattr(img.sys.stdout, "isatty", lambda: True)
+    bar = img._Progress("u", lambda s: None)
+    bar.start(4 << 20)
+    bar.last_draw = -1.0
+    bar.update(2 << 20)
+    bar.finish(4 << 20)
+    out = capsys.readouterr().out
+    assert "[" in out and "50%" in out and "100%" in out and "ETA" in out
