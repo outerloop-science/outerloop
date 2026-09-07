@@ -91,6 +91,9 @@ class JobSpec:
     mem: str = "2G"
     gpus: int = 0
     qos: str = ""
+    # a positive nice LOWERS priority (Slurm, like Unix): experiments yield to
+    # the kernel's own evals and re-measures when a slot frees
+    nice: int = 0
     output: str = "/dev/null"
     # Slurm scheduling controls
     dependency: str = ""  # e.g. "afterany:12345" or "singleton"
@@ -121,6 +124,8 @@ class JobSpec:
             argv.append(f"--gpus-per-node={self.gpus}")
         if self.qos:
             argv.append(f"--qos={self.qos}")
+        if self.nice:
+            argv.append(f"--nice={self.nice}")
         if self.dependency:
             argv.append(f"--dependency={self.dependency}")
         if self.begin:

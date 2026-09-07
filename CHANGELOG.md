@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Experiment launches are submitted with `--nice=5000`, so among the kernel's
+  own pending jobs a gate eval or a follow-up re-measure starts before a new
+  experiment when the GPU cap frees a slot. Other users' jobs and the cap are
+  untouched.
 - The session watcher (docs/design/session-watcher.md): a thread beside the
   live author session answers two new tool verbs within seconds. `queue`
   shows the kernel's jobs in the cluster queue, every agent's, each launch
