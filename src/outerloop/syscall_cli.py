@@ -426,11 +426,7 @@ def cmd_sync(root: Path, args) -> str:
     (kernel counterparts live in outerloop.syscall)."""
     import time
 
-    channel = root / DIR
-    done = channel / "sync-done"
-    request = channel / "sync-request"
-    request.touch()
-    started = request.stat().st_mtime
+    done, started = _leave_request(_dir(root), "sync")
     minutes = getattr(args, "minutes", None)
     deadline = time.time() + 60 * int(35 if minutes is None else minutes)
 
@@ -513,6 +509,29 @@ def cmd_reports(root: Path, args) -> str:
     return "\n".join(lines) + "\n(pass names to read full reports, several at once)"
 
 
+def _leave_request(channel: Path, verb: str) -> tuple[Path, float]:
+    """Touch `<verb>-request` and return the done marker with the mtime the
+    kernel must acknowledge. The kernel answers by writing the request's mtime
+    into `<verb>-done`, so a request that lands within the filesystem's mtime
+    resolution of the previous acknowledgement is pushed one second past it:
+    otherwise the old done value would already satisfy the new request and the
+    previous answer would be read as this one."""
+    import os
+
+    done = channel / f"{verb}-done"
+    try:
+        prev = float(done.read_text() or 0)
+    except (OSError, ValueError):
+        prev = 0.0
+    request = channel / f"{verb}-request"
+    request.touch()
+    started = request.stat().st_mtime
+    if started <= prev:
+        os.utime(request, (prev + 1, prev + 1))
+        started = request.stat().st_mtime
+    return done, started
+
+
 def _ask_kernel(root: Path, verb: str, wait_s: int) -> dict | None:
     """Leave a `<verb>-request` marker for the session watcher — a kernel thread
     beside this session — and wait for `<verb>-done` to acknowledge it, then
@@ -522,10 +541,7 @@ def _ask_kernel(root: Path, verb: str, wait_s: int) -> dict | None:
     import time
 
     channel = _dir(root)
-    request = channel / f"{verb}-request"
-    done = channel / f"{verb}-done"
-    request.touch()
-    started = request.stat().st_mtime
+    done, started = _leave_request(channel, verb)
     deadline = time.time() + max(0, wait_s)
     while True:
         try:
@@ -595,10 +611,14 @@ def cmd_queue(root: Path, args) -> str:
             line += f" — why: {str(j['why'])[:MAX_WHY_CHARS]}"
         lines.append(line)
     lane = data.get("lane") or {}
-    nodes = lane.get("nodes") if isinstance(lane, dict) else None
-    if isinstance(nodes, dict) and nodes:
-        parts = ", ".join(f"{int(n)} {str(state)[:16]}" for state, n in nodes.items())
-        lines.append(f"lane {str(lane.get('partition', ''))[:32]}: {parts} nodes")
+    if isinstance(lane, dict) and lane.get("partition"):
+        where = str(lane.get("partition", ""))[:32]
+        nodes = lane.get("nodes")
+        if lane.get("error"):
+            lines.append(f"lane {where}: node states unavailable ({str(lane['error'])[:120]})")
+        elif isinstance(nodes, dict) and nodes:
+            parts = ", ".join(f"{int(n)} {str(state)[:16]}" for state, n in nodes.items())
+            lines.append(f"lane {where}: {parts} nodes")
     return "\n".join(lines)
 
 

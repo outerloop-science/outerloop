@@ -32,6 +32,12 @@ POLL_S = 2.0
 # rewritten: a session cannot turn the watcher into a squeue loop
 QUERY_GAP_S = 5.0
 MAX_QUEUE_ROWS = 500
+# the lane's node states move slowly; one sinfo a minute is plenty
+LANE_GAP_S = 60.0
+# a stopped watcher may still be inside a scheduler query (its own timeout,
+# a minute at most); the attempt waits this long for it, then moves on — the
+# thread is a daemon and writes nothing once stopped
+JOIN_S = 15.0
 
 
 @dataclass
@@ -48,6 +54,7 @@ class WatcherContext:
     gpu_partition: str = ""
     poll_s: float = POLL_S
     query_gap_s: float = QUERY_GAP_S
+    lane_gap_s: float = LANE_GAP_S
     clock: Callable[[], float] = field(default=time.time)
 
 
@@ -69,6 +76,8 @@ class SessionWatcher:
         self._thread: threading.Thread | None = None
         self._queue_cache: dict[str, Any] | None = None
         self._queue_at = 0.0
+        self._lane_cache: dict[str, Any] | None = None
+        self._lane_at = 0.0
 
     def __enter__(self) -> SessionWatcher:
         self._thread = threading.Thread(target=self._loop, name="session-watcher", daemon=True)
@@ -78,7 +87,9 @@ class SessionWatcher:
     def __exit__(self, *exc: object) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=JOIN_S)
+            if self._thread.is_alive():
+                log.warning("session watcher still inside a scheduler query at session end")
 
     def _loop(self) -> None:
         # wait() is False on timeout: poll; True once stopped
@@ -88,11 +99,15 @@ class SessionWatcher:
     def service(self) -> None:
         """Answer every verb whose request marker is newer than its done marker."""
         for verb in VERBS:
+            if self._stop.is_set():
+                return
             try:
                 requested = marker_requested(self.ctx.workspace, f"{verb}-request", f"{verb}-done")
                 if requested is None:
                     continue
                 payload = self.queue_view() if verb == "queue" else self.history_view()
+                if self._stop.is_set():
+                    return  # the session ended meanwhile: nothing is written after it
                 write_channel_json(self.ctx.workspace, f"{verb}.json", payload)
                 mark_done(self.ctx.workspace, f"{verb}-done", requested)
             except Exception as exc:  # the request stands; the tool times out
@@ -153,12 +168,23 @@ class SessionWatcher:
         return view
 
     def _lane_load(self) -> dict[str, Any]:
+        """The GPU lane's node states, refreshed once per `lane_gap_s` (a
+        second scheduler query per request would defeat the rate limit). A
+        failed sinfo is reported in the answer, never passed off as a lane
+        with no state."""
         ctx = self.ctx
         load = getattr(ctx.compute, "lane_load", None)
         if load is None or not ctx.gpu_partition:
             return {}
+        now = ctx.clock()
+        if self._lane_cache is not None and now - self._lane_at < ctx.lane_gap_s:
+            return self._lane_cache
         try:
-            return {"partition": ctx.gpu_partition, "nodes": load(ctx.gpu_partition)}
+            lane: dict[str, Any] = {
+                "partition": ctx.gpu_partition,
+                "nodes": load(ctx.gpu_partition),
+            }
         except Exception as exc:
-            log.debug("lane load unavailable: %s", exc)
-            return {}
+            lane = {"partition": ctx.gpu_partition, "nodes": {}, "error": str(exc)[:200]}
+        self._lane_cache, self._lane_at = lane, now
+        return lane

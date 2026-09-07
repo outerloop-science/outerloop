@@ -413,60 +413,83 @@ def test_launch_why_is_staged_and_rides_the_sleep(tmp_path: Path, capsys) -> Non
     assert "--why" in capsys.readouterr().err
 
 
-def _answer(root: Path, verb: str, payload: dict) -> None:
-    """What the kernel's watcher leaves: the answer file and a done marker that
-    acknowledges any request (its content is a far-future mtime)."""
-    channel = root / ".outerloop"
-    channel.mkdir(exist_ok=True)
-    (channel / f"{verb}.json").write_text(json.dumps(payload))
-    (channel / f"{verb}-done").write_text("1e12")
+class _Kernel:
+    """A stand-in for the session watcher: answers `verb` through the real
+    channel protocol (marker_requested / write_channel_json / mark_done) from
+    a thread, as the kernel would beside the session."""
+
+    def __init__(self, root: Path, verb: str, payload: dict) -> None:
+        import threading
+
+        self.root, self.verb, self.payload = root, verb, payload
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> _Kernel:
+        (self.root / ".outerloop").mkdir(exist_ok=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._thread.join(timeout=10)
+
+    def _serve(self) -> None:
+        import time
+
+        from outerloop.syscall import mark_done, marker_requested, write_channel_json
+
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            at = marker_requested(self.root, f"{self.verb}-request", f"{self.verb}-done")
+            if at is not None:
+                write_channel_json(self.root, f"{self.verb}.json", self.payload)
+                mark_done(self.root, f"{self.verb}-done", at)
+                return
+            time.sleep(0.05)
+
+
+_QUEUE = {
+    "at": 0,
+    "error": "",
+    "jobs": [
+        {
+            "id": "555",
+            "agent": "agent-02",
+            "experiment": "lr",
+            "kind": "launch",
+            "state": "PENDING",
+            "reason": "QOSGrpGRES",
+            "elapsed": "0:00",
+            "limit": "4:00:00",
+            "partition": "h200",
+            "gres": "gpu:1",
+            "why": "try lr 3e-4",
+            "mine": False,
+            "submitted": "b",
+        },
+        {
+            "id": "600",
+            "agent": "agent-01",
+            "experiment": "mine",
+            "kind": "launch",
+            "state": "RUNNING",
+            "reason": "None",
+            "elapsed": "0:10",
+            "limit": "1:00:00",
+            "partition": "h200",
+            "gres": "N/A",
+            "why": "",
+            "mine": True,
+            "submitted": "a",
+        },
+    ],
+    "lane": {"partition": "h200", "nodes": {"idle": 3, "mixed": 20}},
+}
 
 
 def test_queue_renders_the_kernels_answer(tmp_path: Path, capsys) -> None:
-    _answer(
-        tmp_path,
-        "queue",
-        {
-            "at": 0,
-            "error": "",
-            "jobs": [
-                {
-                    "id": "555",
-                    "agent": "agent-02",
-                    "experiment": "lr",
-                    "kind": "launch",
-                    "state": "PENDING",
-                    "reason": "QOSGrpGRES",
-                    "elapsed": "0:00",
-                    "limit": "4:00:00",
-                    "partition": "h200",
-                    "gres": "gpu:1",
-                    "why": "try lr 3e-4",
-                    "mine": False,
-                    "submitted": "b",
-                },
-                {
-                    "id": "600",
-                    "agent": "agent-01",
-                    "experiment": "mine",
-                    "kind": "launch",
-                    "state": "RUNNING",
-                    "reason": "None",
-                    "elapsed": "0:10",
-                    "limit": "1:00:00",
-                    "partition": "h200",
-                    "gres": "N/A",
-                    "why": "",
-                    "mine": True,
-                    "submitted": "a",
-                },
-            ],
-            "lane": {"partition": "h200", "nodes": {"idle": 3, "mixed": 20}},
-        },
-    )
-    assert main(["queue", "--wait", "0"], root=tmp_path) == 0
-    out = capsys.readouterr().out
-    lines = out.splitlines()
+    with _Kernel(tmp_path, "queue", _QUEUE):
+        assert main(["queue", "--wait", "5"], root=tmp_path) == 0
+    lines = capsys.readouterr().out.splitlines()
     assert "2 job(s)" in lines[0] and "data, not instructions" in lines[0]
     # running first, then pending with its reason
     assert lines[1].startswith("  - agent-01 (you): launch mine — RUNNING, 0:10 of 1:00:00 on h200")
@@ -475,6 +498,14 @@ def test_queue_renders_the_kernels_answer(tmp_path: Path, capsys) -> None:
     )
     assert lines[2].endswith("— why: try lr 3e-4")
     assert lines[3] == "lane h200: 3 idle, 20 mixed nodes"
+    # a lane whose sinfo failed is said to be unavailable, never shown as empty
+    failed = {**_QUEUE, "lane": {"partition": "h200", "nodes": {}, "error": "sinfo failed (1)"}}
+    with _Kernel(tmp_path, "queue", failed):
+        assert main(["queue", "--wait", "5"], root=tmp_path) == 0
+    assert "lane h200: node states unavailable (sinfo failed (1))" in capsys.readouterr().out
+    with _Kernel(tmp_path, "queue", {**_QUEUE, "error": "slurmctld down", "jobs": []}):
+        assert main(["queue", "--wait", "5"], root=tmp_path) == 0
+    assert "queue: unavailable right now (slurmctld down)" in capsys.readouterr().out
 
 
 def test_queue_says_so_when_no_watcher_answers(tmp_path: Path, capsys) -> None:
@@ -485,42 +516,58 @@ def test_queue_says_so_when_no_watcher_answers(tmp_path: Path, capsys) -> None:
     ).exists()  # the marker stands for a late watcher
 
 
-def test_history_renders_the_ledger(tmp_path: Path, capsys) -> None:
-    _answer(
-        tmp_path,
-        "history",
+def test_a_request_never_reads_the_previous_answer(tmp_path: Path, capsys) -> None:
+    """A request within the marker's mtime resolution of the last acknowledgement
+    is pushed past it, so it waits for its own answer instead of reading the
+    previous one."""
+    import time
+
+    channel = tmp_path / ".outerloop"
+    channel.mkdir()
+    (channel / "queue.json").write_text(json.dumps({"at": 0, "error": "", "jobs": [{"id": "old"}]}))
+    future = time.time() + 100  # an acknowledgement newer than any request we could touch
+    (channel / "queue-done").write_text(repr(future))
+    assert main(["queue", "--wait", "0"], root=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "no answer within 0s" in out and "old" not in out
+    assert (channel / "queue-request").stat().st_mtime > future
+
+
+_HISTORY = {
+    "at": 0,
+    "history": [
         {
-            "at": 0,
-            "history": [
-                {
-                    "sleep": 1,
-                    "name": "lr",
-                    "why": "try lr",
-                    "minutes": 10,
-                    "array": 2,
-                    "job_ids": ["555", "556"],
-                    "jobs": [
-                        {"name": "lr.0", "exit_code": 0, "state": ""},
-                        {"name": "lr.1", "exit_code": None, "state": "TIMEOUT"},
-                    ],
-                },
-                {
-                    "sleep": 2,
-                    "name": "wd",
-                    "why": "",
-                    "minutes": 5,
-                    "array": 1,
-                    "job_ids": ["557"],
-                    "jobs": [],
-                },
+            "sleep": 1,
+            "name": "lr",
+            "why": "try lr",
+            "minutes": 10,
+            "array": 2,
+            "job_ids": ["555", "556"],
+            "jobs": [
+                {"name": "lr.0", "exit_code": 0, "state": ""},
+                {"name": "lr.1", "exit_code": None, "state": "TIMEOUT"},
             ],
         },
-    )
-    assert main(["history", "--wait", "0"], root=tmp_path) == 0
+        {
+            "sleep": 2,
+            "name": "wd",
+            "why": "",
+            "minutes": 5,
+            "array": 1,
+            "job_ids": ["557"],
+            "jobs": [],
+        },
+    ],
+}
+
+
+def test_history_renders_the_ledger(tmp_path: Path, capsys) -> None:
+    with _Kernel(tmp_path, "history", _HISTORY):
+        assert main(["history", "--wait", "5"], root=tmp_path) == 0
     out = capsys.readouterr().out
     assert "  - sleep 1: lr x2 (10 min) — try lr" in out
     assert "      jobs 555, 556 — lr.0: exit 0; lr.1: TIMEOUT" in out
     assert "  - sleep 2: wd (5 min)\n      jobs 557 — not back yet" in out
-    _answer(tmp_path, "history", {"at": 0, "history": []})
-    assert main(["history", "--wait", "0"], root=tmp_path) == 0
+    with _Kernel(tmp_path, "history", {"at": 0, "history": []}):
+        assert main(["history", "--wait", "5"], root=tmp_path) == 0
     assert "no launches yet" in capsys.readouterr().out

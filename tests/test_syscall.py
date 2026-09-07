@@ -1093,3 +1093,26 @@ def test_channel_markers_generalize_to_any_verb(tmp_path: Path) -> None:
     write_channel_json(tmp_path, "queue.json", {"jobs": []})
     assert victim.read_text() == "keep"
     assert json.loads((channel / "queue.json").read_text()) == {"jobs": []}
+
+
+def test_a_fifo_in_the_done_markers_place_never_blocks_the_kernel(tmp_path: Path) -> None:
+    """A session can replace `<verb>-done` with a FIFO; a blocking open would
+    hang the watcher thread (and the tick's sync service) for good."""
+    import os
+    import threading
+
+    from outerloop.syscall import marker_requested
+
+    channel = tmp_path / ".outerloop"
+    channel.mkdir()
+    os.mkfifo(channel / "queue-done")
+    (channel / "queue-request").touch()
+    seen: list[float | None] = []
+    t = threading.Thread(
+        target=lambda: seen.append(marker_requested(tmp_path, "queue-request", "queue-done")),
+        daemon=True,
+    )
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), "marker_requested blocked on the FIFO"
+    assert seen and seen[0] is not None  # the FIFO counts as no acknowledgement at all

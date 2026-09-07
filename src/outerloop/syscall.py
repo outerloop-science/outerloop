@@ -36,6 +36,7 @@ import contextlib
 import json
 import os
 import re
+import stat
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -943,10 +944,15 @@ def _read_done(dirfd: int, name: str = SYNC_DONE) -> float:
     no mtime games: hard-linking the marker cannot change another file's
     times, because the kernel never calls utime)."""
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
+        # O_NONBLOCK: opening a FIFO planted in the marker's place returns at
+        # once instead of waiting for a writer that never comes (the watcher
+        # thread and the tick would otherwise hang on it forever)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dirfd)
     except OSError:
         return 0.0
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return 0.0  # a FIFO, socket or device is not a marker the kernel wrote
         return float(os.read(fd, 64).decode() or 0)
     except (OSError, ValueError):
         return 0.0

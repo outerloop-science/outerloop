@@ -14,8 +14,11 @@ from outerloop.watcher import SessionWatcher, WatcherContext
 
 
 class _Compute:
-    def __init__(self, rows: list[dict[str, str]], fail: bool = False) -> None:
+    def __init__(
+        self, rows: list[dict[str, str]], fail: bool = False, lane_fail: bool = False
+    ) -> None:
         self.rows, self.fail, self.calls = rows, fail, 0
+        self.lane_fail, self.lane_calls = lane_fail, 0
 
     def queue_snapshot(self) -> list[dict[str, str]]:
         self.calls += 1
@@ -24,6 +27,9 @@ class _Compute:
         return list(self.rows)
 
     def lane_load(self, partition: str) -> dict[str, int]:
+        self.lane_calls += 1
+        if self.lane_fail:
+            raise RuntimeError("sinfo failed (1)")
         return {"idle": 3, "mixed": 20}
 
 
@@ -204,3 +210,33 @@ def test_a_symlinked_channel_is_never_followed(tmp_path: Path) -> None:
     channel.symlink_to(elsewhere)
     SessionWatcher(_ctx(root, ws, _Compute([]))).service()  # no exception
     assert not (elsewhere / "queue.json").exists() and not (elsewhere / "queue-done").exists()
+
+
+def test_lane_load_is_asked_once_a_minute_and_its_failure_is_said(tmp_path: Path) -> None:
+    root, ws = _fleet(tmp_path)
+    compute = _Compute([_row("555", "r2-launch-lr")])
+    clock = [100.0]
+    watcher = SessionWatcher(_ctx(root, ws, compute, clock=lambda: clock[0], query_gap_s=5.0))
+    for t, at in ((100.0, 50.0), (110.0, 60.0), (170.0, 70.0)):
+        clock[0] = t
+        _ask(ws, "queue", at)
+        watcher.service()
+    # three uncached queue views (5 s apart or more) cost three squeue and two sinfo
+    assert (compute.calls, compute.lane_calls) == (3, 2)
+    failing = _Compute([], lane_fail=True)
+    watcher = SessionWatcher(_ctx(root, ws, failing))
+    _ask(ws, "queue", 80.0)
+    watcher.service()
+    view = _answered(ws, "queue")
+    assert view["lane"] == {"partition": "h200", "nodes": {}, "error": "sinfo failed (1)"}
+    assert view["error"] == ""  # the queue itself was fine
+
+
+def test_nothing_is_written_once_the_session_ended(tmp_path: Path) -> None:
+    root, ws = _fleet(tmp_path)
+    watcher = SessionWatcher(_ctx(root, ws, _Compute([_row("555", "r2-launch-lr")])))
+    _ask(ws, "queue", 50.0)
+    watcher.__exit__(None, None, None)  # stopped (never started): the request stands
+    watcher.service()
+    assert not (ws / ".outerloop" / "queue.json").exists()
+    assert not (ws / ".outerloop" / "queue-done").exists()
