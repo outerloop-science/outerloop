@@ -178,21 +178,6 @@ def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
     assert LocalCompute.queue_snapshot(None) == []  # type: ignore[arg-type]  # no queue in the monolith
 
 
-def test_hold_flag_and_release() -> None:
-    from outerloop.compute import LocalCompute
-
-    held = JobSpec(job_name="j", account="a", partition="p", time_minutes=1, command="x", hold=True)
-    assert "--hold" in held.to_argv()
-    plain = JobSpec(job_name="j", account="a", partition="p", time_minutes=1, command="x")
-    assert "--hold" not in plain.to_argv()
-    runner = FakeRunner([CommandResult(0, "", "")])
-    SlurmCompute(runner=runner).release("4242")
-    assert runner.seen[0] == ["scontrol", "release", "4242"]
-    with pytest.raises(ValueError):
-        SlurmCompute(runner=runner).release("not-an-id")
-    LocalCompute.release(None, "1")  # type: ignore[arg-type]  # nothing is ever held locally
-
-
 def test_gpus_in_gres_parses_squeue_tres() -> None:
     from outerloop.compute import gpus_in_gres
 

@@ -46,6 +46,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Launch admission, queue then stop: a sleep that asks for GPU launches is refused
+  while any of this account's GPU jobs is pending on a cap reason
+  (`QOSMaxGRESPerUser`, `QOSGrpGRES`, and kin), naming the blocking job; otherwise
+  launches queue as before and Slurm does the waiting. No cap number to configure:
+  Slurm publishes none a submitter can trust. `squeue` rows on the board carry
+  the pending reason and GRES.
 - The board's queue is a card in the live strip, not a preformatted dump: a
   full-width table with running jobs first, state pills, elapsed time,
   partition (first of several, the rest counted, all on hover), and the
