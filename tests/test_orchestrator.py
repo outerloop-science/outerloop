@@ -324,7 +324,11 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
 
     _write_syscall(
         tmp_path,
-        {"launches": [{"name": "probe", "command": "uv run probe.py"}], "submit": True},
+        {
+            "launches": [{"name": "probe", "command": "uv run probe.py"}],
+            "submit": True,
+            "report": "H: the change helps",
+        },
     )
     launched: list = []
     harness = FakeHarness(result=ok_session())
@@ -362,7 +366,12 @@ def test_a_submits_sibling_sweep_is_clamped_too(tmp_path: Path) -> None:
         "budgets: {gpu_hours_per_run: 1, runs_per_week: 10, max_concurrent_gpus: 3}",
     )
     _write_syscall(
-        tmp_path, {"launches": [{"name": "s", "command": "x", "array": 8}], "submit": True}
+        tmp_path,
+        {
+            "launches": [{"name": "s", "command": "x", "array": 8}],
+            "submit": True,
+            "report": "H: the change helps",
+        },
     )
     launched: list = []
     with pytest.raises(RunParked) as exc:
@@ -660,7 +669,11 @@ def test_inline_gate_never_dispatches_a_submits_sibling_launches(tmp_path: Path)
     # and their budget stays unspent.
     _write_syscall(
         tmp_path,
-        {"launches": [{"name": "probe", "command": "x"}], "submit": True},
+        {
+            "launches": [{"name": "probe", "command": "x"}],
+            "submit": True,
+            "report": "H: the change helps",
+        },
     )
     launched: list = []
     harness = _SeqHarness(["the claim", "conceded"])
@@ -1534,7 +1547,15 @@ class _SeqHarness:
             d = workspace / ".outerloop"
             d.mkdir(exist_ok=True)
             (d / "syscall.json").write_text(
-                _json.dumps({"type": "sleep", "launches": [], "note": "", "submit": True})
+                _json.dumps(
+                    {
+                        "type": "sleep",
+                        "launches": [],
+                        "note": "",
+                        "submit": True,
+                        "report": "H: the change helps",
+                    }
+                )
             )
         return SessionResult(
             stop_reason="end_turn",
@@ -1809,3 +1830,104 @@ def test_branch_prefix_derives_from_the_agent_id() -> None:
         assert RunConfig(target="o/r", benchmark="b", agent_id=legacy).branch_prefix == (
             "feat/auto/agent-01"
         )
+
+
+def test_a_submits_report_is_what_the_panel_reads_and_the_pr_shows(tmp_path: Path) -> None:
+    """The author's report at submit is the claim: the panel reads it in place
+    of the session's last message, and the result carries it for the PR."""
+    from outerloop.panel import PanelVerdict
+
+    _write_syscall(tmp_path, {"launches": [], "submit": True, "report": "H: warmdown 6400 helps"})
+    seen: list = []
+
+    def panel(baseline, candidate, text):
+        seen.append(text)
+        return PanelVerdict(blocking=(), transcript="panel: ok", wake_text="")
+
+    result, _harness, _ = run_climb(
+        tmp_path,
+        [13.876, 13.10],
+        contract=DEEP_CONTRACT,
+        launcher=_fake_launcher([]),
+        panel_runner=panel,
+    )
+    assert result.outcome == "improved"
+    assert seen == ["H: warmdown 6400 helps"]
+    assert result.submit_report == "H: warmdown 6400 helps"
+
+
+def test_pr_body_leads_with_the_report_and_lists_the_experiments() -> None:
+    from outerloop.orchestrator import AttemptResult
+
+    result = AttemptResult(
+        outcome="improved",
+        baseline=13.876,
+        candidate=13.1,
+        session=ok_session(),
+        submit_report="## Hypothesis\n\nA longer warmdown helps.",
+    )
+    rows = [
+        {
+            "sleep": 1,
+            "launch": "wd",
+            "why": "try 6400",
+            "array": 1,
+            "concurrency": 0,
+            "job": "wd",
+            "back": True,
+            "exit_code": 0,
+            "state": "",
+            "elapsed": 4500,
+            "result": '{"val": 3.28} | tail',
+        },
+        {
+            "sleep": 2,
+            "launch": "lr",
+            "why": "lr sweep",
+            "array": 4,
+            "concurrency": 2,
+            "job": "lr.3",
+            "back": True,
+            "exit_code": None,
+            "state": "TIMEOUT",
+            "elapsed": None,
+            "result": "",
+        },
+        {
+            "sleep": 3,
+            "launch": "late",
+            "why": "",
+            "array": 1,
+            "concurrency": 0,
+            "job": "late",
+            "back": False,
+            "exit_code": None,
+            "state": "",
+            "elapsed": None,
+            "result": "",
+        },
+    ]
+    body = pr_body(result, CONFIG, redact_secrets=(), experiments=rows)
+    report_at = body.index("## Research report")
+    experiments_at = body.index("## Experiments")
+    measured_at = body.index("## Measured")
+    assert report_at < experiments_at < measured_at
+    assert "Written by the author at submit" in body and "A longer warmdown helps." in body
+    assert '| 1 | wd | try 6400 | wd | exit 0, 1h15m | {"val": 3.28} \\| tail |' in body
+    # a pipe at the cut is escaped after the cut, so no bare backslash escapes the separator
+    cut = pr_body(
+        result,
+        CONFIG,
+        redact_secrets=(),
+        experiments=[{**rows[0], "result": "x" * 159 + "|" + "y" * 20}],
+    )
+    assert "x" * 159 + "\\| |" in cut and "x\\ |" not in cut
+    assert "| 2 | lr (x4, 2 at a time) | lr sweep | lr.3 | TIMEOUT |  |" in body
+    assert "| 3 | late |  | late | not back |  |" in body
+    # no report: the session's last words, with the old banner; no table when nothing ran
+    plain = pr_body(
+        AttemptResult(outcome="improved", baseline=1.0, candidate=0.9, session=ok_session()),
+        CONFIG,
+        redact_secrets=(),
+    )
+    assert "Session prose" in plain and "## Experiments" not in plain

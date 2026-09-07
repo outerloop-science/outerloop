@@ -135,14 +135,39 @@ def test_artifact_path_check_matches_the_kernel(tmp_path: Path, capsys) -> None:
 
 
 def test_submit_stages_and_rides_the_sleep(tmp_path: Path, capsys) -> None:
-    assert run(tmp_path, "submit") == 0
-    assert "sealed" in capsys.readouterr().out.lower()
+    (tmp_path / "report.md").write_text("# Hypothesis\n\nA longer warmdown helps.\n")
+    assert run(tmp_path, "submit", "--report", "report.md") == 0
+    out = capsys.readouterr().out
+    assert "sealed" in out.lower() and "your report (" in out
     assert run(tmp_path, "status") == 0
-    assert "submit staged" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "submit staged" in out and "report:" in out
     assert run(tmp_path, "sleep") == 0
     assert "submit" in capsys.readouterr().out
     req = read_request(tmp_path)
     assert req is not None and req.submit and req.launches == ()
+    assert req.report == "# Hypothesis\n\nA longer warmdown helps."
+
+
+def test_submit_requires_a_readable_nonempty_report(tmp_path: Path, capsys) -> None:
+    import pytest
+
+    with pytest.raises(SystemExit):  # --report is required by the parser
+        run(tmp_path, "submit")
+    capsys.readouterr()
+    assert run(tmp_path, "submit", "--report", "missing.md") == 2
+    assert "could not be read" in capsys.readouterr().err
+    (tmp_path / "empty.md").write_text("  \n")
+    assert run(tmp_path, "submit", "--report", "empty.md") == 2
+    assert "is empty" in capsys.readouterr().err
+    (tmp_path / "long.md").write_text("x" * 8_001)
+    assert run(tmp_path, "submit", "--report", "long.md") == 2
+    assert "at most 8000" in capsys.readouterr().err
+    (tmp_path / "huge.md").write_text("y" * 2_000_000)  # refused from its first 8 001 chars
+    assert run(tmp_path, "submit", "--report", "huge.md") == 2
+    assert "at most 8000" in capsys.readouterr().err
+    assert run(tmp_path, "status") == 0
+    assert "submit staged" not in capsys.readouterr().out  # nothing was staged by the failures
 
 
 def test_sleep_with_nothing_staged_is_a_checkpoint(tmp_path: Path, capsys) -> None:

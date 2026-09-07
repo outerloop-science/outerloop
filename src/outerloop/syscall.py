@@ -90,6 +90,8 @@ MAX_ARTIFACTS_PER_LAUNCH = 8
 MAX_NOTE_CHARS = 2_000
 # a launch's one-line reason, shown to every agent in the queue view
 MAX_WHY_CHARS = 200
+# the author's write-up at submit: hypothesis, what ran, what was measured, why merge
+MAX_REPORT_CHARS = 8_000
 # Per-job walltime ask, clamped to the same ceiling as dispatched evals.
 MAX_LAUNCH_MINUTES = 240
 # a submit's declared eval walltime: bounded only by the GPU-hour budget the
@@ -148,6 +150,9 @@ class SyscallRequest:
     # wake returns verdict + gate result to the author (published directly when
     # it clears cleanly). Costs the sleep it rides on, nothing else.
     submit: bool = False
+    # the author's report at submit, required with one: it becomes the pull
+    # request's research report and the panel reads it against the diff
+    report: str = ""
     # The author's declared walltime for the submit's paired gate evals
     # (None = the contract's eval_minutes). Walltime is a budget, never the
     # metric: compute is priced in GPU-hours against the run's budget, so a
@@ -271,7 +276,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # so anything else here (e.g. a verdict) is a wrong-type request, not a sleep.
     if data.get("type") != "sleep":
         raise SyscallError(f"expected a sleep syscall, got type {data.get('type')!r}")
-    unknown = set(data) - {"type", "launches", "note", "submit", "eval_minutes"}
+    unknown = set(data) - {"type", "launches", "note", "submit", "eval_minutes", "report"}
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
     note = data.get("note", "")
@@ -287,6 +292,14 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if not submit:
             raise SyscallError("eval_minutes only applies to a submit")
         eval_minutes = min(eval_minutes, MAX_EVAL_MINUTES)
+    report = data.get("report", "")
+    if not isinstance(report, str) or len(report) > MAX_REPORT_CHARS:
+        raise SyscallError(f"report must be a string of at most {MAX_REPORT_CHARS} chars")
+    if submit and not report.strip():
+        raise SyscallError(
+            "a submit needs a report: `submit --report <file>` with the hypothesis, what "
+            "ran and what was measured, and why this should merge"
+        )
     raw_launches = data.get("launches", [])
     if not isinstance(raw_launches, list):
         raise SyscallError("launches must be a list")
@@ -355,7 +368,11 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # (research-loop.md, "the session clock is visible") — it still burns a
     # sleep count, which is what bounds living forever.
     return SyscallRequest(
-        launches=tuple(launches), note=note, submit=submit, eval_minutes=eval_minutes
+        launches=tuple(launches),
+        note=note,
+        submit=submit,
+        eval_minutes=eval_minutes,
+        report=report.strip(),
     )
 
 
@@ -675,6 +692,41 @@ def budget_error(
     return ""
 
 
+def _job_outcome(ev: Path) -> tuple[int | None, str, str, tuple[str, ...]]:
+    """What one launch job left in its dir: exit code (None = it died before
+    its wrapper ran), stdout/stderr tails, and the copy-out's skip lines."""
+    try:
+        exit_code: int | None = int((ev / "exit-code").read_text().strip())
+    except (OSError, ValueError):
+        exit_code = None
+    stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
+    stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
+    skipped = tuple(ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip())
+    return exit_code, stdout, stderr, skipped
+
+
+def read_results(run_dir: Path, launches: tuple[Launch, ...]) -> tuple[LaunchResult, ...]:
+    """Each launch job's outcome as it sits in the run dir — no delivery into
+    any workspace. For the ledger, and for a wake that publishes without
+    resuming the author (`gather_results` is the delivering form)."""
+    results: list[LaunchResult] = []
+    for launch in launches:
+        for job_name, _env in launch_jobs(launch):
+            exit_code, stdout, stderr, skipped = _job_outcome(run_dir / f"eval-launch-{job_name}")
+            results.append(
+                LaunchResult(
+                    name=job_name,
+                    exit_code=exit_code,
+                    stdout_tail=stdout,
+                    stderr_tail=stderr,
+                    delivered=(),
+                    skipped=skipped,
+                    why=launch.why,
+                )
+            )
+    return tuple(results)
+
+
 def gather_results(
     run_dir: Path, workspace: Path, launches: tuple[Launch, ...]
 ) -> tuple[LaunchResult, ...]:
@@ -697,16 +749,7 @@ def gather_results(
         # with artifacts under results/<launch>/<i>/
         for i, (job_name, _env) in enumerate(launch_jobs(launch)):
             ev = run_dir / f"eval-launch-{job_name}"
-            try:
-                exit_code: int | None = int((ev / "exit-code").read_text().strip())
-            except (OSError, ValueError):
-                exit_code = None
-            stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
-            stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
-            skipped = tuple(
-                ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip()
-            )
-
+            exit_code, stdout, stderr, skipped = _job_outcome(ev)
             delivered, skips = _deliver_artifacts(
                 ev / "artifacts", workspace, launch.name, index=i if launch.array > 1 else None
             )

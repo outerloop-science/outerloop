@@ -116,6 +116,43 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     ]
 
 
+def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
+    """A submitted park's stage report is the author's report at submit, not the
+    session's last words: the wake's panel and the PR read it."""
+    from outerloop.syscall import SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-8", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    req = SyscallRequest(launches=(), note="", submit=True, report="H: token sk-secret-1 helps")
+    parked = RunParked(
+        phase="candidate",
+        afterany="afterany:301",
+        base_sha="b" * 40,
+        seed=1,
+        suite_seed=0,
+        candidate_sha="c" * 40,
+        session=_session("s1"),
+        syscall=req,
+        submitted=True,
+        sleeps_used=1,
+    )
+    _park_run(
+        tmp_path,
+        record,
+        parked,
+        "refs/dispatch/tok",
+        eval_minutes=None,
+        now=1000.0,
+        secrets=("sk-secret-1",),
+    )
+    stage = load_record(tmp_path, "tsp-8").stage
+    assert stage["report"] == "H: token [redacted] helps" or "sk-secret-1" not in str(
+        stage["report"]
+    )
+    assert str(stage["report"]).startswith("H: token")
+
+
 def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> None:
     record = RunRecord(
         run_id="tsp-1", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
@@ -2416,6 +2453,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     ]
     rec.stage["launches_used"] = 1
     rec.stage["sleeps_used"] = 1
+    rec.stage["report"] = "H: the author's report at submit"
     save_record(state, rec, 1_000_050.0)
     outcome = resume_run(
         state,
@@ -2429,6 +2467,8 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     record = load_record(state, run_id)
     assert record.state == "waiting"
     assert record.stage.get("submitted") is True
+    # the author's report survives the re-park: the panel and the PR read it
+    assert record.stage["report"] == "H: the author's report at submit"
     assert record.stage["syscall_launches"] == [
         {"name": "probe", "minutes": 240, "artifacts": ["out.txt"], "array": 3}
     ]  # the sweep keeps its width across the re-park (terra #181)

@@ -80,9 +80,24 @@ def append_submitted(
 
 
 def append_ended(
-    run_dir: Path, *, sleep: int, results: tuple[LaunchResult, ...], at: float
+    run_dir: Path,
+    *,
+    sleep: int,
+    results: tuple[LaunchResult, ...],
+    at: float,
+    elapsed_seconds: list[int | None] | None = None,
 ) -> None:
-    """One record per job that came back at the wake, keyed to its sleep."""
+    """One record per job that came back at the wake, keyed to its sleep, with
+    how long it ran when the compute could say (aligned with `results`) and
+    the last line it printed — captured now, because a later launch with the
+    same name overwrites the job dir. A job already recorded as ended under
+    this (sleep, name) is not written again: a submitted park's wake and the
+    author's wake may both see the same jobs."""
+    known = {
+        (int(row.get("sleep") or 0), str(row.get("name") or ""))
+        for row in read_ledger(run_dir)
+        if row.get("event") == "ended"
+    }
     _append(
         run_dir,
         [
@@ -92,11 +107,28 @@ def append_ended(
                 "name": r.name,
                 "exit_code": r.exit_code,
                 "state": r.slurm_state,
+                "elapsed": (
+                    elapsed_seconds[i]
+                    if elapsed_seconds is not None and i < len(elapsed_seconds)
+                    else None
+                ),
+                "last_line": last_line(r.stdout_tail),
                 "at": at,
             }
-            for r in results
+            for i, r in enumerate(results)
+            if (sleep, r.name) not in known
         ],
     )
+
+
+def last_line(text: str, cap: int = 160) -> str:
+    """The last non-empty line of a job's output — its result line, as the
+    wake shows the author — on one line and bounded. "" when there is none."""
+    for line in reversed(text.splitlines()):
+        flat = " ".join(line.split())
+        if flat:
+            return flat[:cap]
+    return ""
 
 
 def read_ledger(run_dir: Path) -> list[dict[str, Any]]:
@@ -133,6 +165,7 @@ def history(run_dir: Path) -> list[dict[str, Any]]:
             "why": row.get("why", ""),
             "minutes": row.get("minutes"),
             "array": row.get("array", 1),
+            "concurrency": row.get("concurrency", 0),
             "job_ids": list(row.get("job_ids") or []),
             "submitted_at": row.get("at"),
             "jobs": [],
@@ -149,10 +182,43 @@ def history(run_dir: Path) -> list[dict[str, Any]]:
                     "name": row.get("name"),
                     "exit_code": row.get("exit_code"),
                     "state": row.get("state", ""),
+                    "elapsed": row.get("elapsed"),
+                    "last_line": str(row.get("last_line") or ""),
                     "ended_at": row.get("at"),
                 }
             )
     return list(entries.values())
+
+
+def experiments_rows(run_dir: Path) -> list[dict[str, Any]]:
+    """The pull request's experiments table: one row per job of every launch
+    this run — its sleep, name and why, how it ended and how long it ran, and
+    the last line it printed, all from the ledger (the job dir is overwritten
+    by a later launch of the same name). A job not back yet says so."""
+    rows: list[dict[str, Any]] = []
+    for entry in history(run_dir):
+        ended = {str(j.get("name")): j for j in entry["jobs"]}
+        array = int(entry.get("array") or 1)
+        name = str(entry.get("name") or "")
+        jobs = [name] if array <= 1 else [f"{name}.{k}" for k in range(array)]
+        for job in jobs:
+            j = ended.get(job)
+            rows.append(
+                {
+                    "sleep": entry.get("sleep"),
+                    "launch": name,
+                    "why": str(entry.get("why") or ""),
+                    "array": array,
+                    "concurrency": int(entry.get("concurrency") or 0),
+                    "job": job,
+                    "back": j is not None,
+                    "exit_code": j.get("exit_code") if j else None,
+                    "state": str(j.get("state") or "") if j else "",
+                    "elapsed": j.get("elapsed") if j else None,
+                    "result": str(j.get("last_line") or "") if j else "",
+                }
+            )
+    return rows
 
 
 def why_by_job(run_dir: Path) -> dict[str, dict[str, Any]]:

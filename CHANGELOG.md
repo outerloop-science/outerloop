@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The pull request carries the research. `submit --report <file>` is required:
+  the author's write-up (hypothesis, what ran and what was measured, why it
+  should merge, what did not work) becomes the PR's research report, and the
+  panel reads it against the diff in place of the session's last message. An
+  experiments table follows, from the kernel's launch ledger: every job the
+  author launched this run, its reason, how it ended and how long it ran, and
+  the last line it printed. The measured table and the panel transcript follow.
 - Sweeps are Slurm job arrays. `launch --array N` submits one job,
   `--array=0-N%K`, and each task derives its job dir and `SWEEP_INDEX` from
   its array index. The queue holds one entry per sweep. `--concurrency K`

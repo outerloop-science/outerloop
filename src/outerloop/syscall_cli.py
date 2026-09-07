@@ -56,6 +56,7 @@ MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
 MAX_NOTE_CHARS = 2_000
 MAX_WHY_CHARS = 200  # one line on what a launch tests; every agent sees it in `queue`
+MAX_REPORT_CHARS = 8_000  # the write-up a submit carries; it becomes the PR's research report
 MAX_LAUNCH_MINUTES = 240
 MAX_LAUNCH_ARRAY = 16  # jobs one launch may fan out to (a sweep)
 # a submit's declared eval walltime (matches the kernel's backstop)
@@ -103,6 +104,7 @@ def _load_staged(root: Path) -> dict:
         ("note", ""),
         ("submit", False),
         ("eval_minutes", None),
+        ("report", ""),
         ("findings", []),
         ("notes", ""),
     ):
@@ -202,8 +204,27 @@ def cmd_note(root: Path, args: argparse.Namespace) -> str:
 
 
 def cmd_submit(root: Path, args: argparse.Namespace) -> str:
+    path = Path(args.report)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        # read one char past the cap, never the whole file: the size check
+        # decides before an oversized file is in memory
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            report = fh.read(MAX_REPORT_CHARS + 1)
+    except OSError as exc:
+        raise ToolError(f"--report {args.report!r} could not be read ({exc})") from exc
+    if len(report) > MAX_REPORT_CHARS:
+        raise ToolError(f"--report is over the limit; at most {MAX_REPORT_CHARS} chars")
+    report = report.strip()
+    if not report:
+        raise ToolError(
+            f"--report {args.report!r} is empty: write the hypothesis, what you ran and "
+            "measured, and why this should merge"
+        )
     staged = _load_staged(root)
     staged["submit"] = True
+    staged["report"] = report
     minutes = getattr(args, "minutes", None)
     if minutes is not None:
         if minutes < 1:
@@ -219,9 +240,9 @@ def cmd_submit(root: Path, args: argparse.Namespace) -> str:
     )
     return (
         "staged submit: on `sleep` your current tree is SEALED and measured "
-        "against the baseline, and the review panel reads the claim; you will "
-        f"be woken with the result (published if it clears cleanly). {walltime}. "
-        f"{_budget_line(root)}."
+        "against the baseline, and the review panel reads your report "
+        f"({len(report)} chars) against the diff; you will be woken with the "
+        f"result (published if it clears cleanly). {walltime}. {_budget_line(root)}."
     )
 
 
@@ -236,6 +257,9 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     }
     if staged["submit"] and staged.get("eval_minutes"):
         payload["eval_minutes"] = int(staged["eval_minutes"])
+    if staged["submit"]:
+        # the report rides the submit: the kernel refuses a submit without one
+        payload["report"] = str(staged.get("report") or "")
     (_dir(root) / ABI).write_text(json.dumps(payload))
     (root / DIR / REQUEST).unlink(missing_ok=True)
     n = len(staged["launches"])
@@ -323,6 +347,8 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
                 lines.append(f"      why: {la['why']}")
         if staged["submit"]:
             lines.append("  submit staged: `sleep` seals this tree for the gate + panel")
+            if staged.get("report"):
+                lines.append(f"  report: {len(staged['report'])} chars")
         if staged.get("note"):
             lines.append(f"  note: {staged['note']}")
     if staged["findings"]:
@@ -379,6 +405,15 @@ def build_parser() -> argparse.ArgumentParser:
     su = sub.add_parser(
         "submit",
         help="stage a submit: on sleep, seal this tree for the gate + review panel",
+    )
+    su.add_argument(
+        "--report",
+        required=True,
+        help=(
+            "markdown file: your hypothesis, what you ran and what it measured (see "
+            "`history`), why this should merge, what did not work; it becomes the PR's "
+            "research report and the panel reads it against the diff"
+        ),
     )
     su.add_argument(
         "--minutes",
