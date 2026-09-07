@@ -626,6 +626,16 @@ def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
     )
 
 
+# Experiments yield to verification. Every kernel job is one Slurm user, so
+# among the kernel's own pending jobs the priority order is ours: launches
+# carry this nice so a gate eval or a follow-up re-measure (nice 0) starts
+# first when the cap frees a slot. Sized above the factors that differ between
+# our jobs on Torch — age tops out at 1000 after a week, job size at 1000, the
+# per-GPU TRES share stays in the hundreds — so the order holds however long a
+# launch has waited. Other users' jobs and the group cap are untouched.
+LAUNCH_NICE = 5000
+
+
 def _make_launcher(
     dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str, gpus: int = 0
 ):
@@ -665,6 +675,7 @@ def _make_launcher(
                         partition=partition,
                         eval_minutes=launch.minutes,
                         gpus=gpus,
+                        nice=LAUNCH_NICE,
                     )
                     ids.append(dispatch.compute.submit(spec))
         except Exception:

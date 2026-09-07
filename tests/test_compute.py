@@ -50,6 +50,11 @@ def test_account_and_partition_are_optional_in_the_argv() -> None:
     with_both = JobSpec(job_name="j", account="a", partition="cpu,gpu", time_minutes=1, command="x")
     assert "--account=a" in with_both.to_argv()
     assert "--partition=cpu,gpu" in with_both.to_argv()  # comma-list passes through
+    assert not any(a.startswith("--nice") for a in with_both.to_argv())  # 0 = not passed
+    assert (
+        "--nice=5000"
+        in JobSpec(job_name="l", account="", partition="", time_minutes=5, nice=5000).to_argv()
+    )
     # unset: Slurm bills the default association and picks the default partition
     bare = JobSpec(job_name="j", account="", partition="", time_minutes=1, command="x")
     assert not any(a.startswith(("--account", "--partition")) for a in bare.to_argv())

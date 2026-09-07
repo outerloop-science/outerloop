@@ -83,6 +83,13 @@ Two small additions make this complete:
   sweep cancels them. Nothing would read their results.
 - **#315's admission check comes out.** `queue_saturated` and the refusal
   for cap reasons are removed; throttled arrays below replace them.
+- **Experiments yield to verification.** Every kernel job is one Slurm
+  user, so the order among the kernel's own pending jobs is ours to set.
+  Launches carry `--nice` (5000 on Torch, above the age factor's 1000
+  ceiling and the size and per-GPU factors), gate evals and follow-up
+  re-measures do not, so a slot the cap frees goes to verifying claimed work
+  before starting new experiments. Other users' jobs and the cap itself are
+  untouched. Shipped ahead of the rest of this section.
 
 ## Sweeps as throttled arrays
 

@@ -486,6 +486,7 @@ def eval_job_spec(
     cpus: int = 4,
     mem: str = "8G",
     gpus: int = 0,
+    nice: int = 0,
 ) -> JobSpec:
     """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
@@ -494,7 +495,8 @@ def eval_job_spec(
     the GPU lane (DispatchSettings.placement) when it is nonzero, and the
     job is sized for it: a GPU eval gets at least EVAL_CPUS_PER_GPU cores
     and EVAL_MEM_GB_PER_GPU GB per GPU (a training eval's data loading and
-    torch.compile workers do not fit the CPU eval's 4 cores / 8 GB)."""
+    torch.compile workers do not fit the CPU eval's 4 cores / 8 GB). `nice`
+    lowers the job's priority below the kernel's evals (the launcher sets it)."""
     if gpus > 0:
         cpus = max(cpus, EVAL_CPUS_PER_GPU * gpus)
         given = _mem_gb(mem)
@@ -511,6 +513,7 @@ def eval_job_spec(
         cpus=cpus,
         mem=mem,
         gpus=gpus,
+        nice=nice,
     )
 
 

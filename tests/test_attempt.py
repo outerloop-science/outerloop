@@ -785,8 +785,10 @@ def _fake_dispatch(image="/img.sif", account="acct", partition="cpu", cancelled=
     from outerloop.measure import DispatchSettings
 
     ids = iter(range(1000, 1100))
+    seen: list[list[str]] = []  # every argv, for tests that inspect a submission
 
     def runner(argv, timeout_s):
+        seen.append(list(argv))
         if argv[0] == "sbatch":
             return CommandResult(0, f"{next(ids)}\n", "")
         if argv[0] == "squeue":
@@ -797,6 +799,7 @@ def _fake_dispatch(image="/img.sif", account="acct", partition="cpu", cancelled=
             return CommandResult(0, "", "")
         raise AssertionError(f"unexpected slurm call: {argv[0]}")
 
+    runner.seen = seen  # type: ignore[attr-defined]
     return DispatchSettings(
         compute=SlurmCompute(runner=runner),
         image=image,
@@ -1954,7 +1957,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
             ),
         },
         values=[],  # parked before any measurement
-        dispatch=_fake_dispatch(),
+        dispatch=(dispatch := _fake_dispatch()),
     )
     assert outcome.outcome == "parked"
     assert github.prs == []
@@ -1962,6 +1965,14 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert record.state == "waiting"
     assert record.stage["phase"] == "author-sleep"
     assert record.stage["afterany"] == "afterany:1000"
+    # experiments yield to verification: the launch went in below the kernel's
+    # own evals (which carry no nice)
+    from outerloop.attempt import LAUNCH_NICE
+
+    launch_argv = next(
+        a for a in dispatch.compute.runner.seen if "--job-name=tsp-1-launch-probe" in a
+    )
+    assert f"--nice={LAUNCH_NICE}" in launch_argv
     assert record.stage["syscall_launches"] == [
         {"name": "probe", "minutes": 45, "artifacts": ["out/tails.json"]}
     ]
