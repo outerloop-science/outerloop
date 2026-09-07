@@ -10,7 +10,6 @@ from outerloop.harness import SessionResult
 from outerloop.verifier import build_verify_agent_brief
 from outerloop.verify_agent import run_agent_verify
 
-_WORKSPACE = Path("/tmp/two-trees")
 BOT = "agentic-learning-bot"
 
 _FINDINGS = json.dumps(
@@ -102,20 +101,23 @@ class _Client:
         self.comments.append(body)
 
 
-def _run(client: _Client, harness: _Harness) -> str | None:
+def _run(client: _Client, harness: _Harness, workspace: Path) -> str | None:
+    """Each test gets its own workspace: the fake harness commits verdicts through
+    the syscall channel under it, and a path shared across xdist workers let one
+    worker's verdict be read by another's test (#307)."""
     return run_agent_verify(
         client,  # type: ignore[arg-type]
         "org/repo",
         9,
         harness,
-        _WORKSPACE,
+        workspace,
         bot_login=BOT,
     )
 
 
-def test_bot_pr_is_verified_and_posts_issue_comment() -> None:
+def test_bot_pr_is_verified_and_posts_issue_comment(tmp_path: Path) -> None:
     client, harness = _Client(), _Harness(_FINDINGS)
-    label = _run(client, harness)
+    label = _run(client, harness, tmp_path)
     assert label is not None
     assert len(client.comments) == 1
     body = client.comments[0]
@@ -126,25 +128,25 @@ def test_bot_pr_is_verified_and_posts_issue_comment() -> None:
     assert "heldout_probe" in harness.briefs[0]
 
 
-def test_human_pr_is_skipped() -> None:
+def test_human_pr_is_skipped(tmp_path: Path) -> None:
     # the verifier's skip is the INVERSE of the reviewer's: bot PRs only
     client, harness = _Client(author="alice"), _Harness(_FINDINGS)
-    assert _run(client, harness) is None
+    assert _run(client, harness, tmp_path) is None
     assert client.comments == []
     assert harness.briefs == []  # skipped before the session ran
 
 
-def test_outage_posts_skip_stub() -> None:
+def test_outage_posts_skip_stub(tmp_path: Path) -> None:
     client = _Client()
     harness = _Harness("", is_error=True, detail="rate_limit_error: slow down")
-    assert _run(client, harness) is None
+    assert _run(client, harness, tmp_path) is None
     assert len(client.comments) == 1
     assert "could not run" in client.comments[0]
 
 
-def test_malformed_output_posts_nothing() -> None:
+def test_malformed_output_posts_nothing(tmp_path: Path) -> None:
     client, harness = _Client(), _Harness("not json at all")
-    assert _run(client, harness) is None
+    assert _run(client, harness, tmp_path) is None
     assert client.comments == []
 
 
