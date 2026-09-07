@@ -77,10 +77,10 @@ standing instruction they supersede — a resumed agent honors stale constraints
       `gpu_hours_per_run`; `baseline: cached` measures a base once per base
       sha (2026-08-16 → 2026-08-28, #174–#178).
 
-- [ ] The session watcher, queue view and per-agent share
+- [ ] The session watcher, queue view and throttled sweeps
       (docs/design/session-watcher.md): always queue, Slurm does the waiting;
-      one agent's concurrent GPU jobs bounded by a contract share checked at
-      sleep; a watcher thread in the attempt answers `queue`, `history` and
+      a sweep is one throttled array job, the author sets its concurrency under
+      a lenient contract ceiling; a watcher thread in the attempt answers `queue`, `history` and
       later `sync` in seconds; no new process, no Slurm inside the container.
 - [x] The chain: `scripts/tick_chain.sbatch` — successor top-up to depth 2,
       `--dependency=singleton`, absolute `--begin` cadence grid, sbatch

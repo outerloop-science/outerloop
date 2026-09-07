@@ -1,4 +1,4 @@
-# The session watcher, the queue view, and the per-agent share
+# The session watcher, the queue view, and sweeps as throttled arrays
 
 **Status: proposal (2026-09-07).** How an author's launches meet a full
 cluster, what the author can see of that cluster while it works, and where a
@@ -25,8 +25,9 @@ bumping, crash-safe two-phase submission. Slurm already has one, and a
 better one.
 
 So the design walks back to submission and refusal, and puts the work where
-it belongs: Slurm queues, the kernel bounds each agent's share, and the
-author can see the queue and the limit it is being held to.
+it belongs: Slurm queues, a sweep is one throttled array job whose pace the
+author sets under a lenient ceiling, and the author can see the queue and the
+limit it is being held to.
 
 ## What exists today
 
@@ -81,35 +82,41 @@ Two small additions make this complete:
   abandoned, it was stuck) while launches of its are still pending, the
   sweep cancels them. Nothing would read their results.
 - **#315's admission check comes out.** `queue_saturated` and the refusal
-  for cap reasons are removed; the share below replaces them.
+  for cap reasons are removed; throttled arrays below replace them.
 
-## The per-agent share
+## Sweeps as throttled arrays
 
 All agents share one Slurm identity, so Slurm cannot tell them apart. One
-agent asking for eight launches with sixteen-way arrays submits 128 jobs and
-holds the account's cap for hours while its siblings wait behind it. That is
-the one queueing problem that is ours, and it is a wall, not a queue.
+agent asking for eight launches with sixteen-way arrays submits 128 separate
+jobs and holds the account's cap for hours while its siblings wait behind
+them. That is the one queueing problem that is ours. The answer is not to
+refuse the sweep and not to line it up inside the kernel; it is to submit
+the sweep the way Slurm wants it.
 
-- **A contract budget, `max_concurrent_gpu_jobs`:** the most GPU jobs one
-  agent may have running or pending at once. Default four, sized to divide a
-  16-GPU per-user cap among four agents; a benchmark that wants wide sweeps
-  raises it. The per-launch array cap of sixteen stays as the bound on one
-  launch; the share bounds concurrency.
-- **Enforced at sleep, statelessly.** The attempt reads `squeue --me` once,
-  counts the GPU jobs whose run belongs to this agent (the run id in the
-  job name carries the agent id), and refuses a request that would exceed
-  the share, through the budget-refusal path that already exists: "you have
-  12 GPU jobs in the queue; your share is 16; this request adds 24". No
-  state, no line, nothing to recover after a crash.
-- **The author reshapes.** A smaller array, fewer launches, or launch what
-  fits now and the rest after results, which is the depth loop working as
-  intended. Refusal costs the author a wake only when it overshoots its own
-  share, on the same terms the GPU-hours budget already sets.
-- **Fair by construction.** Every agent has its share whether the queue is
-  empty or full, so there is no latecomer who takes cleared capacity from a
-  waiting sibling.
-- **CPU benchmarks are untouched.** The share counts GPU jobs; local compute
-  has no queue and is never refused.
+- **A sweep is one launch and one Slurm job.** An array launch is submitted
+  as a real job array, `--array=0-15%K`. Slurm runs at most `K` tasks at a
+  time, holds the rest inside the same job, and the queue sees one entry
+  that accrues priority as one job. The wake's `afterany` on the array id
+  covers every task.
+- **The author sets its own pace.** `launch --array 16 --concurrency 8` says
+  how many tasks may run at once; unset, the kernel fills in a default. A
+  sweep never has to be chunked across sleeps, and nothing is refused in the
+  normal case.
+- **The kernel sets a lenient ceiling.** A contract budget,
+  `max_concurrency`, caps the concurrency any one launch may ask for. It is
+  deliberately not the cap divided by the agent count: agents rarely launch
+  at the same moment, and an idle share is wasted GPU. On Torch's 16-GPU
+  per-user cap the ceiling might be 12, so a lone sweep uses most of the
+  machine and a sibling's job can still get in. A request above the ceiling
+  is clamped to it, and the wake text says so.
+- **Fairness follows from Slurm.** A sibling's job competes with `K` eligible
+  tasks, not with the whole sweep, so no rule of ours orders anything.
+- **What changes in the launcher.** Arrays become a Slurm-backend concern.
+  The job script maps `SLURM_ARRAY_TASK_ID` to `SWEEP_INDEX`; task ids are
+  `<id>_<k>` for results gathering and the board; local compute keeps running
+  the tasks in sequence as it does today. This removes the fan-out into
+  separate jobs rather than adding state.
+- **CPU benchmarks are untouched,** and local compute has no queue.
 
 ## The session watcher
 
@@ -143,7 +150,7 @@ The principle that decides who answers what:
 |---|---|---|---|
 | what is in the queue, my history, fresh remote refs | the watcher | seconds | alive beside the session, sees Slurm and the run directory |
 | wakes, leases, cancel on end | the tick | one cadence | needs every run's state at once |
-| budgets, the share, scope, sealing, parking | the attempt at the sleep boundary | at sleep | the run's own lifecycle |
+| budgets, the concurrency ceiling, scope, sealing, parking | the attempt at the sleep boundary | at sleep | the run's own lifecycle |
 
 ## The queue view
 
@@ -164,8 +171,8 @@ them for humans, and the limit the author is being held to.
   jobs, by agent id, the way the brief already shows sibling directions. The
   query is `squeue --me`: the kernel is always the submitter, and other users'
   jobs are not ours to show.
-- **Context lines** from what Slurm does expose: this agent's share and how
-  much of it is in use; the lane's load from `sinfo` (nodes idle, mixed,
+- **Context lines** from what Slurm does expose: each sweep's concurrency
+  and the contract's ceiling; the lane's load from `sinfo` (nodes idle, mixed,
   allocated); the account's QOS limits when readable (on Torch, sixteen GPUs
   per user and five hundred submitted jobs). No start estimates: Slurm
   reports none on Torch, and the view promises nothing it cannot back.
@@ -214,8 +221,8 @@ There is no database, and none is needed at this scale:
 ## What this is not
 
 - Not a scheduler. Authors stage launches, the kernel submits, Slurm
-  schedules. The share is a bound checked once at sleep; the view is a
-  projection of Slurm's queue joined with the kernel's records. The kernel
+  schedules. The concurrency ceiling is a clamp applied once at sleep; the
+  view is a projection of Slurm's queue joined with the kernel's records. The kernel
   holds no line of jobs.
 - Not a hole in the container. The session gains read-only answers and no
   new reach.
@@ -228,18 +235,17 @@ There is no database, and none is needed at this scale:
    Test on cluster0 (local mode, the empty-queue path) and on Torch (one
    session asking during a busy queue). Measure the answer latency and the
    watcher's overhead.
-2. Always queue: remove #315's admission; add the per-agent share and
-   cancel-on-end.
+2. Always queue: remove #315's admission; sweeps as throttled arrays with
+   the author's concurrency and the contract ceiling; cancel-on-end.
 3. `sync` onto the watcher, once the watcher has run for a week.
 4. Later, if the tick's scan shows: the derived index.
 
 ## Open questions
 
-- The share's default. Four divides Torch's cap among four agents; a
-  deployment with one agent could take the whole cap, and one with eight
-  wants two each. Deriving it from the agent count is tempting and wrong
-  when the cap is a group cap. A contract dial with a documented default is
-  the honest choice; revisit after a month of data.
+- The ceiling's default and the default concurrency when the author sets
+  none. Twelve of sixteen and "the whole array" respectively are starting
+  points; deriving either from the agent count is tempting and wrong when
+  the cap is a group cap. Revisit after a month of data.
 - The `why` field is free text from the author and appears in a view other
   agents read. It is bounded and rendered as text, never executed; the same
   treatment the note field already gets.
