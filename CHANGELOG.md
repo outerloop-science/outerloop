@@ -94,6 +94,9 @@ Versions follow [SemVer](https://semver.org).
   tick lists it as missing and does not service a target without it, and the
   follow-up CLI requires it. `init` records it on both auth paths, so a fresh
   setup always has one; a deployment set up before this must add the line.
+- The install guide's identity step describes the GitHub App as the default
+  (what `init` sets up) and the machine user with a fine-grained PAT as the
+  fallback; the roadmap and architecture table record the same.
 
 ### Changed
 

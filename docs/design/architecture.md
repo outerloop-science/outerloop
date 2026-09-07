@@ -16,7 +16,7 @@ reports weekly. Humans keep the merge button.
 | --- | --- |
 | Compute | Torch-first: GPU jobs via sbatch under a sponsoring account, tagged, low-priority, hard GPU-hour budgets. Cloud burst deferred. |
 | Agent/LLM | Every LLM touchpoint sits behind the `Harness` seam, so a new backend is an implementation, not a rewrite. Wired today: Claude Code and Codex (subscription harnesses) and hermes-agent (via OpenRouter, an aggregator), plus the first-party API with tiered models and hard $ caps. Self-hosted: deferred. |
-| GitHub | Org machine user (bot) with fine-grained access to opted-in repos + a contract file per repo. No GitHub App for now. |
+| GitHub | A GitHub App installed on the opted-in repos (default; see design/github-app-auth.md), or an org machine user with a fine-grained PAT (fallback) + a contract file per repo. |
 | Scheduling | Self-resubmitting sbatch chain on Torch (scrontab is disabled there); nothing SSHes in — all connections outbound. Reviewer role on GitHub Actions. |
 
 ## Target-repo contract

@@ -166,7 +166,31 @@ suite:
 
 ### 2b. Create a bot identity
 
-A GitHub machine user in your org, with a fine-grained PAT:
+The agents open pull requests, comment, and push branches as a GitHub
+identity that is not yours. `outerloop init` sets it up (step 2c); two kinds
+are supported, and the identity lives on the machine that runs the tick, never
+inside an agent session — the kernel performs every GitHub write on the
+agents' behalf.
+
+**A GitHub App — the default.** Pick `app` at the prompt (or run
+`outerloop init --github-app` on its own). init creates an App under your
+account or under an organization you name, through GitHub's one-click
+manifest flow: it prints one URL, you open it in any browser (a headless
+cluster works too — no localhost, no tunnel), click **Create GitHub App**, and
+paste back the code the page shows. init writes the App's private key and
+`github_app.<slug>.json` under `~/.config/outerloop/` (0600), points you at
+the page that installs the App on the target repo, and checks that the
+installation can write it. The bot login is `<slug>[bot]`; init records it as
+`OUTERLOOP_BOT_LOGIN`. Tokens are minted from the key an hour at a time and
+scoped to the installed repos; the App takes no seat and needs no collaborator
+grant. It declares Contents, Pull requests, Issues and Actions read-write,
+Commit statuses and Metadata read, and nothing else — not Workflows,
+Administration, or Members. If the install step was cut short, run
+`outerloop init --force --github-app` to finish and re-check it.
+
+**A fine-grained PAT — the fallback.** For an org that already runs a machine
+user, or one where you cannot create Apps: pick `pat` (or pass `--pat-file`).
+Mint the token on the machine user with these settings:
 
 - Resource owner: **your organization** (not the bot's personal account —
   this is the step people miss)
@@ -175,12 +199,12 @@ A GitHub machine user in your org, with a fine-grained PAT:
   **no workflow permission**
 - Expiration: 90 days, with a rotation reminder
 
-Then **add the bot as a collaborator with write access on every target
-repo** (org members can be added directly). Without it the tick cannot even
-read the contract and idles silently on that target.
-
-Add the bot as a direct collaborator (**Write**) on each opted-in repo. Don't
-add it to a team — teams grant more than it needs and inherit future grants.
+Then add the bot as a direct collaborator with **Write** on every target repo
+(org members can be added directly; don't add it to a team, which grants more
+than it needs and inherits future grants). Without that grant the tick cannot
+even read the contract and idles silently on that target. init stores the
+token at `~/.config/outerloop/bot_pat` (0600) and records its login as
+`OUTERLOOP_BOT_LOGIN`.
 
 ### 2c. Run the loop
 
@@ -191,15 +215,11 @@ outerloop init      # asks for compute, target repo, placement, auth, and the au
 outerloop start
 ```
 
-For auth, `init` recommends creating **your own GitHub App** in one click
-(`--github-app`, or pick `app` at the prompt): it prints one URL, you open it in
-any browser (works from a headless cluster too — no localhost, no tunnel), click
-**Create GitHub App**, and paste back the code the page shows. init writes the
-App's key + `github_app.<slug>.json`, helps you install it, and verifies it can
-reach your repo. A **PAT** is the fallback (`--pat-file`, or paste one at the
-prompt). Either way, `init` writes `~/.config/outerloop/.env` (all `0600`) —
-everything the prose below otherwise sets by hand. The rest of this section
-documents what it writes, for when you'd rather set it directly.
+`init` asks for the compute backend, the target repo, placement, the
+identity from 2b, and the author's model key, and writes
+`~/.config/outerloop/.env` (all `0600`) — everything the prose below otherwise
+sets by hand. The rest of this section documents what it writes, for when
+you'd rather set it directly.
 
 The orchestrator is CPU-only and makes outbound connections only. Anywhere
 that can reach GitHub and your LLM provider works.
@@ -222,7 +242,8 @@ Slurm bill the default association and pick the default partition),
 `OUTERLOOP_ROOT` locate the checkout and the state, `OUTERLOOP_IMAGE`
 the container. The rest is re-read from `~/.config/outerloop/.env` each
 tick, so changes take effect at the next cadence: `OUTERLOOP_TARGET`
-names the repo being climbed; `OUTERLOOP_BOT_LOGIN` is the login the kernel
+names the repo being climbed; the identity from 2b is `OUTERLOOP_GITHUB_APP_FILE`
+(App) or `OUTERLOOP_PAT_FILE` (token), one of the two; `OUTERLOOP_BOT_LOGIN` is the login the kernel
 posts as (`init` records it on both auth paths; there is no default, and the
 tick does not service a target without it); `OUTERLOOP_GPU_PARTITION` (optionally
 `OUTERLOOP_GPU_ACCOUNT`) is the lane for GPU evals and launches — a

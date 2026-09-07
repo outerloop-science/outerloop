@@ -285,14 +285,15 @@ Roles/flow reference for this whole section: design/roles.md.
 
 ## Beyond 1.0 — external-facing (design: design/external.md)
 
-- [ ] GitHub App identity replacing the machine user
+- [x] GitHub App identity replacing the machine user — `init`'s default path;
+      a machine user with a fine-grained PAT stays the fallback
 - [ ] Storage interface: notebook-repo backend → walled multi-tenant store
 - [ ] Experiment-backend interface: consumer-side runners, verifiable rewards
 
 ## Manual prerequisites (maintainer)
 
-- [ ] Create the bot machine user; invite to org (free seat on Team plan); mint
-      the fine-grained PAT per the architecture's spec
+- [x] Bot identity: the lab runs as its own GitHub App (`outerloop-science[bot]`);
+      the machine user + fine-grained PAT is the fallback, not a prerequisite
 - [ ] Subscription seat or lab-managed account for the pilot harness
 - [ ] API billing with hard spend caps + the separate reviewer key + a third capped key for the verification agent (before any category-2 target)
 - [ ] Choose the sponsoring Torch account for bot-submitted jobs
