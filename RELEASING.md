@@ -23,7 +23,8 @@
    webhook on its own (docs/community.md). For a final release, also write
    the post for X (`@outerloop_sci`) and Bluesky (`@outerloop.science`): one
    or two sentences on what changed for the reader, the install line, the
-   link to the release. Dev and rc pre-releases are not posted.
+   link to the release. Dev and rc pre-releases are not posted to X or
+   Bluesky; Discord gets them through the webhook like any release.
 
 ## Public repo
 
