@@ -2,11 +2,16 @@ name: build-image
 
 # Builds the agent image from containers/agent-py312.def and publishes it to the
 # Hugging Face repo outerloop-science/agent-image. Runs on every change to the
-# recipe on main, and by hand. Needs the HF_TOKEN secret (write access to the org).
+# recipe on main, and by hand; a pull request that touches the recipe builds
+# without publishing. Needs the HF_TOKEN secret (write access to the org).
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - "containers/**"
+      - ".github/workflows/build-image.yml"
+  pull_request:
     paths:
       - "containers/**"
       - ".github/workflows/build-image.yml"
@@ -30,6 +35,7 @@ jobs:
           ls -l agent-py312.sif
           sha256sum agent-py312.sif | tee agent-py312.sif.sha256
       - name: Publish
+        if: github.event_name != 'pull_request'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
