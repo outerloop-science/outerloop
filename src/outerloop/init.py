@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.cli import ENV_FILE
+from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
 CONFIG_DIR = ENV_FILE.parent
@@ -48,6 +49,7 @@ class InitAnswers:
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
     author_key_file: str = ""  # the author's model key file, when known
+    image: str = ""  # the agent image (OUTERLOOP_IMAGE); "" = uncontained
 
 
 def render_env(
@@ -64,6 +66,8 @@ def render_env(
             lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"OUTERLOOP_PARTITION={a.partition}")
+    if a.image:
+        lines.append(f"OUTERLOOP_IMAGE={a.image}")
     lines.append(f"OUTERLOOP_TARGET={a.target}")
     if app_file:
         lines.append(f"OUTERLOOP_GITHUB_APP_FILE={app_file}")
@@ -242,6 +246,10 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
     )
+    # The image: an existing one, or the published one fetched now on a Linux
+    # machine with Apptainer (asked first when interactive). --image names
+    # one, --no-image keeps runs uncontained.
+    image = args.image or ("" if args.no_image else ensure_image(interactive=interactive))
     answers = InitAnswers(
         compute=compute,
         target=target,
@@ -250,6 +258,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         partition=partition,
         author_backend=backend,
         author_model=model,
+        image=image,
     )
     return answers, (args.pat_file or "")
 
@@ -375,6 +384,17 @@ def main(argv: list[str] | None = None) -> int:
         help=f"climbing author's backend ({' or '.join(AUTHOR_BACKENDS)}; default claude)",
     )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
+    parser.add_argument(
+        "--image",
+        help="path to an Apptainer image to run sessions and evals in (default: the "
+        "published one, downloaded on Linux when apptainer is installed)",
+    )
+    parser.add_argument(
+        "--no-image",
+        dest="no_image",
+        action="store_true",
+        help="do not download the image; runs stay uncontained",
+    )
     parser.add_argument(
         "--author-key-file",
         dest="author_key_file",

@@ -1,0 +1,43 @@
+# The Outerloop agent image: what a contained session and a dispatched
+# evaluation see. The kernel binds the workspace, a per-run home and the
+# harness binary (claude/codex) into it; --nv adds the host's GPU driver for
+# GPU benchmarks. So the image only has to provide the base a target's own
+# `uv run ...` needs: Python 3.12, uv, git and a compiler.
+#
+# Built by .github/workflows/build-image.yml and published to
+# https://huggingface.co/outerloop-science/agent-image; `outerloop init` pulls
+# it on Linux. Build by hand: apptainer build agent-py312.sif containers/agent-py312.def
+
+Bootstrap: docker
+From: ubuntu:24.04
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git git-lfs openssh-client \
+        build-essential pkg-config \
+        python3 python3-venv python3-dev \
+        libgomp1 libglib2.0-0 procps less unzip zip jq ripgrep
+    rm -rf /var/lib/apt/lists/*
+    # uv installs its own Pythons when a target pins one; the system 3.12 is the default
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
+    ln -sf /usr/bin/python3 /usr/local/bin/python
+    git lfs install --system
+    python3 --version && uv --version && git --version
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+%labels
+    org.opencontainers.image.title outerloop agent image
+    org.opencontainers.image.source https://github.com/outerloop-science/outerloop
+    outerloop.recipe containers/agent-py312.def
+
+%help
+    Outerloop agent image: Ubuntu 24.04, Python 3.12, uv, git, build tools.
+    The kernel runs sessions and evaluations in it with --containall --cleanenv,
+    binding only the workspace, a per-run home and the harness binary.
