@@ -2436,7 +2436,7 @@ def test_a_gpu_change_is_sealed_and_parked_on_its_dispatched_measure(review_run)
     # the author's reply went out now, with the parked note; nothing was pushed
     assert (
         "addressed" in github.posted[0]
-        and "re-measure is running on the GPU lane" in github.posted[0]
+        and "being re-measured on the GPU lane" in github.posted[0]
     )
     assert not _origin_has_branch(bare)  # nothing pushed
     rec = load_record(root, "tsp-r1")
@@ -2859,7 +2859,7 @@ def test_a_parked_stage_is_durable_before_the_reply_and_the_reply_is_retried(rev
         dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
     )
     assert out2.action == "no-op"
-    assert len(github2.posted) == 1 and "re-measure is running" in github2.posted[0]
+    assert len(github2.posted) == 1 and "Not pushed yet" in github2.posted[0]
     assert load_record(root, "tsp-r1").followup_stage["reply_posted"] is True
 
 

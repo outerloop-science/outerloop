@@ -1632,9 +1632,11 @@ def _park_remeasure(
         "eval_minutes": int(bench.eval_minutes or 0),
     }
     note = (
-        "\n\n_(A code change was made; its re-measure is running on the GPU lane "
-        f"({len(pend.job_ids)} job(s)) — the change is pushed with its number once the "
-        "measurement lands. Comments posted meanwhile are answered after that.)_"
+        "\n\n_(Not pushed yet: the change above is local so far. The changed tree is "
+        f"being re-measured on the GPU lane first ({len(pend.job_ids)} job(s) queued), "
+        "and the branch is updated with the number when that lands — until then GitHub "
+        "still shows the previous head, conflict included. Comments posted meanwhile are "
+        "answered after that.)_"
     )
     stage["reply_note"] = note
     stage["reply_posted"] = False

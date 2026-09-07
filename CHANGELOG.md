@@ -143,6 +143,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The follow-up's note on a re-measured change says the change is not pushed
+  yet and that GitHub still shows the previous head (conflict included) until
+  the number lands; the old wording read as if the merge were already on the
+  branch.
 - Every kernel-made commit that reaches GitHub — line snapshots and line
   merges, the sealed `dispatch snapshot` and `panel snapshot` commits — is
   now authored as the bot login with its GitHub noreply address, like the
