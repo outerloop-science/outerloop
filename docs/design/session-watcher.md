@@ -75,10 +75,10 @@ none. The watcher makes it answer.
   leg alike. It polls the channel directory every two seconds for request
   markers and answers each one through a file the tool renders. Latency is
   seconds.
-- Read-only by construction. The verbs it answers are questions: `queue`,
-  `history`, and, once proven, `sync`, whose only write is to `refs/remotes`
-  and which the tick already performs safely. It never submits, cancels,
-  seals, or parks; those stay at the sleep boundary.
+- It changes no lifecycle state. It writes answer files into the channel and,
+  for `sync` once that moves onto it, `refs/remotes` in the workspace, which
+  the tick already writes safely today. It never submits, cancels, seals,
+  or parks; those stay at the sleep boundary.
 - Failure never reaches the session. An exception is logged and the request
   is left standing; the tool times out and says so. A watcher that dies
   leaves the session exactly as it is today.
@@ -113,6 +113,15 @@ so the queue fills gradually as it clears rather than all at once.
 - **The wake is the same wake.** A deferred park becomes an ordinary one the
   moment its jobs exist; the results, the wake text, and the budget
   accounting are unchanged downstream.
+- **Submission is idempotent across a crash.** Launch job names are
+  deterministic (`<run>-launch-<name>`), and the launcher clears a launch's
+  directory before writing it, so a sweep that submitted and died before
+  recording the ids must not submit again blindly. The sweep first records
+  `submitting` with the intended job names on the park, then submits; a later
+  sweep that finds that marker asks Slurm for each name (`job_id_for_name`,
+  the same authority the wake dispatcher uses), adopts the ids it finds, and
+  submits only the names it does not. A job that already finished in the gap
+  is found through accounting and adopted the same way.
 - **A floor, so waiting is visible.** After twelve hours deferred, the sweep
   wakes the author once with the situation and a fresh queue view, and the
   author decides: keep waiting, change the plan, or finish. This is the one
@@ -120,11 +129,14 @@ so the queue fills gradually as it clears rather than all at once.
 - **Refusal survives for reasons that never clear.** A per-job limit, an
   invalid account, a dependency that cannot be satisfied: waiting cannot fix
   these, so `queue_saturated` keeps refusing them with the reason.
-- **One field on the park record.** An author-sleep park already stores the
-  request and the sealed sha; deferral adds the time it was deferred, which
-  is also what tells the sweep this park is not a checkpoint sleep. One
-  branch in the sweep. No new job store, no Slurm hold, no cap number, and
-  nothing the wake path has to learn.
+- **One field on the park record, two conditions in the sweep.** An
+  author-sleep park already stores the request and the sealed sha; deferral
+  adds the time it was deferred. The sweep's arming step today treats a
+  park with no job ids as a checkpoint sleep and wakes it at once; a
+  deferred park must be excluded from arming until its jobs exist, and the
+  deadline floor must not fire on it either. Those two conditions are the
+  whole change to the wake path. No new job store, no Slurm hold, no cap
+  number.
 
 ## The queue view
 
