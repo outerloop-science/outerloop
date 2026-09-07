@@ -1155,9 +1155,6 @@ def attempt_once(
     resume_session_id: str = "",
     improve_prompt: str = "",
     launcher: Callable[[str, SyscallRequest], str] | None = None,
-    # launch admission (admission.queue_saturated): a reason to refuse the
-    # request's launches now, or ""; None = no admission (tests, CPU benchmarks)
-    admission: Callable[[SyscallRequest], str] | None = None,
     # the session watcher: a context manager around each harness run (None =
     # no watcher in this deployment); docs/design/session-watcher.md
     watcher: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
@@ -1512,10 +1509,6 @@ def attempt_once(
                 suite_gpus=suite_gpus,
                 main_evals=main_evals,
             )
-            if not problem and admission is not None and request.launches and not request.submit:
-                # queue, then stop: while this account's GPU jobs wait on a cap,
-                # a new launch would only queue behind them
-                problem = admission(request)
             if not problem:
                 if request.submit:
                     # a submit rides the measurement below on the SEALED tree —

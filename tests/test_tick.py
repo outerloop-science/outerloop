@@ -465,7 +465,7 @@ def test_is_queue_wait_classifies_slurm_reasons() -> None:
         "AssocGrpGRES",
         "QOSGrpCpuLimit",
         "ReqNodeNotAvail, UnavailableNodes:gpu-01",
-        "JobHeldUser",  # the kernel's own launch admission hold
+        "JobHeldUser",  # a held job is waiting too, not unschedulable
     ]
     nevers = [
         "",
@@ -4420,3 +4420,31 @@ def test_followup_spec_needs_the_bot_login(monkeypatch: Any, tmp_path: Path) -> 
     env["OUTERLOOP_BOT_LOGIN"] = "someone[bot]"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None and spec.bot_login == "someone[bot]"
+
+
+def test_cancel_on_end_cancels_an_ended_runs_pending_launches(tmp_path: Path) -> None:
+    """A run that ended while its author's launches still sat in the queue has
+    nothing to read their results: the sweep cancels them, once."""
+    from outerloop.runstate import ENDED
+    from outerloop.tick import cancel_ended_launches
+
+    stage = {"phase": "author-sleep", "afterany": "afterany:7:8", "launch_afterany": "afterany:7:8"}
+    waiting_run(tmp_path, "r9", state=ENDED, ending="merged", stage=stage, updated=NOW - 60)
+    waiting_run(
+        tmp_path, "r8", state=ENDED, ending="merged", stage=stage, updated=NOW - 30 * 86400
+    )  # long ago
+    slurm = FakeSlurm(states={"7": "PENDING", "8": "COMPLETED"})
+    assert cancel_ended_launches(tmp_path, slurm.compute(), NOW) == ["7"]
+    assert slurm.cancelled == ["7"]
+    assert load_record(tmp_path, "r9").stage["launches_cancelled"] is True
+    assert load_record(tmp_path, "r8").stage["launches_cancelled"] is True  # stamped, never queried
+    # once: the stamp keeps an ended run from being queried again
+    slurm.states["7"] = "PENDING"
+    assert cancel_ended_launches(tmp_path, slurm.compute(), NOW + 1) == []
+    assert slurm.cancelled == ["7"]
+    # dry run reports, cancels nothing, stamps nothing
+    waiting_run(tmp_path, "r7", state=ENDED, ending="merged", stage=stage, updated=NOW - 60)
+    assert cancel_ended_launches(tmp_path, slurm.compute(), NOW, dry_run=True) == ["7"]
+    assert (
+        slurm.cancelled == ["7"] and "launches_cancelled" not in load_record(tmp_path, "r7").stage
+    )

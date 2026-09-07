@@ -48,24 +48,19 @@ Versions follow [SemVer](https://semver.org).
   download shows a progress bar with size, speed and ETA on a terminal, one
   line per 10% otherwise, and confirms the checksum. `docs/install.md` gains
   an "Installing Apptainer" section.
-- Launch admission: with `OUTERLOOP_MAX_LAUNCH_GPUS` set to the per-user GPU
-  cap, author launches are submitted held and the tick releases them
-  oldest-first while the user's GPU jobs fit under the cap, cancels held
-  launches of runs that have ended, and stops releasing when Slurm parks a
-  released launch on a per-user reason. `squeue` rows on the board carry the
-  pending reason and GRES. Unset, launches queue as before.
 - `docs/install.md` explains the multi-GPU workstation: local mode stays one job at
   a time; a box with several GPUs runs Slurm as a single node and the kernel runs
   in Slurm mode unchanged, with the minimal configuration to do it.
 
 ### Changed
 
-- Launch admission, queue then stop: a sleep that asks for GPU launches is refused
-  while any of this account's GPU jobs is pending on a cap reason
-  (`QOSMaxGRESPerUser`, `QOSGrpGRES`, and kin), naming the blocking job; otherwise
-  launches queue as before and Slurm does the waiting. No cap number to configure:
-  Slurm publishes none a submitter can trust. `squeue` rows on the board carry
-  the pending reason and GRES.
+- Launches always queue. The two admission schemes tried this cycle — held
+  launches released under `OUTERLOOP_MAX_LAUNCH_GPUS`, then refusing a sleep's
+  launches while the account waited on a cap — are gone: the kernel keeps no
+  line and never refuses a launch for queue reasons; Slurm does the waiting and
+  the sweep treats a cap reason as a wait. A run that ends with launches still
+  queued has them cancelled by the sweep. `squeue` rows on the board carry the
+  pending reason and GRES.
 - The board's queue is a card in the live strip, not a preformatted dump: a
   full-width table with running jobs first, state pills, elapsed time,
   partition (first of several, the rest counted, all on hover), and the

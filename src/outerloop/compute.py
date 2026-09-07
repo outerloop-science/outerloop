@@ -139,7 +139,7 @@ class JobSpec:
         return argv
 
 
-# `reason` and `gres` feed launch admission (admission.queue_saturated: why a job
+# `reason`, `gres` and `limit` feed the queue view: why a job waits, what it holds
 # waits, whether it holds GPUs); the board reads the first six by key
 QUEUE_FIELDS = (
     "id",
