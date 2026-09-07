@@ -27,8 +27,12 @@ LEGACY_IMAGE_DIR_NAME = "autoresearch-images"  # pre-rename; honored until the r
 _CHUNK = 1 << 20
 _PROBE_TIMEOUT_S = 60
 APPTAINER_RELEASES = "https://github.com/apptainer/apptainer/releases"
-APPTAINER_DEB = "apptainer_1.5.3_amd64.deb"
-APPTAINER_DEB_URL = f"{APPTAINER_RELEASES}/download/v1.5.3/{APPTAINER_DEB}"
+APPTAINER_VERSION = "1.5.3"
+# the GitHub release ships Debian packages for x86-64 only; the project's PPA
+# builds amd64 and arm64 for every current Ubuntu
+APPTAINER_DEB = f"apptainer_{APPTAINER_VERSION}_amd64.deb"
+APPTAINER_DEB_URL = f"{APPTAINER_RELEASES}/download/v{APPTAINER_VERSION}/{APPTAINER_DEB}"
+APPTAINER_PPA = "ppa:apptainer/ppa"
 PROBE_CMD = "apptainer exec docker://alpine:3.20 cat /etc/alpine-release"
 
 
@@ -65,18 +69,39 @@ def install_hint() -> str:
             "  roadmap). A Linux machine, or Slurm, runs contained."
         )
     dist, _version = _linux_flavor()
-    if dist in ("ubuntu", "debian", "linuxmint", "pop"):
+    apparmor_note = (
+        "  Ubuntu 23.10+ blocks unprivileged user namespaces unless an AppArmor profile allows\n"
+        "  them; the official package carries that profile (the unprivileged installer does\n"
+        "  not, and fails with 'Could not write info to setgroups').\n"
+    )
+    check = (
+        f"    3. {PROBE_CMD}\n"
+        "       (prints a version number)\n"
+        "  then run `outerloop init --force` again to download the image."
+    )
+    if dist in ("ubuntu", "linuxmint", "pop"):
         return (
-            "Install the official Apptainer package, which also carries the AppArmor profile\n"
-            "  Ubuntu 23.10+ needs (the unprivileged installer does not, and fails with\n"
-            "  'Could not write info to setgroups'):\n"
-            f"    1. download {APPTAINER_DEB} (not the -suid one) from\n"
-            f"       {APPTAINER_RELEASES}/latest, or in a terminal:\n"
-            f"         curl -fsSLO {APPTAINER_DEB_URL}\n"
-            f"    2. sudo apt-get install -y ./{APPTAINER_DEB}\n"
-            f"    3. {PROBE_CMD}\n"
-            "       (prints a version number)\n"
-            "  then run `outerloop init --force` again to download the image."
+            "Install Apptainer from the project's Ubuntu PPA (amd64 and arm64):\n"
+            + apparmor_note
+            + f"    1. sudo add-apt-repository -y {APPTAINER_PPA}\n"
+            "    2. sudo apt-get update && sudo apt-get install -y apptainer\n" + check
+        )
+    if dist == "debian":
+        if platform.machine() == "x86_64":
+            return (
+                "Install the official Apptainer package (Debian, x86-64):\n"
+                + apparmor_note
+                + f"    1. curl -fsSLO {APPTAINER_DEB_URL}\n"
+                f"    2. sudo apt-get install -y ./{APPTAINER_DEB}\n" + check
+            )
+        return (
+            f"No Apptainer Debian package is published for this machine ({platform.machine()}).\n"
+            "  Build from source (https://apptainer.org/docs/admin/main/installation.html) or use\n"
+            "  the unprivileged installer:\n"
+            "    curl -fsSL https://raw.githubusercontent.com/apptainer/apptainer/main/tools/"
+            "install-unprivileged.sh | bash -s -- ~/apptainer\n"
+            "    export PATH=$HOME/apptainer/bin:$PATH\n"
+            f"  Check with `{PROBE_CMD}`, then run `outerloop init --force` again."
         )
     if dist in ("fedora", "rhel", "centos", "rocky", "almalinux"):
         return (

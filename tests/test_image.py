@@ -208,9 +208,17 @@ def test_containment_check_runs_a_container_not_just_which(
 def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
     monkeypatch.setattr(img.sys, "platform", "linux")
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("ubuntu", "24.04"))
-    hint = img.install_hint()
-    assert "apt-get install" in hint and "AppArmor" in hint and "setgroups" in hint
-    assert "outerloop init --force" in hint
+    for machine in ("x86_64", "aarch64"):  # the PPA covers both (terra, #306)
+        monkeypatch.setattr(img.platform, "machine", lambda m=machine: m)
+        hint = img.install_hint()
+        assert "ppa:apptainer/ppa" in hint and "AppArmor" in hint and "setgroups" in hint
+        assert "outerloop init --force" in hint and ".deb" not in hint
+    monkeypatch.setattr(img, "_linux_flavor", lambda: ("debian", "12"))
+    monkeypatch.setattr(img.platform, "machine", lambda: "x86_64")
+    assert "apptainer_1.5.3_amd64.deb" in img.install_hint()
+    monkeypatch.setattr(img.platform, "machine", lambda: "aarch64")
+    odd = img.install_hint()
+    assert "No Apptainer Debian package" in odd and "aarch64" in odd and ".deb" not in odd
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("fedora", "40"))
     assert "dnf install" in img.install_hint()
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("arch", ""))
