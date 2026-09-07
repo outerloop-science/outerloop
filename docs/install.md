@@ -249,9 +249,52 @@ Codex author needs the image in every mode. Contained local mode needs
 Apptainer and the image: the published one lives at
 [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image),
 built from `containers/agent-py312.def`. On Linux with Apptainer installed,
-`outerloop init` downloads it to `~/outerloop-images/` and records it; `--image`
-points at your own, `--no-image` keeps runs uncontained even when an image is already on disk (it
-writes `OUTERLOOP_IMAGE=`, the off-switch).
+`outerloop init` downloads it to `~/outerloop-images/` (about 200 MB, with a
+progress bar), verifies its published checksum and records it; `--image` points at
+your own, `--no-image` keeps runs uncontained even when an image is already on disk
+(it writes `OUTERLOOP_IMAGE=`, the off-switch). When Apptainer is missing or cannot
+run containers, init says so, prints the install steps for your system, and
+continues uncontained; run `outerloop init --force` after installing it.
+
+**Installing Apptainer (Linux, one time, needs root or an admin).** Apptainer runs
+sessions and evaluations in containers. Check for it
+with `apptainer exec docker://alpine:3.20 cat /etc/alpine-release`; a version number
+means it works.
+
+- *Ubuntu.* Install from the project's PPA, which builds for amd64 and arm64. The
+  package carries the AppArmor profile Ubuntu 23.10 and later require; the
+  unprivileged installer does not, and fails at run time with
+  `Could not write info to setgroups`.
+
+  ```bash
+  sudo add-apt-repository -y ppa:apptainer/ppa
+  sudo apt-get update && sudo apt-get install -y apptainer
+  ```
+
+- *Debian (x86-64).* Install the release package from
+  [github.com/apptainer/apptainer/releases](https://github.com/apptainer/apptainer/releases)
+  (`apptainer_<version>_amd64.deb`, not the `-suid` one):
+
+  ```bash
+  curl -fsSLO https://github.com/apptainer/apptainer/releases/download/v1.5.3/apptainer_1.5.3_amd64.deb
+  sudo apt-get install -y ./apptainer_1.5.3_amd64.deb
+  ```
+
+  The release has no package for other architectures; on ARM Debian, build from
+  source or use the unprivileged installer below.
+
+- *Fedora.* `sudo dnf install -y apptainer`.
+- *RHEL, Rocky, Alma.* `sudo dnf install -y epel-release`, then `sudo dnf install -y apptainer`.
+- *No root.* The project's unprivileged installer works on most other systems. It is
+  pinned to the release tag; download it, read it, then run it:
+
+  ```bash
+  curl -fsSLO https://raw.githubusercontent.com/apptainer/apptainer/v1.5.3/tools/install-unprivileged.sh
+  less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer
+  export PATH=$HOME/apptainer/bin:$PATH
+  ```
+- *Slurm clusters.* Ask the administrators; most already provide it.
+- *macOS.* No Apptainer; runs stay uncontained (a macOS containment is on the roadmap).
 
 ---
 
