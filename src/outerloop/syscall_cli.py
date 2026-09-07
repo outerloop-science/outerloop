@@ -152,6 +152,10 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     why = " ".join((args.why or "").split())
     if len(why) > MAX_WHY_CHARS:
         raise ToolError(f"--why must be at most {MAX_WHY_CHARS} chars")
+    concurrency = args.concurrency
+    if concurrency < 0:
+        raise ToolError("--concurrency must be a non-negative integer")
+    concurrency = min(concurrency, array) if array > 1 else 0
     if len(args.artifact) > MAX_ARTIFACTS:
         raise ToolError(f"at most {MAX_ARTIFACTS} --artifact paths")
     for a in args.artifact:
@@ -170,12 +174,18 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
             "artifacts": args.artifact,
             "array": array,
             **({"why": why} if why else {}),
+            **({"concurrency": concurrency} if concurrency else {}),
         }
     )
     _save_staged(root, staged)
     return (
         f"staged launch {args.name!r} ({minutes} min"
-        + (f" x {array} jobs, SWEEP_INDEX 0..{array - 1}" if array > 1 else "")
+        + (
+            f" x {array} tasks, SWEEP_INDEX 0..{array - 1}, "
+            f"at most {concurrency or array} at a time"
+            if array > 1
+            else ""
+        )
         + f"); {len(staged['launches'])} staged. "
         f"Add more, or `sleep` to run them. {_budget_line(root)}."
     )
@@ -306,6 +316,8 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
         for la in staged["launches"]:
             arts = (" -> " + ", ".join(la["artifacts"])) if la.get("artifacts") else ""
             width = f" x{la['array']}" if int(la.get("array") or 1) > 1 else ""
+            if width and la.get("concurrency"):
+                width += f" ({la['concurrency']} at a time)"
             lines.append(f"  - {la['name']} ({la['minutes']} min{width}): {la['command']}{arts}")
             if la.get("why"):
                 lines.append(f"      why: {la['why']}")
@@ -345,9 +357,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--array",
         type=int,
         default=1,
-        help="fan out to N jobs of this command, each with SWEEP_INDEX=0..N-1 "
-        "and its own results/<name>/<i>/ (a sweep; counts as one launch, "
+        help="fan out to N tasks of this command, each with SWEEP_INDEX=0..N-1 "
+        "and its own results/<name>/<i>/ (a sweep: one launch, one cluster job, "
         "N times the GPU-hours)",
+    )
+    la.add_argument(
+        "--concurrency",
+        type=int,
+        default=0,
+        help="with --array: run at most K tasks at once (default: all; the contract may cap it)",
     )
     la.add_argument(
         "--artifact",
@@ -596,6 +614,8 @@ def cmd_queue(root: Path, args) -> str:
             if j.get("experiment")
             else str(j.get("kind") or j.get("name") or "job")[:64]
         )
+        if j.get("concurrency"):
+            what += f" (sweep, {int(j['concurrency'])} at a time)"
         state = str(j.get("state", ""))[:16]
         reason = str(j.get("reason", ""))[:40]
         if state == "PENDING" and reason and reason != "None":

@@ -212,3 +212,31 @@ def test_lane_load_counts_nodes_by_state() -> None:
     with pytest.raises(SlurmQueryError):
         SlurmCompute(runner=FakeRunner([CommandResult(1, "", "down")])).lane_load("h200")
     assert LocalCompute.lane_load(None, "gpu") == {}  # type: ignore[arg-type]
+
+
+def test_job_arrays_have_a_spec_task_ids_and_a_combined_state() -> None:
+    from outerloop.compute import LocalCompute, array_indices, combine_states
+
+    spec = JobSpec(
+        job_name="s", account="", partition="", time_minutes=5, command="x", array="0-7%4"
+    )
+    assert "--array=0-7%4" in spec.to_argv()
+    assert array_indices("0-7%4") == list(range(8)) and array_indices("") == []
+    assert array_indices("3") == [3] and array_indices("x-y") == []
+    assert combine_states(["COMPLETED", "RUNNING", "PENDING"]) == "RUNNING"
+    assert combine_states(["COMPLETED", "PENDING"]) == "PENDING"
+    assert combine_states(["COMPLETED", "FAILED", "COMPLETED"]) == "FAILED"
+    assert combine_states(["COMPLETED", "COMPLETED"]) == "COMPLETED"
+    assert combine_states(["TIMEOUT"]) == "TIMEOUT"
+    # sacct answers one line per task for an array id: the state is theirs combined
+    runner = FakeRunner([CommandResult(0, "COMPLETED\nRUNNING\nPENDING\n", "")])
+    assert SlurmCompute(runner=runner).status("123") == "RUNNING"
+    # a task id `<id>_<k>` is a job id too; a squeue range is not
+    runner = FakeRunner([CommandResult(0, "COMPLETED\n", ""), CommandResult(0, "", "")])
+    c = SlurmCompute(runner=runner)
+    assert c.status("123_4") == "COMPLETED" and runner.seen[0][2] == "123_4"
+    assert c.cancel("123_4") is True
+    with pytest.raises(ValueError):
+        c.status("123_[0-3]")
+    with pytest.raises(ValueError):
+        LocalCompute().status("12a")

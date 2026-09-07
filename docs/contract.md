@@ -25,6 +25,7 @@ The knobs that shape a climb, all optional:
 | `baseline: paired \| cached` | Re-measure the base tree beside every candidate, or measure it once per base and run only candidates |
 | `depth_k`, `sleep_k` | How many experiments an author may launch and how many times it may sleep for results |
 | `max_active_attempts`, `attempt_cooldown_minutes` | Width: authors abreast on one target; pacing between attempts (0 for a hot loop) |
+| `max_concurrent_gpus` | The pace ceiling for an author's sweeps, in GPUs: a sweep runs at most this many GPUs' worth of tasks at once (`--array=0-N%K`, K = ceiling / `gpus`). Lenient by design; unset = the author's own pace |
 | `steward.allowed` | Paths a separate stewardship lane may maintain (the ruler, the harness) — never the solver |
 | `merge: manual \| auto` | Whether a gate-and-panel-clean PR waits for a human or merges itself |
 

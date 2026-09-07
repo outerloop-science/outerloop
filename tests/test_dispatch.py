@@ -491,3 +491,33 @@ def test_snapshot_commit_is_the_bots(tmp_path: Path) -> None:
     snap = snapshot_tree(ws, base, author="outerloop-science[bot]")  # type: ignore[arg-type]
     ident = ws.git("log", "-1", "--format=%an <%ae>", snap.commit).strip()
     assert ident == "outerloop-science[bot] <outerloop-science[bot]@users.noreply.github.com>"
+
+
+def test_write_eval_job_array_writes_one_script_and_a_dir_per_task(tmp_path):
+    """A sweep is one job array: one script, whose task derives its job dir and
+    SWEEP_INDEX from the array index; the task dirs are created and cleared."""
+    run_dir = tmp_path / "run"
+    stale = run_dir / "eval-launch-sw.1"
+    stale.mkdir(parents=True)
+    (stale / "exit-code").write_text("0")
+    script = write_eval_job(
+        run_dir,
+        "launch-sw",
+        repo_root=tmp_path,
+        snapshot_sha="a" * 40,
+        command="true",
+        image="/i.sif",
+        array=3,
+    )
+    assert script == run_dir / "eval-launch-sw" / "job.sh"
+    for k in range(3):
+        assert (run_dir / f"eval-launch-sw.{k}" / "command.txt").read_text() == "true"
+    assert not (stale / "exit-code").exists()
+    text = script.read_text()
+    assert 'TASK="${SLURM_ARRAY_TASK_ID:-${SWEEP_INDEX:-0}}"' in text
+    assert f'EV={run_dir / "eval-launch-sw"}."$TASK"' in text
+    assert 'export SWEEP_INDEX="$TASK" APPTAINERENV_SWEEP_INDEX="$TASK"' in text
+    plain = write_eval_job(
+        run_dir, "launch-one", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image=""
+    )
+    assert "TASK=" not in plain.read_text() and "SWEEP_INDEX" not in plain.read_text()

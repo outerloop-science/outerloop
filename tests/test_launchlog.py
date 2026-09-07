@@ -96,3 +96,15 @@ def test_a_re_parked_sleep_keeps_its_first_records(tmp_path: Path) -> None:
     # the same name in the next sleep is a new launch
     append_submitted(tmp_path, sleep=2, launches=rebuilt, job_ids=["2"], at=30.0)
     assert [(e["sleep"], e["why"]) for e in history(tmp_path)] == [(1, "probe a"), (2, "")]
+
+
+def test_one_id_per_launch_is_the_arrays_id(tmp_path: Path) -> None:
+    """A sweep is one job array: the park records one id per launch, and the
+    queue view maps every task (`<id>_<k>`) back to it through the array id."""
+    launches = (
+        Launch(name="a", command="x", minutes=5, why="probe a"),
+        Launch(name="sw", command="y", minutes=7, array=4, why="sweep lr"),
+    )
+    append_submitted(tmp_path, sleep=1, launches=launches, job_ids=["10", "11"], at=1.0)
+    assert [e["job_ids"] for e in history(tmp_path)] == [["10"], ["11"]]
+    assert why_by_job(tmp_path)["11"]["why"] == "sweep lr"

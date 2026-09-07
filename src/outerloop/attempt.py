@@ -90,7 +90,13 @@ from outerloop.runstate import (
 from outerloop.runstate import (
     run_dir as run_dir_of,
 )
-from outerloop.syscall import CHANNEL_DIR_NAMES, MAX_ARTIFACT_BYTES, SyscallRequest, channel_dir
+from outerloop.syscall import (
+    CHANNEL_DIR_NAMES,
+    MAX_ARTIFACT_BYTES,
+    SyscallRequest,
+    channel_dir,
+    launch_task_ids,
+)
 from outerloop.syscall import ensure_excluded as syscall_excluded
 from outerloop.syscall import install_tool as syscall_install_tool
 from outerloop.syscall import write_budget as syscall_write_budget
@@ -459,6 +465,7 @@ def _park_run(
                 "artifacts": list(launch.artifacts),
                 **({"array": launch.array} if launch.array > 1 else {}),
                 **({"why": redact(launch.why, secrets)} if launch.why else {}),
+                **({"concurrency": launch.concurrency} if launch.concurrency else {}),
             }
             for launch in parked.syscall.launches
         ]
@@ -648,36 +655,38 @@ def _make_launcher(
 
     def launcher(sha: str, request: SyscallRequest) -> str:
         from outerloop.dispatch import eval_job_spec, write_eval_job
-        from outerloop.syscall import launch_jobs
+        from outerloop.syscall import array_spec
 
         ids: list[str] = []
         try:
             for launch in request.launches:
-                # an array launch is N jobs of one command, each with its
-                # SWEEP_INDEX; one afterany wake covers them all
-                for job_name, extra_env in launch_jobs(launch):
-                    script = write_eval_job(
-                        run_dir,
-                        f"launch-{job_name}",
-                        repo_root=workspace,
-                        snapshot_sha=sha,
-                        command=launch.command,
-                        image=dispatch.image,
-                        extra_env=extra_env,
-                        artifacts=launch.artifacts,
-                        artifact_max_bytes=MAX_ARTIFACT_BYTES,
-                        gpus=gpus,
-                    )
-                    spec = eval_job_spec(
-                        script,
-                        job_name=f"{run_id}-launch-{job_name}",
-                        account=account,
-                        partition=partition,
-                        eval_minutes=launch.minutes,
-                        gpus=gpus,
-                        nice=LAUNCH_NICE,
-                    )
-                    ids.append(dispatch.compute.submit(spec))
+                # a sweep is ONE Slurm job array (`--array=0-N%K`): the queue
+                # holds one entry, Slurm runs at most K tasks at once, each task
+                # derives its job dir and SWEEP_INDEX from its array index, and
+                # one afterany on the array id covers every task
+                script = write_eval_job(
+                    run_dir,
+                    f"launch-{launch.name}",
+                    repo_root=workspace,
+                    snapshot_sha=sha,
+                    command=launch.command,
+                    image=dispatch.image,
+                    artifacts=launch.artifacts,
+                    artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                    gpus=gpus,
+                    array=launch.array,
+                )
+                spec = eval_job_spec(
+                    script,
+                    job_name=f"{run_id}-launch-{launch.name}",
+                    account=account,
+                    partition=partition,
+                    eval_minutes=launch.minutes,
+                    gpus=gpus,
+                    nice=LAUNCH_NICE,
+                    array=array_spec(launch),
+                )
+                ids.append(dispatch.compute.submit(spec))
         except Exception:
             # a partial batch must not orphan: no park record was written yet,
             # so nothing would ever wake or cancel the jobs that DID submit —
@@ -836,6 +845,7 @@ def _wake_author_sleep(
             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
             array=int(item.get("array") or 1),
             why=str(item.get("why") or ""),
+            concurrency=int(item.get("concurrency") or 0),
         )
         for item in _stage_launches(record)
     )
@@ -848,7 +858,9 @@ def _wake_author_sleep(
     # blocks on the scheduler query.
     status_of = getattr(dispatch.compute, "status", None)
     if status_of is not None:
-        results = annotate_launch_states(results, _stage_launch_job_ids(record), status_of)
+        results = annotate_launch_states(
+            results, launch_task_ids(launches, _stage_launch_job_ids(record)), status_of
+        )
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
     _best_effort(
@@ -868,6 +880,13 @@ def _wake_author_sleep(
         ),
         gpus=bench.gpus,
     )
+    pacing = [
+        f"sweep `{la.name}`: {la.array} tasks, at most {la.concurrency or la.array} at a time"
+        for la in launches
+        if la.array > 1
+    ]
+    if pacing:
+        wake_text = f"{wake_text}\n\n" + "\n".join(pacing) + " (the contract's ceiling applies)."
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
         wake_text = f"{extra_update}\n\n{wake_text}"
@@ -1016,6 +1035,7 @@ def _stage_syscall_launches(record: RunRecord) -> tuple:
             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
             array=int(item.get("array") or 1),
             why=str(item.get("why") or ""),
+            concurrency=int(item.get("concurrency") or 0),
         )
         for item in _stage_launches(record)
     )
@@ -1044,7 +1064,9 @@ def _reconcile_launch_hours(
     used = float(stage.get("gpu_hours_used", 0.0))  # type: ignore[arg-type]
     if not gpus or stage.get("launch_hours_refunded"):
         return used
-    refund = _launch_refund(dispatch, launches, _stage_launch_job_ids(record), gpus)
+    refund = _launch_refund(
+        dispatch, launches, launch_task_ids(launches, _stage_launch_job_ids(record)), gpus
+    )
     if refund > 0:
         log.info("%s: refunding %.2f GPU-hours of unused launch walltime", record.run_id, refund)
         used = max(0.0, used - refund)
@@ -1710,6 +1732,7 @@ def resume_run(
                             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
                             array=int(item.get("array") or 1),
                             why=str(item.get("why") or ""),
+                            concurrency=int(item.get("concurrency") or 0),
                         )
                         for item in _stage_launches(record)
                     ),

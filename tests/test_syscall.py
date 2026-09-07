@@ -1116,3 +1116,55 @@ def test_a_fifo_in_the_done_markers_place_never_blocks_the_kernel(tmp_path: Path
     t.join(timeout=5)
     assert not t.is_alive(), "marker_requested blocked on the FIFO"
     assert seen and seen[0] is not None  # the FIFO counts as no acknowledgement at all
+
+
+def test_sweep_pace_is_validated_clamped_and_expanded(tmp_path: Path) -> None:
+    from outerloop.syscall import (
+        Launch,
+        SyscallError,
+        SyscallRequest,
+        array_spec,
+        clamp_concurrency,
+        launch_task_ids,
+    )
+
+    write_req(
+        tmp_path,
+        {
+            "launches": [
+                {"name": "s", "command": "x", "array": 4, "concurrency": 9},
+                {"name": "p", "command": "y", "concurrency": 3},
+            ]
+        },
+    )
+    req = read_request(tmp_path)
+    assert req is not None
+    # clamped to the array; meaningless for a plain launch
+    assert [la.concurrency for la in req.launches] == [4, 0]
+    write_req(
+        tmp_path, {"launches": [{"name": "s", "command": "x", "array": 4, "concurrency": -1}]}
+    )
+    with pytest.raises(SyscallError, match="concurrency"):
+        read_request(tmp_path)
+    s8 = Launch(name="s", command="x", minutes=5, array=8)
+    assert array_spec(s8) == "0-7%8" and array_spec(Launch(name="p", command="y", minutes=5)) == ""
+    assert array_spec(Launch(name="s", command="x", minutes=5, array=8, concurrency=3)) == "0-7%3"
+    req = SyscallRequest(
+        launches=(
+            s8,
+            Launch(name="s2", command="x", minutes=5, array=8, concurrency=2),
+            Launch(name="p", command="y", minutes=5),
+        ),
+        note="",
+        submit=False,
+    )
+    clamped = clamp_concurrency(req, gpus=2, max_concurrent_gpus=12)  # 6 tasks of 2 GPUs
+    assert [la.concurrency for la in clamped.launches] == [6, 2, 0]
+    assert clamp_concurrency(req, gpus=2, max_concurrent_gpus=None) is req
+    assert clamp_concurrency(req, gpus=0, max_concurrent_gpus=1).launches[0].concurrency == 1
+    # one id per launch expands to the array's task ids; a legacy per-task list passes through
+    ids = launch_task_ids(req.launches, ["10", "11", "12"])
+    assert ids == [f"10_{k}" for k in range(8)] + [f"11_{k}" for k in range(8)] + ["12"]
+    legacy = [str(i) for i in range(1, 9)]
+    assert launch_task_ids((s8,), legacy) == legacy
+    assert launch_task_ids((s8,), ["1", "2"]) == []  # an unknown mapping is never guessed

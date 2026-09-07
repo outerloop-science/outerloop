@@ -240,3 +240,16 @@ def test_nothing_is_written_once_the_session_ended(tmp_path: Path) -> None:
     watcher.service()
     assert not (ws / ".outerloop" / "queue.json").exists()
     assert not (ws / ".outerloop" / "queue-done").exists()
+
+
+def test_array_rows_carry_the_launch_label_and_the_pace(tmp_path: Path) -> None:
+    """squeue names a pending array `<id>_[0-7%4]` and a running task `<id>_3`;
+    both map back to the ledger's array id, and the pace is read off the range."""
+    root, ws = _fleet(tmp_path)
+    rows = [_row("555_[0-7%4]", "r2-launch-lr"), _row("555_3", "r2-launch-lr", "RUNNING", "None")]
+    watcher = SessionWatcher(_ctx(root, ws, _Compute(rows)))
+    _ask(ws, "queue", 50.0)
+    watcher.service()
+    by_id = {j["id"]: j for j in _answered(ws, "queue")["jobs"]}
+    assert by_id["555_[0-7%4]"]["why"] == "try lr 3e-4" and by_id["555_[0-7%4]"]["concurrency"] == 4
+    assert by_id["555_3"]["why"] == "try lr 3e-4" and "concurrency" not in by_id["555_3"]

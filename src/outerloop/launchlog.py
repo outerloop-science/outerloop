@@ -52,10 +52,13 @@ def append_submitted(
         for row in read_ledger(run_dir)
         if row.get("event") == "submitted"
     }
+    # one id per launch (a sweep is one Slurm job array), or one per task for
+    # a park recorded when arrays were separate jobs
+    per_launch = len(job_ids) == len(launches)
     rows: list[dict[str, Any]] = []
     k = 0
     for launch in launches:
-        n = len(launch_jobs(launch))
+        n = 1 if per_launch else len(launch_jobs(launch))
         ids = job_ids[k : k + n]
         k += n
         if (sleep, launch.name) in known:

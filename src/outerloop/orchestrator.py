@@ -46,6 +46,7 @@ from outerloop.rolespec import RoleSpec
 from outerloop.syscall import (
     SyscallError,
     SyscallRequest,
+    clamp_concurrency,
     evals_gpu_hours,
     launches_gpu_hours,
 )
@@ -1553,6 +1554,13 @@ def attempt_once(
                         run_seed=run_seed,
                     )
                 sha = snapshot()
+                # a sweep's pace is clamped to the contract's GPU ceiling
+                # before it is submitted or recorded; never refused
+                request = clamp_concurrency(
+                    request,
+                    gpus=bench.gpus,
+                    max_concurrent_gpus=contract.budgets.max_concurrent_gpus,
+                )
                 launch_afterany = launcher(sha, request)
                 raise RunParked(
                     phase="author-sleep",
