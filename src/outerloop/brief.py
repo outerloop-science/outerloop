@@ -394,7 +394,7 @@ def render(brief: SessionBrief) -> str:
             f"    python {_CHANNEL}/syscall launch --name <handle> "
             '--minutes <N> [--array <N>] [--concurrency <K>] [--why "one line"] '
             "--artifact <repo-relative file> -- <command>",
-            f"    python {_CHANNEL}/syscall submit [--minutes <N>]",
+            f"    python {_CHANNEL}/syscall submit --report <file> [--minutes <N>]",
             f"    python {_CHANNEL}/syscall siblings",
             f"    python {_CHANNEL}/syscall queue",
             f"    python {_CHANNEL}/syscall history",
@@ -456,7 +456,14 @@ def render(brief: SessionBrief) -> str:
             "unvalidated submit wastes gate compute and spends a sleep on a "
             "guess.",
             "",
-            "When your candidate is READY, stage `submit` and then `sleep`: "
+            "A submit needs `--report <file>`: a short markdown write-up with "
+            "your hypothesis, what you ran and what it measured (`history` "
+            "lists your launches), why this should merge, and what did not "
+            "work. It becomes the pull request's research report, and the "
+            "panel reads it against the diff and your experiments — claim "
+            "only what the evidence shows.",
+            "",
+            "When your candidate is READY, stage `submit --report <file>` and then `sleep`: "
             "your tree is sealed, measured against the baseline, and read by "
             "the review panel. A clean pass is published as a PR directly; "
             "otherwise you wake with the gate result or the panel's findings "

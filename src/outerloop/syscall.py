@@ -90,6 +90,8 @@ MAX_ARTIFACTS_PER_LAUNCH = 8
 MAX_NOTE_CHARS = 2_000
 # a launch's one-line reason, shown to every agent in the queue view
 MAX_WHY_CHARS = 200
+# the author's write-up at submit: hypothesis, what ran, what was measured, why merge
+MAX_REPORT_CHARS = 8_000
 # Per-job walltime ask, clamped to the same ceiling as dispatched evals.
 MAX_LAUNCH_MINUTES = 240
 # a submit's declared eval walltime: bounded only by the GPU-hour budget the
@@ -148,6 +150,9 @@ class SyscallRequest:
     # wake returns verdict + gate result to the author (published directly when
     # it clears cleanly). Costs the sleep it rides on, nothing else.
     submit: bool = False
+    # the author's report at submit, required with one: it becomes the pull
+    # request's research report and the panel reads it against the diff
+    report: str = ""
     # The author's declared walltime for the submit's paired gate evals
     # (None = the contract's eval_minutes). Walltime is a budget, never the
     # metric: compute is priced in GPU-hours against the run's budget, so a
@@ -271,7 +276,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # so anything else here (e.g. a verdict) is a wrong-type request, not a sleep.
     if data.get("type") != "sleep":
         raise SyscallError(f"expected a sleep syscall, got type {data.get('type')!r}")
-    unknown = set(data) - {"type", "launches", "note", "submit", "eval_minutes"}
+    unknown = set(data) - {"type", "launches", "note", "submit", "eval_minutes", "report"}
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
     note = data.get("note", "")
@@ -287,6 +292,14 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if not submit:
             raise SyscallError("eval_minutes only applies to a submit")
         eval_minutes = min(eval_minutes, MAX_EVAL_MINUTES)
+    report = data.get("report", "")
+    if not isinstance(report, str) or len(report) > MAX_REPORT_CHARS:
+        raise SyscallError(f"report must be a string of at most {MAX_REPORT_CHARS} chars")
+    if submit and not report.strip():
+        raise SyscallError(
+            "a submit needs a report: `submit --report <file>` with the hypothesis, what "
+            "ran and what was measured, and why this should merge"
+        )
     raw_launches = data.get("launches", [])
     if not isinstance(raw_launches, list):
         raise SyscallError("launches must be a list")
@@ -355,7 +368,11 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # (research-loop.md, "the session clock is visible") — it still burns a
     # sleep count, which is what bounds living forever.
     return SyscallRequest(
-        launches=tuple(launches), note=note, submit=submit, eval_minutes=eval_minutes
+        launches=tuple(launches),
+        note=note,
+        submit=submit,
+        eval_minutes=eval_minutes,
+        report=report.strip(),
     )
 
 

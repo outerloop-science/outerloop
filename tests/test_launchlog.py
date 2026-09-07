@@ -110,3 +110,31 @@ def test_one_id_per_launch_is_the_arrays_id(tmp_path: Path) -> None:
     append_submitted(tmp_path, sleep=1, launches=launches, job_ids=["10", "11"], at=1.0)
     assert [e["job_ids"] for e in history(tmp_path)] == [["10"], ["11"]]
     assert why_by_job(tmp_path)["11"]["why"] == "sweep lr"
+
+
+def test_experiments_rows_join_the_ledger_with_each_jobs_last_line(tmp_path: Path) -> None:
+    launches = (
+        Launch(name="wd", command="x", minutes=5, why="try 6400"),
+        Launch(name="lr", command="y", minutes=7, array=2, concurrency=1),
+    )
+    append_submitted(tmp_path, sleep=1, launches=launches, job_ids=["1", "2"], at=10.0)
+    (tmp_path / "eval-launch-wd").mkdir()
+    (tmp_path / "eval-launch-wd" / "stdout").write_text('step 1\nstep 2\n{"val": 3.28}\n\n')
+    (tmp_path / "eval-launch-lr.0").mkdir()
+    (tmp_path / "eval-launch-lr.0" / "stdout").write_text("a   b\n")
+    append_ended(
+        tmp_path,
+        sleep=1,
+        results=(_result("wd", 0), _result("lr.0", 1)),
+        at=20.0,
+        elapsed_seconds=[4500, None],
+    )
+    from outerloop.launchlog import experiments_rows
+
+    rows = experiments_rows(tmp_path)
+    assert [(r["job"], r["back"], r["exit_code"], r["elapsed"], r["result"]) for r in rows] == [
+        ("wd", True, 0, 4500, '{"val": 3.28}'),
+        ("lr.0", True, 1, None, "a b"),
+        ("lr.1", False, None, None, ""),
+    ]
+    assert rows[1]["why"] == "" and rows[1]["array"] == 2 and rows[1]["concurrency"] == 1

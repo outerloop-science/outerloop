@@ -114,7 +114,7 @@ def test_invalid_requests_are_refused_loudly(tmp_path: Path, payload, match) -> 
 
 
 def test_read_request_carries_submit_and_rejects_a_non_bool(tmp_path: Path) -> None:
-    write_req(tmp_path, {"launches": [], "submit": True})
+    write_req(tmp_path, {"launches": [], "submit": True, "report": "H: the change helps"})
     req = read_request(tmp_path)
     assert req is not None and req.submit
     write_req(tmp_path, {"launches": [], "submit": "yes"})
@@ -712,18 +712,24 @@ def test_submit_carries_a_declared_eval_walltime(tmp_path: Path) -> None:
     submit (refused loudly rather than silently ignored)."""
     from outerloop.syscall import MAX_EVAL_MINUTES
 
-    write_req(tmp_path, {"launches": [], "submit": True, "eval_minutes": 420})
+    write_req(
+        tmp_path,
+        {"launches": [], "submit": True, "report": "H: the change helps", "eval_minutes": 420},
+    )
     req = read_request(tmp_path)
     assert req is not None and req.submit and req.eval_minutes == 420
-    write_req(tmp_path, {"launches": [], "submit": True, "eval_minutes": 10**6})
+    write_req(
+        tmp_path,
+        {"launches": [], "submit": True, "report": "H: the change helps", "eval_minutes": 10**6},
+    )
     req = read_request(tmp_path)
     assert req is not None and req.eval_minutes == MAX_EVAL_MINUTES
-    write_req(tmp_path, {"launches": [], "submit": True})
+    write_req(tmp_path, {"launches": [], "submit": True, "report": "H: the change helps"})
     req = read_request(tmp_path)
     assert req is not None and req.eval_minutes is None
     for bad in (
         {"launches": [], "eval_minutes": 60},
-        {"launches": [], "submit": True, "eval_minutes": 0},
+        {"launches": [], "submit": True, "report": "H: the change helps", "eval_minutes": 0},
     ):
         write_req(tmp_path, bad)
         with pytest.raises(SyscallError):
@@ -1168,3 +1174,24 @@ def test_sweep_pace_is_validated_clamped_and_expanded(tmp_path: Path) -> None:
     legacy = [str(i) for i in range(1, 9)]
     assert launch_task_ids((s8,), legacy) == legacy
     assert launch_task_ids((s8,), ["1", "2"]) == []  # an unknown mapping is never guessed
+
+
+def test_a_submit_needs_a_report(tmp_path: Path) -> None:
+    from outerloop.syscall import MAX_REPORT_CHARS, SyscallError
+
+    write_req(tmp_path, {"launches": [], "submit": True})
+    with pytest.raises(SyscallError, match="submit needs a report"):
+        read_request(tmp_path)
+    write_req(tmp_path, {"launches": [], "submit": True, "report": "   "})
+    with pytest.raises(SyscallError, match="submit needs a report"):
+        read_request(tmp_path)
+    write_req(tmp_path, {"launches": [], "submit": True, "report": "x" * (MAX_REPORT_CHARS + 1)})
+    with pytest.raises(SyscallError, match="report must be"):
+        read_request(tmp_path)
+    write_req(tmp_path, {"launches": [], "submit": True, "report": "  H: it helps  "})
+    req = read_request(tmp_path)
+    assert req is not None and req.report == "H: it helps"
+    # a sleep without a submit needs none
+    write_req(tmp_path, {"launches": [{"name": "a", "command": "x"}]})
+    req = read_request(tmp_path)
+    assert req is not None and req.report == ""

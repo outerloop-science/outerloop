@@ -475,6 +475,9 @@ class AttemptResult:
     candidate_sha: str = ""
     session: SessionResult | None = None
     note: str = ""
+    # the author's report at submit (SyscallRequest.report): the PR's research
+    # report and what the panel read; empty when the run never submitted one
+    submit_report: str = ""
     # the seed both measurements ran under (0 = benchmark has no seed_env):
     # recorded in the ledger row so the number is re-derivable
     run_seed: int = 0
@@ -1789,7 +1792,13 @@ def attempt_once(
             break
         # the panel reads the CREDITED claim: improvement + suite gate passed
         panel_reads += 1
-        verdict = panel_runner(baseline, candidate, session.final_text)
+        verdict = panel_runner(
+            baseline,
+            candidate,
+            # the author's report at submit is the claim the panel reads; the
+            # session's last words only when no submit carried one
+            submitted.report if submitted is not None and submitted.report else session.final_text,
+        )
         panel_sections.append(verdict.transcript)
         # only the FINAL read's degradation matters: an earlier outage that a
         # later clean read supersedes is history, not state
@@ -1821,6 +1830,7 @@ def attempt_once(
         suite=suite,
         suite_seed=suite_seed_ran,
         note=baseline_note,
+        submit_report=submitted.report if submitted is not None else "",
         panel_transcript="\n\n".join(panel_sections),
         panel_rounds=panel_reads,
         panel_blocking_open=panel_blocking_open,
@@ -1828,13 +1838,70 @@ def attempt_once(
     )
 
 
+MAX_EXPERIMENT_ROWS = 60
+
+
+def _cell(text: object, cap: int = 160) -> str:
+    """One markdown table cell: one line, pipes escaped, bounded."""
+    return " ".join(str(text).split()).replace("|", "\\|")[:cap]
+
+
+def _ended(row: dict[str, Any]) -> str:
+    if not row.get("back"):
+        return "not back"
+    code = row.get("exit_code")
+    how = f"exit {code}" if code is not None else (str(row.get("state") or "no exit code"))
+    secs = row.get("elapsed")
+    if isinstance(secs, int | float) and secs > 0:
+        h, m = divmod(int(secs) // 60, 60)
+        how += f", {h}h{m:02d}m" if h else f", {m}m"
+    return how
+
+
+def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
+    """The run's launches as the ledger recorded them: what ran, how each job
+    ended, what it printed last. Empty when the run launched nothing."""
+    if not rows:
+        return []
+    lines = [
+        "",
+        "## Experiments",
+        "",
+        f"{len(rows)} job(s) launched by the author this run, from the kernel's ledger; "
+        "the result column is the last line each job printed.",
+        "",
+        "| sleep | launch | why | job | ended | result |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows[:MAX_EXPERIMENT_ROWS]:
+        pace = ""
+        if int(row.get("array") or 1) > 1:
+            k = int(row.get("concurrency") or 0) or int(row["array"])
+            pace = f" (x{row['array']}, {k} at a time)"
+        lines.append(
+            f"| {row.get('sleep', '')} | {_cell(row.get('launch', ''), 48)}{pace} | "
+            f"{_cell(row.get('why', ''), 120)} | {_cell(row.get('job', ''), 48)} | "
+            f"{_ended(row)} | {_cell(row.get('result', ''), 160)} |"
+        )
+    rest = rows[MAX_EXPERIMENT_ROWS:]
+    if rest:
+        ok = sum(1 for r in rest if r.get("back") and r.get("exit_code") == 0)
+        lines.append(
+            f"| | … {len(rest)} more job(s): {ok} exit 0, {len(rest) - ok} otherwise | | | | |"
+        )
+    return lines
+
+
 def pr_body(
     result: AttemptResult,
     config: RunConfig,
     redact_secrets: tuple[str, ...],
     display_digits: int | None = None,
+    experiments: list[dict[str, Any]] | None = None,
 ) -> str:
-    """The PR body for an improved run: results table + the agent's report.
+    """The PR body for an improved run: the author's report, the experiments
+    the run actually ran (from the launch ledger), the measured table, and
+    the panel's transcript.
 
     Human surfaces render at the benchmark's conventional precision;
     full precision lives only in results/leader.json, and every
@@ -1879,11 +1946,41 @@ def pr_body(
         if result.panel_transcript
         else []
     )
+    if result.submit_report:
+        report_lines = [
+            "*Written by the author at submit, before the orchestrator measured; the "
+            "panel read it against the diff and the experiments below.*",
+            "",
+            redact(result.submit_report, redact_secrets)[:MAX_REPORT_BODY],
+        ]
+    else:
+        report_lines = [
+            (
+                "*This report came from the previous session in this line — no "
+                "agent session ran for this attempt. It was written before the "
+                "orchestrator measured; the table below contains the measured "
+                "results.*"
+                if result.session and result.session.stop_reason == "resumed"
+                else "*Session prose, written before the orchestrator measured; "
+                "the table below contains the measured results.*"
+            ),
+            "",
+            redact(result.session.final_text, redact_secrets)[:MAX_REPORT_BODY]
+            if result.session
+            else "",
+        ]
     body = "\n".join(
         [
             *banner,
             f"Automated improvement attempt on `{config.benchmark}` "
             f"(agent `{config.agent_id}`, one hypothesis per PR).",
+            "",
+            "## Research report",
+            "",
+            *report_lines,
+            *_experiments_section(experiments or []),
+            "",
+            "## Measured",
             "",
             "| | value |",
             "| --- | --- |",
@@ -1894,24 +1991,6 @@ def pr_body(
             "Both numbers were measured by the orchestrator re-running the "
             "contract's eval command — not taken from the session. CI "
             "re-verifies independently.",
-            "",
-            "## Research report",
-            "",
-            (
-                "*This report came from the previous session in this line — no "
-                "agent session ran for this attempt. It was written before the "
-                "orchestrator measured; the table above contains the measured "
-                "results.*"
-                if result.session and result.session.stop_reason == "resumed"
-                else "*Session prose, written before the orchestrator measured; "
-                "the table above contains the measured results.*"
-            ),
-            "",
-            (
-                redact(result.session.final_text, redact_secrets)[:MAX_REPORT_BODY]
-                if result.session
-                else ""
-            ),
             *panel_section,
         ]
     )

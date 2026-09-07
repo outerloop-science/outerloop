@@ -47,7 +47,7 @@ from outerloop.github import (
     git_identity,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, redact
-from outerloop.launchlog import append_ended, append_submitted
+from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.markers import has_marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
@@ -437,9 +437,14 @@ def _park_run(
         # it lands in the durable record, like every other persisted final_text
         # — a session that echoed a credential must not leave it in record.json.
         # Empty/zero for a baseline park (the session has not run yet).
-        "report": redact(parked.session.final_text, secrets)[:MAX_CLAIM_CHARS]
-        if parked.session
-        else "",
+        # the author's report at submit, else the session's last words (a park
+        # with no submit); either way what the wake's panel and the PR body read
+        "report": redact(
+            parked.syscall.report
+            if parked.syscall is not None and parked.syscall.report
+            else (parked.session.final_text if parked.session else ""),
+            secrets,
+        )[:MAX_CLAIM_CHARS],
         "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
         "session_turns": parked.session.num_turns if parked.session else 0,
     }
@@ -856,18 +861,20 @@ def _wake_author_sleep(
     # of a blank "job failure". The park's launch job ids align positionally
     # with the results (same launch/array order). Best-effort — the wake never
     # blocks on the scheduler query.
+    task_ids = launch_task_ids(launches, _stage_launch_job_ids(record))
     status_of = getattr(dispatch.compute, "status", None)
     if status_of is not None:
-        results = annotate_launch_states(
-            results, launch_task_ids(launches, _stage_launch_job_ids(record)), status_of
-        )
+        results = annotate_launch_states(results, task_ids, status_of)
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
+    elapsed = _launch_elapsed(dispatch, task_ids) if task_ids else None
     _best_effort(
         "launch ledger",
-        lambda: append_ended(run_dir, sleep=sleeps_used, results=results, at=time.time()),
+        lambda: append_ended(
+            run_dir, sleep=sleeps_used, results=results, at=time.time(), elapsed_seconds=elapsed
+        ),
     )
-    gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches)
+    gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches, elapsed)
     wake_text = render_wake(
         results,
         str(record.stage.get("syscall_note", "")),
@@ -1054,7 +1061,11 @@ def _stage_launch_job_ids(record: RunRecord) -> list[str]:
 
 
 def _reconcile_launch_hours(
-    record: RunRecord, dispatch: DispatchSettings, gpus: int, launches: tuple
+    record: RunRecord,
+    dispatch: DispatchSettings,
+    gpus: int,
+    launches: tuple,
+    elapsed: list[int | None] | None = None,
 ) -> float:
     """The run's GPU-hours after handing back the unused walltime of the
     park's launch jobs — once: the stage remembers the refund, so a wake
@@ -1065,7 +1076,7 @@ def _reconcile_launch_hours(
     if not gpus or stage.get("launch_hours_refunded"):
         return used
     refund = _launch_refund(
-        dispatch, launches, launch_task_ids(launches, _stage_launch_job_ids(record)), gpus
+        dispatch, launches, launch_task_ids(launches, _stage_launch_job_ids(record)), gpus, elapsed
     )
     if refund > 0:
         log.info("%s: refunding %.2f GPU-hours of unused launch walltime", record.run_id, refund)
@@ -1075,21 +1086,35 @@ def _reconcile_launch_hours(
     return used
 
 
+def _launch_elapsed(dispatch: DispatchSettings, job_ids: list[str]) -> list[int | None] | None:
+    """How long each launch job ran, from the compute, aligned with `job_ids`;
+    None when the compute cannot say (nothing is refunded or recorded on a
+    guess)."""
+    query = getattr(dispatch.compute, "elapsed_seconds", None)
+    if query is None or not job_ids:
+        return None
+    try:
+        return [query(jid) for jid in job_ids]
+    except Exception as exc:
+        log.warning("launch walltime unknown (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
 def _launch_refund(
-    dispatch: DispatchSettings, launches: tuple, job_ids: list[str], gpus: int
+    dispatch: DispatchSettings,
+    launches: tuple,
+    job_ids: list[str],
+    gpus: int,
+    elapsed: list[int | None] | None = None,
 ) -> float:
     """The unused walltime of a park's launch jobs, in GPU-hours, or 0 when
     the compute cannot say how long they ran (nothing is refunded on a
-    guess)."""
+    guess). `elapsed` may be handed in when the caller already asked."""
     from outerloop.syscall import launch_hours_refund
 
-    query = getattr(dispatch.compute, "elapsed_seconds", None)
-    if query is None or not job_ids:
-        return 0.0
-    try:
-        elapsed = [query(jid) for jid in job_ids]
-    except Exception as exc:
-        log.warning("launch walltime unknown (%s: %s); nothing refunded", type(exc).__name__, exc)
+    if elapsed is None:
+        elapsed = _launch_elapsed(dispatch, job_ids)
+    if elapsed is None:
         return 0.0
     return launch_hours_refund(launches, elapsed, gpus=gpus)
 
@@ -2059,8 +2084,16 @@ def resume_run(
                     f"\n\nAgent: {config.agent_id}",
                 )
             ws.push(branch)
+            if record.stage.get("submitted"):
+                # the author's report at submit rides the stage: the PR shows it
+                # as the research report, over the ledger's experiments
+                result = dc_replace(result, submit_report=str(record.stage.get("report") or ""))
             body = pr_body(
-                result, config, redact_secrets=secrets, display_digits=bench.display_digits
+                result,
+                config,
+                redact_secrets=secrets,
+                display_digits=bench.display_digits,
+                experiments=experiments_rows(run_dir),
             )
             if issue_number:
                 body = f"Addresses #{issue_number}.\n\n{body}"
@@ -3006,7 +3039,11 @@ def live_attempt(
             ws.push(branch)
             pushed = True
             body = pr_body(
-                result, config, redact_secrets=secrets, display_digits=bench.display_digits
+                result,
+                config,
+                redact_secrets=secrets,
+                display_digits=bench.display_digits,
+                experiments=experiments_rows(run_dir),
             )
             if issue_number:
                 body = f"Addresses #{issue_number}.\n\n{body}"
