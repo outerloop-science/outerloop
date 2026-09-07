@@ -199,6 +199,17 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
     return text
 
 
+def default_binary(backend: str) -> str:
+    """The host CLI a job spawns for `backend`: the path init recorded
+    (`OUTERLOOP_<BACKEND>_BIN`), else `~/.local/bin/<backend>` where the native
+    installers put it. One rule for the climb, the follow-up and the steward,
+    so a CLI installed anywhere else works in every lane."""
+    name = backend.strip().lower() or "claude"
+    return os.path.expanduser(
+        os.environ.get(f"OUTERLOOP_{name.upper()}_BIN") or f"~/.local/bin/{name}"
+    )
+
+
 def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "") -> SessionResult:
     return SessionResult(
         stop_reason=stop_reason,
@@ -609,7 +620,7 @@ class ClaudeCodeHarness:
             )
         except OSError as exc:
             log.warning("could not spawn %s: %s", self.binary, exc)
-            return _error_result("spawn-error")
+            return _error_result("spawn-error", detail=f"could not spawn {self.binary}: {exc}")
 
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
@@ -1061,7 +1072,7 @@ class CodexHarness:
         except OSError as exc:
             log.warning("could not spawn %s: %s", self.binary, exc)
             self._purge_auth(session_home)
-            return _error_result("spawn-error")
+            return _error_result("spawn-error", detail=f"could not spawn {self.binary}: {exc}")
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:

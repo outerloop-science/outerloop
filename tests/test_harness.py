@@ -370,6 +370,7 @@ def test_missing_binary_returns_spawn_error(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=str(tmp_path / "nope")).run("task", tmp_path)
     assert result.is_error
     assert result.stop_reason == "spawn-error"
+    assert "nope" in result.error_detail  # #294: the report names what failed to spawn
 
 
 def test_garbage_output_is_an_error_with_transcript(tmp_path: Path) -> None:
@@ -842,3 +843,29 @@ def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypat
     assert role_key(missing) == ""  # ADC-only claude deployment
     with pytest.raises(ValueError):
         role_key(missing, "codex")  # vertex never excuses a non-claude backend
+
+
+def test_default_binary_prefers_the_recorded_path(monkeypatch) -> None:
+    """init records OUTERLOOP_<BACKEND>_BIN; every lane (climb, follow-up, steward)
+    spawns that binary, else the native installer's ~/.local/bin path (#294)."""
+    from outerloop.harness import default_binary
+
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("OUTERLOOP_CODEX_BIN", raising=False)
+    assert default_binary("claude").endswith("/.local/bin/claude")
+    assert default_binary("codex").endswith("/.local/bin/codex")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", "/opt/bin/claude")
+    assert default_binary("claude") == "/opt/bin/claude"
+    monkeypatch.setenv("OUTERLOOP_CODEX_BIN", "~/tools/codex")
+    assert default_binary("codex").endswith("/tools/codex") and "~" not in default_binary("codex")
+
+
+def test_no_lane_hardcodes_the_harness_path() -> None:
+    """The three job parsers take their binary defaults from default_binary; a
+    literal ~/.local/bin/<cli> in any of them would ignore what init recorded."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "outerloop"
+    for module in ("attempt.py", "followup.py", "steward.py"):
+        text = (src / module).read_text()
+        assert "~/.local/bin/claude" not in text and "~/.local/bin/codex" not in text, module

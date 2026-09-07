@@ -95,7 +95,7 @@ if [ -r "$ENV_FILE" ]; then
     owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
     if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
         for _k in OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL \
-                  OUTERLOOP_CODEX_BIN OUTERLOOP_CODEX_KEY_FILE \
+                  OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN OUTERLOOP_CODEX_KEY_FILE \
                   OUTERLOOP_CLAUDE_KEY_FILE OUTERLOOP_HARNESS_KEY_FILE \
                   OUTERLOOP_VERTEX_PROJECT OUTERLOOP_VERTEX_REGION \
                   OUTERLOOP_VERTEX_ADC \

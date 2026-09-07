@@ -51,6 +51,7 @@ START_KEYS = (
 TICK_ENV_KEYS = (
     "OUTERLOOP_AUTHOR_BACKEND",
     "OUTERLOOP_AUTHOR_MODEL",
+    "OUTERLOOP_CLAUDE_BIN",
     "OUTERLOOP_CODEX_BIN",
     "OUTERLOOP_CODEX_KEY_FILE",
     "OUTERLOOP_CLAUDE_KEY_FILE",
@@ -339,9 +340,37 @@ def _exec(cmd: list[str], env: dict[str, str]) -> int:
     return 1  # unreachable; keeps the signature honest for tests that stub this
 
 
+HARNESS_BIN_KEYS = ("OUTERLOOP_CLAUDE_BIN", "OUTERLOOP_CODEX_BIN")
+
+
+def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str]) -> str:
+    """The process environment wins over .env, including an explicit empty value
+    (the way to clear a recorded path from the shell)."""
+    return (environ[key] if key in environ else values.get(key, "")).strip()
+
+
+def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
+    """Why start must not launch: the CONFIGURED author backend's recorded
+    binary is not there (init records the path; a moved or uninstalled CLI
+    would end every climb with spawn-error). The other backend's path is not
+    consulted: a stale entry for a backend the loop never spawns must not block
+    it. "" when the binary exists or none is recorded."""
+    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    key = f"OUTERLOOP_{backend.upper()}_BIN"
+    if key not in HARNESS_BIN_KEYS:
+        return ""  # an unknown backend is init's error to report, not this check's
+    path = _setting_of(key, values, environ)
+    if path and not Path(path).expanduser().is_file():
+        return f"{key}={path} is not a file; reinstall the CLI or run `outerloop init --force`"
+    return ""
+
+
 def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
+        problem = missing_harness_binary(values, os.environ)
+        if problem:
+            raise StartError(problem)
         from_file = {k: v for k, v in values.items() if k in START_KEYS}
         plan = plan_start(
             root=args.root or "",
@@ -467,7 +496,9 @@ def main(argv: list[str] | None = None) -> int:
         "--local", action="store_true", help="run the local loop even where sbatch exists"
     )
     p.add_argument("--dry-run", action="store_true", help="print the command and exit")
-    sub.add_parser("tick", help="one tick, or --loop; the chain's own entry", add_help=False)
+    sub.add_parser(
+        "tick", help="run one tick now; --loop keeps ticking (the local loop)", add_help=False
+    )
     sub.add_parser(
         "init",
         help="guided setup: write ~/.config/outerloop/.env and the PAT file",

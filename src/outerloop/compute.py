@@ -432,6 +432,13 @@ class LocalCompute:
                 tmp = state_dir / f".{job_id}.{os.getpid()}.tmp"
                 tmp.write_text(state)
                 os.replace(tmp, state_dir / job_id)
+                # the job's combined stdout/stderr beside its state: a failed local
+                # job otherwise leaves nothing to read (#295)
+                out_fd = os.open(
+                    state_dir / f"{job_id}.out", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+                )
+                with os.fdopen(out_fd, "w") as fh:
+                    fh.write(output)
                 # opportunistic prune: one entry per job would leak forever
                 # on a long-running loop; anything the sweep could still want
                 # is far younger than a day
@@ -451,7 +458,12 @@ class LocalCompute:
             except OSError as exc:
                 log.warning("local job %s: output write failed: %s", spec.job_name, exc)
         self._states[job_id] = state
-        log.info("ran %s locally as job %s: %s", spec.job_name, job_id, state)
+        where = (
+            f"; output in {state_dir / (job_id + '.out')}"
+            if state_dir and state != "COMPLETED"
+            else ""
+        )
+        log.info("ran %s locally as job %s: %s%s", spec.job_name, job_id, state, where)
         return job_id
 
     def status(self, job_id: str) -> str:

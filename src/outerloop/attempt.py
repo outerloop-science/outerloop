@@ -44,7 +44,7 @@ from outerloop.github import (
     contract_at,
     ensure_regular_git_dir,
 )
-from outerloop.harness import Harness, SessionResult, redact
+from outerloop.harness import Harness, SessionResult, default_binary, redact
 from outerloop.markers import has_marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
@@ -3170,10 +3170,14 @@ def main() -> int:
         help="run WITHOUT a container (dev only: sessions can then read "
         "same-user files, including credential files)",
     )
-    parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
+    parser.add_argument(
+        "--claude-bin",
+        default=default_binary("claude"),
+        help="host claude binary for the claude author (OUTERLOOP_CLAUDE_BIN, which init records)",
+    )
     parser.add_argument(
         "--codex-bin",
-        default=os.path.expanduser(os.environ.get("OUTERLOOP_CODEX_BIN") or "~/.local/bin/codex"),
+        default=default_binary("codex"),
         help="host codex binary for the codex author; bind-mounted into apptainer "
         "(must be an absolute path).",
     )

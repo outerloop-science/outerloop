@@ -20,6 +20,7 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.error
@@ -51,6 +52,7 @@ class InitAnswers:
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
+    author_bin: str = ""  # the author harness binary (claude/codex), absolute, when found
 
 
 def render_env(
@@ -88,7 +90,66 @@ def render_env(
         lines.append(f"OUTERLOOP_AUTHOR_MODEL={a.author_model}")
     if a.author_key_file:
         lines.append(f"{author_key_env(a.author_backend)}={a.author_key_file}")
+    if a.author_bin:
+        lines.append(f"{author_bin_env(a.author_backend)}={a.author_bin}")
     return "\n".join(lines) + "\n"
+
+
+def author_bin_env(backend: str) -> str:
+    """The `.env` key naming `backend`'s harness binary (`OUTERLOOP_CLAUDE_BIN`,
+    `OUTERLOOP_CODEX_BIN`), the same names `attempt` reads."""
+    return f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
+
+
+HARNESS_INSTALL = {
+    "claude": "npm install -g @anthropic-ai/claude-code "
+    "(or: curl -fsSL https://claude.ai/install.sh | bash)",
+    "codex": "npm install -g @openai/codex",
+}
+
+
+def locate_harness(backend: str) -> str:
+    """The absolute path of `backend`'s CLI on this machine: PATH first, then
+    ~/.local/bin (where the native installers put it and where a Slurm job,
+    with no login PATH, would not find it); "" when absent. Recorded in .env so
+    every job spawns the same binary the operator installed."""
+    name = backend or AUTHOR_BACKENDS[0]
+    found = shutil.which(name)
+    if found:
+        return str(Path(found).resolve())
+    local = Path.home() / ".local" / "bin" / name
+    return str(local) if local.is_file() and os.access(local, os.X_OK) else ""
+
+
+def _harness_hint(answers: InitAnswers) -> None:
+    if not answers.author_bin:
+        name = answers.author_backend or AUTHOR_BACKENDS[0]
+        print(
+            f"  no `{name}` binary found on PATH or in ~/.local/bin — the first climb would end\n"
+            f"  with spawn-error. Install it: {HARNESS_INSTALL.get(name, 'see its docs')}\n"
+            "  then run `outerloop init --force` so its path is recorded."
+        )
+
+
+def _token_login(token: str) -> str:
+    """The login a PAT acts as (GET /user), or "" when GitHub does not say."""
+    req = urllib.request.Request(
+        f"{API}/user",
+        headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return str(json.loads(resp.read()).get("login") or "")
+    except (urllib.error.URLError, OSError, ValueError):
+        return ""
+
+
+def _auth_is_fatal(problem: str) -> bool:
+    """A credential the loop cannot open pull requests with fails setup; not
+    being able to ask GitHub right now (network, 5xx, rate limit) does not."""
+    return bool(problem) and not problem.startswith(
+        ("could not reach GitHub", "could not read the App", "could not check the App")
+    )
 
 
 def author_key_env(backend: str) -> str:
@@ -148,6 +209,13 @@ def _check_repo_access(token: str, target: str) -> str:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return f"{target} not found, or the token cannot see it"
+        if exc.code == 401:
+            return "the token is invalid or expired (GitHub returned 401)"
+        if exc.code == 403:
+            return f"the token is not allowed to access {target} (GitHub returned 403)"
+        if exc.code == 429 or exc.code >= 500:
+            # GitHub's problem, not the credential's: never fatal
+            return f"could not reach GitHub: it returned {exc.code} for {target}"
         return f"GitHub returned {exc.code} for {target}"
     except urllib.error.URLError as exc:
         return f"could not reach GitHub: {exc.reason}"
@@ -195,6 +263,8 @@ def _check_app_access(provider: Any, target: str) -> str:
             )
         return ""
     except urllib.error.HTTPError as exc:
+        if exc.code == 429 or exc.code >= 500:
+            return f"could not reach GitHub: it returned {exc.code} while checking the App"
         return f"GitHub returned {exc.code} while checking the App"
     except urllib.error.URLError as exc:
         return f"could not reach GitHub: {exc.reason}"
@@ -264,6 +334,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         author_backend=backend,
         author_model=model,
         image=image,
+        author_bin=locate_harness(backend),
         uncontained=bool(args.no_image) and not image,
     )
     return answers, (args.pat_file or "")
@@ -289,12 +360,72 @@ def _owner_type(owner: str) -> str:
         return ""
 
 
-def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
+def _app_failure(answers: InitAnswers, slug: str, problem: str) -> int:
+    """The App cannot write the target: say so, keep the credentials, and point
+    at the fix and the re-check. Never `start` — the check just failed."""
+    print(f"  auth check: FAILED — {problem}", file=sys.stderr)
+    print(
+        f"outerloop init: the App '{slug}' cannot write {answers.target}. On\n"
+        f"  https://github.com/apps/{slug}/installations/new (or the App's page under\n"
+        "  Settings > Installations > Configure) install it on that repository and accept\n"
+        "  contents, issues and pull-request write access, then run\n"
+        "  `outerloop init --force --github-app` to re-check with these credentials.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
+    """Re-run Step 3 for an App this machine already created: confirm it can
+    write the target, then point the .env at it."""
+    from outerloop import appmanifest
+    from outerloop.appauth import app_provider_from_file
+
+    slug = app_json.name[len("github_app.") : -len(".json")]
+    print(f"Re-checking the existing App '{slug}' ({app_json}) against {answers.target}.")
+    try:
+        data = json.loads(app_json.read_text())
+        if not int(data.get("installation_id") or 0):
+            # the earlier run ended before the App was installed: look again
+            iid = appmanifest.capture_installation_id(
+                int(data["app_id"]), Path(str(data["private_key"])), answers.target.split("/")[0]
+            )
+            if iid:
+                appmanifest.set_installation_id(app_json, iid)
+                print(f"  installation id {iid} recorded")
+        problem = _check_app_access(app_provider_from_file(app_json), answers.target)
+    except Exception as exc:
+        problem = f"could not read the App credentials: {exc}"
+    env_path = CONFIG_DIR / ENV_FILE.name
+    write_private(env_path, render_env(answers, app_file=str(app_json), bot_login=f"{slug}[bot]"))
+    if _auth_is_fatal(problem):
+        return _app_failure(answers, slug, problem)
+    print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+    print(f"wrote {env_path}")
+    _author_key_hint(answers)
+    _harness_hint(answers)
+    print("next: outerloop start")
+    return 0
+
+
+def _github_app_setup(
+    answers: InitAnswers, app_name: str, org: str, *, interactive: bool = True
+) -> int:
     """The `--github-app` path: create the adopter's own App via the manifest
     flow, write its creds, help install it, then point the .env at the App file.
     Interactive by nature (a browser click + install), so no `--yes` variant."""
     from outerloop import appmanifest
 
+    existing = sorted(CONFIG_DIR.glob("github_app.*.json"))
+    if len(existing) == 1:
+        # a re-run after fixing the installation: re-check the App this machine
+        # already has rather than creating a second one
+        reuse = True
+        if interactive:
+            answer = _ask(f"Reuse the App credentials at {existing[0]}? (Y/n)", "y")
+            reuse = not answer.lower().startswith("n")
+        if reuse:
+            return _github_app_recheck(answers, existing[0])
     owner = org or answers.target.split("/")[0]
     name = app_name or f"outerloop-{owner}"[:34]  # GitHub caps App names at 34
     code = appmanifest.request_manifest_code(
@@ -340,12 +471,21 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
             problem = _check_app_access(app_provider_from_file(app_json), answers.target)
         except Exception as exc:  # a check failure is a warning, never fails setup
             problem = f"could not read the App credentials: {exc}"
+        if _auth_is_fatal(problem):
+            write_private(
+                CONFIG_DIR / ENV_FILE.name,
+                render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+            )
+            return _app_failure(answers, str(conversion["slug"]), problem)
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
-        print(
-            f"  still no installation. When it is installed, put its id into {app_json} as "
-            f"installation_id (GitHub shows it in the URL of the App's page under "
-            f"Settings > Installations), then run outerloop start."
+        # the credentials are kept; nothing can run until the App is installed
+        write_private(
+            CONFIG_DIR / ENV_FILE.name,
+            render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+        )
+        return _app_failure(
+            answers, str(conversion["slug"]), f"the App is not installed on {answers.target}"
         )
     env_path = CONFIG_DIR / ENV_FILE.name
     write_private(
@@ -354,6 +494,7 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
     )
     print(f"wrote {env_path}")
     _author_key_hint(answers)
+    _harness_hint(answers)
     print("next: outerloop start")
     return 0
 
@@ -505,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                 kind = "User" if answer.strip().lower().startswith("u") else "Organization"
             if kind == "User":
                 org = ""  # a user account: GitHub's personal App page, not an org page
-        return _github_app_setup(answers, args.app_name or "", org)
+        return _github_app_setup(answers, args.app_name or "", org, interactive=interactive)
 
     token = ""
     if not pat_file and interactive:
@@ -521,10 +662,32 @@ def main(argv: list[str] | None = None) -> int:
     effective_pat = str(pat_path) if pat_path else pat_file
     if effective_pat:
         problem = validate_pat(effective_pat, answers.target)
+        if _auth_is_fatal(problem):
+            # the loop opens pull requests with this token; sending the adopter
+            # to `start` would fail later and further from the cause
+            print(f"  auth check: FAILED — {problem}", file=sys.stderr)
+            print(
+                f"outerloop init: fix the token in {effective_pat} (write access to "
+                f"{answers.target}), then run `outerloop init --force`",
+                file=sys.stderr,
+            )
+            return 1
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+        if not problem:
+            # record the login the kernel will post as: every own-comment and
+            # own-PR filter keys on it, and a default that is not this token's
+            # identity would hide the adopter's own PRs from the kernel
+            try:
+                login = _token_login(Path(effective_pat).expanduser().read_text().strip())
+            except OSError:
+                login = ""
+            if login:
+                write_private(env_path, render_env(answers, effective_pat, bot_login=login))
+                print(f"  posting as {login} (OUTERLOOP_BOT_LOGIN)")
     else:
         print("  no PAT set — add OUTERLOOP_PAT_FILE before the agents can open PRs")
     _author_key_hint(answers)
+    _harness_hint(answers)
     print("next: outerloop start")
     return 0
 

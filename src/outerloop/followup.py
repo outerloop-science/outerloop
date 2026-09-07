@@ -37,7 +37,7 @@ from outerloop.github import (
     contract_at,
     is_own_login,
 )
-from outerloop.harness import Harness, outage, redact
+from outerloop.harness import Harness, default_binary, outage, redact
 from outerloop.markers import has_marker, marker
 from outerloop.orchestrator import (
     Evaluator,
@@ -1963,10 +1963,10 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--image", default="")
     parser.add_argument("--uncontained", action="store_true")
-    parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
+    parser.add_argument("--claude-bin", default=default_binary("claude"))
     parser.add_argument(
         "--codex-bin",
-        default=os.path.expanduser(os.environ.get("OUTERLOOP_CODEX_BIN") or "~/.local/bin/codex"),
+        default=default_binary("codex"),
     )
     parser.add_argument(
         "--model",

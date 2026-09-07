@@ -43,7 +43,7 @@ from outerloop.github import (
     bot_login_from_env,
     is_own_login,
 )
-from outerloop.harness import Harness, budget_exhausted, outage, redact
+from outerloop.harness import Harness, budget_exhausted, default_binary, outage, redact
 from outerloop.intake import (
     CLAIM_MARKER,
     RELEASE_MARKER,
@@ -768,7 +768,7 @@ def main() -> int:
         action="store_true",
         help="run WITHOUT a container (dev only)",
     )
-    parser.add_argument("--claude-bin", default=os.path.expanduser("~/.local/bin/claude"))
+    parser.add_argument("--claude-bin", default=default_binary("claude"))
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument("--max-turns", type=int, default=60)
     parser.add_argument("--session-minutes", type=int, default=60)
