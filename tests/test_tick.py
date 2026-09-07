@@ -4412,12 +4412,16 @@ def test_admission_releases_held_launches_oldest_first_under_the_cap(
 
     monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
     for rid, jid in (("r1", "301"), ("r2", "302"), ("r3", "303")):
-        waiting_run(tmp_path, run_id=rid, stage={"afterany": f"afterany:{jid}"})
+        waiting_run(
+            tmp_path,
+            run_id=rid,
+            stage={"phase": "author-sleep", "afterany": f"afterany:{jid}"},
+        )
     # names are cut to 60 chars at submission: attribution goes by id, not name
     cut = "a-very-long-benchmark-name-20260906-000000-agent-01-launch-x"[:60]
     slurm = FakeSlurm(
         queue=[
-            _qrow("300", "eval-speedrun-cand", "RUNNING"),  # a gate eval holds 8
+            _qrow("300", "eval-speedrun-cand", "COMPLETING"),  # a finishing eval still holds 8
             _qrow("301", cut, "PENDING", "JobHeldUser"),
             _qrow("302", "r2-launch-b", "PENDING", "JobHeldUser"),
             _qrow("303", "r3-launch-c", "PENDING", "JobHeldUser"),
@@ -4437,9 +4441,23 @@ def test_admission_drops_held_launches_of_ended_runs_and_respects_a_cap_reason(
     from outerloop.tick import service_admission
 
     monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
-    waiting_run(tmp_path, run_id="live", stage={"afterany": "afterany:402:403"})
+    # a candidate park: afterany carries the gate's evals AND the launches; only
+    # launch_afterany names the launches
     waiting_run(
-        tmp_path, run_id="done", state=ENDED, ending=STUCK, stage={"afterany": "afterany:401"}
+        tmp_path,
+        run_id="live",
+        stage={
+            "phase": "candidate",
+            "afterany": "afterany:402:403:405",
+            "launch_afterany": "afterany:402:403",
+        },
+    )
+    waiting_run(
+        tmp_path,
+        run_id="done",
+        state=ENDED,
+        ending=STUCK,
+        stage={"phase": "author-sleep", "afterany": "afterany:401"},
     )
     slurm = FakeSlurm(
         queue=[
@@ -4449,6 +4467,7 @@ def test_admission_drops_held_launches_of_ended_runs_and_respects_a_cap_reason(
                 "403", "live-launch-z", "PENDING", "QOSMaxGRESPerUser"
             ),  # released earlier, parked
             _qrow("404", "someone-launch-q", "PENDING", "JobHeldUser"),  # no record: untouched
+            _qrow("405", "eval-live-cand", "PENDING", "JobHeldUser"),  # a held EVAL: untouched
         ]
     )
     report = service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 16))
@@ -4457,16 +4476,21 @@ def test_admission_drops_held_launches_of_ended_runs_and_respects_a_cap_reason(
     assert slurm.released == [] and report.held == 1
 
 
-def test_admission_is_off_without_a_cap_or_in_local_mode(tmp_path: Path, monkeypatch: Any) -> None:
+def test_admission_off_releases_held_launches_and_local_mode_does_nothing(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     from outerloop.tick import service_admission
 
-    waiting_run(tmp_path, run_id="r1", stage={"afterany": "afterany:501"})
+    waiting_run(tmp_path, run_id="r1", stage={"phase": "author-sleep", "afterany": "afterany:501"})
     slurm = FakeSlurm(queue=[_qrow("501", "r1-launch-a", "PENDING", "JobHeldUser")])
-    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
-    assert service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 0)).held == 0
     monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
     assert service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 16)).held == 0
     assert slurm.released == []
+    # admission switched off after a launch was submitted held: it is let go,
+    # not stranded as JobHeldUser forever
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    report = service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 0))
+    assert slurm.released == ["501"] and report.released == ("501",) and report.held == 0
 
 
 def test_admission_releases_nothing_when_the_queue_cannot_be_read(

@@ -1948,22 +1948,25 @@ def service_admission(
     reason means the configured cap is too high: nothing more is released
     that tick. Off (cap 0) and in local mode this does nothing. A failed
     queue read releases nothing (blind is never "free")."""
-    if spec.max_launch_gpus <= 0 or local_mode():
-        return AdmissionReport()
+    if local_mode():
+        return AdmissionReport()  # local jobs are synchronous; nothing is ever held
     try:
         rows = compute.queue_snapshot()
     except SlurmQueryError as exc:
         log.warning("admission: cannot read the queue (%s); releasing nothing", exc)
         return AdmissionReport()
-    # Launches are attributed by JOB ID through the records' afterany lists,
-    # never by parsing the job name: names are cut to 60 characters at
-    # submission, so a long benchmark name would read as a foreign run. A held
-    # job no record claims is left exactly as it is.
+    # Only the kernel's own LAUNCH jobs are ever released or cancelled here,
+    # attributed by JOB ID through each record's launch ids (a candidate park's
+    # afterany also carries the gate's evals, which are never launches). Names
+    # are never parsed: they are cut to 60 characters at submission, and
+    # `squeue --me` lists every job of the Unix user, ours or not. A held job
+    # no record claims is left exactly as it is.
+    from outerloop.attempt import _stage_launch_job_ids
+
     owner_state: dict[str, str] = {}
     for record in list_runs(root):
-        for jid in str((record.stage or {}).get("afterany", "")).split(":")[1:]:
-            if jid:
-                owner_state[jid] = record.state
+        for jid in _stage_launch_job_ids(record):
+            owner_state[jid] = record.state
     held: list[dict[str, str]] = []
     in_use = 0
     at_cap = False
@@ -1972,15 +1975,9 @@ def service_admission(
         state, reason, jid = row.get("state", ""), row.get("reason", ""), row.get("id", "")
         gpus = gpus_in_gres(row.get("gres", ""))
         owner = owner_state.get(jid)
-        is_launch = owner is not None or LAUNCH_MARK in row.get("name", "")
-        if is_pending(state) and reason.startswith("JobHeldUser") and is_launch:
+        if is_pending(state) and reason.startswith("JobHeldUser"):
             if owner is None:
-                log.info(
-                    "admission: held job %s (%s) belongs to no run record; left alone",
-                    jid,
-                    row.get("name", ""),
-                )
-                continue
+                continue  # not ours, or not a launch: never touched
             if owner != WAITING:
                 # the run ended (PR landed, abandoned, stuck) before its
                 # launch ever ran: nothing will read the result
@@ -1991,13 +1988,22 @@ def service_admission(
                 continue
             held.append(row)
             continue
-        if gpus and (state.startswith("RUNNING") or is_pending(state)):
+        # every GPU job that is not finished counts against the cap, including
+        # one still COMPLETING: Slurm holds its allocation until it exits
+        if gpus and not is_terminal(state) and state != GONE:
             in_use += gpus
-            if is_pending(state) and is_launch and _cap_reason(reason):
+            if is_pending(state) and owner is not None and _cap_reason(reason):
                 at_cap = True
     held.sort(key=lambda r: int(r["id"]) if r["id"].isdigit() else 0)
     released: list[str] = []
-    if at_cap:
+    if spec.max_launch_gpus <= 0:
+        # admission switched off after these were submitted held: let every
+        # claimed launch go, or they would wait as JobHeldUser forever
+        for row in held:
+            if not dry_run:
+                compute.release(row["id"])
+            released.append(row["id"])
+    elif at_cap:
         log.info(
             "admission: a released launch waits on a per-user cap; %d held launch(es) stay held",
             len(held),
