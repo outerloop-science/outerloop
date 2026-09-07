@@ -609,11 +609,22 @@ def refresh_tool(workspace: Path) -> None:
     stay — and it is written with a marker's care (a fresh O_EXCL inode,
     renamed into place), so a `syscall` the session replaced with a symlink
     is never written through."""
+    import shutil
+
     from outerloop import syscall_cli
 
     source = Path(syscall_cli.__file__).read_bytes()
     dirfd = _channel_fd(workspace)
     try:
+        try:
+            st = os.stat("syscall", dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            st = None
+        if st is not None and stat.S_ISDIR(st.st_mode):
+            # a directory planted in the tool's place: rename cannot replace
+            # it; the channel fd was opened O_NOFOLLOW, so this path is the
+            # real directory and nothing else
+            shutil.rmtree(workspace / channel_dir(workspace) / "syscall")
         _write_channel(dirfd, "syscall", source, mode=0o755)
     finally:
         os.close(dirfd)

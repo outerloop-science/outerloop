@@ -50,6 +50,7 @@ from outerloop.syscall import (
     clamp_concurrency,
     evals_gpu_hours,
     launches_gpu_hours,
+    refresh_tool,
 )
 from outerloop.syscall import budget_error as syscall_budget_error
 from outerloop.syscall import read_request as read_syscall_request
@@ -1377,6 +1378,10 @@ def attempt_once(
         """Resume the author session with `prompt`: None on success (session
         advanced), else the terminal AttemptResult for the failed resume."""
         nonlocal session
+        # the tool the author is about to use is this kernel's, whatever the
+        # session started with (a wake refreshed it too; this covers a refusal)
+        with contextlib.suppress(Exception):
+            refresh_tool(workspace)
         with _watched():
             wake_result = run_role(
                 spec, harness, prompt, workspace, resume_session_id=session.session_id
@@ -1464,7 +1469,9 @@ def attempt_once(
                     gpus=bench.gpus,
                 ):
                     main_evals = 1
-            if request.submit and failed_gate is not None:
+            # a report-less resubmit never rides the failed-gate fast path: it
+            # falls through to the refusal below like any other missing report
+            if request.submit and request.report and failed_gate is not None:
                 # a resubmit of the tree the gate already turned down: nothing
                 # to budget or charge — the verdict is reused below (the sleep
                 # still counts, so unchanged resubmits stay bounded). An eval

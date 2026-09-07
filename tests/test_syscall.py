@@ -1235,3 +1235,9 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
     tool.symlink_to(victim)
     refresh_tool(tmp_path)
     assert victim.read_text() == "keep" and "def main(" in tool.read_text()
+    # a directory planted in the tool's place is replaced by the tool
+    tool.unlink()
+    tool.mkdir()
+    (tool / "junk").write_text("x")
+    refresh_tool(tmp_path)
+    assert tool.is_file() and "def main(" in tool.read_text()

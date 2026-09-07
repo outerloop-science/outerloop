@@ -1944,3 +1944,24 @@ def test_a_submit_without_a_report_is_refused_not_fatal(tmp_path: Path) -> None:
     refusal_text, _ws, resumed = harness.calls[1]
     assert "REFUSED" in refusal_text and "submit --report <file>" in refusal_text
     assert resumed == "s1"
+
+
+def test_a_report_less_resubmit_of_a_judged_tree_is_refused_too(tmp_path: Path) -> None:
+    """The failed-gate fast path (same tree the gate already judged) never
+    carries a submit past the report check."""
+    from outerloop.orchestrator import AttemptResult
+
+    _write_syscall(tmp_path, {"launches": [], "submit": True})
+    judged = ("cand1", AttemptResult(outcome="no-improvement", baseline=13.876, candidate=13.9))
+    result, harness, _ = run_climb(
+        tmp_path,
+        [13.876, 13.10],
+        contract=DEEP_CONTRACT,
+        launcher=_fake_launcher([]),
+        judged=judged,
+    )
+    refusal_text, _ws, resumed = harness.calls[1]
+    assert "REFUSED" in refusal_text and "submit --report <file>" in refusal_text
+    assert resumed == "s1"
+    # the run went on: with no new request the judged negative stands, never a dead run
+    assert result.outcome == "no-improvement"
