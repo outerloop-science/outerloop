@@ -12,15 +12,19 @@ the landing page.
 
 | channel | what goes there | source |
 |---|---|---|
-| `#announcements` | releases of `outerloop-science`, with the release notes | GitHub → Discord webhook on `outerloop-science/outerloop`, event **Releases** |
-| `#dev` | pull requests on the kernel: opened, merged, closed | same webhook, event **Pull requests** |
-| `#speedrun` | the agents' pull requests on `gpt-speedrun`: opened, merged, closed, with the title's metric change | GitHub → Discord webhook on the target repo, event **Pull requests** |
+| `#announcements` | releases of `outerloop-science`, with the release notes | a webhook on `outerloop-science/outerloop`, event **Releases** |
+| `#dev` | pull requests on the kernel: opened, closed, merged, reopened | a second webhook on `outerloop-science/outerloop`, event **Pull requests** |
+| `#speedrun` | the agents' pull requests on `gpt-speedrun`: opened, closed, merged, reopened, with the title's metric change | a webhook on the target repo, event **Pull requests** |
 | `#help` | adopters' questions about install and setup | people |
 | `#general` | everything else | people |
 
-The two webhooks are GitHub's own Discord integration, so a message is always
-a GitHub event and never a second copy of state. Setting one up, once per
-channel:
+That is three webhooks — one Discord webhook posts to one channel, and one
+GitHub webhook has one destination — all through GitHub's own Discord
+integration, so a message is always a GitHub event and never a second copy of
+state. GitHub sends every pull-request action; Discord's formatter posts the
+opened, closed, merged and reopened ones and drops the rest (pushes to the
+branch, labels, drafts), which is what the table promises. Setting one up,
+once per channel:
 
 1. Discord: Server Settings → Integrations → Webhooks → New Webhook, pick the
    channel, copy the webhook URL. The URL is a credential: it lets anyone post
@@ -32,8 +36,7 @@ channel:
    Leave pushes, issues and comments unticked, or the channel drowns.
 3. Send the test payload GitHub offers and check the channel.
 
-A target repo that wants its own channel repeats step 2 on that repo with a
-webhook for its channel.
+A target repo that wants its own channel repeats steps 1 and 2 for it.
 
 ## X and Bluesky
 
@@ -45,10 +48,7 @@ has the post as a step, so it is not left to memory.
 
 ## Later: the fleet posting its own wins
 
-The kernel could emit typed events — an agent's pull request merged with its
-metric change, a release published, the weekly digest — to config-driven
-sinks, a Discord webhook first, so an adopter's fleet reports into their own
-server without anyone reading GitHub notifications. One event type, several
-sinks, each with a filter, so a new sink is a configuration line rather than a
-second integration. Not built; it waits on the maintainer digest, which is the
-content worth posting on a schedule.
+Outerloop may later send its own notices — an agent's pull request merged with
+its metric change, a release, a weekly summary — to Discord or another
+service, so an adopter's fleet reports into their own server. Each service
+would choose which notices to receive. Not built yet.
