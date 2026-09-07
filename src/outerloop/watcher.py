@@ -12,6 +12,7 @@ session exactly as it is without one."""
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -32,6 +33,8 @@ POLL_S = 2.0
 # rewritten: a session cannot turn the watcher into a squeue loop
 QUERY_GAP_S = 5.0
 MAX_QUEUE_ROWS = 500
+# squeue names a pending array `<id>_[0-15%4]` and a running task `<id>_3`
+_ARRAY_THROTTLE = re.compile(r"_\[[^\]]*%(\d+)\]$")
 # the lane's node states move slowly; one sinfo a minute is plenty
 LANE_GAP_S = 60.0
 # a stopped watcher may still be inside a scheduler query (its own timeout,
@@ -146,12 +149,22 @@ class SessionWatcher:
             name = str(r.get("name") or "")
             prefix = f"{rid}-launch-" if rid else ""
             r["mine"] = bool(rid) and rid == ctx.run_id
+            job_id = str(r.get("id") or "")
+            throttle = _ARRAY_THROTTLE.search(job_id)
+            if throttle:
+                r["concurrency"] = int(throttle.group(1))
             if prefix and name.startswith(prefix):
                 r["experiment"] = name[len(prefix) :]
-                r["why"] = str(labels.get(str(r.get("id") or ""), {}).get("why", ""))[
-                    :MAX_WHY_CHARS
-                ]
+                # the ledger keys the array's id; squeue shows `<id>_<k>` or `<id>_[...]`
+                base = job_id.split("_", 1)[0]
+                label = labels.get(base, {})
+                r["why"] = str(label.get("why", ""))[:MAX_WHY_CHARS]
                 r["kind"] = "launch"
+                # the pace: the pending range says it; once only running tasks
+                # are left, the ledger does (the whole array when unset)
+                array = int(label.get("array") or 1)
+                if "concurrency" not in r and array > 1:
+                    r["concurrency"] = int(label.get("concurrency") or array)
             else:
                 r["experiment"] = ""
                 r["why"] = ""

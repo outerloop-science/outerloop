@@ -392,7 +392,7 @@ def render(brief: SessionBrief) -> str:
             "inside your own session time — it costs no budget:",
             "",
             f"    python {_CHANNEL}/syscall launch --name <handle> "
-            '--minutes <N> [--array <K>] [--why "one line"] '
+            '--minutes <N> [--array <N>] [--concurrency <K>] [--why "one line"] '
             "--artifact <repo-relative file> -- <command>",
             f"    python {_CHANNEL}/syscall submit [--minutes <N>]",
             f"    python {_CHANNEL}/syscall siblings",
@@ -435,7 +435,9 @@ def render(brief: SessionBrief) -> str:
             "more, revise, or finish. `--array K` runs one command as K jobs "
             "(a sweep): each job sees SWEEP_INDEX=0..K-1 in its environment and "
             "returns its own result, with artifacts under "
-            f"{_CHANNEL}/results/<name>/<i>/; it counts as one launch. "
+            f"{_CHANNEL}/results/<name>/<i>/; it counts as one launch and one "
+            "cluster job, and `--concurrency K` runs at most K of its tasks at "
+            "once (the contract may cap K; the whole sweep runs otherwise). "
             "Budgets this run: "
             f"{brief.launch_budget} experiment launches, {brief.sleep_budget} "
             "sleeps (a `sleep` with nothing staged is a checkpoint that "

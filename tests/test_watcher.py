@@ -240,3 +240,31 @@ def test_nothing_is_written_once_the_session_ended(tmp_path: Path) -> None:
     watcher.service()
     assert not (ws / ".outerloop" / "queue.json").exists()
     assert not (ws / ".outerloop" / "queue-done").exists()
+
+
+def test_array_rows_carry_the_launch_label_and_the_pace(tmp_path: Path) -> None:
+    """squeue names a pending array `<id>_[0-7%4]` and a running task `<id>_3`;
+    both map back to the ledger's array id, and the pace is read off the range."""
+    root, ws = _fleet(tmp_path)
+    rows = [_row("555_[0-7%4]", "r2-launch-lr"), _row("555_3", "r2-launch-lr", "RUNNING", "None")]
+    watcher = SessionWatcher(_ctx(root, ws, _Compute(rows)))
+    _ask(ws, "queue", 50.0)
+    watcher.service()
+    by_id = {j["id"]: j for j in _answered(ws, "queue")["jobs"]}
+    assert by_id["555_[0-7%4]"]["why"] == "try lr 3e-4" and by_id["555_[0-7%4]"]["concurrency"] == 4
+    # a running task carries the pace from the ledger (the range is gone once
+    # only running tasks are left): this sweep recorded none, so the whole array
+    assert by_id["555_3"]["why"] == "try lr 3e-4" and "concurrency" not in by_id["555_3"]
+    append_submitted(
+        run_dir(root, "r2"),
+        sleep=2,
+        launches=(Launch(name="wd", command="c", minutes=10, array=8, concurrency=4),),
+        job_ids=["777"],
+        at=6.0,
+    )
+    running = _Compute([_row("777_5", "r2-launch-wd", "RUNNING", "None")])
+    watcher = SessionWatcher(_ctx(root, ws, running))
+    _ask(ws, "queue", 60.0)
+    watcher.service()
+    row = _answered(ws, "queue")["jobs"][0]
+    assert row["concurrency"] == 4 and row["experiment"] == "wd"

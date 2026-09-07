@@ -90,7 +90,13 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     entries = history(ledger_dir)
     assert [(e["name"], e["job_ids"]) for e in entries] == [("a", ["201"]), ("sw", ["202", "203"])]
     assert entries[0]["why"] == "probe a" and entries[0]["sleep"] == 1 and entries[0]["jobs"] == []
-    assert why_by_job(ledger_dir)["203"] == {"name": "sw", "why": "", "sleep": 1}
+    assert why_by_job(ledger_dir)["203"] == {
+        "name": "sw",
+        "why": "",
+        "sleep": 1,
+        "array": 2,
+        "concurrency": 0,
+    }
     assert load_record(tmp_path, "tsp-7").stage["syscall_launches"] == [
         {"name": "a", "minutes": 5, "artifacts": [], "why": "probe a"},
         {"name": "sw", "minutes": 5, "artifacts": [], "array": 2},
@@ -2352,9 +2358,10 @@ def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None
 def test_author_sleep_live_array_launch_submits_one_job_per_index(
     tmp_path, target_repo_syscalls, monkeypatch
 ) -> None:
-    """`array: 2` is one launch that submits two jailed jobs, `<name>.0` and
-    `<name>.1`, each told its index through SWEEP_INDEX; the park waits on
-    both and the stage carries the width for re-parks and the wake."""
+    """`array: 2` is one launch and ONE job array: two task dirs, `<name>.0`
+    and `<name>.1`, one script whose task derives its dir and SWEEP_INDEX from
+    the array index; the park waits on the array id and the stage carries the
+    width for re-parks and the wake."""
     import json as json_mod
 
     outcome, _github = run_live(
@@ -2372,21 +2379,23 @@ def test_author_sleep_live_array_launch_submits_one_job_per_index(
             ),
         },
         values=[],
-        dispatch=_fake_dispatch(),
+        dispatch=(dispatch := _fake_dispatch()),
     )
     assert outcome.outcome == "parked"
     record = load_record(tmp_path / "state", "tsp-1")
-    assert record.stage["afterany"] == "afterany:1000:1001"
+    assert record.stage["afterany"] == "afterany:1000"  # one job for the whole sweep
+    sbatch = next(a for a in dispatch.compute.runner.seen if "--job-name=tsp-1-launch-sweep" in a)
+    assert "--array=0-1%2" in sbatch
     assert record.stage["syscall_launches"] == [
         {"name": "sweep", "minutes": 45, "artifacts": [], "array": 2}
     ]
     assert record.stage["launches_used"] == 1
     runs = tmp_path / "state" / "runs" / "tsp-1"
     for i in (0, 1):
-        ev = runs / f"eval-launch-sweep.{i}"
-        assert (ev / "command.txt").read_text() == "uv run probe.py"
-        scripts = " ".join(p.read_text() for p in ev.iterdir() if p.is_file())
-        assert f"SWEEP_INDEX={i}" in scripts
+        assert (runs / f"eval-launch-sweep.{i}" / "command.txt").read_text() == "uv run probe.py"
+    script = (runs / "eval-launch-sweep" / "job.sh").read_text()
+    assert 'TASK="${SLURM_ARRAY_TASK_ID:-${SWEEP_INDEX:-0}}"' in script
+    assert 'export SWEEP_INDEX="$TASK"' in script
 
 
 def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, monkeypatch):

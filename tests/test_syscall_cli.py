@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from outerloop.syscall import read_request, read_verdict
 from outerloop.syscall_cli import main
@@ -447,7 +448,7 @@ class _Kernel:
             time.sleep(0.05)
 
 
-_QUEUE = {
+_QUEUE: dict[str, Any] = {
     "at": 0,
     "error": "",
     "jobs": [
@@ -571,3 +572,36 @@ def test_history_renders_the_ledger(tmp_path: Path, capsys) -> None:
     with _Kernel(tmp_path, "history", {"at": 0, "history": []}):
         assert main(["history", "--wait", "5"], root=tmp_path) == 0
     assert "no launches yet" in capsys.readouterr().out
+
+
+def test_sweep_concurrency_is_staged_and_clamped_to_the_array(tmp_path: Path, capsys) -> None:
+    assert (
+        main(
+            ["launch", "--name", "s", "--array", "4", "--concurrency", "2", "--", "x"],
+            root=tmp_path,
+        )
+        == 0
+    )
+    assert "x 4 tasks, SWEEP_INDEX 0..3, at most 2 at a time" in capsys.readouterr().out
+    assert (
+        main(
+            ["launch", "--name", "t", "--array", "4", "--concurrency", "9", "--", "x"],
+            root=tmp_path,
+        )
+        == 0
+    )
+    assert "at most 4 at a time" in capsys.readouterr().out
+    assert main(["status"], root=tmp_path) == 0
+    assert "s (30 min x4 (2 at a time))" in capsys.readouterr().out
+    assert main(["launch", "--name", "u", "--concurrency", "-1", "--", "x"], root=tmp_path) == 2
+    capsys.readouterr()
+    assert main(["sleep"], root=tmp_path) == 0
+    req = read_request(tmp_path)
+    assert req is not None and [la.concurrency for la in req.launches] == [2, 4]
+
+
+def test_queue_shows_a_sweeps_pace(tmp_path: Path, capsys) -> None:
+    row = {**_QUEUE["jobs"][0], "id": "555_[0-7%4]", "concurrency": 4}
+    with _Kernel(tmp_path, "queue", {**_QUEUE, "jobs": [row]}):
+        assert main(["queue", "--wait", "5"], root=tmp_path) == 0
+    assert "launch lr (sweep, 4 at a time) — PENDING" in capsys.readouterr().out

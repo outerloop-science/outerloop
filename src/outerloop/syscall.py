@@ -132,6 +132,9 @@ class Launch:
     array: int = 1
     # the author's one-line reason; the queue view shows it to every agent
     why: str = ""
+    # a sweep's pace: at most this many tasks at once (0 = the whole array);
+    # the kernel clamps it to the contract's GPU ceiling (`clamp_concurrency`)
+    concurrency: int = 0
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,50 @@ def launch_jobs(launch: Launch) -> tuple[tuple[str, dict[str, str]], ...]:
     if launch.array <= 1:
         return ((launch.name, {}),)
     return tuple((f"{launch.name}.{i}", {"SWEEP_INDEX": str(i)}) for i in range(launch.array))
+
+
+def array_spec(launch: Launch) -> str:
+    """The Slurm array spec for a sweep: tasks 0..N-1, at most `concurrency`
+    at a time (the whole array when unset). "" for a plain launch."""
+    if launch.array <= 1:
+        return ""
+    return f"0-{launch.array - 1}%{launch.concurrency or launch.array}"
+
+
+def clamp_concurrency(
+    request: SyscallRequest, *, gpus: int, max_concurrent_gpus: int | None
+) -> SyscallRequest:
+    """Apply the contract's ceiling to every sweep: the tasks one launch may
+    run at once is `max_concurrent_gpus // gpus` (a two-GPU task gets half the
+    tasks of a one-GPU task and the same share of the machine), never below
+    one; a request above it is clamped, never refused. No ceiling: the
+    author's pace stands, the whole array by default."""
+    if not max_concurrent_gpus:
+        return request
+    cap = max(1, max_concurrent_gpus // max(gpus, 1))
+    launches = tuple(
+        replace(la, concurrency=min(la.concurrency or la.array, cap)) if la.array > 1 else la
+        for la in request.launches
+    )
+    return replace(request, launches=launches)
+
+
+def launch_task_ids(launches: Iterable[Launch], job_ids: list[str]) -> list[str]:
+    """The per-task job ids of a park's launches, aligned with `launch_jobs`
+    order (what results, states and refunds are keyed by). A sweep is one
+    Slurm job whose tasks are `<id>_<k>`, so one id per launch expands; a park
+    recorded before arrays were single jobs already carries one id per task
+    and passes through. Anything else is an unknown mapping: no ids, so no
+    caller guesses."""
+    launches = list(launches)
+    if len(job_ids) == len(launches):
+        out: list[str] = []
+        for la, jid in zip(launches, job_ids, strict=True):
+            out.extend([f"{jid}_{k}" for k in range(la.array)] if la.array > 1 else [jid])
+        return out
+    if len(job_ids) == sum(max(la.array, 1) for la in launches):
+        return list(job_ids)
+    return []
 
 
 def _rel_path_ok(path: str) -> bool:
@@ -250,7 +297,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     for i, item in enumerate(raw_launches):
         if not isinstance(item, dict):
             raise SyscallError(f"launch #{i} must be an object")
-        bad = set(item) - {"name", "command", "minutes", "artifacts", "array", "why"}
+        bad = set(item) - {"name", "command", "minutes", "artifacts", "array", "why", "concurrency"}
         if bad:
             raise SyscallError(f"launch #{i}: unknown keys {sorted(bad)}")
         name = item.get("name")
@@ -272,6 +319,10 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if not isinstance(array, int) or isinstance(array, bool) or array < 1:
             raise SyscallError(f"launch {name}: array must be a positive integer")
         array = min(array, MAX_LAUNCH_ARRAY)
+        concurrency = item.get("concurrency", 0)
+        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 0:
+            raise SyscallError(f"launch {name}: concurrency must be a non-negative integer")
+        concurrency = min(concurrency, array) if array > 1 else 0
         why = item.get("why", "")
         if not isinstance(why, str) or len(why) > MAX_WHY_CHARS:
             raise SyscallError(
@@ -297,6 +348,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
                 artifacts=tuple(arts),
                 array=array,
                 why=why,
+                concurrency=concurrency,
             )
         )
     # a sleep with no launches is legitimate: checkpoint-and-reschedule

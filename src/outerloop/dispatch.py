@@ -289,8 +289,14 @@ def write_eval_job(
     artifacts: tuple[str, ...] = (),
     artifact_max_bytes: int = 0,
     gpus: int = 0,
+    array: int = 1,
 ) -> Path:
     """Write the orchestrator-authored job script for one dispatched eval.
+
+    `array` > 1 writes ONE script for a Slurm job array: each task derives its
+    own job dir `eval-<name>.<k>` from SLURM_ARRAY_TASK_ID (SWEEP_INDEX under a
+    local run) and sees the index as SWEEP_INDEX; the task dirs are created
+    and cleared here, the script lives under `eval-<name>/`.
 
     `gpus` > 0 adds `--nv` to the jail so the job's allocated GPUs (the
     JobSpec requests them) are visible inside the container; nothing else
@@ -318,13 +324,16 @@ def write_eval_job(
     """
     ev = run_dir / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
-    # a resubmitted eval must never be read as its predecessor: every prior
-    # artifact — including a leftover extracted tree — goes before submission
-    for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted", "artifacts.log"):
-        (ev / stale).unlink(missing_ok=True)
-    shutil.rmtree(ev / "tree", ignore_errors=True)
-    shutil.rmtree(ev / "artifacts", ignore_errors=True)
-    (ev / "command.txt").write_text(command)
+    task_dirs = [run_dir / f"eval-{name}.{k}" for k in range(array)] if array > 1 else [ev]
+    for task_dir in task_dirs:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        # a resubmitted eval must never be read as its predecessor: every prior
+        # artifact — including a leftover extracted tree — goes before submission
+        for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted", "artifacts.log"):
+            (task_dir / stale).unlink(missing_ok=True)
+        shutil.rmtree(task_dir / "tree", ignore_errors=True)
+        shutil.rmtree(task_dir / "artifacts", ignore_errors=True)
+        (task_dir / "command.txt").write_text(command)
     # extra_env matches the in-job evaluator's contract: managed keys (HOME,
     # UV_*, PATH...) are DROPPED, never allowed to override the isolation, and
     # keys must be shell-identifier shaped (they are exported unquoted).
@@ -338,10 +347,20 @@ def write_eval_job(
     # as the snapshot, injected as GIT_CONFIG_* env (robust to '=' in a driver
     # name, unlike -c) so a smudge filter cannot execute during checkout
     neutral = _filter_neutral_env(["git", "-C", str(repo_root), *SAFE_GIT_FLAGS], {})
+    if array > 1:
+        # the task picks its own job dir; under Slurm the index is the array
+        # task id, under a local run the caller exports SWEEP_INDEX
+        ev_lines = [
+            'TASK="${SLURM_ARRAY_TASK_ID:-${SWEEP_INDEX:-0}}"',
+            f'EV={shlex.quote(str(ev))}."$TASK"',
+            'export SWEEP_INDEX="$TASK" APPTAINERENV_SWEEP_INDEX="$TASK"',
+        ]
+    else:
+        ev_lines = [f"EV={shlex.quote(str(ev))}"]
     lines = [
         "#!/bin/sh",
         "set -u",
-        f"EV={shlex.quote(str(ev))}",
+        *ev_lines,
         f"REPO={shlex.quote(str(repo_root))}",
         # the extracted tree lives on NODE-LOCAL scratch, not the shared run
         # dir: it dies with the job (nothing to reap on the shared FS), and
@@ -487,6 +506,7 @@ def eval_job_spec(
     mem: str = "8G",
     gpus: int = 0,
     nice: int = 0,
+    array: str = "",
 ) -> JobSpec:
     """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
@@ -514,6 +534,7 @@ def eval_job_spec(
         mem=mem,
         gpus=gpus,
         nice=nice,
+        array=array,
     )
 
 

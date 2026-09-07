@@ -272,6 +272,14 @@ class Budgets(_StrictModel):
     # (agent-01..agent-0N), so branches, ledger rows, and reports stay
     # distinct. runs_per_week and gpu_hours_per_run remain the spend guards.
     max_active_attempts: int | None = Field(default=None, ge=1)
+    # The pace ceiling for an author's sweeps, in GPUs: one launch may hold at
+    # most this many at once, so a sweep of N tasks runs
+    # max_concurrent_gpus // gpus of them at a time (`--array=0-N%K`). Lenient
+    # by design — not the cap divided by the agent count (agents rarely launch
+    # at the same moment, and an idle share is wasted GPU); on a 16-GPU cap 12
+    # lets one sweep use most of the machine while a sibling's job still gets
+    # in. Unset: the author's own pace, the whole array by default.
+    max_concurrent_gpus: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="before")
     @classmethod

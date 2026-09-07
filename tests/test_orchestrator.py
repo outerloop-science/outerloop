@@ -287,6 +287,24 @@ def test_author_sleep_parks_on_a_sealed_snapshot(tmp_path: Path) -> None:
     assert sha == "cand1" and request.launches[0].name == "probe"
 
 
+def test_sweep_pace_is_clamped_to_the_contracts_gpu_ceiling(tmp_path: Path) -> None:
+    """A sweep's concurrency is clamped to `max_concurrent_gpus // gpus` before
+    the launcher sees it and before the park records it; never refused."""
+    from outerloop.orchestrator import RunParked
+
+    contract = DEEP_CONTRACT.replace(
+        "budgets: {gpu_hours_per_run: 1, runs_per_week: 10}",
+        "budgets: {gpu_hours_per_run: 1, runs_per_week: 10, max_concurrent_gpus: 3}",
+    )
+    _write_syscall(tmp_path, {"launches": [{"name": "s", "command": "x", "array": 8}]})
+    launched: list = []
+    with pytest.raises(RunParked) as exc:
+        run_climb(tmp_path, [], contract=contract, launcher=_fake_launcher(launched))
+    _sha, request = launched[0]
+    assert request.launches[0].concurrency == 3  # tsp has no gpus: the ceiling counts tasks
+    assert exc.value.syscall is not None and exc.value.syscall.launches[0].concurrency == 3
+
+
 def test_checkpoint_sleep_parks_with_no_dependency(tmp_path: Path) -> None:
     from outerloop.orchestrator import RunParked
 
@@ -332,6 +350,39 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     assert p.afterany.endswith(":900")  # gate evals + the sibling launch, one afterany
     sha, request = launched[0]
     assert sha == "cand1" and request.launches[0].name == "probe"
+
+
+def test_a_submits_sibling_sweep_is_clamped_too(tmp_path: Path) -> None:
+    """The ceiling applies before either path: a submit's sibling launches are
+    dispatched from the candidate park with the clamped pace."""
+    from outerloop.orchestrator import RunParked
+
+    contract = DEEP_CONTRACT.replace(
+        "budgets: {gpu_hours_per_run: 1, runs_per_week: 10}",
+        "budgets: {gpu_hours_per_run: 1, runs_per_week: 10, max_concurrent_gpus: 3}",
+    )
+    _write_syscall(
+        tmp_path, {"launches": [{"name": "s", "command": "x", "array": 8}], "submit": True}
+    )
+    launched: list = []
+    with pytest.raises(RunParked) as exc:
+        attempt_once(
+            CONFIG,
+            contract,
+            tmp_path,
+            FakeHarness(result=ok_session()),
+            ParkingMeasurer(park_on_call=1),
+            "base",
+            _bare_snapshot(),
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            created="t",
+            launcher=_fake_launcher(launched),
+        )
+    assert exc.value.submitted
+    _sha, request = launched[0]
+    assert request.launches[0].concurrency == 3
+    assert exc.value.syscall is not None and exc.value.syscall.launches[0].concurrency == 3
 
 
 def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> None:

@@ -324,3 +324,22 @@ def test_local_job_output_is_kept_beside_its_state(tmp_path: Path, monkeypatch) 
     out = tmp_path / "local_jobs" / f"{job_id}.out"
     assert out.read_text().strip() == "boom"
     assert out.stat().st_mode & 0o777 == 0o600  # a job may print a credential
+
+
+def test_array_runs_every_task_in_turn(tmp_path: Path) -> None:
+    """A local job array runs its tasks one after another, each with its
+    SLURM_ARRAY_TASK_ID; every task keeps its state under `<id>_<k>` and the
+    array's state is theirs combined."""
+    lc = LocalCompute()
+    log = tmp_path / "tasks"
+    script = tmp_path / "job.sh"
+    script.write_text(
+        f'#!/bin/sh\necho "$SLURM_ARRAY_TASK_ID" >> {log}\n[ "$SLURM_ARRAY_TASK_ID" != 1 ]\n'
+    )
+    spec = JobSpec(
+        job_name="t", account="", partition="", time_minutes=1, script=str(script), array="0-2%1"
+    )
+    job = lc.submit(spec)
+    assert log.read_text().split() == ["0", "1", "2"]
+    assert lc.status(job) == "FAILED"  # task 1 failed
+    assert lc.status(f"{job}_0") == "COMPLETED" and lc.status(f"{job}_1") == "FAILED"

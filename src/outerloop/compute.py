@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -98,6 +99,9 @@ class JobSpec:
     # Slurm scheduling controls
     dependency: str = ""  # e.g. "afterany:12345" or "singleton"
     begin: str = ""  # e.g. "now+30" or an absolute "YYYY-MM-DDTHH:MM:SS"
+    # a job array: "0-15%4" runs tasks 0..15, at most 4 at a time; the queue
+    # holds one entry and squeue names its tasks `<id>_<k>`
+    array: str = ""
     extra: tuple[str, ...] = ()
 
     def to_argv(self) -> list[str]:
@@ -130,6 +134,8 @@ class JobSpec:
             argv.append(f"--dependency={self.dependency}")
         if self.begin:
             argv.append(f"--begin={self.begin}")
+        if self.array:
+            argv.append(f"--array={self.array}")
         argv.extend(self.extra)
         if self.command:
             argv.append(f"--wrap={self.command}")
@@ -183,6 +189,47 @@ def compute_from_env() -> SlurmCompute | LocalCompute:
     return LocalCompute() if local_mode() else SlurmCompute()
 
 
+_JOB_ID = re.compile(r"^\d+(_\d+)?$")  # a job, or one task of a job array (`<id>_<k>`)
+
+
+def _check_job_id(job_id: str) -> None:
+    if not _JOB_ID.match(job_id):
+        raise ValueError(f"not a job id: {job_id!r}")
+
+
+def array_indices(spec: str) -> list[int]:
+    """The task indices of an array spec: "0-15%4" -> 0..15 (the %K throttle
+    is the scheduler's concern); "" -> none."""
+    body = spec.split("%", 1)[0].strip()
+    if not body:
+        return []
+    lo, sep, hi = body.partition("-")
+    if not sep:
+        return [int(lo)] if lo.isdigit() else []
+    if not (lo.isdigit() and hi.isdigit()):
+        return []
+    return list(range(int(lo), int(hi) + 1))
+
+
+def combine_states(states: Sequence[str]) -> str:
+    """One state for a job array from its tasks' states: running while any
+    task runs, pending while any task waits, terminal only when every task
+    is — COMPLETED if all are, else the first other terminal state (FAILED,
+    TIMEOUT, CANCELLED...), so a sweep with one dead task reads as failed."""
+    if len(states) == 1:
+        return states[0]
+    for want in ("RUNNING", "COMPLETING"):
+        if any(s.startswith(want) for s in states):
+            return want
+    if any(is_pending(s) for s in states):
+        return "PENDING"
+    live = [s for s in states if not is_terminal(s)]
+    if live:
+        return live[0]
+    bad = [s for s in states if not s.startswith("COMPLETED")]
+    return bad[0] if bad else "COMPLETED"
+
+
 @dataclass
 class SlurmCompute:
     """The three verbs, plus afterany for wake jobs."""
@@ -204,8 +251,7 @@ class SlurmCompute:
     def status(self, job_id: str) -> str:
         """The job's Slurm state, or GONE when a *successful* query finds no
         record. Raises SlurmQueryError when the query itself fails."""
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         try:
             result = self.runner(
                 ["sacct", "-j", job_id, "--parsable2", "--noheader", "-X", "-o", "State"],
@@ -215,14 +261,14 @@ class SlurmCompute:
             raise SlurmQueryError(f"sacct did not run: {exc}") from exc
         if result.returncode != 0:
             raise SlurmQueryError(f"sacct failed ({result.returncode}): {result.stderr.strip()}")
-        state = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
-        return state if state else GONE
+        # a job array answers one line per task; the array's state is theirs combined
+        states = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        return combine_states(states) if states else GONE
 
     def elapsed_seconds(self, job_id: str) -> int | None:
         """How long the job actually ran (sacct Elapsed), or None when sacct
         has no record. Raises SlurmQueryError when the query itself fails."""
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         try:
             result = self.runner(
                 ["sacct", "-j", job_id, "--parsable2", "--noheader", "-X", "-o", "Elapsed"],
@@ -239,8 +285,7 @@ class SlurmCompute:
         """Why a PENDING job is pending — Slurm's reason (`Dependency`,
         `DependencyNeverSatisfied`, `Priority`, ...), or "" when squeue no
         longer lists it. Raises SlurmQueryError when the query itself fails."""
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         try:
             result = self.runner(["squeue", "-j", job_id, "-h", "-o", "%r"], self.command_timeout_s)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -254,8 +299,7 @@ class SlurmCompute:
         them, or "" when squeue no longer lists it. A site can MOVE a pending
         job off the partition it was submitted to (Torch does, under
         congestion); callers compare this with what they asked for."""
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         try:
             result = self.runner(["squeue", "-j", job_id, "-h", "-o", "%P"], self.command_timeout_s)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -346,8 +390,7 @@ class SlurmCompute:
         """Cancel; idempotent (cancelling a finished job is not an error).
         False when scancel itself failed, so a caller that must know (the
         sweep's cancel-on-end) can try again; most callers are best-effort."""
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         result = self.runner(["scancel", job_id], self.command_timeout_s)
         if result.returncode != 0:
             log.warning("scancel %s: %s", job_id, result.stderr.strip())
@@ -417,6 +460,33 @@ class LocalCompute:
             if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
             or (k.startswith(("OUTERLOOP_", "REVIEW_HERMES_")) and not _secret_name(k))
         }
+        indices = array_indices(spec.array)
+        if indices:
+            # a job array runs its tasks in turn — there is no queue here to
+            # throttle; each task keeps its own state and output under
+            # `<id>_<k>`, and the array's own state is theirs combined
+            states = [
+                self._run_and_record(
+                    spec, argv, {**job_env, "SLURM_ARRAY_TASK_ID": str(i)}, f"{job_id}_{i}"
+                )
+                for i in indices
+            ]
+            state = combine_states(states)
+            self._record(spec, job_id, state, "")
+        else:
+            state = self._run_and_record(spec, argv, job_env, job_id)
+        state_dir = _local_state_dir()
+        where = (
+            f"; output in {state_dir / (job_id + '.out')}"
+            if state_dir and state != "COMPLETED"
+            else ""
+        )
+        log.info("ran %s locally as job %s: %s%s", spec.job_name, job_id, state, where)
+        return job_id
+
+    def _run_and_record(
+        self, spec: JobSpec, argv: list[str], job_env: dict[str, str], job_id: str
+    ) -> str:
         try:
             # the job runs in its OWN session (= process group), so the
             # walltime kill takes the whole tree — a job script waiting on
@@ -453,6 +523,10 @@ class LocalCompute:
                     "local job %s: an escaped child survived the walltime kill", spec.job_name
                 )
             state = "TIMEOUT"
+        self._record(spec, job_id, state, output)
+        return state
+
+    def _record(self, spec: JobSpec, job_id: str, state: str, output: str) -> None:
         state_dir = _local_state_dir()
         if state_dir is not None:
             try:
@@ -481,22 +555,14 @@ class LocalCompute:
                 log.warning("local job %s: state persist failed: %s", spec.job_name, exc)
         if spec.output and spec.output != "/dev/null":
             try:
-                with open(spec.output, "w") as fh:
+                with open(spec.output, "a" if "_" in job_id else "w") as fh:
                     fh.write(output)
             except OSError as exc:
                 log.warning("local job %s: output write failed: %s", spec.job_name, exc)
         self._states[job_id] = state
-        where = (
-            f"; output in {state_dir / (job_id + '.out')}"
-            if state_dir and state != "COMPLETED"
-            else ""
-        )
-        log.info("ran %s locally as job %s: %s%s", spec.job_name, job_id, state, where)
-        return job_id
 
     def status(self, job_id: str) -> str:
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         state = self._states.get(job_id, "")
         if state:
             return state
@@ -529,8 +595,7 @@ class LocalCompute:
         return ""
 
     def cancel(self, job_id: str) -> bool:
-        if not job_id.isdigit():
-            raise ValueError(f"not a job id: {job_id!r}")
+        _check_job_id(job_id)
         return True  # already terminal; cancelling a finished job is not an error
 
 

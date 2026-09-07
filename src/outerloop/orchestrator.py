@@ -46,6 +46,7 @@ from outerloop.rolespec import RoleSpec
 from outerloop.syscall import (
     SyscallError,
     SyscallRequest,
+    clamp_concurrency,
     evals_gpu_hours,
     launches_gpu_hours,
 )
@@ -1508,6 +1509,12 @@ def attempt_once(
                 eval_minutes_default=bench.eval_minutes or 0,
                 suite_gpus=suite_gpus,
                 main_evals=main_evals,
+            )
+            # a sweep's pace is clamped to the contract's GPU ceiling here, once,
+            # before either path — an author-sleep launch or a submit's sibling
+            # launches — submits or records it; clamped, never refused
+            request = clamp_concurrency(
+                request, gpus=bench.gpus, max_concurrent_gpus=contract.budgets.max_concurrent_gpus
             )
             if not problem:
                 if request.submit:

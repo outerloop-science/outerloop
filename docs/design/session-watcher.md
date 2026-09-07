@@ -94,6 +94,10 @@ Two small additions make this complete:
 
 ## Sweeps as throttled arrays
 
+*Shipped: a sweep is one job array with `--array=0-N%K`; `launch --concurrency K`
+sets K, `budgets.max_concurrent_gpus` caps it in GPUs, task dirs and
+`SWEEP_INDEX` come from the array index, and the queue view shows the pace.*
+
 All agents share one Slurm identity, so Slurm cannot tell them apart. One
 agent asking for eight launches with sixteen-way arrays submits 128 separate
 jobs and holds the account's cap for hours while its siblings wait behind
