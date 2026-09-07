@@ -654,3 +654,74 @@ def test_repo_access_messages_name_the_cause(monkeypatch) -> None:
     assert not init._auth_is_fatal("could not reach GitHub: timeout")
     assert not init._auth_is_fatal("could not read the App credentials: x")
     assert not init._auth_is_fatal("")
+
+
+def test_transient_github_failures_are_not_dead_credentials(monkeypatch) -> None:
+    """A 5xx or a rate limit is GitHub's problem, not the credential's: init warns
+    and continues instead of failing (terra, #309)."""
+    import email.message
+    import io
+    import urllib.error
+
+    def raising(code):
+        def urlopen(req, timeout=15):
+            raise urllib.error.HTTPError(
+                req.full_url, code, "x", email.message.Message(), io.BytesIO(b"")
+            )
+
+        return urlopen
+
+    for code in (500, 502, 503, 429):
+        monkeypatch.setattr(init.urllib.request, "urlopen", raising(code))
+        problem = init._check_repo_access("t", "o/r")
+        assert problem.startswith("could not reach GitHub") and not init._auth_is_fatal(problem), (
+            code
+        )
+
+    class _Provider:
+        app_id = 1
+        installation_id = 7
+
+        def _sign(self, data: bytes) -> bytes:
+            return b"sig"
+
+    monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
+    monkeypatch.setattr(init.urllib.request, "urlopen", raising(502))
+    problem = init._check_app_access(_Provider(), "o/r")
+    assert problem.startswith("could not reach GitHub") and not init._auth_is_fatal(problem)
+    monkeypatch.setattr(init.urllib.request, "urlopen", raising(404))
+    assert init._auth_is_fatal(init._check_app_access(_Provider(), "o/r"))
+
+
+def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """After fixing the installation, `init --force --github-app` re-checks the App
+    this machine already has; it never mints a second App (terra, #309)."""
+    from outerloop import appmanifest
+
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    app_json = tmp_path / "github_app.myapp.json"
+    app_json.write_text(json.dumps({"app_id": 1, "installation_id": 7, "private_key": "/k.pem"}))
+
+    def never(*a, **k):
+        raise AssertionError("a second App must not be created")
+
+    monkeypatch.setattr(appmanifest, "request_manifest_code", never)
+    monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
+    monkeypatch.setattr(init, "_check_app_access", lambda provider, target: "")
+    argv = ["--yes", "--force", "--github-app", "--compute", "local", "--target", "o/r"]
+    assert init.main(argv) == 0
+    env = (tmp_path / ".env").read_text()
+    assert f"OUTERLOOP_GITHUB_APP_FILE={app_json}" in env
+    assert "OUTERLOOP_BOT_LOGIN=myapp[bot]" in env
+    capsys.readouterr()  # drop the successful run's output
+    # still failing: exit 1, credentials kept, the fix and the re-check named, never `start`
+    monkeypatch.setattr(
+        init, "_check_app_access", lambda provider, target: "the App lacks write on contents (x)"
+    )
+    assert init.main(argv) == 1
+    captured = capsys.readouterr()
+    assert "FAILED" in captured.err and "init --force --github-app" in captured.err
+    assert "apps/myapp/installations/new" in captured.err
+    assert "next: outerloop start" not in captured.out and app_json.exists()

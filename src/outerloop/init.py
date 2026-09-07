@@ -146,9 +146,9 @@ def _token_login(token: str) -> str:
 
 def _auth_is_fatal(problem: str) -> bool:
     """A credential the loop cannot open pull requests with fails setup; not
-    being able to ask GitHub right now does not."""
+    being able to ask GitHub right now (network, 5xx, rate limit) does not."""
     return bool(problem) and not problem.startswith(
-        ("could not reach GitHub", "could not read the App")
+        ("could not reach GitHub", "could not read the App", "could not check the App")
     )
 
 
@@ -213,6 +213,9 @@ def _check_repo_access(token: str, target: str) -> str:
             return "the token is invalid or expired (GitHub returned 401)"
         if exc.code == 403:
             return f"the token is not allowed to access {target} (GitHub returned 403)"
+        if exc.code == 429 or exc.code >= 500:
+            # GitHub's problem, not the credential's: never fatal
+            return f"could not reach GitHub: it returned {exc.code} for {target}"
         return f"GitHub returned {exc.code} for {target}"
     except urllib.error.URLError as exc:
         return f"could not reach GitHub: {exc.reason}"
@@ -260,6 +263,8 @@ def _check_app_access(provider: Any, target: str) -> str:
             )
         return ""
     except urllib.error.HTTPError as exc:
+        if exc.code == 429 or exc.code >= 500:
+            return f"could not reach GitHub: it returned {exc.code} while checking the App"
         return f"GitHub returned {exc.code} while checking the App"
     except urllib.error.URLError as exc:
         return f"could not reach GitHub: {exc.reason}"
@@ -355,12 +360,62 @@ def _owner_type(owner: str) -> str:
         return ""
 
 
-def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
+def _app_failure(answers: InitAnswers, slug: str, problem: str) -> int:
+    """The App cannot write the target: say so, keep the credentials, and point
+    at the fix and the re-check. Never `start` — the check just failed."""
+    print(f"  auth check: FAILED — {problem}", file=sys.stderr)
+    print(
+        f"outerloop init: the App '{slug}' cannot write {answers.target}. On\n"
+        f"  https://github.com/apps/{slug}/installations/new (or the App's page under\n"
+        "  Settings > Installations > Configure) install it on that repository and accept\n"
+        "  contents, issues and pull-request write access, then run\n"
+        "  `outerloop init --force --github-app` to re-check with these credentials.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
+    """Re-run Step 3 for an App this machine already created: confirm it can
+    write the target, then point the .env at it."""
+    from outerloop.appauth import app_provider_from_file
+
+    slug = app_json.name[len("github_app.") : -len(".json")]
+    print(f"Re-checking the existing App '{slug}' ({app_json}) against {answers.target}.")
+    try:
+        problem = _check_app_access(app_provider_from_file(app_json), answers.target)
+    except Exception as exc:
+        problem = f"could not read the App credentials: {exc}"
+    env_path = CONFIG_DIR / ENV_FILE.name
+    write_private(env_path, render_env(answers, app_file=str(app_json), bot_login=f"{slug}[bot]"))
+    if _auth_is_fatal(problem):
+        return _app_failure(answers, slug, problem)
+    print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+    print(f"wrote {env_path}")
+    _author_key_hint(answers)
+    _harness_hint(answers)
+    print("next: outerloop start")
+    return 0
+
+
+def _github_app_setup(
+    answers: InitAnswers, app_name: str, org: str, *, interactive: bool = True
+) -> int:
     """The `--github-app` path: create the adopter's own App via the manifest
     flow, write its creds, help install it, then point the .env at the App file.
     Interactive by nature (a browser click + install), so no `--yes` variant."""
     from outerloop import appmanifest
 
+    existing = sorted(CONFIG_DIR.glob("github_app.*.json"))
+    if len(existing) == 1:
+        # a re-run after fixing the installation: re-check the App this machine
+        # already has rather than creating a second one
+        reuse = True
+        if interactive:
+            answer = _ask(f"Reuse the App credentials at {existing[0]}? (Y/n)", "y")
+            reuse = not answer.lower().startswith("n")
+        if reuse:
+            return _github_app_recheck(answers, existing[0])
     owner = org or answers.target.split("/")[0]
     name = app_name or f"outerloop-{owner}"[:34]  # GitHub caps App names at 34
     code = appmanifest.request_manifest_code(
@@ -407,18 +462,11 @@ def _github_app_setup(answers: InitAnswers, app_name: str, org: str) -> int:
         except Exception as exc:  # a check failure is a warning, never fails setup
             problem = f"could not read the App credentials: {exc}"
         if _auth_is_fatal(problem):
-            print(f"  auth check: FAILED — {problem}", file=sys.stderr)
             write_private(
                 CONFIG_DIR / ENV_FILE.name,
                 render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
             )
-            print(
-                f"outerloop init: the App cannot write {answers.target}; give it contents, "
-                "issues and pull-request write permission on that repository, then run "
-                "`outerloop start` (the config is written)",
-                file=sys.stderr,
-            )
-            return 1
+            return _app_failure(answers, str(conversion["slug"]), problem)
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
         print(
@@ -585,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
                 kind = "User" if answer.strip().lower().startswith("u") else "Organization"
             if kind == "User":
                 org = ""  # a user account: GitHub's personal App page, not an org page
-        return _github_app_setup(answers, args.app_name or "", org)
+        return _github_app_setup(answers, args.app_name or "", org, interactive=interactive)
 
     token = ""
     if not pat_file and interactive:
