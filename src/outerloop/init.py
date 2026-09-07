@@ -684,6 +684,17 @@ def main(argv: list[str] | None = None) -> int:
             if login:
                 write_private(env_path, render_env(answers, effective_pat, bot_login=login))
                 print(f"  posting as {login} (OUTERLOOP_BOT_LOGIN)")
+            else:
+                print(
+                    "  the token's login could not be read — set OUTERLOOP_BOT_LOGIN in "
+                    f"{env_path} before `outerloop start` (the tick skips a target without it)"
+                )
+        else:
+            print(
+                "  OUTERLOOP_BOT_LOGIN not recorded (the check did not pass) — rerun "
+                "`outerloop init --force` with network access, or set it in "
+                f"{env_path} (the tick skips a target without it)"
+            )
     else:
         print("  no PAT set — add OUTERLOOP_PAT_FILE before the agents can open PRs")
     _author_key_hint(answers)
