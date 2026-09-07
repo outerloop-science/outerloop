@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from outerloop.github import DEFAULT_BOT_LOGIN, bot_login_from_env
+from outerloop.github import bot_login_from_env
 
 
 def test_bot_login_defaults_to_the_account_and_follows_the_knob(monkeypatch) -> None:
     monkeypatch.delenv("OUTERLOOP_BOT_LOGIN", raising=False)
-    assert bot_login_from_env() == DEFAULT_BOT_LOGIN
+    assert bot_login_from_env() == ""  # no built-in identity (#298)
     monkeypatch.setenv("OUTERLOOP_BOT_LOGIN", "   ")
-    assert bot_login_from_env() == DEFAULT_BOT_LOGIN  # blank is unset
+    assert bot_login_from_env() == ""  # blank is unset
     monkeypatch.setenv("OUTERLOOP_BOT_LOGIN", "outerloop-autoresearch[bot]")
     assert bot_login_from_env() == "outerloop-autoresearch[bot]"
 
@@ -28,4 +28,4 @@ def test_every_role_config_reads_the_login_at_construction(monkeypatch, tmp_path
     assert StewardConfig(target="o/r", benchmark="b").bot_login == "outerloop-autoresearch[bot]"
     assert RunConfig(target="o/r", benchmark="b", bot_login="x").bot_login == "x"
     monkeypatch.delenv("OUTERLOOP_BOT_LOGIN")
-    assert RunConfig(target="o/r", benchmark="b").bot_login == DEFAULT_BOT_LOGIN
+    assert RunConfig(target="o/r", benchmark="b").bot_login == ""

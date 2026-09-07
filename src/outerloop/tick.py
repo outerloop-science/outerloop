@@ -424,7 +424,7 @@ def contract_alarm(
     target: str,
     error: str | None,
     now: float,
-    bot_login: str = "agentic-learning-bot",
+    bot_login: str = "",
 ) -> None:
     """Persistent contract failure must surface where humans look.
 
@@ -433,6 +433,7 @@ def contract_alarm(
     opens ONE issue on the target repo; the next successful load closes
     it and says so. Alarm plumbing is best-effort by construction: it
     must never break the tick it reports for."""
+    bot_login = bot_login or _bot_login_default()
     state_path = root / "contract-alarm.json"
     try:
         state = json.loads(state_path.read_text())
@@ -3240,16 +3241,9 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
     # association and the partition to Slurm's defaults, as `start` already
     # does for the resident. Local compute has no placement at all.
     target = os.environ.get("OUTERLOOP_TARGET", "")
-    if not os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip():
-        # the default is the lab's bot account; under any other credential
-        # the kernel would not recognize its own comments and PRs (#298)
-        from outerloop.github import DEFAULT_BOT_LOGIN
-
-        log.warning(
-            "OUTERLOOP_BOT_LOGIN is not set; posting as the default %r. Set it to the "
-            "login the kernel posts as (init records it) unless that is your account.",
-            DEFAULT_BOT_LOGIN,
-        )
+    # no default identity (#298): every own-comment and own-PR filter keys on
+    # this login, and a wrong one is worse than none
+    bot_login = os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip()
     image_ok = Path(image).is_file()
     panel = os.environ.get("OUTERLOOP_PANEL", "verify,review")
     if not image_ok and local_mode():
@@ -3276,7 +3270,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
         # the jobs must not inherit a path to an image that is not there
         os.environ.pop("OUTERLOOP_IMAGE", None)
         image, image_ok = "", True
-    if (pat_file or app_file) and home and target and image_ok:
+    if (pat_file or app_file) and home and target and bot_login and image_ok:
         from outerloop.appauth import resolve_bot_auth
         from outerloop.github import GitHubClient
 
@@ -3310,6 +3304,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
             ("OUTERLOOP_PAT_FILE or _GITHUB_APP_FILE", pat_file or app_file),
             ("OUTERLOOP_HOME", home),
             ("OUTERLOOP_TARGET", target),
+            ("OUTERLOOP_BOT_LOGIN", bot_login),
         ]
         if not value
     ]

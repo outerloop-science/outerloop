@@ -81,6 +81,10 @@ Versions follow [SemVer](https://semver.org).
   honored pre-rename name (`~/.config/autoresearch/`, `.autoresearch.yaml`, the
   `.autoresearch` channel dir, the old root, image and job names) is dropped in
   the release after 0.1; the comment marker keeps recognizing old comments.
+- No default bot login (#298). `OUTERLOOP_BOT_LOGIN` has no built-in value: the
+  tick lists it as missing and does not service a target without it, and the
+  follow-up CLI requires it. `init` records it on both auth paths, so a fresh
+  setup always has one; a deployment set up before this must add the line.
 
 ### Changed
 

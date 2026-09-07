@@ -222,7 +222,9 @@ Slurm bill the default association and pick the default partition),
 `OUTERLOOP_ROOT` locate the checkout and the state, `OUTERLOOP_IMAGE`
 the container. The rest is re-read from `~/.config/outerloop/.env` each
 tick, so changes take effect at the next cadence: `OUTERLOOP_TARGET`
-names the repo being climbed; `OUTERLOOP_GPU_PARTITION` (optionally
+names the repo being climbed; `OUTERLOOP_BOT_LOGIN` is the login the kernel
+posts as (`init` records it on both auth paths; there is no default, and the
+tick does not service a target without it); `OUTERLOOP_GPU_PARTITION` (optionally
 `OUTERLOOP_GPU_ACCOUNT`) is the lane for GPU evals and launches;
 `OUTERLOOP_MAX_LAUNCH_GPUS` is the per-user GPU cap (your QOS's
 `MaxTRESPerUser`) under which the tick admits author launches, unset = queue
