@@ -77,6 +77,10 @@ standing instruction they supersede — a resumed agent honors stale constraints
       `gpu_hours_per_run`; `baseline: cached` measures a base once per base
       sha (2026-08-16 → 2026-08-28, #174–#178).
 
+- [ ] Deferred launches + the session watcher (docs/design/session-watcher.md):
+      the kernel waits on a full queue instead of refusing the author; a
+      watcher thread in the attempt answers `queue`, `history` and later `sync`
+      in seconds; no new process, no Slurm inside the container.
 - [x] The chain: `scripts/tick_chain.sbatch` — successor top-up to depth 2,
       `--dependency=singleton`, absolute `--begin` cadence grid, sbatch
       retry/backoff; successors submitted FIRST so nothing below can break
