@@ -19,6 +19,11 @@
 3. `gh release create vX.Y.Z --generate-notes`, with `--prerelease` for a dev
    or rc tag.
 4. `pip install outerloop-science==X.Y.Z` in a fresh venv, then `outerloop --help`.
+5. Announce. Discord's `#announcements` gets the release from the GitHub
+   webhook on its own (docs/community.md). For a final release, also write
+   the post for X (`@outerloop_sci`) and Bluesky (`@outerloop.science`): one
+   or two sentences on what changed for the reader, the install line, the
+   link to the release. Dev and rc pre-releases are not posted.
 
 ## Public repo
 
