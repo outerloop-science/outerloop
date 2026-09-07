@@ -8,6 +8,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `docs/community.md`: the Discord channels and the GitHub webhooks that feed
+  them, the X and Bluesky accounts and what gets posted where; the release
+  checklist gains the announcement step.
 - Experiment launches are submitted with `--nice=5000`, so among the kernel's
   own pending jobs a gate eval or a follow-up re-measure starts before a new
   experiment when the GPU cap frees a slot. Other users' jobs and the cap are
