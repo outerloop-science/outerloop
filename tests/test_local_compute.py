@@ -206,6 +206,9 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
         def cancel(self, job_id: str) -> None:
             pass
 
+        def release(self, job_id: str) -> None:
+            pass
+
     m = DispatchedMeasurer(
         compute=_DeadCompute(),
         run_dir=run_dir,

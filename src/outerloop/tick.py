@@ -36,6 +36,7 @@ from outerloop.compute import (
     SlurmError,
     SlurmQueryError,
     compute_from_env,
+    gpus_in_gres,
     is_pending,
     is_terminal,
     local_mode,
@@ -96,8 +97,10 @@ BLIND_PARK_SLACK_MIN = 12 * 60
 # would put it at the back of the queue behind itself. Per-job limits
 # (`...PerJob...`), a dependency that can never be satisfied, an invalid
 # account/QOS or a held job are NOT waits: those never clear on their own.
+# JobHeldUser is the kernel's own launch admission (service_admission): a
+# held launch waits for a GPU slot, and an operator's hold is theirs to lift.
 QUEUE_WAIT_REASONS = frozenset(
-    {"Priority", "Resources", "Reservation", "Dependency", "ReqNodeNotAvail"}
+    {"Priority", "Resources", "Reservation", "Dependency", "ReqNodeNotAvail", "JobHeldUser"}
 )
 
 
@@ -241,6 +244,11 @@ class FollowupSpec:
     # are minutes, work jobs can be hours, and Slurm prices walltime into
     # scheduling priority, so the two deserve independent placement.
     job_partition: str = ""
+    # Launch admission: the most GPUs this user's jobs may hold at once
+    # (OUTERLOOP_MAX_LAUNCH_GPUS, e.g. the QOS's MaxTRESPerUser). 0 = off:
+    # launches queue as submitted. On, GPU launches are submitted held and
+    # service_admission releases them oldest-first under the cap.
+    max_launch_gpus: int = 0
     # Partition MaxTime for work jobs — the panel-augmented walltime clamps
     # here (see MAX_ATTEMPT_JOB_MINUTES). Raise together with job_partition.
     max_job_minutes: int = MAX_ATTEMPT_JOB_MINUTES
@@ -1855,6 +1863,12 @@ def tick(
             allow_submit=launch_ok,
             contract=contract,
         )
+        # ended runs are known now, so a held launch of an ended run is dropped
+        # and a GPU slot freed by a finished eval is handed to the oldest held one
+        try:
+            service_admission(root, compute, spec, dry_run=followup_dry_run)
+        except Exception as exc:  # admission is advisory to the tick
+            log.warning("admission service failed: %s", exc)
         try:
             service_research_log(root, github, spec, now)
         except Exception as exc:  # the ledger is advisory; the tick continues
@@ -1904,6 +1918,120 @@ def tick(
     # main / mark_tick_complete) — not here with the start-of-tick `now`, which
     # a tick longer than the window would leave stale.
     return report
+
+
+LAUNCH_MARK = "-launch-"  # every author launch job is named <run_id>-launch-<name>
+
+
+@dataclass(frozen=True)
+class AdmissionReport:
+    released: tuple[str, ...] = ()  # job ids let into the queue this tick
+    dropped: tuple[str, ...] = ()  # held launches of runs that already ended
+    held: int = 0  # still waiting after this tick
+    gpus_in_use: int = 0  # GPUs held by this user's eligible jobs, after releases
+
+
+def _cap_reason(reason: str) -> bool:
+    head = reason.strip().split(",")[0].split(" ")[0]
+    return any(tag in head for tag in ("PerUser", "PerAccount", "Grp")) and "PerJob" not in head
+
+
+def service_admission(
+    root: Path, compute: Compute, spec: FollowupSpec, *, dry_run: bool = False
+) -> AdmissionReport:
+    """Launch admission (Torch 2026-09-06: six 8-GPU launches queued against a
+    16-GPU per-user cap, four of them pending for a day on QOSMaxGRESPerUser).
+    Author launches are submitted HELD when a cap is configured; every tick
+    this releases them oldest-first while the user's eligible GPU jobs (evals
+    and launches alike) fit under the cap, and cancels held launches whose run
+    has already ended. A released launch that Slurm then parks on a per-user
+    reason means the configured cap is too high: nothing more is released
+    that tick. Off (cap 0) and in local mode this does nothing. A failed
+    queue read releases nothing (blind is never "free")."""
+    if local_mode():
+        return AdmissionReport()  # local jobs are synchronous; nothing is ever held
+    try:
+        rows = compute.queue_snapshot()
+    except SlurmQueryError as exc:
+        log.warning("admission: cannot read the queue (%s); releasing nothing", exc)
+        return AdmissionReport()
+    # Only the kernel's own LAUNCH jobs are ever released or cancelled here,
+    # attributed by JOB ID through each record's launch ids (a candidate park's
+    # afterany also carries the gate's evals, which are never launches). Names
+    # are never parsed: they are cut to 60 characters at submission, and
+    # `squeue --me` lists every job of the Unix user, ours or not. A held job
+    # no record claims is left exactly as it is.
+    from outerloop.attempt import _stage_launch_job_ids
+
+    owner_state: dict[str, str] = {}
+    for record in list_runs(root):
+        for jid in _stage_launch_job_ids(record):
+            owner_state[jid] = record.state
+    held: list[dict[str, str]] = []
+    in_use = 0
+    at_cap = False
+    dropped: list[str] = []
+    for row in rows:
+        state, reason, jid = row.get("state", ""), row.get("reason", ""), row.get("id", "")
+        gpus = gpus_in_gres(row.get("gres", ""))
+        owner = owner_state.get(jid)
+        if is_pending(state) and reason.startswith("JobHeldUser"):
+            if owner is None:
+                continue  # not ours, or not a launch: never touched
+            if owner != WAITING:
+                # the run ended (PR landed, abandoned, stuck) before its
+                # launch ever ran: nothing will read the result
+                if not dry_run:
+                    with contextlib.suppress(Exception):
+                        compute.cancel(jid)
+                dropped.append(jid)
+                continue
+            held.append(row)
+            continue
+        # every GPU job that is not finished counts against the cap, including
+        # one still COMPLETING: Slurm holds its allocation until it exits
+        if gpus and not is_terminal(state) and state != GONE:
+            in_use += gpus
+            if is_pending(state) and owner is not None and _cap_reason(reason):
+                at_cap = True
+    held.sort(key=lambda r: int(r["id"]) if r["id"].isdigit() else 0)
+    released: list[str] = []
+    if spec.max_launch_gpus <= 0:
+        # admission switched off after these were submitted held: let every
+        # claimed launch go, or they would wait as JobHeldUser forever
+        for row in held:
+            if not dry_run:
+                compute.release(row["id"])
+            released.append(row["id"])
+    elif at_cap:
+        log.info(
+            "admission: a released launch waits on a per-user cap; %d held launch(es) stay held",
+            len(held),
+        )
+    else:
+        for row in held:
+            gpus = gpus_in_gres(row.get("gres", ""))
+            if in_use + gpus > spec.max_launch_gpus:
+                break
+            if not dry_run:
+                compute.release(row["id"])
+            released.append(row["id"])
+            in_use += gpus
+    if released or dropped:
+        log.info(
+            "admission: released %s; dropped %s; %d still held; %d/%d GPUs in use",
+            ",".join(released) or "-",
+            ",".join(dropped) or "-",
+            len(held) - len(released),
+            in_use,
+            spec.max_launch_gpus,
+        )
+    return AdmissionReport(
+        released=tuple(released),
+        dropped=tuple(dropped),
+        held=len(held) - len(released),
+        gpus_in_use=in_use,
+    )
 
 
 def service_syncs(root: Path, spec: Any, now: float) -> None:
@@ -2991,6 +3119,21 @@ def _wake_dispatcher_from_env(
     return JobWakeDispatcher(compute, followup_spec, now), True
 
 
+def max_launch_gpus_from_env() -> int:
+    """OUTERLOOP_MAX_LAUNCH_GPUS: the per-user GPU cap launch admission keeps
+    the fleet under; unset, empty or 0 = admission off. Read by the tick (to
+    release) and by the attempt (to submit held), so the two agree."""
+    raw = os.environ.get("OUTERLOOP_MAX_LAUNCH_GPUS", "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("OUTERLOOP_MAX_LAUNCH_GPUS=%r is not an integer; admission off", raw)
+        return 0
+    return max(value, 0)
+
+
 def _max_job_minutes_from_env() -> int:
     """OUTERLOOP_MAX_JOB_MINUTES, clamped into what the code can honor:
     at least the climb-job floor (an operator on a short-MaxTime partition
@@ -3145,6 +3288,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 gpu_partition=os.environ.get("OUTERLOOP_GPU_PARTITION", ""),
                 gpu_account=os.environ.get("OUTERLOOP_GPU_ACCOUNT", ""),
                 max_job_minutes=_max_job_minutes_from_env(),
+                max_launch_gpus=max_launch_gpus_from_env(),
             )
             return github, followup_spec
         except Exception as exc:

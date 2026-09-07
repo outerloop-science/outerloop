@@ -95,6 +95,10 @@ class JobSpec:
     # Slurm scheduling controls
     dependency: str = ""  # e.g. "afterany:12345" or "singleton"
     begin: str = ""  # e.g. "now+30" or an absolute "YYYY-MM-DDTHH:MM:SS"
+    # submitted held (PENDING, reason JobHeldUser) until `release`: the
+    # tick's launch admission lets GPU launches into the queue in order,
+    # under the per-user cap, instead of queueing them all at once
+    hold: bool = False
     extra: tuple[str, ...] = ()
 
     def to_argv(self) -> list[str]:
@@ -121,6 +125,8 @@ class JobSpec:
             argv.append(f"--gpus-per-node={self.gpus}")
         if self.qos:
             argv.append(f"--qos={self.qos}")
+        if self.hold:
+            argv.append("--hold")
         if self.dependency:
             argv.append(f"--dependency={self.dependency}")
         if self.begin:
@@ -134,7 +140,9 @@ class JobSpec:
         return argv
 
 
-QUEUE_FIELDS = ("id", "name", "state", "elapsed", "partition", "submitted")
+# `reason` and `gres` feed launch admission (why a job waits, how many GPUs it
+# asks for); the board reads the first six by key and ignores the rest
+QUEUE_FIELDS = ("id", "name", "state", "elapsed", "partition", "submitted", "reason", "gres")
 
 
 class Compute(Protocol):
@@ -149,6 +157,7 @@ class Compute(Protocol):
     def queue_snapshot(self) -> list[dict[str, str]]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
+    def release(self, job_id: str) -> None: ...
 
 
 def local_mode() -> bool:
@@ -268,7 +277,7 @@ class SlurmCompute:
         on failure, like active_job_names."""
         try:
             result = self.runner(
-                ["squeue", "--me", "--noheader", "-o", "%i|%j|%T|%M|%P|%V"],
+                ["squeue", "--me", "--noheader", "-o", "%i|%j|%T|%M|%P|%V|%r|%b"],
                 self.command_timeout_s,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -307,6 +316,15 @@ class SlurmCompute:
         result = self.runner(["scancel", job_id], self.command_timeout_s)
         if result.returncode != 0:
             log.warning("scancel %s: %s", job_id, result.stderr.strip())
+
+    def release(self, job_id: str) -> None:
+        """Release a job submitted with `hold` so the scheduler may start it.
+        Releasing a job that is not held is not an error."""
+        if not job_id.isdigit():
+            raise ValueError(f"not a job id: {job_id!r}")
+        result = self.runner(["scontrol", "release", job_id], self.command_timeout_s)
+        if result.returncode != 0:
+            log.warning("scontrol release %s: %s", job_id, result.stderr.strip())
 
 
 # Local job ids start far above any real Slurm id so the two can never be
@@ -472,6 +490,9 @@ class LocalCompute:
             raise ValueError(f"not a job id: {job_id!r}")
         # already terminal; cancelling a finished job is not an error
 
+    def release(self, job_id: str) -> None:
+        """Local jobs run synchronously at submit; nothing is ever held."""
+
 
 def parse_elapsed(text: str) -> int | None:
     """Seconds in a sacct Elapsed field: `MM:SS`, `HH:MM:SS` or `D-HH:MM:SS`.
@@ -503,6 +524,22 @@ def is_terminal(state: str) -> bool:
 
 def is_pending(state: str) -> bool:
     return state.startswith("PENDING")
+
+
+def gpus_in_gres(gres: str) -> int:
+    """GPUs a queue row asks for, from squeue's %b (`gres/gpu:8`,
+    `gres/gpu:h200:2`, `gres:gpu:4`; `N/A` or anything else = 0)."""
+    total = 0
+    for part in gres.replace(";", ",").split(","):
+        fields = part.strip().split(":")
+        if (len(fields) >= 2 and fields[0] in ("gres/gpu", "gpu")) or (
+            len(fields) >= 3 and fields[0] == "gres" and fields[1] == "gpu"
+        ):
+            try:
+                total += int(fields[-1])
+            except ValueError:
+                continue
+    return total
 
 
 def quote_command(parts: Sequence[str]) -> str:

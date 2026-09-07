@@ -223,7 +223,10 @@ Slurm bill the default association and pick the default partition),
 the container. The rest is re-read from `~/.config/outerloop/.env` each
 tick, so changes take effect at the next cadence: `OUTERLOOP_TARGET`
 names the repo being climbed; `OUTERLOOP_GPU_PARTITION` (optionally
-`OUTERLOOP_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
+`OUTERLOOP_GPU_ACCOUNT`) is the lane for GPU evals and launches;
+`OUTERLOOP_MAX_LAUNCH_GPUS` is the per-user GPU cap (your QOS's
+`MaxTRESPerUser`) under which the tick admits author launches, unset = queue
+them as submitted — a
 comma-separated partition list lets Slurm start each job wherever it fits
 first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is

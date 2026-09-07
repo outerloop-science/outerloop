@@ -155,8 +155,8 @@ def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
     from outerloop.compute import LocalCompute
 
     out = (
-        "101|eval-speedrun-2-cand-ab12|RUNNING|1:02:03|gpu|2026-09-05T20:00:00\n"
-        "102|wake-run|PENDING|0:00|cpu|2026-09-05T20:01:00\n"
+        "101|eval-speedrun-2-cand-ab12|RUNNING|1:02:03|gpu|2026-09-05T20:00:00|None|gres/gpu:8\n"
+        "102|wake-run|PENDING|0:00|cpu|2026-09-05T20:01:00|Dependency|N/A\n"
     )
     runner = FakeRunner([CommandResult(0, out, "")])
     rows = SlurmCompute(runner=runner).queue_snapshot()
@@ -168,8 +168,36 @@ def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
         "elapsed": "1:02:03",
         "partition": "gpu",
         "submitted": "2026-09-05T20:00:00",
+        "reason": "None",
+        "gres": "gres/gpu:8",
     }
+    assert rows[1]["reason"] == "Dependency" and rows[1]["gres"] == "N/A"
     assert rows[1]["state"] == "PENDING" and len(rows) == 2
     with pytest.raises(SlurmQueryError):
         SlurmCompute(runner=FakeRunner([CommandResult(1, "", "slurmctld down")])).queue_snapshot()
     assert LocalCompute.queue_snapshot(None) == []  # type: ignore[arg-type]  # no queue in the monolith
+
+
+def test_hold_flag_and_release() -> None:
+    from outerloop.compute import LocalCompute
+
+    held = JobSpec(job_name="j", account="a", partition="p", time_minutes=1, command="x", hold=True)
+    assert "--hold" in held.to_argv()
+    plain = JobSpec(job_name="j", account="a", partition="p", time_minutes=1, command="x")
+    assert "--hold" not in plain.to_argv()
+    runner = FakeRunner([CommandResult(0, "", "")])
+    SlurmCompute(runner=runner).release("4242")
+    assert runner.seen[0] == ["scontrol", "release", "4242"]
+    with pytest.raises(ValueError):
+        SlurmCompute(runner=runner).release("not-an-id")
+    LocalCompute.release(None, "1")  # type: ignore[arg-type]  # nothing is ever held locally
+
+
+def test_gpus_in_gres_parses_squeue_tres() -> None:
+    from outerloop.compute import gpus_in_gres
+
+    assert gpus_in_gres("gres/gpu:8") == 8
+    assert gpus_in_gres("gres/gpu:h200:2") == 2
+    assert gpus_in_gres("gres:gpu:4") == 4
+    assert gpus_in_gres("gres/gpu:1,gres/gpu:h100:1") == 2
+    assert gpus_in_gres("N/A") == 0 and gpus_in_gres("") == 0 and gpus_in_gres("gres/gpu:x") == 0
