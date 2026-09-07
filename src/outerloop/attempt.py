@@ -27,7 +27,7 @@ from typing import Any, cast
 
 from outerloop.appauth import resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
-from outerloop.compute import LocalCompute
+from outerloop.compute import LocalCompute, local_mode
 from outerloop.contract import Benchmark, Contract, contract_text_in_tree, load_contract
 from outerloop.dispatch import (
     Snapshot,
@@ -605,8 +605,15 @@ def _make_launcher(
     partially-submitted batch is reaped rather than orphaned. `gpus` is the
     benchmark's: an author's experiments run on the same lane as its evals."""
     account, partition = dispatch.placement(gpus)
+    # under launch admission a GPU launch enters the queue held; the tick
+    # releases it when the user's GPUs fit under the cap (tick.service_admission)
+    from outerloop.tick import max_launch_gpus_from_env
+
+    hold = gpus > 0 and not local_mode() and max_launch_gpus_from_env() > 0
 
     def launcher(sha: str, request: SyscallRequest) -> str:
+        from dataclasses import replace as _replace
+
         from outerloop.dispatch import eval_job_spec, write_eval_job
         from outerloop.syscall import launch_jobs
 
@@ -628,18 +635,15 @@ def _make_launcher(
                         artifact_max_bytes=MAX_ARTIFACT_BYTES,
                         gpus=gpus,
                     )
-                    ids.append(
-                        dispatch.compute.submit(
-                            eval_job_spec(
-                                script,
-                                job_name=f"{run_id}-launch-{job_name}",
-                                account=account,
-                                partition=partition,
-                                eval_minutes=launch.minutes,
-                                gpus=gpus,
-                            )
-                        )
+                    spec = eval_job_spec(
+                        script,
+                        job_name=f"{run_id}-launch-{job_name}",
+                        account=account,
+                        partition=partition,
+                        eval_minutes=launch.minutes,
+                        gpus=gpus,
                     )
+                    ids.append(dispatch.compute.submit(_replace(spec, hold=hold)))
         except Exception:
             # a partial batch must not orphan: no park record was written yet,
             # so nothing would ever wake or cancel the jobs that DID submit —

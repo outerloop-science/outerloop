@@ -42,6 +42,8 @@ class FakeSlurm:
     states: dict[str, str] = field(default_factory=dict)
     cancelled: list[str] = field(default_factory=list)
     reasons: dict[str, str] = field(default_factory=dict)  # squeue %r by job id
+    queue: list[dict[str, str]] = field(default_factory=list)  # squeue --me rows
+    released: list[str] = field(default_factory=list)
     partitions: dict[str, str] = field(default_factory=dict)  # squeue %P by job id
     cancel_sticks: bool = True  # scancel moves the job to CANCELLED, like Slurm
 
@@ -57,6 +59,9 @@ class FakeSlurm:
             if self.cancel_sticks:
                 self.states[argv[1]] = "CANCELLED"
             return CommandResult(0, "", "")
+        if argv[0] == "scontrol" and argv[1] == "release":
+            self.released.append(argv[2])
+            return CommandResult(0, "", "")
         if argv[0] == "squeue":
             if "-j" in argv:
                 jid = argv[argv.index("-j") + 1]
@@ -65,6 +70,11 @@ class FakeSlurm:
                 if value == "!":
                     return CommandResult(1, "", "squeue down")
                 return CommandResult(0, value + "\n" if value else "", "")
+            if "--me" in argv and "-o" in argv:
+                from outerloop.compute import QUEUE_FIELDS
+
+                lines = ["|".join(r.get(f, "") for f in QUEUE_FIELDS) for r in self.queue]
+                return CommandResult(0, "\n".join(lines) + ("\n" if lines else ""), "")
             return CommandResult(0, "", "")  # no live jobs
         raise AssertionError(f"unexpected command {argv}")
 
@@ -455,6 +465,7 @@ def test_is_queue_wait_classifies_slurm_reasons() -> None:
         "AssocGrpGRES",
         "QOSGrpCpuLimit",
         "ReqNodeNotAvail, UnavailableNodes:gpu-01",
+        "JobHeldUser",  # the kernel's own launch admission hold
     ]
     nevers = [
         "",
@@ -464,7 +475,7 @@ def test_is_queue_wait_classifies_slurm_reasons() -> None:
         "InvalidAccount",
         "InvalidQOS",
         "PartitionDown",
-        "JobHeldUser",
+        "JobHeldAdmin",
         "BadConstraints",
     ]
     assert [r for r in waits if not is_queue_wait(r)] == []
@@ -4366,3 +4377,166 @@ def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path
     env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
     _github, spec = _followup_spec_from_env(tmp_path)
     assert spec is not None and spec.panel == "verify,review"
+
+
+def _qrow(
+    job_id: str, name: str, state: str, reason: str = "None", gpus: int = 8
+) -> dict[str, str]:
+    return {
+        "id": job_id,
+        "name": name,
+        "state": state,
+        "elapsed": "0:00",
+        "partition": "h200",
+        "submitted": "2026-09-06T00:00:00",
+        "reason": reason,
+        "gres": f"gres/gpu:{gpus}" if gpus else "N/A",
+    }
+
+
+def _admission_spec(tmp_path: Path, cap: int) -> Any:
+    from outerloop.tick import FollowupSpec
+
+    return FollowupSpec(
+        account="a", partition="p", run_root=tmp_path, image="", home=tmp_path, max_launch_gpus=cap
+    )
+
+
+def test_admission_releases_held_launches_oldest_first_under_the_cap(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Torch 2026-09-06: six 8-GPU launches against a 16-GPU per-user cap. With
+    admission on, launches wait HELD and the tick releases them in submission
+    order while the user's eligible GPU jobs fit under the cap; evals count."""
+    from outerloop.tick import service_admission
+
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    for rid in ("r1", "r2", "r3"):
+        waiting_run(tmp_path, run_id=rid)
+    slurm = FakeSlurm(
+        queue=[
+            _qrow("300", "eval-speedrun-cand", "RUNNING"),  # a gate eval holds 8
+            _qrow("301", "r1-launch-a", "PENDING", "JobHeldUser"),
+            _qrow("302", "r2-launch-b", "PENDING", "JobHeldUser"),
+            _qrow("303", "r3-launch-c", "PENDING", "JobHeldUser"),
+            _qrow("304", "wake-r1", "PENDING", "Dependency", gpus=0),
+        ]
+    )
+    report = service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 16))
+    assert slurm.released == ["301"]  # 8 in use + 8 = 16: one fits, in id order
+    assert report.released == ("301",) and report.held == 2 and report.gpus_in_use == 16
+    assert slurm.cancelled == []
+
+
+def test_admission_drops_held_launches_of_ended_runs_and_respects_a_cap_reason(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from outerloop.runstate import ENDED, STUCK
+    from outerloop.tick import service_admission
+
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    waiting_run(tmp_path, run_id="live")
+    waiting_run(tmp_path, run_id="done", state=ENDED, ending=STUCK)
+    slurm = FakeSlurm(
+        queue=[
+            _qrow("401", "done-launch-x", "PENDING", "JobHeldUser"),  # its run ended: dropped
+            _qrow("402", "live-launch-y", "PENDING", "JobHeldUser"),
+            _qrow(
+                "403", "live-launch-z", "PENDING", "QOSMaxGRESPerUser"
+            ),  # released earlier, parked
+        ]
+    )
+    report = service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 16))
+    assert slurm.cancelled == ["401"] and report.dropped == ("401",)
+    # a released launch already waits on the per-user cap: the cap is too high, release nothing
+    assert slurm.released == [] and report.held == 1
+
+
+def test_admission_is_off_without_a_cap_or_in_local_mode(tmp_path: Path, monkeypatch: Any) -> None:
+    from outerloop.tick import service_admission
+
+    waiting_run(tmp_path, run_id="r1")
+    slurm = FakeSlurm(queue=[_qrow("501", "r1-launch-a", "PENDING", "JobHeldUser")])
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    assert service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 0)).held == 0
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
+    assert service_admission(tmp_path, slurm.compute(), _admission_spec(tmp_path, 16)).held == 0
+    assert slurm.released == []
+
+
+def test_admission_releases_nothing_when_the_queue_cannot_be_read(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from outerloop.compute import SlurmQueryError
+    from outerloop.tick import service_admission
+
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+
+    class Blind:
+        def queue_snapshot(self) -> list[dict[str, str]]:
+            raise SlurmQueryError("slurmctld down")
+
+        def release(self, job_id: str) -> None:
+            raise AssertionError("must not release blind")
+
+        def cancel(self, job_id: str) -> None:
+            raise AssertionError("must not cancel blind")
+
+    assert service_admission(tmp_path, Blind(), _admission_spec(tmp_path, 16)).released == ()  # type: ignore[arg-type]
+
+
+def test_max_launch_gpus_from_env(monkeypatch: Any) -> None:
+    from outerloop.tick import max_launch_gpus_from_env
+
+    monkeypatch.delenv("OUTERLOOP_MAX_LAUNCH_GPUS", raising=False)
+    assert max_launch_gpus_from_env() == 0
+    monkeypatch.setenv("OUTERLOOP_MAX_LAUNCH_GPUS", "16")
+    assert max_launch_gpus_from_env() == 16
+    monkeypatch.setenv("OUTERLOOP_MAX_LAUNCH_GPUS", "sixteen")
+    assert max_launch_gpus_from_env() == 0
+    monkeypatch.setenv("OUTERLOOP_MAX_LAUNCH_GPUS", "-3")
+    assert max_launch_gpus_from_env() == 0
+
+
+def test_launcher_submits_gpu_launches_held_under_admission(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The attempt side of admission: with a cap configured, a GPU launch enters
+    the queue held; without one, or for a CPU benchmark, it queues as before."""
+    import outerloop.attempt as attempt_mod
+    from outerloop.measure import DispatchSettings
+    from outerloop.syscall import Launch, SyscallRequest
+
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    monkeypatch.setattr(
+        attempt_mod, "write_eval_job", lambda *a, **k: tmp_path / "job.sh", raising=False
+    )
+    import outerloop.dispatch as dispatch_mod
+
+    monkeypatch.setattr(dispatch_mod, "write_eval_job", lambda *a, **k: tmp_path / "job.sh")
+    seen: list[Any] = []
+
+    class Recorder:
+        def submit(self, spec: Any) -> str:
+            seen.append(spec)
+            return str(700 + len(seen))
+
+        def cancel(self, job_id: str) -> None:
+            pass
+
+    settings = DispatchSettings(
+        compute=Recorder(),  # type: ignore[arg-type]
+        image="/img.sif",
+        account="a",
+        partition="cpu",
+        gpu_partition="h200",
+    )
+    request = SyscallRequest(launches=(Launch(name="a", command="true", minutes=10),))
+    monkeypatch.setenv("OUTERLOOP_MAX_LAUNCH_GPUS", "16")
+    dep = attempt_mod._make_launcher(settings, tmp_path, tmp_path, "run1", gpus=8)("sha", request)
+    assert dep == "afterany:701" and seen[-1].hold is True and seen[-1].job_name == "run1-launch-a"
+    attempt_mod._make_launcher(settings, tmp_path, tmp_path, "run1", gpus=0)("sha", request)
+    assert seen[-1].hold is False  # CPU launches are never held
+    monkeypatch.delenv("OUTERLOOP_MAX_LAUNCH_GPUS")
+    attempt_mod._make_launcher(settings, tmp_path, tmp_path, "run1", gpus=8)("sha", request)
+    assert seen[-1].hold is False  # admission off: queue as submitted
