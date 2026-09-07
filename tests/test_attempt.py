@@ -2453,6 +2453,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     ]
     rec.stage["launches_used"] = 1
     rec.stage["sleeps_used"] = 1
+    rec.stage["report"] = "H: the author's report at submit"
     save_record(state, rec, 1_000_050.0)
     outcome = resume_run(
         state,
@@ -2466,6 +2467,8 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     record = load_record(state, run_id)
     assert record.state == "waiting"
     assert record.stage.get("submitted") is True
+    # the author's report survives the re-park: the panel and the PR read it
+    assert record.stage["report"] == "H: the author's report at submit"
     assert record.stage["syscall_launches"] == [
         {"name": "probe", "minutes": 240, "artifacts": ["out.txt"], "array": 3}
     ]  # the sweep keeps its width across the re-park (terra #181)

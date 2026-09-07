@@ -1790,6 +1790,9 @@ def resume_run(
                     ),
                     note=str(stage.get("syscall_note", "")),
                     submit=True,
+                    # the author's report rides every re-park: a suite fan-out
+                    # must not drop what the panel and the PR read
+                    report=str(stage.get("report", "")),
                 )
         old_afterany = str(record.stage.get("afterany", ""))
         made_progress = bool(parked.afterany) and parked.afterany != old_afterany
