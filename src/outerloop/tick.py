@@ -1955,24 +1955,39 @@ def service_admission(
     except SlurmQueryError as exc:
         log.warning("admission: cannot read the queue (%s); releasing nothing", exc)
         return AdmissionReport()
-    waiting = {r.run_id for r in list_runs(root) if r.state == WAITING}
+    # Launches are attributed by JOB ID through the records' afterany lists,
+    # never by parsing the job name: names are cut to 60 characters at
+    # submission, so a long benchmark name would read as a foreign run. A held
+    # job no record claims is left exactly as it is.
+    owner_state: dict[str, str] = {}
+    for record in list_runs(root):
+        for jid in str((record.stage or {}).get("afterany", "")).split(":")[1:]:
+            if jid:
+                owner_state[jid] = record.state
     held: list[dict[str, str]] = []
     in_use = 0
     at_cap = False
     dropped: list[str] = []
     for row in rows:
-        state, reason = row.get("state", ""), row.get("reason", "")
+        state, reason, jid = row.get("state", ""), row.get("reason", ""), row.get("id", "")
         gpus = gpus_in_gres(row.get("gres", ""))
-        is_launch = LAUNCH_MARK in row.get("name", "")
+        owner = owner_state.get(jid)
+        is_launch = owner is not None or LAUNCH_MARK in row.get("name", "")
         if is_pending(state) and reason.startswith("JobHeldUser") and is_launch:
-            run_id = row["name"].split(LAUNCH_MARK, 1)[0]
-            if run_id not in waiting:
+            if owner is None:
+                log.info(
+                    "admission: held job %s (%s) belongs to no run record; left alone",
+                    jid,
+                    row.get("name", ""),
+                )
+                continue
+            if owner != WAITING:
                 # the run ended (PR landed, abandoned, stuck) before its
                 # launch ever ran: nothing will read the result
                 if not dry_run:
                     with contextlib.suppress(Exception):
-                        compute.cancel(row["id"])
-                dropped.append(row["id"])
+                        compute.cancel(jid)
+                dropped.append(jid)
                 continue
             held.append(row)
             continue
