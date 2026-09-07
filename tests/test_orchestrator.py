@@ -660,6 +660,28 @@ def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> 
     assert resumed == "s1"  # the SAME session was woken
 
 
+def test_saturated_queue_refuses_the_launches_once_then_measures(tmp_path: Path) -> None:
+    """Queue-then-stop admission: while this account's GPU jobs wait on a cap, a
+    sleep that asks for launches is refused with the blocking job named, the
+    author is woken once in the same session, and nothing is launched."""
+    _write_syscall(tmp_path, {"launches": [{"name": "a", "command": "x"}]})
+    launched: list = []
+    asked: list = []
+
+    def admission(request):
+        asked.append(request)
+        return (
+            "the GPU queue is full for this account: job 3 (r1-launch-a) is waiting on QOSGrpGRES"
+        )
+
+    result, harness, _ = run_climb(
+        tmp_path, [13.876, 13.10], launcher=_fake_launcher(launched), admission=admission
+    )
+    assert result.outcome == "improved" and launched == [] and len(asked) == 1
+    refusal_text, _ws, resumed = harness.calls[1]
+    assert "REFUSED" in refusal_text and "QOSGrpGRES" in refusal_text and resumed == "s1"
+
+
 def test_author_sleep_refuses_an_out_of_scope_tree_before_launching(tmp_path: Path) -> None:
     # same invariant as the candidate path: an out-of-scope tree is never
     # snapshotted OR executed — a launch would run code from it in an external

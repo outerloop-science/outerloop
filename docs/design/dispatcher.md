@@ -76,17 +76,16 @@ benchmarks outright for now — a stewardship validates its rewrite in-job.
 The first target in this shape is the speedrun (`gpt-speedrun`: one H200
 per eval, ~3.5h).
 
-**Launch admission.** A per-user GPU cap (a QOS's `MaxTRESPerUser`, 16 on
-Torch) means the fleet can run only so many launches at once, whatever the
-agent count: six 8-GPU launches queued against a 16-GPU cap left four pending
-for a day on `QOSMaxGRESPerUser`. With `OUTERLOOP_MAX_LAUNCH_GPUS` set to that
-cap, author launches are submitted HELD, and every tick `service_admission`
-releases them oldest-first while the user's eligible GPU jobs (evals and
-launches alike) fit under the cap; held launches whose run has since ended
-are cancelled. A released launch that Slurm parks on a per-user reason means
-the cap is set too high, and nothing more is released that tick. The wake's
-`afterany` dependency is unchanged (held jobs are pending), and the sweep
-treats the kernel's hold as a wait. Unset, launches queue as submitted.
+**Launch admission: queue, then stop.** Slurm publishes no per-user GPU cap a
+submitter can trust (on Torch the cap that parked launches for a day was a moving
+GROUP cap on the job QOS, `QOSGrpGRES`), but it always says why a job waits. So
+the rule needs no number. A launch queues as long as none of this account's GPU
+jobs is pending on a cap reason; while one is, a sleep that asks for launches is
+REFUSED with the blocking job and reason, and the author is told to wait for the
+results it has or finish (`admission.queue_saturated`). The parked jobs accrue
+priority where they sit, and the sweep treats a cap reason as a wait, never as an
+unschedulable job. Nothing is held or released; the kernel keeps no queue of its
+own. Local compute has no queue and is never refused.
 
 **Who decides the eval walltime.** The gate measures steps, not time, so
 walltime should bound only SPEND — and the attempt already has a spend

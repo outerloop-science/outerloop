@@ -27,7 +27,7 @@ from typing import Any, cast
 
 from outerloop.appauth import resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
-from outerloop.compute import LocalCompute, local_mode
+from outerloop.compute import LocalCompute
 from outerloop.contract import Benchmark, Contract, contract_text_in_tree, load_contract
 from outerloop.dispatch import (
     Snapshot,
@@ -605,15 +605,8 @@ def _make_launcher(
     partially-submitted batch is reaped rather than orphaned. `gpus` is the
     benchmark's: an author's experiments run on the same lane as its evals."""
     account, partition = dispatch.placement(gpus)
-    # under launch admission a GPU launch enters the queue held; the tick
-    # releases it when the user's GPUs fit under the cap (tick.service_admission)
-    from outerloop.tick import max_launch_gpus_from_env
-
-    hold = gpus > 0 and not local_mode() and max_launch_gpus_from_env() > 0
 
     def launcher(sha: str, request: SyscallRequest) -> str:
-        from dataclasses import replace as _replace
-
         from outerloop.dispatch import eval_job_spec, write_eval_job
         from outerloop.syscall import launch_jobs
 
@@ -643,7 +636,7 @@ def _make_launcher(
                         eval_minutes=launch.minutes,
                         gpus=gpus,
                     )
-                    ids.append(dispatch.compute.submit(_replace(spec, hold=hold)))
+                    ids.append(dispatch.compute.submit(spec))
         except Exception:
             # a partial batch must not orphan: no park record was written yet,
             # so nothing would ever wake or cancel the jobs that DID submit —
@@ -659,6 +652,17 @@ def _make_launcher(
         return "afterany:" + ":".join(ids) if ids else ""
 
     return launcher
+
+
+def _make_admission(dispatch: DispatchSettings, gpus: int = 0) -> Callable[[SyscallRequest], str]:
+    """The admission check for this benchmark's launches: only GPU launches on a
+    cluster queue are ever refused (admission.queue_saturated)."""
+    from outerloop.admission import queue_saturated
+
+    def admission(request: SyscallRequest) -> str:
+        return queue_saturated(dispatch.compute) if gpus > 0 else ""
+
+    return admission
 
 
 def _wake_author_sleep(
@@ -873,6 +877,7 @@ def _wake_author_sleep(
             resume_session_id=record.resume_session_id,
             improve_prompt=wake_text,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
+            admission=_make_admission(dispatch, gpus=bench.gpus),
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             judged=judged or _stage_judged(record),
             launches_used=launches_used,
@@ -2688,11 +2693,13 @@ def live_attempt(
         # symlink, tracked request, or any other pre-existing form — has
         # disabled the feature for this run).
         launcher = None
+        admission = None
         if author_syscalls:
             assert dispatch is not None  # folded into author_syscalls above
             launcher = _make_launcher(
                 dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
             )
+            admission = _make_admission(dispatch, gpus=_bench.gpus if _bench else 0)
 
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
@@ -2722,6 +2729,7 @@ def live_attempt(
                 line_memory=line_memory,
                 line_divergence=line_divergence,
                 launcher=launcher,
+                admission=admission,
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )
         except RunParked as p:
