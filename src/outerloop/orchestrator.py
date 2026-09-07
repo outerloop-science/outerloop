@@ -44,6 +44,7 @@ from outerloop.role_runner import run_role
 from outerloop.roles import author_spec
 from outerloop.rolespec import RoleSpec
 from outerloop.syscall import (
+    MISSING_REPORT,
     SyscallError,
     SyscallRequest,
     clamp_concurrency,
@@ -1513,6 +1514,11 @@ def attempt_once(
                 suite_gpus=suite_gpus,
                 main_evals=main_evals,
             )
+            if not problem and request.submit and not request.report:
+                # a refusal the author can act on, never a dead run: a session
+                # that started under an older tool learns the flag here (the wake
+                # refreshed its tool) and resubmits with the report
+                problem = MISSING_REPORT
             # a sweep's pace is clamped to the contract's GPU ceiling here, once,
             # before either path — an author-sleep launch or a submit's sibling
             # launches — submits or records it; clamped, never refused

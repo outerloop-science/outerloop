@@ -1931,3 +1931,16 @@ def test_pr_body_leads_with_the_report_and_lists_the_experiments() -> None:
         redact_secrets=(),
     )
     assert "Session prose" in plain and "## Experiments" not in plain
+
+
+def test_a_submit_without_a_report_is_refused_not_fatal(tmp_path: Path) -> None:
+    """A session under an older tool (no --report flag) submits without a report:
+    the author is woken with the refusal and the flag to use, the run goes on."""
+    _write_syscall(tmp_path, {"launches": [], "submit": True})
+    result, harness, _ = run_climb(
+        tmp_path, [13.876, 13.10], contract=DEEP_CONTRACT, launcher=_fake_launcher([])
+    )
+    assert result.outcome == "improved"  # the run went on after the refusal
+    refusal_text, _ws, resumed = harness.calls[1]
+    assert "REFUSED" in refusal_text and "submit --report <file>" in refusal_text
+    assert resumed == "s1"

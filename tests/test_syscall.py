@@ -1179,12 +1179,14 @@ def test_sweep_pace_is_validated_clamped_and_expanded(tmp_path: Path) -> None:
 def test_a_submit_needs_a_report(tmp_path: Path) -> None:
     from outerloop.syscall import MAX_REPORT_CHARS, SyscallError
 
+    # a submit without a report reads fine — the orchestrator REFUSES it with a
+    # wake the author can act on, never a dead run (an older tool has no flag)
     write_req(tmp_path, {"launches": [], "submit": True})
-    with pytest.raises(SyscallError, match="submit needs a report"):
-        read_request(tmp_path)
+    req = read_request(tmp_path)
+    assert req is not None and req.submit and req.report == ""
     write_req(tmp_path, {"launches": [], "submit": True, "report": "   "})
-    with pytest.raises(SyscallError, match="submit needs a report"):
-        read_request(tmp_path)
+    req = read_request(tmp_path)
+    assert req is not None and req.report == ""
     write_req(tmp_path, {"launches": [], "submit": True, "report": "x" * (MAX_REPORT_CHARS + 1)})
     with pytest.raises(SyscallError, match="report must be"):
         read_request(tmp_path)
@@ -1214,3 +1216,22 @@ def test_read_results_reads_without_delivering(tmp_path: Path) -> None:
         "w",
     )
     assert not (tmp_path / ".outerloop").exists()  # nothing was delivered anywhere
+
+
+def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_path: Path) -> None:
+    from outerloop.syscall import install_tool, refresh_tool
+
+    install_tool(tmp_path)
+    channel = tmp_path / ".outerloop"
+    (channel / "budget.json").write_text("{}")
+    tool = channel / "syscall"
+    tool.write_text("# stale tool\n")
+    refresh_tool(tmp_path)
+    assert "def main(" in tool.read_text() and (tool.stat().st_mode & 0o111)
+    assert (channel / "budget.json").exists()  # the channel is untouched
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    tool.unlink()
+    tool.symlink_to(victim)
+    refresh_tool(tmp_path)
+    assert victim.read_text() == "keep" and "def main(" in tool.read_text()

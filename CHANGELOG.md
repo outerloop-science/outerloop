@@ -8,6 +8,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- A submit without a report is refused with a wake the author can act on, not
+  a dead run, and a wake rewrites the session's tool from the running kernel,
+  so a session that started before a deploy has today's verbs and flags.
 - The pull request carries the research. `submit --report <file>` is required:
   the author's write-up (hypothesis, what ran and what was measured, why it
   should merge, what did not work) becomes the PR's research report, and the
