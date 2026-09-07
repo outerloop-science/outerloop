@@ -36,7 +36,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from outerloop.compute import JobSpec
-from outerloop.github import SAFE_GIT_FLAGS, GitError, Workspace, ensure_regular_git_dir
+from outerloop.github import (
+    SAFE_GIT_FLAGS,
+    GitError,
+    Workspace,
+    ensure_regular_git_dir,
+    git_identity,
+)
 from outerloop.orchestrator import EvalError, _metric_from_output, managed_eval_env
 
 log = logging.getLogger(__name__)
@@ -94,7 +100,11 @@ class Snapshot:
 
 
 def snapshot_tree(
-    ws: Workspace, base_sha: str, exclude: tuple[str, ...] = (), force: tuple[str, ...] = ()
+    ws: Workspace,
+    base_sha: str,
+    exclude: tuple[str, ...] = (),
+    force: tuple[str, ...] = (),
+    author: str = "",
 ) -> Snapshot:
     """Snapshot the workspace's current CONTENT as a commit parented on
     `base_sha`, without touching the working index, and retain it under a
@@ -105,7 +115,8 @@ def snapshot_tree(
     keeps it (docs/design/research-lines.md). `force` adds those paths even
     when the target's ignore rules match them — the notebook seal uses it so
     a .gitignore entry cannot silently discard session memory; callers pass
-    only paths that exist.
+    only paths that exist. `author` is the bot login the seal commit is
+    made as (empty: OUTERLOOP_BOT_LOGIN).
     """
     # the snapshot writes an index, a tree, a commit, and a ref into this
     # repository: a session-reshaped .git is refused first, like every other
@@ -163,10 +174,7 @@ def snapshot_tree(
         commit = run(
             [
                 *git,
-                "-c",
-                "user.name=dispatch",
-                "-c",
-                "user.email=dispatch@localhost",
+                *git_identity(author),
                 "commit-tree",
                 tree,
                 "-p",

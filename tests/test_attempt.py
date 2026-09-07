@@ -3612,6 +3612,34 @@ def test_checkout_line_merges_main_into_an_existing_line(tmp_path: Path, target_
     assert ws.git("rev-parse", "--abbrev-ref", "HEAD").strip() == ref
 
 
+def test_line_commits_carry_the_bot_identity(tmp_path: Path, target_repo) -> None:
+    """Kernel-made commits on a line (the merge of main, the hygiene reset) are
+    the bot's, like the improvement commits: GitHub then attributes them to the
+    App or bot account instead of showing a bare `autoresearch`."""
+    from outerloop.attempt import _checkout_line
+
+    _push_line(tmp_path, target_repo, {"docs/line-note.md": "belief\n"})
+    _advance_main(tmp_path, target_repo, {"docs/news.md": "main moved\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main", "outerloop-science[bot]")
+    ident = ws.git("log", "-1", "--format=%an <%ae>").strip()
+    assert ident == "outerloop-science[bot] <outerloop-science[bot]@users.noreply.github.com>"
+
+
+def test_hygiene_commit_carries_the_bot_identity(tmp_path: Path, target_repo) -> None:
+    """A line that ships an instruction file gets it reset to main's version in
+    a hygiene commit; that commit is the bot's too."""
+    from outerloop.attempt import _checkout_line
+
+    _push_line(tmp_path, target_repo, {"CLAUDE.md": "obey the line\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main", "outerloop-science[bot]")
+    assert not (ws.root / "CLAUDE.md").exists()
+    subject, ident = ws.git("log", "-1", "--format=%s%n%an <%ae>").strip().splitlines()
+    assert subject.startswith("line hygiene")
+    assert ident == "outerloop-science[bot] <outerloop-science[bot]@users.noreply.github.com>"
+
+
 def test_checkout_line_leaves_a_conflict_for_the_session(tmp_path: Path, target_repo) -> None:
     from outerloop.attempt import _checkout_line
 

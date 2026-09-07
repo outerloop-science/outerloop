@@ -479,3 +479,15 @@ def test_snapshot_exclude_drops_files_and_directories(tmp_path):
     # and an empty exclude still seals them
     full = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert "AGENT_MEMORY.md" in ws.git("ls-tree", "-r", "--name-only", full.commit).splitlines()
+
+
+def test_snapshot_commit_is_the_bots(tmp_path: Path) -> None:
+    """The seal is a kernel commit that reaches GitHub (the PR's `dispatch
+    snapshot`), so it carries the bot identity, not a role name."""
+    root = _repo(tmp_path)
+    ws = _WS(root)
+    base = ws.git("rev-parse", "HEAD")
+    (root / "a.py").write_text("x = 1\n")
+    snap = snapshot_tree(ws, base, author="outerloop-science[bot]")  # type: ignore[arg-type]
+    ident = ws.git("log", "-1", "--format=%an <%ae>", snap.commit).strip()
+    assert ident == "outerloop-science[bot] <outerloop-science[bot]@users.noreply.github.com>"

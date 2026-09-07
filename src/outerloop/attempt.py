@@ -43,6 +43,7 @@ from outerloop.github import (
     Workspace,
     contract_at,
     ensure_regular_git_dir,
+    git_identity,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, redact
 from outerloop.markers import has_marker
@@ -717,7 +718,12 @@ def _wake_author_sleep(
         # the same ending shape every other terminal takes. The line notebook
         # records it first, while the tree is still the session's final tree.
         _push_line_snapshot(
-            ws, _line_ref_for(bench, config.agent_id), run_id, result.outcome, secrets
+            ws,
+            _line_ref_for(bench, config.agent_id),
+            run_id,
+            result.outcome,
+            secrets,
+            bot_login=config.bot_login,
         )
         for ref in drop_refs:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
@@ -833,7 +839,9 @@ def _wake_author_sleep(
     wake_line = _line_ref_for(bench, config.agent_id)
 
     def snapshot() -> str:
-        snap = snapshot_tree(ws, base_sha, exclude=LINE_MEMORY_PATHS if wake_line else ())
+        snap = snapshot_tree(
+            ws, base_sha, exclude=LINE_MEMORY_PATHS if wake_line else (), author=config.bot_login
+        )
         snapshots.append(snap)
         return snap.commit
 
@@ -1129,7 +1137,12 @@ def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
 
 
 def _push_line_snapshot(
-    ws: Workspace, line_ref: str, run_id: str, outcome: str, secrets: tuple[str, ...] = ()
+    ws: Workspace,
+    line_ref: str,
+    run_id: str,
+    outcome: str,
+    secrets: tuple[str, ...] = (),
+    bot_login: str = "",
 ) -> None:
     """Publish the session's final tree to the agent's line as a sealed
     snapshot commit — every terminal path, any outcome
@@ -1172,7 +1185,7 @@ def _push_line_snapshot(
                     fork = parent = remote
             except Exception as exc:
                 log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
-            snap = snapshot_tree(ws, parent, force=memory)
+            snap = snapshot_tree(ws, parent, force=memory, author=bot_login)
             try:
                 # seal only when the tree moved past the parent; the PUSH runs
                 # either way — a session that COMMITTED its work advanced the
@@ -1181,10 +1194,7 @@ def _push_line_snapshot(
                 sealed = parent
                 if snap.tree != ws.git("rev-parse", f"{parent}^{{tree}}").strip():
                     sealed = ws.git(
-                        "-c",
-                        "user.name=autoresearch",
-                        "-c",
-                        "user.email=autoresearch@localhost",
+                        *git_identity(bot_login),
                         "commit-tree",
                         snap.tree,
                         "-p",
@@ -1244,7 +1254,9 @@ def _reconcile_with_remote(ws: Workspace, old: str, new: str) -> None:
             ws.git("checkout", new, "--", path)
 
 
-def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: str) -> str:
+def _checkout_line(
+    ws: Workspace, workspace: Path, agent_id: str, base_branch: str, bot_login: str = ""
+) -> str:
     """Check out the agent's research line: the persistent branch
     `agents/<agent-id>`, created from the base branch when absent, with the
     base branch merged in when it exists — a conflicted merge is left in the
@@ -1264,10 +1276,7 @@ def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: s
     conflicted = False
     try:
         ws.git(
-            "-c",
-            "user.name=autoresearch",
-            "-c",
-            "user.email=autoresearch@localhost",
+            *git_identity(bot_login),
             "merge",
             "--no-edit",
             base_ref,
@@ -1282,10 +1291,7 @@ def _checkout_line(ws: Workspace, workspace: Path, agent_id: str, base_branch: s
         ws.git("add", "-A")
         if ws.git("status", "--porcelain").strip():
             ws.git(
-                "-c",
-                "user.name=autoresearch",
-                "-c",
-                "user.email=autoresearch@localhost",
+                *git_identity(bot_login),
                 "commit",
                 "-q",
                 "-m",
@@ -1746,7 +1752,14 @@ def resume_run(
         # Research lines: record the tree AS OF THIS DECIDED TERMINAL — never
         # earlier, because a blocking panel verdict can still resume the
         # author (a continuation, not a terminal).
-        _push_line_snapshot(ws, _line_ref_for(bench, config.agent_id), run_id, outcome, secrets)
+        _push_line_snapshot(
+            ws,
+            _line_ref_for(bench, config.agent_id),
+            run_id,
+            outcome,
+            secrets,
+            bot_login=config.bot_login,
+        )
 
     if result.outcome == "improved":
         # Publish: branch the SEALED candidate sha, fold in the ledger, push,
@@ -1960,10 +1973,7 @@ def resume_run(
             # so push the candidate as-is rather than an empty commit.
             if staged:
                 ws.git(
-                    "-c",
-                    f"user.name={config.bot_login}",
-                    "-c",
-                    f"user.email={config.bot_login}@users.noreply.github.com",
+                    *git_identity(config.bot_login),
                     "commit",
                     "-m",
                     f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
@@ -2304,10 +2314,7 @@ def build_panel_runner(
         tree = ws.git("write-tree").strip()
         ws.git("reset")
         snapshot = ws.git(
-            "-c",
-            "user.name=panel",
-            "-c",
-            "user.email=panel@localhost",
+            *git_identity(bot_login),
             "commit-tree",
             tree,
             "-p",
@@ -2501,7 +2508,9 @@ def live_attempt(
         line_ref = ""
         if lines_active:
             try:
-                line_ref = _checkout_line(ws, workspace, config.agent_id, base_branch)
+                line_ref = _checkout_line(
+                    ws, workspace, config.agent_id, base_branch, config.bot_login
+                )
             except Exception as exc:
                 log.warning(
                     "line checkout failed (%s); running on %s",
@@ -2682,7 +2691,10 @@ def live_attempt(
 
         def snapshot() -> str:
             snap = snapshot_tree(
-                ws, pre_session_sha, exclude=LINE_MEMORY_PATHS if lines_active else ()
+                ws,
+                pre_session_sha,
+                exclude=LINE_MEMORY_PATHS if lines_active else (),
+                author=config.bot_login,
             )
             snapshots.append(snap)
             return snap.commit
@@ -2794,6 +2806,7 @@ def live_attempt(
                 run_id,
                 "attempt-error",
                 secrets,
+                bot_login=config.bot_login,
             )
         failed = RunRecord(
             **{
@@ -2851,7 +2864,7 @@ def live_attempt(
     # memory (it is excluded from measurable seals by design). The label is
     # the GATE outcome, correct at this moment; a publish failure appends a
     # publish-error snapshot at the tail.
-    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets)
+    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
 
     pr_url = ""
     outcome_name = result.outcome
@@ -2903,10 +2916,7 @@ def live_attempt(
                 raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
             if staged:
                 ws.git(
-                    "-c",
-                    f"user.name={config.bot_login}",
-                    "-c",
-                    f"user.email={config.bot_login}@users.noreply.github.com",
+                    *git_identity(config.bot_login),
                     "commit",
                     "-m",
                     f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
@@ -3030,7 +3040,7 @@ def live_attempt(
         # the publish failed after the gate credited the tree: the improved
         # snapshot above stands (the measurement was real); append the
         # publish-error marker so the notebook records how the run ended
-        _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets)
+        _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets, bot_login=config.bot_login)
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return AttemptOutcome(
         run_id=run_id,

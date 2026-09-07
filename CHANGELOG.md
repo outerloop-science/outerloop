@@ -143,6 +143,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Every kernel-made commit that reaches GitHub — line snapshots and line
+  merges, the sealed `dispatch snapshot` and `panel snapshot` commits — is
+  now authored as the bot login with its GitHub noreply address, like the
+  improvement commits; PRs no longer show a bare `autoresearch`, `dispatch`
+  or `panel` author.
 - `outerloop init --github-app` says what to do at each step: which page
   opens, which button to click, where the code appears, how to install the
   App on the repository, and that the last step checks write access. It also
