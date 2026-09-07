@@ -261,6 +261,46 @@ your own, `--no-image` keeps runs uncontained even when an image is already on d
 run containers, init says so, prints the install steps for your system, and
 continues uncontained; run `outerloop init --force` after installing it.
 
+**One machine with several GPUs.** Local mode runs one job at a time and gives it
+the whole machine; on a laptop or a Mac mini there is nothing to schedule. On an
+8-GPU workstation that leaves GPUs idle, and the answer is not a scheduler inside
+Outerloop but the one every cluster runs: Slurm on the one box. The kernel then
+runs in Slurm mode with your machine as its only node, and every feature (parallel
+launches, walltime kills, GPU allocation, the queue view) works unchanged.
+
+Ubuntu, once, as root:
+
+```bash
+sudo apt-get install -y slurm-wlm munge
+sudo slurmd -C            # prints the NodeName line with this machine's CPUs and memory
+```
+
+Then `/etc/slurm/slurm.conf` (the `NodeName` line is the one `slurmd -C` printed,
+plus `Gres=gpu:N`):
+
+```
+ClusterName=onebox
+SlurmctldHost=localhost
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core_Memory
+GresTypes=gpu
+ProctrackType=proctrack/cgroup
+TaskPlugin=task/cgroup
+NodeName=localhost CPUs=64 RealMemory=250000 Gres=gpu:8 State=UNKNOWN
+PartitionName=gpu Nodes=localhost Default=YES MaxTime=INFINITE State=UP
+```
+
+and `/etc/slurm/gres.conf`:
+
+```
+NodeName=localhost Name=gpu File=/dev/nvidia[0-7]
+```
+
+`sudo systemctl enable --now munge slurmctld slurmd`, check with `sinfo` and
+`srun --gres=gpu:1 nvidia-smi -L`, then run `outerloop init --compute slurm` with
+`--root` on a local directory; the account and partition stay blank. Apptainer on
+the same machine is installed as described below.
+
 **Installing Apptainer (Linux, one time, needs root or an admin).** Apptainer runs
 sessions and evaluations in containers. Check for it
 with `apptainer exec docker://alpine:3.20 cat /etc/alpine-release`; a version number

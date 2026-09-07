@@ -40,6 +40,9 @@ Versions follow [SemVer](https://semver.org).
   launches of runs that have ended, and stops releasing when Slurm parks a
   released launch on a per-user reason. `squeue` rows on the board carry the
   pending reason and GRES. Unset, launches queue as before.
+- `docs/install.md` explains the multi-GPU workstation: local mode stays one job at
+  a time; a box with several GPUs runs Slurm as a single node and the kernel runs
+  in Slurm mode unchanged, with the minimal configuration to do it.
 
 ### Changed
 
