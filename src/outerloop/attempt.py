@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
@@ -45,6 +46,7 @@ from outerloop.github import (
     ensure_regular_git_dir,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, redact
+from outerloop.launchlog import append_ended, append_submitted
 from outerloop.markers import has_marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
@@ -83,6 +85,9 @@ from outerloop.runstate import (
     load_record,
     save_record,
     stamp_outage,
+)
+from outerloop.runstate import (
+    run_dir as run_dir_of,
 )
 from outerloop.syscall import CHANNEL_DIR_NAMES, MAX_ARTIFACT_BYTES, SyscallRequest, channel_dir
 from outerloop.syscall import ensure_excluded as syscall_excluded
@@ -452,10 +457,34 @@ def _park_run(
                 "minutes": launch.minutes,
                 "artifacts": list(launch.artifacts),
                 **({"array": launch.array} if launch.array > 1 else {}),
+                **({"why": redact(launch.why, secrets)} if launch.why else {}),
             }
             for launch in parked.syscall.launches
         ]
         stage["syscall_note"] = redact(parked.syscall.note, secrets)
+        if parked.syscall.launches:
+            # the run's launch ledger (`history`, and the queue view's labels):
+            # ids align with launch_jobs order, as _stage_launch_job_ids reads them
+            if parked.launch_afterany:
+                launch_ids = afterany_ids(parked.launch_afterany)
+            elif parked.phase == "author-sleep":
+                launch_ids = list(job_ids)
+            else:
+                launch_ids = []
+            ledger_launches = tuple(
+                dc_replace(launch, why=redact(launch.why, secrets))
+                for launch in parked.syscall.launches
+            )
+            _best_effort(
+                "launch ledger",
+                lambda: append_submitted(
+                    run_dir_of(run_root, record.run_id),
+                    sleep=parked.sleeps_used,
+                    launches=ledger_launches,
+                    job_ids=launch_ids,
+                    at=now,
+                ),
+            )
         # (the session id the wake resumes is the record's own
         # resume_session_id, set below for every park — no stage duplicate)
         stage["launches_used"] = parked.launches_used
@@ -654,6 +683,26 @@ def _make_launcher(
     return launcher
 
 
+def _make_watcher(
+    dispatch: DispatchSettings, run_root: Path, run_id: str, workspace: Path, config: RunConfig
+) -> Callable[[], Any]:
+    """The session watcher for one run: a thread beside the harness that
+    answers `queue` and `history` from the channel (docs/design/session-watcher.md).
+    Shared by the first pass and every wake leg."""
+    from outerloop.watcher import SessionWatcher, WatcherContext
+
+    ctx = WatcherContext(
+        workspace=workspace,
+        run_root=run_root,
+        run_id=run_id,
+        target=config.target,
+        agent_id=config.agent_id,
+        compute=dispatch.compute,
+        gpu_partition=dispatch.gpu_partition,
+    )
+    return lambda: SessionWatcher(ctx)
+
+
 def _make_admission(dispatch: DispatchSettings, gpus: int = 0) -> Callable[[SyscallRequest], str]:
     """The admission check for this benchmark's launches: only GPU launches on a
     cluster queue are ever refused (admission.queue_saturated)."""
@@ -780,6 +829,7 @@ def _wake_author_sleep(
             minutes=int(item.get("minutes") or 1),
             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
             array=int(item.get("array") or 1),
+            why=str(item.get("why") or ""),
         )
         for item in _stage_launches(record)
     )
@@ -795,6 +845,10 @@ def _wake_author_sleep(
         results = annotate_launch_states(results, _stage_launch_job_ids(record), status_of)
     launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
+    _best_effort(
+        "launch ledger",
+        lambda: append_ended(run_dir, sleep=sleeps_used, results=results, at=time.time()),
+    )
     gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches)
     wake_text = render_wake(
         results,
@@ -878,6 +932,7 @@ def _wake_author_sleep(
             improve_prompt=wake_text,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
             admission=_make_admission(dispatch, gpus=bench.gpus),
+            watcher=_make_watcher(dispatch, run_root, run_id, workspace, config),
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             judged=judged or _stage_judged(record),
             launches_used=launches_used,
@@ -953,6 +1008,7 @@ def _stage_syscall_launches(record: RunRecord) -> tuple:
             minutes=int(item.get("minutes") or 1),
             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
             array=int(item.get("array") or 1),
+            why=str(item.get("why") or ""),
         )
         for item in _stage_launches(record)
     )
@@ -2730,6 +2786,11 @@ def live_attempt(
                 line_divergence=line_divergence,
                 launcher=launcher,
                 admission=admission,
+                watcher=(
+                    _make_watcher(dispatch, run_root, run_id, workspace, config)
+                    if dispatch is not None
+                    else None
+                ),
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )
         except RunParked as p:
@@ -3123,7 +3184,6 @@ def arm_sigterm_containment() -> None:
 def main() -> int:
     import argparse
     import os
-    import time
     from datetime import UTC, datetime
 
     arm_sigterm_containment()

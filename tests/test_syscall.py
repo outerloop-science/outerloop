@@ -1020,3 +1020,76 @@ def test_sync_refuses_a_symlinked_channel(tmp_path) -> None:
     with contextlib.suppress(OSError):
         mark_synced(ws, 1.0)  # refused
     assert not (outside / "sync-done").exists()  # nothing written outside
+
+
+def test_read_request_carries_a_one_line_why(tmp_path: Path) -> None:
+    from outerloop.syscall import MAX_WHY_CHARS, SYSCALL_FILE, SyscallError
+
+    channel = tmp_path / ".outerloop"
+    channel.mkdir()
+    (channel / SYSCALL_FILE).write_text(
+        json.dumps(
+            {
+                "type": "sleep",
+                "launches": [{"name": "a", "command": "x", "why": "  two  lines\nhere  "}],
+            }
+        )
+    )
+    req = read_request(tmp_path)
+    assert req is not None and req.launches[0].why == "two lines here"
+    (channel / SYSCALL_FILE).write_text(
+        json.dumps(
+            {
+                "type": "sleep",
+                "launches": [{"name": "a", "command": "x", "why": "w" * (MAX_WHY_CHARS + 1)}],
+            }
+        )
+    )
+    with pytest.raises(SyscallError, match="why"):
+        read_request(tmp_path)
+    (channel / SYSCALL_FILE).write_text(
+        json.dumps({"type": "sleep", "launches": [{"name": "a", "command": "x", "why": 3}]})
+    )
+    with pytest.raises(SyscallError, match="why"):
+        read_request(tmp_path)
+
+
+def test_render_wake_echoes_the_launch_why() -> None:
+    from outerloop.syscall import LaunchResult, render_wake
+
+    r = LaunchResult(
+        name="a",
+        exit_code=0,
+        stdout_tail="ok",
+        stderr_tail="",
+        delivered=(),
+        skipped=(),
+        why="probe lr",
+    )
+    text = render_wake((r,), "", launches_used=1, launch_budget=4, sleeps_used=1, sleep_budget=4)
+    assert "launch `a` (probe lr) — exit code" in text
+
+
+def test_channel_markers_generalize_to_any_verb(tmp_path: Path) -> None:
+    """The watcher's verbs ride the sync marker protocol: a request newer than
+    the done marker is pending; the answer is written with a marker's care."""
+    from outerloop.syscall import mark_done, marker_requested, write_channel_json
+
+    channel = tmp_path / ".outerloop"
+    channel.mkdir()
+    assert marker_requested(tmp_path, "queue-request", "queue-done") is None
+    (channel / "queue-request").touch()
+    at = marker_requested(tmp_path, "queue-request", "queue-done")
+    assert at is not None
+    write_channel_json(tmp_path, "queue.json", {"jobs": [1]})
+    mark_done(tmp_path, "queue-done", at)
+    assert json.loads((channel / "queue.json").read_text()) == {"jobs": [1]}
+    assert marker_requested(tmp_path, "queue-request", "queue-done") is None  # acknowledged
+    # a planted symlink in the answer's place is never written through
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (channel / "queue.json").unlink()
+    (channel / "queue.json").symlink_to(victim)
+    write_channel_json(tmp_path, "queue.json", {"jobs": []})
+    assert victim.read_text() == "keep"
+    assert json.loads((channel / "queue.json").read_text()) == {"jobs": []}

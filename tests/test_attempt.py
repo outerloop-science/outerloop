@@ -56,6 +56,47 @@ def _session(sid: str = "s1") -> SessionResult:
     )
 
 
+def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
+    """An author-sleep park writes one ledger record per launch with the job ids
+    it fanned out to (positional over the array), and the why rides the stage."""
+    from outerloop.launchlog import history, why_by_job
+    from outerloop.syscall import Launch, SyscallRequest
+
+    record = RunRecord(
+        run_id="tsp-7", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+    )
+    req = SyscallRequest(
+        launches=(
+            Launch(name="a", command="x", minutes=5, why="probe a"),
+            Launch(name="sw", command="y", minutes=5, array=2),
+        ),
+        note="",
+        submit=False,
+    )
+    parked = RunParked(
+        phase="author-sleep",
+        afterany="afterany:201:202:203",
+        base_sha="b" * 40,
+        seed=1,
+        suite_seed=0,
+        candidate_sha="c" * 40,
+        session=_session("s1"),
+        syscall=req,
+        launches_used=2,
+        sleeps_used=1,
+    )
+    _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
+    ledger_dir = tmp_path / "runs" / "tsp-7"
+    entries = history(ledger_dir)
+    assert [(e["name"], e["job_ids"]) for e in entries] == [("a", ["201"]), ("sw", ["202", "203"])]
+    assert entries[0]["why"] == "probe a" and entries[0]["sleep"] == 1 and entries[0]["jobs"] == []
+    assert why_by_job(ledger_dir)["203"] == {"name": "sw", "why": "", "sleep": 1}
+    assert load_record(tmp_path, "tsp-7").stage["syscall_launches"] == [
+        {"name": "a", "minutes": 5, "artifacts": [], "why": "probe a"},
+        {"name": "sw", "minutes": 5, "artifacts": [], "array": 2},
+    ]
+
+
 def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> None:
     record = RunRecord(
         run_id="tsp-1", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"

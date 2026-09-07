@@ -136,7 +136,17 @@ class JobSpec:
 
 # `reason` and `gres` feed launch admission (admission.queue_saturated: why a job
 # waits, whether it holds GPUs); the board reads the first six by key
-QUEUE_FIELDS = ("id", "name", "state", "elapsed", "partition", "submitted", "reason", "gres")
+QUEUE_FIELDS = (
+    "id",
+    "name",
+    "state",
+    "elapsed",
+    "partition",
+    "submitted",
+    "reason",
+    "gres",
+    "limit",
+)
 
 
 class Compute(Protocol):
@@ -149,6 +159,7 @@ class Compute(Protocol):
     def job_partition(self, job_id: str) -> str: ...
     def active_job_names(self) -> list[str]: ...
     def queue_snapshot(self) -> list[dict[str, str]]: ...
+    def lane_load(self, partition: str) -> dict[str, int]: ...
     def job_id_for_name(self, name: str) -> str: ...
     def cancel(self, job_id: str) -> None: ...
 
@@ -270,7 +281,7 @@ class SlurmCompute:
         on failure, like active_job_names."""
         try:
             result = self.runner(
-                ["squeue", "--me", "--noheader", "-o", "%i|%j|%T|%M|%P|%V|%r|%b"],
+                ["squeue", "--me", "--noheader", "-o", "%i|%j|%T|%M|%P|%V|%r|%b|%l"],
                 self.command_timeout_s,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -283,6 +294,30 @@ class SlurmCompute:
             if len(parts) == len(QUEUE_FIELDS) and parts[0]:
                 rows.append(dict(zip(QUEUE_FIELDS, parts, strict=True)))
         return rows
+
+    def lane_load(self, partition: str) -> dict[str, int]:
+        """Node counts by state on a lane (a partition or a comma-separated
+        list), from sinfo: {"idle": 3, "mixed": 20, "allocated": 11}. Context
+        for the queue view, nothing a caller acts on. Empty when no lane is
+        named; raises SlurmQueryError on a failed query."""
+        if not partition:
+            return {}
+        try:
+            result = self.runner(
+                ["sinfo", "--noheader", "-p", partition, "-o", "%T %D"], self.command_timeout_s
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SlurmQueryError(f"sinfo did not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SlurmQueryError(f"sinfo failed ({result.returncode}): {result.stderr.strip()}")
+        load: dict[str, int] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                continue
+            state = parts[0].rstrip("*~#!%$@^-")  # sinfo's state flags (draining, no-respond...)
+            load[state] = load.get(state, 0) + int(parts[1])
+        return load
 
     def job_id_for_name(self, name: str) -> str:
         """The id of this user's PENDING/RUNNING job with exactly `name`, or
@@ -477,6 +512,9 @@ class LocalCompute:
 
     def queue_snapshot(self) -> list[dict[str, str]]:
         return []
+
+    def lane_load(self, partition: str) -> dict[str, int]:
+        return {}  # no lanes in the monolith
 
     def job_id_for_name(self, name: str) -> str:
         return ""

@@ -392,9 +392,12 @@ def render(brief: SessionBrief) -> str:
             "inside your own session time — it costs no budget:",
             "",
             f"    python {_CHANNEL}/syscall launch --name <handle> "
-            "--minutes <N> [--array <K>] --artifact <repo-relative file> -- <command>",
+            '--minutes <N> [--array <K>] [--why "one line"] '
+            "--artifact <repo-relative file> -- <command>",
             f"    python {_CHANNEL}/syscall submit [--minutes <N>]",
             f"    python {_CHANNEL}/syscall siblings",
+            f"    python {_CHANNEL}/syscall queue",
+            f"    python {_CHANNEL}/syscall history",
             f"    python {_CHANNEL}/syscall sync",
             f"    python {_CHANNEL}/syscall sleep",
             "",
@@ -418,7 +421,10 @@ def render(brief: SessionBrief) -> str:
                 if brief.gpu_hour_budget > 0
                 else []
             ),
-            "`status` shows staged launches and remaining budget; `note ...` "
+            "`status` shows staged launches and remaining budget; `queue` shows "
+            "the kernel's jobs in the cluster queue right now — every agent's, "
+            "each launch with its `--why` — and `history` this run's launches and "
+            "how each ended, both within seconds while you work; `note ...` "
             "leaves a reminder echoed back to you on wake. `--artifact` must "
             "name a file your command actually writes, anywhere under the repo "
             f"tree — the `{_CHANNEL}/` channel does not exist in the job, so "

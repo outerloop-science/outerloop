@@ -87,6 +87,8 @@ MAX_LAUNCH_ARRAY = 16
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS_PER_LAUNCH = 8
 MAX_NOTE_CHARS = 2_000
+# a launch's one-line reason, shown to every agent in the queue view
+MAX_WHY_CHARS = 200
 # Per-job walltime ask, clamped to the same ceiling as dispatched evals.
 MAX_LAUNCH_MINUTES = 240
 # a submit's declared eval walltime: bounded only by the GPU-hour budget the
@@ -127,6 +129,8 @@ class Launch:
     # a sweep: N jobs of this command, each told its index through SWEEP_INDEX;
     # one launch against depth_k, N times the walltime against GPU-hours
     array: int = 1
+    # the author's one-line reason; the queue view shows it to every agent
+    why: str = ""
 
 
 @dataclass(frozen=True)
@@ -162,6 +166,7 @@ class LaunchResult:
     # code (an untrappable SIGKILL — OOM, walltime kill, node failure — writes
     # none). "" when known from the exit code, unavailable, or unqueried.
     slurm_state: str = ""
+    why: str = ""  # the launch's reason, echoed with its result
 
 
 def launch_jobs(launch: Launch) -> tuple[tuple[str, dict[str, str]], ...]:
@@ -244,7 +249,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     for i, item in enumerate(raw_launches):
         if not isinstance(item, dict):
             raise SyscallError(f"launch #{i} must be an object")
-        bad = set(item) - {"name", "command", "minutes", "artifacts", "array"}
+        bad = set(item) - {"name", "command", "minutes", "artifacts", "array", "why"}
         if bad:
             raise SyscallError(f"launch #{i}: unknown keys {sorted(bad)}")
         name = item.get("name")
@@ -266,6 +271,12 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if not isinstance(array, int) or isinstance(array, bool) or array < 1:
             raise SyscallError(f"launch {name}: array must be a positive integer")
         array = min(array, MAX_LAUNCH_ARRAY)
+        why = item.get("why", "")
+        if not isinstance(why, str) or len(why) > MAX_WHY_CHARS:
+            raise SyscallError(
+                f"launch {name}: why must be a string of at most {MAX_WHY_CHARS} chars"
+            )
+        why = " ".join(why.split())  # one line: it is rendered inline where other agents read
         arts = item.get("artifacts", [])
         if not isinstance(arts, list) or len(arts) > MAX_ARTIFACTS_PER_LAUNCH:
             raise SyscallError(
@@ -278,7 +289,14 @@ def read_request(workspace: Path) -> SyscallRequest | None:
                     f"launch {name}: artifact {a!r} must be a repo-relative file path"
                 )
         launches.append(
-            Launch(name=name, command=command, minutes=minutes, artifacts=tuple(arts), array=array)
+            Launch(
+                name=name,
+                command=command,
+                minutes=minutes,
+                artifacts=tuple(arts),
+                array=array,
+                why=why,
+            )
         )
     # a sleep with no launches is legitimate: checkpoint-and-reschedule
     # (research-loop.md, "the session clock is visible") — it still burns a
@@ -647,6 +665,7 @@ def gather_results(
                     stderr_tail=stderr,
                     delivered=delivered,
                     skipped=skipped + skips,
+                    why=launch.why,
                 )
             )
     return tuple(results)
@@ -832,7 +851,8 @@ def render_wake(
     data-fenced exactly like panel findings."""
     blocks: list[str] = []
     for r in results:
-        lines = [f"launch `{r.name}` — exit code: {_exit_code_line(r)}"]
+        why = f" ({r.why})" if r.why else ""
+        lines = [f"launch `{r.name}`{why} — exit code: {_exit_code_line(r)}"]
         if r.delivered:
             lines.append("artifacts delivered: " + ", ".join(f"`{p}`" for p in r.delivered))
         if r.skipped:
@@ -918,12 +938,12 @@ def _channel_fd(workspace: Path) -> int:
     return os.open(workspace / channel_dir(workspace), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
 
-def _read_done(dirfd: int) -> float:
+def _read_done(dirfd: int, name: str = SYNC_DONE) -> float:
     """The mtime the kernel last acknowledged (stored as marker CONTENT, so
     no mtime games: hard-linking the marker cannot change another file's
     times, because the kernel never calls utime)."""
     try:
-        fd = os.open(SYNC_DONE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
     except OSError:
         return 0.0
     try:
@@ -934,10 +954,28 @@ def _read_done(dirfd: int) -> float:
         os.close(fd)
 
 
-def sync_requested(workspace: Path) -> float | None:
-    """The pending request's mtime, or None. Passed back to mark_synced so
-    the done marker acknowledges exactly the serviced request — one arriving
-    mid-fetch stays newer and re-fires. A symlinked channel or request is
+def _write_channel(dirfd: int, name: str, data: bytes) -> None:
+    """Write `data` to `name` in the channel: a fresh O_EXCL temp inode with an
+    unguessable name, then an atomic rename — all relative to the O_NOFOLLOW
+    channel fd. Never opens (and O_TRUNCs) an existing inode, so a session
+    that hard-links a victim file to the temp name gets a failure instead of a
+    truncation; never writes through a planted symlink; never utime()s."""
+    tmp = f".{name}.{os.urandom(8).hex()}"
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644, dir_fd=dirfd)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+    finally:
+        os.close(fd)
+    os.replace(tmp, name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+
+
+def marker_requested(workspace: Path, request: str, done: str) -> float | None:
+    """The pending request's mtime, or None. Passed back to `mark_done` so the
+    done marker acknowledges exactly the serviced request — one arriving
+    mid-service stays newer and re-fires. A symlinked channel or request is
     refused (returns None), never followed."""
     try:
         dirfd = _channel_fd(workspace)
@@ -945,34 +983,39 @@ def sync_requested(workspace: Path) -> float | None:
         return None
     try:
         try:
-            st = os.stat(SYNC_REQUEST, dir_fd=dirfd, follow_symlinks=False)
+            st = os.stat(request, dir_fd=dirfd, follow_symlinks=False)
         except OSError:
             return None
         req_m = st.st_mtime
-        return req_m if req_m > _read_done(dirfd) else None
+        return req_m if req_m > _read_done(dirfd, done) else None
     finally:
         os.close(dirfd)
+
+
+def mark_done(workspace: Path, done: str, at: float) -> None:
+    """Record the serviced request's mtime as the done marker's CONTENT."""
+    dirfd = _channel_fd(workspace)
+    try:
+        _write_channel(dirfd, done, f"{at!r}".encode())
+    finally:
+        os.close(dirfd)
+
+
+def write_channel_json(workspace: Path, name: str, payload: object) -> None:
+    """A kernel answer the session reads (`queue.json`, `history.json`),
+    written with a marker's care: the session may have replaced anything in
+    the channel while the kernel was not looking."""
+    dirfd = _channel_fd(workspace)
+    try:
+        _write_channel(dirfd, name, json.dumps(payload).encode())
+    finally:
+        os.close(dirfd)
+
+
+def sync_requested(workspace: Path) -> float | None:
+    """The pending sync request's mtime, or None (see `marker_requested`)."""
+    return marker_requested(workspace, SYNC_REQUEST, SYNC_DONE)
 
 
 def mark_synced(workspace: Path, at: float) -> None:
-    """Record the serviced request's mtime as the done marker's CONTENT,
-    written to a fresh temp inode and renamed into place — all relative to a
-    O_NOFOLLOW channel fd. No utime (so a hard-linked marker cannot touch
-    another file), no write through a planted symlink (O_NOFOLLOW create),
-    no parent-symlink escape (the channel fd was opened O_NOFOLLOW), and the
-    rename is atomic."""
-    dirfd = _channel_fd(workspace)
-    try:
-        # O_EXCL + an unguessable name: never open (and O_TRUNC) an existing
-        # inode. A session that hard-links a victim file to the temp name
-        # would otherwise have it truncated — O_EXCL fails on any pre-existing
-        # name instead, and O_NOFOLLOW refuses a symlink.
-        tmp = f".{SYNC_DONE}.{os.urandom(8).hex()}"
-        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644, dir_fd=dirfd)
-        try:
-            os.write(fd, f"{at!r}".encode())
-        finally:
-            os.close(fd)
-        os.replace(tmp, SYNC_DONE, src_dir_fd=dirfd, dst_dir_fd=dirfd)
-    finally:
-        os.close(dirfd)
+    mark_done(workspace, SYNC_DONE, at)

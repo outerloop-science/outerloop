@@ -13,6 +13,7 @@ threshold-clearing delta opens a PR.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -23,7 +24,7 @@ from dataclasses import replace as dc_replace
 from fractions import Fraction
 from pathlib import Path
 from secrets import randbits
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from outerloop.measure import Measure
@@ -1157,6 +1158,9 @@ def attempt_once(
     # launch admission (admission.queue_saturated): a reason to refuse the
     # request's launches now, or ""; None = no admission (tests, CPU benchmarks)
     admission: Callable[[SyscallRequest], str] | None = None,
+    # the session watcher: a context manager around each harness run (None =
+    # no watcher in this deployment); docs/design/session-watcher.md
+    watcher: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
     launches_used: int = 0,
     sleeps_used: int = 0,
     gpu_hours_used: float = 0.0,
@@ -1250,6 +1254,9 @@ def attempt_once(
             "resume — omit them"
         )
 
+    def _watched() -> contextlib.AbstractContextManager[Any]:
+        return watcher() if watcher is not None else contextlib.nullcontext()
+
     # deferred like measure_and_decide's import (measure -> dispatch ->
     # orchestrator for the eval primitives).
     from outerloop.measure import MeasurementPending
@@ -1277,9 +1284,10 @@ def attempt_once(
         # a cumulative depth pass (research-loop-buildout.md, Phase 2a): resume the
         # prior session with the improve prompt instead of a fresh brief, so the
         # author builds on — and sees the measured result of — its own last pass.
-        role_result = run_role(
-            spec, harness, improve_prompt, workspace, resume_session_id=resume_session_id
-        )
+        with _watched():
+            role_result = run_role(
+                spec, harness, improve_prompt, workspace, resume_session_id=resume_session_id
+            )
     else:
         task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
         brief = build_brief(
@@ -1308,7 +1316,8 @@ def attempt_once(
             ),
             created=created,
         )
-        role_result = run_role(spec, harness, render(brief), workspace)
+        with _watched():
+            role_result = run_role(spec, harness, render(brief), workspace)
     session = role_result.session
     if not role_result.ok:
         # the role-runner's verdict, not just the raw session flag (for a
@@ -1366,9 +1375,10 @@ def attempt_once(
         """Resume the author session with `prompt`: None on success (session
         advanced), else the terminal AttemptResult for the failed resume."""
         nonlocal session
-        wake_result = run_role(
-            spec, harness, prompt, workspace, resume_session_id=session.session_id
-        )
+        with _watched():
+            wake_result = run_role(
+                spec, harness, prompt, workspace, resume_session_id=session.session_id
+            )
         session = wake_result.session
         if wake_result.ok:
             return None
