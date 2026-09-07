@@ -1923,6 +1923,7 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
         "OUTERLOOP_IMAGE": str(image),
         "OUTERLOOP_HOME": str(tmp_path),
         "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_BOT_LOGIN": "agentic-learning-bot",
         "OUTERLOOP_PANEL": "verify",
         "OUTERLOOP_PANEL_KEY_FILE": "/keys/verifier",
     }
@@ -3451,6 +3452,7 @@ def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path:
         "OUTERLOOP_IMAGE": str(image),
         "OUTERLOOP_HOME": str(tmp_path),
         "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_BOT_LOGIN": "agentic-learning-bot",
     }
     import outerloop.tick as tick_mod
 
@@ -4360,6 +4362,7 @@ def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path
         "OUTERLOOP_IMAGE": str(tmp_path / "missing.sif"),
         "OUTERLOOP_HOME": str(tmp_path),
         "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_BOT_LOGIN": "agentic-learning-bot",
         "OUTERLOOP_ACCOUNT": "a",
         "OUTERLOOP_PARTITION": "p",
     }
@@ -4569,3 +4572,28 @@ def test_launcher_submits_gpu_launches_held_under_admission(
     monkeypatch.delenv("OUTERLOOP_MAX_LAUNCH_GPUS")
     attempt_mod._make_launcher(settings, tmp_path, tmp_path, "run1", gpus=8)("sha", request)
     assert seen[-1].hold is False  # admission off: queue as submitted
+
+
+def test_followup_spec_needs_the_bot_login(monkeypatch: Any, tmp_path: Path) -> None:
+    """#298: no built-in identity. Without OUTERLOOP_BOT_LOGIN the tick does not
+    service the target and names the setting; with it, the spec carries it."""
+    from outerloop.tick import _followup_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_IMAGE": str(image),
+        "OUTERLOOP_HOME": str(tmp_path),
+        "OUTERLOOP_TARGET": "org/repo",
+    }
+    import outerloop.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is None
+    env["OUTERLOOP_BOT_LOGIN"] = "someone[bot]"
+    _github, spec = _followup_spec_from_env(tmp_path)
+    assert spec is not None and spec.bot_login == "someone[bot]"

@@ -1986,7 +1986,11 @@ def main() -> int:
     # the tick passes the effective limit explicitly; this fallback follows
     # the harness ceiling so a bare CLI run is never silently starved
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
-    parser.add_argument("--bot-login", default=bot_login_from_env())
+    parser.add_argument(
+        "--bot-login",
+        default=bot_login_from_env(),
+        help="the login the kernel posts as (OUTERLOOP_BOT_LOGIN); required",
+    )
     parser.add_argument(
         "--job-minutes",
         type=int,
@@ -2025,6 +2029,8 @@ def main() -> int:
         "the read is skipped and said so; the author's budget is never the panel's)",
     )
     args = parser.parse_args()
+    if not args.bot_login.strip():
+        parser.error("--bot-login / OUTERLOOP_BOT_LOGIN is required (no default identity, #298)")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")

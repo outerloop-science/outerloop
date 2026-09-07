@@ -37,15 +37,16 @@ from typing import Any, Protocol
 from outerloop.contract import CONTRACT_NAMES, find_contract
 from outerloop.markers import legacy_marker, marker
 
-DEFAULT_BOT_LOGIN = "agentic-learning-bot"
 
-
-def bot_login_from_env(default: str = DEFAULT_BOT_LOGIN) -> str:
+def bot_login_from_env(default: str = "") -> str:
     """The login the kernel posts and pushes as — the bot ACCOUNT under a PAT,
     the App's `<slug>[bot]` under App auth (docs/design/github-app-auth.md).
     `OUTERLOOP_BOT_LOGIN` sets it for every role at once (the tick exports
     it, jobs inherit it); every own-comment filter, alarm-issue lookup and
-    intake-claim scan keys on this string, so it must follow the credential."""
+    intake-claim scan keys on this string, so it must follow the credential.
+    There is no built-in default (#298): a wrong identity hides the kernel's
+    own PRs from it, so an unset login fails closed — the tick refuses to
+    service a target without one, and `init` records it on both auth paths."""
     return os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip() or default
 
 

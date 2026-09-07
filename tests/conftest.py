@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 TIERS = ("slow", "llm", "slurm")
@@ -48,3 +50,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if dropped:
         config.hook.pytest_deselected(items=dropped)
         items[:] = kept
+
+
+@pytest.fixture(autouse=True)
+def _configured_bot_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The kernel has no built-in identity (#298); a deployment always sets
+    OUTERLOOP_BOT_LOGIN (init records it). Tests run as such a deployment unless
+    they unset it themselves to exercise the fail-closed paths."""
+    if "OUTERLOOP_BOT_LOGIN" not in os.environ:
+        monkeypatch.setenv("OUTERLOOP_BOT_LOGIN", "agentic-learning-bot")
