@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.cli import ENV_FILE
+from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
 CONFIG_DIR = ENV_FILE.parent
@@ -48,6 +49,8 @@ class InitAnswers:
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
     author_key_file: str = ""  # the author's model key file, when known
+    image: str = ""  # the agent image (OUTERLOOP_IMAGE)
+    uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
 
 
 def render_env(
@@ -64,6 +67,12 @@ def render_env(
             lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"OUTERLOOP_PARTITION={a.partition}")
+    if a.image:
+        lines.append(f"OUTERLOOP_IMAGE={a.image}")
+    elif a.uncontained:
+        # the empty value is the off-switch: without it the tick would still
+        # pick up an image already at the default path
+        lines.append("OUTERLOOP_IMAGE=")
     lines.append(f"OUTERLOOP_TARGET={a.target}")
     if app_file:
         lines.append(f"OUTERLOOP_GITHUB_APP_FILE={app_file}")
@@ -242,6 +251,10 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
     )
+    # An explicit --image is recorded here (absolute: jobs read it from their
+    # own directory); the published one is fetched in main, after every check
+    # that could still end the run.
+    image = str(Path(args.image).expanduser().absolute()) if args.image else ""
     answers = InitAnswers(
         compute=compute,
         target=target,
@@ -250,6 +263,8 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         partition=partition,
         author_backend=backend,
         author_model=model,
+        image=image,
+        uncontained=bool(args.no_image) and not image,
     )
     return answers, (args.pat_file or "")
 
@@ -375,6 +390,18 @@ def main(argv: list[str] | None = None) -> int:
         help=f"climbing author's backend ({' or '.join(AUTHOR_BACKENDS)}; default claude)",
     )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
+    image_flags = parser.add_mutually_exclusive_group()  # one or the other, never both
+    image_flags.add_argument(
+        "--image",
+        help="path to an Apptainer image to run sessions and evals in (default: the "
+        "published one, downloaded on Linux when apptainer is installed)",
+    )
+    image_flags.add_argument(
+        "--no-image",
+        dest="no_image",
+        action="store_true",
+        help="no image at all: runs stay uncontained even if one is already on disk",
+    )
     parser.add_argument(
         "--author-key-file",
         dest="author_key_file",
@@ -402,6 +429,10 @@ def main(argv: list[str] | None = None) -> int:
             f"outerloop init: author backend must be one of {', '.join(AUTHOR_BACKENDS)}",
             file=sys.stderr,
         )
+        return 2
+    if answers.image and not Path(answers.image).is_file():
+        # a typo here would surface as an uncontained loop later
+        print(f"outerloop init: --image {answers.image} is not a file", file=sys.stderr)
         return 2
 
     # Never clobber a working setup silently: a re-run of init on a configured
@@ -441,6 +472,13 @@ def main(argv: list[str] | None = None) -> int:
             key_path = write_author_key(answers.author_backend, pasted, config_dir=CONFIG_DIR)
             answers.author_key_file = str(key_path)
             print(f"wrote {key_path} (0600)")
+
+    # The image, only now: every check that could still end the run has passed
+    # and the overwrite question is answered, so a download is never wasted.
+    # An existing image is used, else the published one is fetched on a machine
+    # that can run it (asked first when interactive); --no-image opts out.
+    if not answers.image and not args.no_image:
+        answers.image = ensure_image(interactive=interactive)
 
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.

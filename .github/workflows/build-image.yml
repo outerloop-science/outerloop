@@ -1,0 +1,47 @@
+name: build-image
+
+# Builds the agent image from containers/agent-py312.def and publishes it to the
+# Hugging Face repo outerloop-science/agent-image. Runs on every change to the
+# recipe on main, and by hand; a pull request that touches the recipe builds
+# without publishing. Needs the HF_TOKEN secret (write access to the org).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "containers/**"
+      - ".github/workflows/build-image.yml"
+  pull_request:
+    paths:
+      - "containers/**"
+      - ".github/workflows/build-image.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: eWaterCycle/setup-apptainer@v2
+      - name: Build
+        run: sudo -E apptainer build --force agent-py312.sif containers/agent-py312.def
+      - name: Describe
+        run: |
+          apptainer inspect --labels agent-py312.sif
+          apptainer exec agent-py312.sif sh -c 'python3 --version; uv --version; git --version'
+          ls -l agent-py312.sif
+          sha256sum agent-py312.sif | tee agent-py312.sif.sha256
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then echo "HF_TOKEN secret not set; built but not published"; exit 0; fi
+          python3 -m pip install -q "huggingface_hub[cli]"
+          hf upload outerloop-science/agent-image agent-py312.sif agent-py312.sif \
+            --commit-message "agent-py312.sif built from ${{ github.sha }}"
+          hf upload outerloop-science/agent-image agent-py312.sif.sha256 agent-py312.sif.sha256 \
+            --commit-message "checksum for ${{ github.sha }}"

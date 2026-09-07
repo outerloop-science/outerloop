@@ -21,6 +21,12 @@ Versions follow [SemVer](https://semver.org).
   before the rename. The focused `--github-app` run still asks nothing about
   the author. Every secret `init` writes (keys, PAT, App PEM and JSON, `.env`)
   is now created 0600 in one step rather than written and then tightened.
+- The agent image is published: `containers/agent-py312.def` is its recipe
+  (Ubuntu 24.04, Python 3.12, uv, git, build tools), the `build-image` workflow
+  builds and uploads it with a checksum to huggingface.co/outerloop-science/
+  agent-image on every recipe change, and `outerloop init` downloads it on
+  Linux when Apptainer is installed, so local mode runs contained by default
+  (`--image` names your own, `--no-image` opts out).
 
 ### Changed
 

@@ -245,8 +245,13 @@ environment, both on your machine with your keys, and the loop says so once
 at start. The verification panel is off in this mode unless you set
 `OUTERLOOP_PANEL_UNCONTAINED=1`, because an uncontained judge holds a shell
 next to its own key file; a pull request opened without a panel says so. A
-Codex author needs the image in every mode. Contained local mode, the
-default on Linux once the image is published, needs Apptainer and the image.
+Codex author needs the image in every mode. Contained local mode needs
+Apptainer and the image: the published one lives at
+[huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image),
+built from `containers/agent-py312.def`. On Linux with Apptainer installed,
+`outerloop init` downloads it to `~/outerloop-images/` and records it; `--image`
+points at your own, `--no-image` keeps runs uncontained even when an image is already on disk (it
+writes `OUTERLOOP_IMAGE=`, the off-switch).
 
 ---
 

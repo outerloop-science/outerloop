@@ -7,6 +7,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from outerloop import init
 from outerloop.init import (
     InitAnswers,
@@ -133,6 +135,84 @@ def test_main_yes_writes_config(tmp_path: Path, monkeypatch, capsys) -> None:
     assert "OUTERLOOP_TARGET=o/r" in env
     assert "OUTERLOOP_PARTITION=cpu,gpu" in env  # comma-list survives the wizard
     assert "OUTERLOOP_PAT_FILE=/some/pat" in env
+
+
+@pytest.fixture(autouse=True)
+def _no_image_download(monkeypatch):
+    """init never reaches the network in tests: no image is found or fetched."""
+    monkeypatch.setattr(init, "ensure_image", lambda **kw: "")
+
+
+def test_the_image_reaches_the_tick() -> None:
+    """start exports OUTERLOOP_IMAGE from .env to the loop, and the chain's deploy
+    allowlist carries it every tick (a parity test keeps the two lists equal)."""
+    from outerloop.cli import TICK_ENV_KEYS
+
+    assert "OUTERLOOP_IMAGE" in TICK_ENV_KEYS
+
+
+def test_render_env_records_the_image_when_set() -> None:
+    a = InitAnswers(compute="local", target="o/r", image="/img/agent-py312.sif")
+    assert "OUTERLOOP_IMAGE=/img/agent-py312.sif" in render_env(a, "/p")
+    assert "OUTERLOOP_IMAGE" not in render_env(InitAnswers(compute="local", target="o/r"), "/p")
+    # --no-image writes the off-switch, so an image already on disk is not picked up
+    off = InitAnswers(compute="local", target="o/r", uncontained=True)
+    assert "\nOUTERLOOP_IMAGE=\n" in render_env(off, "/p")
+
+
+def test_main_yes_records_a_given_image_and_no_image_skips(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    calls: list[dict] = []
+
+    def record(**kw: Any) -> str:
+        calls.append(kw)
+        return ""
+
+    monkeypatch.setattr(init, "ensure_image", record)
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/some/pat"]
+    sif = tmp_path / "x.sif"
+    sif.write_text("")
+    assert init.main([*base, "--image", str(sif)]) == 0
+    assert f"OUTERLOOP_IMAGE={sif}" in (tmp_path / ".env").read_text()
+    assert calls == []  # an explicit image is never re-fetched
+    assert init.main([*base, "--no-image", "--force"]) == 0
+    assert "\nOUTERLOOP_IMAGE=\n" in (tmp_path / ".env").read_text()  # the off-switch
+    assert calls == []
+    assert init.main([*base, "--force"]) == 0
+    assert calls and calls[0]["interactive"] is False  # the default asks the image module
+
+
+def test_main_checks_the_image_path_and_downloads_only_when_setup_proceeds(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A mistyped --image fails init instead of surfacing as an uncontained loop
+    later; the published image is fetched only after every check passed and
+    the existing-config question is settled (terra, #305)."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    calls: list[dict] = []
+
+    def record(**kw: Any) -> str:
+        calls.append(kw)
+        return ""
+
+    monkeypatch.setattr(init, "ensure_image", record)
+    base = ["--yes", "--compute", "local", "--pat-file", "/some/pat"]
+    assert init.main([*base, "--target", "o/r", "--image", str(tmp_path / "missing.sif")]) == 2
+    assert "is not a file" in capsys.readouterr().err
+    assert calls == []
+    assert init.main(base) == 2  # no target: rejected before any download
+    assert calls == []
+    (tmp_path / ".env").write_text("OUTERLOOP_COMPUTE=local\n")
+    assert init.main([*base, "--target", "o/r"]) == 1  # existing config, no --force
+    assert calls == []
+    assert init.main([*base, "--target", "o/r", "--force"]) == 0
+    assert len(calls) == 1
+    # the two flags contradict each other: argparse refuses the pair
+    with pytest.raises(SystemExit):
+        init.main([*base, "--target", "o/r", "--image", "/x.sif", "--no-image"])
+    assert "not allowed with" in capsys.readouterr().err
 
 
 def test_main_yes_requires_target(tmp_path: Path, monkeypatch, capsys) -> None:
