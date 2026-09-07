@@ -43,13 +43,23 @@ def append_submitted(
 ) -> None:
     """One record per launch of a sleep, with the job ids it fanned out to. The
     ids are positional over `launch_jobs` order, exactly as the park recorded
-    them; a launch whose ids are missing (an older park) gets none."""
+    them; a launch whose ids are missing (an older park) gets none. A launch
+    already recorded under this (sleep, name) is not written again: a run
+    re-parks the same sleep through a multi-stage gate, and the first record
+    is the one with the author's words."""
+    known = {
+        (int(row.get("sleep") or 0), str(row.get("name") or ""))
+        for row in read_ledger(run_dir)
+        if row.get("event") == "submitted"
+    }
     rows: list[dict[str, Any]] = []
     k = 0
     for launch in launches:
         n = len(launch_jobs(launch))
         ids = job_ids[k : k + n]
         k += n
+        if (sleep, launch.name) in known:
+            continue
         rows.append(
             {
                 "event": "submitted",

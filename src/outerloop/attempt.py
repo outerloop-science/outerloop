@@ -1704,6 +1704,7 @@ def resume_run(
                             minutes=int(item.get("minutes") or 1),
                             artifacts=tuple(str(a) for a in item.get("artifacts", [])),
                             array=int(item.get("array") or 1),
+                            why=str(item.get("why") or ""),
                         )
                         for item in _stage_launches(record)
                     ),

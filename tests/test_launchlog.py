@@ -80,3 +80,19 @@ def test_ledger_tolerates_a_missing_file_and_a_torn_line(tmp_path: Path) -> None
         tmp_path, sleep=2, launches=(Launch(name="b", command="x", minutes=5),), job_ids=[], at=2.0
     )
     assert history(tmp_path)[-1]["job_ids"] == []
+
+
+def test_a_re_parked_sleep_keeps_its_first_records(tmp_path: Path) -> None:
+    """A submitted run re-parks the same sleep through a multi-stage gate; the
+    rebuilt request must not overwrite the record that carries the why."""
+    first = (Launch(name="a", command="x", minutes=5, why="probe a"),)
+    append_submitted(tmp_path, sleep=1, launches=first, job_ids=["1"], at=10.0)
+    rebuilt = (Launch(name="a", command="(ran)", minutes=5),)
+    append_submitted(tmp_path, sleep=1, launches=rebuilt, job_ids=["1"], at=20.0)
+    entries = history(tmp_path)
+    assert (
+        len(entries) == 1 and entries[0]["why"] == "probe a" and entries[0]["submitted_at"] == 10.0
+    )
+    # the same name in the next sleep is a new launch
+    append_submitted(tmp_path, sleep=2, launches=rebuilt, job_ids=["2"], at=30.0)
+    assert [(e["sleep"], e["why"]) for e in history(tmp_path)] == [(1, "probe a"), (2, "")]

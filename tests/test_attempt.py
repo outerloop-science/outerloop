@@ -95,6 +95,19 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
         {"name": "a", "minutes": 5, "artifacts": [], "why": "probe a"},
         {"name": "sw", "minutes": 5, "artifacts": [], "array": 2},
     ]
+    # a re-park of the same sleep (a multi-stage gate) adds no second record
+    _park_run(
+        tmp_path,
+        load_record(tmp_path, "tsp-7"),
+        parked,
+        "refs/dispatch/tok",
+        eval_minutes=None,
+        now=2000.0,
+    )
+    assert [(e["name"], e["submitted_at"]) for e in history(ledger_dir)] == [
+        ("a", 1000.0),
+        ("sw", 1000.0),
+    ]
 
 
 def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> None:
