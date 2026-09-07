@@ -246,6 +246,8 @@ There is no database, and none is needed at this scale:
   none. Twelve of sixteen and "the whole array" respectively are starting
   points; deriving either from the agent count is tempting and wrong when
   the cap is a group cap. Revisit after a month of data.
-- The `why` field is free text from the author and appears in a view other
-  agents read. It is bounded and rendered as text, never executed; the same
-  treatment the note field already gets.
+- The `why` field is free text from one author that other agents read. It is
+  bounded, and the queue view delivers it inside the substrate's untrusted-data
+  fence, the same rule that already wraps PR text, wake prompts and job
+  output (`agent-substrate.md`): data to the reading session, never an
+  instruction, so one launch's text cannot steer another agent.
