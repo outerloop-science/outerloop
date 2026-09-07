@@ -946,6 +946,9 @@ def queue_rows(root: Path, target: str, snapshot: list[dict[str, str]]) -> list[
                 "elapsed": str(job.get("elapsed", "")),
                 "partition": str(job.get("partition", "")),
                 "submitted": str(job.get("submitted", "")),
+                "reason": str(job.get("reason", "")),
+                "gres": str(job.get("gres", "")),
+                "limit": str(job.get("limit", "")),
                 "agent": agent,
                 "run_id": run_id,
             }

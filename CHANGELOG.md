@@ -8,6 +8,16 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- The session watcher (docs/design/session-watcher.md): a thread beside the
+  live author session answers two new tool verbs within seconds. `queue`
+  shows the kernel's jobs in the cluster queue, every agent's, each launch
+  with its author's `--why` (a new optional one-line field on `launch`), the
+  pending reason, elapsed and limit, and the GPU lane's node states from
+  sinfo; `history` lists this run's launches sleep by sleep and how each job
+  ended. Both ride the `sync` marker protocol; a deployment without the
+  watcher times out with a plain message. The kernel keeps a per-run
+  append-only launch ledger (`launches.jsonl`) that both views read, and the
+  wake text echoes each launch's why.
 - `climb/status.json` carries the fleet's queue: the kernel's own Slurm jobs
   (tick chain, sessions, wakes, evals, launches), each attributed to an agent,
   with state, elapsed time, partition and submit time. Jobs on the account

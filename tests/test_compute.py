@@ -155,8 +155,8 @@ def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
     from outerloop.compute import LocalCompute
 
     out = (
-        "101|eval-speedrun-2-cand-ab12|RUNNING|1:02:03|gpu|2026-09-05T20:00:00|None|gres/gpu:8\n"
-        "102|wake-run|PENDING|0:00|cpu|2026-09-05T20:01:00|Dependency|N/A\n"
+        "101|eval-speedrun-2-cand-ab12|RUNNING|1:02:03|gpu|2026-09-05T20:00:00|None|gres/gpu:8|4:00:00\n"
+        "102|wake-run|PENDING|0:00|cpu|2026-09-05T20:01:00|Dependency|N/A|30:00\n"
     )
     runner = FakeRunner([CommandResult(0, out, "")])
     rows = SlurmCompute(runner=runner).queue_snapshot()
@@ -170,6 +170,7 @@ def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
         "submitted": "2026-09-05T20:00:00",
         "reason": "None",
         "gres": "gres/gpu:8",
+        "limit": "4:00:00",
     }
     assert rows[1]["reason"] == "Dependency" and rows[1]["gres"] == "N/A"
     assert rows[1]["state"] == "PENDING" and len(rows) == 2
@@ -186,3 +187,21 @@ def test_gpus_in_gres_parses_squeue_tres() -> None:
     assert gpus_in_gres("gres:gpu:4") == 4
     assert gpus_in_gres("gres/gpu:1,gres/gpu:h100:1") == 2
     assert gpus_in_gres("N/A") == 0 and gpus_in_gres("") == 0 and gpus_in_gres("gres/gpu:x") == 0
+
+
+def test_lane_load_counts_nodes_by_state() -> None:
+    """The queue view's context line: sinfo's node states on the GPU lane,
+    state flags stripped, duplicates (a lane that is several partitions) summed."""
+    from outerloop.compute import LocalCompute
+
+    runner = FakeRunner([CommandResult(0, "idle 3\nmixed* 20\nallocated 11\nmixed 2\n", "")])
+    assert SlurmCompute(runner=runner).lane_load("h200_courant,h200_public") == {
+        "idle": 3,
+        "mixed": 22,
+        "allocated": 11,
+    }
+    assert runner.seen[0][:4] == ["sinfo", "--noheader", "-p", "h200_courant,h200_public"]
+    assert SlurmCompute(runner=FakeRunner([])).lane_load("") == {}  # no lane named: nothing asked
+    with pytest.raises(SlurmQueryError):
+        SlurmCompute(runner=FakeRunner([CommandResult(1, "", "down")])).lane_load("h200")
+    assert LocalCompute.lane_load(None, "gpu") == {}  # type: ignore[arg-type]
