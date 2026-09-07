@@ -942,6 +942,7 @@ def _wake_author_sleep(
             config.bot_login,
             _utc_date(now),
             exclude=LINE_MEMORY_PATHS if wake_line else (),
+            secrets=secrets,
         )
         if panel_lenses
         else None
@@ -1027,6 +1028,32 @@ def _stage_judged(record: RunRecord) -> tuple[str, AttemptResult] | None:
             candidate=num(j.get("candidate")),
             note=str(j.get("note") or ""),
         ),
+    )
+
+
+def _ledger_ended(
+    run_dir: Path,
+    record: RunRecord,
+    launches: tuple,
+    task_ids: list[str],
+    dispatch: DispatchSettings,
+    elapsed: list[int | None] | None,
+) -> None:
+    """Record a park's finished launches in the ledger from the run dir alone
+    (no delivery into a workspace), with the scheduler's state for jobs that
+    left no exit code."""
+    from outerloop.syscall import annotate_launch_states, read_results
+
+    results = read_results(run_dir, launches)
+    status_of = getattr(dispatch.compute, "status", None)
+    if status_of is not None:
+        results = annotate_launch_states(results, task_ids, status_of)
+    append_ended(
+        run_dir,
+        sleep=int(record.stage.get("sleeps_used", 0)),  # type: ignore[call-overload]
+        results=results,
+        at=time.time(),
+        elapsed_seconds=elapsed,
     )
 
 
@@ -1797,7 +1824,19 @@ def resume_run(
     # the park's sibling launches are done too: settle their charge before
     # any path — publish or hand back to the author — reads the budget
     if _stage_launches(record):
-        _reconcile_launch_hours(record, dispatch, bench.gpus, _stage_syscall_launches(record))
+        sibling_launches = _stage_syscall_launches(record)
+        sibling_ids = launch_task_ids(sibling_launches, _stage_launch_job_ids(record))
+        sibling_elapsed = _launch_elapsed(dispatch, sibling_ids) if sibling_ids else None
+        _reconcile_launch_hours(record, dispatch, bench.gpus, sibling_launches, sibling_elapsed)
+        # the ledger's ended records for the sibling launches, whether or not
+        # the author is woken: the PR's experiments table reads them (an
+        # author wake that follows records nothing twice)
+        _best_effort(
+            "launch ledger",
+            lambda: _ledger_ended(
+                run_dir, record, sibling_launches, sibling_ids, dispatch, sibling_elapsed
+            ),
+        )
 
     def _wake_author(
         extra_update: str, judged: tuple[str, AttemptResult] | None = None
@@ -2010,6 +2049,7 @@ def resume_run(
                         exclude=(
                             LINE_MEMORY_PATHS if _line_ref_for(bench, config.agent_id) else ()
                         ),
+                        secrets=secrets,
                     )(baseline, candidate, str(stage.get("report", "")))
                 except Exception as exc:
                     if isinstance(exc, GitError) and _is_git_tamper(exc):
@@ -2391,6 +2431,7 @@ def build_panel_runner(
     start_round: int = 0,
     exclude: tuple[str, ...] = (),
     claim_body: Callable[[float, float, str], str] | None = None,
+    secrets: tuple[str, ...] = (),
 ) -> Callable[[float, float, str], PanelVerdict]:
     """The git half of the pre-PR panel: prepare the two read-only checkouts
     and the synthetic claim, then hand off to `run_panel` (which owns no git).
@@ -2414,6 +2455,10 @@ def build_panel_runner(
     )
 
     def runner(baseline: float, candidate: float, report: str) -> PanelVerdict:
+        # the claim is author text (the report at submit, or the session's
+        # last words): redacted before any lens sees it, like the record and
+        # the PR body
+        report = redact(report, secrets)
         reads["n"] += 1
         panel_ws = run_dir / "panel"
         shutil.rmtree(panel_ws, ignore_errors=True)
@@ -2765,6 +2810,7 @@ def live_attempt(
                 config.bot_login,
                 created[:10],
                 exclude=LINE_MEMORY_PATHS if lines_active else (),
+                secrets=secrets,
             )
             if panel_lenses
             else None

@@ -1842,8 +1842,9 @@ MAX_EXPERIMENT_ROWS = 60
 
 
 def _cell(text: object, cap: int = 160) -> str:
-    """One markdown table cell: one line, pipes escaped, bounded."""
-    return " ".join(str(text).split()).replace("|", "\\|")[:cap]
+    """One markdown table cell: one line, bounded, then pipes escaped — in that
+    order, so a cut never leaves a bare backslash before the row's separator."""
+    return " ".join(str(text).split())[:cap].replace("|", "\\|")
 
 
 def _ended(row: dict[str, Any]) -> str:

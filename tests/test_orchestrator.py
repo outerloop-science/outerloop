@@ -1914,6 +1914,14 @@ def test_pr_body_leads_with_the_report_and_lists_the_experiments() -> None:
     assert report_at < experiments_at < measured_at
     assert "Written by the author at submit" in body and "A longer warmdown helps." in body
     assert '| 1 | wd | try 6400 | wd | exit 0, 1h15m | {"val": 3.28} \\| tail |' in body
+    # a pipe at the cut is escaped after the cut, so no bare backslash escapes the separator
+    cut = pr_body(
+        result,
+        CONFIG,
+        redact_secrets=(),
+        experiments=[{**rows[0], "result": "x" * 159 + "|" + "y" * 20}],
+    )
+    assert "x" * 159 + "\\| |" in cut and "x\\ |" not in cut
     assert "| 2 | lr (x4, 2 at a time) | lr sweep | lr.3 | TIMEOUT |  |" in body
     assert "| 3 | late |  | late | not back |  |" in body
     # no report: the session's last words, with the old banner; no table when nothing ran

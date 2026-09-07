@@ -692,6 +692,41 @@ def budget_error(
     return ""
 
 
+def _job_outcome(ev: Path) -> tuple[int | None, str, str, tuple[str, ...]]:
+    """What one launch job left in its dir: exit code (None = it died before
+    its wrapper ran), stdout/stderr tails, and the copy-out's skip lines."""
+    try:
+        exit_code: int | None = int((ev / "exit-code").read_text().strip())
+    except (OSError, ValueError):
+        exit_code = None
+    stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
+    stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
+    skipped = tuple(ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip())
+    return exit_code, stdout, stderr, skipped
+
+
+def read_results(run_dir: Path, launches: tuple[Launch, ...]) -> tuple[LaunchResult, ...]:
+    """Each launch job's outcome as it sits in the run dir — no delivery into
+    any workspace. For the ledger, and for a wake that publishes without
+    resuming the author (`gather_results` is the delivering form)."""
+    results: list[LaunchResult] = []
+    for launch in launches:
+        for job_name, _env in launch_jobs(launch):
+            exit_code, stdout, stderr, skipped = _job_outcome(run_dir / f"eval-launch-{job_name}")
+            results.append(
+                LaunchResult(
+                    name=job_name,
+                    exit_code=exit_code,
+                    stdout_tail=stdout,
+                    stderr_tail=stderr,
+                    delivered=(),
+                    skipped=skipped,
+                    why=launch.why,
+                )
+            )
+    return tuple(results)
+
+
 def gather_results(
     run_dir: Path, workspace: Path, launches: tuple[Launch, ...]
 ) -> tuple[LaunchResult, ...]:
@@ -714,16 +749,7 @@ def gather_results(
         # with artifacts under results/<launch>/<i>/
         for i, (job_name, _env) in enumerate(launch_jobs(launch)):
             ev = run_dir / f"eval-launch-{job_name}"
-            try:
-                exit_code: int | None = int((ev / "exit-code").read_text().strip())
-            except (OSError, ValueError):
-                exit_code = None
-            stdout = _read_tail(ev / "stdout", MAX_OUTPUT_CHARS)
-            stderr = _read_tail(ev / "stderr", MAX_OUTPUT_CHARS)
-            skipped = tuple(
-                ln for ln in _read_text(ev / "artifacts.log").splitlines() if ln.strip()
-            )
-
+            exit_code, stdout, stderr, skipped = _job_outcome(ev)
             delivered, skips = _deliver_artifacts(
                 ev / "artifacts", workspace, launch.name, index=i if launch.array > 1 else None
             )

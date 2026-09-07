@@ -163,6 +163,9 @@ def test_submit_requires_a_readable_nonempty_report(tmp_path: Path, capsys) -> N
     (tmp_path / "long.md").write_text("x" * 8_001)
     assert run(tmp_path, "submit", "--report", "long.md") == 2
     assert "at most 8000" in capsys.readouterr().err
+    (tmp_path / "huge.md").write_text("y" * 2_000_000)  # refused from its first 8 001 chars
+    assert run(tmp_path, "submit", "--report", "huge.md") == 2
+    assert "at most 8000" in capsys.readouterr().err
     assert run(tmp_path, "status") == 0
     assert "submit staged" not in capsys.readouterr().out  # nothing was staged by the failures
 

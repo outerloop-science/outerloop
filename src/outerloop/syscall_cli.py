@@ -208,16 +208,20 @@ def cmd_submit(root: Path, args: argparse.Namespace) -> str:
     if not path.is_absolute():
         path = root / path
     try:
-        report = path.read_text(encoding="utf-8", errors="replace").strip()
+        # read one char past the cap, never the whole file: the size check
+        # decides before an oversized file is in memory
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            report = fh.read(MAX_REPORT_CHARS + 1)
     except OSError as exc:
         raise ToolError(f"--report {args.report!r} could not be read ({exc})") from exc
+    if len(report) > MAX_REPORT_CHARS:
+        raise ToolError(f"--report is over the limit; at most {MAX_REPORT_CHARS} chars")
+    report = report.strip()
     if not report:
         raise ToolError(
             f"--report {args.report!r} is empty: write the hypothesis, what you ran and "
             "measured, and why this should merge"
         )
-    if len(report) > MAX_REPORT_CHARS:
-        raise ToolError(f"--report is {len(report)} chars; at most {MAX_REPORT_CHARS}")
     staged = _load_staged(root)
     staged["submit"] = True
     staged["report"] = report

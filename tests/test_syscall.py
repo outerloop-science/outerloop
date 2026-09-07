@@ -1195,3 +1195,22 @@ def test_a_submit_needs_a_report(tmp_path: Path) -> None:
     write_req(tmp_path, {"launches": [{"name": "a", "command": "x"}]})
     req = read_request(tmp_path)
     assert req is not None and req.report == ""
+
+
+def test_read_results_reads_without_delivering(tmp_path: Path) -> None:
+    from outerloop.syscall import Launch, read_results
+
+    ev = tmp_path / "eval-launch-a"
+    ev.mkdir()
+    (ev / "exit-code").write_text("0\n")
+    (ev / "stdout").write_text("hello\nresult 1\n")
+    (ev / "artifacts").mkdir()
+    (ev / "artifacts" / "out.txt").write_text("x")
+    (result,) = read_results(tmp_path, (Launch(name="a", command="x", minutes=5, why="w"),))
+    assert (result.exit_code, result.stdout_tail, result.delivered, result.why) == (
+        0,
+        "hello\nresult 1\n",
+        (),
+        "w",
+    )
+    assert not (tmp_path / ".outerloop").exists()  # nothing was delivered anywhere
