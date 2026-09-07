@@ -1,48 +1,50 @@
-# Deferred launches and the session watcher
+# The session watcher, the queue view, and the per-agent share
 
-**Status: proposal (2026-09-07).** Two changes to how an author's launches
-meet a full cluster, and one new piece of kernel machinery they share.
-`dispatcher.md` owns how launches become jobs; `research-loop.md` owns the
-sleep and wake protocol; `agent-substrate.md` set the rule that experiment
-submission is a syscall, never an agent tool. This note settles three
-questions: who waits when the queue is full, what an author can see of the
-cluster while it works, and where in the process model a fast answer comes
-from.
+**Status: proposal (2026-09-07).** How an author's launches meet a full
+cluster, what the author can see of that cluster while it works, and where a
+fast answer comes from. `dispatcher.md` owns how launches become jobs;
+`research-loop.md` owns the sleep and wake protocol; `agent-substrate.md`
+set the rule that experiment submission is a syscall, never an agent tool.
+The kernel has one compute seam and grows no scheduler of its own; this
+note keeps to that.
 
 ## Why now
 
-On 2026-09-06 four speedrun launches sat pending for a day on Torch. The
-reason was `QOSMaxGRESPerUser`, then `QOSGrpGRES`: a cap on the job QOS that
-Slurm applies to the account, shared with other users, and moved between
-two days. The partition and association QOS carry no cap at all. So the
-number is not something a submitter can read or trust, and the first fix
-(#308, a configured per-user cap with held submissions) was the wrong shape.
-#315 replaced it with a rule that needs no number, queue then stop: a
-launch queues as long as none of the account's GPU jobs is pending on a cap
-reason, and a sleep that asks for launches while one is gets a refusal.
+On 2026-09-06 four speedrun launches sat pending for a day on Torch, parked
+by a cap on the job QOS: per-user one day, a group cap shared with other
+users the next. The partition and association QOS carry no cap at all, so
+the number is not something a submitter can read or trust. Three designs
+followed. #308 held submissions under a configured cap and released them
+from the tick; it needed a number Slurm does not publish. #315 refused a
+sleep's launches while any of the account's GPU jobs was parked on a cap
+reason; it needed no number, but it made the author pay for a queue it did
+not fill, and it did nothing about the one problem that is ours: a single
+agent can occupy the whole shared cap. A deferred line inside the kernel
+was designed and reviewed, and it was a job queue: ordering, fairness,
+bumping, crash-safe two-phase submission. Slurm already has one, and a
+better one.
 
-That rule is right about the cluster and wrong about the author. A refusal
-consumes the request, wakes the session once, and leaves the author to
-sleep without launches and try again in a cadence, spending a sleep from
-its budget and a wake's worth of turns on a queue it did not fill. The
-owner's call: the kernel should wait, not the author. And an author should
-be able to see the queue it is waiting on.
+So the design walks back to submission and refusal, and puts the work where
+it belongs: Slurm queues, the kernel bounds each agent's share, and the
+author can see the queue and the limit it is being held to.
 
 ## What exists today
 
 One tick, one attempt per session leg, the author's jobs, and short wake
-jobs. They share a filesystem and nothing else.
+jobs, sharing a filesystem and nothing else.
 
 - The **tick** is a resident Slurm job on a thirty-minute cadence. It sweeps
-  run records, launches climbs, arms wakes on finished experiments, publishes
-  the board, and answers the one mid-session request that exists, `sync`.
+  run records, launches climbs, arms wakes on finished experiments,
+  publishes the board, and answers the one mid-session request that exists,
+  `sync`.
 - The **attempt** is a Slurm job per session leg. It runs the harness as a
   subprocess inside the container and blocks on it. When the session ends it
   reads what the author staged, checks budgets and scope, seals the tree,
   submits launches, and parks the run. Nothing in the attempt runs while the
   session runs.
 - **Launch and eval jobs** are the author's experiments, one Slurm job each,
-  named `<run>-launch-<name>` so the board can attribute them.
+  named `<run>-launch-<name>`; the run id carries the agent id, which is how
+  the board attributes them.
 - **Wake jobs** resume an attempt when its jobs finish, through an
   `afterany` dependency.
 
@@ -63,6 +65,52 @@ session polls on its own clock. It costs no sleep and refreshes no budget,
 which is what keeps it from becoming a free way to live forever. Its
 latency is one tick, which is why its default wait is thirty-five minutes.
 
+## Always queue
+
+Launches are submitted at sleep time, as they were before #315, and Slurm
+does the waiting. A launch parked on a cap reason accrues priority where it
+sits; #304 taught the sweep that such a park is a wait, never an
+unschedulable job; a reason that can never clear (a per-job limit, an
+invalid account, an unsatisfiable dependency) still ends in the sweep's
+cancel-and-wake, as today. The kernel keeps no line of jobs and never
+holds, defers or releases anything.
+
+Two small additions make this complete:
+
+- **Cancel on end.** When a run ends (its pull request landed, it was
+  abandoned, it was stuck) while launches of its are still pending, the
+  sweep cancels them. Nothing would read their results.
+- **#315's admission check comes out.** `queue_saturated` and the refusal
+  for cap reasons are removed; the share below replaces them.
+
+## The per-agent share
+
+All agents share one Slurm identity, so Slurm cannot tell them apart. One
+agent asking for eight launches with sixteen-way arrays submits 128 jobs and
+holds the account's cap for hours while its siblings wait behind it. That is
+the one queueing problem that is ours, and it is a wall, not a queue.
+
+- **A contract budget, `max_concurrent_gpu_jobs`:** the most GPU jobs one
+  agent may have running or pending at once. Default four, sized to divide a
+  16-GPU per-user cap among four agents; a benchmark that wants wide sweeps
+  raises it. The per-launch array cap of sixteen stays as the bound on one
+  launch; the share bounds concurrency.
+- **Enforced at sleep, statelessly.** The attempt reads `squeue --me` once,
+  counts the GPU jobs whose run belongs to this agent (the run id in the
+  job name carries the agent id), and refuses a request that would exceed
+  the share, through the budget-refusal path that already exists: "you have
+  12 GPU jobs in the queue; your share is 16; this request adds 24". No
+  state, no line, nothing to recover after a crash.
+- **The author reshapes.** A smaller array, fewer launches, or launch what
+  fits now and the rest after results, which is the depth loop working as
+  intended. Refusal costs the author a wake only when it overshoots its own
+  share, on the same terms the GPU-hours budget already sets.
+- **Fair by construction.** Every agent has its share whether the queue is
+  empty or full, so there is no latecomer who takes cleared capacity from a
+  waiting sibling.
+- **CPU benchmarks are untouched.** The share counts GPU jobs; local compute
+  has no queue and is never refused.
+
 ## The session watcher
 
 The attempt is alive for the whole session, outside the container, on a
@@ -77,8 +125,8 @@ none. The watcher makes it answer.
   seconds.
 - It changes no lifecycle state. It writes answer files into the channel and,
   for `sync` once that moves onto it, `refs/remotes` in the workspace, which
-  the tick already writes safely today. It never submits, cancels, seals,
-  or parks; those stay at the sleep boundary.
+  the tick already writes safely today. It never submits, cancels, seals, or
+  parks; those stay at the sleep boundary.
 - Failure never reaches the session. An exception is logged and the request
   is left standing; the tool times out and says so. A watcher that dies
   leaves the session exactly as it is today.
@@ -93,77 +141,37 @@ The principle that decides who answers what:
 
 | question | answered by | latency | why |
 |---|---|---|---|
-| what is in the queue, what is my history, fresh remote refs | the watcher | seconds | alive beside the session, sees Slurm and the run directory |
-| which deferred launch submits next, admission, wakes, leases | the tick | one cadence | needs every run's state at once |
-| budgets, scope, sealing, parking | the attempt at the sleep boundary | at sleep | the run's own lifecycle |
-
-## Deferred launches: the kernel waits
-
-A sleep that asks for launches while the queue is full is honored, not
-refused. The run parks with the request and the sealed tree recorded and no
-jobs submitted, in a stage marked `deferred`. Each tick the sweep reads the
-queue once for all deferred parks and, if no GPU job of the account is
-pending on a cap reason, submits the oldest deferred run's launches through
-the existing launcher, writes their job ids and `afterany`, and the wake
-arms exactly as if they had been submitted at sleep time. One run per tick,
-so the queue fills gradually as it clears rather than all at once.
-
-- **Cost to the author: none.** No sleep, no launch, no GPU hours are
-  charged until the jobs exist. The sleep it asked for is the sleep it gets.
-- **The wake is the same wake.** A deferred park becomes an ordinary one the
-  moment its jobs exist; the results, the wake text, and the budget
-  accounting are unchanged downstream.
-- **Submission is idempotent across a crash.** Launch job names are
-  deterministic (`<run>-launch-<name>`), and the launcher clears a launch's
-  directory before writing it, so a sweep that submitted and died before
-  recording the ids must not submit again blindly. The sweep first records
-  `submitting` with the intended job names on the park, then submits; a later
-  sweep that finds that marker asks Slurm for each name (`job_id_for_name`,
-  the same authority the wake dispatcher uses), adopts the ids it finds, and
-  submits only the names it does not. A job that already finished in the gap
-  is found through accounting and adopted the same way.
-- **A floor, so waiting is visible.** After twelve hours deferred, the sweep
-  wakes the author once with the situation and a fresh queue view, and the
-  author decides: keep waiting, change the plan, or finish. This is the one
-  place deferral costs a wake, and it costs no sleep.
-- **Refusal survives for reasons that never clear.** A per-job limit, an
-  invalid account, a dependency that cannot be satisfied: waiting cannot fix
-  these, so `queue_saturated` keeps refusing them with the reason.
-- **One field on the park record, two conditions in the sweep.** An
-  author-sleep park already stores the request and the sealed sha; deferral
-  adds the time it was deferred. The sweep's arming step today treats a
-  park with no job ids as a checkpoint sleep and wakes it at once; a
-  deferred park must be excluded from arming until its jobs exist, and the
-  deadline floor must not fire on it either. Those two conditions are the
-  whole change to the wake path. No new job store, no Slurm hold, no cap
-  number.
+| what is in the queue, my history, fresh remote refs | the watcher | seconds | alive beside the session, sees Slurm and the run directory |
+| wakes, leases, cancel on end | the tick | one cadence | needs every run's state at once |
+| budgets, the share, scope, sealing, parking | the attempt at the sleep boundary | at sleep | the run's own lifecycle |
 
 ## The queue view
 
 `python .outerloop/syscall queue` shows the author the account's kernel
 jobs as the kernel sees them, projected the way the board already projects
-them for humans.
+them for humans, and the limit the author is being held to.
 
-- **Columns:** `agent`, `run` (short id), `experiment` (the launch name),
-  `why`, `state` (`deferred`, `pending` with its reason, `running`, `done`),
-  `elapsed`, `limit`, and the Slurm job id once one exists. A launch is
-  named by the author, and the name is unique within one sleep; across
-  sleeps a launch is the pair (sleep index, name), which is how the history
-  ledger below keys it. Nothing new is minted.
-- **`why`** is a new optional field on `launch` (`--why "one line"`), stored
-  on the request and shown in the view and the wake text, falling back to
-  the run's hypothesis. It is the one protocol addition in this note.
-- **Visibility is the account's.** Every agent sees every agent's kernel
-  jobs, by agent id, the way the brief already shows sibling directions.
-  Jobs on the account that are not the kernel's appear as one count line,
-  never by name.
-- **A verdict line** closes the view, computed by the same check the kernel
-  uses: "launches will queue now", or "the queue is full on `QOSGrpGRES`;
-  N of our jobs are waiting".
+- **Jobs:** `agent`, `run` (short id), `experiment` (the launch name),
+  `why`, `state` (`pending` with its reason, `running`), `priority`,
+  `elapsed`, `limit`, and the Slurm job id. A launch is named by the author
+  and the name is unique within one sleep; across sleeps a launch is the
+  pair (sleep index, name), which is how the history ledger keys it.
+- **`why`** is a new optional field on `launch` (`--why "one line"`, at most
+  200 characters), stored on the request and shown in the view and the wake
+  text, falling back to the run's hypothesis. It is the one protocol
+  addition in this note.
+- **Visibility is the kernel's.** Every agent sees every agent's kernel
+  jobs, by agent id, the way the brief already shows sibling directions. The
+  query is `squeue --me`: the kernel is always the submitter, and other users'
+  jobs are not ours to show.
+- **Context lines** from what Slurm does expose: this agent's share and how
+  much of it is in use; the lane's load from `sinfo` (nodes idle, mixed,
+  allocated); the account's QOS limits when readable (on Torch, sixteen GPUs
+  per user and five hundred submitted jobs). No start estimates: Slurm
+  reports none on Torch, and the view promises nothing it cannot back.
 - **Freshness is seconds**, through the watcher. In local mode the queue is
   empty by construction and the view says so.
-- **`status`** gains the run's own launches with their state, so "is my
-  deferred launch in yet" is one command.
+- **`status`** gains the run's own launches with their state.
 
 ## History
 
@@ -179,11 +187,10 @@ names are unique only within one sleep: the launcher reuses
 `eval-launch-<name>/` when a later sleep repeats a name and clears the old
 contents first, so the directory alone cannot carry history. The directory
 stays what it is, the latest outputs, which is also what the wake delivers
-to the author; the ledger is the record. It is written once per launch, never
-rewritten, and it is exactly the row store a later index would load.
+to the author; the ledger is the record. It is written once per launch,
+never rewritten, and it is exactly the row store a later index would load.
 
-There is no database, and none is needed at this scale. The history already
-exists as files:
+There is no database, and none is needed at this scale:
 
 - Each run's directory holds its record, the ledger, and one
   `eval-launch-<name>/` directory per launch name: exit code, output tails,
@@ -207,32 +214,32 @@ exists as files:
 ## What this is not
 
 - Not a scheduler. Authors stage launches, the kernel submits, Slurm
-  schedules. The queue view is a projection of Slurm's queue joined with
-  the kernel's records; deferral is a delay before submission. Nothing gets
-  an id of its own and the kernel keeps no queue of jobs.
-- Not a hole in the container. The session gains three read-only answers and
-  no new reach.
+  schedules. The share is a bound checked once at sleep; the view is a
+  projection of Slurm's queue joined with the kernel's records. The kernel
+  holds no line of jobs.
+- Not a hole in the container. The session gains read-only answers and no
+  new reach.
 - Not a new process. The watcher is a thread that lives and dies with the
   session it serves; the process count is unchanged.
 
 ## Rollout
 
-1. The watcher, with `queue` and `history`. Test on cluster0 (local mode,
-   the empty-queue path) and on Torch (one session asking during a busy
-   queue). Measure the answer latency and the watcher's overhead.
-2. Deferral. Replace the refusal for cap reasons with the deferred park; keep
-   it for reasons that never clear. The twelve-hour wake.
+1. The watcher, with `queue`, `history`, the `why` field and the ledger.
+   Test on cluster0 (local mode, the empty-queue path) and on Torch (one
+   session asking during a busy queue). Measure the answer latency and the
+   watcher's overhead.
+2. Always queue: remove #315's admission; add the per-agent share and
+   cancel-on-end.
 3. `sync` onto the watcher, once the watcher has run for a week.
 4. Later, if the tick's scan shows: the derived index.
 
 ## Open questions
 
-- One deferred run per tick is conservative. If the queue clears and stays
-  clear, releasing all deferred runs at once wastes nothing; the gradual
-  fill matters only when the cap is tight. A batch size dial may be
-  warranted after the first week of data.
+- The share's default. Four divides Torch's cap among four agents; a
+  deployment with one agent could take the whole cap, and one with eight
+  wants two each. Deriving it from the agent count is tempting and wrong
+  when the cap is a group cap. A contract dial with a documented default is
+  the honest choice; revisit after a month of data.
 - The `why` field is free text from the author and appears in a view other
-  agents read. It is bounded (one line, 200 characters) and rendered as
-  text, never executed; the same treatment the note field already gets.
-- Whether the twelve-hour wake should shorten as the deadline of the
-  session's own budget approaches. Left for the data.
+  agents read. It is bounded and rendered as text, never executed; the same
+  treatment the note field already gets.
