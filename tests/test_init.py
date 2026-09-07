@@ -259,7 +259,9 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
     monkeypatch.setattr(init, "_owner_type", lambda owner: "Organization")
     monkeypatch.setattr("builtins.input", lambda *a: "")
-    assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
+    # capture_installation_id returned 0: the App was never installed, so init keeps
+    # the credentials but exits 1 and never says start (terra, #309)
+    assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 1
     written = (tmp_path / ".env").read_text()
     assert "OUTERLOOP_BOT_LOGIN=s[bot]" in written  # the login it recognizes itself by
     # the organization question is the only prompt; nothing about the author
@@ -468,7 +470,9 @@ def test_github_app_run_never_asks_for_the_key(tmp_path: Path, monkeypatch) -> N
         raise AssertionError("the focused --github-app run must not ask for a key")
 
     monkeypatch.setattr(init.getpass, "getpass", boom)
-    assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 0
+    # capture_installation_id returned 0: the App was never installed, so init keeps
+    # the credentials but exits 1 and never says start (terra, #309)
+    assert init.main(["--github-app", "--compute", "local", "--target", "o/r"]) == 1
 
 
 def test_write_private_never_widens(tmp_path: Path, monkeypatch) -> None:
@@ -725,3 +729,35 @@ def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
     assert "FAILED" in captured.err and "init --force --github-app" in captured.err
     assert "apps/myapp/installations/new" in captured.err
     assert "next: outerloop start" not in captured.out and app_json.exists()
+
+
+def test_github_app_rerun_captures_a_missing_installation_id(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A first run that ended before the App was installed left installation_id 0;
+    the re-run looks the installation up, records it, then checks access."""
+    from outerloop import appmanifest
+
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    app_json = tmp_path / "github_app.myapp.json"
+    creds = {"app_id": 1, "installation_id": 0, "private_key": "/k.pem"}
+    app_json.write_text(json.dumps(creds))
+    monkeypatch.setattr(
+        appmanifest, "request_manifest_code", lambda *a, **k: pytest.fail("no new App")
+    )
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda app_id, pem, owner: 7)
+    monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
+    monkeypatch.setattr(init, "_check_app_access", lambda provider, target: "")
+    argv = ["--yes", "--force", "--github-app", "--compute", "local", "--target", "o/r"]
+    assert init.main(argv) == 0
+    assert json.loads(app_json.read_text())["installation_id"] == 7
+    assert "installation id 7 recorded" in capsys.readouterr().out
+    # still not installed: exit 1 with the install page, credentials kept
+    app_json.write_text(json.dumps(creds))
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda app_id, pem, owner: 0)
+    monkeypatch.setattr(
+        init, "_check_app_access", lambda provider, target: "the App is not installed on o/r"
+    )
+    assert init.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "apps/myapp/installations/new" in err and "init --force --github-app" in err

@@ -342,14 +342,25 @@ def _exec(cmd: list[str], env: dict[str, str]) -> int:
 HARNESS_BIN_KEYS = ("OUTERLOOP_CLAUDE_BIN", "OUTERLOOP_CODEX_BIN")
 
 
+def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str]) -> str:
+    """The process environment wins over .env, including an explicit empty value
+    (the way to clear a recorded path from the shell)."""
+    return (environ[key] if key in environ else values.get(key, "")).strip()
+
+
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
-    """Why start must not launch: a recorded harness binary that is not there
-    (init records the path; a moved or uninstalled CLI would end every climb
-    with spawn-error). "" when every recorded binary exists or none is set."""
-    for key in HARNESS_BIN_KEYS:
-        path = (environ.get(key) or values.get(key) or "").strip()
-        if path and not Path(path).expanduser().is_file():
-            return f"{key}={path} is not a file; reinstall the CLI or run `outerloop init --force`"
+    """Why start must not launch: the CONFIGURED author backend's recorded
+    binary is not there (init records the path; a moved or uninstalled CLI
+    would end every climb with spawn-error). The other backend's path is not
+    consulted: a stale entry for a backend the loop never spawns must not block
+    it. "" when the binary exists or none is recorded."""
+    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    key = f"OUTERLOOP_{backend.upper()}_BIN"
+    if key not in HARNESS_BIN_KEYS:
+        return ""  # an unknown backend is init's error to report, not this check's
+    path = _setting_of(key, values, environ)
+    if path and not Path(path).expanduser().is_file():
+        return f"{key}={path} is not a file; reinstall the CLI or run `outerloop init --force`"
     return ""
 
 

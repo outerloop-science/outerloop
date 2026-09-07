@@ -320,3 +320,4 @@ def test_local_job_output_is_kept_beside_its_state(tmp_path: Path, monkeypatch) 
     assert compute.status(job_id) == "FAILED"
     out = tmp_path / "local_jobs" / f"{job_id}.out"
     assert out.read_text().strip() == "boom"
+    assert out.stat().st_mode & 0o777 == 0o600  # a job may print a credential

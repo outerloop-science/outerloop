@@ -378,11 +378,21 @@ def _app_failure(answers: InitAnswers, slug: str, problem: str) -> int:
 def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
     """Re-run Step 3 for an App this machine already created: confirm it can
     write the target, then point the .env at it."""
+    from outerloop import appmanifest
     from outerloop.appauth import app_provider_from_file
 
     slug = app_json.name[len("github_app.") : -len(".json")]
     print(f"Re-checking the existing App '{slug}' ({app_json}) against {answers.target}.")
     try:
+        data = json.loads(app_json.read_text())
+        if not int(data.get("installation_id") or 0):
+            # the earlier run ended before the App was installed: look again
+            iid = appmanifest.capture_installation_id(
+                int(data["app_id"]), Path(str(data["private_key"])), answers.target.split("/")[0]
+            )
+            if iid:
+                appmanifest.set_installation_id(app_json, iid)
+                print(f"  installation id {iid} recorded")
         problem = _check_app_access(app_provider_from_file(app_json), answers.target)
     except Exception as exc:
         problem = f"could not read the App credentials: {exc}"
@@ -469,10 +479,13 @@ def _github_app_setup(
             return _app_failure(answers, str(conversion["slug"]), problem)
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     else:
-        print(
-            f"  still no installation. When it is installed, put its id into {app_json} as "
-            f"installation_id (GitHub shows it in the URL of the App's page under "
-            f"Settings > Installations), then run outerloop start."
+        # the credentials are kept; nothing can run until the App is installed
+        write_private(
+            CONFIG_DIR / ENV_FILE.name,
+            render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+        )
+        return _app_failure(
+            answers, str(conversion["slug"]), f"the App is not installed on {answers.target}"
         )
     env_path = CONFIG_DIR / ENV_FILE.name
     write_private(

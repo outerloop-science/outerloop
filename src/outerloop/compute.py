@@ -416,7 +416,11 @@ class LocalCompute:
                 os.replace(tmp, state_dir / job_id)
                 # the job's combined stdout/stderr beside its state: a failed local
                 # job otherwise leaves nothing to read (#295)
-                (state_dir / f"{job_id}.out").write_text(output)
+                out_fd = os.open(
+                    state_dir / f"{job_id}.out", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+                )
+                with os.fdopen(out_fd, "w") as fh:
+                    fh.write(output)
                 # opportunistic prune: one entry per job would leak forever
                 # on a long-running loop; anything the sweep could still want
                 # is far younger than a day

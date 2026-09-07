@@ -591,21 +591,49 @@ def test_tick_subcommand_forwards_to_the_tick_entry(monkeypatch: pytest.MonkeyPa
     assert seen[1:] == ["--root", "/r", "--loop"]
 
 
-def test_start_refuses_a_missing_recorded_harness_binary(tmp_path: Path) -> None:
-    """#294: init records the CLI path; if it is gone, every climb would end with
-    spawn-error, so start says so instead of launching."""
+def test_missing_harness_binary_checks_only_the_configured_backend(tmp_path: Path) -> None:
+    """#294: init records the CLI path; a missing one would end every climb with
+    spawn-error. Only the configured backend's path counts, and an explicit empty
+    value in the environment clears a stale recorded path."""
     from outerloop.cli import missing_harness_binary
 
     present = tmp_path / "claude"
     present.write_text("")
+    nope = str(tmp_path / "nope")
     assert missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": str(present)}, {}) == ""
     assert missing_harness_binary({}, {}) == ""
-    problem = missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": str(tmp_path / "nope")}, {})
+    problem = missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": nope}, {})
     assert "OUTERLOOP_CLAUDE_BIN" in problem and "init --force" in problem
-    # the process environment wins over the file
+    # a stale path for the backend the loop never spawns does not block it
+    stale_other = {"OUTERLOOP_CLAUDE_BIN": nope, "OUTERLOOP_AUTHOR_BACKEND": "codex"}
+    assert missing_harness_binary(stale_other, {}) == ""
+    assert missing_harness_binary(
+        {"OUTERLOOP_CODEX_BIN": nope}, {"OUTERLOOP_AUTHOR_BACKEND": "codex"}
+    )
+    # the environment wins over the file, and an explicit empty value clears the path
     assert (
         missing_harness_binary(
-            {"OUTERLOOP_CODEX_BIN": str(tmp_path / "nope")}, {"OUTERLOOP_CODEX_BIN": str(present)}
+            {"OUTERLOOP_CLAUDE_BIN": nope}, {"OUTERLOOP_CLAUDE_BIN": str(present)}
         )
         == ""
     )
+    assert (
+        missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": nope}, {"OUTERLOOP_CLAUDE_BIN": ""}) == ""
+    )
+
+
+def test_start_refuses_a_missing_recorded_harness_binary(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Through `start` itself: a recorded binary that is gone stops the launch
+    before any plan is made."""
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/sbatch")
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", str(clean_env / "gone"))
+    assert main(["start"]) == 2
+    err = capsys.readouterr().err
+    assert "OUTERLOOP_CLAUDE_BIN" in err and "is not a file" in err
+    # the same stale path is ignored when the loop is configured for codex
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
+    assert main(["start"]) == 2
+    assert "state root" in capsys.readouterr().err  # past the binary check
