@@ -35,6 +35,7 @@ from outerloop.github import (
     Workspace,
     bot_login_from_env,
     contract_at,
+    git_identity,
     is_own_login,
 )
 from outerloop.harness import Harness, default_binary, outage, redact
@@ -1501,10 +1502,7 @@ def _commit_sealed_tree(
     the live workspace, which may hold content the seal excluded."""
     ws.git("add", "-A")
     ws.git(
-        "-c",
-        f"user.name={bot_login}",
-        "-c",
-        f"user.email={bot_login}@users.noreply.github.com",
+        *git_identity(bot_login),
         "commit",
         "-q",
         "--amend",

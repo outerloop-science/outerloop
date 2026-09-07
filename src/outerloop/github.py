@@ -50,6 +50,16 @@ def bot_login_from_env(default: str = "") -> str:
     return os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip() or default
 
 
+def git_identity(login: str = "") -> tuple[str, ...]:
+    """`git -c` arguments that make a commit the kernel's: the bot login and
+    its GitHub noreply address, so GitHub attributes the commit to the App or
+    bot account like every other kernel write. One identity for every kernel
+    commit — seals, line merges, ledger commits alike. An empty login takes
+    OUTERLOOP_BOT_LOGIN."""
+    login = login or bot_login_from_env()
+    return ("-c", f"user.name={login}", "-c", f"user.email={login}@users.noreply.github.com")
+
+
 def bot_aliases_from_env() -> tuple[str, ...]:
     """Former logins the kernel posted as (comma-separated
     `OUTERLOOP_BOT_ALIASES`). Every issue, claim, alarm and PR created
@@ -1430,10 +1440,7 @@ class Workspace:
                 self.git("reset")
                 raise ForbiddenPathError(f"commit touches forbidden paths: {sorted(violations)}")
         self.git(
-            "-c",
-            f"user.name={author}",
-            "-c",
-            f"user.email={author}@users.noreply.github.com",
+            *git_identity(author),
             "commit",
             "-m",
             message,
