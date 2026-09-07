@@ -33,6 +33,11 @@ APPTAINER_VERSION = "1.5.3"
 APPTAINER_DEB = f"apptainer_{APPTAINER_VERSION}_amd64.deb"
 APPTAINER_DEB_URL = f"{APPTAINER_RELEASES}/download/v{APPTAINER_VERSION}/{APPTAINER_DEB}"
 APPTAINER_PPA = "ppa:apptainer/ppa"
+# the unprivileged installer, pinned to the release tag (never a moving branch)
+APPTAINER_UNPRIV_URL = (
+    "https://raw.githubusercontent.com/apptainer/apptainer/"
+    f"v{APPTAINER_VERSION}/tools/install-unprivileged.sh"
+)
 PROBE_CMD = "apptainer exec docker://alpine:3.20 cat /etc/alpine-release"
 
 
@@ -97,16 +102,23 @@ def install_hint() -> str:
         return (
             f"No Apptainer Debian package is published for this machine ({platform.machine()}).\n"
             "  Build from source (https://apptainer.org/docs/admin/main/installation.html) or use\n"
-            "  the unprivileged installer:\n"
-            "    curl -fsSL https://raw.githubusercontent.com/apptainer/apptainer/main/tools/"
-            "install-unprivileged.sh | bash -s -- ~/apptainer\n"
+            "  the unprivileged installer. Download it, read it, then run it:\n"
+            f"    curl -fsSLO {APPTAINER_UNPRIV_URL}\n"
+            "    less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer\n"
             "    export PATH=$HOME/apptainer/bin:$PATH\n"
             f"  Check with `{PROBE_CMD}`, then run `outerloop init --force` again."
         )
-    if dist in ("fedora", "rhel", "centos", "rocky", "almalinux"):
+    if dist == "fedora":
         return (
-            "Install Apptainer from EPEL/Fedora (the package includes everything it needs):\n"
-            "    sudo dnf install -y epel-release   # RHEL-family only; Fedora skips this\n"
+            "Install Apptainer from the Fedora repositories:\n"
+            "    sudo dnf install -y apptainer\n"
+            f"    {PROBE_CMD}   # prints a version number\n"
+            "  then run `outerloop init --force` again to download the image."
+        )
+    if dist in ("rhel", "centos", "rocky", "almalinux"):
+        return (
+            "Install Apptainer from EPEL:\n"
+            "    sudo dnf install -y epel-release\n"
             "    sudo dnf install -y apptainer\n"
             f"    {PROBE_CMD}   # prints a version number\n"
             "  then run `outerloop init --force` again to download the image."
@@ -114,9 +126,10 @@ def install_hint() -> str:
     return (
         "Install Apptainer for your distribution:\n"
         "    https://apptainer.org/docs/admin/main/installation.html\n"
-        "  Without root, the project's unprivileged installer works on most systems:\n"
-        "    curl -fsSL https://raw.githubusercontent.com/apptainer/apptainer/main/tools/"
-        "install-unprivileged.sh | bash -s -- ~/apptainer\n"
+        "  Without root, the project's unprivileged installer works on most systems.\n"
+        "  Download it, read it, then run it:\n"
+        f"    curl -fsSLO {APPTAINER_UNPRIV_URL}\n"
+        "    less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer\n"
         "    export PATH=$HOME/apptainer/bin:$PATH\n"
         "  On a Slurm cluster, ask the administrators; most already provide it.\n"
         f"  Check with `{PROBE_CMD}`, then run\n"
@@ -320,27 +333,33 @@ def ensure_image(
     *,
     interactive: bool,
     want: bool = True,
+    probe: bool = True,
     home: Path | None = None,
     ask: Callable[[str], str] = input,
     report: Callable[[str], None] = print,
     fetch: Callable[..., Path] = download_image,
 ) -> str:
     """The image path `init` records: an existing image, else the published
-    one downloaded to the image dir when this machine can run it and the
+    one downloaded to the image dir, when this machine can run it and the
     adopter did not opt out. "" means uncontained (the loop says so at start);
     when that is because Apptainer is missing or cannot run containers, the
-    exact install steps for this machine are printed. A failed download is a
-    warning, never a failed setup."""
-    found = find_image(home)
-    if found:
-        return found
+    exact install steps for this machine are printed, and an image already on
+    disk is NOT recorded (a contained run would only fail later). `probe=False`
+    skips the container check: on Slurm the image runs on compute nodes, which
+    the login node cannot speak for. A failed download is a warning, never a
+    failed setup."""
     if not want:
         return ""
-    problem = containment_check()
+    problem = containment_check() if probe else ""
+    found = find_image(home)
     if problem:
         report(f"Runs will be UNCONTAINED on this machine: {problem}.")
         report("  " + install_hint())
+        if found:
+            report(f"  (the image at {found} will be used once apptainer works)")
         return ""
+    if found:
+        return found
     dest = image_dir(home) / IMAGE_NAME
     if interactive:
         answer = ask(f"Download the agent image to {dest} so runs are contained? [Y/n] ")

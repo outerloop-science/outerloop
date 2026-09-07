@@ -256,8 +256,8 @@ your own, `--no-image` keeps runs uncontained even when an image is already on d
 run containers, init says so, prints the install steps for your system, and
 continues uncontained; run `outerloop init --force` after installing it.
 
-**Installing Apptainer (Linux, one time, needs root or an admin).** Apptainer is
-the container runtime the kernel jails sessions and evaluations with. Check for it
+**Installing Apptainer (Linux, one time, needs root or an admin).** Apptainer runs
+sessions and evaluations in containers. Check for it
 with `apptainer exec docker://alpine:3.20 cat /etc/alpine-release`; a version number
 means it works.
 
@@ -280,11 +280,19 @@ means it works.
   sudo apt-get install -y ./apptainer_1.5.3_amd64.deb
   ```
 
-- *Fedora, RHEL, Rocky, Alma.* `sudo dnf install -y apptainer` (RHEL-family first
-  `sudo dnf install -y epel-release`).
-- *No root.* The project's unprivileged installer works on most other systems:
-  `curl -fsSL https://raw.githubusercontent.com/apptainer/apptainer/main/tools/install-unprivileged.sh | bash -s -- ~/apptainer`,
-  then add `~/apptainer/bin` to your PATH.
+  The release has no package for other architectures; on ARM Debian, build from
+  source or use the unprivileged installer below.
+
+- *Fedora.* `sudo dnf install -y apptainer`.
+- *RHEL, Rocky, Alma.* `sudo dnf install -y epel-release`, then `sudo dnf install -y apptainer`.
+- *No root.* The project's unprivileged installer works on most other systems. It is
+  pinned to the release tag; download it, read it, then run it:
+
+  ```bash
+  curl -fsSLO https://raw.githubusercontent.com/apptainer/apptainer/v1.5.3/tools/install-unprivileged.sh
+  less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer
+  export PATH=$HOME/apptainer/bin:$PATH
+  ```
 - *Slurm clusters.* Ask the administrators; most already provide it.
 - *macOS.* No Apptainer; runs stay uncontained (a macOS containment is on the roadmap).
 

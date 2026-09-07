@@ -55,7 +55,8 @@ def quiet(s: str) -> None:
     pass
 
 
-def test_download_streams_through_a_part_file(tmp_path: Path) -> None:
+def test_download_streams_through_a_part_file(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(img.sys.stdout, "isatty", lambda: False)
     payload = b"x" * (3 * (1 << 20) + 7)
     dest = tmp_path / "outerloop-images" / "agent-py312.sif"
     lines: list[str] = []
@@ -65,6 +66,11 @@ def test_download_streams_through_a_part_file(tmp_path: Path) -> None:
     assert got == dest and dest.read_bytes() == payload
     assert not dest.with_name(dest.name + ".part").exists()
     assert lines[0].startswith("downloading https://example/agent.sif")
+    # the download drives the progress: every 10% line, then the summary and the checksum
+    pct = [line.split("%")[0].strip() for line in lines if "%" in line]
+    assert pct == [str(n) for n in range(10, 101, 10)]
+    assert any(line.startswith("  downloaded") for line in lines)
+    assert "  checksum verified" in lines and lines[-1].startswith("  saved ")
 
 
 def test_interrupted_download_leaves_nothing_behind(tmp_path: Path) -> None:
@@ -220,9 +226,14 @@ def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
     odd = img.install_hint()
     assert "No Apptainer Debian package" in odd and "aarch64" in odd and ".deb" not in odd
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("fedora", "40"))
-    assert "dnf install" in img.install_hint()
+    fedora = img.install_hint()
+    assert "dnf install -y apptainer" in fedora and "epel" not in fedora
+    monkeypatch.setattr(img, "_linux_flavor", lambda: ("rocky", "9"))
+    assert "epel-release" in img.install_hint()
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("arch", ""))
-    assert "install-unprivileged.sh" in img.install_hint()
+    generic = img.install_hint()
+    # the installer is pinned to the release tag and never piped into a shell
+    assert "/v1.5.3/tools/install-unprivileged.sh" in generic and "| bash" not in generic
     monkeypatch.setattr(img.sys, "platform", "darwin")
     assert "macOS" in img.install_hint()
 
@@ -236,6 +247,27 @@ def test_ensure_image_explains_why_runs_are_uncontained(tmp_path: Path, monkeypa
     assert img.ensure_image(interactive=False, home=tmp_path, report=lines.append) == ""
     assert any("UNCONTAINED" in line and "not installed" in line for line in lines)
     assert any("INSTALL STEPS HERE" in line for line in lines)
+
+
+def test_ensure_image_probes_before_accepting_an_existing_image(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An image on disk is not recorded when apptainer cannot run containers
+    (terra, #306): a contained run would only fail later. Slurm skips the probe,
+    since the login node cannot speak for the compute nodes."""
+    existing = tmp_path / "outerloop-images" / "agent-py312.sif"
+    existing.parent.mkdir()
+    existing.write_text("")
+    monkeypatch.setattr(
+        img, "containment_check", lambda: "apptainer cannot create containers here (x)"
+    )
+    monkeypatch.setattr(img, "install_hint", lambda: "STEPS")
+    lines: list[str] = []
+    assert img.ensure_image(interactive=False, home=tmp_path, report=lines.append) == ""
+    assert any(str(existing) in line and "once apptainer works" in line for line in lines)
+    assert img.ensure_image(
+        interactive=False, probe=False, home=tmp_path, report=lines.append
+    ) == str(existing)
 
 
 def test_progress_reports_ten_percent_steps_off_a_terminal(monkeypatch: Any) -> None:

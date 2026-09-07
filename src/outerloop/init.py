@@ -478,7 +478,9 @@ def main(argv: list[str] | None = None) -> int:
     # An existing image is used, else the published one is fetched on a machine
     # that can run it (asked first when interactive); --no-image opts out.
     if not answers.image and not args.no_image:
-        answers.image = ensure_image(interactive=interactive)
+        # the container probe is for local mode: on Slurm the image runs on
+        # compute nodes, which the login node cannot speak for
+        answers.image = ensure_image(interactive=interactive, probe=(answers.compute == "local"))
 
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.
