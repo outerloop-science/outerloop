@@ -83,8 +83,9 @@ where it sits, and the sweep treats a cap reason as a wait, never as an
 unschedulable job (`is_queue_wait`). Two rules shape the order among the
 kernel's own jobs: launches carry `--nice`, so a gate eval or a follow-up
 re-measure starts first when the cap frees a slot, and a run that ends with
-launches still queued has them cancelled by the sweep (`cancel_ended_launches`)
-— nothing would read their results. Sweeps as throttled Slurm arrays, and the
+launches still queued or running has them cancelled by the sweep
+(`cancel_ended_launches`) — nothing would read their results, and a running
+one holds GPUs for them. Sweeps as throttled Slurm arrays, and the
 author's view of the queue, are in `session-watcher.md`. Local compute has no
 queue.
 

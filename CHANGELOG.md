@@ -59,7 +59,7 @@ Versions follow [SemVer](https://semver.org).
   launches while the account waited on a cap — are gone: the kernel keeps no
   line and never refuses a launch for queue reasons; Slurm does the waiting and
   the sweep treats a cap reason as a wait. A run that ends with launches still
-  queued has them cancelled by the sweep. `squeue` rows on the board carry the
+  queued or running has them cancelled by the sweep. `squeue` rows on the board carry the
   pending reason and GRES.
 - The board's queue is a card in the live strip, not a preformatted dump: a
   full-width table with running jobs first, state pills, elapsed time,

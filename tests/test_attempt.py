@@ -684,8 +684,8 @@ class QueueCompute:
     def job_id_for_name(self, name: str) -> str:
         return ""
 
-    def cancel(self, job_id: str) -> None:
-        pass
+    def cancel(self, job_id: str) -> bool:
+        return True
 
 
 @dataclass

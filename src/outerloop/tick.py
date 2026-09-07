@@ -1210,11 +1210,14 @@ CANCEL_ON_END_WINDOW_S = 7 * 86400
 def cancel_ended_launches(
     root: Path, compute: Compute, now: float, dry_run: bool = False
 ) -> list[str]:
-    """Cancel on end: a run that ended while its author's launches still sit in
-    the queue has nothing left to read their results, so the jobs are
-    cancelled — once. The stage remembers, so an ended run costs no query
-    afterwards; runs ended longer ago than the window are stamped without a
-    query (their jobs have long left the queue). Returns the cancelled ids."""
+    """Cancel on end: a run that ended while its author's launches are still
+    queued or running has nothing left to read their results, so the jobs are
+    cancelled — a running one included, since that is the one holding GPUs for
+    a result nobody will read. The stage is stamped once every cancel
+    succeeded, so an ended run costs no query afterwards; a failed scancel
+    leaves the run unstamped for the next tick, and runs ended longer ago than
+    the window are stamped without a query (their jobs have long left the
+    queue). Returns the cancelled ids."""
     from outerloop.attempt import _stage_launch_job_ids
 
     cancelled: list[str] = []
@@ -1239,12 +1242,19 @@ def cancel_ended_launches(
         if dry_run:
             cancelled.extend(live)
             continue
+        failed = False
         for jid in live:
             try:
-                compute.cancel(jid)
-                cancelled.append(jid)
+                ok = compute.cancel(jid)
             except Exception as exc:
+                ok = False
                 log.warning("cancel-on-end: %s: scancel %s failed: %s", record.run_id, jid, exc)
+            if ok:
+                cancelled.append(jid)
+            else:
+                failed = True
+        if failed:
+            continue  # unstamped: the next tick tries again, until the window closes
         stage["launches_cancelled"] = True
         save_record(root, replace(record, stage=stage), now)
     if cancelled:

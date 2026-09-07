@@ -166,7 +166,7 @@ class Compute(Protocol):
     def queue_snapshot(self) -> list[dict[str, str]]: ...
     def lane_load(self, partition: str) -> dict[str, int]: ...
     def job_id_for_name(self, name: str) -> str: ...
-    def cancel(self, job_id: str) -> None: ...
+    def cancel(self, job_id: str) -> bool: ...
 
 
 def local_mode() -> bool:
@@ -342,13 +342,17 @@ class SlurmCompute:
         ids = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return ids[0] if ids else ""
 
-    def cancel(self, job_id: str) -> None:
-        """Cancel; idempotent (cancelling a finished job is not an error)."""
+    def cancel(self, job_id: str) -> bool:
+        """Cancel; idempotent (cancelling a finished job is not an error).
+        False when scancel itself failed, so a caller that must know (the
+        sweep's cancel-on-end) can try again; most callers are best-effort."""
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
         result = self.runner(["scancel", job_id], self.command_timeout_s)
         if result.returncode != 0:
             log.warning("scancel %s: %s", job_id, result.stderr.strip())
+            return False
+        return True
 
 
 # Local job ids start far above any real Slurm id so the two can never be
@@ -524,10 +528,10 @@ class LocalCompute:
     def job_id_for_name(self, name: str) -> str:
         return ""
 
-    def cancel(self, job_id: str) -> None:
+    def cancel(self, job_id: str) -> bool:
         if not job_id.isdigit():
             raise ValueError(f"not a job id: {job_id!r}")
-        # already terminal; cancelling a finished job is not an error
+        return True  # already terminal; cancelling a finished job is not an error
 
 
 def parse_elapsed(text: str) -> int | None:

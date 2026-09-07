@@ -79,8 +79,9 @@ holds, defers or releases anything.
 Two small additions make this complete:
 
 - **Cancel on end.** When a run ends (its pull request landed, it was
-  abandoned, it was stuck) while launches of its are still pending, the
-  sweep cancels them. Nothing would read their results.
+  abandoned, it was stuck) while launches of its are still queued or
+  running, the sweep cancels them. Nothing would read their results, and a
+  running one holds GPUs for them.
 - **#315's admission check comes out.** `queue_saturated` and the refusal
   for cap reasons are removed; throttled arrays below replace them.
 - **Experiments yield to verification.** Every kernel job is one Slurm
