@@ -14,7 +14,7 @@ the landing page.
 |---|---|---|
 | `#announcements` | releases of `outerloop-science`, with the release notes | a webhook on `outerloop-science/outerloop`, event **Releases** |
 | `#dev` | pull requests on the kernel: opened, closed, merged, reopened | a second webhook on `outerloop-science/outerloop`, event **Pull requests** |
-| `#speedrun` | the agents' pull requests on `gpt-speedrun`: opened, closed, merged, reopened, with the title's metric change | a webhook on the target repo, event **Pull requests** |
+| `#speedrun` | every pull request on `gpt-speedrun` — the agents' carry the metric change in the title, and a person's shows up the same way: opened, closed, merged, reopened | a webhook on the target repo, event **Pull requests** |
 | `#help` | adopters' questions about install and setup | people |
 | `#general` | everything else | people |
 

@@ -16,9 +16,10 @@
    and publishes `outerloop-science` to PyPI through Trusted Publishing; the
    one-time PyPI setup is described at the top of
    `.github/workflows/release.yml`.
-3. `pip install outerloop-science==X.Y.Z` in a fresh venv, then `outerloop --help`.
-   This comes before the GitHub release: publishing it is what Discord
-   announces, so nothing is announced that did not install.
+3. Once the `release` workflow run for the tag is green (`gh run watch` on
+   it), `pip install outerloop-science==X.Y.Z` in a fresh venv, then
+   `outerloop --help`. This comes before the GitHub release: publishing it is
+   what Discord announces, so nothing is announced that did not install.
 4. `gh release create vX.Y.Z --generate-notes`, with `--prerelease` for a dev
    or rc tag.
 5. Announce. Discord's `#announcements` gets the release from the GitHub
