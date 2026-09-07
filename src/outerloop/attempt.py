@@ -715,17 +715,6 @@ def _make_watcher(
     return lambda: SessionWatcher(ctx)
 
 
-def _make_admission(dispatch: DispatchSettings, gpus: int = 0) -> Callable[[SyscallRequest], str]:
-    """The admission check for this benchmark's launches: only GPU launches on a
-    cluster queue are ever refused (admission.queue_saturated)."""
-    from outerloop.admission import queue_saturated
-
-    def admission(request: SyscallRequest) -> str:
-        return queue_saturated(dispatch.compute) if gpus > 0 else ""
-
-    return admission
-
-
 def _wake_author_sleep(
     *,
     run_root: Path,
@@ -950,7 +939,6 @@ def _wake_author_sleep(
             resume_session_id=record.resume_session_id,
             improve_prompt=wake_text,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
-            admission=_make_admission(dispatch, gpus=bench.gpus),
             watcher=_make_watcher(dispatch, run_root, run_id, workspace, config),
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             judged=judged or _stage_judged(record),
@@ -2773,13 +2761,11 @@ def live_attempt(
         # symlink, tracked request, or any other pre-existing form — has
         # disabled the feature for this run).
         launcher = None
-        admission = None
         if author_syscalls:
             assert dispatch is not None  # folded into author_syscalls above
             launcher = _make_launcher(
                 dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
             )
-            admission = _make_admission(dispatch, gpus=_bench.gpus if _bench else 0)
 
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
@@ -2809,7 +2795,6 @@ def live_attempt(
                 line_memory=line_memory,
                 line_divergence=line_divergence,
                 launcher=launcher,
-                admission=admission,
                 watcher=(
                     _make_watcher(dispatch, run_root, run_id, workspace, config)
                     if dispatch is not None

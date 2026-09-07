@@ -76,16 +76,18 @@ benchmarks outright for now — a stewardship validates its rewrite in-job.
 The first target in this shape is the speedrun (`gpt-speedrun`: one H200
 per eval, ~3.5h).
 
-**Launch admission: queue, then stop.** Slurm publishes no per-user GPU cap a
-submitter can trust (on Torch the cap that parked launches for a day was a moving
-GROUP cap on the job QOS, `QOSGrpGRES`), but it always says why a job waits. So
-the rule needs no number. A launch queues as long as none of this account's GPU
-jobs is pending on a cap reason; while one is, a sleep that asks for launches is
-REFUSED with the blocking job and reason, and the author is told to wait for the
-results it has or finish (`admission.queue_saturated`). The parked jobs accrue
-priority where they sit, and the sweep treats a cap reason as a wait, never as an
-unschedulable job. Nothing is held or released; the kernel keeps no queue of its
-own. Local compute has no queue and is never refused.
+**Always queue.** Launches are submitted at sleep time and Slurm does the
+waiting; the kernel keeps no line of its own and never holds, defers or refuses
+a launch for queue reasons. A launch parked on a cap reason accrues priority
+where it sits, and the sweep treats a cap reason as a wait, never as an
+unschedulable job (`is_queue_wait`). Two rules shape the order among the
+kernel's own jobs: launches carry `--nice`, so a gate eval or a follow-up
+re-measure starts first when the cap frees a slot, and a run that ends with
+launches still queued or running has them cancelled by the sweep
+(`cancel_ended_launches`) — nothing would read their results, and a running
+one holds GPUs for them. Sweeps as throttled Slurm arrays, and the
+author's view of the queue, are in `session-watcher.md`. Local compute has no
+queue.
 
 **Who decides the eval walltime.** The gate measures steps, not time, so
 walltime should bound only SPEND — and the attempt already has a spend

@@ -1186,6 +1186,11 @@ def sweep(
         except Exception as exc:
             log.warning("sweep failed on %s: %s: %s", record.run_id, type(exc).__name__, exc)
 
+    try:
+        cancel_ended_launches(root, compute, now, dry_run)
+    except Exception as exc:
+        log.warning("cancel-on-end failed: %s: %s", type(exc).__name__, exc)
+
     return TickReport(
         swept=len(records),
         woken=tuple(woken),
@@ -1197,6 +1202,64 @@ def sweep(
         # live even while wakes stay dry.
         implementing_ended=tuple(_sweep_implementing(root, compute, now, grace_s)),
     )
+
+
+CANCEL_ON_END_WINDOW_S = 7 * 86400
+
+
+def cancel_ended_launches(
+    root: Path, compute: Compute, now: float, dry_run: bool = False
+) -> list[str]:
+    """Cancel on end: a run that ended while its author's launches are still
+    queued or running has nothing left to read their results, so the jobs are
+    cancelled — a running one included, since that is the one holding GPUs for
+    a result nobody will read. The stage is stamped once every cancel
+    succeeded, so an ended run costs no query afterwards; a failed scancel
+    leaves the run unstamped for the next tick, and runs ended longer ago than
+    the window are stamped without a query (their jobs have long left the
+    queue). Returns the cancelled ids."""
+    from outerloop.attempt import _stage_launch_job_ids
+
+    cancelled: list[str] = []
+    for record in list_runs(root):
+        if record.state != ENDED:
+            continue
+        stage = dict(record.stage or {})
+        if stage.get("launches_cancelled"):
+            continue
+        job_ids = _stage_launch_job_ids(record)
+        recent = now - float(getattr(record, "updated", 0.0) or 0.0) <= CANCEL_ON_END_WINDOW_S
+        live: list[str] = []
+        if job_ids and recent:
+            try:
+                for jid in job_ids:
+                    state = compute.status(jid)
+                    if state != GONE and not is_terminal(state):
+                        live.append(jid)
+            except SlurmQueryError as exc:
+                log.warning("cancel-on-end: %s: query failed (%s); next tick", record.run_id, exc)
+                continue
+        if dry_run:
+            cancelled.extend(live)
+            continue
+        failed = False
+        for jid in live:
+            try:
+                ok = compute.cancel(jid)
+            except Exception as exc:
+                ok = False
+                log.warning("cancel-on-end: %s: scancel %s failed: %s", record.run_id, jid, exc)
+            if ok:
+                cancelled.append(jid)
+            else:
+                failed = True
+        if failed:
+            continue  # unstamped: the next tick tries again, until the window closes
+        stage["launches_cancelled"] = True
+        save_record(root, replace(record, stage=stage), now)
+    if cancelled:
+        log.info("cancel-on-end: cancelled %d launch job(s) of ended runs", len(cancelled))
+    return cancelled
 
 
 RESEARCH_LOG_BRANCH = "research-log"

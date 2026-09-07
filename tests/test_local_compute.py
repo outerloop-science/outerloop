@@ -206,8 +206,8 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
         def job_id_for_name(self, name: str) -> str:
             return ""
 
-        def cancel(self, job_id: str) -> None:
-            pass
+        def cancel(self, job_id: str) -> bool:
+            return True
 
     m = DispatchedMeasurer(
         compute=_DeadCompute(),
