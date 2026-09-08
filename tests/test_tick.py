@@ -4476,3 +4476,48 @@ def test_eval_cache_service_warms_from_the_default_branch(tmp_path: Path, monkey
 
     assert tick_mod.service_eval_cache(tmp_path, G(), "org/repo") == "warmed"
     assert seen == [(tmp_path, "org/repo", "trunk")]
+
+
+def test_a_tick_warms_the_targets_seed_cache(tmp_path: Path, monkeypatch) -> None:
+    """The scheduled tick itself, not just the service: with a GitHub client and
+    a target, one tick warms the seed from the default branch."""
+    from outerloop.tick import FollowupSpec, tick
+
+    seen: list = []
+
+    def fake_warm(root, target, gh, ref, **kw):
+        seen.append((target, ref))
+        return "warmed"
+
+    monkeypatch.setattr("outerloop.evalcache.warm", fake_warm)
+
+    class G:
+        def default_branch(self, repo):
+            return "main"
+
+        def get_file_content(self, repo, path, ref):
+            return None  # no contract: the launch lanes stop after the gate
+
+    spec = FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+
+    def runner(argv, timeout_s):
+        if argv[0] == "squeue":
+            return CommandResult(0, "", "")
+        raise AssertionError("no slurm calls expected")
+
+    tick(
+        tmp_path,
+        SlurmCompute(runner=runner),
+        RecordingDispatcher(),
+        now=NOW,
+        github=G(),
+        followup_spec=spec,
+    )
+    assert seen == [("org/pilot", "main")]

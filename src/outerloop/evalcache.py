@@ -26,6 +26,25 @@ WARM_FILES = ("pyproject.toml", "uv.lock")
 # picked for it, and the tick host's uv fetches it when it has none
 EVAL_PYTHON = "3.12"
 WARM_TIMEOUT_S = 30 * 60
+# what uv needs to download wheels and nothing more: the tick host's
+# environment holds credentials (token providers, key paths) that an
+# uncontained download process has no business seeing
+WARM_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+)
 
 Runner = Callable[..., Any]
 
@@ -80,16 +99,23 @@ def warm(
     uv = uv or shutil.which("uv")
     if not uv:
         return "skipped: uv is not on the tick host's PATH"
-    seed.mkdir(parents=True, exist_ok=True)
+    # warm into a fresh directory beside the seed and swap it in whole: the
+    # seed then holds exactly this lockfile's wheels (nothing accumulates
+    # across lockfile changes), and a job copying mid-swap fails its
+    # best-effort copy rather than seeing a half-written cache
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    fresh = seed.parent / f".{seed.name}.warm-{digest[:12]}"
+    shutil.rmtree(fresh, ignore_errors=True)
+    fresh.mkdir()
     with tempfile.TemporaryDirectory(prefix="outerloop-warm-") as tmp:
         for name, text in files.items():
             (Path(tmp) / name).write_text(text)
-        env = {
-            **os.environ,
-            "UV_CACHE_DIR": str(seed),
-            "UV_PROJECT_ENVIRONMENT": str(Path(tmp) / ".venv"),
-            "UV_LINK_MODE": "copy",
-        }
+        env = {k: os.environ[k] for k in WARM_ENV_KEYS if k in os.environ}
+        env.update(
+            UV_CACHE_DIR=str(fresh),
+            UV_PROJECT_ENVIRONMENT=str(Path(tmp) / ".venv"),
+            UV_LINK_MODE="copy",
+        )
         argv = [
             uv,
             "sync",
@@ -105,9 +131,17 @@ def warm(
                 argv, cwd=tmp, env=env, capture_output=True, text=True, timeout=WARM_TIMEOUT_S
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
+            shutil.rmtree(fresh, ignore_errors=True)
             return f"failed: {type(exc).__name__}: {exc}"
     if proc.returncode != 0:
+        shutil.rmtree(fresh, ignore_errors=True)
         tail = (proc.stderr or "").strip().splitlines()[-3:]
         return f"failed: uv sync exited {proc.returncode}: {' | '.join(tail)}"
-    marker.write_text(digest)
+    (fresh / LOCK_HASH).write_text(digest)
+    old = seed.parent / f".{seed.name}.old"
+    shutil.rmtree(old, ignore_errors=True)
+    if seed.exists():
+        os.replace(seed, old)
+    os.replace(fresh, seed)
+    shutil.rmtree(old, ignore_errors=True)
     return "warmed"

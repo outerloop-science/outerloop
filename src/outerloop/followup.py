@@ -1565,6 +1565,12 @@ def _seal_and_measure(
     from outerloop.measure import MeasurementPending
 
     parent = ws.git("rev-parse", "HEAD").strip()
+    from outerloop.attempt import with_seed
+    from outerloop.runstate import load_record
+
+    # the follow-up CLI carries the run id, not the target: the seed comes
+    # from the record
+    dispatch = with_seed(dispatch, run_root, load_record(run_root, run_id).target)
     snap = snapshot_tree(
         ws, parent, exclude=LINE_MEMORY_PATHS if bench.lines else (), author=bot_login
     )
