@@ -99,6 +99,7 @@ from outerloop.syscall import (
 )
 from outerloop.syscall import ensure_excluded as syscall_excluded
 from outerloop.syscall import install_tool as syscall_install_tool
+from outerloop.syscall import refresh_tool as syscall_refresh_tool
 from outerloop.syscall import write_budget as syscall_write_budget
 from outerloop.syscall import write_siblings as syscall_write_siblings
 from outerloop.verifier import MAX_CLAIM_CHARS
@@ -897,6 +898,9 @@ def _wake_author_sleep(
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
         wake_text = f"{extra_update}\n\n{wake_text}"
+    # the tool the session invokes comes from THIS kernel: a session that
+    # started under an older one gets today's verbs and flags at its wake
+    _best_effort("tool refresh", lambda: syscall_refresh_tool(workspace))
     _best_effort(
         "budget refresh",
         lambda: write_budget(

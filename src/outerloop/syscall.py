@@ -295,11 +295,6 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     report = data.get("report", "")
     if not isinstance(report, str) or len(report) > MAX_REPORT_CHARS:
         raise SyscallError(f"report must be a string of at most {MAX_REPORT_CHARS} chars")
-    if submit and not report.strip():
-        raise SyscallError(
-            "a submit needs a report: `submit --report <file>` with the hypothesis, what "
-            "ran and what was measured, and why this should merge"
-        )
     raw_launches = data.get("launches", [])
     if not isinstance(raw_launches, list):
         raise SyscallError("launches must be a list")
@@ -598,6 +593,42 @@ def install_tool(workspace: Path) -> None:
     tool = channel / "syscall"
     tool.write_text(source)
     tool.chmod(0o755)
+
+
+MISSING_REPORT = (
+    "a submit needs a report. Write your hypothesis, what you ran and what it measured, "
+    "why this should merge and what did not work to a markdown file, stage "
+    "`submit --report <file>`, and sleep again."
+)
+
+
+def refresh_tool(workspace: Path) -> None:
+    """Rewrite the installed tool from this kernel's source at a wake, so a
+    session that started under an older kernel gets the current verbs and
+    flags. Only the tool file changes — the channel and everything in it
+    stay — and it is written with a marker's care (a fresh O_EXCL inode,
+    renamed into place), so a `syscall` the session replaced with a symlink
+    is never written through."""
+    import shutil
+
+    from outerloop import syscall_cli
+
+    source = Path(syscall_cli.__file__).read_bytes()
+    dirfd = _channel_fd(workspace)
+    try:
+        try:
+            st = os.stat("syscall", dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            st = None
+        if st is not None and stat.S_ISDIR(st.st_mode):
+            # a directory planted in the tool's place: rename cannot replace
+            # it. Removed RELATIVE TO THE CHANNEL FD, never by path — a path
+            # would be re-resolved, and a channel swapped for a symlink in
+            # between would send the removal outside the workspace
+            shutil.rmtree("syscall", dir_fd=dirfd)
+        _write_channel(dirfd, "syscall", source, mode=0o755)
+    finally:
+        os.close(dirfd)
 
 
 def write_budget(
@@ -1055,15 +1086,17 @@ def _read_done(dirfd: int, name: str = SYNC_DONE) -> float:
         os.close(fd)
 
 
-def _write_channel(dirfd: int, name: str, data: bytes) -> None:
+def _write_channel(dirfd: int, name: str, data: bytes, mode: int = 0o644) -> None:
     """Write `data` to `name` in the channel: a fresh O_EXCL temp inode with an
     unguessable name, then an atomic rename — all relative to the O_NOFOLLOW
     channel fd. Never opens (and O_TRUNCs) an existing inode, so a session
     that hard-links a victim file to the temp name gets a failure instead of a
     truncation; never writes through a planted symlink; never utime()s."""
     tmp = f".{name}.{os.urandom(8).hex()}"
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644, dir_fd=dirfd)
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, mode, dir_fd=dirfd)
     try:
+        # the open's mode is filtered by the umask; the tool must stay executable
+        os.fchmod(fd, mode)
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
