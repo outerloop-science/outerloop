@@ -1027,9 +1027,9 @@ def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
 
 def test_one_run_record_snapshot_per_tick(tmp_path: Path, monkeypatch) -> None:
     """The whole tick walks runs/ a fixed, small number of times, not once per
-    service. Two snapshots (the read services share one, the board shares one)
-    plus the three mutation-phase reads that must stay fresh (sweep,
-    cancel-on-end, the implementing sweep) = 5. Before this refactor the same
+    service. Two snapshots (the read services share one, the board shares one,
+    research_log reads fresh) plus the three mutation-phase reads that must stay
+    fresh (sweep, cancel-on-end, the implementing sweep) = 6. Before this refactor the same
     tick read runs/ ~10-12 times."""
     import outerloop.climbboard as board_mod
     import outerloop.tick as tick_mod
@@ -1068,8 +1068,52 @@ def test_one_run_record_snapshot_per_tick(tmp_path: Path, monkeypatch) -> None:
         min_free_bytes=1,
     )
     # 3 mutation-phase reads (sweep, cancel_ended_launches, _sweep_implementing)
-    # + 1 shared read-service snapshot + 1 shared board snapshot
-    assert calls["n"] == 5
+    # + 1 shared read-service snapshot + 1 fresh read in research_log (it
+    # publishes terminal outcomes) + 1 shared board snapshot
+    assert calls["n"] == 6
+
+
+def test_launch_lanes_use_the_passed_snapshot_not_a_fresh_read(tmp_path, monkeypatch) -> None:
+    """service_steward and service_self_initiated read the shared snapshot the
+    tick hands them; given records they never walk runs/ themselves. Passing
+    records=[] skips the fresh-read branch, so a 0 count proves the snapshot is
+    used; a lane reverting to an unconditional list_runs would count 1 (terra:
+    the whole-tick count test does not exercise these two lanes)."""
+    import contextlib
+
+    import outerloop.tick as tick_mod
+    from outerloop.runstate import list_runs as real_list_runs
+
+    calls = {"n": 0}
+
+    def counting(root):
+        calls["n"] += 1
+        return real_list_runs(root)
+
+    monkeypatch.setattr(tick_mod, "list_runs", counting)
+    from outerloop.limits import effective_limits
+
+    spec = tick_mod.FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+    compute = FakeSlurm().compute()
+    limits = effective_limits(None)
+    invocations = [
+        lambda: tick_mod.service_self_initiated(tmp_path, compute, spec, None, NOW, records=[]),
+        lambda: tick_mod.service_steward(
+            tmp_path, None, compute, spec, NOW, None, limits, records=[]
+        ),
+    ]
+    for call in invocations:
+        calls["n"] = 0
+        with contextlib.suppress(Exception):
+            call()
+        assert calls["n"] == 0
 
 
 def test_in_review_acts_on_the_fresh_record_not_the_stale_snapshot(tmp_path: Path) -> None:

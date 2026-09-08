@@ -602,7 +602,7 @@ def service_in_review(
         if record.state != IN_REVIEW or not record.pr_url:
             continue
         try:
-            ending = close_if_done(root, record, github, now)
+            ending = close_if_done(root, load_record(root, record.run_id), github, now)
             if ending:
                 ended.append((record.run_id, ending))
                 continue
@@ -1856,8 +1856,10 @@ def tick(
         # purpose: the only record-writer between here and them is
         # service_in_review, and it only ENDS runs (frees slots), so the
         # snapshot can only OVER-count active runs — never launch a duplicate.
-        # Any service that acts on a single record's CURRENT state still
-        # re-reads that one record fresh via load_record (the freshness guard).
+        # The one exception is service_research_log, which PUBLISHES terminal
+        # outcomes: it reads fresh (below), never the snapshot. Any service
+        # that acts on a single record's CURRENT state re-reads that one
+        # record fresh via load_record (the freshness guard).
         tick_records = list_runs(root)
         service_syncs(root, followup_spec, now, tick_records)
     # a dry run reports and writes nothing: no download, no seed
@@ -1938,7 +1940,11 @@ def tick(
             records=tick_records,
         )
         try:
-            service_research_log(root, github, spec, now, records=tick_records)
+            # research_log reads FRESH, not the shared snapshot: it publishes
+            # terminal outcomes and writes done markers, and service_in_review
+            # just above may have ended a run this tick — a stale in-review
+            # record would be published as 'improved' and locked, wrong.
+            service_research_log(root, github, spec, now)
         except Exception as exc:  # the ledger is advisory; the tick continues
             log.warning("research-log service failed: %s", exc)
         intake_job = (
