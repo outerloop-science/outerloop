@@ -100,6 +100,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Helpers shared across kernel modules are public in their owning module:
+  `brief.code_fence`, `brief.cap`, `attempt.target_clone_url`,
+  `attempt.stage_launch_job_ids`, `orchestrator.metric_from_output`,
+  `review_agent.emit_envelope` and `review_agent.pull_request` (formerly
+  underscore-prefixed).
 - Toolchain: ruff 0.16.6 (pre-commit rev to match), mypy 2.3.1, pydantic 2.13.5;
   gitleaks 8.30.1 in CI and pre-commit, the CI download verified against its
   release checksum; the CI and release jobs run on `ubuntu-24.04`.

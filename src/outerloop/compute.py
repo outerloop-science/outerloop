@@ -68,7 +68,9 @@ Runner = Callable[[Sequence[str], int], CommandResult]
 
 
 def _subprocess_runner(argv: Sequence[str], timeout_s: int) -> CommandResult:
-    completed = subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout_s)
+    completed = subprocess.run(
+        list(argv), capture_output=True, text=True, timeout=timeout_s, check=False
+    )
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 

@@ -74,7 +74,7 @@ def sanitize_checkout(tree: Path) -> tuple[int, int]:
     return renamed, failed
 
 
-def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullRequest, dict]:
+def pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullRequest, dict]:
     pr_data = client.get_pull_request(repo, number)
     diff = client.get_pull_request_diff(repo, number)
     pr = PullRequest(
@@ -94,7 +94,7 @@ def _pull_request(client: GitHubClient, repo: str, number: int) -> tuple[PullReq
     return pr, pr_data
 
 
-def _emit(
+def emit_envelope(
     path: Path,
     repo: str,
     number: int,
@@ -155,7 +155,7 @@ def run_agent_review(
     spec = spec or reviewer_spec()
     today = today or datetime.now(UTC).date().isoformat()
     try:
-        pr, pr_data = _pull_request(client, repo, number)
+        pr, pr_data = pull_request(client, repo, number)
         skip = skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping agent review of %s#%s: %s", repo, number, skip)
@@ -163,7 +163,7 @@ def run_agent_review(
                 # even a clean skip leaves an envelope: the posting job can
                 # then REQUIRE an artifact, so "no artifact" always means a
                 # broken session, never an ambiguous quiet day
-                _emit(emit_path, repo, number, kind="skip-clean", detail=skip)
+                emit_envelope(emit_path, repo, number, kind="skip-clean", detail=skip)
             return None
 
         from outerloop.syscall import tool_command
@@ -183,7 +183,7 @@ def run_agent_review(
                 # EVERY errored session surfaces on the PR in the split
                 # topology: this job's log is not the record — the stub the
                 # post job publishes is.
-                _emit(
+                emit_envelope(
                     emit_path,
                     repo,
                     number,
@@ -199,7 +199,7 @@ def run_agent_review(
             # raw data, not rendered text: the posting step re-validates and
             # sanitizes at the render boundary, so the artifact crossing the
             # job boundary carries no pre-trusted markup
-            _emit(
+            emit_envelope(
                 emit_path,
                 repo,
                 number,
@@ -252,7 +252,7 @@ def run_agent_review(
             # a missing file, but with a generic detail — the real failure is
             # the one worth reading on the PR
             with contextlib.suppress(Exception):
-                _emit(
+                emit_envelope(
                     emit_path,
                     repo,
                     number,

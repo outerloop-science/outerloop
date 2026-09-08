@@ -952,6 +952,7 @@ class CodexHarness:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                check=False,
             )
         except OSError as exc:
             log.warning("could not spawn codex login: %s", exc)

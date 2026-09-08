@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from outerloop.maintain import run_maintenance_scan
-from outerloop.review_agent import _emit, sanitize_checkout
+from outerloop.review_agent import emit_envelope, sanitize_checkout
 from outerloop.review_agent_cli import resolve_reviewer_harness
 from outerloop.roles import maintainer_spec
 
@@ -40,7 +40,7 @@ def main() -> int:
     def stub(detail: str) -> int:
         log.warning("%s; skipping scan", detail)
         if emit_env:
-            _emit(
+            emit_envelope(
                 Path(emit_env).resolve(),
                 repo,
                 0,

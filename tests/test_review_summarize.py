@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from outerloop.review import REVIEW_LENSES, build_agent_brief, build_summarizer_brief
-from outerloop.review_agent import _emit
+from outerloop.review_agent import emit_envelope
 
 
 def _pr():
@@ -47,7 +47,7 @@ def test_summarizer_brief_fences_opinions_and_states_the_contract() -> None:
 def _envelope(tmp_path: Path, name: str, **kw) -> None:
     d = tmp_path / "in" / name
     d.mkdir(parents=True, exist_ok=True)
-    _emit(d / "findings.json", kw.pop("repo", "org/r"), kw.pop("number", 7), **kw)
+    emit_envelope(d / "findings.json", kw.pop("repo", "org/r"), kw.pop("number", 7), **kw)
 
 
 def _run_summarize(tmp_path: Path, monkeypatch) -> dict:

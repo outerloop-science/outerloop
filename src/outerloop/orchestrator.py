@@ -373,7 +373,7 @@ class SubprocessEvaluator:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
     def _parse_measured(self, stdout: str, metric: str) -> float:
-        value = _metric_from_output(stdout, metric)
+        value = metric_from_output(stdout, metric)
         if value is None:
             raise EvalError(f"metric {metric!r} not found in eval output")
         if not math.isfinite(value):
@@ -381,7 +381,7 @@ class SubprocessEvaluator:
         return value
 
 
-def _metric_from_output(stdout: str, metric: str) -> float | None:
+def metric_from_output(stdout: str, metric: str) -> float | None:
     """The metric from the LAST single-line JSON object that carries it.
 
     No regex fallback: a fuzzy match that reads the wrong number (a progress

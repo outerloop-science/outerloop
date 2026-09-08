@@ -876,7 +876,8 @@ def _last_worked_ts(root: Path) -> float | None:
             return None
         val = float(ts)
         return val if math.isfinite(val) else None
-    except Exception:
+    except Exception as exc:
+        log.debug("work marker unreadable, coalescing as if absent: %s", exc)
         return None
 
 
@@ -1206,7 +1207,7 @@ def cancel_ended_launches(
     leaves the run unstamped for the next tick, and runs ended longer ago than
     the window are stamped without a query (their jobs have long left the
     queue). Returns the cancelled ids."""
-    from outerloop.attempt import _stage_launch_job_ids
+    from outerloop.attempt import stage_launch_job_ids
 
     cancelled: list[str] = []
     for record in list_runs(root):
@@ -1215,7 +1216,7 @@ def cancel_ended_launches(
         stage = dict(record.stage or {})
         if stage.get("launches_cancelled"):
             continue
-        job_ids = _stage_launch_job_ids(record)
+        job_ids = stage_launch_job_ids(record)
         recent = now - float(getattr(record, "updated", 0.0) or 0.0) <= CANCEL_ON_END_WINDOW_S
         live: list[str] = []
         if job_ids and recent:
@@ -1984,7 +1985,7 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
     are written — safe next to the session's local git use. Best-effort per
     run; a failure leaves the request standing for the next cycle."""
     from outerloop.appauth import resolve_bot_auth
-    from outerloop.attempt import _target_clone_url
+    from outerloop.attempt import target_clone_url
     from outerloop.github import Workspace
     from outerloop.syscall import mark_synced, sync_requested
 
@@ -2005,7 +2006,7 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
                     if (spec.pat_file or spec.github_app_file)
                     else None
                 ),
-                url=_target_clone_url(record.target),
+                url=target_clone_url(record.target),
             )
             ws.fetch_origin()
             mark_synced(workspace, requested_at)
@@ -2212,16 +2213,6 @@ def _pending_path(root: Path, target: str, agent: str = "") -> Path:
     # (org/pilot__agent-01 is a valid repo).
     suffix = f"@{agent}" if agent else ""
     return root / "pending" / (target.replace("/", "__") + suffix + ".json")
-
-
-def read_pending(root: Path, target: str, agent: str = "") -> dict[str, Any] | None:
-    """The submit-time marker for a climb whose run record may not exist yet."""
-    path = _pending_path(root, target, agent)
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) and "submitted_at" in data else None
 
 
 def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:

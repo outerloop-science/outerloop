@@ -20,7 +20,7 @@ from pathlib import Path
 
 from outerloop.github import EnvTokenProvider, GitHubClient
 from outerloop.posting import EXPECTED_FAILURES, post_round, post_skip_stub
-from outerloop.review_agent import _pull_request
+from outerloop.review_agent import pull_request
 from outerloop.verifier import (
     VERIFY_MARKER,
     format_verify_comment,
@@ -58,7 +58,7 @@ def post_from_file(
         # the write authority re-checks the bot-only rule for EVERY kind: this
         # side of the artifact boundary is the one that must never post on a
         # non-bot PR — a forged envelope is still a post
-        pr, pr_data = _pull_request(client, repo, number)
+        pr, pr_data = pull_request(client, repo, number)
         skip = verify_skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping post on %s#%s: %s", repo, number, skip)

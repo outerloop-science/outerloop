@@ -15,7 +15,7 @@ from pathlib import Path
 from outerloop.github import EnvTokenProvider, GitHubClient
 from outerloop.harness import Harness
 from outerloop.review_agent import (
-    _emit,
+    emit_envelope,
     run_agent_review,
     sanitize_checkout,
 )
@@ -32,7 +32,7 @@ def _skip_stub(emit_env: str, repo: str, number: int, detail: str, reviewed_by: 
     on the PR rather than fail into silence."""
     log.warning("%s; skipping review", detail)
     if emit_env:
-        _emit(
+        emit_envelope(
             Path(emit_env).resolve(),
             repo,
             number,

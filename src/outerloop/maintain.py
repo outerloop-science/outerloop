@@ -22,7 +22,7 @@ from outerloop.harness import Harness, backend_id
 from outerloop.markers import marker
 from outerloop.posting import EXPECTED_FAILURES
 from outerloop.review import DEFAULT_SYSCALL_CMD, Finding, ReviewResult, sanitize
-from outerloop.review_agent import _emit
+from outerloop.review_agent import emit_envelope
 from outerloop.role_runner import run_role
 from outerloop.rolespec import RoleSpec
 
@@ -271,7 +271,7 @@ def run_maintenance_scan(
         if not role_result.ok or role_result.data is None:
             detail = role_result.error or role_result.session.stop_reason
             log.warning("maintenance scan produced no verdict on %s (%s): %s", repo, lens, detail)
-            _emit(
+            emit_envelope(
                 emit_path,
                 repo,
                 0,
@@ -281,7 +281,7 @@ def run_maintenance_scan(
                 lens=lens,
             )
             return None
-        _emit(
+        emit_envelope(
             emit_path,
             repo,
             0,
@@ -302,7 +302,7 @@ def run_maintenance_scan(
     except EXPECTED_FAILURES as exc:  # advisory: never red the repository's Actions
         log.warning("maintenance scan did not complete: %s: %s", type(exc).__name__, exc)
         with contextlib.suppress(Exception):
-            _emit(
+            emit_envelope(
                 emit_path,
                 repo,
                 0,

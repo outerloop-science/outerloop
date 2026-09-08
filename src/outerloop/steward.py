@@ -380,12 +380,12 @@ def _older_than(iso_timestamp: str, now: float, seconds: float) -> bool:
 
 
 def steward_brief(contract_text: str, contract: Contract, work_order: str, benchmark: str) -> str:
-    from outerloop.brief import _cap, _fence
+    from outerloop.brief import cap, code_fence
 
-    order = _cap(work_order, 20_000)
-    order_fence = _fence(order)
-    contract_capped = _cap(contract_text, 10_000)
-    contract_fence = _fence(contract_capped)
+    order = cap(work_order, 20_000)
+    order_fence = code_fence(order)
+    contract_capped = cap(contract_text, 10_000)
+    contract_fence = code_fence(contract_capped)
     steward_paths = "\n".join(
         f"- {p}" for p in (contract.steward.allowed if contract.steward else [])
     )

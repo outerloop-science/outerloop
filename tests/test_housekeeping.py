@@ -8,7 +8,6 @@ from pathlib import Path
 
 from outerloop.housekeeping import (
     DEFAULT_SHED_GRACE_S,
-    shed_candidates,
     shed_ended_workspaces,
     shed_workspace,
 )
@@ -42,9 +41,6 @@ def test_only_ended_runs_past_the_grace_shed_and_only_the_two_directories(tmp_pa
     _run(root, "old-ended", ENDED, NOW - DEFAULT_SHED_GRACE_S - 1)
     _run(root, "fresh-ended", ENDED, NOW - 60)
     _run(root, "live", WAITING, NOW - DEFAULT_SHED_GRACE_S - 1)
-    assert [r.run_id for r in shed_candidates(root, NOW, DEFAULT_SHED_GRACE_S, force=False)] == [
-        "old-ended"
-    ]
     shed = shed_ended_workspaces(root, NOW)
     assert shed == ["old-ended"]
     d = run_dir(root, "old-ended")

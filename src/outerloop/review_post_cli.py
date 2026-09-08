@@ -27,7 +27,7 @@ from outerloop.review import (
     sanitize,
     skip_reason,
 )
-from outerloop.review_agent import _pull_request
+from outerloop.review_agent import pull_request
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def post_from_file(
         # session job decided them once, but this side of the artifact
         # boundary is the one that must never post on a bot PR — a forged
         # stub envelope is still a post.
-        pr, pr_data = _pull_request(client, repo, number)
+        pr, pr_data = pull_request(client, repo, number)
         skip = skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping post on %s#%s: %s", repo, number, skip)

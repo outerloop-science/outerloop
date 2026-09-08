@@ -43,7 +43,7 @@ from outerloop.github import (
     ensure_regular_git_dir,
     git_identity,
 )
-from outerloop.orchestrator import EvalError, _metric_from_output, managed_eval_env
+from outerloop.orchestrator import EvalError, managed_eval_env, metric_from_output
 
 log = logging.getLogger(__name__)
 
@@ -213,6 +213,7 @@ def _filter_neutral_env(base_git: list[str], env: dict[str, str]) -> dict[str, s
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     # -z: NUL-separated records, each "key\nvalue" — so a value containing a
     # newline can never masquerade as a second record.
@@ -585,7 +586,7 @@ def read_eval_result(run_dir: Path, name: str, metric: str) -> float:
         with contextlib.suppress(OSError, ValueError):
             tail = (ev / "stderr").read_text(errors="replace")[-300:]
         raise EvalError(f"dispatched eval {name} failed ({code}): {tail}")
-    value = _metric_from_output(stdout, metric)
+    value = metric_from_output(stdout, metric)
     if value is None:
         raise EvalError(f"dispatched eval {name}: no readable {metric!r} in output")
     if not math.isfinite(value):

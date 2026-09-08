@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import logging
 import os
 import shutil
 import sys
@@ -32,6 +33,8 @@ from typing import Any
 from outerloop.cli import ENV_FILE
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
+
+log = logging.getLogger(__name__)
 
 CONFIG_DIR = ENV_FILE.parent
 DEFAULT_PAT_FILE = CONFIG_DIR / "bot_pat"
@@ -359,7 +362,8 @@ def _owner_type(owner: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return str(json.loads(resp.read()).get("type", ""))
-    except Exception:
+    except Exception as exc:
+        log.warning("could not look up the account type of %s: %s", owner, exc)
         return ""
 
 

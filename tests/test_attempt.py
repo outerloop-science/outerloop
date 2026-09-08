@@ -270,7 +270,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
     per park, however many wakes read the budget afterwards."""
     from dataclasses import dataclass
 
-    from outerloop.attempt import _reconcile_launch_hours, _stage_launch_job_ids
+    from outerloop.attempt import _reconcile_launch_hours, stage_launch_job_ids
     from outerloop.syscall import Launch
 
     @dataclass
@@ -299,7 +299,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
             "gpu_hours_used": 16.0,
         },
     )
-    assert _stage_launch_job_ids(rec) == ["701", "702"]
+    assert stage_launch_job_ids(rec) == ["701", "702"]
     d = D(Elapsed({"601": 12000, "602": 12000, "701": 300, "702": 300}))
     used = _reconcile_launch_hours(rec, d, 1, sweep)  # type: ignore[arg-type]
     assert abs(used - (16.0 - (8.0 - 600 / 3600))) < 1e-9
@@ -314,7 +314,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
         state="waiting",
         stage={"phase": "author-sleep", "afterany": "afterany:701:702"},
     )
-    assert _stage_launch_job_ids(old_sleep) == ["701", "702"]
+    assert stage_launch_job_ids(old_sleep) == ["701", "702"]
     old_cand = RunRecord(
         run_id="c",
         target="o/p",
@@ -322,7 +322,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
         state="waiting",
         stage={"phase": "candidate", "afterany": "afterany:601:701"},
     )
-    assert _stage_launch_job_ids(old_cand) == []
+    assert stage_launch_job_ids(old_cand) == []
     # no GPUs: nothing is metered, nothing refunded
     assert _reconcile_launch_hours(old_sleep, d, 0, sweep) == 0.0  # type: ignore[arg-type]
 
@@ -2343,7 +2343,7 @@ def _write_parked_candidate(
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
     # the wake pushes to the canonical target URL (never the ws git config);
     # point that at this run's local bare so the improved-wake test can push.
-    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
     return state, run_id
 
 
@@ -4449,7 +4449,7 @@ def _write_parked_line_candidate(tmp_path, monkeypatch, *, values, run_id="tsp-l
     save_record(state, record, 1_000_000.0)
     fake = _FakeMeasurer(values=values)
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
-    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
     return state, run_id
 
 
