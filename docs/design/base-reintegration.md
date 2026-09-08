@@ -22,9 +22,12 @@ Two gaps produced this:
 - A line merges main only at run start. A long depth run therefore drifts
   arbitrarily far from main as siblings merge, and `research-lines.md` already
   names the danger ("a stale line reverting others' wins").
-- The kernel has a stale-and-conflict wake for an in-review PR whose base
-  moves, but it needs a live, parkable run to target. Once a run ends by
-  opening its PR, there is no session left to wake, and the PR is stranded.
+The kernel already reconciles a PR whose base moves AFTER it opens: an open PR
+keeps its run in the in-review state, and the tick's follow-up conflict wake
+(`followup.py`) fetches the moved base into the workspace and asks the agent to
+merge and re-measure. So the only real gap is the first bullet — a line that
+never re-syncs main mid-run and opens its PR against a base superseded days
+earlier.
 
 ## Proposed protocol
 
@@ -62,19 +65,22 @@ The semantic choices, settled — the mechanics follow from them.
 3. **A superseded axis: tell, don't force.** The wake digest says its axis was
    beaten (e.g. "warmdown was taken further by #10"); the agent decides to
    pivot or push on. The kernel never kills a line for it.
-4. **Healing a PR after the run ended: re-instantiate on demand.** A lightweight
-   reconcile session is woken only when the PR actually conflicts; we do not
-   hold a slot parked for days. The run's records persist and the session wakes
-   against them.
+4. **Healing a PR after its base moves: already handled, no new mechanism.**
+   An open PR's run stays in-review, and the follow-up conflict wake already
+   fetches the moved base and asks the agent to merge and re-measure. The
+   note's earlier "post-terminal" framing was wrong (terra, #341): the run is
+   not terminated while its PR is open. Base reintegration is therefore stage 1
+   alone — closing the during-run drift; the post-open case needs nothing new.
 5. **Who pays the re-measure GPU: only when the agent keeps its change.** The
    re-measure is then a normal launch against the line's own budget. No eager
    baseline re-runs on every merge.
 
-**Build order.** Stage 1 is decisions 1–3 and 5: re-pin at wake with the
-digest, and the re-measure paid only on keep. Stage 2 is decision 4, the
-post-terminal reconcile, which reuses the existing stale/conflict wake.
+**Build order.** The whole feature is one stage: re-pin at wake with the digest
+(decisions 1–3), the re-measure paid only on keep (decision 5). Decision 4 needs
+no code — the existing follow-up conflict wake already covers a base that moves
+after the PR opens.
 
-## Why this is the right shape
+## Why this shape addresses the problem
 
 The base pin is correct during a run — you cannot measure improvement against
 a moving target. The failure is not the pin; it is holding one pin for a
