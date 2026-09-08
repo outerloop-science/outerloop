@@ -50,17 +50,17 @@ jobs:
       BACKEND: ${{ inputs.backend }}
     steps:
       - name: Check out the reviewer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: .autoresearch
           persist-credentials: false
       - name: Check out the PR head (read-only; never executed)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ inputs.pr_number }}/head
           path: pr-head
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock

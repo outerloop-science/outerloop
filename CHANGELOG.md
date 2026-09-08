@@ -652,6 +652,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- CI and reusable-workflow Actions bumped to current majors: actions/checkout
+  v7, astral-sh/setup-uv v10, upload-artifact v7, download-artifact v8. The
+  single-name artifact downloads stay flat and the pattern download reads
+  recursively, so the review split is unaffected; the node24 runtime is on the
+  hosted runners.
 - The tick reads its run records once per phase instead of once per service: a
   single snapshot after the mutation phase feeds the read services, and one
   feeds the board pass. About twelve full run-directory scans per tick become
