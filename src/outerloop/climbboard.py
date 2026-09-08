@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.markers import marker
-from outerloop.runstate import ENDED, list_runs, run_dir
+from outerloop.runstate import ENDED, RunRecord, list_runs, run_dir
 
 log = logging.getLogger("outerloop.climbboard")
 
@@ -169,12 +169,19 @@ def _curve_from_eval(run_directory: Path) -> list[list[float]]:
     return best
 
 
-def collect_rows(root: Path, target: str) -> dict[str, list[ClimbRow]]:
-    """Terminal attempts of `target` with a report, grouped by benchmark."""
+def collect_rows(
+    root: Path, target: str, records: list[RunRecord] | None = None
+) -> dict[str, list[ClimbRow]]:
+    """Terminal attempts of `target` with a report, grouped by benchmark.
+
+    `records` is one tick-wide snapshot the board threads to every collector;
+    absent, the rows are read fresh (direct callers, tests)."""
     from datetime import UTC, datetime
 
+    if records is None:
+        records = list_runs(root)
     out: dict[str, list[ClimbRow]] = {}
-    for record in list_runs(root):
+    for record in records:
         # only ENDED runs: an in-review run's outcome is not known yet (its
         # PR may be rejected), and a published row is never rewritten
         if record.target != target or record.state != ENDED:
@@ -872,13 +879,19 @@ def is_fixed_kernel_job(name: str) -> bool:
     return any(p.match(name) for p in FIXED_JOB_PATTERNS)
 
 
-def run_job_names(root: Path, target: str) -> dict[str, tuple[str, str, bool]]:
+def run_job_names(
+    root: Path, target: str, records: list[RunRecord] | None = None
+) -> dict[str, tuple[str, str, bool]]:
     """Expected per-run job names for `target`: name -> (run_id, agent,
     is_prefix). Exact for wake and followup; a prefix for launches, whose
     names end in the experiment's own label. Every run of the target counts,
-    ended ones too: a finishing job can outlive its record's state."""
+    ended ones too: a finishing job can outlive its record's state.
+
+    `records` shares the board's one snapshot; absent, it reads fresh."""
+    if records is None:
+        records = list_runs(root)
     out: dict[str, tuple[str, str, bool]] = {}
-    for record in list_runs(root):
+    for record in records:
         if record.target != target:
             continue
         rid, agent = record.run_id, record.agent_id
@@ -897,13 +910,19 @@ def run_job_names(root: Path, target: str) -> dict[str, tuple[str, str, bool]]:
     return out
 
 
-def eval_job_owners(root: Path, target: str) -> dict[str, tuple[str, str]]:
+def eval_job_owners(
+    root: Path, target: str, records: list[RunRecord] | None = None
+) -> dict[str, tuple[str, str]]:
     """Slurm job id -> (run_id, agent) for every eval a live run of `target`
     has dispatched: the measurer leaves the id in eval-*/submitted. Eval job
     names are liveness hashes with no agent in them, so this is how the queue
-    view knows whose eval is whose."""
+    view knows whose eval is whose.
+
+    `records` shares the board's one snapshot; absent, it reads fresh."""
+    if records is None:
+        records = list_runs(root)
     out: dict[str, tuple[str, str]] = {}
-    for record in list_runs(root):
+    for record in records:
         if record.target != target or record.state == ENDED:
             continue
         for submitted in run_dir(root, record.run_id).glob("eval-*/submitted"):
@@ -916,12 +935,20 @@ def eval_job_owners(root: Path, target: str) -> dict[str, tuple[str, str]]:
     return out
 
 
-def queue_rows(root: Path, target: str, snapshot: list[dict[str, str]]) -> list[dict[str, str]]:
+def queue_rows(
+    root: Path,
+    target: str,
+    snapshot: list[dict[str, str]],
+    records: list[RunRecord] | None = None,
+) -> list[dict[str, str]]:
     """The published queue: kernel jobs from a `Compute.queue_snapshot()`,
     each attributed to an agent (by eval marker, else by the agent id every
-    other kernel job carries in its name)."""
-    owners = eval_job_owners(root, target)
-    expected = run_job_names(root, target)
+    other kernel job carries in its name).
+
+    `records` shares the board's one snapshot across both owner maps; absent,
+    each reads fresh (watcher, tests)."""
+    owners = eval_job_owners(root, target, records)
+    expected = run_job_names(root, target, records)
     rows: list[dict[str, str]] = []
     for job in snapshot:
         name = str(job.get("name", ""))
@@ -1001,19 +1028,25 @@ def collect_status(
     now: float,
     contract: Any = None,
     queue: list[dict[str, str]] | None = None,
+    records: list[RunRecord] | None = None,
 ) -> dict[str, Any]:
     """The fleet's live picture for `target`: one entry per non-terminal run.
     Timestamps, not durations — the page computes elapsed time client-side,
-    so the strip feels live between pushes."""
+    so the strip feels live between pushes.
+
+    `records` shares the board's one snapshot (the runs list and the queue's
+    owner maps read the same records); absent, it reads fresh."""
     from outerloop.dispatch import effective_eval_minutes
 
+    if records is None:
+        records = list_runs(root)
     budgets = {
         b.name: (b.depth_k, b.sleep_k, getattr(b, "eval_minutes", 0) or 0)
         for b in getattr(contract, "benchmarks", ())
     }
     gpu_budget = getattr(getattr(contract, "budgets", None), "gpu_hours_per_run", None)
     runs = []
-    for record in list_runs(root):
+    for record in records:
         if record.target != target or record.state not in _LIVE_STATES:
             continue
         stage = record.stage or {}
@@ -1058,7 +1091,7 @@ def collect_status(
     runs.sort(key=lambda r: str(r.get("run_id")))
     status: dict[str, Any] = {"target": target, "published": now, "runs": runs}
     if queue is not None:  # a snapshot was taken (Slurm); the local loop has no queue
-        status["queue"] = queue_rows(root, target, queue)
+        status["queue"] = queue_rows(root, target, queue, records)
     return status
 
 
@@ -1069,12 +1102,15 @@ def service_status(
     now: float,
     contract: Any = None,
     queue: list[dict[str, str]] | None = None,
+    records: list[RunRecord] | None = None,
 ) -> bool:
     """Publish the strip when the fleet's SHAPE changed — a run appearing,
     leaving, or changing state/phase — never on every tick: the page shows
     elapsed time client-side, so timestamp-only drift is not worth a commit.
-    Advisory like the board; True when a write happened."""
-    status = collect_status(root, target, now, contract, queue)
+    Advisory like the board; True when a write happened.
+
+    `records` shares the board's one snapshot; absent, it reads fresh."""
+    status = collect_status(root, target, now, contract, queue, records)
     try:
         existing_raw: str | None = github.get_file(target, STATUS_PATH, BOARD_BRANCH)
     except Exception as exc:
@@ -1247,7 +1283,11 @@ def _read_index(github: Any, target: str) -> dict[str, str] | None:
 
 
 def service_climb_board(
-    root: Path, github: Any, target: str, directions: dict[str, str] | None = None
+    root: Path,
+    github: Any,
+    target: str,
+    directions: dict[str, str] | None = None,
+    records: list[RunRecord] | None = None,
 ) -> int:
     """Publish the board for `target`. Returns how many files changed.
 
@@ -1255,8 +1295,10 @@ def service_climb_board(
     as ONE commit (`put_files`) — data, curves, and the views are atomic,
     so the page can never point at data that is not on the branch, and a
     board pass costs at most one commit of research-log history. A failed
-    batch changes nothing; the whole pass retries next tick."""
-    local = collect_rows(root, target)
+    batch changes nothing; the whole pass retries next tick.
+
+    `records` shares the board's one snapshot; absent, it reads fresh."""
+    local = collect_rows(root, target, records)
     # snapshot BEFORE any branch read: put_files refuses if the head moves
     # mid-pass, so a concurrent write is never buried under stale content.
     # "" = branch missing (nothing to protect); None = outage — writing

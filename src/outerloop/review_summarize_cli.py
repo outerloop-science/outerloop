@@ -30,7 +30,7 @@ from outerloop.roles import summarizer_spec
 
 log = logging.getLogger(__name__)
 
-MAX_OPINIONS = 8  # artifacts are workflow-authored, but cap the read anyway
+MAX_OPINIONS = 12  # the maintenance scan fans out 9 lenses; cap the read, generously
 
 
 def _load_envelopes(root: Path, repo: str, number: int) -> list[dict]:

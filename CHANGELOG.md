@@ -8,6 +8,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `docs/design/base-reintegration.md`: a proposal to keep a running line's
+  base current by re-pinning at each wake and to reconcile a PR whose base
+  moved after the run ended, with the owner's five decisions and the build order.
 - A weekly maintenance digest (`maintenance-agent.yml`, reusable; the kernel's
   own caller is `maintenance.yml`): read-only lens sessions scan a repository's
   default branch for dead pathways, duplicated logic, oversized modules, stale
@@ -654,6 +657,14 @@ Versions follow [SemVer](https://semver.org).
   single-name artifact downloads stay flat and the pattern download reads
   recursively, so the review split is unaffected; the node24 runtime is on the
   hosted runners.
+- The tick reads its run records once per phase instead of once per service: a
+  single snapshot after the mutation phase feeds the read services, and one
+  feeds the board pass. About twelve full run-directory scans per tick become
+  five, which matters under a large fleet (the 2026-09-03 disk pressure); the
+  freshness guards that re-read a single record are unchanged.
+- The maintenance scan gains an `architecture` lens: it proposes abstraction
+  simplifications and missing extension points (a new backend, benchmark, or
+  role should need zero kernel change), as decision-kind digest items.
 - Helpers shared across kernel modules are public in their owning module:
   `brief.code_fence`, `brief.cap`, `attempt.target_clone_url`,
   `attempt.stage_launch_job_ids`, `orchestrator.metric_from_output`,
