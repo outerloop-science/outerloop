@@ -652,6 +652,14 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The tick reads its run records once per phase instead of once per service: a
+  single snapshot after the mutation phase feeds the read services, and one
+  feeds the board pass. About twelve full run-directory scans per tick become
+  five, which matters under a large fleet (the 2026-09-03 disk pressure); the
+  freshness guards that re-read a single record are unchanged.
+- The maintenance scan gains an `architecture` lens: it proposes abstraction
+  simplifications and missing extension points (a new backend, benchmark, or
+  role should need zero kernel change), as decision-kind digest items.
 - Helpers shared across kernel modules are public in their owning module:
   `brief.code_fence`, `brief.cap`, `attempt.target_clone_url`,
   `attempt.stage_launch_job_ids`, `orchestrator.metric_from_output`,

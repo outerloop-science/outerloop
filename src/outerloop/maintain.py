@@ -85,6 +85,17 @@ MAINTENANCE_LENSES: dict[str, str] = {
         "whose status no longer matches the code, knobs and flags the docs "
         "never name, wording that disagrees between two documents."
     ),
+    "architecture": (
+        "LENS — abstraction and extensibility, forward-looking rather than "
+        "cleanup: where two abstractions could be unified or a layer dropped "
+        "so the system is simpler to reason about; and, holding the principle "
+        "that a new backend, benchmark, or role should need zero kernel "
+        "change, where an extension point is missing so adding one today "
+        "forces a kernel edit. Name the files and propose the merge or the "
+        "seam; mark these decisions — a refactor of an abstraction many "
+        "parts of the system depend on is the maintainer's call, not a "
+        "mechanical change."
+    ),
 }
 
 SYSTEM_PROMPT = (
