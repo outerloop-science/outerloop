@@ -12,7 +12,9 @@ Versions follow [SemVer](https://semver.org).
   deploy step does to a checkout-based deployment: nothing, move to the newest
   release tag, or follow every merge. Adopters run what they installed until
   they choose to upgrade; following `main` is for the kernel's own developers.
-  `init` writes the default for Slurm deployments.
+  `init` writes the default for Slurm deployments. A successful sync records
+  the installed commit, so a checkout moved by hand rolls back the same way a
+  policy move does when its sync fails.
 - A seed cache per target (docs/design/eval-cache.md): the tick warms one uv
   cache from the target's lockfile on the tick host — wheels only, `--no-build`,
   never the target's code — and every eval and launch job copies it into its

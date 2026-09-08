@@ -78,7 +78,15 @@ newest_release() {
 # deploy fail and the chain run stale code; sweep locks older than a few
 # minutes (a live git op holds one for seconds) before touching the checkout.
 bash "$OUTERLOOP_HOME/scripts/sweep_git_locks.sh" "$OUTERLOOP_HOME" 10 || true
-DEPLOY_PREV=""
+# DEPLOY_PREV is the commit whose environment is installed: a successful sync
+# records it beside the environment, so a checkout moved by hand (the `off`
+# policy) still rolls back to it when its sync fails. Before the first record
+# it is the checkout as found, which is right when this step is what moves it.
+VENV="${UV_PROJECT_ENVIRONMENT:-$OUTERLOOP_HOME/.venv}"
+record_synced() { [ -d "$VENV" ] && printf '%s\n' "$1" > "$VENV/.synced-head" 2>/dev/null || true; }
+HEAD_BEFORE=$(git -C "$OUTERLOOP_HOME" rev-parse HEAD 2>/dev/null || echo "")
+DEPLOY_PREV=$(cat "$VENV/.synced-head" 2>/dev/null || echo "")
+[ -n "$DEPLOY_PREV" ] || DEPLOY_PREV="$HEAD_BEFORE"
 if [ "$POLICY" != off ]; then
     # The repo is public, so the fetch needs no credential; with a bot PAT the
     # fetch authenticates, and the PAT never appears in argv (argv is
@@ -93,22 +101,25 @@ if [ "$POLICY" != off ]; then
             KERNEL="https://x-access-token@github.com/outerloop-science/outerloop.git"
         fi
     fi
-    fetch() {
-        env ${ASKPASS:+GIT_ASKPASS="$ASKPASS"} GIT_TERMINAL_PROMPT=0 \
-            git -C "$OUTERLOOP_HOME" fetch --quiet "$KERNEL" "$@"
+    kgit() {
+        env ${ASKPASS:+GIT_ASKPASS="$ASKPASS"} GIT_TERMINAL_PROMPT=0 git -C "$OUTERLOOP_HOME" "$@"
     }
-    DEPLOY_PREV=$(git -C "$OUTERLOOP_HOME" rev-parse HEAD 2>/dev/null || echo "")
     if [ "$POLICY" = main ]; then
-        if fetch main; then
+        if kgit fetch --quiet "$KERNEL" main; then
             git -C "$OUTERLOOP_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
         else
             echo "deploy: fetch failed; running previous code"
         fi
-    elif fetch 'refs/tags/v*:refs/tags/v*'; then
-        TAG=$(git -C "$OUTERLOOP_HOME" tag -l 'v*' | newest_release)
+    # the newest release among the tags the public repo has NOW; a stale or
+    # local v-tag in this checkout is never chosen, and the chosen tag is
+    # force-updated to the public one
+    elif TAGS=$(kgit ls-remote --tags --refs "$KERNEL" 'v*'); then
+        TAG=$(printf '%s\n' "$TAGS" | sed -n 's|.*refs/tags/||p' | newest_release)
         if [ -z "$TAG" ]; then
             echo "deploy: no release tag found; running previous code"
-        elif [ "$(git -C "$OUTERLOOP_HOME" rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null)" != "$DEPLOY_PREV" ]; then
+        elif ! kgit fetch --quiet "$KERNEL" "+refs/tags/$TAG:refs/tags/$TAG"; then
+            echo "deploy: fetch failed; running previous code"
+        elif [ "$(git -C "$OUTERLOOP_HOME" rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null)" != "$HEAD_BEFORE" ]; then
             if git -C "$OUTERLOOP_HOME" reset --hard --quiet "refs/tags/$TAG"; then
                 echo "deploy: at release $TAG"
             else
@@ -116,7 +127,7 @@ if [ "$POLICY" != off ]; then
             fi
         fi
     else
-        echo "deploy: fetch failed; running previous code"
+        echo "deploy: tag lookup failed; running previous code"
     fi
     [ -n "$ASKPASS" ] && rm -f "$ASKPASS"
 fi
@@ -137,11 +148,13 @@ mkdir -p "$UV_CACHE_DIR" "$APPTAINER_CACHEDIR" || true
 # iteration: the checkout and the installed environment do not match and
 # could not be made to (the rollback itself failed). Cleared on every deploy.
 OUTERLOOP_DEPLOY_BROKEN=""
-if ! (cd "$OUTERLOOP_HOME" && uv sync --locked --quiet); then
+if (cd "$OUTERLOOP_HOME" && uv sync --locked --quiet); then
+    record_synced "$(git -C "$OUTERLOOP_HOME" rev-parse HEAD 2>/dev/null || echo "")"
+else
     NEW_HEAD=$(git -C "$OUTERLOOP_HOME" rev-parse HEAD 2>/dev/null || echo "")
     if [ -z "${DEPLOY_PREV:-}" ] || [ "$NEW_HEAD" = "$DEPLOY_PREV" ]; then
-        # nothing was fetched: the environment is whatever the last good
-        # deploy installed, and the checkout still matches it
+        # the checkout is at the commit whose environment is installed (or
+        # neither is known): nothing to go back to, keep running it
         echo "deploy: uv sync failed; environment unchanged"
     elif [ -n "$NEW_HEAD" ] \
         && [ "$(git -C "$OUTERLOOP_HOME" rev-parse "$DEPLOY_PREV":uv.lock 2>/dev/null)" \
@@ -152,6 +165,7 @@ if ! (cd "$OUTERLOOP_HOME" && uv sync --locked --quiet); then
         # not touch uv.lock — and it keeps the tick alive (2026-09-03: the
         # scratch quota filled and every tick died here for two hours).
         echo "deploy: uv sync failed but uv.lock is unchanged; running new code on the current environment"
+        record_synced "$NEW_HEAD"
     else
         # dependencies changed and could not be installed; the partial sync
         # may have altered the environment, so go back to the previous commit
@@ -161,6 +175,7 @@ if ! (cd "$OUTERLOOP_HOME" && uv sync --locked --quiet); then
         if git -C "$OUTERLOOP_HOME" reset --hard --quiet "$DEPLOY_PREV" \
            && (cd "$OUTERLOOP_HOME" && uv sync --locked --quiet); then
             echo "deploy: uv sync failed; back on $DEPLOY_PREV with its environment"
+            record_synced "$DEPLOY_PREV"
         else
             echo "deploy: uv sync failed and the environment could not be made consistent; tick skipped until a deploy succeeds"
             OUTERLOOP_DEPLOY_BROKEN=1

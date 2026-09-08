@@ -490,16 +490,26 @@ def _deploy(
     *,
     tags: str = "",
     at_tag: bool = False,
+    head: str = "OLD",
+    synced: str | None = None,
+    sync_fails_once: bool = False,
     env_file: str | None = None,
     **env_extra: str,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Source tick_deploy.sh alone. A shim git logs its argv and answers the
-    release questions (the tags it has; whether HEAD is already at the chosen
-    tag); uv sync succeeds. Returns the process and git's argv log."""
+    questions the script asks: the public repo's tags (ls-remote), whether
+    HEAD is already at the chosen tag, HEAD itself (`head`, OLD after a
+    rollback), and lockfiles that DIFFER between OLD and HEAD. `synced` plants
+    the recorded synced commit beside a (bare) .venv; `sync_fails_once` makes
+    the first `uv sync` fail with a quota error. Returns the process and git's
+    argv log."""
     home = tmp_path / "home"
     (home / "scripts").mkdir(parents=True)
     for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
         (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    if synced is not None:
+        (home / ".venv").mkdir()
+        (home / ".venv" / ".synced-head").write_text(synced + "\n")
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "gitlog"
@@ -509,14 +519,26 @@ def _deploy(
         f"""#!/bin/sh
 echo "$@" >> "{log}"
 case "$*" in
-  *"tag -l v*"*) for t in {tags}; do echo "$t"; done ;;
+  *"ls-remote"*) for t in {tags}; do printf 'abc\trefs/tags/%s\n' "$t"; done ;;
   *"rev-parse refs/tags/"*) echo {tag_commit} ;;
-  *"rev-parse HEAD"*) echo OLD ;;
+  *"rev-parse OLD:uv.lock"*) echo lockOLD ;;
+  *"rev-parse HEAD:uv.lock"*) echo lockNEW ;;
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/rolledback" ]; then echo OLD; else echo {head}; fi ;;
+  *"reset --hard --quiet OLD"*) touch "{tmp_path}/rolledback" ;;
 esac
 exit 0
 """
     )
-    (bindir / "uv").write_text("#!/bin/sh\nexit 0\n")
+    syncs = tmp_path / "syncs"
+    fail = (
+        f'[ "$(wc -l < "{syncs}" | tr -d " ")" -eq 1 ] && '
+        '{ echo "error: Disk quota exceeded" >&2; exit 2; }'
+        if sync_fails_once
+        else "true"
+    )
+    (bindir / "uv").write_text(
+        f'#!/bin/sh\ncase "$1" in sync) echo x >> "{syncs}"; {fail} ;; esac\nexit 0\n'
+    )
     for p in bindir.iterdir():
         os.chmod(p, 0o755)
     if env_file is not None:
@@ -532,7 +554,12 @@ exit 0
         "OUTERLOOP_ROOT": str(tmp_path / "root"),
         "HOME": str(tmp_path),
     }
-    for k in ("OUTERLOOP_AUTO_UPDATE", "AUTORESEARCH_AUTO_UPDATE", "OUTERLOOP_PAT_FILE"):
+    for k in (
+        "OUTERLOOP_AUTO_UPDATE",
+        "AUTORESEARCH_AUTO_UPDATE",
+        "OUTERLOOP_PAT_FILE",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
         env.pop(k, None)
     env.update(env_extra)
     proc = subprocess.run(
@@ -559,21 +586,23 @@ def test_the_default_update_policy_leaves_the_checkout_alone(tmp_path: Path) -> 
 
 
 def test_release_policy_moves_to_the_newest_release_tag(tmp_path: Path) -> None:
-    """`release` fetches the public repo's tags without a credential and resets
-    to the newest by version order: at one X.Y.Z a final release beats rc
-    beats alpha beats dev, and dev10 beats dev2; tags that are not releases
-    are ignored."""
+    """`release` asks the public repo for its tags without a credential, picks
+    the newest by version order (at one X.Y.Z a final release beats rc beats
+    alpha beats dev, and dev10 beats dev2; tags that are not releases are
+    ignored), fetches only that tag and resets to it. Local tags never count."""
     proc, gitlog = _deploy(
         tmp_path,
         tags="v0.1.0.dev2 v0.1.0 v0.1.0rc1 v0.2.0.dev1 v0.1.1 vlatest v1 v0.2.0a1 v0.1.0.dev10",
         OUTERLOOP_AUTO_UPDATE="release",
     )
     assert proc.returncode == 0, proc.stderr
+    public = "https://github.com/outerloop-science/outerloop.git"
+    assert f"ls-remote --tags --refs {public} v*" in gitlog
     fetches = [ln for ln in gitlog.splitlines() if " fetch " in ln]
     assert fetches == [
-        f"-C {tmp_path / 'home'} fetch --quiet"
-        " https://github.com/outerloop-science/outerloop.git refs/tags/v*:refs/tags/v*"
+        f"-C {tmp_path / 'home'} fetch --quiet {public} +refs/tags/v0.2.0a1:refs/tags/v0.2.0a1"
     ]
+    assert "tag -l" not in gitlog  # the checkout's own tags are never consulted
     assert "reset --hard --quiet refs/tags/v0.2.0a1" in gitlog
     assert "deploy: at release v0.2.0a1" in proc.stdout
 
@@ -615,7 +644,7 @@ def test_the_env_file_policy_wins_over_the_environment(tmp_path: Path) -> None:
     proc, gitlog = _deploy(
         tmp_path / "b", tags="v0.1.0", env_file="AUTORESEARCH_AUTO_UPDATE=release\n"
     )
-    assert "refs/tags/v*:refs/tags/v*" in gitlog
+    assert "ls-remote --tags --refs" in gitlog
     assert "reset --hard --quiet refs/tags/v0.1.0" in gitlog
 
 
@@ -623,3 +652,32 @@ def test_an_unknown_policy_is_off_and_says_so(tmp_path: Path) -> None:
     proc, gitlog = _deploy(tmp_path, OUTERLOOP_AUTO_UPDATE="nightly")
     assert "fetch" not in gitlog
     assert "OUTERLOOP_AUTO_UPDATE=nightly is not one of off, release, main" in proc.stdout
+
+
+def test_off_policy_rolls_a_hand_moved_checkout_back_when_its_sync_fails(tmp_path: Path) -> None:
+    """The operator pulled by hand (HEAD is NEW), the recorded synced commit is
+    OLD and their lockfiles differ: when NEW's sync fails the checkout goes
+    back to OLD and OLD's environment is reinstalled — the same guarantee the
+    policies get, without any fetch."""
+    proc, gitlog = _deploy(tmp_path, head="NEW", synced="OLD", sync_fails_once=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog
+    assert "reset --hard --quiet OLD" in gitlog
+    assert "back on OLD with its environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout
+    assert (tmp_path / "home" / ".venv" / ".synced-head").read_text() == "OLD\n"
+
+
+def test_a_successful_sync_records_the_installed_commit(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(tmp_path, head="NEW", synced="OLD")
+    assert proc.returncode == 0, proc.stderr
+    assert "reset" not in gitlog
+    assert (tmp_path / "home" / ".venv" / ".synced-head").read_text() == "NEW\n"
+
+
+def test_without_a_record_a_failed_sync_keeps_the_checkout(tmp_path: Path) -> None:
+    """Nothing recorded and nothing moved by this step: there is no known-good
+    commit to return to, so the checkout stays and the failure is logged."""
+    proc, gitlog = _deploy(tmp_path, head="NEW", sync_fails_once=True)
+    assert "reset" not in gitlog
+    assert "uv sync failed; environment unchanged" in proc.stdout
