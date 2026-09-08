@@ -8,6 +8,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- A wake that replaced an older session's tool tells the author what is new
+  (`--report`, `--why`, `--concurrency`, `queue`, `history`). The install guide
+  says the local loop runs in the foreground and how to keep it up headless.
 - A submit without a report is refused with a wake the author can act on, not
   a dead run, and a wake rewrites the session's tool from the running kernel,
   so a session that started before a deploy has today's verbs and flags.

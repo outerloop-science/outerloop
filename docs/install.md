@@ -236,7 +236,9 @@ that can reach GitHub and your LLM provider works.
 - **Slurm cluster**: the tick can live in the queue as a self-resubmitting
   job — no daemon and no inbound SSH, which matters when your cluster requires
   2FA.
-- **A VM or workstation**: run it on a timer.
+- **A VM or workstation**: `outerloop start` runs the local loop in the
+  foreground (Ctrl-C stops it, the records resume it); on a headless machine
+  start it under `nohup` or in a tmux window, or as a user service.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI

@@ -93,6 +93,7 @@ from outerloop.runstate import (
 from outerloop.syscall import (
     CHANNEL_DIR_NAMES,
     MAX_ARTIFACT_BYTES,
+    TOOL_UPDATE_NOTE,
     SyscallRequest,
     channel_dir,
     launch_task_ids,
@@ -876,6 +877,14 @@ def _wake_author_sleep(
         ),
     )
     gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches, elapsed)
+    # the tool the session invokes comes from THIS kernel: a session that
+    # started under an older one gets today's verbs and flags at its wake, and
+    # is told what is new
+    tool_changed = False
+    try:
+        tool_changed = syscall_refresh_tool(workspace)
+    except Exception as exc:
+        log.warning("tool refresh failed: %s", redact(f"{type(exc).__name__}: {exc}", secrets))
     wake_text = render_wake(
         results,
         str(record.stage.get("syscall_note", "")),
@@ -895,12 +904,11 @@ def _wake_author_sleep(
     ]
     if pacing:
         wake_text = f"{wake_text}\n\n" + "\n".join(pacing) + " (the contract's ceiling applies)."
+    if tool_changed:
+        wake_text = f"{wake_text}\n\n{TOOL_UPDATE_NOTE}"
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
         wake_text = f"{extra_update}\n\n{wake_text}"
-    # the tool the session invokes comes from THIS kernel: a session that
-    # started under an older one gets today's verbs and flags at its wake
-    _best_effort("tool refresh", lambda: syscall_refresh_tool(workspace))
     _best_effort(
         "budget refresh",
         lambda: write_budget(

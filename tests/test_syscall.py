@@ -1225,6 +1225,9 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
     channel = tmp_path / ".outerloop"
     (channel / "budget.json").write_text("{}")
     tool = channel / "syscall"
+    assert refresh_tool(tmp_path) is False  # already this kernel's tool: nothing to tell
+    tool.write_text("# stale tool\n")
+    assert refresh_tool(tmp_path) is True  # an older tool was replaced: the wake says what is new
     tool.write_text("# stale tool\n")
     import os
 
