@@ -141,7 +141,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
           path: base
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: kernel/uv.lock
@@ -218,7 +218,7 @@ jobs:
           ssh-key: ${{ secrets.checkout_ssh_key }}
           path: kernel
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: kernel/uv.lock

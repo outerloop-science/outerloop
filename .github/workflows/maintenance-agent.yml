@@ -112,7 +112,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
           path: tree
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
@@ -223,7 +223,7 @@ jobs:
           ref: ${{ inputs.reviewer_ref }}
           path: .autoresearch
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
@@ -336,7 +336,7 @@ jobs:
           ref: ${{ inputs.reviewer_ref }}
           path: .autoresearch
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
