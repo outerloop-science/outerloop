@@ -653,6 +653,9 @@ def test_find_uv_takes_path_first_then_the_installer_directory(
     assert cli.find_uv() == ("", "")  # nowhere
     installed = tmp_path / ".local" / "bin" / "uv"
     installed.parent.mkdir(parents=True)
+    installed.mkdir()  # a searchable DIRECTORY of that name is not uv
+    assert cli.find_uv() == ("", "")
+    installed.rmdir()
     installed.write_text("#!/bin/sh\n")
     installed.chmod(0o755)
     assert cli.find_uv() == (str(installed), str(installed.parent))
@@ -689,3 +692,21 @@ def test_start_adds_the_installer_directory_to_the_loops_path(
     env = seen["env"]
     assert isinstance(env, dict)
     assert env["PATH"].startswith("/h/.local/bin" + os.pathsep)
+
+
+def test_slurm_start_hands_the_installer_directory_to_the_resident_job(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resident job inherits start's environment through --export=ALL, so
+    the fallback directory must reach sbatch's PATH, not only the local loop."""
+    home = checkout(clean_env)
+    bin_dir = clean_env / "bin"
+    bin_dir.mkdir()
+    pathlog = clean_env / "sbatch.path"
+    shim(bin_dir, "sbatch", f'printf "%s" "$PATH" > {pathlog}\necho "4242;torch"\n')
+    shim(bin_dir, "squeue", "exit 0\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setattr(cli, "find_uv", lambda: ("/h/.local/bin/uv", "/h/.local/bin"))
+    monkeypatch.chdir(home)
+    assert main(["start", "--root", "/scratch/me/ar", "--account", "a", "--partition", "p"]) == 0
+    assert pathlog.read_text().startswith("/h/.local/bin" + os.pathsep)

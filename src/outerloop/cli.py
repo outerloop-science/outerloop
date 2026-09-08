@@ -353,7 +353,9 @@ def find_uv() -> tuple[str, str]:
         return found, ""
     for rel in UV_FALLBACK_DIRS:
         candidate = Path.home() / rel / "uv"
-        if os.access(candidate, os.X_OK):
+        # a regular executable file, as `which` would accept: a directory of
+        # that name is searchable, not runnable
+        if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate), str(candidate.parent)
     return "", ""
 
