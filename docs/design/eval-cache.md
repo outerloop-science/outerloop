@@ -22,7 +22,7 @@ dies with the job leaves nothing to reap.
 
 The cost shows on a torch target. A speedrun eval installs torch and its
 CUDA libraries, about 2.5 GB, on every job; on Torch's network that is a
-minute, on a workstation several. The heavier the stack the worse it gets,
+minute; on a workstation, several minutes. The heavier the stack the worse it gets,
 and torch is the common case, not the exception.
 
 ## The constraint that shapes the fix
