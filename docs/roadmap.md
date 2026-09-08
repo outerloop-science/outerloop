@@ -289,7 +289,8 @@ Roles/flow reference for this whole section: design/roles.md.
        improvements return only as human-reviewed development PRs
 
 - [ ] Dependency caches for evals and the target image (design/eval-cache.md):
-      a kernel-warmed seed cache each job copies, then a contract `image:` knob
+      a kernel-warmed seed cache each job copies, then the contract's
+      `environment.container` knob
 
 ## Beyond 1.0 — external-facing (design: design/external.md)
 

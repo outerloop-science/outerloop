@@ -75,10 +75,12 @@ run. Both are what the image is for.
 The architecture note already reserves a per-target Apptainer image as where
 a repository's dependency world belongs; today one shared agent image serves
 every target and the deployment names it (`OUTERLOOP_IMAGE`). The contract
-gains one knob, pinned to content:
+gains the knob the architecture note and the roadmap already name,
+`environment.container`, pinned to content:
 
 ```yaml
-image: hf://outerloop-science/speedrun-image@<revision sha>   # or a path plus sha256
+environment:
+  container: hf://outerloop-science/speedrun-image@<revision sha>   # or a path plus sha256
 ```
 
 - **Evals and launches only.** The kernel resolves the reference once per
@@ -110,8 +112,8 @@ image: hf://outerloop-science/speedrun-image@<revision sha>   # or a path plus s
 1. The seed cache, kernel side: the `--no-build` warmer with its tests, and a
    job-script test that a present seed's contents are copied into the job's
    cache and an absent seed is skipped.
-2. The `image:` knob (evals and launches, digest-pinned) and the in-image
-   seed path.
+2. The `environment.container` knob (evals and launches, digest-pinned) and
+   the in-image seed path.
 3. Speedrun's image recipe, in that repository.
 
 Open: whether the warmer should also seed the *session's* environment (the

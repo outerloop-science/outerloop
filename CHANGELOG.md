@@ -10,7 +10,7 @@ Versions follow [SemVer](https://semver.org).
 
 - `docs/design/eval-cache.md`: why every eval downloads its dependencies today,
   and the two changes that stop it — a kernel-warmed seed cache each job
-  copies, and a per-target image named in the contract.
+  copies, and a per-target image named in the contract (`environment.container`).
 - A wake that replaced an older session's tool tells the author what is new
   (`--report`, `--why`, `--concurrency`, `queue`, `history`). The install guide
   says the local loop runs in the foreground and how to keep it up headless.
