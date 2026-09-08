@@ -649,6 +649,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The maintenance scan gains an `architecture` lens: it proposes abstraction
+  simplifications and missing extension points (a new backend, benchmark, or
+  role should need zero kernel change), as decision-kind digest items.
 - Helpers shared across kernel modules are public in their owning module:
   `brief.code_fence`, `brief.cap`, `attempt.target_clone_url`,
   `attempt.stage_launch_job_ids`, `orchestrator.metric_from_output`,
