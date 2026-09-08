@@ -288,6 +288,9 @@ Roles/flow reference for this whole section: design/roles.md.
        snapshot of autoresearch and the eval is the battery score;
        improvements return only as human-reviewed development PRs
 
+- [ ] Dependency caches for evals and the target image (design/eval-cache.md):
+      a kernel-warmed seed cache each job copies, then a contract `image:` knob
+
 ## Beyond 1.0 — external-facing (design: design/external.md)
 
 - [x] GitHub App identity replacing the machine user — `init`'s default path;
