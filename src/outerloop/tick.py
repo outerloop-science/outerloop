@@ -1850,7 +1850,8 @@ def tick(
     # whether github/contract loaded this tick.
     if followup_spec is not None:
         service_syncs(root, followup_spec, now)
-    if github is not None and followup_spec is not None and followup_spec.target:
+    # a dry run reports and writes nothing: no download, no seed
+    if github is not None and followup_spec is not None and followup_spec.target and not dry_run:
         try:
             service_eval_cache(root, github, followup_spec.target)
         except Exception as exc:  # advisory: a cold cache costs a download, never a tick
