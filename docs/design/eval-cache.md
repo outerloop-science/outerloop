@@ -40,6 +40,9 @@ the kernel, on a trusted host, and jobs only read it.
 
 ## Change 1: a kernel-warmed seed cache
 
+*Shipped: `evalcache.warm` on the tick, `write_eval_job(seed_cache=)` in every
+job, the seed under `<state root>/eval-cache/<target>`.*
+
 - **The kernel warms one cache per target**, `<state root>/eval-cache/<target>`
   on Torch and `~/.outerloop/eval-cache/<target>` in local mode, by running
   `uv sync --frozen --no-install-project --no-build` into a throwaway

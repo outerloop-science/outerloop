@@ -290,8 +290,15 @@ def write_eval_job(
     artifact_max_bytes: int = 0,
     gpus: int = 0,
     array: int = 1,
+    seed_cache: Path | None = None,
 ) -> Path:
     """Write the orchestrator-authored job script for one dispatched eval.
+
+    `seed_cache` names the kernel-warmed seed for this target
+    (docs/design/eval-cache.md): the job copies its contents into its own
+    scratch cache before `uv` runs — a copy, never a bind or a hardlink, so the
+    job's cache is its own and the seed is never written; a missing seed or a
+    failed copy costs a download, never the eval.
 
     `array` > 1 writes ONE script for a Slurm job array: each task derives its
     own job dir `eval-<name>.<k>` from SLURM_ARRAY_TASK_ID (SWEEP_INDEX under a
@@ -388,6 +395,11 @@ def write_eval_job(
     ]
     for k, v in neutral.items():
         lines.append(f"export {k}={shlex.quote(v)}")
+    if seed_cache is not None:
+        q = shlex.quote(str(seed_cache))
+        lines.append(
+            f'if [ -d {q} ]; then cp -a {q}/. "$SCRATCH/cache"/ 2>> "$EV/setup.log" || true; fi'
+        )
     lines += [
         # Materialize the snapshot by CHECKOUT, not `git archive`: a checkout
         # reproduces content faithfully — INCLUDING .gitattributes — and does

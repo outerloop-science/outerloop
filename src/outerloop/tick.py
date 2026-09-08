@@ -1850,6 +1850,11 @@ def tick(
     # whether github/contract loaded this tick.
     if followup_spec is not None:
         service_syncs(root, followup_spec, now)
+    if github is not None and followup_spec is not None and followup_spec.target:
+        try:
+            service_eval_cache(root, github, followup_spec.target)
+        except Exception as exc:  # advisory: a cold cache costs a download, never a tick
+            log.warning("eval cache warm failed: %s: %s", type(exc).__name__, exc)
     if github is not None and followup_spec is not None:
         # expired flight snapshots die with their TTL, not with a human.
         # One home suffices: every lane's spec derives from followup_spec
@@ -1969,6 +1974,18 @@ def tick(
     # main / mark_tick_complete) — not here with the start-of-tick `now`, which
     # a tick longer than the window would leave stale.
     return report
+
+
+def service_eval_cache(root: Path, github: Any, target: str) -> str:
+    """Warm the target's seed cache from its default branch's lockfile
+    (docs/design/eval-cache.md). Cheap when nothing changed: two file reads
+    and a hash. Returns the warmer's one-word status."""
+    from outerloop.evalcache import warm
+
+    status = warm(root, target, github, github.default_branch(target))
+    if status != "unchanged":
+        log.info("eval cache for %s: %s", target, status)
+    return status
 
 
 def service_syncs(root: Path, spec: Any, now: float) -> None:

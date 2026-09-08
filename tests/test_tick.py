@@ -4457,3 +4457,22 @@ def test_cancel_on_end_cancels_an_ended_runs_pending_launches(tmp_path: Path) ->
     assert (
         slurm.cancelled == ["7"] and "launches_cancelled" not in load_record(tmp_path, "r7").stage
     )
+
+
+def test_eval_cache_service_warms_from_the_default_branch(tmp_path: Path, monkeypatch) -> None:
+    from outerloop import tick as tick_mod
+
+    seen: list = []
+
+    def fake_warm(root, target, github, ref, **kw):
+        seen.append((root, target, ref))
+        return "warmed"
+
+    monkeypatch.setattr("outerloop.evalcache.warm", fake_warm)
+
+    class G:
+        def default_branch(self, repo):
+            return "trunk"
+
+    assert tick_mod.service_eval_cache(tmp_path, G(), "org/repo") == "warmed"
+    assert seen == [(tmp_path, "org/repo", "trunk")]

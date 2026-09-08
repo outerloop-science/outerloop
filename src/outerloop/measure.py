@@ -271,6 +271,8 @@ class DispatchedMeasurer:
     # where a `baseline: cached` benchmark's base-tree measurements live
     # (target-wide); None = no cache, every gate measures its own baseline
     baseline_cache: Path | None = None
+    # the target's kernel-warmed seed cache, copied into each job (evalcache)
+    seed_cache: Path | None = None
 
     def _placement(self, m: Measure) -> tuple[str, str]:
         if m.gpus <= 0:
@@ -353,6 +355,7 @@ class DispatchedMeasurer:
             image=self.image,
             extra_env=m.env(),
             gpus=m.gpus,
+            seed_cache=self.seed_cache,
         )
         account, partition = self._placement(m)
         spec: JobSpec = eval_job_spec(
@@ -481,6 +484,8 @@ class DispatchSettings:
     # to launch such benchmarks); empty gpu_account = same account as CPU jobs.
     gpu_partition: str = ""
     gpu_account: str = ""
+    # the target's seed cache (evalcache.seed_dir), copied into every job
+    seed_cache: Path | None = None
 
     def placement(self, gpus: int) -> tuple[str, str]:
         """(account, partition) for a job needing `gpus` GPUs. Raises when a
@@ -520,4 +525,5 @@ class DispatchSettings:
             # target-wide, beside the run dirs: every attempt on one base
             # shares its cached baseline measurement (Benchmark.baseline)
             baseline_cache=run_dir.parent / "baselines",
+            seed_cache=self.seed_cache,
         )
