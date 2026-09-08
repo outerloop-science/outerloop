@@ -238,6 +238,53 @@ single real opinion; a model session only when merging), the reusable
 emit-only lens opinions + the summarized round; label re-trigger → the
 single full-rubric convergence session.
 
+## Maintenance scan (design, 2026-09-08)
+
+The reviewer's machinery pointed at a whole tree on a schedule. A maintainer
+who cannot read the code base every week still wants the list a careful
+maintainer would write after a week away: dead pathways, duplicated owners,
+oversized modules, stale pins, slow tests, repeated work on the hot path,
+documentation drift. The first such list was written by hand in an agent
+session (issue #332); this makes it repeatable.
+
+**What runs.** `maintenance-agent.yml` is a reusable workflow, called on a
+cron (weekly) or by hand. It fans out one read-only lens session per digest
+section (`maintain.MAINTENANCE_LENSES`, plus `general` for the whole
+checklist) over a checkout of the calling repository's default branch, merges
+the opinions with the same summarizer the wide review round uses, and posts
+ONE rolling issue ("Maintainer digest") whose body each scan replaces;
+earlier digests stay in the edit history, and a short comment per scan
+notifies watchers. The role is `roles.maintainer_spec`: the reviewer's tools
+and verdict shape (findings through the syscall tool, no scope), a larger
+budget because a tree is more to read than a diff. Items carry a section
+(`--category`), an effort and risk estimate, and a kind: `change` is
+mechanical and safe for an agent PR, `question` needs the maintainer's
+decision, `note` is worth knowing. Nothing is blocking.
+
+**Where it runs.** GitHub-hosted runners, like the reviewer: free on public
+repositories, no deployment dependency, and the same key secrets. The session
+jobs hold a read-only token and one backend key, and no checkout key comes
+near them (the kernel is public); the write token lives in the posting job
+with no session beside it. One job resolves the default branch's head first,
+so every lens scans, and the digest links, the same commit whatever ref a
+manual run was started from. Only the poster's own marker issue is ever
+rewritten: it asks GitHub for its own open issues by author. A deployment that wants the scan to
+read its own logs could host the same module from the tick later; that is
+not built.
+
+**Who acts.** Nobody automatically. The digest issue carries no
+`outerloop:steward` label, so intake and the steward ignore it, and research
+attempts come from the contract's benchmarks, never from issues — a
+maintenance change moves no metric and would fail the improvement gate. A
+person turns a mechanical item into a work order (an issue with the steward
+label) when they want it done, and the steward's PR goes through the author,
+the panel and a human merge as any steward PR does. Stage 2, not built: a
+deployment whose target is the kernel repository itself, so the kernel's own
+digest can feed its steward.
+
+**Any repository.** The caller is five lines (docs/install.md, "a weekly
+maintenance digest"); the brief assumes nothing about this code base.
+
 ## What's next
 
 The harness runs agent sessions over the PR-head checkout — that part is done,

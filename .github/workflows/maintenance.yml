@@ -1,0 +1,24 @@
+name: maintenance
+# The kernel's own weekly maintenance digest (docs/design/reviewer-infra.md,
+# "Maintenance scan"): lens sessions over main, merged into one rolling issue.
+# Same backend and keys as the advisory reviewer. Any repository gets the same
+# by copying this file (docs/install.md).
+on:
+  schedule:
+    - cron: '17 6 * * 1'  # Mondays, 06:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+# one scan at a time: two runs would race on the digest issue
+concurrency: maintenance
+jobs:
+  digest:
+    uses: outerloop-science/outerloop/.github/workflows/maintenance-agent.yml@main
+    with:
+      backend: hermes
+      hermes_provider: openai
+      model: gpt-5.6-terra
+      opinion_label: terra
+    secrets:
+      openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}

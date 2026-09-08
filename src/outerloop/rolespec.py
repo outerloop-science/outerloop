@@ -20,7 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-RoleName = Literal["author", "reviewer", "verifier", "summarizer", "steward", "followup"]
+RoleName = Literal[
+    "author", "reviewer", "verifier", "summarizer", "steward", "followup", "maintainer"
+]
 KeyFamily = Literal["author", "reviewer", "verifier", "steward"]
 Environment = Literal["apptainer", "gh-runner", "local"]
 
