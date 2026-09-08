@@ -1,8 +1,8 @@
-"""Autonomous research agent that co-develops the lab's benchmark-bearing repos."""
+"""Outerloop: autonomous research agents that improve a benchmark on your own code."""
 
 import os
 
-__version__ = "0.1.0.dev2"
+__version__ = "0.1.0.dev3"
 
 
 def _bridge_legacy_env() -> None:
