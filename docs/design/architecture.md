@@ -233,7 +233,7 @@ outage notice, not a round — because silence only visible in the
 Actions tab is not a defensible way to miss a verification.
 
 **Every flight has a snapshot.** Submitted jobs do not run from the
-shared checkout — the deploy step resets it at every tick, so a queued
+shared checkout — the deploy step may move it at any tick, so a queued
 job could have its code swapped mid-flight. Each submission gets a
 detached worktree of the checkout as it was at submit time (`flights/`,
 beside the checkout); the job runs exactly the tree that submitted it,

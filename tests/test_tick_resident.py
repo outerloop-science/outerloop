@@ -347,6 +347,7 @@ exit 0
         "OUTERLOOP_HOME": str(home),
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_AUTO_UPDATE": "main",
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
@@ -403,6 +404,7 @@ exit 0
         "OUTERLOOP_HOME": str(home),
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_AUTO_UPDATE": "main",
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
@@ -463,6 +465,7 @@ exit 0
         "OUTERLOOP_HOME": str(home),
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_AUTO_UPDATE": "main",
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
@@ -480,3 +483,201 @@ exit 0
     assert "uv.lock is unchanged; running new code on the current environment" in proc.stdout
     assert "BROKEN=\n" in proc.stdout
     assert "reset --hard --quiet OLD" not in log.read_text()  # no rollback: HEAD kept
+
+
+def _deploy(
+    tmp_path: Path,
+    *,
+    tags: str = "",
+    at_tag: bool = False,
+    head: str = "OLD",
+    synced: str | None = None,
+    sync_fails_once: bool = False,
+    env_file: str | None = None,
+    **env_extra: str,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Source tick_deploy.sh alone. A shim git logs its argv and answers the
+    questions the script asks: the public repo's tags (ls-remote), whether
+    HEAD is already at the chosen tag, HEAD itself (`head`, OLD after a
+    rollback), and lockfiles that DIFFER between OLD and HEAD. `synced` plants
+    the recorded synced commit beside a (bare) .venv; `sync_fails_once` makes
+    the first `uv sync` fail with a quota error. Returns the process and git's
+    argv log."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    if synced is not None:
+        (home / ".venv").mkdir()
+        (home / ".venv" / ".synced-head").write_text(synced + "\n")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "gitlog"
+    log.touch()
+    tag_commit = "OLD" if at_tag else "TAGGED"
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{log}"
+case "$*" in
+  *"ls-remote"*) for t in {tags}; do printf 'abc\trefs/tags/%s\n' "$t"; done ;;
+  *"rev-parse refs/tags/"*) echo {tag_commit} ;;
+  *"rev-parse OLD:uv.lock"*) echo lockOLD ;;
+  *"rev-parse HEAD:uv.lock"*) echo lockNEW ;;
+  *"rev-parse HEAD"*) if [ -f "{tmp_path}/rolledback" ]; then echo OLD; else echo {head}; fi ;;
+  *"reset --hard --quiet OLD"*) touch "{tmp_path}/rolledback" ;;
+esac
+exit 0
+"""
+    )
+    syncs = tmp_path / "syncs"
+    fail = (
+        f'[ "$(wc -l < "{syncs}" | tr -d " ")" -eq 1 ] && '
+        '{ echo "error: Disk quota exceeded" >&2; exit 2; }'
+        if sync_fails_once
+        else "true"
+    )
+    (bindir / "uv").write_text(
+        f'#!/bin/sh\ncase "$1" in sync) echo x >> "{syncs}"; {fail} ;; esac\nexit 0\n'
+    )
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    if env_file is not None:
+        cfg = tmp_path / ".config" / "outerloop"
+        cfg.mkdir(parents=True)
+        (cfg / ".env").write_text(env_file)
+        os.chmod(cfg / ".env", 0o600)
+    (tmp_path / "pat").write_text("ghp_secret\n")
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": str(tmp_path / "root"),
+        "HOME": str(tmp_path),
+    }
+    for k in (
+        "OUTERLOOP_AUTO_UPDATE",
+        "AUTORESEARCH_AUTO_UPDATE",
+        "OUTERLOOP_PAT_FILE",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        env.pop(k, None)
+    env.update(env_extra)
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$OUTERLOOP_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return proc, log.read_text()
+
+
+def test_the_default_update_policy_leaves_the_checkout_alone(tmp_path: Path) -> None:
+    """No OUTERLOOP_AUTO_UPDATE: the deploy fetches nothing, PAT or not — an
+    adopter runs the code they installed until they choose to upgrade."""
+    proc, gitlog = _deploy(tmp_path, OUTERLOOP_PAT_FILE=str(tmp_path / "pat"))
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog and "reset" not in gitlog
+    assert "BROKEN=\n" in proc.stdout
+
+
+def test_release_policy_moves_to_the_newest_release_tag(tmp_path: Path) -> None:
+    """`release` asks the public repo for its tags without a credential, picks
+    the newest by version order (at one X.Y.Z a final release beats rc beats
+    alpha beats dev, and dev10 beats dev2; tags that are not releases are
+    ignored), fetches only that tag and resets to it. Local tags never count."""
+    proc, gitlog = _deploy(
+        tmp_path,
+        tags="v0.1.0.dev2 v0.1.0 v0.1.0rc1 v0.2.0.dev1 v0.1.1 vlatest v1 v0.2.0a1 v0.1.0.dev10",
+        OUTERLOOP_AUTO_UPDATE="release",
+    )
+    assert proc.returncode == 0, proc.stderr
+    public = "https://github.com/outerloop-science/outerloop.git"
+    assert f"ls-remote --tags --refs {public} v*" in gitlog
+    fetches = [ln for ln in gitlog.splitlines() if " fetch " in ln]
+    assert fetches == [
+        f"-C {tmp_path / 'home'} fetch --quiet {public} +refs/tags/v0.2.0a1:refs/tags/v0.2.0a1"
+    ]
+    assert "tag -l" not in gitlog  # the checkout's own tags are never consulted
+    assert "reset --hard --quiet refs/tags/v0.2.0a1" in gitlog
+    assert "deploy: at release v0.2.0a1" in proc.stdout
+
+
+def test_release_policy_at_the_current_release_stays_put(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(
+        tmp_path, tags="v0.1.0 v0.1.1", at_tag=True, OUTERLOOP_AUTO_UPDATE="release"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "reset" not in gitlog
+    assert "deploy: at release" not in proc.stdout
+
+
+def test_release_policy_without_a_release_tag_runs_the_previous_code(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(tmp_path, tags="vlatest", OUTERLOOP_AUTO_UPDATE="release")
+    assert "reset" not in gitlog
+    assert "no release tag found" in proc.stdout
+
+
+def test_main_policy_follows_main_and_authenticates_with_the_pat(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(
+        tmp_path, OUTERLOOP_AUTO_UPDATE="main", OUTERLOOP_PAT_FILE=str(tmp_path / "pat")
+    )
+    assert proc.returncode == 0, proc.stderr
+    authed = "fetch --quiet https://x-access-token@github.com/outerloop-science/outerloop.git main"
+    assert authed in gitlog
+    assert "reset --hard --quiet FETCH_HEAD" in gitlog
+    assert "ghp_secret" not in gitlog  # the PAT rides GIT_ASKPASS, never argv
+
+
+def test_the_env_file_policy_wins_over_the_environment(tmp_path: Path) -> None:
+    """The .env line is read before the fetch, in either spelling; an explicit
+    `off` there switches off an inherited `main`."""
+    proc, gitlog = _deploy(
+        tmp_path, env_file="OUTERLOOP_AUTO_UPDATE=off\n", OUTERLOOP_AUTO_UPDATE="main"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog
+    proc, gitlog = _deploy(
+        tmp_path / "b", tags="v0.1.0", env_file="AUTORESEARCH_AUTO_UPDATE=release\n"
+    )
+    assert "ls-remote --tags --refs" in gitlog
+    assert "reset --hard --quiet refs/tags/v0.1.0" in gitlog
+
+
+def test_an_unknown_policy_is_off_and_says_so(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(tmp_path, OUTERLOOP_AUTO_UPDATE="nightly")
+    assert "fetch" not in gitlog
+    assert "OUTERLOOP_AUTO_UPDATE=nightly is not one of off, release, main" in proc.stdout
+
+
+def test_off_policy_rolls_a_hand_moved_checkout_back_when_its_sync_fails(tmp_path: Path) -> None:
+    """The operator pulled by hand (HEAD is NEW), the recorded synced commit is
+    OLD and their lockfiles differ: when NEW's sync fails the checkout goes
+    back to OLD and OLD's environment is reinstalled — the same guarantee the
+    policies get, without any fetch."""
+    proc, gitlog = _deploy(tmp_path, head="NEW", synced="OLD", sync_fails_once=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog
+    assert "reset --hard --quiet OLD" in gitlog
+    assert "back on OLD with its environment" in proc.stdout
+    assert "BROKEN=\n" in proc.stdout
+    assert (tmp_path / "home" / ".venv" / ".synced-head").read_text() == "OLD\n"
+
+
+def test_a_successful_sync_records_the_installed_commit(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(tmp_path, head="NEW", synced="OLD")
+    assert proc.returncode == 0, proc.stderr
+    assert "reset" not in gitlog
+    assert (tmp_path / "home" / ".venv" / ".synced-head").read_text() == "NEW\n"
+
+
+def test_without_a_record_a_failed_sync_keeps_the_checkout(tmp_path: Path) -> None:
+    """Nothing recorded and nothing moved by this step: there is no known-good
+    commit to return to, so the checkout stays and the failure is logged."""
+    proc, gitlog = _deploy(tmp_path, head="NEW", sync_fails_once=True)
+    assert "reset" not in gitlog
+    assert "uv sync failed; environment unchanged" in proc.stdout
