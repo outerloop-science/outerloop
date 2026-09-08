@@ -763,6 +763,17 @@ class GitHubClient:
         )
         return int(data.get("number", 0)) if isinstance(data, dict) else 0
 
+    def update_issue(self, repo: str, number: int, body: str) -> None:
+        """Replace an issue's body (the rolling maintenance digest)."""
+        if self.dry_run:
+            log.info("[dry-run] update issue %s#%s (%d chars)", repo, number, len(body))
+            return
+        self._request(
+            "PATCH",
+            f"/repos/{urllib.parse.quote(repo)}/issues/{number}",
+            {"body": body},
+        )
+
     def close_issue(self, repo: str, number: int) -> None:
         if self.dry_run:
             log.info("[dry-run] close issue %s#%s", repo, number)

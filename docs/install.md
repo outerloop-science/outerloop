@@ -101,6 +101,37 @@ always exits successfully so your PR stays green.
 
 ---
 
+### Optional — a weekly maintenance digest
+
+The same reviewer, pointed at your whole repository once a week: dead code,
+duplicated logic, oversized modules, stale pins, slow tests, repeated work on
+the hot path, documentation drift. It writes one issue, "Maintainer digest",
+and replaces its body each scan; nothing is changed and nothing is opened
+automatically. Add `.github/workflows/maintenance.yml` with the same secret
+as the reviewer:
+
+```yaml
+name: maintenance
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # weekly; or run it from the Actions tab
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency: maintenance
+jobs:
+  digest:
+    uses: outerloop-science/outerloop/.github/workflows/maintenance-agent.yml@main
+    secrets:
+      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
+```
+
+The `backend`, `model` and `hermes_provider` inputs select the model as they
+do for the reviewer; `lenses` picks which sections run. Items marked
+**Decision** need your call; the rest are mechanical and can be given to an
+agent as work orders (the steward, Level 2).
+
 ## Level 2 — the benchmark climber
 
 The agent proposes improvements to your code and opens PRs when a benchmark

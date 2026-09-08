@@ -1,0 +1,332 @@
+# The maintenance scan, reusable (docs/design/reviewer-infra.md, "Maintenance
+# scan"): lens sessions read a checkout of the calling repository's default
+# branch and emit findings; a summarizer merges them; a posting job writes the
+# one rolling digest issue. Same split as the advisory reviewer — the session
+# jobs hold a read-only token and one backend key, the write token lives in
+# the post job with no session beside it. Advisory throughout: nothing here
+# turns the caller's Actions red.
+#
+# Call it from a scheduled workflow in the repository to scan; see
+# docs/install.md ("a weekly maintenance digest").
+name: maintenance-agent
+on:
+  workflow_call:
+    inputs:
+      backend:
+        description: Session backend — claude, codex or hermes
+        type: string
+        default: claude
+      model:
+        description: >-
+          Model id for the backend (hermes+openrouter needs the provider prefix,
+          hermes+openai the provider-native id)
+        type: string
+        default: ''
+      hermes_provider:
+        description: hermes only — openrouter or openai
+        type: string
+        default: openrouter
+      opinion_label:
+        description: Short attribution shown in the digest header (e.g. terra)
+        type: string
+        default: ''
+      lenses:
+        description: >-
+          JSON array of lens names to fan out (general = the whole checklist;
+          the library is outerloop.maintain.MAINTENANCE_LENSES)
+        type: string
+        default: '["general", "pathways", "duplication", "structure", "upgrades", "tests", "performance", "docs"]'
+      reviewer_repo:
+        description: The kernel repository to run the scan code from
+        type: string
+        default: outerloop-science/outerloop
+      reviewer_ref:
+        description: Its ref
+        type: string
+        default: main
+    secrets:
+      anthropic_reviewer_key:
+        required: false
+      openrouter_api_key:
+        required: false
+      openai_reviewer_key:
+        required: false
+      checkout_ssh_key:
+        required: false
+
+jobs:
+  # --- one read-only session per lens, emit only ---
+  lens:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        lens: ${{ fromJSON(inputs.lenses) }}
+    env:
+      BACKEND: ${{ inputs.backend }}
+      HERMES_REF: v2026.8.13
+      HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - name: Check out the tree to scan (the calling repository at this run's commit)
+        uses: actions/checkout@v4
+        with:
+          path: tree
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Install the ${{ inputs.backend }} backend
+        run: |
+          set -euo pipefail
+          case "$BACKEND" in
+            codex)
+              npm install -g @openai/codex@0.130.0
+              ;;
+            hermes)
+              verify_hermes() {
+                [ -d "$GITHUB_WORKSPACE/hermes-agent/.git" ] &&
+                  [ "$(git -C "$GITHUB_WORKSPACE/hermes-agent" rev-parse HEAD 2>/dev/null)" = "$HERMES_SHA" ] &&
+                  [ -z "$(git -C "$GITHUB_WORKSPACE/hermes-agent" status --porcelain 2>/dev/null)" ]
+              }
+              if verify_hermes; then
+                echo "hermes-agent already present (pinned sha verified)"
+              else
+                # anonymous clone of the public pinned tag, retried through the
+                # anonymous rate limit; an unverified tree never runs with a key
+                rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                for i in 1 2 3 4 5 6; do
+                  if git clone --depth 1 --branch "$HERMES_REF" \
+                      https://github.com/NousResearch/hermes-agent \
+                      "$GITHUB_WORKSPACE/hermes-agent"; then
+                    break
+                  fi
+                  if [ "$i" = 6 ]; then
+                    echo "hermes clone failed after 6 attempts" >&2
+                    exit 0  # advisory: the CLI's missing-repo stub surfaces it
+                  fi
+                  sleep $(( i * 10 + RANDOM % 10 ))
+                  rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                done
+                if ! verify_hermes; then
+                  echo "hermes-agent does not match pinned sha $HERMES_SHA — refusing" >&2
+                  rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                  exit 0  # advisory: the missing-repo stub surfaces it
+                fi
+              fi
+              ;;
+            claude)
+              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "unsupported backend: $BACKEND" >&2
+              exit 0  # advisory: never red the caller's Actions
+              ;;
+          esac
+      - name: Run the lens session (emit only — nothing posted from this job)
+        working-directory: .autoresearch
+        env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          # ONLY the chosen backend's key enters the session process tree, and
+          # for hermes the key follows the provider (same rule as the reviewer)
+          ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.anthropic_reviewer_key || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.openrouter_api_key || '' }}
+          OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.openai_reviewer_key || '' }}
+          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
+          REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
+          MAINTAIN_REPO: ${{ github.repository }}
+          MAINTAIN_REF: ${{ github.sha }}
+          REVIEW_CHECKOUT: ${{ github.workspace }}/tree
+          REVIEW_LENS: ${{ matrix.lens }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: uv run python -m outerloop.maintain_agent_cli
+      - name: Backstop envelope
+        if: ${{ !cancelled() }}
+        working-directory: .autoresearch
+        env:
+          MAINTAIN_REPO: ${{ github.repository }}
+          EMIT_FILE: ${{ runner.temp }}/findings.json
+          LENS: ${{ matrix.lens }}
+        run: |
+          if [ ! -f "$EMIT_FILE" ]; then
+            uv run python -c "import json, os, pathlib; pathlib.Path(os.environ['EMIT_FILE']).write_text(json.dumps({'repo': os.environ['MAINTAIN_REPO'], 'number': 0, 'kind': 'skip-stub', 'detail': 'lens session wrote no envelope (crashed before emitting)', 'lens': os.environ['LENS']}))"
+          fi
+      - name: Upload findings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-findings-lens-${{ matrix.lens }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/findings.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # --- merge the lens opinions into one digest, emit only ---
+  summarize:
+    runs-on: ubuntu-latest
+    needs: lens
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      BACKEND: ${{ inputs.backend }}
+      HERMES_REF: v2026.8.13
+      HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Install the ${{ inputs.backend }} backend
+        run: |
+          set -euo pipefail
+          case "$BACKEND" in
+            codex)
+              npm install -g @openai/codex@0.130.0
+              ;;
+            hermes)
+              verify_hermes() {
+                [ -d "$GITHUB_WORKSPACE/hermes-agent/.git" ] &&
+                  [ "$(git -C "$GITHUB_WORKSPACE/hermes-agent" rev-parse HEAD 2>/dev/null)" = "$HERMES_SHA" ] &&
+                  [ -z "$(git -C "$GITHUB_WORKSPACE/hermes-agent" status --porcelain 2>/dev/null)" ]
+              }
+              if verify_hermes; then
+                echo "hermes-agent already present (pinned sha verified)"
+              else
+                # anonymous clone of the public pinned tag, retried through the
+                # anonymous rate limit; an unverified tree never runs with a key
+                rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                for i in 1 2 3 4 5 6; do
+                  if git clone --depth 1 --branch "$HERMES_REF" \
+                      https://github.com/NousResearch/hermes-agent \
+                      "$GITHUB_WORKSPACE/hermes-agent"; then
+                    break
+                  fi
+                  if [ "$i" = 6 ]; then
+                    echo "hermes clone failed after 6 attempts" >&2
+                    exit 0  # advisory: the CLI's missing-repo stub surfaces it
+                  fi
+                  sleep $(( i * 10 + RANDOM % 10 ))
+                  rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                done
+                if ! verify_hermes; then
+                  echo "hermes-agent does not match pinned sha $HERMES_SHA — refusing" >&2
+                  rm -rf "$GITHUB_WORKSPACE/hermes-agent"
+                  exit 0  # advisory: the missing-repo stub surfaces it
+                fi
+              fi
+              ;;
+            claude)
+              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "unsupported backend: $BACKEND" >&2
+              exit 0  # advisory: never red the caller's Actions
+              ;;
+          esac
+      - name: Download lens opinions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: maintenance-findings-lens-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/opinions
+      - name: Merge the opinions (emit only — nothing posted from this job)
+        working-directory: .autoresearch
+        env:
+          REVIEW_BACKEND: ${{ inputs.backend }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          # ONLY the chosen backend's key enters the session process tree, and
+          # for hermes the key follows the provider (same rule as the reviewer)
+          ANTHROPIC_REVIEWER_KEY: ${{ inputs.backend == 'claude' && secrets.anthropic_reviewer_key || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.backend == 'hermes' && inputs.hermes_provider != 'openai' && secrets.openrouter_api_key || '' }}
+          OPENAI_REVIEWER_KEY: ${{ (inputs.backend == 'codex' || (inputs.backend == 'hermes' && inputs.hermes_provider == 'openai')) && secrets.openai_reviewer_key || '' }}
+          REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
+          REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
+          # the summarizer's envelope contract: a repository and number 0
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: '0'
+          SUMMARIZE_DIR: ${{ runner.temp }}/opinions
+          SUMMARIZE_EXPECTED: ${{ join(fromJSON(inputs.lenses), ' ') }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: uv run python -m outerloop.review_summarize_cli
+      - name: Backstop envelope
+        if: ${{ !cancelled() }}
+        working-directory: .autoresearch
+        env:
+          MAINTAIN_REPO: ${{ github.repository }}
+          EMIT_FILE: ${{ runner.temp }}/findings.json
+        run: |
+          if [ ! -f "$EMIT_FILE" ]; then
+            uv run python -c "import json, os, pathlib; pathlib.Path(os.environ['EMIT_FILE']).write_text(json.dumps({'repo': os.environ['MAINTAIN_REPO'], 'number': 0, 'kind': 'skip-stub', 'detail': 'summarizer wrote no envelope (crashed before emitting)'}))"
+          fi
+      - name: Upload the merged digest
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-findings-summary-${{ github.run_id }}
+          path: ${{ runner.temp }}/findings.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # --- the write token, and no session beside it ---
+  post:
+    runs-on: ubuntu-latest
+    needs: summarize
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.reviewer_repo }}
+          ref: ${{ inputs.reviewer_ref }}
+          ssh-key: ${{ secrets.checkout_ssh_key }}
+          path: .autoresearch
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: .autoresearch/uv.lock
+      - name: Download the merged digest
+        id: findings
+        uses: actions/download-artifact@v4
+        with:
+          name: maintenance-findings-summary-${{ github.run_id }}
+          path: ${{ runner.temp }}
+      - name: Post the digest
+        if: steps.findings.outcome == 'success'
+        working-directory: .autoresearch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAINTAIN_REPO: ${{ github.repository }}
+          MAINTAIN_REF: ${{ github.sha }}
+          REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
+          REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
+        run: uv run python -m outerloop.maintain_post_cli

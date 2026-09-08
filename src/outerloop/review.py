@@ -316,6 +316,8 @@ def build_summarizer_brief(opinions: list[dict], *, syscall_cmd: str = DEFAULT_S
         "- deduplicate findings that make the same claim about the same place "
         "(keep the sharpest wording; note the lenses that agree);\n"
         "- order blocking findings first;\n"
+        "- keep each finding's category as given (a maintenance scan's digest "
+        "section);\n"
         "- prefix each finding's detail with its lens attribution, e.g. "
         "'[credentials] ...' ('[credentials+deployment]' when lenses agree);\n"
         "- NEVER drop a finding silently: one you judge mistaken or "
@@ -400,6 +402,7 @@ def result_from_data(data: dict[str, Any]) -> ReviewResult:
         # `isinstance(..., int)` check and become line 1.
         line = item.get("line")
         line = line if isinstance(line, int) and not isinstance(line, bool) else None
+        category = item.get("category", "")
         findings.append(
             Finding(
                 file=sanitize(file, 200),
@@ -409,6 +412,7 @@ def result_from_data(data: dict[str, Any]) -> ReviewResult:
                 detail=sanitize(detail, MAX_DETAIL_CHARS),
                 blocking=bool(item.get("blocking")),
                 kind=item["kind"] if item.get("kind") in KINDS else "note",
+                category=sanitize(category, 60) if isinstance(category, str) else "",
             )
         )
     notes = data.get("notes", "")
