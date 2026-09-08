@@ -573,6 +573,7 @@ def service_in_review(
     dry_run: bool = False,
     allow_submit: bool = True,
     contract: Any = None,
+    records: list[RunRecord] | None = None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """PR-state transitions + follow-up job submission for in-review runs.
 
@@ -593,9 +594,11 @@ def service_in_review(
         panel_wake_pending,
     )
 
+    if records is None:
+        records = list_runs(root)
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
-    for record in list_runs(root):
+    for record in records:
         if record.state != IN_REVIEW or not record.pr_url:
             continue
         try:
@@ -1268,7 +1271,13 @@ def _ledger_issue_cache(root: Path, target: str) -> Path:
     return root / ("research-log-issue-" + target.replace("/", "__"))
 
 
-def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float) -> int:
+def service_research_log(
+    root: Path,
+    github: Any,
+    spec: FollowupSpec,
+    now: float,
+    records: list[RunRecord] | None = None,
+) -> int:
     """STATE-driven ledger (terra #170 r1: wiring publisher calls at terminal
     sites missed four terminal paths — attempt error, zero-change resume,
     the direct live terminal, steward): any run of this target whose
@@ -1284,13 +1293,15 @@ def service_research_log(root: Path, github: Any, spec: FollowupSpec, now: float
     before the feature's first pass are marker-stamped silently (no
     backfill spam).
     """
+    if records is None:
+        records = list_runs(root)
     since_path = _ledger_since(root, spec.target)
     first_pass = not since_path.exists()
     if first_pass:
         with contextlib.suppress(OSError):
             since_path.write_text(str(now))
     published = 0
-    for record in list_runs(root):
+    for record in records:
         if record.target != spec.target or record.state not in (ENDED, IN_REVIEW):
             continue
         marker = _ledger_marker(root, record.run_id)
@@ -1838,7 +1849,17 @@ def tick(
     # no contract), and a live session waiting on `sync` must not depend on
     # whether github/contract loaded this tick.
     if followup_spec is not None:
-        service_syncs(root, followup_spec, now)
+        # ONE run-record snapshot for every READ-heavy service that follows the
+        # mutation phase (sweep/park/reap and housekeeping have already run and
+        # written what they will). Sharing it means walking runs/ once, not once
+        # per service. The launch lanes read a stale-but-conservative picture on
+        # purpose: the only record-writer between here and them is
+        # service_in_review, and it only ENDS runs (frees slots), so the
+        # snapshot can only OVER-count active runs — never launch a duplicate.
+        # Any service that acts on a single record's CURRENT state still
+        # re-reads that one record fresh via load_record (the freshness guard).
+        tick_records = list_runs(root)
+        service_syncs(root, followup_spec, now, tick_records)
     # a dry run reports and writes nothing: no download, no seed
     if github is not None and followup_spec is not None and followup_spec.target and not dry_run:
         try:
@@ -1914,9 +1935,10 @@ def tick(
             dry_run=followup_dry_run,
             allow_submit=launch_ok,
             contract=contract,
+            records=tick_records,
         )
         try:
-            service_research_log(root, github, spec, now)
+            service_research_log(root, github, spec, now, records=tick_records)
         except Exception as exc:  # the ledger is advisory; the tick continues
             log.warning("research-log service failed: %s", exc)
         intake_job = (
@@ -1928,7 +1950,15 @@ def tick(
         )
         steward_job = (
             service_steward(
-                root, github, compute, spec, now, contract, limits, dry_run=followup_dry_run
+                root,
+                github,
+                compute,
+                spec,
+                now,
+                contract,
+                limits,
+                dry_run=followup_dry_run,
+                records=tick_records,
             )
             if launch_ok and intake_job is None and contract is not None
             else None
@@ -1944,6 +1974,7 @@ def tick(
                     now,
                     limits=limits,
                     dry_run=followup_dry_run,
+                    records=tick_records,
                 )
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
@@ -1978,7 +2009,9 @@ def service_eval_cache(root: Path, github: Any, target: str) -> str:
     return status
 
 
-def service_syncs(root: Path, spec: Any, now: float) -> None:
+def service_syncs(
+    root: Path, spec: Any, now: float, records: list[RunRecord] | None = None
+) -> None:
     """Honor mid-leg sync requests: a LIVE session asked for fresh origin/*
     refs and is waiting inside its own clock. The fetch pins the canonical
     URL (never the workspace's mutable remote config) and only refs/remotes
@@ -1989,7 +2022,9 @@ def service_syncs(root: Path, spec: Any, now: float) -> None:
     from outerloop.github import Workspace
     from outerloop.syscall import mark_synced, sync_requested
 
-    for record in list_runs(root):
+    if records is None:
+        records = list_runs(root)
+    for record in records:
         if record.state != IMPLEMENTING:
             continue
         workspace = run_dir(root, record.run_id) / "ws"
@@ -2022,10 +2057,15 @@ def service_boards(
     publish from the first tick (before any run ends), and a failure never
     stops the tick. With a compute backend, the strip also carries the
     kernel's queue (its own Slurm jobs, attributed to agents)."""
+    # ONE snapshot for the whole board pass: the climb rows, the live strip,
+    # and the queue's owner maps all read the SAME records, so they share it
+    # rather than each re-walking runs/. Taken here (end of tick) so a run
+    # ended earlier this tick already shows.
+    records = list_runs(root)
     try:
         from outerloop.climbboard import contract_directions, service_climb_board
 
-        service_climb_board(root, github, target, contract_directions(contract))
+        service_climb_board(root, github, target, contract_directions(contract), records)
     except Exception as exc:
         log.warning("climb board service failed: %s", exc)
     try:
@@ -2037,7 +2077,7 @@ def service_boards(
                 queue = compute.queue_snapshot()
             except Exception as exc:  # blind this tick: the strip publishes without a queue
                 log.warning("queue snapshot failed: %s", exc)
-        service_status(root, github, target, now, contract, queue=queue)
+        service_status(root, github, target, now, contract, queue=queue, records=records)
     except Exception as exc:  # each is advisory ALONE: one failing never mutes the other
         log.warning("status strip service failed: %s", exc)
 
@@ -2490,6 +2530,7 @@ def service_self_initiated(
     now: float,
     limits: EffectiveLimits | None = None,
     dry_run: bool = False,
+    records: list[RunRecord] | None = None,
 ) -> tuple[str, str] | None:
     """The default background mode: when nothing else needs doing, climb the
     least-recently-attempted benchmark.
@@ -2504,7 +2545,8 @@ def service_self_initiated(
         log.info("self-initiated lane paused (api outage: %s)", paused)
         return None
     try:
-        records = list_runs(root)
+        if records is None:
+            records = list_runs(root)
         width = _attempt_width(contract)
         # WIDTH: every live pending marker occupies a slot; landed ones
         # clear; dead ones become per-benchmark tombstones and free theirs.
@@ -2656,6 +2698,7 @@ def service_steward(
     contract: Any,
     limits: EffectiveLimits,
     dry_run: bool = False,
+    records: list[RunRecord] | None = None,
 ) -> tuple[str, str] | None:
     """The steward lane: claim at most ONE labeled work-order issue per tick
     and submit a stewardship job. Off until the operator provisions the
@@ -2673,7 +2716,8 @@ def service_steward(
 
         # ONE active run per target covers stewardships too: an env rewrite
         # must not fly alongside a solver climb or another stewardship.
-        records = list_runs(root)
+        if records is None:
+            records = list_runs(root)
         # reconcile first: killed jobs never post their own release — and
         # BEFORE the outage pause below, because a claim orphaned by the
         # very session the outage killed must not stay held all cooldown

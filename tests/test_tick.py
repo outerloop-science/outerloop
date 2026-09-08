@@ -1025,6 +1025,119 @@ def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
     assert report.disk == () and report.launch_blocked is False
 
 
+def test_one_run_record_snapshot_per_tick(tmp_path: Path, monkeypatch) -> None:
+    """The whole tick walks runs/ a fixed, small number of times, not once per
+    service. Two snapshots (the read services share one, the board shares one)
+    plus the three mutation-phase reads that must stay fresh (sweep,
+    cancel-on-end, the implementing sweep) = 5. Before this refactor the same
+    tick read runs/ ~10-12 times."""
+    import outerloop.climbboard as board_mod
+    import outerloop.tick as tick_mod
+    from outerloop.runstate import list_runs as real_list_runs
+
+    calls = {"n": 0}
+
+    def counting(root):
+        calls["n"] += 1
+        return real_list_runs(root)
+
+    # both modules imported the name directly, so patch it in each namespace
+    monkeypatch.setattr(tick_mod, "list_runs", counting)
+    monkeypatch.setattr(board_mod, "list_runs", counting)
+
+    spec = tick_mod.FollowupSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+
+    class G:  # contract absent -> launch lanes sit out; the read services + board still run
+        def get_file_content(self, repo, path, ref):
+            return None
+
+    tick_mod.tick(
+        tmp_path,
+        FakeSlurm().compute(),
+        RecordingDispatcher(),
+        now=NOW,
+        github=G(),
+        followup_spec=spec,
+        min_free_bytes=1,
+    )
+    # 3 mutation-phase reads (sweep, cancel_ended_launches, _sweep_implementing)
+    # + 1 shared read-service snapshot + 1 shared board snapshot
+    assert calls["n"] == 5
+
+
+def test_in_review_acts_on_the_fresh_record_not_the_stale_snapshot(tmp_path: Path) -> None:
+    """The freshness guard: a service handed the tick's bulk snapshot still
+    re-reads via load_record before a read-modify-write, so a field another
+    writer changed since the snapshot is preserved. Guards against a later
+    edit dropping the load_record and writing back stale bulk state."""
+    from outerloop.compute import CommandResult
+    from outerloop.runstate import IN_REVIEW, RunRecord, list_runs, load_record, save_record
+    from outerloop.tick import FollowupSpec, service_in_review
+
+    record = RunRecord(
+        run_id="r-fresh",
+        target="org/pilot",
+        task_title="improve tsp",
+        benchmark="tsp",
+        state=IN_REVIEW,
+        pr_url="https://github.com/org/pilot/pull/9",
+        wake_attempts=0,
+    )
+    save_record(tmp_path, record, now=NOW)
+    # the bulk snapshot the tick would hand the service (wake_attempts=0)
+    stale = list_runs(tmp_path)
+    # ...but another writer bumps the on-disk record BETWEEN snapshot and service
+    save_record(tmp_path, replace(record, wake_attempts=5), now=NOW)
+
+    class G:
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "merged": False}
+
+        def list_comments(self, repo, number, max_pages=20):
+            return [
+                {
+                    "id": 9,
+                    "body": "explain",
+                    "user": {"login": "renmengye"},
+                    "author_association": "MEMBER",
+                }
+            ]
+
+        def list_pr_reviews(self, repo, number, max_pages=10):
+            return []
+
+        def list_pr_review_comments(self, repo, number, max_pages=10):
+            return []
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            return CommandResult(0, "4242\n", "")
+        if argv[0] == "sacct":
+            return CommandResult(0, "RUNNING\n", "")
+        raise AssertionError(argv)
+
+    spec = FollowupSpec(
+        account="acct",
+        partition="cpu_short",
+        run_root=tmp_path,
+        image="/img/a.sif",
+        home=Path("/home/x/autoresearch"),
+    )
+    _ended, submitted = service_in_review(
+        tmp_path, G(), SlurmCompute(runner=runner), spec, NOW, records=stale
+    )
+    assert submitted == [("r-fresh", "4242")]
+    # the resubmit incremented the FRESH count (5 -> 6), not the stale one (0 -> 1)
+    assert load_record(tmp_path, "r-fresh").wake_attempts == 6
+
+
 def _implementing_run(root: Path, run_id: str, job_id: str = "", age_s: float = 0.0) -> None:
     from outerloop.runstate import IMPLEMENTING
 
@@ -3360,7 +3473,9 @@ def test_sync_is_serviced_even_without_followup_servicing(tmp_path: Path, monkey
 
     calls = []
     monkeypatch.setattr(
-        tick_mod, "service_syncs", lambda root, spec, now: calls.append((root, spec, now))
+        tick_mod,
+        "service_syncs",
+        lambda root, spec, now, records=None: calls.append((root, spec, now)),
     )
     spec = tick_mod.FollowupSpec(
         account="a",
