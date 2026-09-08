@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import wait_until
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sweep_git_locks.sh"
 HOUR_AGO = time.time() - 3600
 
@@ -39,6 +41,22 @@ def _aged_lock(path: Path) -> Path:
     path.write_text("")
     os.utime(path, (HOUR_AGO, HOUR_AGO))
     return path
+
+
+def _live(proc: subprocess.Popen[bytes]) -> bool:
+    """Is `proc` alive with its argv readable — what the sweep needs to see it?
+    Reads the cmdline the way the sweep does (/proc on Linux, `ps` on a Mac),
+    so the test's readiness never diverges from the sweep's own detection."""
+    if proc.poll() is not None:  # already exited: never "live"
+        return False
+    try:
+        with open(f"/proc/{proc.pid}/cmdline", "rb") as fh:
+            cmd = fh.read().replace(b"\x00", b" ").decode()
+    except OSError:  # no /proc (macOS): ps, as the sweep also falls back to
+        cmd = subprocess.run(
+            ["ps", "-o", "args=", "-p", str(proc.pid)], capture_output=True, text=True
+        ).stdout
+    return "hash-object" in cmd
 
 
 def _sweep(checkout: Path, min_age: str = "10") -> subprocess.CompletedProcess[str]:
@@ -86,7 +104,7 @@ def test_an_aged_lock_under_a_live_git_process_is_left_alone(tmp_path: Path) -> 
         cwd=tmp_path,
     )
     try:
-        time.sleep(0.3)
+        assert wait_until(lambda: _live(proc))
         out = _sweep(repo)
         assert lock.exists() and out.stdout == ""
     finally:
@@ -113,7 +131,7 @@ def test_a_linked_worktree_is_followed_to_its_git_dir(tmp_path: Path) -> None:
         stdout=subprocess.DEVNULL,
     )
     try:
-        time.sleep(0.3)
+        assert wait_until(lambda: _live(proc))
         assert _sweep(linked).stdout == "" and common_lock.exists()
     finally:
         assert proc.stdin is not None
@@ -162,7 +180,7 @@ def test_a_prefix_named_sibling_checkout_never_blocks_the_sweep(tmp_path: Path) 
         stdout=subprocess.DEVNULL,
     )
     try:
-        time.sleep(0.3)
+        assert wait_until(lambda: _live(proc))
         out = _sweep(repo)
         assert not lock.exists() and "swept stale git lock" in out.stdout
     finally:
@@ -183,7 +201,7 @@ def test_a_worktree_path_with_spaces_still_counts_as_live(tmp_path: Path) -> Non
         cwd=linked,
     )
     try:
-        time.sleep(0.3)
+        assert wait_until(lambda: _live(proc))
         assert _sweep(repo).stdout == "" and common_lock.exists()
     finally:
         assert proc.stdin is not None
@@ -205,7 +223,7 @@ def test_split_form_git_dir_and_work_tree_from_the_parent_count_as_live(tmp_path
         cwd=tmp_path,
     )
     try:
-        time.sleep(0.3)
+        assert wait_until(lambda: _live(proc))
         assert _sweep(repo).stdout == "" and lock.exists()
     finally:
         assert proc.stdin is not None

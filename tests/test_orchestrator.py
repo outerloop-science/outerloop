@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from outerloop.harness import FakeHarness, SessionResult
+from fakes import FakeHarness
+from outerloop.harness import SessionResult
 from outerloop.orchestrator import (
     EvalError,
     RunConfig,

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from helpers import wait_until
 from outerloop.compute import GONE, JobSpec, LocalCompute
 from outerloop.dispatch import snapshot_tree
 from outerloop.github import Workspace
@@ -228,16 +229,21 @@ def test_walltime_kill_takes_the_whole_process_group(tmp_path: Path) -> None:
     # Slurm kills the job's process group at walltime; a local job script
     # waiting on a child must not leave that child running past it
     import os
-    import time
 
     pidfile = tmp_path / "child.pid"
     lc = LocalCompute(minute_s=1)  # 1-minute walltime == 1 second, for the test
     job = lc.submit(_spec(command=f"sleep 300 & echo $! > {pidfile}; wait", minutes=1))
     assert lc.status(job) == "TIMEOUT"
     child = int(pidfile.read_text().strip())
-    time.sleep(0.1)  # let the SIGKILL land
-    with pytest.raises(ProcessLookupError):
-        os.kill(child, 0)  # the child died with the group
+
+    def gone() -> bool:  # died with the group, once the SIGKILL lands
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    assert wait_until(gone), f"child {child} survived the group kill"
 
 
 def test_job_env_is_an_allowlist_not_the_submitter_env(tmp_path: Path) -> None:

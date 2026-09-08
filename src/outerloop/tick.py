@@ -146,18 +146,6 @@ class WakeDispatcher(Protocol):
     def dispatch(self, record: RunRecord, reason: str) -> str: ...
 
 
-@dataclass
-class RecordingDispatcher:
-    """Test/dry-run dispatcher: records what would have been woken."""
-
-    dispatched: list[tuple[str, str]] = field(default_factory=list)
-    holder_job_id: str = ""  # set to simulate async dispatch
-
-    def dispatch(self, record: RunRecord, reason: str) -> str:
-        self.dispatched.append((record.run_id, reason))
-        return self.holder_job_id
-
-
 @dataclass(frozen=True)
 class TickReport:
     paused: bool = False

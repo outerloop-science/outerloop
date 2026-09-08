@@ -906,7 +906,7 @@ def test_parse_elapsed_reads_sacct_fields() -> None:
     assert parse_elapsed("x-01:00:00") is None
 
 
-def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
+def test_sync_cli_waits_for_the_done_marker(tmp_path, monkeypatch) -> None:
     """The verb touches the request, then blocks until the kernel stamps
     done — the wait is the session's own time, never a new leg."""
     import threading
@@ -916,6 +916,7 @@ def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
     from outerloop.syscall_cli import cmd_sync
 
     (tmp_path / SYSCALL_DIR).mkdir()
+    monkeypatch.setattr("outerloop.syscall_cli.SYNC_POLL_S", 0.01)
 
     class A:
         minutes = 1
@@ -925,8 +926,13 @@ def test_sync_cli_waits_for_the_done_marker(tmp_path) -> None:
         mark_synced(tmp_path, _time.time())
 
     threading.Thread(target=stamp_soon, daemon=True).start()
+    started = _time.monotonic()
     out = cmd_sync(tmp_path, A())
+    elapsed = _time.monotonic() - started
     assert "refreshed" in out
+    # the poll interval was honored: the default 15 s would block far longer
+    # than the marker's 0.3 s arrival, so this bounds it well under one interval
+    assert elapsed < 5, elapsed
 
 
 def test_sync_cli_times_out_gracefully(tmp_path, monkeypatch) -> None:

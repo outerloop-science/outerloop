@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from helpers import wait_until
 from outerloop.syscall import read_request, read_verdict
 from outerloop.syscall_cli import main
 
@@ -459,18 +460,17 @@ class _Kernel:
         self._thread.join(timeout=10)
 
     def _serve(self) -> None:
-        import time
-
         from outerloop.syscall import mark_done, marker_requested, write_channel_json
 
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            at = marker_requested(self.root, f"{self.verb}-request", f"{self.verb}-done")
-            if at is not None:
-                write_channel_json(self.root, f"{self.verb}.json", self.payload)
-                mark_done(self.root, f"{self.verb}-done", at)
-                return
-            time.sleep(0.05)
+        def requested() -> float | None:
+            return marker_requested(self.root, f"{self.verb}-request", f"{self.verb}-done")
+
+        if not wait_until(lambda: requested() is not None, timeout=10, interval=0.05):
+            return
+        at = requested()
+        assert at is not None
+        write_channel_json(self.root, f"{self.verb}.json", self.payload)
+        mark_done(self.root, f"{self.verb}-done", at)
 
 
 _QUEUE: dict[str, Any] = {
