@@ -339,6 +339,27 @@ def _exec(cmd: list[str], env: dict[str, str]) -> int:
     return 1  # unreachable; keeps the signature honest for tests that stub this
 
 
+# where the uv installer puts the binary before the shell's PATH knows it
+UV_FALLBACK_DIRS = (".local/bin", ".cargo/bin")
+
+
+def find_uv() -> tuple[str, str]:
+    """(uv's path, the directory to prepend to PATH): the directory is "" when
+    uv is already on PATH, both are "" when it is nowhere. Every evaluation and
+    launch runs through `uv run` with the PATH start hands over, so a missing
+    uv is caught here, not in a run that ends unmeasured."""
+    found = shutil.which("uv")
+    if found:
+        return found, ""
+    for rel in UV_FALLBACK_DIRS:
+        candidate = Path.home() / rel / "uv"
+        # a regular executable file, as `which` would accept: a directory of
+        # that name is searchable, not runnable
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate), str(candidate.parent)
+    return "", ""
+
+
 HARNESS_BIN_KEYS = ("OUTERLOOP_CLAUDE_BIN", "OUTERLOOP_CODEX_BIN")
 
 
@@ -388,10 +409,22 @@ def start(args: argparse.Namespace) -> int:
     if args.dry_run:
         print(shlex.join(cmd))
         return 0
+    uv, uv_dir = find_uv()
+    if not uv:
+        print(
+            "outerloop start: uv is not on PATH. Evaluations and launches run through "
+            "`uv run`; install it (https://docs.astral.sh/uv/) or add its directory to "
+            "PATH, then start again.",
+            file=sys.stderr,
+        )
+        return 2
+    path_env = {"PATH": uv_dir + os.pathsep + os.environ.get("PATH", "")} if uv_dir else {}
+    if uv_dir:
+        print(f"uv found at {uv}; {uv_dir} is added to the loop's PATH", file=sys.stderr)
     if plan.mode == "local":
         # the loop has no deploy step, so the author knobs the chain would
         # export from .env each tick are exported here once; the shell wins
-        env = dict(os.environ)
+        env = {**os.environ, **path_env}
         for key, value in values.items():
             if key in TICK_ENV_KEYS:
                 env.setdefault(key, value)
@@ -427,7 +460,7 @@ def start(args: argparse.Namespace) -> int:
         return 0
     # sbatch --export=ALL carries these to the resident job from the environment
     # we hand it here (so a comma in a value never breaks a --export delimiter).
-    submit_env = {**os.environ, **plan.export_env()}
+    submit_env = {**os.environ, **path_env, **plan.export_env()}
     proc = subprocess.run(cmd, capture_output=True, text=True, env=submit_env)
     if proc.returncode != 0:
         print(

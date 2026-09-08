@@ -325,6 +325,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     for key in (*START_KEYS, *TICK_ENV_KEYS, "OUTERLOOP_HOME"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(cli, "ENV_FILE", tmp_path / "absent.env")
+    monkeypatch.setattr(cli, "find_uv", lambda: ("/usr/bin/uv", ""))
     return tmp_path
 
 
@@ -637,3 +638,75 @@ def test_start_refuses_a_missing_recorded_harness_binary(
     monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
     assert main(["start"]) == 2
     assert "state root" in capsys.readouterr().err  # past the binary check
+
+
+# ---------------------------------------------------------------- uv
+
+
+def test_find_uv_takes_path_first_then_the_installer_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/opt/bin/uv")
+    assert cli.find_uv() == ("/opt/bin/uv", "")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli.find_uv() == ("", "")  # nowhere
+    installed = tmp_path / ".local" / "bin" / "uv"
+    installed.parent.mkdir(parents=True)
+    installed.mkdir()  # a searchable DIRECTORY of that name is not uv
+    assert cli.find_uv() == ("", "")
+    installed.rmdir()
+    installed.write_text("#!/bin/sh\n")
+    installed.chmod(0o755)
+    assert cli.find_uv() == (str(installed), str(installed.parent))
+
+
+def test_start_stops_when_uv_is_nowhere(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A loop without uv marks every run unmeasured; start says so and stops.
+    The dry run still prints the command."""
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli, "find_uv", lambda: ("", ""))
+    monkeypatch.setattr(cli, "_exec", lambda cmd, env: pytest.fail("must not exec"))
+    monkeypatch.chdir(checkout(clean_env))
+    assert main(["start", "--root", str(clean_env / "s")]) == 2
+    assert "uv is not on PATH" in capsys.readouterr().err
+    assert main(["start", "--dry-run", "--root", str(clean_env / "s")]) == 0
+
+
+def test_start_adds_the_installer_directory_to_the_loops_path(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli, "find_uv", lambda: ("/h/.local/bin/uv", "/h/.local/bin"))
+    seen: dict[str, object] = {}
+
+    def fake_exec(cmd: list[str], env: dict[str, str]) -> int:
+        seen["env"] = env
+        return 0
+
+    monkeypatch.setattr(cli, "_exec", fake_exec)
+    monkeypatch.chdir(checkout(clean_env))
+    assert main(["start", "--root", str(clean_env / "s")]) == 0
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["PATH"].startswith("/h/.local/bin" + os.pathsep)
+
+
+def test_slurm_start_hands_the_installer_directory_to_the_resident_job(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resident job inherits start's environment through --export=ALL, so
+    the fallback directory must reach sbatch's PATH, not only the local loop."""
+    home = checkout(clean_env)
+    bin_dir = clean_env / "bin"
+    bin_dir.mkdir()
+    pathlog = clean_env / "sbatch.path"
+    shim(bin_dir, "sbatch", f'printf "%s" "$PATH" > {pathlog}\necho "4242;torch"\n')
+    shim(bin_dir, "squeue", "exit 0\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setattr(cli, "find_uv", lambda: ("/h/.local/bin/uv", "/h/.local/bin"))
+    monkeypatch.chdir(home)
+    assert main(["start", "--root", "/scratch/me/ar", "--account", "a", "--partition", "p"]) == 0
+    assert pathlog.read_text().startswith("/h/.local/bin" + os.pathsep)

@@ -193,6 +193,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `outerloop start` stops with a clear message when `uv` is not on PATH, instead
+  of starting a loop whose every run ends unmeasured; when the binary is only in
+  the uv installer's default directory, that directory is added to the loop's
+  PATH.
 - The follow-up's note on a re-measured change says the change is not pushed
   yet and that GitHub still shows the previous head (conflict included) until
   the number lands; the old wording read as if the merge were already on the
