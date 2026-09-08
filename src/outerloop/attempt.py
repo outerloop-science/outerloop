@@ -37,6 +37,7 @@ from outerloop.dispatch import (
     should_dispatch,
     snapshot_tree,
 )
+from outerloop.evalcache import seed_dir
 from outerloop.github import (
     GitError,
     GitHubClient,
@@ -630,6 +631,7 @@ def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
     #174: the wake dropped the GPU lane)."""
     from outerloop.compute import compute_from_env
 
+    target = getattr(args, "target", "") or ""
     return DispatchSettings(
         compute=compute_from_env(),
         image=args.image,
@@ -637,6 +639,7 @@ def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
         partition=args.partition,
         gpu_partition=getattr(args, "gpu_partition", ""),
         gpu_account=getattr(args, "gpu_account", ""),
+        seed_cache=seed_dir(Path(args.run_root), target) if target else None,
     )
 
 
@@ -648,6 +651,20 @@ def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
 # per-GPU TRES share stays in the hundreds — so the order holds however long a
 # launch has waited. Other users' jobs and the group cap are untouched.
 LAUNCH_NICE = 5000
+
+
+def with_seed(dispatch: DispatchSettings, run_root: Path, target: str) -> DispatchSettings:
+    """These settings with the target's seed cache filled in from the record's
+    target when the CLI gave none (wake and follow-up jobs carry the run id,
+    not the target)."""
+    # tolerant of any settings object: a backend that knows no seed (or a
+    # test double) is left exactly as it is
+    if not target or getattr(dispatch, "seed_cache", "unknown") is not None:
+        return dispatch
+    try:
+        return dc_replace(dispatch, seed_cache=seed_dir(run_root, target))
+    except TypeError:
+        return dispatch
 
 
 def _make_launcher(
@@ -682,6 +699,7 @@ def _make_launcher(
                     artifact_max_bytes=MAX_ARTIFACT_BYTES,
                     gpus=gpus,
                     array=launch.array,
+                    seed_cache=dispatch.seed_cache,
                 )
                 spec = eval_job_spec(
                     script,
@@ -1618,6 +1636,7 @@ def resume_run(
     run_dir = run_root / "runs" / run_id
     workspace = run_dir / "ws"
     record = load_record(run_root, run_id)
+    dispatch = with_seed(dispatch, run_root, record.target)
     stage = record.stage
     # Push to the CANONICAL target URL, never the workspace's remote.origin.url:
     # the session could have rewritten that config to exfil the bot token / code
@@ -2859,6 +2878,7 @@ def live_attempt(
                 run_tag=run_id,
                 # an inline gate shares the same target-wide baseline cache
                 baseline_cache=run_dir.parent / "baselines",
+                seed_cache=dispatch.seed_cache if dispatch is not None else None,
             )
         snapshots: list[Snapshot] = []
 

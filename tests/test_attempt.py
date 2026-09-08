@@ -5083,3 +5083,17 @@ def test_is_git_tamper_classifies_object_store_damage_not_ordinary_failures() ->
     # ordinary git failures a wake should NOT treat as tamper
     assert not _is_git_tamper(GitError("git push failed: ! [rejected] (non-fast-forward)"))
     assert not _is_git_tamper(GitError("git fetch failed: could not resolve host"))
+
+
+def test_with_seed_fills_the_seed_from_the_records_target(tmp_path) -> None:
+    """Wake and follow-up jobs carry the run id, not the target: the seed cache
+    comes from the record, and an explicit setting is left alone."""
+    from outerloop.attempt import with_seed
+    from outerloop.evalcache import seed_dir
+
+    bare = _fake_dispatch()
+    assert bare.seed_cache is None
+    filled = with_seed(bare, tmp_path, "org/pilot")
+    assert filled.seed_cache == seed_dir(tmp_path, "org/pilot")
+    assert with_seed(filled, tmp_path, "other/repo").seed_cache == filled.seed_cache
+    assert with_seed(bare, tmp_path, "").seed_cache is None
