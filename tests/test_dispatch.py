@@ -521,3 +521,34 @@ def test_write_eval_job_array_writes_one_script_and_a_dir_per_task(tmp_path):
         run_dir, "launch-one", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image=""
     )
     assert "TASK=" not in plain.read_text() and "SWEEP_INDEX" not in plain.read_text()
+
+
+def test_job_copies_the_seed_cache_into_its_own_before_uv_runs(tmp_path):
+    """The kernel-warmed seed is copied — never bound, never hardlinked — into
+    the job's scratch cache, best-effort, before uv runs; no seed, no line."""
+    run_dir = tmp_path / "run"
+    seed = tmp_path / "state" / "eval-cache" / "o__r"
+    script = write_eval_job(
+        run_dir,
+        "candidate",
+        repo_root=tmp_path,
+        snapshot_sha="a" * 40,
+        command="true",
+        image="/i.sif",
+        seed_cache=seed,
+    )
+    text = script.read_text()
+    line = next(ln for ln in text.splitlines() if "cp -a" in ln)
+    assert line == (
+        f'if [ -d {seed} ]; then cp -a {seed}/. "$SCRATCH/cache"/ 2>> "$EV/setup.log" || true; fi'
+    )
+    # after the scratch cache exists, before the venv is built
+    assert (
+        text.index('mkdir -p "$SCRATCH/cache"')
+        < text.index("cp -a")
+        < text.index("UV_PROJECT_ENVIRONMENT=")
+    )
+    plain = write_eval_job(
+        run_dir, "plain", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image="/i.sif"
+    )
+    assert "cp -a" not in plain.read_text()

@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- A seed cache per target (docs/design/eval-cache.md): the tick warms one uv
+  cache from the target's lockfile on the tick host — wheels only, `--no-build`,
+  never the target's code — and every eval and launch job copies it into its
+  own scratch cache before `uv` runs, so a torch-sized dependency set is
+  downloaded once per lockfile instead of once per job. Jobs still build a
+  private environment and write nothing shared.
 - `docs/design/eval-cache.md`: why every eval downloads its dependencies today,
   and the two changes that stop it — a kernel-warmed seed cache each job
   copies, and a per-target image named in the contract (`environment.container`).
