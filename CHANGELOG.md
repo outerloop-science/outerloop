@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- A weekly maintenance digest (`maintenance-agent.yml`, reusable; the kernel's
+  own caller is `maintenance.yml`): read-only lens sessions scan a repository's
+  default branch for dead pathways, duplicated logic, oversized modules, stale
+  pins, slow tests, repeated work on the hot path and documentation drift, the
+  summarizer merges them, and one rolling issue holds the result. Nothing is
+  changed or opened automatically; items marked as decisions wait for the
+  maintainer. Any repository adds a five-line caller (docs/install.md).
 - `OUTERLOOP_AUTO_UPDATE` (`off` by default, `release`, `main`) sets what the
   deploy step does to a checkout-based deployment: nothing, move to the newest
   release tag, or follow every merge. Adopters run what they installed until

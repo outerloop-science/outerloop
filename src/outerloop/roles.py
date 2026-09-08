@@ -101,6 +101,33 @@ def reviewer_spec(
     )
 
 
+def maintainer_spec(
+    *, environment: Environment = "gh-runner", max_turns: int = 80, walltime_s: int = 3600
+) -> RoleSpec:
+    """The maintenance scan as an agent session (docs/design/reviewer-infra.md,
+    "Maintenance scan"): reads a whole default-branch checkout on a schedule
+    and records cleanup, upgrade, test-health and performance items through
+    the syscall tool — the reviewer's verdict shape, so lenses, summarizer and
+    poster are shared. It edits nothing; the digest is advisory and the
+    maintainer decides. A tree is more to read than a diff, hence the larger
+    budget."""
+    return RoleSpec(
+        name="maintainer",
+        instructions=(
+            "Scan the repository for cleanup, upgrade, test-health and "
+            "performance items. Measure rather than guess and cite a file and "
+            "line for each. Record every item with the installed syscall tool, "
+            "then commit your verdict with its `conclude` command and end your turn."
+        ),
+        key="reviewer",
+        tools=_JUDGE_TOOLS,
+        execution=Execution(environment=environment, can_execute=True),
+        budget=SessionBudget(max_turns=max_turns, walltime_s=walltime_s),
+        skills=("plain-style", "investigation"),
+        output_schema=FINDINGS_SCHEMA,
+    )
+
+
 def summarizer_spec(
     *, environment: Environment = "gh-runner", max_turns: int = 15, walltime_s: int = 900
 ) -> RoleSpec:

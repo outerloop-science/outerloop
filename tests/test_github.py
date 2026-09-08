@@ -4,6 +4,7 @@ import subprocess
 import threading
 import urllib.request
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -492,3 +493,23 @@ def test_auto_mode_arming_binds_to_the_expected_head(provider: FileTokenProvider
     assert client.arm_auto_merge_auto_mode("o/r", 1, expected_head="h" * 40) is True
     merge = [b for m, u, b in seen if "/pulls/1/merge" in u][-1]
     assert merge["sha"] == "h" * 40
+
+
+def test_update_issue_patches_the_body(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([{}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.update_issue("o/r", 9, "new body")
+    request = transport.requests[0]
+    assert request.get_method() == "PATCH"
+    assert request.full_url.endswith("/repos/o/r/issues/9")
+    assert json.loads(cast(bytes, request.data)) == {"body": "new body"}
+
+
+def test_list_open_issues_can_filter_by_creator(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([[{"number": 1, "user": {"login": "github-actions[bot]"}}]])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.list_open_issues("o/r", creator="github-actions[bot]") == [
+        {"number": 1, "user": {"login": "github-actions[bot]"}}
+    ]
+    url = transport.requests[0].full_url
+    assert "/repos/o/r/issues?per_page=100&page=1&creator=github-actions%5Bbot%5D" in url
