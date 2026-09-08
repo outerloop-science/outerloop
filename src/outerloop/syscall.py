@@ -602,13 +602,28 @@ MISSING_REPORT = (
 )
 
 
-def refresh_tool(workspace: Path) -> None:
+def tool_update_note(channel: str) -> str:
+    """What a session that started under an older kernel is told at a wake
+    whose tool refresh replaced its tool; `channel` is this workspace's channel
+    dir name (a resumed legacy session still has `.autoresearch`)."""
+    return (
+        "Your syscall tool was updated. `submit` now requires `--report <file>`. The "
+        "report explains your hypothesis, what you ran and measured, why this should "
+        "merge, and what did not work; it becomes the pull request's research report "
+        "and the panel reads it. `launch` accepts `--why` and, with `--array`, "
+        "`--concurrency K`. `queue` shows every agent's jobs; `history` shows your "
+        f"launches this run. `python {channel}/syscall <verb> --help` has the details."
+    )
+
+
+def refresh_tool(workspace: Path) -> bool:
     """Rewrite the installed tool from this kernel's source at a wake, so a
     session that started under an older kernel gets the current verbs and
     flags. Only the tool file changes — the channel and everything in it
     stay — and it is written with a marker's care (a fresh O_EXCL inode,
     renamed into place), so a `syscall` the session replaced with a symlink
-    is never written through."""
+    is never written through. Returns whether the tool changed, so the wake
+    can tell the author what is new."""
     import shutil
 
     from outerloop import syscall_cli
@@ -620,6 +635,25 @@ def refresh_tool(workspace: Path) -> None:
             st = os.stat("syscall", dir_fd=dirfd, follow_symlinks=False)
         except FileNotFoundError:
             st = None
+        current: bytes | None = None
+        if st is not None and stat.S_ISREG(st.st_mode) and st.st_size == len(source):
+            # compare through a non-blocking open checked after the fact: a FIFO
+            # swapped in since the stat returns at once instead of waiting for a
+            # writer, and anything unreadable (mode 000) simply gets rewritten
+            try:
+                fd = os.open("syscall", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dirfd)
+            except OSError:
+                fd = -1
+            if fd >= 0:
+                try:
+                    if stat.S_ISREG(os.fstat(fd).st_mode):
+                        current = os.read(fd, len(source) + 1)
+                except OSError:
+                    current = None
+                finally:
+                    os.close(fd)
+        if current == source:
+            return False  # already this kernel's tool, readable as it should be
         if st is not None and stat.S_ISDIR(st.st_mode):
             # a directory planted in the tool's place: rename cannot replace
             # it. Removed RELATIVE TO THE CHANNEL FD, never by path — a path
@@ -627,6 +661,7 @@ def refresh_tool(workspace: Path) -> None:
             # between would send the removal outside the workspace
             shutil.rmtree("syscall", dir_fd=dirfd)
         _write_channel(dirfd, "syscall", source, mode=0o755)
+        return True
     finally:
         os.close(dirfd)
 
