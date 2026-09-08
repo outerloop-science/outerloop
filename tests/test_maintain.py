@@ -25,6 +25,7 @@ from outerloop.maintain import (
 from outerloop.review import FINDINGS_SCHEMA, result_from_data
 from outerloop.role_runner import RoleResult
 from outerloop.roles import maintainer_spec
+from outerloop.syscall import SYSCALL_FILE, channel_dir, read_verdict
 
 ROOT = Path(__file__).resolve().parents[1]
 CMD = "python /ws/.outerloop/syscall"
@@ -186,6 +187,35 @@ def test_scan_emits_findings_or_a_stub_for_the_posting_job(
     assert envelope["number"] == 0
 
 
+def test_a_committed_verdict_keeps_its_digest_section_through_the_kernels_reader(
+    tmp_path: Path,
+) -> None:
+    """The real path a scan takes: the session commits a verdict through the
+    syscall channel, `read_verdict` validates it, and the section survives into
+    the rendered digest. A category outside both taxonomies still clamps."""
+    channel = tmp_path / channel_dir(tmp_path)
+    channel.mkdir(parents=True)
+    (channel / SYSCALL_FILE).write_text(
+        json.dumps(
+            {
+                "type": "verdict",
+                "notes": "fine",
+                "findings": [
+                    _item(category="docs"),
+                    _item(file="src/z.py", summary="Odd", category="vibes"),
+                ],
+            }
+        )
+    )
+    verdict = read_verdict(tmp_path)
+    assert verdict is not None
+    assert [f["category"] for f in verdict["findings"]] == ["docs", "other"]
+    body = render_digest(
+        result_from_data(verdict), repo="o/r", ref="abcdef1234", today="2026-09-08", reviewed_by="x"
+    )
+    assert "### docs" in body and "### other" in body and "### pathways" not in body
+
+
 def test_maintainer_is_a_judge_with_the_reviewers_verdict_shape() -> None:
     spec = maintainer_spec()
     assert spec.name == "maintainer" and spec.key == "reviewer"
@@ -200,9 +230,12 @@ class _Client:
         self.created: list[tuple[str, str]] = []
         self.updated: list[tuple[int, str]] = []
         self.comments: list[tuple[int, str]] = []
+        self.asked_creator = ""
 
-    def list_open_issues(self, repo: str) -> list[dict[str, Any]]:
-        return self.issues
+    def list_open_issues(self, repo: str, creator: str = "") -> list[dict[str, Any]]:
+        self.asked_creator = creator
+        # the server-side author filter the real client asks for
+        return [i for i in self.issues if not creator or i["user"]["login"] == creator]
 
     def create_issue(self, repo: str, title: str, body: str) -> int:
         self.created.append((title, body))
@@ -247,14 +280,23 @@ def test_post_opens_the_digest_issue_when_there_is_none(tmp_path: Path) -> None:
     assert client.updated == [] and client.comments == []
 
 
-def test_post_rewrites_only_the_bots_marker_issue_and_notifies(tmp_path: Path) -> None:
-    human = {"number": 5, "body": MARKER + " pasted by a person", "user": {"type": "User"}}
-    bot = {"number": 9, "body": MARKER + "\nlast week", "user": {"type": "Bot"}}
-    client = _Client([human, bot])
+def test_post_rewrites_only_its_own_marker_issue_and_notifies(tmp_path: Path) -> None:
+    """A person's or another bot's issue carrying the marker is never touched:
+    the lookup asks GitHub for the poster's own open issues and checks the
+    author again."""
+    human = {"number": 5, "body": MARKER + " pasted", "user": {"type": "User", "login": "ann"}}
+    other = {"number": 7, "body": MARKER, "user": {"type": "Bot", "login": "other-bot[bot]"}}
+    ours = {
+        "number": 9,
+        "body": MARKER + "\nlast week",
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+    }
+    client = _Client([human, other, ours])
     out = post_cli.post_digest(
         cast(Any, client), "o/r", "abcdef1234", _envelope(tmp_path), today="2026-09-08"
     )
     assert out == "updated" and client.created == []
+    assert client.asked_creator == "github-actions[bot]"
     ((number, body),) = client.updated
     assert number == 9 and body.startswith(MARKER) and "scanned by `hermes/x`" in body
     ((cnumber, comment),) = client.comments
@@ -281,7 +323,8 @@ def test_post_refuses_review_envelopes_and_reports_stubs(tmp_path: Path) -> None
         == "skip-stub"
     )
     assert "could not run (hermes/x): OPENAI_REVIEWER_KEY is unset" in client.created[0][1]
-    with_issue = _Client([{"number": 9, "body": MARKER, "user": {"type": "Bot"}}])
+    mine = {"number": 9, "body": MARKER, "user": {"type": "Bot", "login": "github-actions[bot]"}}
+    with_issue = _Client([mine])
     assert (
         post_cli.post_digest(cast(Any, with_issue), "o/r", "abcdef1234", stub, today="2026-09-08")
         == "skip-stub"
@@ -299,6 +342,7 @@ def test_post_cli_reads_its_environment(tmp_path: Path, monkeypatch: pytest.Monk
             "MAINTAIN_REF": "abc",
             "REVIEW_EMIT_FILE": str(path),
             "REVIEW_OPINION_LABEL": "terra",
+            "MAINTAIN_BOT_LOGIN": "outerloop-science[bot]",
             "GITHUB_TOKEN": "t",
         },
     )
@@ -309,6 +353,7 @@ def test_post_cli_reads_its_environment(tmp_path: Path, monkeypatch: pytest.Monk
     )
     assert post_cli.main() == 0
     assert seen["args"][1:3] == ("o/r", "abc") and seen["kwargs"]["opinion_label"] == "terra"
+    assert seen["kwargs"]["bot_login"] == "outerloop-science[bot]"
 
 
 def _agent_env(tmp_path: Path) -> dict[str, str]:
@@ -369,9 +414,13 @@ def test_agent_cli_fails_closed_with_a_stub(
 def test_workflows_keep_the_write_token_out_of_the_session_jobs() -> None:
     agent = yaml.safe_load((ROOT / ".github/workflows/maintenance-agent.yml").read_text())
     jobs = agent["jobs"]
-    assert jobs["lens"]["permissions"] == {"contents": "read"}
-    assert jobs["summarize"]["permissions"] == {"contents": "read"}
+    for job in ("resolve", "lens", "summarize"):
+        assert jobs[job]["permissions"] == {"contents": "read"}
     assert jobs["post"]["permissions"] == {"contents": "read", "issues": "write"}
+    text = (ROOT / ".github/workflows/maintenance-agent.yml").read_text()
+    assert "checkout_ssh_key" not in text  # no deploy key near a session
+    assert "github.sha" not in text  # every job uses the resolved default-branch head
+    assert jobs["lens"]["needs"] == "resolve" and "resolve" in jobs["post"]["needs"]
     assert jobs["lens"]["strategy"]["matrix"]["lens"] == "${{ fromJSON(inputs.lenses) }}"
     # YAML reads a bare `on` key as the boolean True
     triggers = agent.get("on", agent.get(True))

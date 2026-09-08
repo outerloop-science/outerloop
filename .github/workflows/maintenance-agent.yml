@@ -30,6 +30,12 @@ on:
         description: Short attribution shown in the digest header (e.g. terra)
         type: string
         default: ''
+      bot_login:
+        description: >-
+          The login the posting job's token writes as; only that login's own
+          digest issue is ever rewritten (the default is a workflow's own token)
+        type: string
+        default: 'github-actions[bot]'
       lenses:
         description: >-
           JSON array of lens names to fan out (general = the whole checklist;
@@ -44,6 +50,8 @@ on:
         description: Its ref
         type: string
         default: main
+    # no checkout key: the kernel is public, and a session job must never
+    # sit next to a deploy credential
     secrets:
       anthropic_reviewer_key:
         required: false
@@ -51,13 +59,33 @@ on:
         required: false
       openai_reviewer_key:
         required: false
-      checkout_ssh_key:
-        required: false
 
 jobs:
+  # --- the one commit every job scans and links: the default branch's head
+  #     now, whatever ref a manual run was dispatched from ---
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$REPO/branches/$BRANCH" --jq .commit.sha)
+          echo "default branch $BRANCH is at $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
   # --- one read-only session per lens, emit only ---
   lens:
     runs-on: ubuntu-latest
+    needs: resolve
     continue-on-error: true
     timeout-minutes: 75
     permissions:
@@ -76,12 +104,12 @@ jobs:
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
-          ssh-key: ${{ secrets.checkout_ssh_key }}
           path: .autoresearch
           persist-credentials: false
-      - name: Check out the tree to scan (the calling repository at this run's commit)
+      - name: Check out the tree to scan (the default branch's resolved commit)
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve.outputs.sha }}
           path: tree
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
@@ -149,7 +177,7 @@ jobs:
           REVIEW_HERMES_REPO: ${{ github.workspace }}/hermes-agent
           REVIEW_HERMES_PROVIDER: ${{ inputs.hermes_provider }}
           MAINTAIN_REPO: ${{ github.repository }}
-          MAINTAIN_REF: ${{ github.sha }}
+          MAINTAIN_REF: ${{ needs.resolve.outputs.sha }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/tree
           REVIEW_LENS: ${{ matrix.lens }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
@@ -193,7 +221,6 @@ jobs:
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
-          ssh-key: ${{ secrets.checkout_ssh_key }}
           path: .autoresearch
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
@@ -294,7 +321,7 @@ jobs:
   # --- the write token, and no session beside it ---
   post:
     runs-on: ubuntu-latest
-    needs: summarize
+    needs: [resolve, summarize]
     if: ${{ !cancelled() }}
     continue-on-error: true
     timeout-minutes: 15
@@ -307,7 +334,6 @@ jobs:
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
-          ssh-key: ${{ secrets.checkout_ssh_key }}
           path: .autoresearch
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
@@ -326,7 +352,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MAINTAIN_REPO: ${{ github.repository }}
-          MAINTAIN_REF: ${{ github.sha }}
+          MAINTAIN_REF: ${{ needs.resolve.outputs.sha }}
+          MAINTAIN_BOT_LOGIN: ${{ inputs.bot_login }}
           REVIEW_EMIT_FILE: ${{ runner.temp }}/findings.json
           REVIEW_OPINION_LABEL: ${{ inputs.opinion_label }}
         run: uv run python -m outerloop.maintain_post_cli

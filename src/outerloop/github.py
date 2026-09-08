@@ -282,9 +282,13 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}/issues/{number}"
         return self._expect_dict(self._request("GET", path), path)
 
-    def list_open_issues(self, repo: str, max_pages: int = 3) -> list[dict[str, Any]]:
-        """Open issues (PRs excluded — the issues API mixes them in)."""
-        items = self._paginate(f"/repos/{urllib.parse.quote(repo)}/issues", max_pages)
+    def list_open_issues(
+        self, repo: str, max_pages: int = 3, creator: str = ""
+    ) -> list[dict[str, Any]]:
+        """Open issues (PRs excluded — the issues API mixes them in); `creator`
+        narrows them to one author's, server-side."""
+        query = urllib.parse.urlencode({"creator": creator}) if creator else ""
+        items = self._paginate(f"/repos/{urllib.parse.quote(repo)}/issues", max_pages, query)
         return [i for i in items if "pull_request" not in i]
 
     def create_pull(
@@ -687,10 +691,11 @@ class GitHubClient:
             f"/repos/{urllib.parse.quote(repo)}/pulls/{number}/comments", max_pages
         )
 
-    def _paginate(self, base_path: str, max_pages: int) -> list[dict[str, Any]]:
+    def _paginate(self, base_path: str, max_pages: int, query: str = "") -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+        extra = f"&{query}" if query else ""
         for page in range(1, max_pages + 1):
-            data = self._request("GET", f"{base_path}?per_page=100&page={page}")
+            data = self._request("GET", f"{base_path}?per_page=100&page={page}{extra}")
             if not isinstance(data, list) or not data:
                 break
             items.extend(item for item in data if isinstance(item, dict))

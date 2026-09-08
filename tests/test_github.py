@@ -503,3 +503,13 @@ def test_update_issue_patches_the_body(provider: FileTokenProvider) -> None:
     assert request.get_method() == "PATCH"
     assert request.full_url.endswith("/repos/o/r/issues/9")
     assert json.loads(cast(bytes, request.data)) == {"body": "new body"}
+
+
+def test_list_open_issues_can_filter_by_creator(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([[{"number": 1, "user": {"login": "github-actions[bot]"}}]])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.list_open_issues("o/r", creator="github-actions[bot]") == [
+        {"number": 1, "user": {"login": "github-actions[bot]"}}
+    ]
+    url = transport.requests[0].full_url
+    assert "/repos/o/r/issues?per_page=100&page=1&creator=github-actions%5Bbot%5D" in url

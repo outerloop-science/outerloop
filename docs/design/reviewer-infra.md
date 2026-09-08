@@ -263,8 +263,12 @@ decision, `note` is worth knowing. Nothing is blocking.
 
 **Where it runs.** GitHub-hosted runners, like the reviewer: free on public
 repositories, no deployment dependency, and the same key secrets. The session
-jobs hold a read-only token and one backend key; the write token lives in the
-posting job with no session beside it. A deployment that wants the scan to
+jobs hold a read-only token and one backend key, and no checkout key comes
+near them (the kernel is public); the write token lives in the posting job
+with no session beside it. One job resolves the default branch's head first,
+so every lens scans, and the digest links, the same commit whatever ref a
+manual run was started from. Only the poster's own marker issue is ever
+rewritten: it asks GitHub for its own open issues by author. A deployment that wants the scan to
 read its own logs could host the same module from the tick later; that is
 not built.
 

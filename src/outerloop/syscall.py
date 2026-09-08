@@ -532,14 +532,16 @@ def _validate_finding(i: int, item: Any) -> dict[str, Any]:
     # Absent or "" is legitimately "no category".
     if not isinstance(category, str):
         raise VerdictError(f"finding {file}: category must be a string")
-    if category:  # verifier-only; a non-empty string
-        # (str here, so `in CATEGORIES` cannot raise on unhashables) — CLAMP an
+    if category:  # a non-empty string: the verifier's taxonomy or a digest section
+        # (str here, so membership cannot raise on unhashables) — CLAMP an
         # unknown category to "other" rather than reject, the existing verifier
         # stance (verifier.py: "a free-string category must not leak through"),
         # so a taxonomy typo normalizes instead of nuking a verdict.
+        from outerloop.maintain import MAINTENANCE_LENSES
         from outerloop.verifier import CATEGORIES
 
-        out["category"] = category if category in CATEGORIES else "other"
+        known = category in CATEGORIES or category in MAINTENANCE_LENSES
+        out["category"] = category if known else "other"
     return out
 
 

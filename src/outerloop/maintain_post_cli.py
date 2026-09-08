@@ -4,7 +4,8 @@ lives only here — the session jobs are read-only — the same split as the
 reviewer. Exits 0 on every outcome.
 
 Env: GITHUB_TOKEN, MAINTAIN_REPO, MAINTAIN_REF, REVIEW_EMIT_FILE,
-REVIEW_OPINION_LABEL (optional attribution shown in the header).
+MAINTAIN_BOT_LOGIN (the login the token posts as; the digest issue must be
+its own), REVIEW_OPINION_LABEL (optional attribution shown in the header).
 """
 
 from __future__ import annotations
@@ -24,13 +25,18 @@ from outerloop.review import result_from_data
 log = logging.getLogger(__name__)
 
 
-def find_digest_issue(client: GitHubClient, repo: str) -> int | None:
-    """The open, bot-authored issue carrying the digest marker, or None. Only
-    a bot's own issue is ever rewritten: a person who pastes the marker into
-    their issue keeps their text."""
-    for issue in client.list_open_issues(repo):
-        author_type = str((issue.get("user") or {}).get("type", ""))
-        if author_type.casefold() != "bot":
+DEFAULT_BOT_LOGIN = "github-actions[bot]"  # what a workflow's own token posts as
+
+
+def find_digest_issue(client: GitHubClient, repo: str, bot_login: str) -> int | None:
+    """The open issue carrying the digest marker among those `bot_login`
+    itself opened, or None. Only the poster's own issue is ever rewritten: a
+    person or another bot who pastes the marker into their issue keeps their
+    text, and asking GitHub for one author's issues keeps the lookup small
+    however many issues the repository has."""
+    for issue in client.list_open_issues(repo, creator=bot_login):
+        login = str((issue.get("user") or {}).get("login", ""))
+        if login.casefold() != bot_login.casefold():
             continue
         if MARKER in str(issue.get("body") or ""):
             return int(issue["number"])
@@ -43,6 +49,7 @@ def post_digest(
     ref: str,
     path: Path,
     *,
+    bot_login: str = DEFAULT_BOT_LOGIN,
     today: str | None = None,
     opinion_label: str = "",
 ) -> str | None:
@@ -71,7 +78,7 @@ def post_digest(
         return None
     who = " ".join(opinion_label.split())[:60] or str(envelope.get("reviewed_by", ""))
     try:
-        number = find_digest_issue(client, repo)
+        number = find_digest_issue(client, repo, bot_login)
         if kind == "skip-stub":
             body = render_stub(
                 str(envelope.get("detail", "")), repo=repo, ref=ref, today=today, who=who
@@ -123,6 +130,7 @@ def main() -> int:
         repo,
         ref,
         path,
+        bot_login=os.environ.get("MAINTAIN_BOT_LOGIN", "").strip() or DEFAULT_BOT_LOGIN,
         opinion_label=os.environ.get("REVIEW_OPINION_LABEL", "").strip(),
     )
     return 0

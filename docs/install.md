@@ -106,9 +106,8 @@ always exits successfully so your PR stays green.
 The same reviewer, pointed at your whole repository once a week: dead code,
 duplicated logic, oversized modules, stale pins, slow tests, repeated work on
 the hot path, documentation drift. It writes one issue, "Maintainer digest",
-and replaces its body each scan; nothing is changed and nothing is opened
-automatically. Add `.github/workflows/maintenance.yml` with the same secret
-as the reviewer:
+and replaces its body each scan. It changes no code and opens no work orders.
+Add `.github/workflows/maintenance.yml` with the same secret as the reviewer:
 
 ```yaml
 name: maintenance
@@ -128,7 +127,10 @@ jobs:
 ```
 
 The `backend`, `model` and `hermes_provider` inputs select the model as they
-do for the reviewer; `lenses` picks which sections run. Items marked
+do for the reviewer; `lenses` picks which sections run; `bot_login` names the
+account the digest is posted as when it is not the workflow's own token. Every
+run scans the default branch's head, whatever ref a manual run was started
+from. Items marked
 **Decision** need your call; the rest are mechanical and can be given to an
 agent as work orders (the steward, Level 2).
 
