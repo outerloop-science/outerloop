@@ -1,6 +1,6 @@
 # The session watcher, the queue view, and sweeps as throttled arrays
 
-**Status: proposal (2026-09-07).** How an author's launches meet a full
+**Status: shipped (#319–#324); folding `sync` onto the watcher is still to come.** How an author's launches meet a full
 cluster, what the author can see of that cluster while it works, and where a
 fast answer comes from. `dispatcher.md` owns how launches become jobs;
 `research-loop.md` owns the sleep and wake protocol; `agent-substrate.md`
