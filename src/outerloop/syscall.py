@@ -1095,6 +1095,8 @@ def _write_channel(dirfd: int, name: str, data: bytes, mode: int = 0o644) -> Non
     tmp = f".{name}.{os.urandom(8).hex()}"
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, mode, dir_fd=dirfd)
     try:
+        # the open's mode is filtered by the umask; the tool must stay executable
+        os.fchmod(fd, mode)
         view = memoryview(data)
         while view:
             written = os.write(fd, view)

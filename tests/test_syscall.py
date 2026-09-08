@@ -1226,8 +1226,14 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
     (channel / "budget.json").write_text("{}")
     tool = channel / "syscall"
     tool.write_text("# stale tool\n")
-    refresh_tool(tmp_path)
-    assert "def main(" in tool.read_text() and (tool.stat().st_mode & 0o111)
+    import os
+
+    before = os.umask(0o177)  # an execute-masking umask must not strip the tool's x bits
+    try:
+        refresh_tool(tmp_path)
+    finally:
+        os.umask(before)
+    assert "def main(" in tool.read_text() and (tool.stat().st_mode & 0o111) == 0o111
     assert (channel / "budget.json").exists()  # the channel is untouched
     victim = tmp_path / "victim"
     victim.write_text("keep")
