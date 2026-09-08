@@ -69,6 +69,9 @@ def render_env(
             lines.append(f"OUTERLOOP_ACCOUNT={a.account}")
         if a.partition:  # optional: unset lets Slurm pick its default partition
             lines.append(f"OUTERLOOP_PARTITION={a.partition}")
+        # the checkout stays put until the operator upgrades; `release` follows
+        # the release tags, `main` every merge (docs/install.md)
+        lines.append("OUTERLOOP_AUTO_UPDATE=off")
     if a.image:
         lines.append(f"OUTERLOOP_IMAGE={a.image}")
     elif a.uncontained:

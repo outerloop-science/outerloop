@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `OUTERLOOP_AUTO_UPDATE` (`off` by default, `release`, `main`) sets what the
+  deploy step does to a checkout-based deployment: nothing, move to the newest
+  release tag, or follow every merge. Adopters run what they installed until
+  they choose to upgrade; following `main` is for the kernel's own developers.
+  `init` writes the default for Slurm deployments.
 - `docs/design/eval-cache.md`: why every eval downloads its dependencies today,
   and the two changes that stop it — a kernel-warmed seed cache each job
   copies, and a per-target image named in the contract (`environment.container`).
@@ -80,6 +85,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The deploy step no longer pulls `main` on its own: a deployment that relied
+  on the PAT-gated pull sets `OUTERLOOP_AUTO_UPDATE=main` in its `.env`.
 - Launches always queue. The two admission schemes tried this cycle — held
   launches released under `OUTERLOOP_MAX_LAUNCH_GPUS`, then refusing a sleep's
   launches while the account waited on a cap — are gone: the kernel keeps no

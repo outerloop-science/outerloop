@@ -86,10 +86,9 @@ standing instruction they supersede — a resumed agent honors stale constraints
       `--dependency=singleton`, absolute `--begin` cadence grid, sbatch
       retry/backoff; successors submitted FIRST so nothing below can break
       the chain
-- [x] Deploy shim (same script): pull main with the bot PAT → `uv sync
-      --locked` → exec tick; every step best-effort (bad merges crash ticks,
-      never the chain). Bot PAT on Torch + repo in the token's selection
-      still owed by the maintainer before live deploy
+- [x] Deploy shim (same script): move the checkout per `OUTERLOOP_AUTO_UPDATE`
+      (`off` by default, `release`, `main`) → `uv sync --locked` → exec tick;
+      every step best-effort (bad merges crash ticks, never the chain)
 - [x] Pause sentinel, heartbeat at tick start (now with disk preflight
       payload), stale-lease reaping (TTL + tombstone CAS)
 - [x] `compute`: sbatch submit / sacct status / cancel behind an injectable

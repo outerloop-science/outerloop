@@ -241,6 +241,17 @@ that can reach GitHub and your LLM provider works.
   you start it again. On a headless machine start it under `nohup` or in a
   tmux window, or as a user service.
 
+**Updates.** A Slurm deployment runs from a checkout, and
+`OUTERLOOP_AUTO_UPDATE` in `.env` says whether the deploy step moves it. `off`,
+the default, leaves the checkout alone: you upgrade when you choose, and the
+loop keeps running the code you validated. `release` moves it to the newest
+release tag at the next cadence (pre-releases included; the repo is public, so
+no credential is needed). `main` follows every merge and is meant for the
+kernel's own developers. Whatever moves the checkout, the environment is
+synced to the commit that is checked out, or the deploy rolls back to the pair
+that matched. The local loop runs the installed package: upgrade it with
+`pip install -U outerloop-science` and start it again.
+
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.

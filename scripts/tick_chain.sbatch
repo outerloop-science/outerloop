@@ -3,8 +3,9 @@
 #
 # Order matters and is the fail-safety:
 #   1. top up successors FIRST — a crash anywhere below never breaks the chain
-#   2. pull main + sync (deploy-at-tick-start; failures logged, tick continues
-#      on the previous code — a bad merge crashes ticks, never the chain)
+#   2. update the checkout per OUTERLOOP_AUTO_UPDATE + sync (deploy-at-tick-
+#      start; failures logged, tick continues on the previous code — a bad
+#      merge crashes ticks, never the chain)
 #   3. exec the tick
 #
 # Deploy/config knobs come from the environment (set once via
@@ -14,8 +15,8 @@
 #   OUTERLOOP_ACCOUNT / OUTERLOOP_PARTITION  slurm placement (optional;
 #                             unset uses Slurm's default association/partition)
 #   OUTERLOOP_CADENCE_MIN  tick cadence, default 30
-#   OUTERLOOP_PAT_FILE     bot PAT for the deploy pull (optional; no file
-#                             means run whatever code is already deployed)
+#   OUTERLOOP_PAT_FILE     bot PAT; a deploy fetch authenticates with it when
+#                             present (optional — the kernel repo is public)
 #   OUTERLOOP_RESIDENT=1   run as the RESIDENT tick (design/resident-tick.md):
 #                             one long-lived job that loops deploy -> tick ->
 #                             sleep, with a single afterany:self successor.
@@ -135,7 +136,7 @@ if [ -w "$LOG_DIR" ]; then
 fi
 echo "=== tick $(date -Is) on $(hostname -s) job=${SLURM_JOB_ID:-none}"
 
-# --- 2. deploy: pull main, sync deps, read the operator's knobs (best-effort;
+# --- 2. deploy: update the checkout, sync deps, read the operator's knobs (best-effort;
 #        scripts/tick_deploy.sh, sourced so its exports reach the tick) ---
 . "$OUTERLOOP_HOME/scripts/tick_deploy.sh"
 

@@ -1,31 +1,124 @@
 #!/usr/bin/env bash
 # The chain's deploy step, SOURCED by tick_chain.sbatch (it exports the
 # operator's config knobs into the tick's environment): sweep stale git locks,
-# pull main with the bot PAT, sync deps, read the allowlisted .env knobs,
-# install the non-claude backends. Every step is best-effort — a bad merge
-# crashes the tick, never the chain. Shared by the per-cadence chain (once per
-# job) and the resident loop (once per iteration).
+# move the checkout per the operator's update policy, sync deps, read the
+# allowlisted .env knobs, install the non-claude backends. Every step is
+# best-effort — a bad merge crashes the tick, never the chain. Shared by the
+# per-cadence chain (once per job) and the resident loop (once per iteration).
 #
 # Expects: OUTERLOOP_HOME, OUTERLOOP_ROOT; optional OUTERLOOP_PAT_FILE.
 
-# --- 2. deploy: pull main with the bot PAT, sync deps (best-effort) ---
+# --- the operator's .env: ~/.config/outerloop (new) or ~/.config/autoresearch
+# (pre-rename). We do NOT source it: sourcing would execute it and let it set
+# ANY variable (the chain's own HOME/ROOT/PATH/cadence, arbitrary code).
+# Instead single allowlisted keys are read from it, and only when the file is
+# ours and not group/world-writable (a writable one could still inject a
+# malicious VALUE, e.g. a bad codex binary path).
+ENV_FILE="$HOME/.config/outerloop/.env"
+[ -r "$ENV_FILE" ] || ENV_FILE="$HOME/.config/autoresearch/.env"
+ENV_TRUSTED=""
+if [ -r "$ENV_FILE" ]; then
+    # GNU stat first, BSD stat second (a developer's Mac runs this too)
+    perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || stat -f "%Lp" "$ENV_FILE" 2>/dev/null || echo 777)
+    owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || stat -f "%u" "$ENV_FILE" 2>/dev/null || echo -1)
+    if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
+        ENV_TRUSTED=1
+    else
+        echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
+             "needs to be yours and not group/world-writable)"
+    fi
+fi
+# env_line: the last assignment of key $_k in the trusted .env, into $_line.
+# Either spelling, the canonical key first: a pre-rename AUTORESEARCH_ twin
+# counts only when the OUTERLOOP_ key is absent, whatever the order. Empty
+# when the key is absent or the file is not trusted.
+env_line() {
+    _line=""
+    [ -n "$ENV_TRUSTED" ] || return 0
+    _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
+    [ -n "$_line" ] || _line=$(grep -E "^AUTORESEARCH_${_k#OUTERLOOP_}=" "$ENV_FILE" 2>/dev/null | tail -1)
+}
+# env_value: the value of $_line into $_v — the CR of a CRLF-edited file and
+# one pair of surrounding quotes stripped
+env_value() {
+    _v=${_line#*=}
+    _v=${_v%$'\r'}
+    _v=${_v#[\"\']}; _v=${_v%[\"\']}
+}
+
+# --- 2. deploy: move the checkout per the update policy, sync deps ---
+# OUTERLOOP_AUTO_UPDATE, the .env line first, then the environment:
+#   off      (default) run the checkout as it is; the operator upgrades by hand
+#   release  move to the newest release tag (vX.Y.Z; dev/rc pre-releases count)
+#   main     follow every merge — for the kernel's own developers
+_k=OUTERLOOP_AUTO_UPDATE; env_line
+if [ -n "$_line" ]; then
+    env_value; POLICY="${_v:-off}"
+else
+    POLICY="${OUTERLOOP_AUTO_UPDATE:-${AUTORESEARCH_AUTO_UPDATE:-off}}"
+fi
+case "$POLICY" in
+    off|release|main) ;;
+    *) echo "deploy: OUTERLOOP_AUTO_UPDATE=$POLICY is not one of off, release, main; not updating"
+       POLICY=off ;;
+esac
+# newest_release: of the tags on stdin, the newest release in version order —
+# at one X.Y.Z a final release beats rc beats beta beats alpha beats dev;
+# anything not shaped like a release tag is ignored
+newest_release() {
+    sed -E -n \
+        -e 's/^v([0-9]+)\.([0-9]+)\.([0-9]+)$/\1 \2 \3 4 0 &/p' \
+        -e 's/^v([0-9]+)\.([0-9]+)\.([0-9]+)rc([0-9]+)$/\1 \2 \3 3 \4 &/p' \
+        -e 's/^v([0-9]+)\.([0-9]+)\.([0-9]+)b([0-9]+)$/\1 \2 \3 2 \4 &/p' \
+        -e 's/^v([0-9]+)\.([0-9]+)\.([0-9]+)a([0-9]+)$/\1 \2 \3 1 \4 &/p' \
+        -e 's/^v([0-9]+)\.([0-9]+)\.([0-9]+)\.dev([0-9]+)$/\1 \2 \3 0 \4 &/p' \
+        | sort -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | tail -1 | awk '{print $6}'
+}
 # A tick killed mid-fetch leaves .git/*.lock files that make every later
 # deploy fail and the chain run stale code; sweep locks older than a few
 # minutes (a live git op holds one for seconds) before touching the checkout.
 bash "$OUTERLOOP_HOME/scripts/sweep_git_locks.sh" "$OUTERLOOP_HOME" 10 || true
-# The PAT never appears in argv (argv is world-readable via /proc on shared
-# nodes): git asks for it through GIT_ASKPASS instead.
-if [ -n "${OUTERLOOP_PAT_FILE:-}" ] && [ -r "$OUTERLOOP_PAT_FILE" ]; then
-    ASKPASS=$(mktemp 2>/dev/null || echo "") && [ -n "$ASKPASS" ] && chmod 700 "$ASKPASS"
-    printf '#!/bin/sh\ncat "%s"\n' "$OUTERLOOP_PAT_FILE" > "$ASKPASS"
+DEPLOY_PREV=""
+if [ "$POLICY" != off ]; then
+    # The repo is public, so the fetch needs no credential; with a bot PAT the
+    # fetch authenticates, and the PAT never appears in argv (argv is
+    # world-readable via /proc on shared nodes): git asks through GIT_ASKPASS.
+    KERNEL="https://github.com/outerloop-science/outerloop.git"
+    ASKPASS=""
+    if [ -n "${OUTERLOOP_PAT_FILE:-}" ] && [ -r "$OUTERLOOP_PAT_FILE" ]; then
+        ASKPASS=$(mktemp 2>/dev/null || echo "")
+        if [ -n "$ASKPASS" ]; then
+            chmod 700 "$ASKPASS"
+            printf '#!/bin/sh\ncat "%s"\n' "$OUTERLOOP_PAT_FILE" > "$ASKPASS"
+            KERNEL="https://x-access-token@github.com/outerloop-science/outerloop.git"
+        fi
+    fi
+    fetch() {
+        env ${ASKPASS:+GIT_ASKPASS="$ASKPASS"} GIT_TERMINAL_PROMPT=0 \
+            git -C "$OUTERLOOP_HOME" fetch --quiet "$KERNEL" "$@"
+    }
     DEPLOY_PREV=$(git -C "$OUTERLOOP_HOME" rev-parse HEAD 2>/dev/null || echo "")
-    if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -C "$OUTERLOOP_HOME" fetch --quiet \
-        "https://x-access-token@github.com/outerloop-science/outerloop.git" main; then
-        git -C "$OUTERLOOP_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
+    if [ "$POLICY" = main ]; then
+        if fetch main; then
+            git -C "$OUTERLOOP_HOME" reset --hard --quiet FETCH_HEAD || echo "deploy: reset failed"
+        else
+            echo "deploy: fetch failed; running previous code"
+        fi
+    elif fetch 'refs/tags/v*:refs/tags/v*'; then
+        TAG=$(git -C "$OUTERLOOP_HOME" tag -l 'v*' | newest_release)
+        if [ -z "$TAG" ]; then
+            echo "deploy: no release tag found; running previous code"
+        elif [ "$(git -C "$OUTERLOOP_HOME" rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null)" != "$DEPLOY_PREV" ]; then
+            if git -C "$OUTERLOOP_HOME" reset --hard --quiet "refs/tags/$TAG"; then
+                echo "deploy: at release $TAG"
+            else
+                echo "deploy: reset to $TAG failed"
+            fi
+        fi
     else
         echo "deploy: fetch failed; running previous code"
     fi
-    rm -f "$ASKPASS"
+    [ -n "$ASKPASS" ] && rm -f "$ASKPASS"
 fi
 # Host-side caches must never land in $HOME: home quotas are tiny on many
 # clusters and invisible until EDQUOT (verified on Torch — a full home took
@@ -76,25 +169,14 @@ if ! (cd "$OUTERLOOP_HOME" && uv sync --locked --quiet); then
 fi
 export OUTERLOOP_DEPLOY_BROKEN
 
-# --- config knobs: read the config-driven AUTHOR knobs from the operator .env so
+# --- config knobs: the config-driven AUTHOR knobs from the operator .env, so
 # live config changes need no chain restart. These are where
 # OUTERLOOP_AUTHOR_BACKEND/_MODEL and the per-backend key files live; the
 # config-driven climb/followup default from them and the tick preflights them.
-#
-# We do NOT source .env: sourcing would execute it and let it set ANY variable
-# (the chain's own HOME/ROOT/PATH/cadence, arbitrary code). Instead we extract
-# only an ALLOWLIST of author knobs — so .env is structurally per-tick author
-# config and can never hijack the chain's identity or scheduling. And only from a
-# file that is ours and not group/world-writable (a writable one could still
-# inject a malicious VALUE, e.g. a bad codex binary path).
-# the operator's config dir: ~/.config/outerloop (new) or ~/.config/autoresearch (pre-rename)
-ENV_FILE="$HOME/.config/outerloop/.env"
-[ -r "$ENV_FILE" ] || ENV_FILE="$HOME/.config/autoresearch/.env"
-if [ -r "$ENV_FILE" ]; then
-    perms=$(stat -c "%a" "$ENV_FILE" 2>/dev/null || echo 777)
-    owner=$(stat -c "%u" "$ENV_FILE" 2>/dev/null || echo -1)
-    if [ "$owner" = "$(id -u)" ] && [ $((8#$perms & 8#022)) -eq 0 ]; then
-        for _k in OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL \
+# Only this ALLOWLIST is read, so .env is structurally per-tick author config
+# and can never hijack the chain's identity or scheduling.
+if [ -n "$ENV_TRUSTED" ]; then
+    for _k in OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL \
                   OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN OUTERLOOP_CODEX_KEY_FILE \
                   OUTERLOOP_CLAUDE_KEY_FILE OUTERLOOP_HARNESS_KEY_FILE \
                   OUTERLOOP_VERTEX_PROJECT OUTERLOOP_VERTEX_REGION \
@@ -107,25 +189,16 @@ if [ -r "$ENV_FILE" ]; then
                   OUTERLOOP_PANEL_CODEX_KEY_FILE \
                   OUTERLOOP_PANEL_HERMES_KEY_FILE \
                   REVIEW_HERMES_REPO REVIEW_HERMES_PROVIDER; do
-            # either spelling, the canonical key first: a pre-rename AUTORESEARCH_
-            # twin counts only when the OUTERLOOP_ key is absent, whatever the order
-            _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
-            [ -n "$_line" ] || _line=$(grep -E "^AUTORESEARCH_${_k#OUTERLOOP_}=" "$ENV_FILE" 2>/dev/null | tail -1)
-            # PRESENCE-based, not value-based: a key set to "" in .env is a
-            # live OFF-SWITCH (OUTERLOOP_PANEL="" disables the panel,
-            # VERTEX_PROJECT="" reverts to API-key billing) and must override
-            # an inherited chain value; an ABSENT key changes nothing.
-            if [ -n "$_line" ]; then
-                _v=${_line#*=}
-                _v=${_v%$'\r'}                     # CRLF-edited file
-                _v=${_v#[\"\']}; _v=${_v%[\"\']}   # optional surrounding quote
-                export "$_k=$_v"
-            fi
-        done
-    else
-        echo "deploy: refusing to read $ENV_FILE (owner=$owner perms=$perms;" \
-             "needs to be yours and not group/world-writable)"
-    fi
+        env_line
+        # PRESENCE-based, not value-based: a key set to "" in .env is a
+        # live OFF-SWITCH (OUTERLOOP_PANEL="" disables the panel,
+        # VERTEX_PROJECT="" reverts to API-key billing) and must override
+        # an inherited chain value; an ABSENT key changes nothing.
+        if [ -n "$_line" ]; then
+            env_value
+            export "$_k=$_v"
+        fi
+    done
 fi
 
 # The codex author binary is a host prerequisite; install it (idempotent, fast

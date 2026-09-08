@@ -347,6 +347,7 @@ exit 0
         "OUTERLOOP_HOME": str(home),
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_AUTO_UPDATE": "main",
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
@@ -403,6 +404,7 @@ exit 0
         "OUTERLOOP_HOME": str(home),
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_AUTO_UPDATE": "main",
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
@@ -463,6 +465,7 @@ exit 0
         "OUTERLOOP_HOME": str(home),
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_AUTO_UPDATE": "main",
         "HOME": str(tmp_path),
     }
     proc = subprocess.run(
@@ -480,3 +483,143 @@ exit 0
     assert "uv.lock is unchanged; running new code on the current environment" in proc.stdout
     assert "BROKEN=\n" in proc.stdout
     assert "reset --hard --quiet OLD" not in log.read_text()  # no rollback: HEAD kept
+
+
+def _deploy(
+    tmp_path: Path,
+    *,
+    tags: str = "",
+    at_tag: bool = False,
+    env_file: str | None = None,
+    **env_extra: str,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Source tick_deploy.sh alone. A shim git logs its argv and answers the
+    release questions (the tags it has; whether HEAD is already at the chosen
+    tag); uv sync succeeds. Returns the process and git's argv log."""
+    home = tmp_path / "home"
+    (home / "scripts").mkdir(parents=True)
+    for name in ("tick_deploy.sh", "sweep_git_locks.sh"):
+        (home / "scripts" / name).write_text((ROOT / "scripts" / name).read_text())
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "gitlog"
+    log.touch()
+    tag_commit = "OLD" if at_tag else "TAGGED"
+    (bindir / "git").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{log}"
+case "$*" in
+  *"tag -l v*"*) for t in {tags}; do echo "$t"; done ;;
+  *"rev-parse refs/tags/"*) echo {tag_commit} ;;
+  *"rev-parse HEAD"*) echo OLD ;;
+esac
+exit 0
+"""
+    )
+    (bindir / "uv").write_text("#!/bin/sh\nexit 0\n")
+    for p in bindir.iterdir():
+        os.chmod(p, 0o755)
+    if env_file is not None:
+        cfg = tmp_path / ".config" / "outerloop"
+        cfg.mkdir(parents=True)
+        (cfg / ".env").write_text(env_file)
+        os.chmod(cfg / ".env", 0o600)
+    (tmp_path / "pat").write_text("ghp_secret\n")
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_ROOT": str(tmp_path / "root"),
+        "HOME": str(tmp_path),
+    }
+    for k in ("OUTERLOOP_AUTO_UPDATE", "AUTORESEARCH_AUTO_UPDATE", "OUTERLOOP_PAT_FILE"):
+        env.pop(k, None)
+    env.update(env_extra)
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{home}/scripts/tick_deploy.sh"; echo "BROKEN=$OUTERLOOP_DEPLOY_BROKEN"',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return proc, log.read_text()
+
+
+def test_the_default_update_policy_leaves_the_checkout_alone(tmp_path: Path) -> None:
+    """No OUTERLOOP_AUTO_UPDATE: the deploy fetches nothing, PAT or not — an
+    adopter runs the code they installed until they choose to upgrade."""
+    proc, gitlog = _deploy(tmp_path, OUTERLOOP_PAT_FILE=str(tmp_path / "pat"))
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog and "reset" not in gitlog
+    assert "BROKEN=\n" in proc.stdout
+
+
+def test_release_policy_moves_to_the_newest_release_tag(tmp_path: Path) -> None:
+    """`release` fetches the public repo's tags without a credential and resets
+    to the newest by version order: at one X.Y.Z a final release beats rc
+    beats alpha beats dev, and dev10 beats dev2; tags that are not releases
+    are ignored."""
+    proc, gitlog = _deploy(
+        tmp_path,
+        tags="v0.1.0.dev2 v0.1.0 v0.1.0rc1 v0.2.0.dev1 v0.1.1 vlatest v1 v0.2.0a1 v0.1.0.dev10",
+        OUTERLOOP_AUTO_UPDATE="release",
+    )
+    assert proc.returncode == 0, proc.stderr
+    fetches = [ln for ln in gitlog.splitlines() if " fetch " in ln]
+    assert fetches == [
+        f"-C {tmp_path / 'home'} fetch --quiet"
+        " https://github.com/outerloop-science/outerloop.git refs/tags/v*:refs/tags/v*"
+    ]
+    assert "reset --hard --quiet refs/tags/v0.2.0a1" in gitlog
+    assert "deploy: at release v0.2.0a1" in proc.stdout
+
+
+def test_release_policy_at_the_current_release_stays_put(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(
+        tmp_path, tags="v0.1.0 v0.1.1", at_tag=True, OUTERLOOP_AUTO_UPDATE="release"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "reset" not in gitlog
+    assert "deploy: at release" not in proc.stdout
+
+
+def test_release_policy_without_a_release_tag_runs_the_previous_code(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(tmp_path, tags="vlatest", OUTERLOOP_AUTO_UPDATE="release")
+    assert "reset" not in gitlog
+    assert "no release tag found" in proc.stdout
+
+
+def test_main_policy_follows_main_and_authenticates_with_the_pat(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(
+        tmp_path, OUTERLOOP_AUTO_UPDATE="main", OUTERLOOP_PAT_FILE=str(tmp_path / "pat")
+    )
+    assert proc.returncode == 0, proc.stderr
+    authed = "fetch --quiet https://x-access-token@github.com/outerloop-science/outerloop.git main"
+    assert authed in gitlog
+    assert "reset --hard --quiet FETCH_HEAD" in gitlog
+    assert "ghp_secret" not in gitlog  # the PAT rides GIT_ASKPASS, never argv
+
+
+def test_the_env_file_policy_wins_over_the_environment(tmp_path: Path) -> None:
+    """The .env line is read before the fetch, in either spelling; an explicit
+    `off` there switches off an inherited `main`."""
+    proc, gitlog = _deploy(
+        tmp_path, env_file="OUTERLOOP_AUTO_UPDATE=off\n", OUTERLOOP_AUTO_UPDATE="main"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog
+    proc, gitlog = _deploy(
+        tmp_path / "b", tags="v0.1.0", env_file="AUTORESEARCH_AUTO_UPDATE=release\n"
+    )
+    assert "refs/tags/v*:refs/tags/v*" in gitlog
+    assert "reset --hard --quiet refs/tags/v0.1.0" in gitlog
+
+
+def test_an_unknown_policy_is_off_and_says_so(tmp_path: Path) -> None:
+    proc, gitlog = _deploy(tmp_path, OUTERLOOP_AUTO_UPDATE="nightly")
+    assert "fetch" not in gitlog
+    assert "OUTERLOOP_AUTO_UPDATE=nightly is not one of off, release, main" in proc.stdout

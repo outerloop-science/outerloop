@@ -159,6 +159,14 @@ def test_render_env_records_the_image_when_set() -> None:
     a = InitAnswers(compute="local", target="o/r", image="/img/agent-py312.sif")
     assert "OUTERLOOP_IMAGE=/img/agent-py312.sif" in render_env(a, "/p")
     assert "OUTERLOOP_IMAGE" not in render_env(InitAnswers(compute="local", target="o/r"), "/p")
+
+
+def test_a_slurm_env_carries_the_default_update_policy() -> None:
+    """The checkout-based deployment gets `off` written out so the knob is
+    visible where it is set; the local loop runs the installed package."""
+    slurm = render_env(InitAnswers(compute="slurm", target="o/r", root="/r"), "")
+    assert "\nOUTERLOOP_AUTO_UPDATE=off\n" in slurm
+    assert "AUTO_UPDATE" not in render_env(InitAnswers(compute="local", target="o/r"), "")
     # --no-image writes the off-switch, so an image already on disk is not picked up
     off = InitAnswers(compute="local", target="o/r", uncontained=True)
     assert "\nOUTERLOOP_IMAGE=\n" in render_env(off, "/p")
