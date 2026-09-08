@@ -8,6 +8,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `docs/design/base-reintegration.md`: a proposal to keep a running line's
+  base current by re-pinning at each wake and to reconcile a PR whose base
+  moved after the run ended, with the open questions for the owner.
 - A weekly maintenance digest (`maintenance-agent.yml`, reusable; the kernel's
   own caller is `maintenance.yml`): read-only lens sessions scan a repository's
   default branch for dead pathways, duplicated logic, oversized modules, stale
