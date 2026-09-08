@@ -164,7 +164,7 @@ jobs:
       # An empty ssh-key is ignored by actions/checkout (token auth is enough
       # for a public or same-repo reviewer); a private reviewer repo needs it.
       - name: Check out the reviewer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
@@ -172,12 +172,12 @@ jobs:
           path: .autoresearch
           persist-credentials: false
       - name: Check out the PR head (read-only; never executed)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ env.PR_NUMBER }}/head
           path: pr-head
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
@@ -288,7 +288,7 @@ jobs:
         # not `success()`: a session step that died AFTER emitting must still
         # deliver its findings (or its skip-stub) to the posting job
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: review-findings-${{ inputs.opinion_id || inputs.backend }}-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/findings.json
@@ -311,14 +311,14 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Check out the reviewer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
           ssh-key: ${{ secrets.checkout_ssh_key }}
           path: .autoresearch
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
@@ -330,7 +330,7 @@ jobs:
         # caller's PR stays green; the job is continue-on-error at job
         # level). Observed live 2026-08-15: errored terra sessions posted
         # nothing and read as quiet clean days.
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: review-findings-${{ inputs.opinion_id || inputs.backend }}-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}

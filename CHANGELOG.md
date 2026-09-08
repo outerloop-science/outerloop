@@ -649,6 +649,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- CI and reusable-workflow Actions bumped to current majors: actions/checkout
+  v7, astral-sh/setup-uv v10, upload-artifact v7, download-artifact v8. The
+  single-name artifact downloads stay flat and the pattern download reads
+  recursively, so the review split is unaffected; the node24 runtime is on the
+  hosted runners.
 - Helpers shared across kernel modules are public in their owning module:
   `brief.code_fence`, `brief.cap`, `attempt.target_clone_url`,
   `attempt.stage_launch_job_ids`, `orchestrator.metric_from_output`,

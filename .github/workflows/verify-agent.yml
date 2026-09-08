@@ -120,7 +120,7 @@ jobs:
       # force-owns (recreates) before the session; a colliding checkout there
       # would be destroyed.
       - name: Check out the verifier
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.verifier_repo }}
           ref: ${{ inputs.verifier_ref }}
@@ -128,7 +128,7 @@ jobs:
           path: kernel
           persist-credentials: false
       - name: Check out the PR head (the change under review)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ env.PR_NUMBER }}/head
           path: pr-head
@@ -136,12 +136,12 @@ jobs:
       # The base tree carries the TRUSTED contract and ruler — the brief
       # directs all ruler reads here, never at the PR head.
       - name: Check out the base branch (trusted contract + ruler)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           path: base
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: kernel/uv.lock
@@ -183,7 +183,7 @@ jobs:
       - name: Upload the verdict
         # not success(): a session that died AFTER emitting must still deliver
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verify-verdict-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/verdict.json
@@ -211,14 +211,14 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Check out the verifier
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.verifier_repo }}
           ref: ${{ inputs.verifier_ref }}
           ssh-key: ${{ secrets.checkout_ssh_key }}
           path: kernel
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: kernel/uv.lock
@@ -227,7 +227,7 @@ jobs:
         # NO continue-on-error: every session outcome uploads an envelope, so a
         # missing artifact means the session died before emitting — fail this
         # job visibly (the caller's PR stays green; job is continue-on-error).
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: verify-verdict-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}

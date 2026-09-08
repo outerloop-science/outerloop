@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: eWaterCycle/setup-apptainer@v2
       - name: Build
         run: sudo -E apptainer build --force agent-py312.sif containers/agent-py312.def

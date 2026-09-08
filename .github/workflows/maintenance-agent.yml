@@ -100,19 +100,19 @@ jobs:
       HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
     steps:
       - name: Check out the kernel
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
           path: .autoresearch
           persist-credentials: false
       - name: Check out the tree to scan (the default branch's resolved commit)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           path: tree
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
@@ -195,7 +195,7 @@ jobs:
           fi
       - name: Upload findings
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maintenance-findings-lens-${{ matrix.lens }}-${{ github.run_id }}
           path: ${{ runner.temp }}/findings.json
@@ -217,13 +217,13 @@ jobs:
       HERMES_SHA: f80f453ae0679347e38abc917c7f94f717bf96c5
     steps:
       - name: Check out the kernel
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
           path: .autoresearch
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
@@ -276,7 +276,7 @@ jobs:
               ;;
           esac
       - name: Download lens opinions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: maintenance-findings-lens-*-${{ github.run_id }}
           path: ${{ runner.temp }}/opinions
@@ -311,7 +311,7 @@ jobs:
           fi
       - name: Upload the merged digest
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maintenance-findings-summary-${{ github.run_id }}
           path: ${{ runner.temp }}/findings.json
@@ -330,19 +330,19 @@ jobs:
       issues: write
     steps:
       - name: Check out the kernel
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.reviewer_repo }}
           ref: ${{ inputs.reviewer_ref }}
           path: .autoresearch
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: .autoresearch/uv.lock
       - name: Download the merged digest
         id: findings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: maintenance-findings-summary-${{ github.run_id }}
           path: ${{ runner.temp }}
