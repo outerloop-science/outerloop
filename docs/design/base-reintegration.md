@@ -49,28 +49,30 @@ Two gaps produced this:
    after the PR opens fires the existing conflict wake — merge main,
    re-measure, push — instead of stranding the PR for a human.
 
-## Open questions for the owner (decide before building)
+## Decisions (owner, 2026-09-08)
 
-These are the semantic choices; the mechanics follow from them.
+The semantic choices, settled — the mechanics follow from them.
 
-- **Re-pin cadence.** Every wake, or only when main actually moved? Only-when-
-  moved avoids needless re-merges and re-measures, at the cost of a cheap
-  check each wake.
-- **The "what changed" digest.** How far back does it reach, and how much does
-  the agent see — just that the record moved, or the sibling's diff? This is
-  what the agent reasons over to decide whether to abandon or keep its current
-  line of attack.
-- **Superseded axes.** When a sibling lands a strictly better result on the
-  same knob the line is exploring (another agent's better warmdown, say), is
-  the line told to drop that axis, or left to rediscover that it is beaten?
-  This is the `scaling.md` "wake-and-reintegrate for superseded siblings"
-  question.
-- **Post-terminal cost.** Keep the run parked while its PR is open, holding a
-  slot, or re-instantiate a lightweight reconciliation session only when the
-  PR actually conflicts?
-- **Whose GPU.** Re-measuring a baseline at a moved merge-base costs a run. Is
-  it always paid, or only when a claim is actually being re-evaluated against
-  the new base?
+1. **Re-pin cadence: only when main moved.** Each wake does a cheap
+   fetch-and-compare; it re-merges and re-pins only when a sibling actually
+   landed something. No churn when nothing changed.
+2. **What the agent sees: the record move, plus each sibling PR's metric and a
+   one-line summary — not full diffs.** Enough to decide whether its line is
+   still worth pursuing, without flooding its context.
+3. **A superseded axis: tell, don't force.** The wake digest says its axis was
+   beaten (e.g. "warmdown was taken further by #10"); the agent decides to
+   pivot or push on. The kernel never kills a line for it.
+4. **Healing a PR after the run ended: re-instantiate on demand.** A lightweight
+   reconcile session is woken only when the PR actually conflicts; we do not
+   hold a slot parked for days. The run's records persist and the session wakes
+   against them.
+5. **Who pays the re-measure GPU: only when the agent keeps its change.** The
+   re-measure is then a normal launch against the line's own budget. No eager
+   baseline re-runs on every merge.
+
+**Build order.** Stage 1 is decisions 1–3 and 5: re-pin at wake with the
+digest, and the re-measure paid only on keep. Stage 2 is decision 4, the
+post-terminal reconcile, which reuses the existing stale/conflict wake.
 
 ## Why this is the right shape
 
