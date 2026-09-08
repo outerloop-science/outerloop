@@ -77,7 +77,7 @@ standing instruction they supersede — a resumed agent honors stale constraints
       `gpu_hours_per_run`; `baseline: cached` measures a base once per base
       sha (2026-08-16 → 2026-08-28, #174–#178).
 
-- [ ] The session watcher, queue view and throttled sweeps
+- [x] The session watcher, queue view and throttled sweeps (#319–#324)
       (docs/design/session-watcher.md): always queue, Slurm does the waiting;
       a sweep is one throttled array job, the author sets its concurrency under
       a lenient contract ceiling; a watcher thread in the attempt answers `queue`, `history` and
@@ -97,7 +97,7 @@ standing instruction they supersede — a resumed agent honors stale constraints
 - [ ] Ops runbook: manual restart, `scancel` procedures, PAT rotation calendar
 - [ ] Transcript storage on project space with stated retention
 
-- [ ] Resident tick (design/resident-tick.md): a six-hour looping job with a
+- [x] Resident tick (design/resident-tick.md): a six-hour looping job with a
       single `afterany:self` successor, four scheduling events a day — the
       structural answer to the 2026-09-02 chain stalls (site partition moves;
       the #235 deadline reverted in #237). Opt-in mode first, then default.
@@ -287,9 +287,8 @@ Roles/flow reference for this whole section: design/roles.md.
        snapshot of autoresearch and the eval is the battery score;
        improvements return only as human-reviewed development PRs
 
-- [ ] Dependency caches for evals and the target image (design/eval-cache.md):
-      a kernel-warmed seed cache each job copies, then the contract's
-      `environment.container` knob
+- [x] Kernel-warmed seed cache each eval and launch job copies
+      (design/eval-cache.md, #330)
 
 ## Beyond 1.0 — external-facing (design: design/external.md)
 
