@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from fakes import RecordingDispatcher
 from outerloop.compute import CommandResult, SlurmCompute
 from outerloop.runstate import (
     ENDED,
@@ -23,7 +24,6 @@ from outerloop.tick import (
     DEFAULT_MIN_TICK_S,
     PAUSE_SENTINEL,
     WORK_MARKER_NAME,
-    RecordingDispatcher,
     _mark_worked,
     mark_tick_complete,
     tick,
@@ -357,7 +357,7 @@ def test_first_terminal_sighting_starts_the_grace_clock_not_a_wake(tmp_path: Pat
 def test_dry_run_reports_without_any_writes(tmp_path: Path) -> None:
     """python -m outerloop.tick runs exactly this until phase 5: a healthy
     completed run must survive any number of dry ticks unchanged."""
-    from outerloop.tick import RecordingDispatcher as RD
+    from fakes import RecordingDispatcher as RD
     from outerloop.tick import tick as tick_fn
 
     waiting_run(tmp_path)
@@ -3201,7 +3201,7 @@ def test_sweep_gives_a_dependency_pending_wake_the_grace_window(tmp_path: Path) 
     waiting_run(tmp_path, terminal_seen=0.0)
     acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
     slurm = FakeSlurm(states={"100": "COMPLETED", "55": "PENDING"}, reasons={"55": "Dependency"})
-    from outerloop.tick import RecordingDispatcher as RD
+    from fakes import RecordingDispatcher as RD
 
     d = RD()
     tick_fn(tmp_path, slurm.compute(), d, now=NOW, min_tick_s=0)

@@ -1440,21 +1440,3 @@ class HermesHarness:
             prior_turns.append({"role": "assistant", "text": redact(result.final_text, secrets)})
             _save_resume_transcript(session_home, session_id, prior_turns)
         return replace(result, session_id=session_id)
-
-
-@dataclass
-class FakeHarness:
-    """Deterministic in-process harness for tests and dry runs."""
-
-    result: SessionResult
-    script: Any = None  # optional callable(brief_text, workspace) for side effects
-    calls: list[tuple[str, str, str | None]] = field(default_factory=list)
-    supports_resume: bool = True  # a field so tests can exercise the no-resume path
-
-    def run(
-        self, brief_text: str, workspace: Path, resume_session_id: str | None = None
-    ) -> SessionResult:
-        self.calls.append((brief_text, str(workspace), resume_session_id))
-        if self.script is not None:
-            self.script(brief_text, workspace)
-        return self.result

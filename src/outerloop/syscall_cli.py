@@ -470,6 +470,10 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# seconds between checks of the kernel's done marker; tests shrink it
+SYNC_POLL_S = 15
+
+
 def cmd_sync(root: Path, args) -> str:
     """Ask the kernel for fresh origin/* refs and wait, inside this session's
     own clock. The kernel acts on its next cycle (cadence up to 30 minutes),
@@ -505,7 +509,7 @@ def cmd_sync(root: Path, args) -> str:
                 "continuing with current refs (they refresh at your next "
                 "wake regardless)."
             )
-        time.sleep(15)
+        time.sleep(SYNC_POLL_S)
 
 
 def cmd_siblings(root: Path, _args) -> str:

@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from fakes import FakeHarness
+from helpers import wait_until
 from outerloop.harness import (
     SESSION_ENV_ALLOWLIST,
     ClaudeCodeHarness,
     CodexHarness,
-    FakeHarness,
     SessionResult,
     budget_exhausted,
     outage,
@@ -431,18 +432,16 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=str(script), timeout_s=1).run("task", ws)
     assert result.stop_reason == "timeout"
     child = int((tmp_path / "child_pid").read_text().strip())
-    # the grandchild lingers as a zombie until init reaps it — poll briefly
-    import time
 
-    deadline = time.time() + 5
-    while time.time() < deadline:
+    # the grandchild lingers as a zombie until init reaps it — poll briefly
+    def gone() -> bool:
         try:
             _os.kill(child, 0)
         except ProcessLookupError:
-            break
-        time.sleep(0.05)
-    else:
-        raise AssertionError(f"child {child} survived the group kill")
+            return True
+        return False
+
+    assert wait_until(gone, interval=0.05), f"child {child} survived the group kill"
 
 
 def test_transcript_and_home_are_owner_only(tmp_path: Path) -> None:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 
+from helpers import wait_until
 from outerloop.launchlog import append_submitted
 from outerloop.runstate import RunRecord, run_dir, save_record
 from outerloop.syscall import Launch
@@ -193,10 +193,7 @@ def test_the_thread_answers_while_the_session_runs(tmp_path: Path) -> None:
     root, ws = _fleet(tmp_path)
     with SessionWatcher(_ctx(root, ws, _Compute([_row("555", "r2-launch-lr")]), poll_s=0.05)):
         (ws / ".outerloop" / "queue-request").touch()
-        deadline = time.time() + 5
-        while not (ws / ".outerloop" / "queue-done").exists() and time.time() < deadline:
-            time.sleep(0.05)
-        assert (ws / ".outerloop" / "queue-done").exists()
+        assert wait_until((ws / ".outerloop" / "queue-done").exists)
     assert _answered(ws, "queue")["jobs"][0]["experiment"] == "lr"
 
 
