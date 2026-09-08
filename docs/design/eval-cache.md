@@ -88,8 +88,10 @@ environment:
   digest, and hands the path to that target's eval and launch jobs. Sessions
   keep the deployment's image: the session harness places the author's model
   credential inside its container, and a target-maintained image must never
-  be where that credential lands. The deployment's image stays the default
-  for targets that name none.
+  be where that credential lands. The deployment's image (`OUTERLOOP_IMAGE`) is
+  the default for targets that name none — the contract as it stands since
+  the agent image shipped; the architecture note's older line about a
+  uv-managed environment for such targets is updated to say so.
 - **What the image carries is a seed cache, not an installed torch.** Every
   job builds its private environment from the lockfile regardless of what is
   installed in the image, so preinstalled packages would be installed again.
