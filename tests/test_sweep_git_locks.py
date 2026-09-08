@@ -44,13 +44,19 @@ def _aged_lock(path: Path) -> Path:
 
 
 def _live(proc: subprocess.Popen[bytes]) -> bool:
-    """Is `proc` in the process table the way the sweep looks for it: a `git`
-    process of ours with its argv readable?"""
-    pids = subprocess.run(["pgrep", "-x", "git"], capture_output=True, text=True).stdout
-    args = subprocess.run(
-        ["ps", "-o", "args=", "-p", str(proc.pid)], capture_output=True, text=True
-    ).stdout
-    return str(proc.pid) in pids.split() and "hash-object" in args
+    """Is `proc` alive with its argv readable — what the sweep needs to see it?
+    Reads the cmdline the way the sweep does (/proc on Linux, `ps` on a Mac),
+    so the test's readiness never diverges from the sweep's own detection."""
+    if proc.poll() is not None:  # already exited: never "live"
+        return False
+    try:
+        with open(f"/proc/{proc.pid}/cmdline", "rb") as fh:
+            cmd = fh.read().replace(b"\x00", b" ").decode()
+    except OSError:  # no /proc (macOS): ps, as the sweep also falls back to
+        cmd = subprocess.run(
+            ["ps", "-o", "args=", "-p", str(proc.pid)], capture_output=True, text=True
+        ).stdout
+    return "hash-object" in cmd
 
 
 def _sweep(checkout: Path, min_age: str = "10") -> subprocess.CompletedProcess[str]:

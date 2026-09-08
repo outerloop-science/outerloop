@@ -10,7 +10,8 @@ def wait_until(
     predicate: Callable[[], object], timeout: float = 5.0, interval: float = 0.01
 ) -> bool:
     """Poll `predicate` until it is truthy or `timeout` seconds pass; True if it
-    became so. A precondition reads `assert wait_until(...)`."""
+    became so, False on timeout. Callers assert the result, so a timeout fails
+    the test rather than passing silently."""
     deadline = time.monotonic() + timeout
     while True:
         if predicate():
