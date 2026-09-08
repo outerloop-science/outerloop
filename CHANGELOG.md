@@ -93,6 +93,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Toolchain: ruff 0.16.6 (pre-commit rev to match), mypy 2.3.1, pydantic 2.13.5;
+  gitleaks 8.30.1 in CI and pre-commit, the CI download verified against its
+  release checksum; the CI and release jobs run on `ubuntu-24.04`.
 - The deploy step no longer pulls `main` on its own: a deployment that relied
   on the PAT-gated pull sets `OUTERLOOP_AUTO_UPDATE=main` in its `.env`.
 - Launches always queue. The two admission schemes tried this cycle — held
