@@ -48,6 +48,8 @@ def test_brief_focuses_one_lens_or_covers_all_and_refuses_unknown_ones() -> None
     assert "Today's date: 2026-09-08" in general and "Repository: o/r at abc123" in general
     with pytest.raises(ValueError, match="unknown maintenance lens"):
         build_maintenance_brief("o/r", "abc123", lens="vibes")
+    assert "architecture" in MAINTENANCE_LENSES
+    assert "extension point" in build_maintenance_brief("o/r", "abc123", lens="architecture")
     assert lens_names(["general", "docs"]) == ["general", "docs"]
     with pytest.raises(ValueError, match="unknown maintenance lens"):
         lens_names(["docs", "vibes"])

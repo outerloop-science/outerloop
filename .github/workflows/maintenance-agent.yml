@@ -41,7 +41,7 @@ on:
           JSON array of lens names to fan out (general = the whole checklist;
           the library is outerloop.maintain.MAINTENANCE_LENSES)
         type: string
-        default: '["general", "pathways", "duplication", "structure", "upgrades", "tests", "performance", "docs"]'
+        default: '["general", "pathways", "duplication", "structure", "upgrades", "tests", "performance", "docs", "architecture"]'
       reviewer_repo:
         description: The kernel repository to run the scan code from
         type: string
