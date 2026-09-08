@@ -446,7 +446,7 @@ Containers are applied where they pay, not uniformly:
 | --- | --- | --- |
 | Orchestrator tick | host `uv` venv, deliberately NOT containerized | it exists to drive the host's `sbatch`/`sacct`/`squeue`; binding Slurm binaries, config, and the munge socket into a container is well-known friction, bought for a four-dependency pure-Python loop that needs none of it |
 | Experiments | **per-target Apptainer image, declared in the target's contract** | each researched repo owns its dependency world; a pinned image makes the contract's "deterministic and re-runnable" promise stronger (same digest at claim time and at CI re-verification), and GPU runs use the supported `apptainer exec --nv` path. A target that names no container runs in the deployment's agent image (`OUTERLOOP_IMAGE`), the default since the image shipped |
-| Agent sessions | host binary today; Apptainer `--no-home --bind <workspace>` is the designated hardening step | this is the named mechanism for the threat model's accepted residual risk: a contained session cannot read same-user absolute paths (key files, other runs), closing the gap the per-run HOME redirect only narrows |
+| Agent sessions | contained: `apptainer exec --containall --cleanenv` with the workspace bound, whenever the deployment names an image (`OUTERLOOP_IMAGE`); the host binary only in local mode without an image, which says so at start | this is the mechanism for the threat model's residual risk: a contained session cannot read same-user absolute paths (key files, other runs), closing the gap the per-run HOME redirect only narrows |
 
 The contract grows an optional `environment` block (phase 5):
 
