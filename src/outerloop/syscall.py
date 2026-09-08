@@ -602,15 +602,18 @@ MISSING_REPORT = (
 )
 
 
-TOOL_UPDATE_NOTE = (
-    "Your syscall tool was updated with this kernel. New since your session started: "
-    "`submit` requires `--report <file>` — your write-up (hypothesis, what ran and what "
-    "it measured, why this should merge, what did not work), which becomes the pull "
-    "request's research report and which the panel reads; `launch` takes `--why "
-    '"one line"` and, with `--array`, `--concurrency K`; `queue` shows the cluster '
-    "queue (every agent's jobs) and `history` your launches this run. "
-    "`python .outerloop/syscall <verb> --help` has the details."
-)
+def tool_update_note(channel: str) -> str:
+    """What a session that started under an older kernel is told at a wake
+    whose tool refresh replaced its tool; `channel` is this workspace's channel
+    dir name (a resumed legacy session still has `.autoresearch`)."""
+    return (
+        "Your syscall tool was updated. `submit` now requires `--report <file>`. The "
+        "report explains your hypothesis, what you ran and measured, why this should "
+        "merge, and what did not work; it becomes the pull request's research report "
+        "and the panel reads it. `launch` accepts `--why` and, with `--array`, "
+        "`--concurrency K`. `queue` shows every agent's jobs; `history` shows your "
+        f"launches this run. `python {channel}/syscall <verb> --help` has the details."
+    )
 
 
 def refresh_tool(workspace: Path) -> bool:
@@ -632,13 +635,25 @@ def refresh_tool(workspace: Path) -> bool:
             st = os.stat("syscall", dir_fd=dirfd, follow_symlinks=False)
         except FileNotFoundError:
             st = None
+        current: bytes | None = None
         if st is not None and stat.S_ISREG(st.st_mode) and st.st_size == len(source):
-            fd = os.open("syscall", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
+            # compare through a non-blocking open checked after the fact: a FIFO
+            # swapped in since the stat returns at once instead of waiting for a
+            # writer, and anything unreadable (mode 000) simply gets rewritten
             try:
-                if os.read(fd, len(source) + 1) == source:
-                    return False  # already this kernel's tool
-            finally:
-                os.close(fd)
+                fd = os.open("syscall", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dirfd)
+            except OSError:
+                fd = -1
+            if fd >= 0:
+                try:
+                    if stat.S_ISREG(os.fstat(fd).st_mode):
+                        current = os.read(fd, len(source) + 1)
+                except OSError:
+                    current = None
+                finally:
+                    os.close(fd)
+        if current == source:
+            return False  # already this kernel's tool, readable as it should be
         if st is not None and stat.S_ISDIR(st.st_mode):
             # a directory planted in the tool's place: rename cannot replace
             # it. Removed RELATIVE TO THE CHANNEL FD, never by path — a path

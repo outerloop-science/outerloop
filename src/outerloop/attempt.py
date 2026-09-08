@@ -93,10 +93,10 @@ from outerloop.runstate import (
 from outerloop.syscall import (
     CHANNEL_DIR_NAMES,
     MAX_ARTIFACT_BYTES,
-    TOOL_UPDATE_NOTE,
     SyscallRequest,
     channel_dir,
     launch_task_ids,
+    tool_update_note,
 )
 from outerloop.syscall import ensure_excluded as syscall_excluded
 from outerloop.syscall import install_tool as syscall_install_tool
@@ -905,7 +905,7 @@ def _wake_author_sleep(
     if pacing:
         wake_text = f"{wake_text}\n\n" + "\n".join(pacing) + " (the contract's ceiling applies)."
     if tool_changed:
-        wake_text = f"{wake_text}\n\n{TOOL_UPDATE_NOTE}"
+        wake_text = f"{wake_text}\n\n{tool_update_note(channel_dir(workspace))}"
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
         wake_text = f"{extra_update}\n\n{wake_text}"

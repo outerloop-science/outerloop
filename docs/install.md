@@ -237,8 +237,9 @@ that can reach GitHub and your LLM provider works.
   job — no daemon and no inbound SSH, which matters when your cluster requires
   2FA.
 - **A VM or workstation**: `outerloop start` runs the local loop in the
-  foreground (Ctrl-C stops it, the records resume it); on a headless machine
-  start it under `nohup` or in a tmux window, or as a user service.
+  foreground. Ctrl-C stops it; its saved records let it continue the work when
+  you start it again. On a headless machine start it under `nohup` or in a
+  tmux window, or as a user service.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI

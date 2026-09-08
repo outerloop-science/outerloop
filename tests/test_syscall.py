@@ -1253,5 +1253,27 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
     tool.unlink()
     tool.mkdir()
     (tool / "junk").write_text("x")
-    refresh_tool(tmp_path)
+    assert refresh_tool(tmp_path) is True
     assert tool.is_file() and "def main(" in tool.read_text()
+    # the same bytes made unreadable (mode 000) are replaced, not left as a
+    # tool the session cannot run
+    tool.chmod(0)
+    assert refresh_tool(tmp_path) is True
+    assert (tool.stat().st_mode & 0o777) == 0o755 and "def main(" in tool.read_text()
+    # a FIFO in the tool's place never blocks the wake: the comparison opens
+    # non-blocking and checks what it opened, then the tool is rewritten
+    import threading
+
+    tool.unlink()
+    os.mkfifo(tool)
+    seen: list[bool] = []
+    t = threading.Thread(target=lambda: seen.append(refresh_tool(tmp_path)), daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), "refresh_tool blocked on a FIFO"
+    assert seen == [True] and tool.is_file() and "def main(" in tool.read_text()
+    # the notice names this workspace's channel, legacy name included
+    from outerloop.syscall import tool_update_note
+
+    assert "python .autoresearch/syscall <verb> --help" in tool_update_note(".autoresearch")
+    assert "`--report <file>`" in tool_update_note(".outerloop")
