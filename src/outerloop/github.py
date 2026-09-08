@@ -1293,6 +1293,7 @@ def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
         },
         capture_output=True,
         timeout=30,
+        check=False,
     )
     # BYTES + surrogateescape, never text=True: the config is session-written,
     # so a non-UTF-8 byte in a value must not crash the git call — and the

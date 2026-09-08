@@ -93,6 +93,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Helpers shared across kernel modules are public in their owning module:
+  `brief.code_fence`, `brief.cap`, `attempt.target_clone_url`,
+  `attempt.stage_launch_job_ids`, `orchestrator.metric_from_output`,
+  `review_agent.emit_envelope` and `review_agent.pull_request` (formerly
+  underscore-prefixed).
 - The deploy step no longer pulls `main` on its own: a deployment that relied
   on the PAT-gated pull sets `OUTERLOOP_AUTO_UPDATE=main` in its `.env`.
 - Launches always queue. The two admission schemes tried this cycle — held

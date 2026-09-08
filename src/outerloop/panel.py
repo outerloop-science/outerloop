@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from outerloop.brief import _fence
+from outerloop.brief import code_fence
 from outerloop.harness import Harness, backend_id
 from outerloop.review import Finding, PullRequest, build_agent_brief
 from outerloop.role_runner import run_role
@@ -108,7 +108,7 @@ def _render_wake(findings: tuple[Finding, ...]) -> str:
         f"- {f.file}:{f.line if f.line is not None else '?'} — {f.summary}: {f.detail}"
         for f in findings
     )
-    fence = _fence(body)
+    fence = code_fence(body)
     return (
         "Before your work becomes a pull request, a verification panel read "
         "it and found BLOCKING findings. Address them in the workspace: your "

@@ -900,7 +900,7 @@ def test_self_initiated_stranded_implementing_unblocks() -> None:
 def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None:
     from outerloop.tick import (
         FollowupSpec,
-        read_pending,
+        list_pendings,
         service_self_initiated,
     )
 
@@ -929,7 +929,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     compute = SlurmCompute(runner=runner)
     out = service_self_initiated(tmp_path, compute, spec, contract, NOW)
     assert out == ("denoise", "123")
-    marker = read_pending(tmp_path, "org/pilot", "agent-01")
+    marker = dict(list_pendings(tmp_path, "org/pilot")).get("agent-01")
     assert marker is not None and marker["benchmark"] == "denoise"
     # next tick, record not yet written, job alive -> NO duplicate submit
     assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 1800) is None
@@ -942,7 +942,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
         now=NOW + 1900,
     )
     assert service_self_initiated(tmp_path, compute, spec, contract, NOW + 3600) is None
-    assert read_pending(tmp_path, "org/pilot", "agent-01") is None
+    assert list_pendings(tmp_path, "org/pilot") == []
     assert len(submitted) == 1
 
 
@@ -1786,9 +1786,9 @@ roadmap: docs/roadmap.md
     out = service_steward(tmp_path, github, compute, spec("/k"), NOW, with_steward, limits)
     assert out == ("steward-issue-21", "321")
     # the queue window is bridged: pending marker written, second pass no-ops
-    from outerloop.tick import read_pending
+    from outerloop.tick import list_pendings
 
-    marker = read_pending(tmp_path, "org/pilot")  # steward lane: legacy marker
+    [(_, marker)] = list_pendings(tmp_path, "org/pilot")  # steward lane: legacy marker
     assert marker is not None and marker["benchmark"] == "steward:tsp"
     assert (
         service_steward(tmp_path, G(), compute, spec("/k"), NOW + 60, with_steward, limits) is None
@@ -2778,9 +2778,9 @@ roadmap: docs/roadmap.md
     assert "--agent-id agent-01" in submitted[2]
     # the landed check is SLOT-SCOPED: agent-01's record must not have
     # cleared agent-02's still-live marker (terra #173 r1)
-    from outerloop.tick import read_pending
+    from outerloop.tick import list_pendings
 
-    assert read_pending(tmp_path, "org/pilot", "agent-02") is not None
+    assert "agent-02" in dict(list_pendings(tmp_path, "org/pilot"))
 
 
 def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
@@ -2789,7 +2789,7 @@ def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
     file that isn't a width-slot name (terra #173 r1), nor the LEGACY
     marker of a repo literally named pilot__agent-01 — "_" is legal in
     repo names, which is why the slot separator is "@" (terra #173 r2)."""
-    from outerloop.tick import list_pendings, read_pending, write_pending
+    from outerloop.tick import list_pendings, write_pending
 
     write_pending(tmp_path, "org/pilot", "tsp", "1", NOW, agent="agent-01")
     write_pending(tmp_path, "org/pilotx", "tsp", "2", NOW)
@@ -2798,7 +2798,7 @@ def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
     write_pending(tmp_path, "org/pilot__agent-01", "tsp", "5", NOW)
     got = [(agent, p["job_id"]) for agent, p in list_pendings(tmp_path, "org/pilot")]
     assert got == [("agent-01", "1")]
-    marker = read_pending(tmp_path, "org/pilot__agent-01")
+    [(_, marker)] = list_pendings(tmp_path, "org/pilot__agent-01")
     assert marker is not None and marker["job_id"] == "5"
 
 
@@ -3428,7 +3428,7 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     _g(mover, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "moves")
     _g(mover, "push", "-q", "origin", "main")
 
-    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda t: str(bare))
+    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda t: str(bare))
 
     class Spec:
         pat_file = ""

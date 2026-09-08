@@ -30,28 +30,12 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from outerloop.runstate import ENDED, RunRecord, list_runs, load_record, run_dir, save_record
+from outerloop.runstate import ENDED, RunRecord, load_record, run_dir, save_record
 
 log = logging.getLogger(__name__)
 
 WORKSPACE_DIRS = ("ws", "ws-home")
 DEFAULT_SHED_GRACE_S = 24 * 3600.0
-
-
-def shed_candidates(root: Path, now: float, grace_s: float, force: bool) -> list[RunRecord]:
-    """Ended runs whose workspaces may go now, oldest ending first. With
-    `force` (the disk is failing) the grace period does not apply."""
-    due: list[RunRecord] = []
-    for record in list_runs(root):
-        if record.state != ENDED or record.workspace_shed:
-            continue
-        if not force and now - record.updated < grace_s:
-            continue
-        if not any((run_dir(root, record.run_id) / d).exists() for d in WORKSPACE_DIRS):
-            continue
-        due.append(record)
-    due.sort(key=lambda r: r.updated)
-    return due
 
 
 def shed_workspace(root: Path, record: RunRecord, now: float) -> bool:

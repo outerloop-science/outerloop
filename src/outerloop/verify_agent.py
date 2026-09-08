@@ -20,7 +20,7 @@ from outerloop.contract import find_contract
 from outerloop.github import GitHubClient
 from outerloop.harness import Harness, backend_id, budget_exhausted, outage
 from outerloop.posting import EXPECTED_FAILURES, post_round, post_skip_stub
-from outerloop.review_agent import _emit, _pull_request
+from outerloop.review_agent import emit_envelope, pull_request
 from outerloop.role_runner import run_role
 from outerloop.roles import verifier_spec, verify_result_from_role
 from outerloop.rolespec import RoleSpec
@@ -81,19 +81,21 @@ def run_agent_verify(
         # `detail` is already api-key-redacted by the harness (it owns its own
         # secret), so no secret is passed here.
         if emit_path is not None:
-            _emit(emit_path, repo, number, kind="skip-stub", detail=detail, reviewed_by=reviewed_by)
+            emit_envelope(
+                emit_path, repo, number, kind="skip-stub", detail=detail, reviewed_by=reviewed_by
+            )
         else:
             post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
 
     try:
-        pr, pr_data = _pull_request(client, repo, number)
+        pr, pr_data = pull_request(client, repo, number)
         skip = verify_skip_reason(pr, bot_login)
         if skip is not None:
             log.info("skipping verification of %s#%s: %s", repo, number, skip)
             # a clean skip still leaves an envelope so the post job can REQUIRE
             # an artifact — a missing one then always means a broken session
             if emit_path is not None:
-                _emit(emit_path, repo, number, kind="skip-clean", detail=skip)
+                emit_envelope(emit_path, repo, number, kind="skip-clean", detail=skip)
             return None
 
         contract_text = _base_contract(client, repo, pr_data)
@@ -122,11 +124,11 @@ def run_agent_verify(
             elif emit_path is not None:
                 # nothing worth posting, but the post job still needs an
                 # artifact so a MISSING one always means a broken session
-                _emit(emit_path, repo, number, kind="skip-clean", detail=detail)
+                emit_envelope(emit_path, repo, number, kind="skip-clean", detail=detail)
             return None
 
         if emit_path is not None:
-            _emit(
+            emit_envelope(
                 emit_path,
                 repo,
                 number,

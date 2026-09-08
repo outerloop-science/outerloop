@@ -317,6 +317,7 @@ def _resident_jobs() -> list[str] | None:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -328,7 +329,9 @@ def _resident_jobs() -> list[str] | None:
 
 def _cancel(job: str) -> bool:
     try:
-        proc = subprocess.run(["scancel", job], capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(
+            ["scancel", job], capture_output=True, text=True, timeout=30, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0
@@ -461,7 +464,7 @@ def start(args: argparse.Namespace) -> int:
     # sbatch --export=ALL carries these to the resident job from the environment
     # we hand it here (so a comma in a value never breaks a --export delimiter).
     submit_env = {**os.environ, **path_env, **plan.export_env()}
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=submit_env)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=submit_env, check=False)
     if proc.returncode != 0:
         print(
             f"outerloop start: sbatch failed: {(proc.stderr or proc.stdout).strip()}",

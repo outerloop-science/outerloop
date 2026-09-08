@@ -13,11 +13,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from outerloop.brief import MAX_TASK_CHARS, _cap, _fence
+from outerloop.brief import MAX_TASK_CHARS, cap, code_fence
 from outerloop.contract import Contract
 from outerloop.followup import QUALIFYING_ASSOCIATIONS
 from outerloop.github import is_own_login
-from outerloop.markers import has_label, has_marker, label_name, marker
+from outerloop.markers import has_label, has_marker, marker
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +29,6 @@ RELEASE_MARKER = marker("claim-released")
 # failure must not claim/release (and comment) forever. Same idea as the
 # steward lane's MAX_STEWARD_ATTEMPTS.
 MAX_INTAKE_ATTEMPTS = 3
-# steward work orders carry this label; they are the STEWARD lane's,
-# never the solver's (a solver climb cannot touch env paths anyway)
-STEWARD_LABEL = label_name("steward")
 
 
 @dataclass(frozen=True)
@@ -119,8 +116,8 @@ def issue_hypothesis(task: IssueTask) -> str:
     The author passed the standing gate, so the REQUEST is legitimate; the
     fence marks where quoted text ends and the harness's authority resumes.
     """
-    quoted = _cap(f"{task.title}\n\n{task.body}".strip(), MAX_TASK_CHARS - 400)
-    fence = _fence(quoted)
+    quoted = cap(f"{task.title}\n\n{task.body}".strip(), MAX_TASK_CHARS - 400)
+    fence = code_fence(quoted)
     return (
         f"A maintainer (@{task.author}) opened issue #{task.number} requesting "
         f"work on the `{task.benchmark}` benchmark. Their request:\n"

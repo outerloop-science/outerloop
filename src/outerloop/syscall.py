@@ -43,7 +43,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from outerloop.brief import _fence
+from outerloop.brief import code_fence
 from outerloop.compute import GONE
 
 # The syscall channel dir in the workspace. New runs install `.outerloop/`;
@@ -1021,7 +1021,7 @@ def render_wake(
             lines.append("artifacts NOT delivered: " + "; ".join(r.skipped))
         body = _tail(r.stdout_tail) or "(empty)"
         err = _tail(r.stderr_tail)
-        fence = _fence(body + err)
+        fence = code_fence(body + err)
         lines.append(f"stdout (tail):\n{fence}\n{body}\n{fence}")
         if err:
             lines.append(f"stderr (tail):\n{fence}\n{err}\n{fence}")
@@ -1034,7 +1034,7 @@ def render_wake(
         joined,
     ]
     if note:
-        fence = _fence(note)
+        fence = code_fence(note)
         parts.append(f"Your note to yourself:\n{fence}\n{note}\n{fence}")
     gpu = f", {gpu_hours_remaining:.1f} GPU-hours" if gpu_hours_remaining is not None else ""
     # Push to keep going ONLY when another launch is actually possible: a launch

@@ -190,10 +190,6 @@ def containment_check(*, runner: Callable[..., Any] = subprocess.run) -> str:
     return ""
 
 
-def containment_available() -> bool:
-    return containment_check() == ""
-
-
 def _fmt_mb(n: int) -> str:
     return f"{n / (1 << 20):,.0f} MB"
 

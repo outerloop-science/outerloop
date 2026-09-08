@@ -24,7 +24,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from outerloop.review_agent import _emit, backend_id
+from outerloop.review_agent import backend_id, emit_envelope
 from outerloop.role_runner import run_role
 from outerloop.roles import summarizer_spec
 
@@ -83,7 +83,9 @@ def main() -> int:
     emit_path = Path(emit_env).resolve()
 
     def stub(detail: str) -> int:
-        _emit(emit_path, repo, number, kind="skip-stub", detail=detail, reviewed_by="summarizer")
+        emit_envelope(
+            emit_path, repo, number, kind="skip-stub", detail=detail, reviewed_by="summarizer"
+        )
         return 0
 
     envelopes = _load_envelopes(Path(src).resolve(), repo, number)
@@ -109,7 +111,7 @@ def main() -> int:
         # all skipped/failed: ONE stub summarizing why (clean skips stay
         # clean — the poster's own skip re-check silences bot/opt-out PRs)
         if all(e.get("kind") == "skip-clean" for e in envelopes):
-            _emit(emit_path, repo, number, kind="skip-clean", detail=details)
+            emit_envelope(emit_path, repo, number, kind="skip-clean", detail=details)
             return 0
         return stub(f"no lens produced findings ({details})")
     failed = [e for e in envelopes if e.get("kind") == "skip-stub"] + vanished
@@ -119,7 +121,7 @@ def main() -> int:
         # must not hide that most of the panel died)
         only = reals[0]
         data = _with_lost_lenses(dict(only.get("data") or {}), failed)
-        _emit(
+        emit_envelope(
             emit_path,
             repo,
             number,
@@ -147,7 +149,7 @@ def main() -> int:
         detail = role_result.error or role_result.session.stop_reason
         return stub(f"summarizer session produced no verdict: {detail}")
     lenses = "+".join(str(e.get("lens") or "general") for e in reals)
-    _emit(
+    emit_envelope(
         emit_path,
         repo,
         number,

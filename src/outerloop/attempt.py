@@ -201,7 +201,7 @@ class WorkspaceDrift(RuntimeError):
     """The tree changed between measurement and commit."""
 
 
-def _target_clone_url(target: str) -> str:
+def target_clone_url(target: str) -> str:
     """The canonical HTTPS clone URL for `owner/repo`. The one source of truth
     for where a run's git pushes go — derived from the target, never read from
     the session-writable `remote.origin.url`."""
@@ -221,7 +221,8 @@ def _blessed_head(ws: Workspace, result: Any, contract: Any) -> str:
         return ""
     try:
         return ws.git("rev-parse", "HEAD").strip()
-    except Exception:
+    except Exception as exc:
+        log.warning("could not read HEAD; not arming self-merge: %s", exc)
         return ""
 
 
@@ -480,7 +481,7 @@ def _park_run(
         stage["syscall_note"] = redact(parked.syscall.note, secrets)
         if parked.syscall.launches:
             # the run's launch ledger (`history`, and the queue view's labels):
-            # ids align with launch_jobs order, as _stage_launch_job_ids reads them
+            # ids align with launch_jobs order, as stage_launch_job_ids reads them
             if parked.launch_afterany:
                 launch_ids = afterany_ids(parked.launch_afterany)
             elif parked.phase == "author-sleep":
@@ -881,7 +882,7 @@ def _wake_author_sleep(
     # of a blank "job failure". The park's launch job ids align positionally
     # with the results (same launch/array order). Best-effort — the wake never
     # blocks on the scheduler query.
-    task_ids = launch_task_ids(launches, _stage_launch_job_ids(record))
+    task_ids = launch_task_ids(launches, stage_launch_job_ids(record))
     status_of = getattr(dispatch.compute, "status", None)
     if status_of is not None:
         results = annotate_launch_states(results, task_ids, status_of)
@@ -1105,7 +1106,7 @@ def _stage_syscall_launches(record: RunRecord) -> tuple:
     )
 
 
-def _stage_launch_job_ids(record: RunRecord) -> list[str]:
+def stage_launch_job_ids(record: RunRecord) -> list[str]:
     """The park's launch jobs: `launch_afterany` when the park recorded it;
     for an older author-sleep park every waited job was a launch; for an
     older candidate park the gate's evals are mixed in, so none."""
@@ -1133,7 +1134,7 @@ def _reconcile_launch_hours(
     if not gpus or stage.get("launch_hours_refunded"):
         return used
     refund = _launch_refund(
-        dispatch, launches, launch_task_ids(launches, _stage_launch_job_ids(record)), gpus, elapsed
+        dispatch, launches, launch_task_ids(launches, stage_launch_job_ids(record)), gpus, elapsed
     )
     if refund > 0:
         log.info("%s: refunding %.2f GPU-hours of unused launch walltime", record.run_id, refund)
@@ -1642,7 +1643,7 @@ def resume_run(
     # the session could have rewritten that config to exfil the bot token / code
     # to another remote. Passing `url` here means `Workspace.push` uses it
     # instead of reading `remote.origin.url`.
-    ws = Workspace(root=workspace, auth=bot_auth, url=_target_clone_url(record.target))
+    ws = Workspace(root=workspace, auth=bot_auth, url=target_clone_url(record.target))
     # A session reshaped .git (symlinked object store, gitdir file, FIFO) is
     # refused BEFORE anything writes through it: the exclude below opens
     # .git/info/exclude, and every ws.git call re-checks. The refusal ENDS
@@ -1859,7 +1860,7 @@ def resume_run(
     # any path — publish or hand back to the author — reads the budget
     if _stage_launches(record):
         sibling_launches = _stage_syscall_launches(record)
-        sibling_ids = launch_task_ids(sibling_launches, _stage_launch_job_ids(record))
+        sibling_ids = launch_task_ids(sibling_launches, stage_launch_job_ids(record))
         sibling_elapsed = _launch_elapsed(dispatch, sibling_ids) if sibling_ids else None
         _reconcile_launch_hours(record, dispatch, bench.gpus, sibling_launches, sibling_elapsed)
         # the ledger's ended records for the sibling launches, whether or not
@@ -2635,7 +2636,7 @@ def live_attempt(
     # exception path cannot rely on names bound inside the try
     salvage: dict[str, object] = {}
     try:
-        ws = Workspace.clone(_target_clone_url(config.target), workspace, auth=bot_auth)
+        ws = Workspace.clone(target_clone_url(config.target), workspace, auth=bot_auth)
         # Build ON the requested PR base: the clone checks out the remote
         # DEFAULT branch, which need not be `base_branch` — the session must
         # edit, and the gate must measure, the tree the PR will land on.

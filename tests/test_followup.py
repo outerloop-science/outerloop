@@ -182,7 +182,7 @@ def review_run(tmp_path: Path, monkeypatch):
         last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
-    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
     return root, bare
 
 
@@ -657,7 +657,7 @@ def steward_review_run(tmp_path: Path, monkeypatch):
         last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
-    monkeypatch.setattr("outerloop.attempt._target_clone_url", lambda target: str(bare))
+    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
     return root, bare
 
 

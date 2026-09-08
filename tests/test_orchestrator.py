@@ -11,9 +11,9 @@ from outerloop.harness import FakeHarness, SessionResult
 from outerloop.orchestrator import (
     EvalError,
     RunConfig,
-    _metric_from_output,
     attempt_once,
     improved,
+    metric_from_output,
     pr_body,
 )
 
@@ -989,20 +989,20 @@ def test_metric_parsing_accepts_pilot_shape() -> None:
         '{"benchmark": "tsp", "metric": "mean_tour_length",'
         ' "value": 13.875696168157484, "direction": "min"}'
     )
-    assert _metric_from_output(line, "mean_tour_length") == 13.875696168157484
-    assert _metric_from_output(line, "solve_rate") is None
+    assert metric_from_output(line, "mean_tour_length") == 13.875696168157484
+    assert metric_from_output(line, "solve_rate") is None
 
 
 def test_metric_parsing_json_only_no_fuzzy_fallback() -> None:
-    assert _metric_from_output('{"mean_tour_length": 13.1}', "mean_tour_length") == 13.1
+    assert metric_from_output('{"mean_tour_length": 13.1}', "mean_tour_length") == 13.1
     noisy = 'log line\n{"other": 1}\n{"solve_rate": 0.31, "n": 40}'
-    assert _metric_from_output(noisy, "solve_rate") == 0.31
-    assert _metric_from_output("nothing here", "solve_rate") is None
-    assert _metric_from_output('{"solve_rate": "high"}', "solve_rate") is None
+    assert metric_from_output(noisy, "solve_rate") == 0.31
+    assert metric_from_output("nothing here", "solve_rate") is None
+    assert metric_from_output('{"solve_rate": "high"}', "solve_rate") is None
     # NO regex fallback: a fuzzy match that reads a progress line or a
     # prefixed metric name is worse than a clean failure
-    assert _metric_from_output("solve_rate: 0.28", "solve_rate") is None
-    assert _metric_from_output('{"mean_solve_rate": 0.99}', "solve_rate") is None
+    assert metric_from_output("solve_rate: 0.28", "solve_rate") is None
+    assert metric_from_output('{"mean_solve_rate": 0.99}', "solve_rate") is None
 
 
 def test_scope_violation_blocks_before_candidate_eval(tmp_path: Path) -> None:
