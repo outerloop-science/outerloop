@@ -8,6 +8,15 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Base reintegration, stage 1 (docs/design/base-reintegration.md): a research
+  line that has drifted behind sibling merges is re-pinned onto the current
+  base at each wake, not only at run start. When `origin/<base_branch>` has
+  advanced past the line's pinned base, the wake merges it in, re-pins the base
+  to the merge, and leads the wake text with a short digest — the record move
+  plus a one-line summary of each sibling commit, never full diffs. It is a
+  strict no-op when the base has not moved, applies only to line runs, triggers
+  no eval (the agent re-measures a kept change through its normal launch), and
+  leaves a conflicting merge in the working tree for the agent to resolve.
 - A weekly maintenance digest (`maintenance-agent.yml`, reusable; the kernel's
   own caller is `maintenance.yml`): read-only lens sessions scan a repository's
   default branch for dead pathways, duplicated logic, oversized modules, stale

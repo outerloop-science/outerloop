@@ -65,7 +65,9 @@ from outerloop.orchestrator import (
 from outerloop.panel import PanelLens, PanelVerdict, run_panel
 from outerloop.paths import CONFIG_DIR
 from outerloop.progress import (
+    LEADER_FILE,
     PROGRESS_PATHS,
+    LeaderEntry,
     load_leader,
     update_leader,
     write_progress,
@@ -949,6 +951,19 @@ def _wake_author_sleep(
     snapshots: list[Snapshot] = []
     wake_line = _line_ref_for(bench, config.agent_id)
 
+    # Base reintegration stage 1: a line that has drifted behind sibling merges
+    # is re-pinned onto the current base HERE, at the wake seam (never mid-
+    # experiment), before the base_sha-paired snapshot/changed_paths/panel are
+    # built below. Only line runs; a strict no-op when the base has not moved.
+    # A clean merge advances base_sha to the merge and leads the wake with a
+    # digest; a conflict is left in the tree for the agent, base_sha unchanged.
+    reint = _reintegrate_line_base(
+        ws, wake_line, base_branch, base_sha, config.benchmark, config.bot_login, secrets
+    )
+    if reint is not None:
+        base_sha = reint.new_base_sha
+        wake_text = f"{reint.digest}\n\n{wake_text}"
+
     def snapshot() -> str:
         snap = snapshot_tree(
             ws, base_sha, exclude=LINE_MEMORY_PATHS if wake_line else (), author=config.bot_login
@@ -1466,6 +1481,180 @@ def _checkout_line(
         # pushed: the conflict is session work, not line state.
         ws.push(line)
     return line
+
+
+# Base reintegration stage 1 (docs/design/base-reintegration.md): a line that
+# merged main only at run start drifts behind sibling merges over a multi-day
+# depth run. Each wake re-pins the line onto the current base when — and only
+# when — a sibling actually landed something.
+_DIGEST_MAX_SIBLINGS = 12
+_DIGEST_SUBJECT_CHARS = 120
+
+
+@dataclass(frozen=True)
+class _Reintegration:
+    """The outcome of re-pinning a line's base at wake. `new_base_sha` is the
+    merged line head after a clean merge, or the UNCHANGED base after a
+    conflict — the base advances only when the merge actually applied.
+    `conflicted` says the merge was left in the working tree for the agent to
+    resolve; `digest` leads the wake text (the record move plus a one-line
+    summary of each sibling change)."""
+
+    new_base_sha: str
+    conflicted: bool
+    digest: str
+
+
+def _leader_best_at(ws: Workspace, sha: str, benchmark: str) -> LeaderEntry | None:
+    """The leaderboard entry for `benchmark` in results/leader.json AT a commit
+    `sha`, read straight from git (never the working tree). None when the file
+    or the entry is absent or unparsable — best-effort, like load_leader."""
+    try:
+        raw = json.loads(ws.git("show", f"{sha}:{LEADER_FILE}"))
+    except Exception:
+        return None
+    item = raw.get(benchmark) if isinstance(raw, dict) else None
+    if not isinstance(item, dict):
+        return None
+    known = {k: v for k, v in item.items() if k in LeaderEntry.__dataclass_fields__}
+    try:
+        return LeaderEntry(**known)
+    except TypeError:
+        return None
+
+
+def _reintegration_digest(
+    ws: Workspace,
+    base_branch: str,
+    old_base_sha: str,
+    new_main: str,
+    benchmark: str,
+    conflicted: bool,
+    secrets: tuple[str, ...],
+) -> str:
+    """The wake digest: what moved on the base, not a diff. The best-metric
+    move for this benchmark (results/leader.json, old base vs new head) plus a
+    one-line summary of each sibling commit that landed since. Decision 3
+    (tell, don't force): it surfaces the change; the agent pivots or pushes on
+    its own — the kernel never abandons the line."""
+    if conflicted:
+        lines = [
+            f"Base moved: `origin/{base_branch}` advanced since you last ran, but "
+            "merging it into your line CONFLICTS. Resolving the conflicts left in "
+            "your working tree is your first task before you continue."
+        ]
+    else:
+        lines = [
+            f"Base moved: `origin/{base_branch}` advanced since you last ran; I "
+            "merged it into your line and re-pinned your base to the merge. Decide "
+            "what to re-run — a result you keep is re-measured through a normal "
+            "launch, and results that do not depend on what changed still hold."
+        ]
+    before = _leader_best_at(ws, old_base_sha, benchmark)
+    after = _leader_best_at(ws, new_main, benchmark)
+    if after is not None and before is not None and after.best != before.best:
+        better = after.best < before.best if after.direction == "min" else after.best > before.best
+        lines.append(
+            f"- record on {benchmark}: {before.best:g} -> {after.best:g} "
+            f"({after.direction}; {'better' if better else 'worse'}), run {after.best_run}"
+        )
+    elif after is not None and before is None:
+        lines.append(
+            f"- record on {benchmark}: now {after.best:g} ({after.direction}), run {after.best_run}"
+        )
+    try:
+        subjects = [
+            ln.strip()
+            for ln in ws.git(
+                "log", "--no-merges", "--format=%h %s", f"{old_base_sha}..{new_main}"
+            ).splitlines()
+            if ln.strip()
+        ]
+    except Exception:
+        subjects = []
+    for entry in subjects[:_DIGEST_MAX_SIBLINGS]:
+        lines.append(f"- {entry[:_DIGEST_SUBJECT_CHARS]}")
+    if len(subjects) > _DIGEST_MAX_SIBLINGS:
+        lines.append(f"- (+{len(subjects) - _DIGEST_MAX_SIBLINGS} more)")
+    return redact("\n".join(lines), secrets)
+
+
+def _reintegrate_line_base(
+    ws: Workspace,
+    wake_line: str,
+    base_branch: str,
+    base_sha: str,
+    benchmark: str,
+    bot_login: str,
+    secrets: tuple[str, ...],
+) -> _Reintegration | None:
+    """Stage 1 of base reintegration (docs/design/base-reintegration.md): when
+    a research LINE wakes and `origin/<base_branch>` has advanced past the
+    pinned base, merge the base into the line, re-pin the base to the merge,
+    and return a digest for the wake text. A strict no-op — returns None,
+    changes nothing — for a non-line run (`wake_line` empty) or when the base
+    has not moved. Git + text only: it never triggers an eval (decision 5 —
+    the agent re-measures a kept change through its normal launch path).
+
+    A conflicting merge is left in the working tree for the AGENT to resolve
+    (the kernel never resolves content, mirroring the run-start conflict-as-
+    first-task behavior), and the base stays pinned until a clean merge
+    applies. Best-effort: any unexpected git failure restores the pre-call
+    tree and returns None, so the wake proceeds exactly as it does today."""
+    if not wake_line:
+        return None
+    base_ref = f"refs/remotes/origin/{base_branch}"
+    # Detect movement the way the base-sync wake does (followup.py): fetch the
+    # canonical remote, then ask whether the fresh base head is already
+    # contained in the pinned base. For a line, base_sha is the line tip that
+    # merged the base in at run start, so an unmoved base is its ancestor and
+    # this is a strict no-op. The fetch also refreshes refs/remotes/origin/*,
+    # which the wake's changed_paths pairs against.
+    try:
+        ws.fetch_origin()
+        new_main = ws.git("rev-parse", base_ref).strip()
+        merge_base = ws.git("merge-base", new_main, base_sha).strip()
+    except Exception as exc:
+        log.warning("base reintegration: movement check failed (%s); skipping", type(exc).__name__)
+        return None
+    if merge_base == new_main:
+        return None  # the fresh base head is already in the line: nothing moved
+    # Commit the session's accumulated tree so the merge runs on a clean tree
+    # (a dirty overlapping tree makes `git merge` abort wholesale) and the work
+    # is preserved on the line — then merge the fresh base in, exactly like the
+    # run-start merge (_checkout_line).
+    try:
+        ws.git("add", "-A")
+        if ws.git("diff", "--cached", "--name-only").strip():
+            ws.git(
+                *git_identity(bot_login),
+                "commit",
+                "-q",
+                "-m",
+                "line: session work in progress before base reintegration",
+            )
+    except Exception as exc:
+        log.warning("base reintegration: staging the session tree failed (%s)", type(exc).__name__)
+        _best_effort("reintegration reset", lambda: ws.git("reset", "-q", base_sha), secrets)
+        return None
+    try:
+        ws.git(*git_identity(bot_login), "merge", "--no-edit", base_ref)
+    except GitError:
+        if ws.git("diff", "--name-only", "--diff-filter=U").strip():
+            # a real content conflict: the agent resolves it, never the kernel;
+            # the base stays pinned — it advances only on a clean merge.
+            digest = _reintegration_digest(
+                ws, base_branch, base_sha, new_main, benchmark, True, secrets
+            )
+            return _Reintegration(new_base_sha=base_sha, conflicted=True, digest=digest)
+        # not a content conflict: undo the half-merge and the WIP commit, and
+        # skip — the wake proceeds against the unchanged base.
+        _best_effort("reintegration merge abort", lambda: ws.git("merge", "--abort"), secrets)
+        _best_effort("reintegration reset", lambda: ws.git("reset", "-q", base_sha), secrets)
+        return None
+    new_base = ws.git("rev-parse", "HEAD").strip()
+    digest = _reintegration_digest(ws, base_branch, base_sha, new_main, benchmark, False, secrets)
+    return _Reintegration(new_base_sha=new_base, conflicted=False, digest=digest)
 
 
 def _paths_changed_from_base(

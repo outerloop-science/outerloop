@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -3801,6 +3802,140 @@ def test_checkout_line_rejects_a_ref_shaping_agent_id(tmp_path: Path, target_rep
     ws = _line_ws(tmp_path, target_repo)
     with pytest.raises(ValueError, match="cannot shape a line ref"):
         _checkout_line(ws, ws.root, "../evil", "main")
+
+
+# Base reintegration stage 1 (docs/design/base-reintegration.md): a line is
+# re-pinned onto the current base at each wake, but only when a sibling moved.
+
+
+def _leader_json(best: float, run: str) -> str:
+    return json.dumps(
+        {
+            "tsp": {
+                "benchmark": "tsp",
+                "metric": "mean_tour_length",
+                "direction": "min",
+                "baseline": 8192.0,
+                "best": best,
+                "best_run": run,
+                "updated": "2026-09-05",
+            }
+        }
+    )
+
+
+def _advance_main_in(tmp_path: Path, bare: Path, subdir: str, files: dict[str, str]) -> None:
+    """Like _advance_main, but into a named work dir so a test can move main
+    more than once."""
+    work = tmp_path / subdir
+    _git(tmp_path, "clone", "-q", str(bare), str(work))
+    for rel, content in files.items():
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    _git(work, "push", "-q", "origin", "main")
+
+
+def test_reintegrate_line_base_is_a_no_op_when_the_base_did_not_move(
+    tmp_path: Path, target_repo
+) -> None:
+    from outerloop.attempt import _checkout_line, _reintegrate_line_base
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    base_sha = ws.git("rev-parse", "HEAD").strip()
+    tsp = ws.root / "src" / "pilot" / "solvers" / "tsp.py"
+    tsp.write_text("def solve(): return 2\n")  # the session's dirty tree
+
+    reint = _reintegrate_line_base(ws, "agents/agent-07", "main", base_sha, "tsp", "bot", ())
+
+    assert reint is None  # strict no-op: no merge, no digest
+    assert ws.git("rev-parse", "HEAD").strip() == base_sha  # base unchanged
+    assert tsp.read_text() == "def solve(): return 2\n"  # dirty tree untouched
+    assert ws.git("status", "--porcelain").strip() != ""  # nothing was committed
+
+
+def test_reintegrate_line_base_repins_and_digests_when_main_moved(
+    tmp_path: Path, target_repo
+) -> None:
+    from outerloop.attempt import _checkout_line, _reintegrate_line_base
+
+    _advance_main_in(
+        tmp_path, target_repo, "main-a", {"results/leader.json": _leader_json(8192.0, "tsp-3")}
+    )
+    _push_line(tmp_path, target_repo, {"docs/line-note.md": "belief\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    base_sha = ws.git("rev-parse", "HEAD").strip()
+    tsp = ws.root / "src" / "pilot" / "solvers" / "tsp.py"
+    tsp.write_text("def solve(): return 3\n")  # the session's accumulated work
+    # a sibling lands a change and moves the record
+    _advance_main_in(
+        tmp_path,
+        target_repo,
+        "main-b",
+        {
+            "docs/warmdown.md": "warmdown to 4352\n",
+            "results/leader.json": _leader_json(7808.0, "tsp-10"),
+        },
+    )
+
+    reint = _reintegrate_line_base(
+        ws, "agents/agent-07", "main", base_sha, "tsp", "outerloop-science[bot]", ()
+    )
+
+    assert reint is not None and not reint.conflicted
+    new_head = ws.git("rev-parse", "HEAD").strip()
+    assert reint.new_base_sha == new_head != base_sha  # re-pinned to the merge
+    # the base merged in, the line's work and the session's edit all survive
+    assert (ws.root / "docs" / "warmdown.md").read_text() == "warmdown to 4352\n"
+    assert (ws.root / "docs" / "line-note.md").read_text() == "belief\n"
+    assert tsp.read_text() == "def solve(): return 3\n"
+    # the digest names the record move and summarizes the sibling change
+    assert "8192" in reint.digest and "7808" in reint.digest
+    assert "better" in reint.digest and "tsp" in reint.digest
+    assert "main moves" in reint.digest  # the sibling commit subject, not a diff
+
+
+def test_reintegrate_line_base_surfaces_a_conflict_to_the_agent(
+    tmp_path: Path, target_repo
+) -> None:
+    from outerloop.attempt import _checkout_line, _reintegrate_line_base
+
+    _push_line(tmp_path, target_repo, {"docs/roadmap.md": "# line roadmap\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    base_sha = ws.git("rev-parse", "HEAD").strip()
+    # the session edits the same file the sibling is about to change
+    (ws.root / "docs" / "roadmap.md").write_text("# agent roadmap edit\n")
+    _advance_main(tmp_path, target_repo, {"docs/roadmap.md": "# main roadmap\n"})
+
+    reint = _reintegrate_line_base(ws, "agents/agent-07", "main", base_sha, "tsp", "bot", ())
+
+    assert reint is not None and reint.conflicted
+    assert reint.new_base_sha == base_sha  # the base stays pinned on a conflict
+    assert "conflict" in reint.digest.lower()  # the digest says so
+    # the kernel did NOT resolve: the conflict is left in the working tree
+    assert "docs/roadmap.md" in ws.git("diff", "--name-only", "--diff-filter=U")
+
+
+def test_reintegrate_line_base_skips_a_non_line_run(tmp_path: Path, target_repo) -> None:
+    from outerloop.attempt import _reintegrate_line_base
+
+    ws = _line_ws(tmp_path, target_repo)  # checked out on main, not a line
+    base_sha = ws.git("rev-parse", "HEAD").strip()
+    tsp = ws.root / "src" / "pilot" / "solvers" / "tsp.py"
+    tsp.write_text("def solve(): return 9\n")
+    _advance_main(tmp_path, target_repo, {"docs/news.md": "moved\n"})  # main DID move
+
+    reint = _reintegrate_line_base(ws, "", "main", base_sha, "tsp", "bot", ())
+
+    assert reint is None  # non-line: bypassed entirely, never even fetched
+    assert ws.git("rev-parse", "HEAD").strip() == base_sha
+    assert tsp.read_text() == "def solve(): return 9\n"  # dirty tree untouched
+    assert not (ws.root / "docs" / "news.md").exists()  # main's move not pulled in
 
 
 @pytest.fixture
