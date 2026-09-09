@@ -710,3 +710,73 @@ def test_slurm_start_hands_the_installer_directory_to_the_resident_job(
     monkeypatch.chdir(home)
     assert main(["start", "--root", "/scratch/me/ar", "--account", "a", "--partition", "p"]) == 0
     assert pathlog.read_text().startswith("/h/.local/bin" + os.pathsep)
+
+
+# ---------------------------------------------------------------- upgrade
+
+
+def test_upgrade_dry_run_prints_the_pip_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "subprocess", pytest.fail)  # must not run pip
+    assert main(["upgrade", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "-m pip install --upgrade outerloop-science" in out
+    assert "--pre" not in out
+
+
+def test_upgrade_pre_dry_run_adds_the_pre_flag(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "subprocess", pytest.fail)
+    assert main(["upgrade", "--pre", "--dry-run"]) == 0
+    assert "install --upgrade outerloop-science --pre" in capsys.readouterr().out
+
+
+def test_upgrade_runs_pip_and_reports_the_version_change(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[list[str]] = []
+    versions = iter(["0.1.0.dev3", "0.1.0.dev4"])
+
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        import subprocess
+
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_installed_version", lambda _python: next(versions))
+    assert main(["upgrade"]) == 0
+    assert calls[0][1:] == ["-m", "pip", "install", "--upgrade", "outerloop-science"]
+    out = capsys.readouterr().out
+    assert "0.1.0.dev3 -> 0.1.0.dev4" in out
+    assert "outerloop start" in out
+
+
+def test_upgrade_reports_when_already_current(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        import subprocess
+
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_installed_version", lambda _python: "0.1.0.dev3")
+    assert main(["upgrade"]) == 0
+    assert "already up to date: outerloop 0.1.0.dev3" in capsys.readouterr().out
+
+
+def test_upgrade_surfaces_a_failed_pip_and_its_exit_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        import subprocess
+
+        return subprocess.CompletedProcess(argv, 3)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_installed_version", lambda _python: "0.1.0.dev3")
+    assert main(["upgrade"]) == 3
+    assert "upgrade failed (pip exited 3)" in capsys.readouterr().err

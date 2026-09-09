@@ -499,6 +499,55 @@ def start(args: argparse.Namespace) -> int:
     return 0
 
 
+DIST = "outerloop-science"  # the PyPI distribution; imported as `outerloop`
+
+
+def _installed_version(python: str) -> str:
+    """The installed version of the distribution, read from a fresh interpreter
+    so it reflects what pip just wrote rather than this process's imported copy."""
+    proc = subprocess.run(
+        [python, "-c", f"import importlib.metadata as m; print(m.version({DIST!r}))"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip() or "unknown"
+
+
+def upgrade(args: argparse.Namespace) -> int:
+    """Upgrade the installed package in place, the local adopter's one verb.
+
+    On Slurm the resident tick self-updates through OUTERLOOP_AUTO_UPDATE; a local
+    install has no such loop, so this is the equivalent: `pip install --upgrade`,
+    then you restart the loop to pick the new code up. Pip already picks the newest
+    release and only falls back to a pre-release when that is all that is published;
+    --pre forces pre-releases even once a stable exists."""
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", DIST]
+    if args.pre:
+        cmd.append("--pre")
+    if args.dry_run:
+        print(shlex.join(cmd))
+        return 0
+    before = _installed_version(sys.executable)
+    proc = subprocess.run(cmd, check=False)
+    if proc.returncode != 0:
+        print(
+            f"upgrade failed (pip exited {proc.returncode}). If this environment has no "
+            f"pip, upgrade through its installer instead, e.g. `uv pip install --upgrade {DIST}`.",
+            file=sys.stderr,
+        )
+        return proc.returncode
+    after = _installed_version(sys.executable)
+    if before == after:
+        print(f"already up to date: outerloop {after}.")
+    else:
+        print(
+            f"upgraded outerloop {before} -> {after}. Restart the loop to pick it up: "
+            f"stop the running tick, then `outerloop start`."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     from outerloop import __version__
 
@@ -539,6 +588,17 @@ def main(argv: list[str] | None = None) -> int:
         help="guided setup: write ~/.config/outerloop/.env and the PAT file",
         add_help=False,
     )
+    up = sub.add_parser(
+        "upgrade",
+        help="upgrade the installed package, then restart the loop to pick it up",
+        description="Upgrade outerloop-science in this environment with pip. On Slurm the "
+        "resident tick self-updates through OUTERLOOP_AUTO_UPDATE; this is the equivalent "
+        "for a local install. Restart the loop afterwards to run the new code.",
+    )
+    up.add_argument(
+        "--pre", action="store_true", help="include pre-releases even once a stable exists"
+    )
+    up.add_argument("--dry-run", action="store_true", help="print the command and exit")
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["tick"]:
         # the tick entry owns its own parser; hand it the rest untouched
@@ -551,7 +611,10 @@ def main(argv: list[str] | None = None) -> int:
         from outerloop import init
 
         return init.main(argv[1:])
-    return start(parser.parse_args(argv))
+    args = parser.parse_args(argv)
+    if args.command == "upgrade":
+        return upgrade(args)
+    return start(args)
 
 
 if __name__ == "__main__":
