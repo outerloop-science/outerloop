@@ -26,7 +26,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from outerloop.appauth import resolve_bot_auth
+from outerloop.appauth import add_credential_args, resolve_bot_auth
 from outerloop.attempt import (
     AttemptOutcome,
     Terminated,
@@ -750,7 +750,6 @@ def live_steward(
 def main() -> int:
     import argparse
     import base64
-    import os
     import time
     from datetime import UTC, datetime
 
@@ -774,13 +773,7 @@ def main() -> int:
     parser.add_argument("--session-minutes", type=int, default=60)
     parser.add_argument("--job-minutes", type=int, default=0)
     parser.add_argument("--deadline-margin-s", type=float, default=120.0)
-    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
-    parser.add_argument(
-        "--github-app-file",
-        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
-        help="GitHub App config (JSON: app_id, installation_id, private_key); "
-        "when set, installation tokens replace the PAT",
-    )
+    add_credential_args(parser)
     parser.add_argument(
         "--key-file",
         default=str(CONFIG_DIR / "steward_key"),

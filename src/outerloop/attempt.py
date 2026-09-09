@@ -26,7 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
-from outerloop.appauth import resolve_bot_auth
+from outerloop.appauth import add_credential_args, resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
 from outerloop.compute import LocalCompute
 from outerloop.contract import Benchmark, Contract, contract_text_in_tree, load_contract
@@ -3511,13 +3511,7 @@ def main() -> int:
         default=120.0,
         help="how long before the walltime the self-deadline fires (floor 60)",
     )
-    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
-    parser.add_argument(
-        "--github-app-file",
-        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
-        help="GitHub App config (JSON: app_id, installation_id, private_key); "
-        "when set, installation tokens replace the PAT",
-    )
+    add_credential_args(parser)
     parser.add_argument(
         "--key-file",
         default="",

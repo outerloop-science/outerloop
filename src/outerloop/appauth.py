@@ -17,8 +17,10 @@ network; the production signer lives behind the `app-auth` extra.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.github import AUTH_SAFE_OPENER, FileTokenProvider, TokenProvider
+from outerloop.paths import CONFIG_DIR
 
 # RS256-sign the JWT signing input, returning the raw signature bytes.
 Signer = Callable[[bytes], bytes]
@@ -211,3 +214,17 @@ def resolve_bot_auth(pat_file: str | Path, app_file: str | Path = "") -> TokenPr
     if str(app_file).strip():
         return app_provider_from_file(Path(str(app_file)).expanduser())
     return FileTokenProvider(Path(str(pat_file)).expanduser())
+
+
+def add_credential_args(parser: argparse.ArgumentParser) -> None:
+    """Add the shared bot-auth options to a role parser: `--pat-file`, and
+    `--github-app-file`, which supplies installation tokens instead of the PAT
+    when set. `resolve_bot_auth` reads the pair. One owner so the defaults and
+    help cannot drift between attempt, followup, and steward."""
+    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
+    parser.add_argument(
+        "--github-app-file",
+        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
+        help="GitHub App config (JSON: app_id, installation_id, private_key); "
+        "when set, installation tokens replace the PAT",
+    )

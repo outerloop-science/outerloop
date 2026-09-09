@@ -49,7 +49,6 @@ from outerloop.orchestrator import (
     steward_out_of_scope,
 )
 from outerloop.orchestrator import improved as orch_improved
-from outerloop.paths import CONFIG_DIR
 from outerloop.progress import (
     PROGRESS_PATHS,
     fmt_metric,
@@ -1970,7 +1969,7 @@ def main() -> int:
     import os
     import time
 
-    from outerloop.appauth import resolve_bot_auth
+    from outerloop.appauth import add_credential_args, resolve_bot_auth
     from outerloop.harness import DEFAULT_MAX_TURNS
     from outerloop.orchestrator import SubprocessEvaluator
 
@@ -2013,13 +2012,7 @@ def main() -> int:
         default=0,
         help="this job's Slurm walltime; arms the self-deadline (0 = off)",
     )
-    parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
-    parser.add_argument(
-        "--github-app-file",
-        default=os.environ.get("OUTERLOOP_GITHUB_APP_FILE", ""),
-        help="GitHub App config (JSON: app_id, installation_id, private_key); "
-        "when set, installation tokens replace the PAT",
-    )
+    add_credential_args(parser)
     parser.add_argument(
         "--key-file",
         default="",
