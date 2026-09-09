@@ -928,12 +928,22 @@ def _wake_author_sleep(
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
         wake_text = f"{extra_update}\n\n{wake_text}"
-    # A research line whose base moved while it slept is told to merge the
-    # fresh base — the agent does the merge (mirroring the in-review conflict
-    # wake), the kernel only fetches it. Non-line runs and an unmoved base are
-    # untouched.
-    if _line_ref_for(bench, config.agent_id) and _line_base_moved(ws, base_branch, base_sha):
-        wake_text = REINTEGRATE_PROMPT.format(base_branch=base_branch) + wake_text
+    # A research line whose base moved while it slept RE-PINS to the fresh base
+    # and is told to merge it: the agent does the merge (mirroring the in-review
+    # conflict wake, followup.py), the kernel only fetches and re-pins. Re-pinning
+    # base_sha to the fresh head is what makes the gate baseline and the scope
+    # base the CURRENT base (like followup's base_sha_at_fetch), so a sibling's
+    # merged work is never credited to this line and a forbidden conflict
+    # resolution (differing from the fresh base) is still scope-checked. Non-line
+    # runs and an unmoved base are untouched.
+    if _line_ref_for(bench, config.agent_id):
+        fresh_base = _line_base_advanced(ws, base_branch, base_sha)
+        if fresh_base:
+            digest = _reintegration_digest(ws, base_sha, fresh_base)
+            base_sha = fresh_base
+            wake_text = (
+                REINTEGRATE_PROMPT.format(base_branch=base_branch, digest=digest) + wake_text
+            )
     _best_effort(
         "budget refresh",
         lambda: write_budget(
@@ -1313,27 +1323,41 @@ def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
 REINTEGRATE_PROMPT = (
     "# The base moved while you were asleep\n"
     "`origin/{base_branch}` advanced since your last run and is fetched into "
-    "your workspace. Merge it into your line and resolve any conflicts "
-    "honestly, then decide what to re-run given what landed — if a sibling "
-    "took your direction further, pivot or say so plainly rather than pushing "
-    "on. Your change is measured against the current base.\n\n"
+    "your workspace. What landed:\n{digest}\n"
+    "Merge it into your line and resolve any conflicts honestly, then decide "
+    "what to re-run given what landed — if a sibling took your direction "
+    "further, pivot or say so plainly rather than pushing on. Your change is "
+    "measured against the current base.\n\n"
 )
 
 
-def _line_base_moved(ws: Workspace, base_branch: str, base_sha: str) -> bool:
-    """Fetch `origin/<base_branch>` and report whether it advanced past the
-    line's pinned base. The fetch doubles as making the fresh base available
-    for the agent to merge, and refreshes the origin refs `changed_paths`
-    pairs against. Best-effort: any git failure returns False and the wake
-    proceeds exactly as today."""
+def _reintegration_digest(ws: Workspace, base_sha: str, fresh_head: str) -> str:
+    """A short 'what landed' list: the subjects of the commits merged into the
+    base since this line's base, newest first, capped. These are MERGED commits
+    — vetted by the human-merge gate — so they are context, not untrusted input;
+    the agent also has them in git to read in full."""
+    try:
+        out = ws.git("log", "--no-merges", "--format=%s", f"{base_sha}..{fresh_head}")
+    except Exception:
+        return "  (recent changes on the base; see `git log`)"
+    subjects = [ln.strip() for ln in out.splitlines() if ln.strip()][:12]
+    return "\n".join(f"  - {s}" for s in subjects) or "  (a merge on the base; see `git log`)"
+
+
+def _line_base_advanced(ws: Workspace, base_branch: str, base_sha: str) -> str:
+    """Fetch `origin/<base_branch>` and return its head when it has advanced
+    past the line's pinned base, else "". The fetch doubles as making the
+    fresh base available for the agent to merge and refreshes the origin refs
+    the scope/measure path pairs against. Best-effort: any git failure returns
+    "" and the wake proceeds exactly as today."""
     try:
         ws.fetch_origin()
         new = ws.git("rev-parse", f"refs/remotes/origin/{base_branch}").strip()
         merge_base = ws.git("merge-base", new, base_sha).strip()
-        return bool(new) and merge_base != new
+        return new if new and merge_base != new else ""
     except Exception as exc:
         log.warning("base-moved check failed (%s); wake proceeds unchanged", type(exc).__name__)
-        return False
+        return ""
 
 
 def _push_line_snapshot(

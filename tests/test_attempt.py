@@ -5099,33 +5099,36 @@ def test_with_seed_fills_the_seed_from_the_records_target(tmp_path) -> None:
     assert with_seed(bare, tmp_path, "").seed_cache is None
 
 
-def test_line_base_moved_detects_a_moved_base(tmp_path, target_repo) -> None:
-    """The wake's base-moved check: False when origin/main still equals the
-    line's base, True once a sibling advances main — and the check leaves the
-    fresh base fetched into the workspace for the agent to merge."""
-    from outerloop.attempt import _line_base_moved
+def test_line_base_advanced_returns_the_fresh_head_when_main_moved(tmp_path, target_repo) -> None:
+    """The wake's base-moved check: "" when origin/main still equals the line's
+    base, the fresh head once a sibling advances main — and it leaves that head
+    fetched into the workspace (re-pinned as the gate baseline and the scope
+    base, and available for the agent to merge)."""
+    from outerloop.attempt import _line_base_advanced
 
     ws = _line_ws(tmp_path, target_repo)
     base_sha = ws.git("rev-parse", "HEAD").strip()
-    assert _line_base_moved(ws, "main", base_sha) is False  # nothing moved
+    assert _line_base_advanced(ws, "main", base_sha) == ""  # nothing moved
     _advance_main(tmp_path, target_repo, {"docs/news.md": "main moved\n"})
-    assert _line_base_moved(ws, "main", base_sha) is True
-    assert ws.git("rev-parse", "refs/remotes/origin/main").strip() != base_sha
+    got = _line_base_advanced(ws, "main", base_sha)
+    assert got == ws.git("rev-parse", "refs/remotes/origin/main").strip()
+    assert got != base_sha
 
 
 def test_line_base_moved_is_best_effort_false_on_git_failure(tmp_path) -> None:
     """A workspace with no remote can't fetch; the check returns False and the
     wake proceeds unchanged rather than raising."""
-    from outerloop.attempt import _line_base_moved
+    from outerloop.attempt import _line_base_advanced
     from outerloop.github import Workspace
 
     ws = Workspace(root=tmp_path / "nope")
-    assert _line_base_moved(ws, "main", "deadbeef") is False
+    assert _line_base_advanced(ws, "main", "deadbeef") == ""
 
 
 def test_reintegrate_prompt_names_the_base_branch() -> None:
     from outerloop.attempt import REINTEGRATE_PROMPT
 
-    text = REINTEGRATE_PROMPT.format(base_branch="main")
+    text = REINTEGRATE_PROMPT.format(base_branch="main", digest="  - a sibling win")
     assert "origin/main" in text and "merge" in text.lower()
-    assert "{base_branch}" not in text
+    assert "a sibling win" in text
+    assert "{base_branch}" not in text and "{digest}" not in text
