@@ -15,7 +15,7 @@ honest when it says three steps:
 
 ## What the wizard does
 
-`python -m autoresearch.init` (interactive; every answer has a flag for
+`python -m outerloop.init` (interactive; every answer has a flag for
 non-interactive use):
 
 - **Detect compute.** `sbatch` on PATH → Slurm mode (prompt for account and
@@ -47,7 +47,7 @@ non-interactive use):
   The doctor is re-runnable on its own (`init --doctor`) and is the first
   thing support asks for.
 - **Print the start command.** Nothing starts implicitly. The command is
-  `autoresearch start` on both paths: it submits the resident tick where
+  `outerloop start` on both paths: it submits the resident tick where
   `sbatch` exists and runs the local loop elsewhere, taking the root and
   placement from flags, the environment, or the `.env` the wizard wrote.
 
@@ -73,7 +73,7 @@ simultaneously the zero-Slurm on-ramp and the paper's Karpathy-loop
 ablation cell (width 1 × serialized) — the same kernel, the compute seam
 swapped, nothing else different.
 
-- **The chain is a loop.** No sbatch → `autoresearch start` runs
+- **The chain is a loop.** No sbatch → `outerloop start` runs
   `tick --loop`, a tick every cadence in the foreground. State stays in records on
   disk, so killing and restarting the loop resumes exactly like the Slurm
   chain surviving a dead tick.
@@ -98,8 +98,8 @@ swapped, nothing else different.
    `OUTERLOOP_COMPUTE` selection at the two `SlurmCompute()` sites,
    `tick --loop`, local-mode wake-arming skip, per-mode required-env
    relaxation (no account/partition in local mode), and the one launch
-   command `autoresearch start` (`src/autoresearch/cli.py`). Done.
-2. **The wizard**: `autoresearch.init` — detection, prompts, `.env` writer,
+   command `outerloop start` (`src/outerloop/cli.py`). Done.
+2. **The wizard**: `outerloop.init` — detection, prompts, `.env` writer,
    doctor (PAT path first).
 3. **The manifest flow**: App mint + installation discovery inside the
    wizard.

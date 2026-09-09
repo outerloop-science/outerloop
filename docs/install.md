@@ -321,7 +321,12 @@ still read). A Codex author always runs contained, so it also needs the image
 cluster, evals run inside the Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/outerloop-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
-GPU jobs are requested per node (`--gpus-per-node`).
+GPU jobs are requested per node (`--gpus-per-node`). The tick's own scheduling
+and caps have three knobs: `OUTERLOOP_CADENCE_MIN` is how often the chain ticks
+(minutes; default 30), `OUTERLOOP_MAX_JOB_MINUTES` caps the walltime of jobs the
+tick submits (clamped under a code ceiling), and `OUTERLOOP_MIN_TICK_MINUTES`
+coalesces ticks that land too close together (0 disables; unset defaults to half
+the cadence).
 
 **Local mode without an image.** On a machine with no Apptainer image,
 `OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own

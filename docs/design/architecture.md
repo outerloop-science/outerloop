@@ -35,7 +35,7 @@ scope:
 roadmap: docs/roadmap.md
 ```
 
-The schema lives here (`autoresearch.contract`). The loader hard-codes invariants
+The schema lives here (`outerloop.contract`). The loader hard-codes invariants
 no YAML can override: `.github/`, the contract file itself, and the roadmap are
 always forbidden write paths; the contract is read from the default branch only;
 **autoresearch is never a valid target of itself**.
@@ -278,7 +278,7 @@ insights across all targets and must never be part of any public flip. Raw
 metrics stay in W&B; the notebook links to runs. No database or vector store —
 grep + recency + distillation until that provably fails.
 
-## Components (`src/autoresearch/`)
+## Components (`src/outerloop/`)
 
 | Module | Job |
 | --- | --- |
@@ -287,8 +287,8 @@ grep + recency + distillation until that provably fails.
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |
-| `budget` | Hard caps: $ per run, weekly $, GPU-hours, PRs per week; subscription backends metered by a session/token proxy |
-| `report` | Per-run research reports (takeaways + next steps), notebook writes + distillation, weekly digests, cost ledger, leaderboard history |
+| `limits` | Hard caps: $ per run, weekly $, GPU-hours, PRs per week; contract wishes clamped by our ceilings; subscription backends metered by a session/token proxy |
+| `progress` / `climbboard` | `progress` writes the human-readable benchmark-progress files into the target repo on each improvement PR; `climbboard` publishes the climb board — every attempt and its outcome, plus the ledger and views — to the target's `research-log` branch |
 
 ## Harness and context engineering
 
@@ -309,7 +309,7 @@ exactly what any given agent saw, and a bad run can be replayed from its brief:
 | Ruler: how the metric is computed, how claims get re-verified | target repo docs | fixed |
 | Lessons: distilled, bounded per-target lessons file | notebook `lessons/<target>.md` | hard cap |
 | Recent history: last N run reports for this target (incl. failures) | notebook `runs/<target>/` | hard cap, newest first |
-| Budget state: remaining GPU-hours/$/PRs this week | `budget` | fixed |
+| Budget state: remaining GPU-hours/$/PRs this week | `limits` | fixed |
 
 Everything else is deliberately absent: no other targets' data (cross-target
 separation), no raw transcripts (distillation instead), no maintainer-private
