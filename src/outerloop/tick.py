@@ -1614,139 +1614,138 @@ def _sweep_one(
     reaped: list[str],
     stuck: list[str],
 ) -> None:
-    if True:
-        # Leases first: a LIVE wake in flight owns this run — even the stuck
-        # verdict must wait for it (its session may be the one that succeeds).
-        lease = read_lease(root, record.run_id)
-        if lease is not None:
-            alive = _holder_alive(compute, lease.holder_job_id)
-            if not lease_is_stale(lease, now, lease_ttl_s, alive):
-                if not _armed_wake_lost(root, compute, record, lease, now, grace_s, dry_run):
-                    return
-                record = load_record(root, record.run_id)
-            if dry_run:
-                reaped.append(record.run_id)
+    # Leases first: a LIVE wake in flight owns this run — even the stuck
+    # verdict must wait for it (its session may be the one that succeeds).
+    lease = read_lease(root, record.run_id)
+    if lease is not None:
+        alive = _holder_alive(compute, lease.holder_job_id)
+        if not lease_is_stale(lease, now, lease_ttl_s, alive):
+            if not _armed_wake_lost(root, compute, record, lease, now, grace_s, dry_run):
                 return
-            if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}", expected=lease):
-                return  # a concurrent tick reaped it first; it owns redelivery
+            record = load_record(root, record.run_id)
+        if dry_run:
             reaped.append(record.run_id)
+            return
+        if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}", expected=lease):
+            return  # a concurrent tick reaped it first; it owns redelivery
+        reaped.append(record.run_id)
 
-        # Layer 5: too many failed attempts is a terminal, reported state.
-        if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
-            if not dry_run:
-                ended = replace(
-                    record,
-                    state=ENDED,
-                    ending=STUCK,
-                    ending_note=(
-                        f"{record.wake_attempts} wake attempts without the run leaving 'waiting'"
+    # Layer 5: too many failed attempts is a terminal, reported state.
+    if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
+        if not dry_run:
+            ended = replace(
+                record,
+                state=ENDED,
+                ending=STUCK,
+                ending_note=(
+                    f"{record.wake_attempts} wake attempts without the run leaving 'waiting'"
+                ),
+            )
+            save_record(root, ended, now)
+        stuck.append(record.run_id)
+        return
+
+    job_ids = _poll_targets(record)
+    if not job_ids:
+        # No job ids to poll. A BLIND PARK (the measurer could not read Slurm,
+        # so `MeasurementPending` carried no ids) still hibernated with a
+        # deadline — the deadline floor is its ONLY wake, so fire on it. A
+        # genuinely mid-write record has no deadline and is left alone.
+        # (A jobless CHECKPOINT SLEEP arrives here too — its deadline is
+        # near-term by construction, attempt.py sizes it to the next sweep
+        # pass, not the 12h queue slack that protects queued jobs.)
+        if record.deadline > 0 and now > record.deadline:
+            wake(record, "blind park past deadline", "deadline")
+        return
+
+    try:
+        states = [compute.status(jid) for jid in job_ids]
+    except SlurmQueryError:
+        # Layer 4's rule: query failure is "Slurm unknown", never "gone".
+        deferred.append(record.run_id)
+        return
+
+    # deadline <= 0 cannot be written by save_record for waiting runs;
+    # if one exists anyway (legacy/hand-edited), treat it as already past
+    # for GONE — a vanished-experiment wake is safe — but never for
+    # PENDING, where the consequence would be cancelling a healthy job.
+    past_deadline = record.deadline <= 0 or now > record.deadline
+
+    if all(is_terminal(s) for s in states):
+        state = ",".join(sorted(set(states)))
+        # Layer 3, with real grace: time runs from when the sweep FIRST
+        # saw every job terminal, not from submission — the afterany
+        # job gets the full window to deliver before the backup steps in.
+        # Local compute has no afterany jobs to wait for (jobs are
+        # terminal at submit): the sweep IS the delivery, so grace would
+        # only cost a whole extra loop iteration.
+        if local_mode():
+            wake(record, f"experiment {state}", state)
+            return
+        if record.terminal_seen <= 0:
+            if dry_run:
+                # no writes in dry-run: report the would-wake now so the
+                # terminal path is visible to live plumbing checks
+                wake(record, f"experiment {state}", state)
+            else:
+                save_record(
+                    root,
+                    replace(
+                        record,
+                        terminal_seen=now,
+                        # repair legacy records as we touch them (see _wake)
+                        deadline=record.deadline if record.deadline > 0 else now,
                     ),
+                    now,
                 )
-                save_record(root, ended, now)
-            stuck.append(record.run_id)
             return
-
-        job_ids = _poll_targets(record)
-        if not job_ids:
-            # No job ids to poll. A BLIND PARK (the measurer could not read Slurm,
-            # so `MeasurementPending` carried no ids) still hibernated with a
-            # deadline — the deadline floor is its ONLY wake, so fire on it. A
-            # genuinely mid-write record has no deadline and is left alone.
-            # (A jobless CHECKPOINT SLEEP arrives here too — its deadline is
-            # near-term by construction, attempt.py sizes it to the next sweep
-            # pass, not the 12h queue slack that protects queued jobs.)
-            if record.deadline > 0 and now > record.deadline:
-                wake(record, "blind park past deadline", "deadline")
-            return
-
-        try:
-            states = [compute.status(jid) for jid in job_ids]
-        except SlurmQueryError:
-            # Layer 4's rule: query failure is "Slurm unknown", never "gone".
-            deferred.append(record.run_id)
-            return
-
-        # deadline <= 0 cannot be written by save_record for waiting runs;
-        # if one exists anyway (legacy/hand-edited), treat it as already past
-        # for GONE — a vanished-experiment wake is safe — but never for
-        # PENDING, where the consequence would be cancelling a healthy job.
-        past_deadline = record.deadline <= 0 or now > record.deadline
-
-        if all(is_terminal(s) for s in states):
-            state = ",".join(sorted(set(states)))
-            # Layer 3, with real grace: time runs from when the sweep FIRST
-            # saw every job terminal, not from submission — the afterany
-            # job gets the full window to deliver before the backup steps in.
-            # Local compute has no afterany jobs to wait for (jobs are
-            # terminal at submit): the sweep IS the delivery, so grace would
-            # only cost a whole extra loop iteration.
-            if local_mode():
-                wake(record, f"experiment {state}", state)
+        if now - record.terminal_seen >= grace_s:
+            wake(record, f"experiment {state}", state)
+    elif any(is_pending(s) for s in states) and record.deadline > 0 and now > record.deadline:
+        # Past the deadline with a job still queued. Ask Slurm WHY before
+        # calling it unschedulable: a busy queue or the account's own cap is
+        # a wait a scientist would sit out, so the deadline moves out by one
+        # slack window instead (Torch 2026-09-06: four launches pending on
+        # QOSMaxGRESPerUser were about to be cancelled and re-launched into
+        # the same cap). Local compute has no queue and no reasons.
+        pending = [j for j, s in zip(job_ids, states, strict=True) if is_pending(s)]
+        reason_of = getattr(compute, "pending_reason", None)
+        reasons: dict[str, str] = {}
+        if reason_of is not None:
+            try:
+                reasons = {j: str(reason_of(j)) for j in pending}
+            except SlurmQueryError:
+                deferred.append(record.run_id)  # unknown is never "cancel"
                 return
-            if record.terminal_seen <= 0:
-                if dry_run:
-                    # no writes in dry-run: report the would-wake now so the
-                    # terminal path is visible to live plumbing checks
-                    wake(record, f"experiment {state}", state)
-                else:
-                    save_record(
-                        root,
-                        replace(
-                            record,
-                            terminal_seen=now,
-                            # repair legacy records as we touch them (see _wake)
-                            deadline=record.deadline if record.deadline > 0 else now,
-                        ),
-                        now,
-                    )
-                return
-            if now - record.terminal_seen >= grace_s:
-                wake(record, f"experiment {state}", state)
-        elif any(is_pending(s) for s in states) and record.deadline > 0 and now > record.deadline:
-            # Past the deadline with a job still queued. Ask Slurm WHY before
-            # calling it unschedulable: a busy queue or the account's own cap is
-            # a wait a scientist would sit out, so the deadline moves out by one
-            # slack window instead (Torch 2026-09-06: four launches pending on
-            # QOSMaxGRESPerUser were about to be cancelled and re-launched into
-            # the same cap). Local compute has no queue and no reasons.
-            pending = [j for j, s in zip(job_ids, states, strict=True) if is_pending(s)]
-            reason_of = getattr(compute, "pending_reason", None)
-            reasons: dict[str, str] = {}
-            if reason_of is not None:
-                try:
-                    reasons = {j: str(reason_of(j)) for j in pending}
-                except SlurmQueryError:
-                    deferred.append(record.run_id)  # unknown is never "cancel"
-                    return
-            if reasons and all(is_queue_wait(r) for r in reasons.values()):
-                extended = now + BLIND_PARK_SLACK_MIN * 60
-                if not dry_run:
-                    save_record(root, replace(record, deadline=extended), now)
-                log.info(
-                    "sweep: %s waits in the queue (%s); deadline extended by %d min",
-                    record.run_id,
-                    ", ".join(f"{j}={r}" for j, r in reasons.items()),
-                    BLIND_PARK_SLACK_MIN,
-                )
-                return
-            # Unschedulable in practice: cancel every non-terminal job
-            # (best-effort — scancel trouble must not abort the sweep), then
-            # wake with that fact.
+        if reasons and all(is_queue_wait(r) for r in reasons.values()):
+            extended = now + BLIND_PARK_SLACK_MIN * 60
             if not dry_run:
-                for jid, s in zip(job_ids, states, strict=True):
-                    if is_terminal(s) or s == GONE:
-                        continue
-                    try:
-                        compute.cancel(jid)
-                    except Exception as exc:  # scancel trouble is never fatal here
-                        log.warning("cancel %s failed: %s", jid, exc)
-            wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
-        elif all(is_terminal(s) or s == GONE for s in states):
-            # done-or-vanished, at least one GONE (all-terminal handled above)
-            if past_deadline:
-                wake(record, "experiment vanished from Slurm", "vanished")
-            # else: sacct lag right after submission is normal; wait.
-        # something RUNNING (or recently pending): nothing to do yet.
+                save_record(root, replace(record, deadline=extended), now)
+            log.info(
+                "sweep: %s waits in the queue (%s); deadline extended by %d min",
+                record.run_id,
+                ", ".join(f"{j}={r}" for j, r in reasons.items()),
+                BLIND_PARK_SLACK_MIN,
+            )
+            return
+        # Unschedulable in practice: cancel every non-terminal job
+        # (best-effort — scancel trouble must not abort the sweep), then
+        # wake with that fact.
+        if not dry_run:
+            for jid, s in zip(job_ids, states, strict=True):
+                if is_terminal(s) or s == GONE:
+                    continue
+                try:
+                    compute.cancel(jid)
+                except Exception as exc:  # scancel trouble is never fatal here
+                    log.warning("cancel %s failed: %s", jid, exc)
+        wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
+    elif all(is_terminal(s) or s == GONE for s in states):
+        # done-or-vanished, at least one GONE (all-terminal handled above)
+        if past_deadline:
+            wake(record, "experiment vanished from Slurm", "vanished")
+        # else: sacct lag right after submission is normal; wait.
+    # something RUNNING (or recently pending): nothing to do yet.
 
 
 def tick(
