@@ -30,7 +30,7 @@ The invariants, proven on #132/#133 and non-negotiable everywhere:
    kernel-side (authoritative validators, PAT-out-of-session, scope, budgets).
    The tool is ergonomics and fast feedback; authority stays in the kernel.
 2. **Sandbox-side tools are standalone** (stdlib-only — the target repo has no
-   autoresearch), which duplicates a little advisory validation, pinned by
+   outerloop), which duplicates a little advisory validation, pinned by
    parity tests (`test_artifact_path_check_matches_the_kernel`).
    **Orchestrator-side roles** (reviewer/verifier/panel/planner/steward run on
    our own checkout, not a target sandbox) import the real validators — no

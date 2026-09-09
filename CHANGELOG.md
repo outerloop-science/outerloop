@@ -8,6 +8,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Docs: corrected stale `autoresearch` command and module paths left by the
+  rename (onboarding, author-syscalls, architecture, role-cli), refreshed the
+  architecture component map (`budget` → `limits`, `report` →
+  `progress`/`climbboard`), and documented the tick scheduling knobs
+  `OUTERLOOP_CADENCE_MIN`, `OUTERLOOP_MAX_JOB_MINUTES`, and
+  `OUTERLOOP_MIN_TICK_MINUTES` in the install guide.
+
 - The maintainer digest issue now carries the scan date in its title
   (`Maintainer digest — YYYY-MM-DD`), so its freshness shows in the issue list.
   The scan's long verdict and rejected-findings text now folds into a
