@@ -891,29 +891,29 @@ def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
 
     armed = {"node_id": "N1", "auto_merge": {"enabled_by": {"login": "x"}}}
     off = {"node_id": "N1", "auto_merge": None}
-
-    # already off (merge:manual repo, or "Allow auto-merge" disabled, or the
-    # App-auth case Amelia hit): confirmed without ever attempting the disarm
-    # mutation, whatever error text it would have returned
     calls: list[int] = []
 
     def record_then_fail(self, q, v):
         calls.append(1)
         hard_fail()
 
+    # already off (merge:manual repo, "Allow auto-merge" disabled, or the App-auth
+    # case Amelia hit): the disarm IS attempted — never skipped on a stale read,
+    # which would let an actor arm between the read and the push — and when it
+    # errors the off state is confirmed by re-reading, so the push is safe
     client.get_pull_request = types.MethodType(lambda self, repo, n: off, client)  # type: ignore[method-assign]
     client._graphql = types.MethodType(record_then_fail, client)  # type: ignore[method-assign]
-    assert client.disable_auto_merge("o/r", 1) is True  # already off = safe
-    assert calls == []  # the mutation is never even attempted
+    assert client.disable_auto_merge("o/r", 1) is True  # confirmed off = safe
+    assert calls == [1]  # the disarm was attempted, not skipped
 
     # armed and the disarm succeeds: confirmed
     client.get_pull_request = types.MethodType(lambda self, repo, n: armed, client)  # type: ignore[method-assign]
     client._graphql = types.MethodType(lambda self, q, v: {"ok": True}, client)  # type: ignore[method-assign]
     assert client.disable_auto_merge("o/r", 1) is True
 
-    # armed and the disarm hard-fails: cannot confirm disarmed, so block the push
-    client._graphql = types.MethodType(lambda self, q, v: hard_fail(), client)  # type: ignore[method-assign]
-    assert client.disable_auto_merge("o/r", 1) is False  # unknown state = block
+    # the disarm errors and the PR is STILL armed on re-read: cannot confirm, block
+    client._graphql = types.MethodType(record_then_fail, client)  # type: ignore[method-assign]
+    assert client.disable_auto_merge("o/r", 1) is False  # still armed = block
 
 
 def _dirty_pr(head="h" * 40) -> dict:

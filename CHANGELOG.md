@@ -37,12 +37,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- The follow-up finalizer no longer withholds a measured base sync because it
-  "could not confirm auto-merge is disabled". It now reads the PR's actual
-  auto-merge state and treats an already-disarmed PR as confirmed, instead of
-  matching one error string — so a merge:manual repo (or one whose "Allow
-  auto-merge" setting is off, which returns a different error under a GitHub App
-  token) is no longer stuck re-withholding its successful re-measurements.
+- The follow-up finalizer no longer gets stuck withholding a measured re-sync
+  when auto-merge is already off. Before pushing a re-measured head it confirms
+  the PR will not auto-merge by the PR's actual auto-merge state, rather than by
+  matching one error string — whose text varies with the repo's "Allow
+  auto-merge" setting and the token type — so a merge:manual repo under a GitHub
+  App token no longer re-withholds its successful re-measurements.
 
 ### Added
 
