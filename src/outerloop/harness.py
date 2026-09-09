@@ -460,6 +460,24 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _kill_and_drain(process: subprocess.Popen[str]) -> str:
+    """Kill a timed-out session's whole process group, then drain its pipe within
+    a bound so `run()` always returns — a descendant that left the group (setsid)
+    can hold the pipe open past the kill. Returns whatever stdout drained (may be
+    empty). Shared by every backend's timeout path; keep the sequence in one place
+    so the safety-sensitive termination cannot drift between them."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+    try:
+        stdout, _ = process.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout = ""
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            stdout, _ = process.communicate(timeout=5)
+    return stdout or ""
+
+
 @dataclass
 class ClaudeCodeHarness:
     """Headless Claude Code (`claude -p`): the JSON output carries cost,
@@ -625,17 +643,7 @@ class ClaudeCodeHarness:
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            # Bounded drain: a descendant that left the process group (setsid)
-            # can hold the pipe open past the kill; run() must still return.
-            try:
-                stdout, _ = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout = ""
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    stdout, _ = process.communicate(timeout=5)
+            stdout = _kill_and_drain(process)
             path = _write_private(
                 workspace.parent, transcript_stem, ".json", redact(stdout or "", (self.api_key,))
             )
@@ -1077,15 +1085,7 @@ class CodexHarness:
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            try:
-                stdout, _ = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout = ""
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    stdout, _ = process.communicate(timeout=5)
+            stdout = _kill_and_drain(process)
             path = _write_private(
                 workspace.parent, transcript_stem, ".jsonl", redact(stdout or "", (self.api_key,))
             )
@@ -1402,15 +1402,7 @@ class HermesHarness:
         try:
             stdout, _ = process.communicate(timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            try:
-                stdout, _ = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout = ""
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    stdout, _ = process.communicate(timeout=5)
+            stdout = _kill_and_drain(process)
             path = _write_private(
                 workspace.parent, transcript_stem, ".log", redact(stdout or "", (self.api_key,))
             )
