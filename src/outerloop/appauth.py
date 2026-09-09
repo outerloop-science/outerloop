@@ -217,10 +217,10 @@ def resolve_bot_auth(pat_file: str | Path, app_file: str | Path = "") -> TokenPr
 
 
 def add_credential_args(parser: argparse.ArgumentParser) -> None:
-    """The bot-credential CLI options shared by every live role (attempt,
-    followup, steward): the PAT file, and the GitHub App file that supplies
-    installation tokens in the PAT's place when set. `resolve_bot_auth` reads the
-    pair. One owner so the defaults and help text cannot drift between roles."""
+    """Add the shared bot-auth options to a role parser: `--pat-file`, and
+    `--github-app-file`, which supplies installation tokens instead of the PAT
+    when set. `resolve_bot_auth` reads the pair. One owner so the defaults and
+    help cannot drift between attempt, followup, and steward."""
     parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",
