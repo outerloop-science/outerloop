@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `outerloop upgrade`: one verb for a local install to move to the newest
+  release (`--pre` to track pre-releases), the local counterpart of the Slurm
+  resident tick's `OUTERLOOP_AUTO_UPDATE` policy. It runs `pip install --upgrade`,
+  reports the version change, and reminds you to restart the loop.
 - Base reintegration (docs/design/base-reintegration.md): when a research
   line's base moves while it sleeps, its wake fetches the fresh base and tells
   the agent to merge it and decide what to re-run — the same fetch-and-merge

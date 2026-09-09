@@ -284,8 +284,10 @@ release tag at the next cadence (pre-releases included; the repo is public, so
 no credential is needed). `main` follows every merge and is meant for the
 kernel's own developers. Whatever moves the checkout, you or the policy, the
 environment is synced to the commit that is checked out, or the deploy rolls
-back to the last commit whose environment was installed. The local loop runs the installed package: upgrade it with
-`pip install -U outerloop-science` and start it again.
+back to the last commit whose environment was installed. The local loop runs
+the installed package, which has no such policy: run `outerloop upgrade` to move
+it to the newest release (add `--pre` to track pre-releases), then start it
+again. That is `pip install --upgrade outerloop-science` under one verb.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
