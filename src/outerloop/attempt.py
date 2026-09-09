@@ -928,6 +928,22 @@ def _wake_author_sleep(
     if extra_update:
         # a submitted park's gate/panel feedback leads; launch results follow
         wake_text = f"{extra_update}\n\n{wake_text}"
+    # A research line whose base moved while it slept RE-PINS to the fresh base
+    # and is told to merge it: the agent does the merge (mirroring the in-review
+    # conflict wake, followup.py), the kernel only fetches and re-pins. Re-pinning
+    # base_sha to the fresh head is what makes the gate baseline and the scope
+    # base the CURRENT base (like followup's base_sha_at_fetch), so a sibling's
+    # merged work is never credited to this line and a forbidden conflict
+    # resolution (differing from the fresh base) is still scope-checked. Non-line
+    # runs and an unmoved base are untouched.
+    if _line_ref_for(bench, config.agent_id):
+        fresh_base = _line_base_advanced(ws, base_branch, base_sha)
+        if fresh_base:
+            digest = _reintegration_digest(ws, base_sha, fresh_base)
+            base_sha = fresh_base
+            wake_text = (
+                REINTEGRATE_PROMPT.format(base_branch=base_branch, digest=digest) + wake_text
+            )
     _best_effort(
         "budget refresh",
         lambda: write_budget(
@@ -1294,6 +1310,54 @@ def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_id):
         return ""
     return f"agents/{agent_id}"
+
+
+# The base moved under a line while it slept: rather than the kernel doing a
+# git merge (which mishandles the agent's in-flight tree, its conflicts, and
+# the scope gate), the wake mirrors the in-review conflict wake — fetch the
+# fresh base into the workspace and TELL THE AGENT to merge it. The agent has
+# git and already resolves the run-start merge as its first task; only the
+# credential-bearing fetch/push are the kernel's. No commit text goes in the
+# prompt (no cross-agent prompt-injection surface); the agent reads what
+# landed from git itself.
+REINTEGRATE_PROMPT = (
+    "# The base moved while you were asleep\n"
+    "`origin/{base_branch}` advanced since your last run and is fetched into "
+    "your workspace. What landed:\n{digest}\n"
+    "Merge it into your line and resolve any conflicts honestly, then decide "
+    "what to re-run given what landed — if a sibling took your direction "
+    "further, pivot or say so plainly rather than pushing on. Your change is "
+    "measured against the current base.\n\n"
+)
+
+
+def _reintegration_digest(ws: Workspace, base_sha: str, fresh_head: str) -> str:
+    """A short 'what landed' list: the subjects of the commits merged into the
+    base since this line's base, newest first, capped. These are MERGED commits
+    — vetted by the human-merge gate — so they are context, not untrusted input;
+    the agent also has them in git to read in full."""
+    try:
+        out = ws.git("log", "--no-merges", "--format=%s", f"{base_sha}..{fresh_head}")
+    except Exception:
+        return "  (recent changes on the base; see `git log`)"
+    subjects = [ln.strip() for ln in out.splitlines() if ln.strip()][:12]
+    return "\n".join(f"  - {s}" for s in subjects) or "  (a merge on the base; see `git log`)"
+
+
+def _line_base_advanced(ws: Workspace, base_branch: str, base_sha: str) -> str:
+    """Fetch `origin/<base_branch>` and return its head when it has advanced
+    past the line's pinned base, else "". The fetch doubles as making the
+    fresh base available for the agent to merge and refreshes the origin refs
+    the scope/measure path pairs against. Best-effort: any git failure returns
+    "" and the wake proceeds exactly as today."""
+    try:
+        ws.fetch_origin()
+        new = ws.git("rev-parse", f"refs/remotes/origin/{base_branch}").strip()
+        merge_base = ws.git("merge-base", new, base_sha).strip()
+        return new if new and merge_base != new else ""
+    except Exception as exc:
+        log.warning("base-moved check failed (%s); wake proceeds unchanged", type(exc).__name__)
+        return ""
 
 
 def _push_line_snapshot(

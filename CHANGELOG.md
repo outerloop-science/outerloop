@@ -8,6 +8,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Base reintegration (docs/design/base-reintegration.md): when a research
+  line's base moves while it sleeps, its wake fetches the fresh base and tells
+  the agent to merge it and decide what to re-run — the same fetch-and-merge
+  the in-review conflict wake already uses, so a long depth run no longer
+  drifts behind sibling merges and opens a stale PR.
 - `docs/design/base-reintegration.md`: a proposal to keep a running line's
   base current by re-pinning at each wake and to reconcile a PR whose base
   moved after the run ended, with the owner's five decisions and the build order.
