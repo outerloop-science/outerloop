@@ -367,6 +367,26 @@ def _owner_type(owner: str) -> str:
         return ""
 
 
+def _app_owner_mismatch_note(conversion: dict[str, Any], expected_owner: str, target: str) -> str:
+    """When the App landed under a different account than intended — GitHub's
+    fallback when someone who is not an org owner tries to create an org-owned
+    App — explain the path that still works, since a personal App does not
+    install on an org repo by default. Empty when the App landed as intended."""
+    actual = str((conversion.get("owner") or {}).get("login", "")).strip()
+    if not actual or actual.casefold() == expected_owner.casefold():
+        return ""
+    org = target.split("/")[0]
+    return (
+        f"  note: the App was created under '{actual}', not '{expected_owner}'. Creating an\n"
+        f"  App owned by an organization needs org-owner rights, so GitHub made a personal\n"
+        f"  one — which will not install on {target} by default. To use it there anyway:\n"
+        f"  make the App public (its Settings > 'Make public'), request its installation on\n"
+        f"  {target}, and have an owner of {org} approve it; then rerun\n"
+        f"  `outerloop init --force --github-app`. For lab ownership, you can later transfer\n"
+        f"  the App to {org} from its Advanced settings — the key keeps working."
+    )
+
+
 def _app_failure(answers: InitAnswers, slug: str, problem: str) -> int:
     """The App cannot write the target: say so, keep the credentials, and point
     at the fix and the re-check. Never `start` — the check just failed."""
@@ -376,7 +396,9 @@ def _app_failure(answers: InitAnswers, slug: str, problem: str) -> int:
         f"  https://github.com/apps/{slug}/installations/new (or the App's page under\n"
         "  Settings > Installations > Configure) install it on that repository and accept\n"
         "  contents, issues and pull-request write access, then run\n"
-        "  `outerloop init --force --github-app` to re-check with these credentials.",
+        "  `outerloop init --force --github-app` to re-check with these credentials.\n"
+        "  If the App is under your personal account and the repository belongs to an\n"
+        "  organization, make the App public first and have an org owner approve the install.",
         file=sys.stderr,
     )
     return 1
@@ -449,6 +471,9 @@ def _github_app_setup(
     pem_path, app_json = appmanifest.save_app_creds(conversion, CONFIG_DIR)
     repo = answers.target.split("/", 1)[-1]
     print(f"  created App '{conversion['slug']}'; credentials in {app_json} and {pem_path} (0600)")
+    mismatch = _app_owner_mismatch_note(conversion, owner, answers.target)
+    if mismatch:
+        print(mismatch, file=sys.stderr)
     print()
     print(f"Step 2 of 3: install the App on {answers.target}.")
     print(f"  Open {appmanifest.install_url(conversion)}")
