@@ -65,6 +65,23 @@ def test_create_pr_posts_body(provider: FileTokenProvider) -> None:
     }
 
 
+def test_update_issue_sets_the_title_only_when_given(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([{}, {}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.update_issue("org/repo", 9, "new body", title="Maintainer digest — 2026-09-08")
+    req = transport.requests[0]
+    assert req.get_method() == "PATCH"
+    assert req.full_url == "https://api.github.com/repos/org/repo/issues/9"
+    assert isinstance(req.data, bytes)
+    assert json.loads(req.data.decode()) == {
+        "body": "new body",
+        "title": "Maintainer digest — 2026-09-08",
+    }
+    client.update_issue("org/repo", 9, "body only")  # no title → body only, title untouched
+    assert isinstance(transport.requests[1].data, bytes)
+    assert json.loads(transport.requests[1].data.decode()) == {"body": "body only"}
+
+
 def test_dry_run_mutations_touch_nothing(provider: FileTokenProvider) -> None:
     transport = FakeTransport([])
     client = GitHubClient(auth=provider, transport=transport, dry_run=True)
