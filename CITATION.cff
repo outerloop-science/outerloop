@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use Outerloop in your research, please cite it."
+title: Outerloop
+abstract: >-
+  Outerloop runs AI agents on your own research code: an agent proposes a
+  change, runs the experiment on your cluster, and opens a pull request only when
+  your benchmark improves. Every claim is re-measured against the repository's
+  contract, every attempt is recorded, and it runs on your keys, your compute,
+  and your repositories.
+type: software
+authors:
+  - family-names: Ren
+    given-names: Mengye
+    affiliation: New York University
+  - name: "Agentic Learning AI Lab, New York University"
+repository-code: "https://github.com/outerloop-science/outerloop"
+url: "https://outerloop.science"
+license: Apache-2.0
+version: 0.1.0
+date-released: "2026-09-09"

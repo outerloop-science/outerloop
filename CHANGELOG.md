@@ -8,6 +8,44 @@ Versions follow [SemVer](https://semver.org).
 
 ## [0.1.0] - 2026-09-09
 
+The first release of Outerloop — autoresearch agents that improve your benchmark
+on your own code, your keys, and your compute. Built and used daily by the
+Agentic Learning AI Lab at NYU.
+
+### Highlights
+
+- **The loop.** An agent proposes a change, runs the experiment on your cluster,
+  measures it against the base tree at the same seed, and opens a pull request
+  only when the benchmark actually improves. Every attempt gets a short report,
+  negative results included.
+- **Verification first.** Outerloop re-measures every claim against the
+  repository's contract — it never trusts a number the agent reports — and a
+  reviewer panel reads the change and the claim before a pull request stands.
+- **Your guardrails apply.** Agents cannot touch the benchmark, the budgets, or
+  your CI; your branch protection and required checks apply to them as to any
+  contributor. A pull request waits for a human by default; a repo can also let
+  clean ones merge themselves.
+- **Runs where you do.** Slurm or a single GPU machine, behind one compute seam.
+  Sessions run in a scrubbed sandbox, and your model key and bot credentials
+  never leave the job.
+- **Onboarding in a few commands.** `outerloop init` writes the config and sets
+  up auth (a per-adopter GitHub App, or a token), `outerloop start` runs the
+  loop, and `outerloop upgrade` moves a local install to the newest release. The
+  container image is pulled, not built.
+- **Contracts and the board.** A repo declares its benchmark, scope, and budgets
+  in `.outerloop.yaml`; the climb board publishes every attempt and its outcome,
+  and the ledger keeps the honest record — refusals and negatives included.
+- **Research lines and depth.** Each agent works its own line and reintegrates
+  the moving base; a run hibernates through long experiments and wakes to read
+  its results.
+- **Advisory review and a weekly digest.** The reviewer posts structured,
+  advisory findings on every pull request, and a weekly maintainer scan files a
+  codebase-health digest.
+
+The `AUTORESEARCH_*` environment names and `.autoresearch` paths from before the
+rename are still accepted in 0.1; they are removed in 0.1.1. The full history
+since the first pre-release follows.
+
 ### Changed
 
 - Install guide: a lab member who is not an org owner now has documented steps
