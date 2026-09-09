@@ -193,6 +193,12 @@ def _item(finding: Finding, repo: str, ref: str) -> str:
     return f"- {label}**{summary}.** {detail} ([{where}]({link}); {finding.confidence})"
 
 
+def digest_title(today: str) -> str:
+    """The rolling issue's title, carrying the scan date so its freshness shows
+    in the issue list without opening it. Refreshed on every scan."""
+    return f"{DIGEST_TITLE} — {today}"
+
+
 def render_digest(
     result: ReviewResult,
     *,
@@ -221,7 +227,16 @@ def render_digest(
         "",
     ]
     if result.notes:
-        lines += [result.notes, ""]
+        # keep the top a short summary (title, advisory, counts); the scan's
+        # own verdict and its rejected-findings reasoning fold away below it
+        lines += [
+            "<details><summary>Scan verdict and rejected findings</summary>",
+            "",
+            result.notes,
+            "",
+            "</details>",
+            "",
+        ]
     by_section: dict[str, list[Finding]] = {}
     for f in findings:
         section = f.category if f.category in MAINTENANCE_LENSES else "other"

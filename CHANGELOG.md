@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- The maintainer digest issue now carries the scan date in its title
+  (`Maintainer digest — YYYY-MM-DD`, refreshed each scan) so its freshness shows
+  in the issue list, and the scan's long verdict/rejected-findings text folds
+  into a collapsible block so the top of the issue stays a short summary
+  (title, advisory line, counts).
+
 ### Added
 
 - `outerloop upgrade`: one verb for a local install to move to the newest

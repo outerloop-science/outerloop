@@ -17,6 +17,7 @@ from outerloop.maintain import (
     MAINTENANCE_LENSES,
     MARKER,
     build_maintenance_brief,
+    digest_title,
     lens_names,
     render_digest,
     render_stub,
@@ -104,7 +105,10 @@ def test_digest_groups_by_section_puts_decisions_first_and_links_the_lines() -> 
     assert body.startswith(MARKER + "\n")
     assert "o/r at `abcdef12` on 2026-09-08; scanned by `hermes/gpt-5.6-terra`" in body
     assert "4 items: 1 need a decision, 2 are mechanical, 1 are notes." in body
+    # the counts stay a short summary up top; the verdict folds away below them
     assert "Healthy overall." in body
+    assert "<details><summary>Scan verdict and rejected findings</summary>" in body
+    assert body.index("items: 1 need a decision") < body.index("Healthy overall.")
     pathways, docs, other = (
         body.index("### pathways"),
         body.index("### docs"),
@@ -118,6 +122,10 @@ def test_digest_groups_by_section_puts_decisions_first_and_links_the_lines() -> 
     assert "*Note.* **Stale &lt;b&gt;status&lt;/b&gt;.**" in body  # model text is escaped
     assert "`weird.py`" in body and "we`ird" not in body  # a backtick cannot close the span
     assert "Each scan replaces this body" in body
+
+
+def test_digest_title_carries_the_scan_date() -> None:
+    assert digest_title("2026-09-08") == "Maintainer digest — 2026-09-08"
 
 
 def test_stub_names_the_reason_and_who() -> None:
@@ -243,8 +251,8 @@ class _Client:
         self.created.append((title, body))
         return 42
 
-    def update_issue(self, repo: str, number: int, body: str) -> None:
-        self.updated.append((number, body))
+    def update_issue(self, repo: str, number: int, body: str, *, title: str | None = None) -> None:
+        self.updated.append((number, body, title))
 
     def comment(self, repo: str, number: int, body: str) -> None:
         self.comments.append((number, body))
@@ -277,7 +285,7 @@ def test_post_opens_the_digest_issue_when_there_is_none(tmp_path: Path) -> None:
     )
     assert out == "created"
     ((title, body),) = client.created
-    assert title == "Maintainer digest" and body.startswith(MARKER)
+    assert title == "Maintainer digest — 2026-09-08" and body.startswith(MARKER)
     assert "scanned by `terra`" in body and "### tests" in body
     assert client.updated == [] and client.comments == []
 
@@ -299,8 +307,9 @@ def test_post_rewrites_only_its_own_marker_issue_and_notifies(tmp_path: Path) ->
     )
     assert out == "updated" and client.created == []
     assert client.asked_creator == "github-actions[bot]"
-    ((number, body),) = client.updated
+    ((number, body, title),) = client.updated
     assert number == 9 and body.startswith(MARKER) and "scanned by `hermes/x`" in body
+    assert title == "Maintainer digest — 2026-09-08"  # the title refreshes its date on update
     ((cnumber, comment),) = client.comments
     assert cnumber == 9 and "Digest updated for `abcdef12` on 2026-09-08: 1 items." in comment
 

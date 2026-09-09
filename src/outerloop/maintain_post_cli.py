@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from outerloop.github import EnvTokenProvider, GitHubClient
-from outerloop.maintain import DIGEST_TITLE, MARKER, render_digest, render_stub
+from outerloop.maintain import MARKER, digest_title, render_digest, render_stub
 from outerloop.posting import EXPECTED_FAILURES
 from outerloop.review import result_from_data
 
@@ -84,7 +84,7 @@ def post_digest(
                 str(envelope.get("detail", "")), repo=repo, ref=ref, today=today, who=who
             )
             if number is None:
-                client.create_issue(repo, DIGEST_TITLE, body)
+                client.create_issue(repo, digest_title(today), body)
             else:
                 client.comment(repo, number, body)
             return "skip-stub"
@@ -92,10 +92,10 @@ def post_digest(
         result = result_from_data(data if isinstance(data, dict) else {})
         body = render_digest(result, repo=repo, ref=ref, today=today, reviewed_by=who)
         if number is None:
-            number = client.create_issue(repo, DIGEST_TITLE, body)
+            number = client.create_issue(repo, digest_title(today), body)
             log.info("opened the digest issue %s#%s", repo, number)
             return "created"
-        client.update_issue(repo, number, body)
+        client.update_issue(repo, number, body, title=digest_title(today))
         # a body edit notifies nobody; the comment does
         client.comment(
             repo,
