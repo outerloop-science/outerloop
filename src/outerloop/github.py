@@ -503,10 +503,20 @@ class GitHubClient:
         return True
 
     def disable_auto_merge(self, repo: str, number: int) -> bool:
-        """Disarm GitHub auto-merge (GraphQL). The follow-up lane calls this
-        before pushing new commits to an auto-mode PR: an armed PR would
-        merge the NEW head on green CI without a fresh gate/suite/panel
-        (terra #171). Returns False when nothing was armed or on error."""
+        """Ensure GitHub auto-merge will not fire on this PR, and report whether
+        that is confirmed. The follow-up lane calls this before pushing new
+        commits to an auto-mode PR: an armed PR would merge the NEW head on green
+        CI without a fresh gate/suite/panel (terra #171).
+
+        The property to confirm is "auto-merge is not armed". We always run the
+        disarm mutation — never skipping it on a prior read, which would let
+        another actor arm auto-merge between the read and the push. When nothing
+        is armed the mutation errors, and its text varies by the repo's "Allow
+        auto-merge" setting and the token type (App vs PAT), so we confirm by
+        RE-READING the PR's `auto_merge` state rather than matching a string: if
+        auto-merge is off afterward, the safety property holds and pushing is
+        safe. Returns False only when auto-merge is still armed and could not be
+        disarmed."""
         if self.dry_run:
             log.info("[dry-run] disarm auto-merge on %s#%d", repo, number)
             return True
@@ -519,12 +529,18 @@ class GitHubClient:
                 " disablePullRequestAutoMerge(input: {pullRequestId: $pr})"
                 " { pullRequest { number } } }"
             )
-            self._graphql(mutation, {"pr": str(node_id)})
-            return True
-        except GitHubError as exc:
-            if "not enabled" in str(exc).casefold():
-                # nothing was armed — the state we wanted; pushing is safe
+            try:
+                self._graphql(mutation, {"pr": str(node_id)})
                 return True
+            except GitHubError as exc:
+                # Disarming a PR with nothing armed errors; the message is not a
+                # reliable signal (merge:manual repo, "Allow auto-merge" off, or
+                # App-token phrasing), so confirm by state: off now = safe.
+                if not self.get_pull_request(repo, number).get("auto_merge"):
+                    return True
+                log.warning("auto-merge disarm on %s#%s failed: %s", repo, number, exc)
+                return False
+        except GitHubError as exc:
             log.warning("auto-merge disarm on %s#%s failed: %s", repo, number, exc)
             return False
 
