@@ -9,10 +9,10 @@ Versions follow [SemVer](https://semver.org).
 ### Changed
 
 - The maintainer digest issue now carries the scan date in its title
-  (`Maintainer digest — YYYY-MM-DD`, refreshed each scan) so its freshness shows
-  in the issue list, and the scan's long verdict/rejected-findings text folds
-  into a collapsible block so the top of the issue stays a short summary
-  (title, advisory line, counts).
+  (`Maintainer digest — YYYY-MM-DD`), so its freshness shows in the issue list.
+  The scan's long verdict and rejected-findings text now folds into a
+  collapsible block, keeping the top of the issue a short summary (title,
+  advisory line, counts).
 
 ### Added
 

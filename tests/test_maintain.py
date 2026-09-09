@@ -238,7 +238,7 @@ class _Client:
     def __init__(self, issues: list[dict[str, Any]] | None = None) -> None:
         self.issues = issues or []
         self.created: list[tuple[str, str]] = []
-        self.updated: list[tuple[int, str]] = []
+        self.updated: list[tuple[int, str, str | None]] = []
         self.comments: list[tuple[int, str]] = []
         self.asked_creator = ""
 
