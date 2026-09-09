@@ -780,3 +780,32 @@ def test_upgrade_surfaces_a_failed_pip_and_its_exit_code(
     monkeypatch.setattr(cli, "_installed_version", lambda _python: "0.1.0.dev3")
     assert main(["upgrade"]) == 3
     assert "upgrade failed (pip exited 3)" in capsys.readouterr().err
+
+
+def test_installed_version_reads_a_fresh_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        import subprocess
+
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="0.1.0.dev9\n", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._installed_version("/usr/bin/python3") == "0.1.0.dev9"
+    # a fresh interpreter is what reflects a just-written upgrade, not this process
+    assert seen[0][0] == "/usr/bin/python3"
+    assert seen[0][1] == "-c"
+    assert "outerloop-science" in seen[0][2]
+
+
+def test_installed_version_is_unknown_when_the_lookup_says_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        import subprocess
+
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._installed_version(sys.executable) == "unknown"
