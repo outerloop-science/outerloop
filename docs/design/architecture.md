@@ -287,8 +287,8 @@ grep + recency + distillation until that provably fails.
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |
-| `limits` | Hard caps: $ per run, weekly $, GPU-hours, PRs per week; contract wishes clamped by our ceilings; subscription backends metered by a session/token proxy |
-| `progress` / `climbboard` | `progress` writes the human-readable benchmark-progress files into the target repo on each improvement PR; `climbboard` publishes the climb board — every attempt and its outcome, plus the ledger and views — to the target's `research-log` branch |
+| `limits` | Effective session and job limits — turns, session and job minutes — with each contract wish clamped into our `[floor, ceiling]`; the tick's `OUTERLOOP_MAX_JOB_MINUTES` floors here |
+| `progress` / `climbboard` | `progress` writes the human-readable benchmark-progress files into the target repo on each improvement PR; `climbboard` publishes the climb board — every ended attempt and its outcome, plus the ledger and views — to the target's `research-log` branch whenever runs end |
 
 ## Harness and context engineering
 
@@ -309,7 +309,7 @@ exactly what any given agent saw, and a bad run can be replayed from its brief:
 | Ruler: how the metric is computed, how claims get re-verified | target repo docs | fixed |
 | Lessons: distilled, bounded per-target lessons file | notebook `lessons/<target>.md` | hard cap |
 | Recent history: last N run reports for this target (incl. failures) | notebook `runs/<target>/` | hard cap, newest first |
-| Budget state: remaining GPU-hours/$/PRs this week | `limits` | fixed |
+| Budget state: remaining GPU-hours/$/PRs this week | tick weekly accounting | fixed |
 
 Everything else is deliberately absent: no other targets' data (cross-target
 separation), no raw transcripts (distillation instead), no maintainer-private
