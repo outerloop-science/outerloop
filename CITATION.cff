@@ -9,9 +9,6 @@ abstract: >-
   and your repositories.
 type: software
 authors:
-  - family-names: Ren
-    given-names: Mengye
-    affiliation: New York University
   - name: "Agentic Learning AI Lab, New York University"
 repository-code: "https://github.com/outerloop-science/outerloop"
 url: "https://outerloop.science"
