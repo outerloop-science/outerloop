@@ -5097,3 +5097,35 @@ def test_with_seed_fills_the_seed_from_the_records_target(tmp_path) -> None:
     assert filled.seed_cache == seed_dir(tmp_path, "org/pilot")
     assert with_seed(filled, tmp_path, "other/repo").seed_cache == filled.seed_cache
     assert with_seed(bare, tmp_path, "").seed_cache is None
+
+
+def test_line_base_moved_detects_a_moved_base(tmp_path, target_repo) -> None:
+    """The wake's base-moved check: False when origin/main still equals the
+    line's base, True once a sibling advances main — and the check leaves the
+    fresh base fetched into the workspace for the agent to merge."""
+    from outerloop.attempt import _line_base_moved
+
+    ws = _line_ws(tmp_path, target_repo)
+    base_sha = ws.git("rev-parse", "HEAD").strip()
+    assert _line_base_moved(ws, "main", base_sha) is False  # nothing moved
+    _advance_main(tmp_path, target_repo, {"docs/news.md": "main moved\n"})
+    assert _line_base_moved(ws, "main", base_sha) is True
+    assert ws.git("rev-parse", "refs/remotes/origin/main").strip() != base_sha
+
+
+def test_line_base_moved_is_best_effort_false_on_git_failure(tmp_path) -> None:
+    """A workspace with no remote can't fetch; the check returns False and the
+    wake proceeds unchanged rather than raising."""
+    from outerloop.attempt import _line_base_moved
+    from outerloop.github import Workspace
+
+    ws = Workspace(root=tmp_path / "nope")
+    assert _line_base_moved(ws, "main", "deadbeef") is False
+
+
+def test_reintegrate_prompt_names_the_base_branch() -> None:
+    from outerloop.attempt import REINTEGRATE_PROMPT
+
+    text = REINTEGRATE_PROMPT.format(base_branch="main")
+    assert "origin/main" in text and "merge" in text.lower()
+    assert "{base_branch}" not in text

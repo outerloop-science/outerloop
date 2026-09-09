@@ -84,7 +84,9 @@ after the PR opens.
 
 The base pin is correct during a run — you cannot measure improvement against
 a moving target. The failure is not the pin; it is holding one pin for a
-multi-day run and having no reconciliation once the run ends. Re-pinning at the
-iteration boundary keeps the stability the pin gives while bounding the drift,
-and extending the conflict wake past the run's terminal closes the orphaned-PR
-gap. Both reuse machinery that already exists rather than adding a new one.
+multi-day run and having no reconciliation once the run ends. Waking the line to merge the fresh base keeps the stability the pin gives
+while bounding the drift to a single iteration, and it reuses the exact
+mechanism the in-review conflict wake already uses — the kernel fetches, the
+agent merges — rather than adding new kernel git machinery. The post-open case
+needs nothing more: an open PR's run stays in-review and that same conflict
+wake already reconciles it.
