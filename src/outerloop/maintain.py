@@ -194,8 +194,10 @@ def _item(finding: Finding, repo: str, ref: str) -> str:
 
 
 def digest_title(today: str) -> str:
-    """The rolling issue's title, carrying the scan date so its freshness shows
-    in the issue list without opening it. Refreshed on every scan."""
+    """The rolling issue's title, carrying the date of the digest it shows so
+    its freshness reads from the issue list. A successful scan sets it to that
+    scan's date; a scan that could not run keeps the last good digest — and this
+    date — so a stalled scan reads as stale rather than falsely fresh."""
     return f"{DIGEST_TITLE} — {today}"
 
 
