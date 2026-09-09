@@ -289,6 +289,14 @@ def test_app_owner_mismatch_note_fires_only_on_a_fallback() -> None:
     assert init._app_owner_mismatch_note({}, org, target) == ""
 
 
+def test_app_failure_names_the_make_public_and_owner_approval_path(capsys) -> None:
+    rc = init._app_failure(InitAnswers(compute="local", target="the-lab/forecast"), "s", "no write")
+    assert rc == 1  # the check failed, so init keeps the creds and never says start
+    err = capsys.readouterr().err
+    assert "cannot write the-lab/forecast" in err
+    assert "make the App public" in err and "org owner approve" in err
+
+
 def test_github_app_warns_when_it_lands_under_a_different_account(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

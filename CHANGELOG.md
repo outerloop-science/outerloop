@@ -9,12 +9,12 @@ Versions follow [SemVer](https://semver.org).
 ### Fixed
 
 - `outerloop init --github-app` no longer dead-ends a non-owner of an
-  organization: creating an org-owned App needs org-owner rights, so GitHub
+  organization. Creating an org-owned App needs org-owner rights, so GitHub
   makes a personal App that will not install on the org repo by default. init
   now detects that the App landed under a different account and prints the path
-  that works (make the App public, request the install, an org owner approves,
-  rerun `init --force --github-app`; optionally transfer the App to the org),
-  and the install-failure help names the same steps.
+  that works — make it public, request the install, have an org owner approve
+  it, then rerun `init --force --github-app` (and optionally transfer the App to
+  the org). The install-failure help names the same steps.
 
 ### Added
 
