@@ -105,8 +105,9 @@ always exits successfully so your PR stays green.
 
 The same reviewer, pointed at your whole repository once a week: dead code,
 duplicated logic, oversized modules, stale pins, slow tests, repeated work on
-the hot path, documentation drift. It writes one issue, "Maintainer digest",
-and replaces its body each scan. It changes no code and opens no work orders.
+the hot path, documentation drift. It writes one issue, titled "Maintainer
+digest — <date>" (the date of the digest it shows), and replaces its body each
+scan. It changes no code and opens no work orders.
 Add `.github/workflows/maintenance.yml` with the same secret as the reviewer:
 
 ```yaml
