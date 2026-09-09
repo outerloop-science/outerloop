@@ -276,6 +276,52 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
     assert asked == [init.ORG_PROMPT]
 
 
+def test_app_owner_mismatch_note_fires_only_on_a_fallback() -> None:
+    org, target = "agentic-learning-ai-lab", "agentic-learning-ai-lab/autoresearch-forecast"
+    # non-owner fallback: App landed under a personal account, not the org
+    note = init._app_owner_mismatch_note({"owner": {"login": "amelia"}}, org, target)
+    assert "'amelia'" in note and f"'{org}'" in note
+    assert "Make public" in note or "make the App public" in note
+    assert "approve" in note and "--force" in note
+    # landed where intended (org owner, or a personal target): no note
+    assert init._app_owner_mismatch_note({"owner": {"login": org}}, org, target) == ""
+    assert init._app_owner_mismatch_note({"owner": {"login": "Amelia"}}, "amelia", "amelia/r") == ""
+    assert init._app_owner_mismatch_note({}, org, target) == ""
+
+
+def test_app_failure_names_the_make_public_and_owner_approval_path(capsys) -> None:
+    rc = init._app_failure(InitAnswers(compute="local", target="the-lab/forecast"), "s", "no write")
+    assert rc == 1  # the check failed, so init keeps the creds and never says start
+    err = capsys.readouterr().err
+    assert "cannot write the-lab/forecast" in err
+    assert "make the App public" in err and "org owner approve" in err
+
+
+def test_github_app_warns_when_it_lands_under_a_different_account(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A non-owner org member gets a personal App; init must say so and name the
+    make-public + owner-approval path rather than silently dead-ending (#349)."""
+    from outerloop import appmanifest
+
+    monkeypatch.setattr(init, "_ask", lambda *a, **k: "")
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "_owner_type", lambda owner: "Organization")
+    monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "c")
+    monkeypatch.setattr(
+        appmanifest,
+        "convert_manifest",
+        lambda code, **k: {"id": 1, "slug": "s", "pem": "p", "owner": {"login": "amelia"}},
+    )
+    monkeypatch.setattr(appmanifest, "capture_installation_id", lambda *a, **k: 0)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    rc = init.main(["--github-app", "--compute", "local", "--target", "the-lab/forecast"])
+    assert rc == 1  # not installed, so it still exits 1 and keeps the creds
+    err = capsys.readouterr().err
+    assert "was created under 'amelia', not 'the-lab'" in err
+    assert "make the App public" in err and "approve" in err
+
+
 def test_main_yes_rejects_an_unknown_author_backend(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
     rc = init.main(["--yes", "--compute", "local", "--target", "o/r", "--author-backend", "hermes"])

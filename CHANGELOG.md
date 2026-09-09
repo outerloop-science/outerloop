@@ -14,6 +14,16 @@ Versions follow [SemVer](https://semver.org).
   collapsible block, keeping the top of the issue a short summary (title,
   advisory line, counts).
 
+### Fixed
+
+- `outerloop init --github-app` no longer dead-ends a non-owner of an
+  organization. Creating an org-owned App needs org-owner rights, so GitHub
+  makes a personal App that will not install on the org repo by default. init
+  now detects that the App landed under a different account and prints the path
+  that works — make it public, request the install, have an org owner approve
+  it, then rerun `init --force --github-app` (and optionally transfer the App to
+  the org). The install-failure help names the same steps.
+
 ### Added
 
 - `outerloop upgrade`: one verb for a local install to move to the newest
