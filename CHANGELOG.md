@@ -35,6 +35,15 @@ Versions follow [SemVer](https://semver.org).
   it, then rerun `init --force --github-app` (and optionally transfer the App to
   the org). The install-failure help names the same steps.
 
+### Fixed
+
+- The follow-up finalizer no longer withholds a measured base sync because it
+  "could not confirm auto-merge is disabled". It now reads the PR's actual
+  auto-merge state and treats an already-disarmed PR as confirmed, instead of
+  matching one error string — so a merge:manual repo (or one whose "Allow
+  auto-merge" setting is off, which returns a different error under a GitHub App
+  token) is no longer stuck re-withholding its successful re-measurements.
+
 ### Added
 
 - `outerloop upgrade`: one verb for a local install to move to the newest

@@ -503,17 +503,31 @@ class GitHubClient:
         return True
 
     def disable_auto_merge(self, repo: str, number: int) -> bool:
-        """Disarm GitHub auto-merge (GraphQL). The follow-up lane calls this
-        before pushing new commits to an auto-mode PR: an armed PR would
-        merge the NEW head on green CI without a fresh gate/suite/panel
-        (terra #171). Returns False when nothing was armed or on error."""
+        """Ensure GitHub auto-merge will not fire on this PR, and report whether
+        that is confirmed. The follow-up lane calls this before pushing new
+        commits to an auto-mode PR: an armed PR would merge the NEW head on green
+        CI without a fresh gate/suite/panel (terra #171).
+
+        The property to confirm is "auto-merge is not armed". We read the PR's
+        actual `auto_merge` state and only run the disarm mutation when something
+        is armed. When auto-merge is already off — the common case for a
+        merge:manual repo, or one whose "Allow auto-merge" setting is disabled —
+        there is nothing to disarm and this returns True without depending on the
+        error text a disarm-on-an-unarmed-PR happens to return (which differs by
+        repo setting and token type). Returns False only when a disarm was
+        actually needed and could not be completed."""
         if self.dry_run:
             log.info("[dry-run] disarm auto-merge on %s#%d", repo, number)
             return True
         try:
-            node_id = self.get_pull_request(repo, number).get("node_id")
+            pr = self.get_pull_request(repo, number)
+            node_id = pr.get("node_id")
             if not node_id:
                 return False
+            if not pr.get("auto_merge"):
+                # not armed (or the repo disallows auto-merge): nothing to
+                # disarm, so the safety property already holds and pushing is safe
+                return True
             mutation = (
                 "mutation($pr: ID!) {"
                 " disablePullRequestAutoMerge(input: {pullRequestId: $pr})"
@@ -523,7 +537,7 @@ class GitHubClient:
             return True
         except GitHubError as exc:
             if "not enabled" in str(exc).casefold():
-                # nothing was armed — the state we wanted; pushing is safe
+                # a race disarmed it between the read and the mutation; still safe
                 return True
             log.warning("auto-merge disarm on %s#%s failed: %s", repo, number, exc)
             return False

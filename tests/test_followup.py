@@ -884,19 +884,34 @@ def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
 
     client = GitHubClient(auth=_Tok())
 
-    def not_enabled(*a, **k):
-        raise GitHubError(0, "/x", "Pull request auto merge is not enabled")
-
     def hard_fail(*a, **k):
         raise GitHubError(0, "/x", "Something went wrong")
 
     import types
 
-    client._graphql = types.MethodType(lambda self, q, v: not_enabled(), client)  # type: ignore[method-assign]
-    client.get_pull_request = types.MethodType(  # type: ignore[method-assign]
-        lambda self, repo, n: {"node_id": "N1"}, client
-    )
-    assert client.disable_auto_merge("o/r", 1) is True  # nothing armed = safe
+    armed = {"node_id": "N1", "auto_merge": {"enabled_by": {"login": "x"}}}
+    off = {"node_id": "N1", "auto_merge": None}
+
+    # already off (merge:manual repo, or "Allow auto-merge" disabled, or the
+    # App-auth case Amelia hit): confirmed without ever attempting the disarm
+    # mutation, whatever error text it would have returned
+    calls: list[int] = []
+
+    def record_then_fail(self, q, v):
+        calls.append(1)
+        hard_fail()
+
+    client.get_pull_request = types.MethodType(lambda self, repo, n: off, client)  # type: ignore[method-assign]
+    client._graphql = types.MethodType(record_then_fail, client)  # type: ignore[method-assign]
+    assert client.disable_auto_merge("o/r", 1) is True  # already off = safe
+    assert calls == []  # the mutation is never even attempted
+
+    # armed and the disarm succeeds: confirmed
+    client.get_pull_request = types.MethodType(lambda self, repo, n: armed, client)  # type: ignore[method-assign]
+    client._graphql = types.MethodType(lambda self, q, v: {"ok": True}, client)  # type: ignore[method-assign]
+    assert client.disable_auto_merge("o/r", 1) is True
+
+    # armed and the disarm hard-fails: cannot confirm disarmed, so block the push
     client._graphql = types.MethodType(lambda self, q, v: hard_fail(), client)  # type: ignore[method-assign]
     assert client.disable_auto_merge("o/r", 1) is False  # unknown state = block
 
