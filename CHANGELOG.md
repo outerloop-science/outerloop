@@ -6,6 +6,8 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-09
+
 ### Changed
 
 - Install guide: a lab member who is not an org owner now has documented steps
