@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Install guide: a lab member who is not an org owner now has documented steps
+  for GitHub App auth — make the personal App public, request the install, an
+  org owner approves, then optionally transfer the App to the org — matching
+  what `init --github-app` prints on the personal-App fallback.
 - Docs: corrected stale `autoresearch` command and module paths left by the
   rename (onboarding, author-syscalls, architecture, role-cli), refreshed the
   architecture component map (`budget` → `limits`, `report` →

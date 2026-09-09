@@ -228,6 +228,21 @@ declares Contents, Issues and Pull requests read-write and Metadata read,
 nothing else. If the install step was cut short, run
 `outerloop init --force --github-app` to finish and re-check it.
 
+**If you are a member, not an owner, of the organization.** Creating an App
+*owned by the org* needs org-owner rights, so init falls back to creating one
+under your personal account — and a personal App does not install on an org
+repo by default. You do not need an org-owned App or a shared key:
+
+1. In the App's settings, make it **public** (a private App installs only on
+   its owner's account, which is why the org repo is not offered).
+2. Request its installation on your repo; an **org owner approves** the request.
+3. Run `outerloop init --force --github-app` to record the installation.
+
+Your key never leaves your machine. To let the lab own the App centrally later,
+transfer it to the org from the App's Advanced settings — the same key keeps
+working, so nothing has to be recreated. init prints these steps itself when it
+detects the personal-App fallback.
+
 **A fine-grained PAT — the fallback.** For an org that already runs a machine
 user, or one where you cannot create Apps: pick `pat` (or pass `--pat-file`).
 Mint the token on the machine user with these settings:
