@@ -8,6 +8,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- `docs/design/compute-cloud.md`: a design sketch (post-0.1, not a launch item)
+  for a third-party/cloud compute backend and the storage substrate it forces —
+  git-in/artifact-out instead of a region-pinned shared filesystem, the resident
+  decoupled from where experiments run, durable state as a storage-backend choice
+  rather than a database, and a run-artifact store holding traces and full
+  measurement trajectories keyed by run_id.
 - `outerloop upgrade`: one verb for a local install to move to the newest
   release (`--pre` to track pre-releases), the local counterpart of the Slurm
   resident tick's `OUTERLOOP_AUTO_UPDATE` policy. It runs `pip install --upgrade`,
