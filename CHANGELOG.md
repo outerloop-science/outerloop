@@ -6,7 +6,7 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-09
+## [0.1.0] - 2026-09-10
 
 The first release of Outerloop — autoresearch agents that improve your benchmark
 on your own code, your keys, and your compute. Built and used daily by the
