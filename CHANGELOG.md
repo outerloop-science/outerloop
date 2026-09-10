@@ -8,7 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- Package metadata now declares trove classifiers (Python 3.12, audience, topic), so the PyPI project page and the Python-version badge read correctly. The README's Python badge is a static `3.12+` so it renders regardless of the release's metadata.
+- The PyPI project page and the Python-version badge now read correctly: the package metadata lists the supported Python version (3.12) and the project's audience and topic. The README's Python badge is a static `3.12+` so it renders regardless of the release's metadata.
 
 ## [0.1.0] - 2026-09-10
 
