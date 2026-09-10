@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- The PyPI project page and the Python-version badge now read correctly: the package metadata lists the supported Python version (3.12) and the project's audience and topic. The README's Python badge is a static `3.12+` so it renders regardless of the release's metadata.
+
 ## [0.1.0] - 2026-09-10
 
 The first release of Outerloop — autoresearch agents that improve your benchmark

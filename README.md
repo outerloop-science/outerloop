@@ -7,7 +7,7 @@
 
 [![ci](https://github.com/outerloop-science/outerloop/actions/workflows/ci.yml/badge.svg)](https://github.com/outerloop-science/outerloop/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/outerloop-science.svg)](https://pypi.org/project/outerloop-science/)
-[![Python](https://img.shields.io/pypi/pyversions/outerloop-science.svg)](https://pypi.org/project/outerloop-science/)
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://pypi.org/project/outerloop-science/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **Autoresearch agents that improve your benchmark.**
