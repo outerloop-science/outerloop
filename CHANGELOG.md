@@ -57,8 +57,9 @@ Agentic Learning AI Lab at NYU.
   codebase-health digest.
 
 The `AUTORESEARCH_*` environment names and `.autoresearch` paths from before the
-rename are still accepted in 0.1; they are removed in 0.1.1. The full history
-since the first pre-release follows.
+rename are still accepted in 0.1; they are removed in the next minor release
+(0.1.1 kept them, see its notes). The full history since the first pre-release
+follows.
 
 ### Changed
 
