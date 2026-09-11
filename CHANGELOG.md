@@ -6,6 +6,8 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-11
+
 ### Fixed
 
 - Wakes never recorded a launch as ended. A nested `import time` in the wake function shadowed the module import, so the ledger step failed on every wake, and the failure was only logged to a stderr the scheduler discards. The PR's experiments table stayed empty and `history` showed every launch as not back. The nested imports are gone, the best-effort wrapper now logs the redacted traceback, and a wake writes its kernel log to `runs/<run>/kernel.log`.
@@ -13,6 +15,10 @@ Versions follow [SemVer](https://semver.org).
 ### Changed
 
 - The PyPI project page and the Python-version badge now read correctly: the package metadata lists the supported Python version (3.12) and the project's audience and topic. The README's Python badge is a static `3.12+` so it renders regardless of the release's metadata.
+
+### Deprecated
+
+- The `AUTORESEARCH_*` environment names and `.autoresearch` paths are still accepted. The 0.1.0 notes said they would go in 0.1.1; a bug-fix release should not also break a deployment's environment, so their removal moves to 0.2.0.
 
 ## [0.1.0] - 2026-09-10
 
@@ -51,8 +57,8 @@ Agentic Learning AI Lab at NYU.
   codebase-health digest.
 
 The `AUTORESEARCH_*` environment names and `.autoresearch` paths from before the
-rename are still accepted in 0.1; they are removed in 0.1.1. The full history
-since the first pre-release follows.
+rename are still accepted in 0.1; 0.1.1 kept them (see its notes) and 0.2.0
+removes them. The full history since the first pre-release follows.
 
 ### Changed
 
