@@ -18,7 +18,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Deprecated
 
-- The `AUTORESEARCH_*` environment names and `.autoresearch` paths are still accepted. The 0.1.0 notes said they would go in 0.1.1; a bug-fix release should not also break a deployment's environment, so their removal moves to the next minor release.
+- The `AUTORESEARCH_*` environment names and `.autoresearch` paths are still accepted. The 0.1.0 notes said they would go in 0.1.1; a bug-fix release should not also break a deployment's environment, so their removal moves to 0.2.0.
 
 ## [0.1.0] - 2026-09-10
 
@@ -57,9 +57,8 @@ Agentic Learning AI Lab at NYU.
   codebase-health digest.
 
 The `AUTORESEARCH_*` environment names and `.autoresearch` paths from before the
-rename are still accepted in 0.1; they are removed in the next minor release
-(0.1.1 kept them, see its notes). The full history since the first pre-release
-follows.
+rename are still accepted in 0.1; 0.1.1 kept them (see its notes) and 0.2.0
+removes them. The full history since the first pre-release follows.
 
 ### Changed
 
