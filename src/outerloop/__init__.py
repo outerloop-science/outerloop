@@ -2,7 +2,7 @@
 
 import os
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 def _bridge_legacy_env() -> None:
