@@ -16,6 +16,10 @@ Versions follow [SemVer](https://semver.org).
 
 - The PyPI project page and the Python-version badge now read correctly: the package metadata lists the supported Python version (3.12) and the project's audience and topic. The README's Python badge is a static `3.12+` so it renders regardless of the release's metadata.
 
+### Deprecated
+
+- The `AUTORESEARCH_*` environment names and `.autoresearch` paths are still accepted. The 0.1.0 notes said they would go in 0.1.1; a bug-fix release should not also break a deployment's environment, so their removal moves to the next minor release.
+
 ## [0.1.0] - 2026-09-10
 
 The first release of Outerloop — autoresearch agents that improve your benchmark
