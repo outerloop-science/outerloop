@@ -3304,6 +3304,81 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     assert str(record.stage["candidate_ref"]) in refs[0]
 
 
+def test_author_sleep_wake_records_each_launch_as_ended_in_the_ledger(
+    tmp_path, monkeypatch
+) -> None:
+    """The wake writes one `ended` record per launch job under the sleep that
+    submitted it, so `history` and the PR's experiments table see the job come
+    back. A nested `import time` once made this step raise inside its
+    best-effort wrapper on every wake: no ended record was ever written."""
+    from outerloop.launchlog import append_submitted, history, read_ledger
+    from outerloop.measure import MeasurementPending
+    from outerloop.roles import author_spec
+    from outerloop.syscall import Launch
+
+    state, run_id, _wsroot, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, raise_exc=MeasurementPending(("701", "702"))
+    )
+    run_dir = state / "runs" / run_id
+    append_submitted(
+        run_dir,
+        sleep=1,
+        launches=(Launch(name="probe", command="uv run probe.py", minutes=45, why="tails"),),
+        job_ids=["501"],
+        at=1_000_000.0,
+    )
+    resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 'p'\n"}),
+        spec=author_spec(),
+    )
+    ended = [r for r in read_ledger(run_dir) if r["event"] == "ended"]
+    assert [(r["sleep"], r["name"], r["exit_code"], r["last_line"]) for r in ended] == [
+        (1, "probe", 0, "tail improvement: 0.7")
+    ]
+    (entry,) = history(run_dir)
+    assert entry["jobs"] and entry["jobs"][0]["exit_code"] == 0
+
+
+def test_best_effort_logs_the_traceback_of_a_swallowed_step(caplog) -> None:
+    import logging
+
+    from outerloop.attempt import _best_effort
+
+    def boom() -> None:
+        raise NameError("cannot access free variable 'time' (token hunter2)")
+
+    with caplog.at_level(logging.WARNING):
+        assert _best_effort("launch ledger", boom, secrets=("hunter2",)) is False
+    assert "launch ledger failed" in caplog.text
+    assert "Traceback" in caplog.text and "in boom" in caplog.text
+    assert "hunter2" not in caplog.text
+
+
+def test_attach_run_log_persists_kernel_lines_beside_the_run(tmp_path) -> None:
+    import logging
+
+    from outerloop.attempt import _attach_run_log, log
+
+    _attach_run_log(tmp_path / "runs" / "nope")  # no such run: nothing created
+    assert not (tmp_path / "runs").exists()
+    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    _attach_run_log(tmp_path / "runs" / "r1")
+    try:
+        log.warning("launch ledger failed: NameError")
+    finally:
+        for h in list(logging.getLogger().handlers):
+            if isinstance(h, logging.FileHandler) and h.baseFilename.endswith("kernel.log"):
+                logging.getLogger().removeHandler(h)
+                h.close()
+    assert "launch ledger failed" in (tmp_path / "runs" / "r1" / "kernel.log").read_text()
+
+
 def test_author_sleep_wake_can_sleep_again(tmp_path, monkeypatch) -> None:
     # the woken author launches more work and sleeps again: a fresh author-sleep
     # park with the counts advanced.

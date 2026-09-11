@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- A wake never recorded its launches as ended: a nested `import time` in the wake function shadowed the module, so the ledger step raised inside a best-effort wrapper whose warning went to the scheduler's discarded stderr. The PR's experiments table stayed empty and `history` showed every launch as not back. The wrapper now logs the full (redacted) traceback, and a wake's kernel log persists at `runs/<run>/kernel.log`.
+
 ### Changed
 
 - The PyPI project page and the Python-version badge now read correctly: the package metadata lists the supported Python version (3.12) and the project's audience and topic. The README's Python badge is a static `3.12+` so it renders regardless of the release's metadata.
