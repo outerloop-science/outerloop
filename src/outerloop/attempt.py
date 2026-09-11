@@ -3433,11 +3433,22 @@ def main() -> int:
             )
         return value
 
+    def _run_id(value: str) -> str:
+        # the id names the run directory under runs/: one path segment, so a
+        # value cannot reach outside the run root before the record is read
+        # ("" is the default: a fresh climb, not a resume)
+        if value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}", value):
+            raise argparse.ArgumentTypeError(
+                f"run id {value!r} is not a run directory name (want [A-Za-z0-9][A-Za-z0-9_.@-]*)"
+            )
+        return value
+
     parser.add_argument("--agent-id", default="agent-01", type=_agent_id)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument(
         "--resume",
         default="",
+        type=_run_id,
         metavar="RUN_ID",
         help="wake a parked dispatched run instead of starting a fresh climb",
     )

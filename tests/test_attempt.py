@@ -4280,6 +4280,26 @@ def test_cli_rejects_ref_shaping_agent_ids(capsys, monkeypatch) -> None:
         assert "cannot shape a git ref" in capsys.readouterr().err
 
 
+def test_resume_rejects_a_run_id_that_is_not_one_path_segment(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """`--resume` names the run directory under runs/. A traversal value is
+    refused by the parser, before the lease or the kernel log could be created
+    outside the run root."""
+    from outerloop.attempt import main as climb_main
+
+    (tmp_path / "elsewhere").mkdir()
+    for bad in ("../elsewhere", "a/b", ".."):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["climb", "--resume", bad, "--run-root", str(tmp_path / "state"), "--image", "x.sif"],
+        )
+        with pytest.raises(SystemExit):
+            climb_main()
+        assert "is not a run directory name" in capsys.readouterr().err
+    assert not (tmp_path / "elsewhere" / "kernel.log").exists()
+
+
 def test_wake_refreshes_origin_refs(tmp_path, monkeypatch) -> None:
     """The clone's refs freeze at run start; a wake fetches origin so the
     resumed session reads current base and sibling refs locally."""
