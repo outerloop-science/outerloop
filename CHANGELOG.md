@@ -8,7 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A wake never recorded its launches as ended: a nested `import time` in the wake function shadowed the module, so the ledger step raised inside a best-effort wrapper whose warning went to the scheduler's discarded stderr. The PR's experiments table stayed empty and `history` showed every launch as not back. The wrapper now logs the full (redacted) traceback, and a wake's kernel log persists at `runs/<run>/kernel.log`.
+- Wakes never recorded a launch as ended. A nested `import time` in the wake function shadowed the module import, so the ledger step failed on every wake, and the failure was only logged to a stderr the scheduler discards. The PR's experiments table stayed empty and `history` showed every launch as not back. The nested imports are gone, the best-effort wrapper now logs the redacted traceback, and a wake writes its kernel log to `runs/<run>/kernel.log`.
 
 ### Changed
 
