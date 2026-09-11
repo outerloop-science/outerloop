@@ -8,8 +8,8 @@
 
 ## Cutting a release
 
-1. PR: bump `__version__` and move the `[Unreleased]` entries under the new
-   version. A dev or rc pre-release still bumps the version (PyPI never
+1. PR: bump `__version__`, set `CITATION.cff`'s `version` and `date-released`,
+   and move the `[Unreleased]` entries under the new version. A dev or rc pre-release still bumps the version (PyPI never
    accepts a version twice, so the next one is `.dev1`, `rc2`, ...) but leaves
    `[Unreleased]` in place until the final release.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow builds
