@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import time
+import traceback
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
@@ -319,18 +320,35 @@ class AttemptOutcome:
     report_path: str = ""
 
 
+def _attach_run_log(directory: Path) -> None:
+    """Also write the kernel's log lines to `<run dir>/kernel.log`: the scheduler
+    discards a wake job's own stderr, so this is the only trace a swallowed
+    step leaves. Only for a run that exists — never a stray directory."""
+    if not directory.is_dir():
+        return
+    try:
+        handler = logging.FileHandler(directory / "kernel.log", encoding="utf-8")
+    except OSError as exc:
+        log.warning("run log unavailable: %s", exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+
+
 def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] = ()) -> bool:
-    """One ending step; a failure is logged, never raised.
+    """One ending step; a failure is logged with its traceback, never raised.
 
     The terminal sequence (record, report, issue post) must degrade
     independently: a full disk must not block the GitHub post, and a network
-    failure must not block the record.
+    failure must not block the record. The traceback is the only trace a
+    swallowed step leaves, so it is logged whole (redacted).
     """
     try:
         fn()
         return True
     except Exception as exc:
-        log.warning("%s failed: %s", what, redact(f"{type(exc).__name__}: {exc}", secrets))
+        detail = "".join(traceback.format_exception(exc)).rstrip()
+        log.warning("%s failed: %s", what, redact(detail, secrets))
         return False
 
 
@@ -1025,8 +1043,6 @@ def _wake_author_sleep(
         # existing wake path decides). Keep the NEW park's snapshot ref; the OLD
         # sleep ref is superseded once the new park persists.
         kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
-        import time
-
         try:
             _park_run(
                 run_root,
@@ -3017,8 +3033,6 @@ def live_attempt(
                 # commit); record and keep that same ref, drop the rest. An
                 # author-sleep's snapshot is the tree the wake re-delivers.
                 kept_ref = next((s.ref for s in snapshots if s.commit == p.candidate_sha), "")
-            import time
-
             # anchor the deadline to the PARK (when the evals were submitted),
             # not the run's start `now` — a session lasting hours would otherwise
             # eat the queue budget and let the sweep cancel a still-queued eval.
@@ -3419,11 +3433,22 @@ def main() -> int:
             )
         return value
 
+    def _run_id(value: str) -> str:
+        # the id names the run directory under runs/: one path segment, so a
+        # value cannot reach outside the run root before the record is read
+        # ("" is the default: a fresh climb, not a resume)
+        if value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}", value):
+            raise argparse.ArgumentTypeError(
+                f"run id {value!r} is not a run directory name (want [A-Za-z0-9][A-Za-z0-9_.@-]*)"
+            )
+        return value
+
     parser.add_argument("--agent-id", default="agent-01", type=_agent_id)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument(
         "--resume",
         default="",
+        type=_run_id,
         metavar="RUN_ID",
         help="wake a parked dispatched run instead of starting a fresh climb",
     )
@@ -3530,6 +3555,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    if args.resume:
+        _attach_run_log(run_dir_of(args.run_root, args.resume))
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
     # NOTE: the codex author is validated on the EFFECTIVE author per path — the
