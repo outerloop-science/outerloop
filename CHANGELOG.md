@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- A GPU benchmark on local compute aborted at its first gate measure with "no GPU lane is configured". The measure placement now follows the launch placement's rule: local compute has no lanes, the job runs on the machine's own GPUs.
+
 ## [0.1.1] - 2026-09-11
 
 ### Fixed
