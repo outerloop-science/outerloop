@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from outerloop.compute import GONE, Compute, JobSpec, is_terminal
+from outerloop.compute import GONE, Compute, JobSpec, is_terminal, local_mode
 from outerloop.dispatch import (
     eval_job_spec,
     read_eval_result,
@@ -275,7 +275,9 @@ class DispatchedMeasurer:
     seed_cache: Path | None = None
 
     def _placement(self, m: Measure) -> tuple[str, str]:
-        if m.gpus <= 0:
+        # local compute has no lanes: the job is a subprocess on whatever GPUs
+        # the machine has (same rule as DispatchSettings.placement)
+        if m.gpus <= 0 or local_mode():
             return self.account, self.partition
         if not self.gpu_partition:
             raise ValueError(
@@ -492,8 +494,6 @@ class DispatchSettings:
         GPU job has no lane — a queue that can never run is worse than a
         loud refusal. Local compute has no lanes: jobs are subprocesses on
         whatever GPUs the machine has, so placement is empty by design."""
-        from outerloop.compute import local_mode
-
         if gpus <= 0 or local_mode():
             return self.account, self.partition
         if not self.gpu_partition:
