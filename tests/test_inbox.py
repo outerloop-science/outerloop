@@ -1,4 +1,4 @@
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -198,7 +198,9 @@ def test_gate_and_base_facts():
     assert "Merge it" not in text
 
 
-def test_old_record_load_migrates_panel_once(tmp_path):
+def test_a_legacy_record_loads_without_writing(tmp_path):
+    """An older kernel's pending findings ride the record until a wake
+    converts them; a load never writes anything, inbox included."""
     import json
 
     record = RunRecord(
@@ -213,23 +215,27 @@ def test_old_record_load_migrates_panel_once(tmp_path):
     path = run_dir(tmp_path, "run") / "state.json"
     raw = json.loads(path.read_text())
     raw.pop("inbox_seq")
-    raw["panel_wake_text"] = "Address these findings.\n```\nunjustified constant\n```"
+    raw["panel_wake_text"] = "unjustified constant"
     path.write_text(json.dumps(raw))
     loaded = load_record(tmp_path, "run")
-    assert delivered_seq(loaded) == 0
-    messages = pending(path.parent, 0)
-    assert len(messages) == 1
-    assert messages[0].payload["head"] == "abc"
-    assert messages[0].payload["findings"][0]["blocking"]
-    assert messages[0].payload["findings"][0]["detail"] == "unjustified constant"
-    assert "panel_wake_text" not in asdict(loaded)
-    # a load never writes: the legacy field leaves the file at the next save
-    # under the lease, and a second load does not append a second message
-    assert "panel_wake_text" in json.loads(path.read_text())
-    load_record(tmp_path, "run")
-    assert pending(path.parent, 0) == messages
-    save_record(tmp_path, loaded, 11)
-    assert "panel_wake_text" not in json.loads(path.read_text())
+    assert loaded.panel_wake_text == "unjustified constant" and delivered_seq(loaded) == 0
+    assert not (path.parent / "inbox").exists()
+    assert json.loads(path.read_text())["panel_wake_text"] == "unjustified constant"
+
+
+def test_delivered_files_are_never_read_again_and_dedupe_sees_past_damage(tmp_path):
+    """A damaged file that was already delivered cannot block later
+    messages, and a repeated key is still refused while a damaged file
+    sits between the two copies."""
+    directory = tmp_path / "inbox"
+    first = append(tmp_path, message(key="first"))
+    (directory / f"{first.seq:06d}.json").write_text("broken")
+    later = append(tmp_path, message(key="later"))
+    assert pending(tmp_path, after=first.seq) == [later]
+    (directory / "000009.json").write_text("[]")
+    again = append(tmp_path, message(key="later"))
+    assert again == later
+    assert pending(tmp_path, after=first.seq) == [later]  # stops at the damage
 
 
 def test_concurrent_append_preserves_sequences_and_dedupe(tmp_path):

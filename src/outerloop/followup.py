@@ -326,8 +326,11 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
 
 
 def panel_wake_pending(run_root: Path, record: RunRecord, pr: dict) -> bool:
-    """Only undelivered blocking findings on the current head trigger a wake."""
+    """Only undelivered blocking findings on the current head trigger a wake
+    (an older kernel's pending text counts until the wake converts it)."""
     head = str((pr.get("head") or {}).get("sha", ""))
+    if record.panel_wake_text and record.panel_wake_head == head:
+        return True
     return any(
         m.kind == "panel-verdict"
         and m.payload.get("head") == head
@@ -677,6 +680,32 @@ def _respond(
                 },
             ),
         )
+    if record.panel_wake_text:
+        # an older kernel left the findings on the record: into the inbox
+        # once (the key dedupes a retried wake); the field is cleared by this
+        # wake's own record save, under its lease
+        append(
+            directory,
+            Message(
+                0,
+                "panel-verdict",
+                "panel",
+                thread,
+                now,
+                f"panel:legacy:{record.panel_wake_head}",
+                {
+                    "head": record.panel_wake_head,
+                    "findings": [
+                        {
+                            "blocking": True,
+                            "summary": "Pending panel findings",
+                            "detail": record.panel_wake_text,
+                        }
+                    ],
+                },
+            ),
+        )
+        record = replace(record, panel_wake_text="")
     messages = pending(directory, delivered_seq(record))
     delivery_seq = max((m.seq for m in messages), default=record.inbox_seq)
     from outerloop.style import PLAIN_STYLE

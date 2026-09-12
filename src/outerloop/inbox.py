@@ -66,6 +66,8 @@ def pending(run_dir: Path, after: int) -> list[Message]:
     message the session did not see."""
     messages = []
     for path in _files(run_dir):
+        if int(path.stem) <= after:
+            continue  # delivered already; its file is never read again
         try:
             message = Message(**json.loads(path.read_text()))
             if message.seq != int(path.stem) or not isinstance(message.payload, dict):
@@ -73,9 +75,21 @@ def pending(run_dir: Path, after: int) -> list[Message]:
         except (OSError, ValueError, TypeError) as exc:
             log.warning("cannot read inbox message %s; delivery stops there: %s", path, exc)
             break
-        if message.seq > after:
-            messages.append(message)
+        messages.append(message)
     return messages
+
+
+def _keys(run_dir: Path) -> dict[str, Message]:
+    """Every readable message by key, damaged files skipped (dedupe must see
+    past a damaged entry, delivery must not)."""
+    out: dict[str, Message] = {}
+    for path in _files(run_dir):
+        try:
+            message = Message(**json.loads(path.read_text()))
+        except (OSError, ValueError, TypeError):
+            continue
+        out.setdefault(message.key, message)
+    return out
 
 
 def append(run_dir: Path, message: Message) -> Message:
@@ -84,9 +98,9 @@ def append(run_dir: Path, message: Message) -> Message:
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        for existing in pending(run_dir, 0):
-            if existing.key == message.key:
-                return existing
+        existing = _keys(run_dir).get(message.key)
+        if existing is not None:
+            return existing
         seq = max((int(p.stem) for p in _files(run_dir)), default=0) + 1
         stored = replace(message, seq=seq)
         data = json.dumps(asdict(stored), sort_keys=True, indent=2)

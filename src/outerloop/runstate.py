@@ -141,6 +141,10 @@ class RunRecord:
     # (legacy records, and the common config-driven case).
     author_key_file: str = ""
     inbox_seq: int = 0  # last message delivered by a completed session leg
+    # legacy: blocking findings an older kernel left for the author; the next
+    # follow-up wake turns them into an inbox message and clears this. Never
+    # set by this kernel; carried through saves so a rollback still sees it.
+    panel_wake_text: str = ""
     # Per-source comment cursors: issue comments, top-level reviews, and
     # inline review comments are three REST collections with independent id
     # sequences — one cursor across them drops comments forever.
@@ -236,33 +240,6 @@ def load_record(root: Path, run_id: str) -> RunRecord:
     # Unknown fields must not blind an older kernel to a live run.
     known = {k: v for k, v in raw.items() if k in RunRecord.__dataclass_fields__}
     record = RunRecord(**known)
-    legacy = raw.pop("panel_wake_text", "")
-    if legacy:
-        from outerloop.inbox import Message, append, thread_for
-
-        lines = str(legacy).splitlines()
-        fences = [i for i, line in enumerate(lines) if line.startswith("```")]
-        if len(fences) >= 2:
-            legacy = "\n".join(lines[fences[0] + 1 : fences[-1]])
-        append(
-            run_dir(root, run_id),
-            Message(
-                seq=0,
-                kind="panel-verdict",
-                source="panel",
-                thread=thread_for(record),
-                arrived=float(raw.get("updated", 0)),
-                key=f"panel:migrated:{raw.get('panel_wake_head', '')}",
-                payload={
-                    "head": raw.get("panel_wake_head", ""),
-                    "findings": [
-                        {"blocking": True, "summary": "Pending panel findings", "detail": legacy}
-                    ],
-                },
-            ),
-        )
-    # the legacy field is dropped by whoever next saves the record under the
-    # lease; a load never writes
     return record
 
 

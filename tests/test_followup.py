@@ -2319,6 +2319,37 @@ def test_the_wake_is_saved_before_the_reread_comment_and_survives_its_failure(re
     assert rec.panel_wake_head == _ws_head(root) and "unjustified constant" in panel_text(root, rec)
 
 
+def test_a_legacy_panel_wake_text_still_wakes_and_becomes_a_message(review_run) -> None:
+    """A record written by an older kernel carries its blocking findings as
+    text: the wake still fires for that head, the findings reach the session
+    from the inbox, and the record's field is cleared by the wake's save."""
+    from outerloop.inbox import pending
+
+    root, _bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    save_record(
+        root,
+        replace(
+            load_record(root, "tsp-r1"),
+            panel_wake_head=head,
+            panel_wake_text="unjustified constant in the kick",
+        ),
+        NOW,
+    )
+    github = AutoGitHub()
+    github.ws = ws
+    harness = ResumingHarness()
+    out = respond(root, github, harness=harness)
+    assert out.action == "replied"
+    prompt = harness.calls[0][0]
+    assert "Pending panel findings" in prompt and "unjustified constant in the kick" in prompt
+    rec = load_record(root, "tsp-r1")
+    assert rec.panel_wake_text == "" and rec.panel_wake_head == ""
+    keys = [m.key for m in pending(run_dir(root, "tsp-r1"), 0)]
+    assert keys.count(f"panel:legacy:{head}") == 1
+
+
 def test_a_reverted_response_keeps_the_panel_wake_pending(review_run) -> None:
     """The author was woken for the findings but its change was reverted (out
     of scope here): it never answered them, so the wake stands for the next
