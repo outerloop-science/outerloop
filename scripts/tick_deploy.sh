@@ -191,7 +191,7 @@ export OUTERLOOP_DEPLOY_BROKEN
 # Only this ALLOWLIST is read, so .env is structurally per-tick author config
 # and can never hijack the chain's identity or scheduling.
 if [ -n "$ENV_TRUSTED" ]; then
-    for _k in OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL \
+    for _k in OUTERLOOP_DISPATCH_WAKE OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL \
                   OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN OUTERLOOP_CODEX_KEY_FILE \
                   OUTERLOOP_CLAUDE_KEY_FILE OUTERLOOP_HARNESS_KEY_FILE \
                   OUTERLOOP_VERTEX_PROJECT OUTERLOOP_VERTEX_REGION \

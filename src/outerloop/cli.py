@@ -49,6 +49,7 @@ START_KEYS = (
 # local loop has no deploy step, so start exports them once at launch; a test
 # keeps this list identical to tick_deploy.sh's.
 TICK_ENV_KEYS = (
+    "OUTERLOOP_DISPATCH_WAKE",
     "OUTERLOOP_AUTHOR_BACKEND",
     "OUTERLOOP_AUTHOR_MODEL",
     "OUTERLOOP_CLAUDE_BIN",

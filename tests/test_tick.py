@@ -2410,7 +2410,9 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert "--account=acct" in argv and "--partition=cpu_short" in argv
 
 
-def test_wake_dispatcher_is_live_by_default_and_disarms(tmp_path, monkeypatch):
+def test_wake_dispatcher_is_live_by_default_and_disarms(tmp_path, monkeypatch, caplog):
+    import logging
+
     # wakes are on by default (an unarmed loop strands every parked run, silently);
     # the operator disarms with the env var or the sentinel, and a chain env
     # that cannot run a wake job still fails safe to dry.
@@ -2430,13 +2432,17 @@ def test_wake_dispatcher_is_live_by_default_and_disarms(tmp_path, monkeypatch):
     monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
-    # incomplete env -> fail SAFE to dry, not a wake that can't run
-    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
+    # incomplete env -> fail SAFE to dry, not a wake that can't run — and say so
+    with caplog.at_level(logging.WARNING):
+        dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
-    # the env var disarms; "1" (the old on-switch) is still on
+    assert "chain env is incomplete" in caplog.text
+    # the env var disarms, and a dry sweep is never silent; "1" (the old on-switch) is still on
     monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "0")
-    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
+    with caplog.at_level(logging.INFO):
+        dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
+    assert "dispatched wakes are OFF" in caplog.text
     monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "1")
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True

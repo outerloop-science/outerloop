@@ -2755,6 +2755,45 @@ def test_resume_cli_needs_no_image_when_uncontained(tmp_path, monkeypatch, compu
     assert isinstance(seen["dispatch"].compute, expected)
 
 
+def test_a_queued_wake_honours_the_disarm_switch(tmp_path, monkeypatch, capsys) -> None:
+    """A park on Slurm queues its own wake job; if the operator disarms wakes
+    before it runs, the job leaves the run parked and hands the lease back, so
+    the sweep delivers it once wakes are on again."""
+    from outerloop.attempt import main
+    from outerloop.runstate import acquire_lease, read_lease
+
+    run_id = "tsp-wake"
+    (tmp_path / "runs" / run_id).mkdir(parents=True)
+    (tmp_path / "pat").write_text("ghp_x\n")
+    (tmp_path / "pat").chmod(0o600)
+    assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
+    monkeypatch.setenv("SLURM_JOB_ID", "1")
+    monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
+    (tmp_path / "DISARM_WAKE").touch()
+    called: list = []
+    monkeypatch.setattr(climb_mod, "arm_sigterm_containment", lambda: None)
+    monkeypatch.setattr(climb_mod, "resume_run", lambda *a, **k: called.append(k))
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "climb",
+            "--resume",
+            run_id,
+            "--run-root",
+            str(tmp_path),
+            "--uncontained",
+            "--pat-file",
+            str(tmp_path / "pat"),
+            "--panel",
+            "",
+        ],
+    )
+    assert main() == 0
+    assert called == []
+    assert "dispatched wakes are OFF" in capsys.readouterr().out
+    assert read_lease(tmp_path, run_id) is None  # handed back for the sweep
+
+
 def test_cli_refuses_an_image_that_is_not_a_file(tmp_path, monkeypatch, capsys) -> None:
     """A wrong image path fails at the command line instead of silently
     degrading the run to inline evaluation."""
