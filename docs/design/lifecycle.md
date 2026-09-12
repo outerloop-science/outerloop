@@ -142,6 +142,17 @@ Human messages do not interrupt a sleep on jobs. They wait in the inbox and
 arrive with the job results. The author who wants to answer sooner takes a
 checkpoint sleep. The kernel stays out of scheduling.
 
+The inbox is files: a directory beside the run's record, one file per
+message named by a sequence number, written by temp-and-rename, never
+deleted, outside the workspace so the session cannot forge one. The record
+holds the delivered position. Records, leases and the inbox all sit behind
+one small storage interface (put, list, get, conditional put) with a
+filesystem implementation for Slurm and local compute; a cloud backend gives
+it an object-store implementation and nothing else changes. No messaging
+service is needed: delivery only happens at a wake, which the kernel
+triggers, so nothing waits on a push. A job-completion callback may later
+wake the tick sooner than its cadence; that is a trigger, not a transport.
+
 ### The author's moves
 
 | Move | What the kernel does | Rigid part |
