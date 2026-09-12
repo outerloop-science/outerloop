@@ -160,8 +160,8 @@ wake the tick sooner than its cadence; that is a trigger, not a transport.
 
 | Move | What the kernel does | Rigid part |
 | --- | --- | --- |
-| `launch` | seals the tree, submits a contained job on the contract's lane, records it in the ledger, delivers the result at the wake | containment, placement, metering |
-| `sleep` | parks the run on the launched jobs (possibly none) | the sleep count |
+| `launch` | stages a contained job for the contract's lane; the author keeps working | metering |
+| `sleep` | seals the tree, submits the staged jobs, records them in the ledger, parks the run on them (possibly none); the results arrive at the wake | containment, placement, the sleep count |
 | `submit` | seals the tree, runs the gate and the panel as jobs, delivers the verdict as a message; a credited verdict publishes | the gate; the publish |
 | `reply` | posts text on the thread the message came from, with secrets redacted and self-approval scrubbed, as the follow-up's reply is today | standing of the poster; redaction |
 | `end` | ends the run with the author's report and the last verdict as its ending | the report |
