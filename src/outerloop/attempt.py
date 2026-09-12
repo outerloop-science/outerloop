@@ -817,48 +817,44 @@ def _wake_author_sleep(
     )
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
-        # a terminal from the resumed climb: report, ending record, issue note —
-        # the same ending shape every other terminal takes. The line notebook
-        # records it first, while the tree is still the session's final tree.
-        _push_line_snapshot(
-            ws,
-            _line_ref_for(bench, config.agent_id),
-            run_id,
-            result.outcome,
-            secrets,
-            bot_login=config.bot_login,
+        # the terminal every climb takes (report, notebook, PR or ending
+        # record, issue note); then this park's snapshot is released
+        if record.stage.get("submitted") and not result.submit_report:
+            # the author's report at submit rides the stage: a session woken
+            # with its gate result that ends without submitting again still
+            # shows that report on the PR (same rule as the candidate wake)
+            result = dc_replace(result, submit_report=str(record.stage.get("report") or ""))
+        outcome = _finish_attempt(
+            result=result,
+            ws=ws,
+            workspace=workspace,
+            run_root=run_root,
+            run_dir=run_dir,
+            run_id=run_id,
+            record=record,
+            config=config,
+            contract=contract,
+            github=github,
+            now=now,
+            secrets=secrets,
+            base_branch=base_branch,
+            base_sha=base_sha,
+            issue_number=issue_number,
+            line_ref=_line_ref_for(bench, config.agent_id),
+            date=_utc_date(now),
         )
-        for ref in drop_refs:
-            drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
-        report_path = run_dir / "report.md"
-        _best_effort(
-            "run report",
-            lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
-            secrets,
-        )
-        ending = _ENDINGS_BY_OUTCOME.get(result.outcome, ABORTED)
-        final = _clear_stage(
-            RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": ending,
-                    "ending_note": redact(result.note, secrets),
-                }
-            )
-        )
-        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
-        _post_issue_finished(
-            github,
-            config.target,
-            issue_number,
-            run_id,
-            result.outcome,
-            "",
-            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
-            secrets,
-        )
-        return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+        # the park's snapshot is released only once the run has left WAITING:
+        # a terminal whose record failed to save stays recoverable by a re-wake
+        try:
+            still_waiting = load_record(run_root, run_id).state == WAITING
+        except Exception:
+            still_waiting = True
+        if still_waiting:
+            log.warning("run %s: terminal record unsaved; the sleep snapshot is kept", run_id)
+        else:
+            for ref in drop_refs:
+                drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
+        return outcome
 
     # The wake NEEDS the author harness (it resumes the session). Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
@@ -1069,9 +1065,10 @@ def _wake_author_sleep(
                 continue
             drop_snapshot(ws, snap)
 
-    # a terminal from the resumed session (session-error/-outage/-budget,
-    # scope-violation, eval-error; a dispatched gate never returns improved
-    # inline): end the run and release the sleep snapshot.
+    # a terminal from the resumed session: a session ending, a negative
+    # verdict, or an inline gate verdict on a synchronous backend (a
+    # dispatched gate parks a candidate instead). Same terminal as a fresh
+    # climb's; then the sleep snapshot is released.
     return _end(result, drop_refs=[sleep_ref])
 
 
@@ -2724,6 +2721,268 @@ def build_panel_runner(
     return runner
 
 
+def _finish_attempt(
+    *,
+    result: AttemptResult,
+    ws: Workspace,
+    workspace: Path,
+    run_root: Path,
+    run_dir: Path,
+    run_id: str,
+    record: RunRecord,
+    config: RunConfig,
+    contract: Contract,
+    github: GitHubClient,
+    now: float,
+    secrets: tuple[str, ...],
+    base_branch: str,
+    base_sha: str,
+    issue_number: int,
+    line_ref: str,
+    date: str,
+) -> AttemptOutcome:
+    """A climb's terminal, the same whether the session was fresh or resumed
+    from a park: the report, the line notebook, then a PR for an improved
+    result (the sealed candidate, never the live tree) or an ending record
+    for anything else, and the issue note. On a synchronous backend the gate
+    answers inline instead of parking a candidate, so a resumed session's
+    improvement reaches this path too (a wake that only knew how to END lost
+    two improved runs on cluster0, 2026-09-12). `base_sha` is the tree the
+    run started on (the auto-merge arm checks the base has not moved past
+    it); `date` is the ledger row's date."""
+    if result.outcome == "improved" and not result.measured_paths:
+        # a zero-change "improvement" is metric noise, not progress — never a
+        # PR (same rule as the wake publish)
+        result = dc_replace(result, outcome="no-improvement", note="no code change; metric noise")
+
+    report = result.report(config, redact_secrets=secrets)
+    report_path = run_dir / "report.md"
+    wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
+
+    # Research lines: seal the notebook NOW, while the tree is still the
+    # session's final tree — the publish below force-checkouts the sealed
+    # candidate and cleans untracked files, which would drop the agent's
+    # memory (it is excluded from measurable seals by design). The label is
+    # the GATE outcome, correct at this moment; a publish failure appends a
+    # publish-error snapshot at the tail.
+    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
+
+    pr_url = ""
+    outcome_name = result.outcome
+    branch = ""
+    pushed = False
+    if result.outcome == "improved":
+        try:
+            # Publish the SEALED candidate sha — never the live tree, which
+            # may have drifted since the snapshot (eval caches, stray writes);
+            # the sha is exactly the measured, scope-checked content. A base
+            # branch that moved during the climb is NOT merged and re-measured
+            # here: a stale PR is review's to handle (research-loop.md).
+            branch = f"{config.branch_prefix}/{run_id}"
+            if result.baseline is None or result.candidate is None or not result.candidate_sha:
+                raise EvalError("improved result missing measurements or the sealed sha")
+            bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+            baseline, candidate = result.baseline, result.candidate
+            # IDEMPOTENCY: a wake may have opened the PR and died before
+            # recording it (the run stays WAITING and is woken again). If a PR
+            # is already open for this head->base, reconcile to it — never
+            # re-push (non-fast-forward) or open a duplicate; a lookup failure
+            # just falls through to the normal publish.
+            existing: dict[str, object] | None = None
+            try:
+                existing = github.find_open_pull_for_head(config.target, branch, base_branch)
+            except Exception as exc:
+                log.warning(
+                    "idempotency PR lookup failed for %s: %s",
+                    run_id,
+                    redact(f"{type(exc).__name__}: {exc}", secrets),
+                )
+            if existing:
+                pr_url = str(existing.get("html_url", ""))
+                draft = bool(existing.get("draft"))
+                log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
+                # the workspace goes on the branch a later follow-up expects
+                ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+            else:
+                # blocking findings open at the panel, or a degraded final
+                # read: visible, plainly not merge-ready
+                draft = result.panel_blocking_open or result.panel_degraded
+                # FORCE-checkout: the workspace still holds the session's dirty
+                # tree. The snapshot commit is anchored by the new branch (the
+                # dropped dispatch ref left it unreferenced; nothing pruned it in
+                # this process). clean -fd drops post-snapshot cruft so the
+                # pushed tree is exactly candidate_sha plus the ledger commit.
+                ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+                ws.git("clean", "-fd")
+                entries = update_leader(
+                    load_leader(workspace),
+                    benchmark=bench.name,
+                    metric=bench.metric,
+                    direction=bench.direction,
+                    baseline=baseline,
+                    candidate=candidate,
+                    run_id=run_id,
+                    date=date,
+                    run_seed=result.run_seed,
+                )
+                write_progress(
+                    workspace,
+                    entries,
+                    config.target,
+                    digits={
+                        b.name: b.display_digits for b in contract.benchmarks if b.display_digits
+                    },
+                )
+                # Stage ONLY the ledger files on top of the sealed candidate —
+                # never `git add -A`, which would sweep in anything a session or
+                # eval left behind (same rule as the wake publish).
+                ws.git("add", "--", *PROGRESS_PATHS)
+                staged = ws.staged_paths()
+                extra = [p for p in staged if p not in PROGRESS_PATHS]
+                if extra:
+                    raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
+                if staged:
+                    ws.git(
+                        *git_identity(config.bot_login),
+                        "commit",
+                        "-m",
+                        f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                        f"\n\nAgent: {config.agent_id}",
+                    )
+                ws.push(branch)
+                pushed = True
+                body = pr_body(
+                    result,
+                    config,
+                    redact_secrets=secrets,
+                    display_digits=bench.display_digits,
+                    experiments=experiments_rows(run_dir),
+                )
+                if issue_number:
+                    body = f"Addresses #{issue_number}.\n\n{body}"
+                pr_url = github.create_pull(
+                    config.target,
+                    # short precision in the title; full precision lives in the
+                    # PR body table and the ledger
+                    title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
+                    head=branch,
+                    base=base_branch,
+                    body=body,
+                    # blocking findings open at the panel, or a degraded final
+                    # read: visible, plainly not merge-ready
+                    draft=draft,
+                )
+            # Arm auto-merge, best-effort, and ONLY when branch protection
+            # requires a human review — the guard keeps bot-never-merges
+            # enforced in code, not in per-repo config. Never arm a draft,
+            # and never arm a claim whose base has moved (_arm_unless_base_moved).
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if pr_number.isdigit() and not draft:
+                _arm_unless_base_moved(
+                    github,
+                    ws,
+                    config.target,
+                    pr_number,
+                    base_branch,
+                    base_sha,
+                    secrets,
+                    merge_mode=getattr(contract, "merge", "manual"),
+                    panel_ran=result.panel_rounds > 0,
+                )
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": IN_REVIEW,
+                    "pr_url": pr_url,
+                    "auto_blessed_head": _blessed_head(ws, result, contract),
+                    "resume_session_id": result.session.session_id if result.session else "",
+                    "ending_note": pr_url,
+                }
+            )
+        except Exception as exc:
+            log.warning(
+                "publish failed for %s: %s",
+                run_id,
+                redact(f"{type(exc).__name__}: {exc}", secrets),
+            )
+            # Never delete the remote branch: an exception from create_pull
+            # does not prove no PR exists (a 422-already-exists or a timeout
+            # after a successful POST both land here), and deleting the ref
+            # would close such a PR and discard the only pushed copy. Leave
+            # it and record it; a sweeper can reap confirmed orphans later.
+            outcome_name = "publish-error"
+            final = RunRecord(
+                **{
+                    **record.__dict__,
+                    "state": ENDED,
+                    "ending": ABORTED,
+                    "ending_note": (
+                        (f"branch left on remote: {branch}; " if pushed else "")
+                        + redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
+                    ),
+                }
+            )
+    else:
+        if result.outcome == "session-outage":
+            _best_effort(
+                "outage stamp",
+                lambda: stamp_outage(run_root, redact(result.note, secrets)[:300], now),
+                secrets,
+            )
+        final = RunRecord(
+            **{
+                **record.__dict__,
+                "state": ENDED,
+                "ending": _ENDINGS_BY_OUTCOME[result.outcome],
+                "ending_note": redact(result.note, secrets),
+            }
+        )
+    # a resumed run's park bookkeeping never rides into review or an ending
+    final = _clear_stage(final)
+    if not _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+        # The on-disk record still says `implementing`, so automated
+        # follow-up servicing will not track this run — and if a PR was
+        # opened, its humans are the only ones who can act. Say so WHERE
+        # they are looking: GitHub is the one store still writable when the
+        # local disk is gone.
+        pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1] if pr_url else ""
+        if pr_number.isdigit():
+            _best_effort(
+                "pr state warning",
+                lambda: github.comment(
+                    config.target,
+                    int(pr_number),
+                    f"State record for run `{run_id}` could not be saved; "
+                    f"automated follow-up servicing is offline for this run. "
+                    f"A maintainer owns any follow-ups on this PR.",
+                ),
+                secrets,
+            )
+    if issue_number:
+        _post_issue_finished(
+            github,
+            config.target,
+            issue_number,
+            run_id,
+            outcome_name,
+            pr_url,
+            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
+            secrets,
+        )
+    if outcome_name != result.outcome:
+        # the publish failed after the gate credited the tree: the improved
+        # snapshot above stands (the measurement was real); append the
+        # publish-error marker so the notebook records how the run ended
+        _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets, bot_login=config.bot_login)
+    log.info("run %s: %s %s", run_id, outcome_name, pr_url)
+    return AttemptOutcome(
+        run_id=run_id,
+        outcome=outcome_name,
+        pr_url=pr_url,
+        report_path=str(report_path) if wrote_report else "",
+    )
+
+
 def live_attempt(
     config: RunConfig,
     run_root: Path,
@@ -3206,208 +3465,24 @@ def live_attempt(
             report_path=str(report_path) if wrote else "",
         )
 
-    if result.outcome == "improved" and not result.measured_paths:
-        # a zero-change "improvement" is metric noise, not progress — never a
-        # PR (same rule as the wake publish)
-        result = dc_replace(result, outcome="no-improvement", note="no code change; metric noise")
-
-    report = result.report(config, redact_secrets=secrets)
-    report_path = run_dir / "report.md"
-    wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
-
-    # Research lines: seal the notebook NOW, while the tree is still the
-    # session's final tree — the publish below force-checkouts the sealed
-    # candidate and cleans untracked files, which would drop the agent's
-    # memory (it is excluded from measurable seals by design). The label is
-    # the GATE outcome, correct at this moment; a publish failure appends a
-    # publish-error snapshot at the tail.
-    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
-
-    pr_url = ""
-    outcome_name = result.outcome
-    branch = ""
-    pushed = False
-    if result.outcome == "improved":
-        try:
-            # Publish the SEALED candidate sha — never the live tree, which
-            # may have drifted since the snapshot (eval caches, stray writes);
-            # the sha is exactly the measured, scope-checked content. A base
-            # branch that moved during the climb is NOT merged and re-measured
-            # here: a stale PR is review's to handle (research-loop.md).
-            branch = f"{config.branch_prefix}/{run_id}"
-            if result.baseline is None or result.candidate is None or not result.candidate_sha:
-                raise EvalError("improved result missing measurements or the sealed sha")
-            bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
-            baseline, candidate = result.baseline, result.candidate
-            # FORCE-checkout: the workspace still holds the session's dirty
-            # tree. The snapshot commit is anchored by the new branch (the
-            # dropped dispatch ref left it unreferenced; nothing pruned it in
-            # this process). clean -fd drops post-snapshot cruft so the
-            # pushed tree is exactly candidate_sha plus the ledger commit.
-            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
-            ws.git("clean", "-fd")
-            entries = update_leader(
-                load_leader(workspace),
-                benchmark=bench.name,
-                metric=bench.metric,
-                direction=bench.direction,
-                baseline=baseline,
-                candidate=candidate,
-                run_id=run_id,
-                date=created[:10],
-                run_seed=result.run_seed,
-            )
-            write_progress(
-                workspace,
-                entries,
-                config.target,
-                digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
-            )
-            # Stage ONLY the ledger files on top of the sealed candidate —
-            # never `git add -A`, which would sweep in anything a session or
-            # eval left behind (same rule as the wake publish).
-            ws.git("add", "--", *PROGRESS_PATHS)
-            staged = ws.staged_paths()
-            extra = [p for p in staged if p not in PROGRESS_PATHS]
-            if extra:
-                raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
-            if staged:
-                ws.git(
-                    *git_identity(config.bot_login),
-                    "commit",
-                    "-m",
-                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
-                    f"\n\nAgent: {config.agent_id}",
-                )
-            ws.push(branch)
-            pushed = True
-            body = pr_body(
-                result,
-                config,
-                redact_secrets=secrets,
-                display_digits=bench.display_digits,
-                experiments=experiments_rows(run_dir),
-            )
-            if issue_number:
-                body = f"Addresses #{issue_number}.\n\n{body}"
-            pr_url = github.create_pull(
-                config.target,
-                # short precision in the title; full precision lives in the
-                # PR body table and the ledger
-                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
-                head=branch,
-                base=base_branch,
-                body=body,
-                # blocking findings open at the panel, or a degraded final
-                # read: visible, plainly not merge-ready
-                draft=result.panel_blocking_open or result.panel_degraded,
-            )
-            # Arm auto-merge, best-effort, and ONLY when branch protection
-            # requires a human review — the guard keeps bot-never-merges
-            # enforced in code, not in per-repo config. Never arm a draft,
-            # and never arm a claim whose base has moved (_arm_unless_base_moved).
-            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
-                _arm_unless_base_moved(
-                    github,
-                    ws,
-                    config.target,
-                    pr_number,
-                    base_branch,
-                    pre_session_sha,
-                    secrets,
-                    merge_mode=getattr(contract, "merge", "manual"),
-                    panel_ran=result.panel_rounds > 0,
-                )
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": IN_REVIEW,
-                    "pr_url": pr_url,
-                    "auto_blessed_head": _blessed_head(ws, result, contract),
-                    "resume_session_id": result.session.session_id if result.session else "",
-                    "ending_note": pr_url,
-                }
-            )
-        except Exception as exc:
-            log.warning(
-                "publish failed for %s: %s",
-                run_id,
-                redact(f"{type(exc).__name__}: {exc}", secrets),
-            )
-            # Never delete the remote branch: an exception from create_pull
-            # does not prove no PR exists (a 422-already-exists or a timeout
-            # after a successful POST both land here), and deleting the ref
-            # would close such a PR and discard the only pushed copy. Leave
-            # it and record it; a sweeper can reap confirmed orphans later.
-            outcome_name = "publish-error"
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": ABORTED,
-                    "ending_note": (
-                        (f"branch left on remote: {branch}; " if pushed else "")
-                        + redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
-                    ),
-                }
-            )
-    else:
-        if result.outcome == "session-outage":
-            _best_effort(
-                "outage stamp",
-                lambda: stamp_outage(run_root, redact(result.note, secrets)[:300], now),
-                secrets,
-            )
-        final = RunRecord(
-            **{
-                **record.__dict__,
-                "state": ENDED,
-                "ending": _ENDINGS_BY_OUTCOME[result.outcome],
-                "ending_note": redact(result.note, secrets),
-            }
-        )
-    if not _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
-        # The on-disk record still says `implementing`, so automated
-        # follow-up servicing will not track this run — and if a PR was
-        # opened, its humans are the only ones who can act. Say so WHERE
-        # they are looking: GitHub is the one store still writable when the
-        # local disk is gone.
-        pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1] if pr_url else ""
-        if pr_number.isdigit():
-            _best_effort(
-                "pr state warning",
-                lambda: github.comment(
-                    config.target,
-                    int(pr_number),
-                    f"State record for run `{run_id}` could not be saved; "
-                    f"automated follow-up servicing is offline for this run. "
-                    f"A maintainer owns any follow-ups on this PR.",
-                ),
-                secrets,
-            )
-    if issue_number:
-        _post_issue_finished(
-            github,
-            config.target,
-            issue_number,
-            run_id,
-            outcome_name,
-            pr_url,
-            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
-            secrets,
-        )
-    if outcome_name != result.outcome:
-        # the publish failed after the gate credited the tree: the improved
-        # snapshot above stands (the measurement was real); append the
-        # publish-error marker so the notebook records how the run ended
-        _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets, bot_login=config.bot_login)
-    log.info("run %s: %s %s", run_id, outcome_name, pr_url)
-    return AttemptOutcome(
+    return _finish_attempt(
+        result=result,
+        ws=ws,
+        workspace=workspace,
+        run_root=run_root,
+        run_dir=run_dir,
         run_id=run_id,
-        outcome=outcome_name,
-        pr_url=pr_url,
-        report_path=str(report_path) if wrote_report else "",
+        record=record,
+        config=config,
+        contract=contract,
+        github=github,
+        now=now,
+        secrets=secrets,
+        base_branch=base_branch,
+        base_sha=pre_session_sha,
+        issue_number=issue_number,
+        line_ref=line_ref,
+        date=created[:10],
     )
 
 

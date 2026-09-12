@@ -3301,7 +3301,9 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
 # --- the author-sleep wake (research-loop-buildout.md Phase A, part 2) ---
 
 
-def _write_parked_author_sleep(tmp_path, monkeypatch, *, raise_exc=None, run_id="tsp-9"):
+def _write_parked_author_sleep(
+    tmp_path, monkeypatch, *, raise_exc=None, run_id="tsp-9", values=None, submitted=False
+):
     """An author-sleep-parked run on disk in the REAL park state: the session's
     tree persisted as the author left it (uncommitted edits over base), the
     sleep snapshot sealed under its ref, launch job outputs in the run dir, and
@@ -3326,6 +3328,10 @@ def _write_parked_author_sleep(tmp_path, monkeypatch, *, raise_exc=None, run_id=
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'wip'\n")
     ws = Workspace(root=wsroot)
     snap = snapshot_tree(ws, base_sha)  # the sealed sleep tree
+    # a bare 'origin' so an improved wake can push its branch
+    bare = tmp_path / f"origin-{run_id}.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
+    _git(wsroot, "remote", "add", "origin", str(bare))
     # the finished launch's job outputs, as the job script leaves them
     ev = state / "runs" / run_id / "eval-launch-probe"
     (ev / "artifacts").mkdir(parents=True)
@@ -3355,11 +3361,15 @@ def _write_parked_author_sleep(tmp_path, monkeypatch, *, raise_exc=None, run_id=
             "syscall_note": "compare against the sweep",
             "launches_used": 1,
             "sleeps_used": 1,
+            **({"submitted": True, "report": "the author's submit report"} if submitted else {}),
         },
     )
     save_record(state, record, 1_000_000.0)
-    fake = _FakeMeasurer(values={}, raise_exc=raise_exc)
+    fake = _FakeMeasurer(values=values or {}, raise_exc=raise_exc)
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
+    # the wake pushes to the canonical target URL (never the ws git config);
+    # point that at this run's local bare so an improved wake can push
+    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
     return state, run_id, wsroot, json_mod
 
 
@@ -3413,6 +3423,132 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     refs = [r for r in _git(wsroot, "for-each-ref", "refs/dispatch/").splitlines() if r]
     assert len(refs) == 1
     assert str(record.stage["candidate_ref"]) in refs[0]
+
+
+def test_author_sleep_wake_publishes_an_inline_improvement(tmp_path, monkeypatch) -> None:
+    """On a synchronous backend the gate answers inline instead of parking a
+    candidate: the woken session's improvement becomes a PR through the same
+    terminal a fresh climb takes (cluster0, 2026-09-12: two improved wakes
+    ended `aborted` with no PR)."""
+    from outerloop.roles import author_spec
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = CommentingGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+        ),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/1")
+    record = load_record(state, run_id)
+    assert record.state == "in-review" and record.pr_url == outcome.pr_url
+    assert not record.stage.get("phase")  # the park's bookkeeping is gone
+    pr = github.prs[0]
+    assert pr["head"] == f"feat/auto/agent-01/{run_id}" and pr["base"] == "main"
+    bare = tmp_path / f"origin-{run_id}.git"
+    assert "def solve(): return 'polished'" in _git(
+        bare, "show", f"feat/auto/agent-01/{run_id}:src/pilot/solvers/tsp.py"
+    )
+    # the sleep snapshot is released; nothing else lingers under the dispatch refs
+    assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_author_sleep_wake_keeps_the_submit_report_on_the_pr(tmp_path, monkeypatch) -> None:
+    """A submitted park woken with its gate result whose session ends without
+    submitting again still shows the author's submit report on the PR."""
+    from outerloop.roles import author_spec
+
+    state, run_id, _, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}, submitted=True
+    )
+    github = CommentingGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+        ),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved"
+    assert "the author's submit report" in github.prs[0]["body"]
+
+
+def test_author_sleep_wake_reconciles_an_already_open_pr(tmp_path, monkeypatch) -> None:
+    """A wake that opened its PR and died before recording it is woken again:
+    the terminal finds the open PR for its head and reconciles to it, never
+    re-pushing or opening a second."""
+    from outerloop.roles import author_spec
+
+    state, run_id, _, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = CommentingGitHub(existing_pr="https://github.com/org/pilot/pull/7")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+        ),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/7")
+    assert github.prs == []  # no duplicate
+    record = load_record(state, run_id)
+    assert record.state == "in-review" and record.pr_url.endswith("/pull/7")
+
+
+def test_author_sleep_wake_keeps_its_snapshot_when_the_terminal_record_fails(
+    tmp_path, monkeypatch
+) -> None:
+    """A terminal whose record cannot be saved leaves the run WAITING; the
+    sleep snapshot must survive with it, or nothing could ever wake it."""
+    import outerloop.attempt as attempt_mod
+    from outerloop.roles import author_spec
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    refs_before = _git(wsroot, "for-each-ref", "refs/dispatch/").strip()
+    assert refs_before
+    real_save = attempt_mod.save_record
+
+    def failing_save(root, record, now):
+        if record.state in ("ended", "in-review"):
+            raise OSError("disk gone")
+        return real_save(root, record, now)
+
+    monkeypatch.setattr(attempt_mod, "save_record", failing_save)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "no-improvement"
+    assert load_record(state, run_id).state == "waiting"  # unsaved terminal
+    assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == refs_before
 
 
 def test_author_sleep_wake_records_each_launch_as_ended_in_the_ledger(
