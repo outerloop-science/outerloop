@@ -348,10 +348,10 @@ the walltime the tick requests for the climb and author-sleep wake jobs it sizes
 **Two operator switches.** `touch <root>/PAUSE` pauses the loop; `touch
 <root>/DISARM_WAKE` stops parked runs from being woken, by the sweep and by a
 wake job a park already queued, until the file is removed. Both are read at
-every tick and by every wake, no restart: the sentinel is the live switch.
-`OUTERLOOP_DISPATCH_WAKE=0` in `.env` is the same setting read once, when the
-loop or the chain starts. Wakes are on by default: a loop that cannot wake
-strands every parked run without a word.
+every tick and by every wake, no restart: the sentinel is the switch.
+(`OUTERLOOP_DISPATCH_WAKE=0` in the environment that starts the loop or the
+chain does the same; it is not read from `.env`.) Wakes are on by default: a
+loop that cannot wake strands every parked run without a word.
 
 **Local mode without an image.** On a machine with no Apptainer image,
 `OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own
