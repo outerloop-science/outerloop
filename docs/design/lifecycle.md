@@ -145,7 +145,10 @@ checkpoint sleep. The kernel stays out of scheduling.
 The inbox is files: a directory beside the run's record, one file per
 message named by a sequence number, written by temp-and-rename, never
 deleted, outside the workspace so the session cannot forge one. The record
-holds the delivered position. Records, leases and the inbox all sit behind
+holds the delivered position. A message file is durable before any poll
+position advances, and the delivered position advances only after the wake's
+session leg ends, so a wake that dies re-delivers; double delivery is
+harmless, as it is for today's leases. Records, leases and the inbox all sit behind
 one small storage interface (put, list, get, conditional put) with a
 filesystem implementation for Slurm and local compute; a cloud backend gives
 it an object-store implementation and nothing else changes. No messaging
@@ -160,7 +163,7 @@ wake the tick sooner than its cadence; that is a trigger, not a transport.
 | `launch` | seals the tree, submits a contained job on the contract's lane, records it in the ledger, delivers the result at the wake | containment, placement, metering |
 | `sleep` | parks the run on the launched jobs (possibly none) | the sleep count |
 | `submit` | seals the tree, runs the gate and the panel as jobs, delivers the verdict as a message; a credited verdict publishes | the gate; the publish |
-| `reply` | posts text, as written, on the thread the message came from | standing of the poster; redaction |
+| `reply` | posts text on the thread the message came from, with secrets redacted and self-approval scrubbed, as the follow-up's reply is today | standing of the poster; redaction |
 | `end` | ends the run with the author's report and the last verdict as its ending | the report |
 
 `reply` and `end` are new. A session that stops without sleeping or
