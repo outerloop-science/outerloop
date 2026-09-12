@@ -2679,8 +2679,17 @@ def test_a_parked_remeasure_posts_its_number_before_the_push_and_only_once(
     assert "Re-measured" in github2.posted[0] and "10.2" in github2.posted[0]
     assert github2.row_updates == []  # the row follows the push
     assert not _origin_has_branch(bare)
+    # the worst case: the record write after the comment was lost too, so the
+    # stage does not remember the post — the thread does (the note names the
+    # sealed sha), and the retry finds it there
+    rec = load_record(root, "tsp-r1")
+    stage = {k: v for k, v in rec.followup_stage.items() if k != "measured_posted"}
+    save_record(root, replace(rec, followup_stage=stage), NOW + 1)
     monkeypatch.setattr(Workspace, "push", real_push)
-    github3 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": pre_session}})
+    github3 = AutoGitHub(
+        pr={"state": "open", "merged": False, "head": {"sha": pre_session}},
+        comments=[{"id": 950, "body": github2.posted[0], "user": {"login": BOT}}],
+    )
     out3 = respond_once(
         root,
         "tsp-r1",
