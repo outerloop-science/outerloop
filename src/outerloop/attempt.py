@@ -3583,6 +3583,14 @@ def main() -> int:
         if other:
             print(f"run {args.resume}: wake job {other} holds the lease; this one exits")
             return 0
+        from outerloop.tick import dispatch_wake_armed
+
+        if not dispatch_wake_armed(args.run_root):
+            # the operator turned dispatched wakes off after this wake was armed:
+            # leave the run parked; the sweep delivers it once wakes are back on
+            print(f"run {args.resume}: dispatched wakes are OFF; leaving it parked")
+            _release_own_lease(args.run_root, args.resume)
+            return 0
 
         # Reproduce the PARKED run's author, not the current fleet default: the
         # (backend, model) PAIR is persisted on the record — a fleet flip must not
