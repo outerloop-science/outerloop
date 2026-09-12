@@ -269,13 +269,31 @@ def test_outbox_retries_in_order(tmp_path, caplog):
             raise RuntimeError("GitHub unavailable")
         posted.append(reply)
 
-    assert flush_replies(tmp_path, flaky_post) == 1
+    assert flush_replies(tmp_path, lambda r, _id: flaky_post(r)) == 1
     assert "GitHub unavailable" in caplog.text
     assert (tmp_path / "outbox/000001.posted").exists()
     assert (tmp_path / "outbox/000002.json").exists()
     assert (tmp_path / "outbox/000003.json").exists()
-    assert flush_replies(tmp_path, posted.append) == 2
-    assert flush_replies(tmp_path, posted.append) == 0
+    assert flush_replies(tmp_path, lambda r, _id: posted.append(r)) == 2
+    assert flush_replies(tmp_path, lambda r, _id: posted.append(r)) == 0
     stage_replies(tmp_path, ("fourth",))
-    assert flush_replies(tmp_path, posted.append) == 1
+    assert flush_replies(tmp_path, lambda r, _id: posted.append(r)) == 1
     assert posted == ["first", "second", "third", "fourth"]
+
+
+def test_a_reply_the_thread_already_carries_is_not_posted_again(tmp_path):
+    """A crash between the GitHub post and the outbox rename leaves the entry
+    pending; the next flush asks the thread and marks it posted without a
+    second post."""
+    from outerloop.inbox import flush_replies, reply_id, stage_replies
+
+    stage_replies(tmp_path, ["first", "second"])
+    entries = sorted((tmp_path / "outbox").glob("*.json"))
+    already = {reply_id(tmp_path, entries[0])}
+    posted: list[tuple[str, str]] = []
+    assert (
+        flush_replies(tmp_path, lambda r, rid: posted.append((r, rid)), already.__contains__) == 2
+    )
+    assert [r for r, _ in posted] == ["second"]
+    assert posted[0][1] == reply_id(tmp_path, entries[1])
+    assert not list((tmp_path / "outbox").glob("*.json"))

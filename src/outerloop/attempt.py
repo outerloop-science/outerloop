@@ -774,6 +774,11 @@ def _make_watcher(
     return lambda: SessionWatcher(ctx)
 
 
+def reply_id_marker(rid: str) -> str:
+    """The hidden line a posted reply carries so a retried flush can find it."""
+    return f"<!-- outerloop:reply-id {rid} -->"
+
+
 def post_replies(
     record: RunRecord,
     github: GitHubClient,
@@ -790,13 +795,25 @@ def post_replies(
         return
     from outerloop.inbox import flush_replies, stage_replies
 
-    def post(reply: str) -> None:
+    def post(reply: str, rid: str) -> None:
         body = APPROVAL_PATTERN.sub(REDACTED, redact(reply, secrets))[:MAX_REPLY_CHARS]
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{body}")
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_id_marker(rid)}\n{body}")
+
+    def seen(rid: str) -> bool:
+        # the thread is the record of what was posted: a crash between the
+        # post and the outbox rename must not post the reply twice
+        try:
+            return any(
+                reply_id_marker(rid) in str(c.get("body", ""))
+                for c in github.list_comments(record.target, number)
+            )
+        except Exception as exc:
+            log.warning("reply lookup failed for %s: %s", record.run_id, exc)
+            return False  # posting twice beats never posting
 
     try:
         stage_replies(run_dir, replies)
-        flush_replies(run_dir, post)
+        flush_replies(run_dir, post, seen)
     except Exception as exc:
         log.warning("reply delivery failed for %s: %s", record.run_id, exc)
 

@@ -3458,7 +3458,9 @@ def test_reply_syscall_posts_on_run_thread_once(review_run, pr_url, number, fail
     assert all(text.startswith(REPLY_MARKER) for text in github.posted)
     assert "sk-x" not in github.posted[0] and "LGTM" not in github.posted[0]
     assert "first" in github.posted[0] and "second" in github.posted[1]
-    assert len(github.posted[1].split("\n", 1)[1]) == 20_000
+    # the marker line and the hidden reply id precede the capped body
+    assert len(github.posted[1].split("\n", 2)[2]) == 20_000
+    assert "<!-- outerloop:reply-id " in github.posted[1].split("\n", 2)[1]
 
 
 @pytest.mark.parametrize("sleep_again", [False, True])

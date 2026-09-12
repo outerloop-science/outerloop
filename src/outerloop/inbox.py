@@ -244,8 +244,20 @@ def stage_replies(run_dir: Path, replies: Sequence[str]) -> None:
                 tmp.unlink(missing_ok=True)
 
 
-def flush_replies(run_dir: Path, post: Callable[[str], None]) -> int:
-    """Post in order, retaining the failed reply and everything after it."""
+def reply_id(run_dir: Path, path: Path) -> str:
+    """The id a posted reply carries, so a flush can see it on the thread."""
+    return f"{run_dir.name}/{path.stem}"
+
+
+def flush_replies(
+    run_dir: Path,
+    post: Callable[[str, str], None],
+    seen: Callable[[str], bool] = lambda _id: False,
+) -> int:
+    """Post in order, retaining the failed reply and everything after it. A
+    reply the thread already carries (a crash between the post and the
+    rename) is marked posted without posting again: `seen` answers from the
+    thread, `post` writes the id into what it posts."""
     directory = run_dir / "outbox"
     if not directory.exists():
         return 0
@@ -253,11 +265,13 @@ def flush_replies(run_dir: Path, post: Callable[[str], None]) -> int:
     with (directory / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         for path in sorted(directory.glob("*.json")):
+            rid = reply_id(run_dir, path)
             try:
                 reply = json.loads(path.read_text())
                 if not isinstance(reply, str):
                     raise ValueError("invalid reply")
-                post(reply)
+                if not seen(rid):
+                    post(reply, rid)
                 path.rename(path.with_suffix(".posted"))
             except Exception as exc:
                 log.warning("cannot post outbox reply %s; delivery stops there: %s", path, exc)
