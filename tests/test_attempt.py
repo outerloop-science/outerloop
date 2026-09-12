@@ -4036,6 +4036,34 @@ def test_push_line_snapshot_chains_sequential_terminals(tmp_path: Path, target_r
     assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "second\n"
 
 
+def test_line_seal_parents_on_the_kernels_head_not_the_checked_out_branch(
+    tmp_path: Path, target_repo
+) -> None:
+    """A session that runs `git reset --hard origin/main` moves the checked-out
+    line branch onto main's history and drops the line's memory file from the
+    tree (gpt-speedrun agent-02, 2026-09-12; #368). The seal parents on the
+    kernel's own record of the line head, so the push is still a fast-forward
+    on the line, and the memory file comes back from that head."""
+    from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
+
+    _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "remember the pivot\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    line_tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    assert ws.git("rev-parse", LINE_HEAD_REF).strip() == line_tip
+    # the session's reset: the branch now points at main, the memory is gone from the tree
+    ws.git("reset", "-q", "--hard", "origin/main")
+    assert ws.git("rev-parse", "refs/heads/agents/agent-07").strip() != line_tip
+    assert not (ws.root / "AGENT_MEMORY.md").exists()
+    (ws.root / "docs" / "belief.md").write_text("after the reset\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
+    tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    assert _git(target_repo, "rev-parse", f"{tip}^").strip() == line_tip  # on the line, not main
+    assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "remember the pivot\n"
+    assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "after the reset\n"
+    assert ws.git("rev-parse", LINE_HEAD_REF).strip() == tip  # the record follows the push
+
+
 def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
     from outerloop.attempt import _push_line_snapshot
 

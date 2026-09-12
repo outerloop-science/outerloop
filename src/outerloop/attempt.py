@@ -1301,6 +1301,10 @@ def _reset_instruction_files(ws: Workspace, workspace: Path, base_ref: str) -> N
 # every MEASURABLE seal and from changed-path accounting — never a scope
 # violation, never claimable work, never part of a main-PR candidate.
 LINE_MEMORY_PATHS = ("AGENT_MEMORY.md", "agent_memory")
+# The kernel's own record of the line head, kept in the workspace's refs: a
+# session's `git reset`/`checkout` moves only the checked-out branch, never
+# this ref, so a seal parents on the line the kernel last sealed (#368).
+LINE_HEAD_REF = "refs/outerloop/line"
 
 
 def _is_line_memory(path: str) -> bool:
@@ -1377,6 +1381,42 @@ def _line_base_advanced(ws: Workspace, base_branch: str, base_sha: str) -> str:
         return ""
 
 
+def _restore_line_memory(ws: Workspace, parent: str) -> None:
+    """Put back the line's memory files a session's reset to main dropped from
+    the tree: they live on the line, and the seal must carry them forward."""
+    for path in LINE_MEMORY_PATHS:
+        if (Path(ws.root) / path).exists():
+            continue
+        try:
+            ws.git("cat-file", "-e", f"{parent}:{path}")
+        except Exception:
+            continue  # not on the line either
+        ws.git("checkout", parent, "--", path)
+
+
+def _line_head(ws: Workspace, line_ref: str) -> str:
+    """The commit the seal parents on. The line only moves forward from the
+    kernel's record: a session that COMMITTED on the line advanced the branch
+    past it (those commits count), one that reset the branch onto main moved
+    it off the line (the record wins, #368). No record — a park that predates
+    it — means the branch is the line."""
+    branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
+    try:
+        record = ws.git("rev-parse", "--verify", "-q", LINE_HEAD_REF).strip()
+    except Exception:
+        return branch
+    if record == branch:
+        return branch
+    try:
+        ws.git("merge-base", "--is-ancestor", record, branch)  # raises when not
+    except Exception:
+        log.info(
+            "line %s: the session moved the branch off the line; sealing on the record", line_ref
+        )
+        return record
+    return branch
+
+
 def _push_line_snapshot(
     ws: Workspace,
     line_ref: str,
@@ -1397,11 +1437,9 @@ def _push_line_snapshot(
         return
 
     def _seal_and_push() -> None:
-        # raises if the ref is absent (e.g. a park that predates the line
-        # feature) or the session altered .git (every ws.git call checks) —
-        # _best_effort turns either into a logged skip
-        local = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
-        memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
+        # raises if the session altered .git (every ws.git call checks) —
+        # _best_effort turns that into a logged skip
+        local = _line_head(ws, line_ref)
         last_exc: Exception | None = None
         # the line commit this workspace's untouched files currently match:
         # the local ref at first, then each remote head reconciled into it
@@ -1426,6 +1464,8 @@ def _push_line_snapshot(
                     fork = parent = remote
             except Exception as exc:
                 log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
+            _restore_line_memory(ws, parent)
+            memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
             snap = snapshot_tree(ws, parent, force=memory, author=bot_login)
             try:
                 # seal only when the tree moved past the parent; the PUSH runs
@@ -1446,6 +1486,7 @@ def _push_line_snapshot(
                 ws.git("update-ref", f"refs/heads/{line_ref}", sealed)
                 try:
                     ws.push(line_ref)
+                    ws.git("update-ref", LINE_HEAD_REF, sealed)  # the record follows the push
                     return
                 except Exception as exc:
                     # another run pushed between our fetch and this push:
@@ -1512,6 +1553,7 @@ def _checkout_line(
     if not ws.git("branch", "--list", "-r", f"origin/{line}").strip():
         ws.git("checkout", "-q", "-B", line, base_ref)
         ws.push(line)  # the line is durable from its first run
+        ws.git("update-ref", LINE_HEAD_REF, ws.git("rev-parse", f"refs/heads/{line}").strip())
         return line
     ws.git("checkout", "-q", "-B", line, f"origin/{line}")
     conflicted = False
@@ -1546,6 +1588,7 @@ def _checkout_line(
         # a sealed sha, never invent a commit). A conflicted merge is not
         # pushed: the conflict is session work, not line state.
         ws.push(line)
+    ws.git("update-ref", LINE_HEAD_REF, ws.git("rev-parse", f"refs/heads/{line}").strip())
     return line
 
 
