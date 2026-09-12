@@ -4073,6 +4073,27 @@ def test_line_seal_parents_on_the_kernels_head_not_the_checked_out_branch(
     assert ws.git("rev-parse", LINE_HEAD_REF).strip() == tip  # the record follows the push
 
 
+def test_line_seal_prefers_the_lines_memory_over_mains_stale_copy(
+    tmp_path: Path, target_repo
+) -> None:
+    """When main itself tracks a memory path (a human committed one), a reset
+    leaves main's older copy in the tree; the seal still carries the line's,
+    since the session did not write that copy."""
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
+
+    _advance_main(tmp_path, target_repo, {"AGENT_MEMORY.md": "main's stale copy\n"})
+    _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "the line's newer memory\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    ws.git("reset", "-q", "--hard", "origin/main")
+    assert (ws.root / "AGENT_MEMORY.md").read_text() == "main's stale copy\n"
+    (ws.root / "docs" / "belief.md").write_text("after the reset\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
+    assert (
+        _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "the line's newer memory\n"
+    )
+
+
 def test_line_seal_keeps_a_memory_deletion_the_session_made_on_the_line(
     tmp_path: Path, target_repo
 ) -> None:

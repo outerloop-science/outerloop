@@ -1382,21 +1382,32 @@ def _line_base_advanced(ws: Workspace, base_branch: str, base_sha: str) -> str:
 
 
 def _restore_line_memory(ws: Workspace, parent: str, seen: str) -> None:
-    """Put back the line's memory files a session's reset to main dropped from
-    the tree. File by file: one missing from the tree is a deletion only when
-    the session's branch (`seen`) had it, so a file the session deleted on the
-    line stays deleted, and a topic file the session never saw (its branch
-    was reset onto main) comes back beside whatever it wrote since."""
+    """Put back the line's memory files a session's reset to main took from
+    the tree. File by file, judged against the session's branch (`seen`): a
+    file the session wrote or deleted stands; any other memory file on the
+    line comes back. So a topic file the session never saw (its branch was
+    reset onto main) returns beside whatever it wrote since, a file the
+    session deleted on the line stays deleted, and main's stale copy of a
+    memory path never replaces the line's."""
+
+    def blob(rev: str, file: str) -> str:
+        try:
+            return ws.git("rev-parse", "--verify", "-q", f"{rev}:{file}").strip()
+        except Exception:
+            return ""  # absent
+
     for path in LINE_MEMORY_PATHS:
         files = ws.git("ls-tree", "-r", "-z", "--name-only", parent, "--", path).split("\0")
         for file in filter(None, files):
+            in_seen = blob(seen, file)
             if (Path(ws.root) / file).exists():
-                continue
-            try:
-                ws.git("cat-file", "-e", f"{seen}:{file}")
-                continue  # the session had it and removed it
-            except Exception:
-                pass
+                in_tree = ws.git("hash-object", "--", file).strip()
+                if in_tree != in_seen:
+                    continue  # the session wrote it
+                if in_tree == blob(parent, file):
+                    continue  # already the line's
+            elif in_seen:
+                continue  # the session deleted it
             ws.git("checkout", parent, "--", file)
 
 
