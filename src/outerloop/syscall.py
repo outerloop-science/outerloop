@@ -244,9 +244,7 @@ def _rel_path_ok(path: str) -> bool:
     return all(p not in ("", ".", "..") for p in parts)
 
 
-def read_request(
-    workspace: Path, on_replies: Callable[[tuple[str, ...]], None] | None = None
-) -> SyscallRequest | None:
+def read_request(workspace: Path) -> SyscallRequest | None:
     """Read and CONSUME the author's request. None = no request (the session
     finished; today's path). Malformed or over per-request bounds ->
     SyscallError. The file is consumed even on error so a bad request can
@@ -261,17 +259,6 @@ def read_request(
         if len(head) > MAX_REQUEST_BYTES:
             raise SyscallError(f"syscall.json exceeds {MAX_REQUEST_BYTES} bytes")
         raw = head.decode("utf-8", "replace")
-        if on_replies is not None:
-            try:
-                data = json.loads(raw)
-                replies = data.get("replies", []) if isinstance(data, dict) else []
-                if isinstance(replies, list) and all(
-                    isinstance(reply, str) and reply.strip() and len(reply) <= MAX_REQUEST_BYTES
-                    for reply in replies
-                ):
-                    on_replies(tuple(replies))
-            except (ValueError, TypeError):
-                pass
     except FileNotFoundError:
         return None
     except OSError as exc:

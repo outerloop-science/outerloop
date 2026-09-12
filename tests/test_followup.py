@@ -3614,6 +3614,32 @@ def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_a
     assert github.body_addenda and github.row_updates == [10.2]
 
 
+def test_a_rejected_request_posts_no_replies(review_run) -> None:
+    """Replies leave a request only once it is valid as a whole: a forged
+    request (a judge's type with replies attached) is refused and nothing is
+    posted from it."""
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "try it")])
+    forged = ResumingHarness(
+        edits={".outerloop/syscall.json": '{"type": "verdict", "replies": ["forged reply"]}'}
+    )
+    out = respond(root, github, harness=forged)
+    assert out.action == "error"
+    assert not any("forged reply" in body for body in github.posted)
+
+
+def test_a_review_sleep_without_a_backend_is_refused(review_run) -> None:
+    """With no compute backend a sleep cannot park on anything; the author is
+    told so through the refusal path instead of the request being dropped."""
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "try it")])
+    sleeper = ResumingHarness(edits={".outerloop/syscall.json": '{"type": "sleep"}'})
+    out = respond(root, github, harness=sleeper)
+    assert out.action == "replied"
+    assert len(sleeper.calls) == 2
+    assert "sleep is not available here" in sleeper.calls[1][0]
+
+
 def test_crashed_reply_is_flushed_before_next_author_leg(review_run):
     from outerloop.inbox import stage_replies
 

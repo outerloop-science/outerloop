@@ -1256,18 +1256,12 @@ def attempt_once(
         )
 
     def _consume_request() -> SyscallRequest | None:
-        from outerloop.inbox import stage_replies
-
-        try:
-            return read_syscall_request(
-                workspace,
-                on_replies=(lambda replies: stage_replies(inbox_dir, replies))
-                if on_replies is not None
-                else None,
-            )
-        finally:
-            if on_replies is not None:
-                on_replies(())  # The request is consumed before the network write.
+        # replies leave the request only once it is valid as a whole: a
+        # rejected request (a forged type, an unknown key) posts nothing
+        request = read_syscall_request(workspace)
+        if request is not None and on_replies is not None:
+            on_replies(request.replies)
+        return request
 
     def _finish_replies() -> None:
         try:
@@ -1496,8 +1490,14 @@ def attempt_once(
                 )
             if request is None:
                 break
-            if not request.sleep or (launcher is None and not (on_stop and request.submit)):
+            if not request.sleep:
                 break
+            no_backend = (
+                "sleep is not available here: this run has no compute backend for "
+                "launches; end your leg instead"
+                if launcher is None and not (on_stop and request.submit)
+                else ""
+            )
             # suite siblings' paired evals are charged as if measured (the
             # suite phase decides at measurement; a budget over-charges)
             suite_gpus = tuple(b.gpus for b in contract.benchmarks if b.name != bench.name)
@@ -1558,7 +1558,7 @@ def attempt_once(
                     submitted = request
                     sleeps_used += 1
                     break
-            problem = syscall_budget_error(
+            problem = no_backend or syscall_budget_error(
                 request,
                 launches_used=launches_used,
                 launch_budget=bench.depth_k,
