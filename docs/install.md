@@ -224,7 +224,8 @@ manifest flow:
 The bot login is `<slug>[bot]`; init records it as `OUTERLOOP_BOT_LOGIN`.
 Tokens are minted from the key an hour at a time and scoped to the installed
 repos; the App takes no seat and needs no collaborator grant. The manifest
-declares Contents, Issues and Pull requests read-write and Metadata read,
+declares Contents, Issues and Pull requests read-write, Metadata read and
+Members read (so a private org member's issue reads as MEMBER, not CONTRIBUTOR),
 nothing else. If the install step was cut short, run
 `outerloop init --force --github-app` to finish and re-check it.
 

@@ -172,3 +172,33 @@ roadmap: docs/roadmap.md
             return []
 
     assert pick_issue(G(), "org/pilot", contract, "agentic-learning-bot") is None
+
+
+def test_task_label_vouches_for_an_issue_and_every_skip_says_why(caplog) -> None:
+    """The App lists issues with its own token; without the members permission
+    a private org member reads as CONTRIBUTOR and the issue was dropped with no
+    log line (quickstart-trial #7, 2026-09-11). A maintainer's `outerloop:task`
+    label now vouches for an issue regardless of association, and a skipped
+    issue is logged with its reason."""
+    import logging
+
+    unlabelled = issue(7, "reach: make each step count", assoc="CONTRIBUTOR")
+    labelled = {
+        **issue(8, "reach: try a wider trunk", assoc="CONTRIBUTOR"),
+        "labels": [{"name": "outerloop:task"}],
+    }
+    assert not qualifying_issue(unlabelled, "bot", vouching_label="task")
+    assert qualifying_issue(labelled, "bot", vouching_label="task")
+    # no lane label: author standing only, which is the steward lane's rule
+    assert not qualifying_issue(labelled, "bot")
+    own = issue(6, "reach: research log", author="bot")
+    steward = {**issue(5, "reach: fix the ruler"), "labels": [{"name": "outerloop:steward"}]}
+    with caplog.at_level(logging.INFO):
+        task = pick_issue(G([steward, own, unlabelled, labelled]), "org/pilot", CONTRACT, "bot")
+    assert task is not None and task.number == 8
+    assert "issue #5 skipped: a steward work order" in caplog.text
+    assert "issue #6 skipped: the kernel's own issue" in caplog.text
+    assert (
+        "issue #7 skipped: by renmengye as CONTRIBUTOR (needs OWNER/MEMBER/COLLABORATOR, "
+        "or the task label)" in caplog.text
+    )

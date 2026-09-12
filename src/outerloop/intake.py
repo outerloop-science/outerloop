@@ -48,13 +48,40 @@ def infer_benchmark(text: str, contract: Contract) -> str:
     return named[0] if len(named) == 1 else ""
 
 
-def qualifying_issue(issue: dict, bot_login: str) -> bool:
+def issue_labels(issue: dict) -> set[str]:
+    """The issue's label names, casefolded."""
+    return {
+        str(label.get("name", "")).casefold()
+        for label in issue.get("labels", [])
+        if isinstance(label, dict)
+    }
+
+
+def disqualification(issue: dict, bot_login: str, *, vouching_label: str | None = None) -> str:
+    """Why this issue is not a work order, or "" when it is. A maintainer
+    vouches for an issue by writing it (an OWNER, MEMBER or COLLABORATOR
+    author) or, on a lane that accepts one, by setting the lane's label (only
+    triage rights can). The label matters because the kernel lists issues with
+    the App's token, and an App without the members permission sees a private
+    org member as CONTRIBUTOR. The reason is what the skip log says."""
     author = str((issue.get("user") or {}).get("login", ""))
     if is_own_login(author, bot_login):
-        return False  # the kernel's own issues (research log, alarms) are never orders
-    if str(issue.get("author_association", "")) not in QUALIFYING_ASSOCIATIONS:
-        return False
-    return bool(str(issue.get("title") or "").strip())
+        return "the kernel's own issue"  # research log, alarms: never orders
+    if not str(issue.get("title") or "").strip():
+        return "no title"
+    association = str(issue.get("author_association", ""))
+    if association in QUALIFYING_ASSOCIATIONS:
+        return ""
+    if vouching_label and has_label(issue_labels(issue), vouching_label):
+        return ""
+    wanted = "/".join(QUALIFYING_ASSOCIATIONS)
+    if vouching_label:
+        wanted += f", or the {vouching_label} label"
+    return f"by {author} as {association or 'unknown'} (needs {wanted})"
+
+
+def qualifying_issue(issue: dict, bot_login: str, *, vouching_label: str | None = None) -> bool:
+    return not disqualification(issue, bot_login, vouching_label=vouching_label)
 
 
 def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTask | None:
@@ -68,16 +95,15 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
         return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
-        labels = {
-            str(label.get("name", "")).casefold()
-            for label in issue.get("labels", [])
-            if isinstance(label, dict)
-        }
-        if has_label(labels, "steward"):
-            continue  # the steward lane's, never the solver's
-        if not qualifying_issue(issue, bot_login):
-            continue
         number = int(issue["number"])
+        # every skip says why: a silent one cost a day of "why is my issue
+        # not picked up" on a private org member's issue
+        if has_label(issue_labels(issue), "steward"):
+            log.info("issue #%s skipped: a steward work order", number)
+            continue
+        if reason := disqualification(issue, bot_login, vouching_label="task"):
+            log.info("issue #%s skipped: %s", number, reason)
+            continue
         claimed = False
         attempts = 0
         for c in github.list_comments(repo, number):
@@ -91,7 +117,8 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
             if has_marker(body, "claim-released"):
                 claimed = False
         if claimed:
-            continue  # already claimed by a run
+            log.info("issue #%s skipped: claimed by a run", number)
+            continue
         if attempts >= MAX_INTAKE_ATTEMPTS:
             log.info("issue #%s burned %d claim attempts; needs a human look", number, attempts)
             continue
