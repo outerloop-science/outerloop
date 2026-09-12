@@ -2410,11 +2410,12 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
     assert "--account=acct" in argv and "--partition=cpu_short" in argv
 
 
-def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
-    # dispatched climbing must NOT deliver wakes unless the operator flips the
-    # explicit on-switch AND the chain env is complete.
+def test_wake_dispatcher_is_live_by_default_and_disarms(tmp_path, monkeypatch):
+    # wakes are on by default (an unarmed loop strands every parked run, silently);
+    # the operator disarms with the env var or the sentinel, and a chain env
+    # that cannot run a wake job still fails safe to dry.
     from outerloop.tick import (
-        DISPATCH_WAKE_SENTINEL,
+        DISARM_WAKE_SENTINEL,
         FollowupSpec,
         JobWakeDispatcher,
         LoggingDispatcher,
@@ -2425,33 +2426,28 @@ def test_wake_dispatcher_on_switch_lands_dark_by_default(tmp_path, monkeypatch):
     spec = FollowupSpec(
         account="a", partition="p", run_root=tmp_path, image="/i.sif", home=tmp_path
     )
-
-    # default: no env, no sentinel -> dry sweep, logging dispatcher
+    # default: no env, no sentinel, complete env -> live sweep, real dispatcher
     monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
+    assert isinstance(dispatcher, JobWakeDispatcher) and live is True
+    # incomplete env -> fail SAFE to dry, not a wake that can't run
+    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
     assert isinstance(dispatcher, LoggingDispatcher) and live is False
-
-    # env on-switch + complete env -> live sweep, real dispatcher
+    # the env var disarms; "1" (the old on-switch) is still on
+    monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "0")
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
     monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "1")
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
-
-    # env on-switch but incomplete env -> fail SAFE to dry, not a wake that can't run
-    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
-    assert isinstance(dispatcher, LoggingDispatcher) and live is False
-
-    # sentinel file arms it too (mirrors PAUSE) — no env var needed
+    # the sentinel disarms without a restart (mirrors PAUSE), and rm re-arms
     monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
-    (tmp_path / DISPATCH_WAKE_SENTINEL).touch()
+    (tmp_path / DISARM_WAKE_SENTINEL).touch()
+    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
+    assert isinstance(dispatcher, LoggingDispatcher) and live is False
+    (tmp_path / DISARM_WAKE_SENTINEL).unlink()
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
-    # ...still fail-safe to dry on an incomplete env
-    dispatcher, live = _wake_dispatcher_from_env(compute, None, NOW, tmp_path)
-    assert isinstance(dispatcher, LoggingDispatcher) and live is False
-    # disarming removes the sentinel -> back to dry (reversible, like PAUSE)
-    (tmp_path / DISPATCH_WAKE_SENTINEL).unlink()
-    dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
-    assert isinstance(dispatcher, LoggingDispatcher) and live is False
 
 
 def test_job_wake_dispatcher_walltime_includes_the_panel(tmp_path, monkeypatch):
@@ -3423,14 +3419,17 @@ def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
         SlurmCompute(runner=runner).pending_reason("55")
 
 
-def test_dispatch_wake_switch_reads_env_or_sentinel(tmp_path: Path, monkeypatch) -> None:
+def test_dispatch_wake_switch_is_on_unless_disarmed(tmp_path: Path, monkeypatch) -> None:
     from outerloop.tick import dispatch_wake_armed
 
     monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
+    assert dispatch_wake_armed(tmp_path)  # the default
+    (tmp_path / "DISARM_WAKE").touch()
     assert not dispatch_wake_armed(tmp_path)
-    (tmp_path / "DISPATCH_WAKE").touch()
-    assert dispatch_wake_armed(tmp_path)
-    (tmp_path / "DISPATCH_WAKE").unlink()
+    (tmp_path / "DISARM_WAKE").unlink()
+    for off in ("0", "off", "False", "no"):
+        monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", off)
+        assert not dispatch_wake_armed(tmp_path)
     monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "1")
     assert dispatch_wake_armed(tmp_path)
 

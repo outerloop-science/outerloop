@@ -345,6 +345,12 @@ lesser of 10 minutes and half the cadence), and `OUTERLOOP_MAX_JOB_MINUTES` caps
 the walltime the tick requests for the climb and author-sleep wake jobs it sizes
 (clamped under a code ceiling).
 
+**Two operator switches in the state root, no restart needed.** `touch
+<root>/PAUSE` pauses the loop; `touch <root>/DISARM_WAKE` (or
+`OUTERLOOP_DISPATCH_WAKE=0`) stops the sweep from waking parked runs, which then
+wait until the file is removed. Wakes are on by default: a loop that cannot
+wake strands every parked run without a word.
+
 **Local mode without an image.** On a machine with no Apptainer image,
 `OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own
 sandbox, evaluations run bare in a throwaway tree under an allowlisted

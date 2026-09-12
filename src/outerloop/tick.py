@@ -72,11 +72,12 @@ from outerloop.runstate import (
 log = logging.getLogger(__name__)
 
 PAUSE_SENTINEL = "PAUSE"
-# Operator on-switch for dispatched-wake, mirroring PAUSE: a root-relative
-# sentinel an operator arms/disarms with a touch/rm — no chain restart, no
-# env-var surgery on a live tick. The OUTERLOOP_DISPATCH_WAKE env var still
-# works too (either arms it); the sentinel is the reversible, restart-free path.
-DISPATCH_WAKE_SENTINEL = "DISPATCH_WAKE"
+# Operator off-switch for dispatched wakes, mirroring PAUSE: touch
+# <root>/DISARM_WAKE (or set OUTERLOOP_DISPATCH_WAKE=0) and the waiting-run
+# sweep goes dry at the next tick; rm it and wakes resume, no chain restart.
+# On by default: an unarmed loop strands every parked run, silently.
+DISARM_WAKE_SENTINEL = "DISARM_WAKE"
+_WAKE_OFF = frozenset({"0", "off", "false", "no"})
 HEARTBEAT_NAME = "heartbeat.json"
 # Written at a full tick's END (not its start) — the coalesce guard's signal, so
 # a tick that crashes mid-work cannot suppress the next (recovery) tick.
@@ -978,13 +979,13 @@ WAKE_SPEC_NAME = "wake-spec.json"
 
 
 def dispatch_wake_armed(root: Path) -> bool:
-    """The operator's on-switch for dispatched wakes: the env var, or the
-    sentinel file (touch/rm, no chain restart). Read by the tick and by every
-    park, so a disarm takes effect at once."""
-    return (
-        bool(os.environ.get("OUTERLOOP_DISPATCH_WAKE", "").strip())
-        or (root / DISPATCH_WAKE_SENTINEL).exists()
-    )
+    """Dispatched wakes are on unless the operator turned them off:
+    OUTERLOOP_DISPATCH_WAKE set to 0/off/false/no, or a `<root>/DISARM_WAKE`
+    sentinel (touch/rm, no chain restart). Read by the tick and by every park,
+    so a disarm takes effect at once."""
+    if os.environ.get("OUTERLOOP_DISPATCH_WAKE", "").strip().casefold() in _WAKE_OFF:
+        return False
+    return not (root / DISARM_WAKE_SENTINEL).exists()
 
 
 def write_wake_spec(root: Path, spec: FollowupSpec) -> None:
@@ -3082,24 +3083,25 @@ def _wake_panel_minutes(spec: FollowupSpec) -> int:
 def _wake_dispatcher_from_env(
     compute: Compute, followup_spec: FollowupSpec | None, now: float, root: Path
 ) -> tuple[WakeDispatcher, bool]:
-    """The wake delivery for this tick, behind an EXPLICIT on-switch so the
-    dispatched-wake path lands DARK. Returns `(dispatcher, live)`:
+    """The wake delivery for this tick. Returns `(dispatcher, live)`:
 
-    * armed (the `OUTERLOOP_DISPATCH_WAKE` env var OR a `<root>/DISPATCH_WAKE`
-      sentinel file) AND the chain env carries what a wake job needs -> the real
-      `JobWakeDispatcher` and a LIVE sweep;
+    * armed (the default; the operator disarms with OUTERLOOP_DISPATCH_WAKE=0
+      or a `<root>/DISARM_WAKE` sentinel) AND the chain env carries what a wake
+      job needs -> the real `JobWakeDispatcher` and a LIVE sweep;
     * otherwise -> the `LoggingDispatcher` and a DRY sweep.
 
-    The sentinel mirrors PAUSE: an operator arms/disarms with a touch/rm, no
-    chain restart. So dispatched climbing is turned on deliberately, and a
-    half-configured environment fails safe to dry rather than to a wake job
-    that cannot run."""
+    A half-configured environment fails safe to dry rather than to a wake job
+    that cannot run; the sentinel mirrors PAUSE (touch/rm, no chain restart)."""
     if not dispatch_wake_armed(root):
+        log.info(
+            "dispatched wakes are OFF (OUTERLOOP_DISPATCH_WAKE or <root>/DISARM_WAKE): "
+            "the waiting-run sweep is dry, parked runs wait"
+        )
         return LoggingDispatcher(), False
     if followup_spec is None:
-        log.warning("dispatch-wake armed but the chain env is incomplete; wake stays dry")
+        log.warning("the chain env is incomplete; the waiting-run sweep stays dry")
         return LoggingDispatcher(), False
-    log.info("dispatched-wake ON: the waiting-run sweep delivers real wakes this tick")
+    log.info("dispatched wakes ON: the waiting-run sweep delivers real wakes this tick")
     return JobWakeDispatcher(compute, followup_spec, now), True
 
 
@@ -3344,10 +3346,9 @@ def main() -> int:
     if os.environ.get("OUTERLOOP_ROOT", "") != str(args.root.resolve()):
         os.environ["OUTERLOOP_ROOT"] = str(args.root.resolve())
     # In-review servicing is LIVE when credentials + image are available in the
-    # chain environment. The waiting-run sweep delivers real wakes only when the
-    # operator arms it — the OUTERLOOP_DISPATCH_WAKE env var or a
-    # <root>/DISPATCH_WAKE sentinel — and the env is complete; by default it
-    # stays dry with the LoggingDispatcher — dispatched climbing lands DARK.
+    # chain environment. The waiting-run sweep delivers real wakes whenever the
+    # env is complete, unless the operator disarmed it (OUTERLOOP_DISPATCH_WAKE=0
+    # or a <root>/DISARM_WAKE sentinel); then it stays dry with the LoggingDispatcher.
     # ONE compute for the process: LocalCompute remembers its jobs' states
     # in memory, so a --loop deployment must not discard them between ticks.
     compute = compute_from_env()

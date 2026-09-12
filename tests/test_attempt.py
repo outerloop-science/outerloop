@@ -227,10 +227,11 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
         account="a", partition="cpu", run_root=tmp_path, image="/img.sif", home=tmp_path
     )
     write_wake_spec(tmp_path, spec)
+    (tmp_path / "DISARM_WAKE").touch()
     park("tsp-disarmed")  # a recipe left behind after a disarm is not used
     assert read_lease(tmp_path, "tsp-disarmed") is None
-    (tmp_path / "DISPATCH_WAKE").touch()
-    park("tsp-armed")
+    (tmp_path / "DISARM_WAKE").unlink()
+    park("tsp-armed")  # the default: armed
     lease = read_lease(tmp_path, "tsp-armed")
     assert lease is not None and lease.holder == "wake-job:1000"
     r = load_record(tmp_path, "tsp-armed")

@@ -8,6 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Dispatched wakes are on by default. The old on-switch (`OUTERLOOP_DISPATCH_WAKE=1` or a `DISPATCH_WAKE` sentinel) is gone; the operator turns wakes off with `OUTERLOOP_DISPATCH_WAKE=0` or a `<root>/DISARM_WAKE` sentinel, and a dry sweep says so in the log. An unarmed loop stranded every parked run silently, which local compute, able to park since 0.1.2, hit at once.
 - The brief's launch section says that a launch runs a sealed snapshot of the working tree and is scope-checked like the final tree, so experiment scripts must live under the contract's allowed paths.
 
 - Whether jobs need a lane is now the compute backend's word (`has_lanes`): the measurer, the launcher, and the tick's GPU preflight ask it instead of testing for local mode. The dispatch settings always exist (a backend always does), so local compute arms the author's `launch`/`sleep` syscalls for benchmarks with `depth_k`, and a local wake no longer needs a container image. A `--image` path that is not a file is refused at the command line instead of silently degrading the run to inline evaluation.
