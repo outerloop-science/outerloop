@@ -162,3 +162,111 @@ against fakes before that.)
 3. **Phase B — submit-for-review as a payload** — LANDED (the orchestrator
    panel-revision loop is retired); suite gate + metric taxonomy still to come.
 4. Parallel/coordination helpers only if recurring author patterns earn them.
+5. **Phase C — in review, the author receives messages** (below): the
+   follow-up pipeline becomes wake messages to the parked author; built in
+   three reviewed stages, the old module deleted in the third.
+
+## Phase C — in review, the author receives messages
+
+**Status: plan (2026-09-12), reviewable before code.** Ruling from Mengye,
+2026-09-12: an in-review run is the author receiving messages and doing
+whatever is necessary. Not hard-coded steps.
+
+### What exists
+
+`followup.py` (2,200 lines) services a run whose PR is open. Each tick it
+reads new comments, resumes the author session with a fixed prompt, and then
+decides on its own what the session's result means. An edit inside scope is
+re-measured as the PR's new candidate; the number moves the ledger row when it
+clears the floor; the row is folded into the sealed commit and pushed; the
+number is posted. A moved base has its own ladder (sync, conflict, withheld,
+superseded). A pushed change gets a panel re-read. The steward lane repeats
+most of this under another key. Every step is the kernel deciding what the
+reviewer wanted. A reviewer who asks for an ablation gets the ablation pushed
+as the PR head, or nothing at all (three finished evaluations went unreported
+in a trial deployment when the kernel's push step failed).
+
+### The design
+
+A message arrives for a run in review: a qualifying comment, a review, a
+panel verdict, the base moving. The kernel delivers it to the parked author
+session as wake text, data-fenced, through the same wake path that delivers
+launch results and gate verdicts today. The author answers with the moves it
+already has in a climb:
+
+- **launch**: run an experiment outside the sandbox, metered and recorded in
+  the ledger; the result comes back at the next wake.
+- **reply**: text, posted on the thread as written.
+- **submit**: this tree is my candidate. The gate measures the sealed tree;
+  on a run in review the PR head moves to that sealed tree and the number is
+  posted with it.
+- **sleep**: park until the next message or the named jobs.
+
+An ablation is a launch and a reply. A requested change is an edit and a
+submit. A moved base is a message that says so; the author merges (or does
+not) and submits. Nothing is re-measured unless the author submits it.
+
+### What the kernel keeps
+
+- The credited number is the kernel's measurement of a submitted tree, never
+  the author's claim.
+- Scope, on the submitted tree.
+- Auto-merge is confirmed disarmed before a PR head moves.
+- The ledger row moves only for a submit that beats the recorded best by the
+  floor; every other number is reported and leaves the row alone.
+- The meter: launches, sleeps, submits. Open question below.
+- Delivery bookkeeping: which comments have been delivered (the cursor), and
+  the one-run-per-PR lease.
+
+### What goes away
+
+The `changed`-detection and automatic re-measure of any edit; the base-sync
+ladder; `_park_remeasure`, `_resume_measure`, `_commit_sealed_tree`,
+`_update_ledger`'s follow-up variant; the panel re-read after a push (a
+submit already runs the panel, Phase B); the steward's copy of the pipeline
+(the steward is a role that receives the same messages under its own key).
+`followup_stage` on the record. `followup.py` and its tests are deleted in the
+PR that lands the replacement; no second implementation of one role.
+
+### State and entry point
+
+A run in review is a parked run: WAITING, woken by messages instead of jobs.
+The wake is the attempt CLI's resume with a message payload; the follow-up
+entry point folds into it. One record shape, one wake path, one terminal.
+
+### Open decisions
+
+1. **Budget.** Review-time launches and sleeps draw on the climb's remaining
+   counts, or on a separate review budget in the contract? Recommendation: the
+   climb's counts, with the contract able to top them up for review; one meter
+   is easier to read in the prompt.
+2. **Who sends messages.** As today: qualifying commenters (member,
+   collaborator, owner; the `outerloop:task` label vouches), the panel, and the
+   base moving. Never the author's own comments.
+3. **A worse submit.** When the author submits a tree whose number is worse
+   than the PR's current one, the head still moves and the number is posted
+   plainly. Recommendation: yes; the author decided, the thread shows it,
+   humans merge. The ledger row does not move.
+4. **Ending.** Unchanged: humans merge or close; a merged PR ends the run
+   merged, a closed one rejected; the steward may close a stale PR.
+
+### Acceptance
+
+A reviewer asks for an ablation on an open PR. The author launches it, sleeps,
+wakes with the result, replies with the numbers, and the PR head does not
+move; the launch is in the ledger. A reviewer asks for a change. The author
+edits, submits, the gate measures, the PR head moves to the sealed tree, and
+the number is on the thread. A base move arrives as a message; the author
+merges and submits, or explains why the PR is superseded.
+
+### Sequencing
+
+Built in stages, each reviewed:
+
+1. Messages reach a parked in-review author: comments delivered as wake text,
+   replies posted as written; launches and sleeps work in review. The old
+   pipeline still handles submits.
+2. Submit on a run in review moves the PR head, with the disarm rule and the
+   ledger rule above.
+3. Delete `followup.py`, its tests, and `followup_stage`; the steward runs on
+   the same path.
