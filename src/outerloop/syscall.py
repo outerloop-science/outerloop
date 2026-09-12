@@ -140,9 +140,11 @@ class Launch:
 
 @dataclass(frozen=True)
 class SyscallRequest:
-    """Everything the author asked for before it slept."""
+    """The author's staged replies and optional sleep request."""
 
     launches: tuple[Launch, ...]
+    replies: tuple[str, ...] = ()
+    sleep: bool = True
     note: str = ""  # the author's reminder-to-self, echoed back on wake
     # research-loop-buildout.md Phase B: a submit is a launch whose job is the
     # GATE (paired baseline/candidate on the sealed tree) plus the panel; the
@@ -242,7 +244,9 @@ def _rel_path_ok(path: str) -> bool:
     return all(p not in ("", ".", "..") for p in parts)
 
 
-def read_request(workspace: Path) -> SyscallRequest | None:
+def read_request(
+    workspace: Path, on_replies: Callable[[tuple[str, ...]], None] | None = None
+) -> SyscallRequest | None:
     """Read and CONSUME the author's request. None = no request (the session
     finished; today's path). Malformed or over per-request bounds ->
     SyscallError. The file is consumed even on error so a bad request can
@@ -257,6 +261,17 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         if len(head) > MAX_REQUEST_BYTES:
             raise SyscallError(f"syscall.json exceeds {MAX_REQUEST_BYTES} bytes")
         raw = head.decode("utf-8", "replace")
+        if on_replies is not None:
+            try:
+                data = json.loads(raw)
+                replies = data.get("replies", []) if isinstance(data, dict) else []
+                if isinstance(replies, list) and all(
+                    isinstance(reply, str) and reply.strip() and len(reply) <= MAX_REQUEST_BYTES
+                    for reply in replies
+                ):
+                    on_replies(tuple(replies))
+            except (ValueError, TypeError):
+                pass
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -271,13 +286,28 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         raise SyscallError(f"syscall.json is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise SyscallError("syscall.json must be a JSON object")
-    # a sleep is one syscall TYPE; the kernel reads this file in author context,
-    # so anything else here (e.g. a verdict) is a wrong-type request, not a sleep.
-    if data.get("type") != "sleep":
-        raise SyscallError(f"expected a sleep syscall, got type {data.get('type')!r}")
-    unknown = set(data) - {"type", "launches", "note", "submit", "eval_minutes", "report"}
+    # Author requests cannot carry a judge verdict.
+    if data.get("type") not in ("sleep", "reply"):
+        raise SyscallError(f"expected a sleep or reply syscall, got type {data.get('type')!r}")
+    unknown = set(data) - {
+        "type",
+        "launches",
+        "note",
+        "submit",
+        "eval_minutes",
+        "report",
+        "replies",
+    }
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
+    replies = data.get("replies", [])
+    if not isinstance(replies, list) or any(
+        not isinstance(reply, str) or not reply.strip() or len(reply) > MAX_REQUEST_BYTES
+        for reply in replies
+    ):
+        raise SyscallError("replies must be a list of non-empty bounded strings")
+    if data["type"] == "reply" and set(data) - {"type", "replies"}:
+        raise SyscallError("reply syscall only accepts replies")
     note = data.get("note", "")
     if not isinstance(note, str) or len(note) > MAX_NOTE_CHARS:
         raise SyscallError(f"note must be a string of at most {MAX_NOTE_CHARS} chars")
@@ -363,6 +393,8 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # sleep count, which is what bounds living forever.
     return SyscallRequest(
         launches=tuple(launches),
+        replies=tuple(replies),
+        sleep=data["type"] == "sleep",
         note=note,
         submit=submit,
         eval_minutes=eval_minutes,
@@ -608,7 +640,11 @@ def tool_update_note(channel: str) -> str:
     whose tool refresh replaced its tool; `channel` is this workspace's channel
     dir name (a resumed legacy session still has `.autoresearch`)."""
     return (
-        "Your syscall tool was updated. `submit` now requires `--report <file>`. The "
+        "Your syscall tool was updated. `reply <text>` or `reply --file <path>` stages "
+        "a reply on your PR or issue, posted when this leg ends. "
+        "Submit is not available while your PR is in review; end your leg and a "
+        "code change is re-measured, or launch and sleep. "
+        "`submit` requires `--report <file>`. The "
         "report explains your hypothesis, what you ran and measured, why this should "
         "merge, and what did not work; it becomes the pull request's research report "
         "and the panel reads it. `launch` accepts `--why` and, with `--array`, "

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from fakes import RecordingDispatcher
 from outerloop.compute import CommandResult, SlurmCompute
 from outerloop.runstate import (
@@ -4712,3 +4714,33 @@ def test_a_tick_warms_the_targets_seed_cache(tmp_path: Path, monkeypatch) -> Non
         followup_spec=spec,
     )
     assert seen == [("org/pilot", "main")]
+
+
+@pytest.mark.parametrize("merged,ending", [(True, "merged"), (False, "rejected")])
+def test_closed_parked_review_ends_and_cancels_launches(tmp_path, merged, ending) -> None:
+    from outerloop.runstate import RunRecord, load_record, save_record
+    from outerloop.tick import FollowupSpec, cancel_ended_launches, service_in_review
+
+    record = RunRecord(
+        run_id="parked-review",
+        target="org/pilot",
+        task_title="experiment",
+        benchmark="tsp",
+        state="waiting",
+        pr_url="https://github.com/org/pilot/pull/6",
+        deadline=NOW + 100,
+        stage={"phase": "author-sleep", "launch_afterany": "afterany:501"},
+    )
+    save_record(tmp_path, record, NOW)
+
+    class GitHub:
+        def get_pull_request(self, repo, number):
+            return {"state": "closed", "merged": merged}
+
+    slurm = FakeSlurm(states={"501": "RUNNING"})
+    spec = FollowupSpec(account="", partition="", run_root=tmp_path, image="", home=tmp_path)
+    ended, submitted = service_in_review(tmp_path, GitHub(), slurm.compute(), spec, NOW)
+    assert ended == [(record.run_id, ending)] and submitted == []
+    assert load_record(tmp_path, record.run_id).ending == ending
+    assert cancel_ended_launches(tmp_path, slurm.compute(), NOW) == ["501"]
+    assert slurm.cancelled == ["501"]

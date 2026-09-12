@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from outerloop.contract import Contract
     from outerloop.measure import DispatchSettings
 
 from outerloop.contract import CONTRACT_NAME, contract_in_tree, contract_text_in_tree, load_contract
@@ -38,15 +39,13 @@ from outerloop.github import (
     git_identity,
     is_own_login,
 )
-from outerloop.harness import Harness, default_binary, outage, redact
+from outerloop.harness import Harness, SessionResult, default_binary, outage, redact
 from outerloop.inbox import (
     Message,
     append,
-    budgets_line,
     delivered_seq,
     panel_payload,
     pending,
-    render_inbox,
 )
 from outerloop.markers import has_marker, marker
 from outerloop.orchestrator import (
@@ -66,7 +65,7 @@ from outerloop.progress import (
     write_progress,
 )
 from outerloop.review import APPROVAL_PATTERN, REDACTED
-from outerloop.role_runner import role_key, run_role
+from outerloop.role_runner import role_key
 from outerloop.roles import followup_spec
 from outerloop.rolespec import RoleSpec
 from outerloop.runstate import (
@@ -74,6 +73,7 @@ from outerloop.runstate import (
     IN_REVIEW,
     MERGED,
     REJECTED,
+    WAITING,
     RunRecord,
     acquire_lease,
     load_record,
@@ -262,19 +262,19 @@ def _release_parked_snapshot(run_root: Path, record: RunRecord) -> None:
     """A run that ends while a dispatched re-measure is parked must not leave
     the sealed commit's retaining ref behind (best-effort: the ending is
     load-bearing, the ref release is hygiene — a failure logs)."""
-    ref = str(record.followup_stage.get("candidate_ref", "") or "")
-    if not ref:
-        return
-    try:
-        from outerloop.dispatch import Snapshot, drop_snapshot
+    from outerloop.dispatch import Snapshot, drop_snapshot
 
-        ws = Workspace(root=run_dir(run_root, record.run_id) / "ws")
-        drop_snapshot(
-            ws,
-            Snapshot(commit=str(record.followup_stage.get("candidate_sha", "")), tree="", ref=ref),
-        )
-    except Exception as exc:
-        log.warning("parked snapshot release failed for %s: %s", record.run_id, exc)
+    ws = Workspace(root=run_dir(run_root, record.run_id) / "ws")
+    for stage in (record.stage, record.followup_stage):
+        ref = str(stage.get("candidate_ref", "") or "")
+        if not ref:
+            continue
+        try:
+            drop_snapshot(
+                ws, Snapshot(commit=str(stage.get("candidate_sha", "")), tree="", ref=ref)
+            )
+        except Exception as exc:
+            log.warning("parked snapshot release failed for %s: %s", record.run_id, exc)
 
 
 def _end_run(
@@ -305,24 +305,30 @@ def _end_run(
 
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
     """End the run if its PR is merged/closed. Returns the ending or ""."""
-    number = _pr_number(record.pr_url)
+    if not acquire_lease(run_root, record.run_id, holder=f"close:{now}", holder_job_id="", now=now):
+        return ""
     try:
-        pr = github.get_pull_request(record.target, number)
-    except GitHubError as exc:
-        if exc.status == 404:
-            # The PR was deleted out from under us — nothing left to review or
-            # merge. End the run (state transition + a courtesy note on the
-            # issue, not the gone PR) rather than re-fetching a 404 every tick.
-            _end_run(run_root, record, github, REJECTED, "PR no longer exists", now)
+        record = load_record(run_root, record.run_id)
+        number = _pr_number(record.pr_url)
+        try:
+            pr = github.get_pull_request(record.target, number)
+        except GitHubError as exc:
+            if exc.status == 404:
+                # The PR was deleted out from under us — nothing left to review or
+                # merge. End the run (state transition + a courtesy note on the
+                # issue, not the gone PR) rather than re-fetching a 404 every tick.
+                _end_run(run_root, record, github, REJECTED, "PR no longer exists", now)
+                return REJECTED
+            raise
+        if pr.get("merged") or pr.get("merged_at"):
+            _end_run(run_root, record, github, MERGED, "", now)
+            return MERGED
+        if pr.get("state") == "closed":
+            _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
             return REJECTED
-        raise
-    if pr.get("merged") or pr.get("merged_at"):
-        _end_run(run_root, record, github, MERGED, "", now)
-        return MERGED
-    if pr.get("state") == "closed":
-        _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
-        return REJECTED
-    return ""
+        return ""
+    finally:
+        release_lease(run_root, record.run_id)
 
 
 def panel_wake_pending(run_root: Path, record: RunRecord, pr: dict) -> bool:
@@ -426,60 +432,19 @@ def respond_once(
         release_lease(run_root, run_id)
 
 
-def _respond(
+def build_review_messages(
     run_root: Path,
-    run_id: str,
     record: RunRecord,
     number: int,
-    harness: Harness,
-    evaluator: Evaluator,
     github: GitHubClient,
     bot_login: str,
     now: float,
-    secrets: tuple[str, ...],
-    created: str,
-    spec: RoleSpec | None = None,
-    panel_lenses: tuple[Any, ...] = (),
-    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
-    panel_skip: str = "",
-    dispatch: DispatchSettings | None = None,
-) -> FollowupOutcome:
-    # a deployment bug is refused before any GitHub read or contract load —
-    # the contained error outcome retries next tick either way, so fail as
-    # cheaply as possible
-    spec = spec or followup_spec()
-    if not spec.execution.can_execute:
-        raise ValueError(
-            "the follow-up responder is an editing role; the spec must allow execution"
-        )
-
-    pr = github.get_pull_request(record.target, number)
-    if pr.get("merged") or pr.get("merged_at"):
-        _end_run(run_root, record, github, MERGED, "", now)
-        return FollowupOutcome(run_id, "ended-merged")
-    if pr.get("state") == "closed":
-        _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
-        return FollowupOutcome(run_id, "ended-rejected")
-    if record.followup_stage:
-        # a sealed change is waiting on its dispatched measure: finish THAT
-        # (or find it still pending) before any comment is serviced
-        return _resume_measure(
-            run_root,
-            run_id,
-            record,
-            number,
-            pr,
-            github,
-            bot_login,
-            now,
-            secrets,
-            created,
-            dispatch,
-            panel_lenses,
-            panel_builder,
-            panel_skip,
-        )
-
+    pr: dict,
+    base_sha_at_fetch: str = "",
+) -> tuple[RunRecord, dict[str, int], list[tuple[int, str, str]]]:
+    """Append GitHub data before advancing any collection position."""
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    is_steward = record.agent_id.startswith("steward")
     # All three places a maintainer can write — three REST collections with
     # INDEPENDENT id sequences, so each keeps its own cursor.
     collections = {
@@ -521,9 +486,6 @@ def _respond(
     is_conflict = bool(dirty_pr_head(pr))
     conflict_head = base_sync_head(pr)
     conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
-    panel_wake = panel_wake_pending(run_root, record, pr)
-    if not merged and not conflict_wake and not panel_wake:
-        return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     # oldest first WITHIN each source (ids are monotonic per source); cap the
     # wake, and advance each cursor only to the max id actually processed
     merged.sort(key=lambda item: item[1])
@@ -537,61 +499,7 @@ def _respond(
         cursors[source] = max(cursors[source], cid)
     comments = [(cid, author, body) for _, cid, author, body in merged]
 
-    workspace = run_dir(run_root, run_id) / "ws"
-    if not workspace.is_dir():
-        return FollowupOutcome(run_id, "error", "workspace no longer exists (GC'd?)")
-    from outerloop.attempt import target_clone_url
-
-    ws = Workspace(root=workspace, auth=github.auth, url=target_clone_url(record.target))
-    contract_text = contract_text_in_tree(workspace)
-    contract = load_contract(contract_text, record.target)
-    bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
-    if bench is None:
-        return FollowupOutcome(
-            run_id, "error", f"benchmark {record.benchmark!r} not in the contract"
-        )
-
-    is_steward = record.agent_id.startswith("steward")
-    scope_check = steward_out_of_scope if is_steward else out_of_scope
-
-    # Fill the manifest's key family and scope from the record and contract
-    # so the spec run_role receives is TRUE (roles.md: the follow-up runs
-    # under the resuming role's own key and scope). run_role does not consume
-    # these fields — like instructions/skills, they are manifest data ahead
-    # of the loader — enforcement stays scope_check below and the CLI's
-    # key-file.
-    owned = (
-        (contract.steward.allowed if contract.steward else [])
-        if is_steward
-        else contract.scope.allowed
-    )
-    spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
-
-    # Every wake needs a CURRENT origin/<base>: the conflict wake tells the
-    # session to merge it, and the scope check's base-content exemption must
-    # never compare against a stale ref (old base content could smuggle).
-    # The session has no credentials, so the kernel fetches on its behalf.
-    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-    base_sha_at_fetch = ""
-    try:
-        ws.fetch_origin()
-        # pinned NOW, before the session runs: refs/remotes/* are plain
-        # files a session can rewrite, so the scope exemption compares
-        # against this sha, never the ref name
-        base_sha_at_fetch = ws.git("rev-parse", f"origin/{base_ref}").strip()
-    except Exception as exc:
-        log.warning("base fetch failed for %s: %s", run_id, exc)
-    base_fetched = bool(base_sha_at_fetch)
-    if base_sync_head(pr) and not base_fetched:
-        # a PR that NEEDS a base sync cannot be serviced without a current
-        # base — comment-driven edits included: they would measure and push
-        # against no known base while the PR stays behind/conflicted. The
-        # cursor is unspent; the next tick retries the whole wake.
-        return FollowupOutcome(
-            run_id, "error", "base sync needed but the base fetch failed; retrying next tick"
-        )
-
-    directory = run_dir(run_root, run_id)
+    directory = run_dir(run_root, record.run_id)
     thread = f"pr:{number}"
     for source, cid, author, body in merged:
         original = next(c for c in collections[source] if c.get("id") == cid)
@@ -633,7 +541,8 @@ def _respond(
                 now,
                 f"base:{conflict_head}:{base_sha_at_fetch}",
                 {
-                    "text": fact + f" `origin/{base_ref}` has been fetched into your workspace. "
+                    "text": fact
+                    + f" At delivery, `origin/{base_ref}` has been fetched into your workspace. "
                     "A change is applied only when your tree contains that base; it is "
                     "re-measured before it is pushed, and a human merges the updated PR.",
                     "base_sha": base_sha_at_fetch,
@@ -706,46 +615,216 @@ def _respond(
             ),
         )
         record = replace(record, panel_wake_text="")
+    return record, cursors, comments
+
+
+def _respond(
+    run_root: Path,
+    run_id: str,
+    record: RunRecord,
+    number: int,
+    harness: Harness,
+    evaluator: Evaluator,
+    github: GitHubClient,
+    bot_login: str,
+    now: float,
+    secrets: tuple[str, ...],
+    created: str,
+    spec: RoleSpec | None = None,
+    panel_lenses: tuple[Any, ...] = (),
+    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None = None,
+    panel_skip: str = "",
+    dispatch: DispatchSettings | None = None,
+) -> FollowupOutcome:
+    # a deployment bug is refused before any GitHub read or contract load —
+    # the contained error outcome retries next tick either way, so fail as
+    # cheaply as possible
+    spec = spec or followup_spec()
+    if not spec.execution.can_execute:
+        raise ValueError(
+            "the follow-up responder is an editing role; the spec must allow execution"
+        )
+
+    pr = github.get_pull_request(record.target, number)
+    if pr.get("merged") or pr.get("merged_at"):
+        _end_run(run_root, record, github, MERGED, "", now)
+        return FollowupOutcome(run_id, "ended-merged")
+    if pr.get("state") == "closed":
+        _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
+        return FollowupOutcome(run_id, "ended-rejected")
+    if record.followup_stage:
+        # a sealed change is waiting on its dispatched measure: finish THAT
+        # (or find it still pending) before any comment is serviced
+        return _resume_measure(
+            run_root,
+            run_id,
+            record,
+            number,
+            pr,
+            github,
+            bot_login,
+            now,
+            secrets,
+            created,
+            dispatch,
+            panel_lenses,
+            panel_builder,
+            panel_skip,
+        )
+
+    workspace = run_dir(run_root, run_id) / "ws"
+    if not workspace.is_dir():
+        return FollowupOutcome(run_id, "error", "workspace no longer exists (GC'd?)")
+    from outerloop.attempt import target_clone_url
+
+    ws = Workspace(root=workspace, auth=github.auth, url=target_clone_url(record.target))
+    contract_text = contract_text_in_tree(workspace)
+    contract = load_contract(contract_text, record.target)
+    bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
+    if bench is None:
+        return FollowupOutcome(
+            run_id, "error", f"benchmark {record.benchmark!r} not in the contract"
+        )
+
+    is_steward = record.agent_id.startswith("steward")
+    scope_check = steward_out_of_scope if is_steward else out_of_scope
+
+    # Fill the manifest's key family and scope from the record and contract
+    # so the spec run_role receives is TRUE (roles.md: the follow-up runs
+    # under the resuming role's own key and scope). run_role does not consume
+    # these fields — like instructions/skills, they are manifest data ahead
+    # of the loader — enforcement stays scope_check below and the CLI's
+    # key-file.
+    owned = (
+        (contract.steward.allowed if contract.steward else [])
+        if is_steward
+        else contract.scope.allowed
+    )
+    spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
+
+    # Every wake needs a CURRENT origin/<base>: the conflict wake tells the
+    # session to merge it, and the scope check's base-content exemption must
+    # never compare against a stale ref (old base content could smuggle).
+    # The session has no credentials, so the kernel fetches on its behalf.
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    base_sha_at_fetch = ""
+    try:
+        ws.fetch_origin()
+        # pinned NOW, before the session runs: refs/remotes/* are plain
+        # files a session can rewrite, so the scope exemption compares
+        # against this sha, never the ref name
+        base_sha_at_fetch = ws.git("rev-parse", f"origin/{base_ref}").strip()
+    except Exception as exc:
+        log.warning("base fetch failed for %s: %s", run_id, exc)
+    base_fetched = bool(base_sha_at_fetch)
+    if base_sync_head(pr) and not base_fetched:
+        # a PR that NEEDS a base sync cannot be serviced without a current
+        # base — comment-driven edits included: they would measure and push
+        # against no known base while the PR stays behind/conflicted. The
+        # cursor is unspent; the next tick retries the whole wake.
+        return FollowupOutcome(
+            run_id, "error", "base sync needed but the base fetch failed; retrying next tick"
+        )
+
+    record, cursors, comments = build_review_messages(
+        run_root, record, number, github, bot_login, now, pr, base_sha_at_fetch
+    )
+    directory = run_dir(run_root, run_id)
+    conflict_head = base_sync_head(pr)
+    conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
+    panel_wake = panel_wake_pending(run_root, record, pr)
     messages = pending(directory, delivered_seq(record))
+    if not comments and not conflict_wake and not panel_wake and record.state != WAITING:
+        return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     delivery_seq = max((m.seq for m in messages), default=record.inbox_seq)
-    from outerloop.style import PLAIN_STYLE
+    from outerloop.attempt import _park_run, run_author_leg
+    from outerloop.dispatch import drop_snapshot, snapshot_tree
+    from outerloop.orchestrator import AttemptResult, RunConfig, RunParked
 
-    # no sibling refresh here: a follow-up session has no syscall tool to read
-    # it with, and an untracked file in this workspace would count as its edit
-    protocol = (
-        "Your open pull request received messages; this supersedes the brief's "
-        "instruction to consider the task finished, and every other rule still binds. "
-        "Your final message is posted on the PR as your reply. A code change inside the "
-        "contract's scope is re-measured before it is pushed, and the number is appended "
-        "to your reply.\n\n# How to write\n" + PLAIN_STYLE
-    )
-    prompt = render_inbox(
-        messages,
-        protocol=protocol,
-        budgets=budgets_line(
-            launches=bench.depth_k - int(str(record.stage.get("launches_used", 0))),
-            sleeps=bench.sleep_k - int(str(record.stage.get("sleeps_used", 0))),
-            gpu_hours=(
-                contract.budgets.gpu_hours_per_run
-                - float(str(record.stage.get("gpu_hours_used", 0)))
-                if bench.gpus
-                else None
+    snapshots = []
+
+    def snapshot() -> str:
+        snap = snapshot_tree(ws, base_sha_at_fetch or "HEAD", author=bot_login)
+        snapshots.append(snap)
+        return snap.commit
+
+    def acknowledge(seq: int) -> None:
+        nonlocal record
+        record = replace(record, inbox_seq=seq)
+        save_record(run_root, record, now)
+
+    tip = str((pr.get("head") or {}).get("sha", "")) or ws.git("rev-parse", "HEAD").strip()
+
+    def launch_changes() -> list[str]:
+        changed, _, known, matches_base = review_changes(ws, tip, base_sha_at_fetch, base_fetched)
+        if not known:
+            raise GitError("cannot determine committed review changes")
+        return [path for path in changed if not matches_base(path)]
+
+    kept_ref = ""
+    try:
+        result = run_author_leg(
+            RunConfig(
+                target=record.target,
+                benchmark=record.benchmark,
+                agent_id=record.agent_id,
+                bot_login=bot_login,
             ),
-        ),
-    )
+            contract_text,
+            workspace,
+            harness,
+            None,
+            base_sha_at_fetch or "HEAD",
+            snapshot,
+            run_root=run_root,
+            record=record,
+            ws=ws,
+            dispatch=dispatch,
+            github=github,
+            secrets=secrets,
+            spec=spec,
+            changed_paths=launch_changes,
+            scope_validator=scope_check,
+            on_inbox_delivered=acknowledge,
+            on_stop=lambda session: AttemptResult(outcome="review", session=session),
+        )
+    except RunParked as parked:
+        kept_ref = next(s.ref for s in snapshots if s.commit == parked.candidate_sha)
+        record = replace(
+            record,
+            last_comment_id=cursors["comment"],
+            last_review_id=cursors["review"],
+            last_review_comment_id=cursors["review_comment"],
+        )
+        try:
+            _park_run(
+                run_root,
+                record,
+                parked,
+                kept_ref,
+                bench.eval_minutes,
+                now,
+                secrets,
+                dispatch=dispatch,
+                base_branch=base_ref,
+            )
+        except Exception:
+            from outerloop.attempt import afterany_ids
 
-    def requeue_panel_findings() -> None:
-        # the author never got to answer them (its response was reverted):
-        # the findings go back into the inbox for the next wake
-        for m in messages:
-            if m.kind == "panel-verdict" and m.payload.get("wake_author", True):
-                append(directory, replace(m, key=f"{m.key}:again:{now}"))
-
-    role_result = run_role(
-        spec, harness, prompt, workspace, resume_session_id=record.resume_session_id or None
-    )
-    session = role_result.session
-    if not role_result.ok:
+            if dispatch is not None:
+                for job_id in afterany_ids(parked.afterany):
+                    dispatch.compute.cancel(job_id)
+            kept_ref = ""
+            raise
+        return FollowupOutcome(run_id, "parked")
+    finally:
+        for snap in snapshots:
+            if snap.ref != kept_ref:
+                drop_snapshot(ws, snap)
+    session = result.session
+    if session is None:
+        return FollowupOutcome(run_id, "error", result.note)
+    if result.outcome != "review":
         # cursor NOT advanced: the next attempt sees the same comments
         # Deliberately NOT a budget-exhausted ending: follow-ups never end
         # the run, and "error" is what keeps cursors un-advanced so the next
@@ -773,8 +852,133 @@ def _respond(
         return FollowupOutcome(
             run_id,
             "error",
-            f"session: {role_result.error or session.error_detail or session.stop_reason}",
+            f"session: {result.note or session.error_detail or session.stop_reason}",
         )
+
+    from outerloop.attempt import _clear_stage
+
+    record = replace(_clear_stage(record), state=IN_REVIEW, wake_attempts=record.wake_attempts)
+    delivery_seq = max(delivery_seq, record.inbox_seq)
+    return finish_review_leg(
+        base_sha_at_fetch=base_sha_at_fetch,
+        bot_login=bot_login,
+        comments=comments,
+        conflict_head=conflict_head,
+        conflict_wake=conflict_wake,
+        contract=contract,
+        created=created,
+        cursors=cursors,
+        delivery_seq=delivery_seq,
+        dispatch=dispatch,
+        evaluator=evaluator,
+        github=github,
+        now=now,
+        number=number,
+        panel_builder=panel_builder,
+        panel_lenses=panel_lenses,
+        panel_skip=panel_skip,
+        panel_wake=panel_wake,
+        pr=pr,
+        record=record,
+        run_root=run_root,
+        secrets=secrets,
+        session=session,
+        workspace=workspace,
+        ws=ws,
+        messages=messages,
+    )
+
+
+def review_changes(
+    ws: Workspace, pushed_tip: str, base_sha_at_fetch: str, base_fetched: bool
+) -> tuple[list[str], list[str], bool, Callable[[str], bool]]:
+    """Working and committed edits, with the fetched base's content exempted."""
+
+    def _matches_base(path: str) -> bool:
+        # content identical to origin/<base> is the base branch's own (a
+        # merge brings it in); it can neither smuggle nor exceed scope. Only
+        # against the sha PINNED at fetch time — the ref itself is a plain
+        # file the session could have rewritten while it ran. Blob-hash
+        # comparison: `git diff <commit> -- path` would call an UNTRACKED
+        # working file "deleted" instead of reading its content. A deletion
+        # matches when the base deleted the path too.
+        if not base_fetched:
+            return False
+        try:
+            base_blob = ws.git("rev-parse", f"{base_sha_at_fetch}:{path}").strip()
+        except Exception:
+            base_blob = ""  # absent on base
+        local_path = Path(ws.root) / path
+        if not local_path.exists():
+            return not base_blob  # both absent: a base-side deletion merged in
+        if not base_blob:
+            return False
+        try:
+            return ws.git("hash-object", "--", path).strip() == base_blob
+        except Exception:
+            return False
+
+    committed: list[str] = []
+    try:
+        # a session that COMMITTED its work (a resolved merge commit is the
+        # normal shape) leaves the working tree clean — the diff against the
+        # PR branch's pushed tip is where those changes show. The tip is
+        # PINNED from the kernel-fetched PR object: refs/remotes/* are plain
+        # files the session can rewrite to make this diff read empty.
+        committed = [
+            p
+            for p in ws.git("diff", "--name-only", f"{pushed_tip}..HEAD").splitlines()
+            if p.strip()
+        ]
+        history_known = True
+    except Exception:
+        committed = []
+        history_known = False
+
+    changed = sorted(set(_changed_paths(ws)) | set(committed))
+    return changed, committed, history_known, _matches_base
+
+
+def finish_review_leg(
+    *,
+    base_sha_at_fetch: str,
+    bot_login: str,
+    comments: list[tuple[int, str, str]],
+    conflict_head: str,
+    conflict_wake: bool,
+    contract: Contract,
+    created: str,
+    cursors: dict[str, int],
+    delivery_seq: int,
+    dispatch: DispatchSettings | None,
+    evaluator: Evaluator,
+    github: GitHubClient,
+    now: float,
+    number: int,
+    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
+    panel_lenses: tuple[Any, ...],
+    panel_skip: str,
+    panel_wake: bool,
+    pr: dict,
+    record: RunRecord,
+    run_root: Path,
+    secrets: tuple[str, ...],
+    session: SessionResult,
+    workspace: Path,
+    ws: Workspace,
+    messages: list[Message],
+) -> FollowupOutcome:
+    base_fetched = bool(base_sha_at_fetch)
+    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
+    is_steward = record.agent_id.startswith("steward")
+    run_id = record.run_id
+    directory = run_dir(run_root, run_id)
+    scope_check = steward_out_of_scope if is_steward else out_of_scope
+
+    def requeue_panel_findings() -> None:
+        for message in messages:
+            if message.kind == "panel-verdict" and message.payload.get("wake_author", True):
+                append(directory, replace(message, key=f"{message.key}:again:{now}"))
 
     # Same self-approval scrub as the reviewer: the pipeline must never nudge
     # humans toward merging its own work, even in the author's voice.
@@ -802,48 +1006,11 @@ def _respond(
     pushed_head = ""  # the exact sha a code-changing push put on the PR
     sealed_snap: Any = None  # a synchronous sealed measure's snapshot, released after the reply
 
-    def _matches_base(path: str) -> bool:
-        # content identical to origin/<base> is the base branch's own (a
-        # merge brings it in); it can neither smuggle nor exceed scope. Only
-        # against the sha PINNED at fetch time — the ref itself is a plain
-        # file the session could have rewritten while it ran. Blob-hash
-        # comparison: `git diff <commit> -- path` would call an UNTRACKED
-        # working file "deleted" instead of reading its content. A deletion
-        # matches when the base deleted the path too.
-        if not base_fetched:
-            return False
-        try:
-            base_blob = ws.git("rev-parse", f"{base_sha_at_fetch}:{path}").strip()
-        except Exception:
-            base_blob = ""  # absent on base
-        local_path = Path(ws.root) / path
-        if not local_path.exists():
-            return not base_blob  # both absent: a base-side deletion merged in
-        if not base_blob:
-            return False
-        try:
-            return ws.git("hash-object", "--", path).strip() == base_blob
-        except Exception:
-            return False
-
     branch = _current_branch(ws)
-    committed: list[str] = []
     pushed_tip = str((pr.get("head") or {}).get("sha", "")) or f"origin/{branch}"
-    try:
-        # a session that COMMITTED its work (a resolved merge commit is the
-        # normal shape) leaves the working tree clean — the diff against the
-        # PR branch's pushed tip is where those changes show. The tip is
-        # PINNED from the kernel-fetched PR object: refs/remotes/* are plain
-        # files the session can rewrite to make this diff read empty.
-        committed = [
-            p
-            for p in ws.git("diff", "--name-only", f"{pushed_tip}..HEAD").splitlines()
-            if p.strip()
-        ]
-        history_known = True
-    except Exception:
-        committed = []
-        history_known = False
+    changed, committed, history_known, _matches_base = review_changes(
+        ws, pushed_tip, base_sha_at_fetch, base_fetched
+    )
 
     response_reverted = False
 
@@ -863,7 +1030,6 @@ def _respond(
             # is a session-writable file and may not even exist locally
             ws.git("reset", "--hard", pushed_tip)
 
-    changed = sorted(set(_changed_paths(ws)) | set(committed))
     # The merge may have brought a NEW contract in: everything downstream —
     # the sync-skip comparison, the scope check, the re-measure's bench —
     # must see the tree's contract, not the one loaded before the session
@@ -1229,7 +1395,8 @@ def _respond(
         from outerloop.dispatch import drop_snapshot
 
         drop_snapshot(ws, sealed_snap)
-    github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
+    if reply_body or measured_note:
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
     if change_pushed:
         try:
             # the measured table is rewritten in place; the narrative is
@@ -1261,6 +1428,7 @@ def _respond(
         run_root,
         replace(
             record,
+            state=IN_REVIEW,
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],

@@ -323,7 +323,7 @@ between stages.
    pending blocking findings are read from the inbox from this stage on, so
    `panel_wake_text` can go. Advisory findings and a refreshed sibling view
    ride along. No lifecycle change yet.
-2. **Messages reach a parked author.** `reply` exists. A run with an open PR
+2. **Messages reach a parked author.** Status: landed. `reply` exists. A run with an open PR
    parks; comments and base moves are inbox messages; the author can launch,
    reply and sleep in review. A session that edits code in review still goes
    through today's re-measure-and-push until the next stage replaces it.

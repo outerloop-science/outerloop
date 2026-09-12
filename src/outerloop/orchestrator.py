@@ -1174,6 +1174,9 @@ def attempt_once(
     gpu_hours_used: float = 0.0,
     tree_of: Callable[[str], str] | None = None,
     judged: tuple[str, AttemptResult] | None = None,
+    on_replies: Callable[[tuple[str, ...]], None] | None = None,
+    on_stop: Callable[[SessionResult], AttemptResult] | None = None,
+    scope_validator: Callable[[list[str], Contract], list[str]] = out_of_scope,
 ) -> AttemptResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1252,6 +1255,26 @@ def attempt_once(
             "resume — omit them"
         )
 
+    def _consume_request() -> SyscallRequest | None:
+        from outerloop.inbox import stage_replies
+
+        try:
+            return read_syscall_request(
+                workspace,
+                on_replies=(lambda replies: stage_replies(inbox_dir, replies))
+                if on_replies is not None
+                else None,
+            )
+        finally:
+            if on_replies is not None:
+                on_replies(())  # The request is consumed before the network write.
+
+    def _finish_replies() -> None:
+        try:
+            _consume_request()
+        except SyscallError as exc:
+            log.warning("cannot consume failed session request: %s", exc)
+
     def _watched() -> contextlib.AbstractContextManager[Any]:
         return watcher() if watcher is not None else contextlib.nullcontext()
 
@@ -1298,7 +1321,16 @@ def attempt_once(
             role_result = run_role(
                 spec,
                 harness,
-                render_inbox(messages, budgets=_budgets_line()),
+                render_inbox(
+                    messages,
+                    budgets=_budgets_line(),
+                    protocol=(
+                        "submit is not available while your PR is in review; end your leg and a "
+                        "code change is re-measured, or launch and sleep"
+                    )
+                    if on_stop is not None
+                    else "",
+                ),
                 workspace,
                 resume_session_id=resume_session_id,
             )
@@ -1336,6 +1368,7 @@ def attempt_once(
             role_result = run_role(spec, harness, render(brief), workspace)
     session = role_result.session
     if not role_result.ok:
+        _finish_replies()
         # the role-runner's verdict, not just the raw session flag (for a
         # schema-less role they coincide today, but any failure the runner
         # learns to report must not slip through as a clean run).
@@ -1392,7 +1425,16 @@ def attempt_once(
         nonlocal session
         append(inbox_dir, message)
         messages = pending_messages(inbox_dir, inbox_seq)
-        prompt = render_inbox(messages, budgets=_budgets_line())
+        prompt = render_inbox(
+            messages,
+            budgets=_budgets_line(),
+            protocol=(
+                "submit is not available while your PR is in review; end your leg and a "
+                "code change is re-measured, or launch and sleep"
+            )
+            if on_stop is not None
+            else "",
+        )
         # the tool the author is about to use is this kernel's, whatever the
         # session started with (a wake refreshed it too; this covers a refusal)
         with contextlib.suppress(Exception):
@@ -1405,6 +1447,7 @@ def attempt_once(
         if wake_result.ok:
             _ack(messages)
             return None
+        _finish_replies()
         if outage(session):
             kind = "session-outage"
         elif budget_exhausted(session):
@@ -1440,9 +1483,9 @@ def attempt_once(
         submitted: SyscallRequest | None = None
         evals_charge = 0.0  # GPU-hours this pass took for gate evals
         presealed = ""  # a seal taken early to compare against the judged tree
-        while launcher is not None:
+        while launcher is not None or on_replies is not None:
             try:
-                request = read_syscall_request(workspace)
+                request = _consume_request()
             except SyscallError as exc:
                 # loud, never silent: the author meant something by the file
                 return AttemptResult(
@@ -1452,6 +1495,8 @@ def attempt_once(
                     note=f"unhonorable syscall request: {exc}",
                 )
             if request is None:
+                break
+            if not request.sleep or (launcher is None and not (on_stop and request.submit)):
                 break
             # suite siblings' paired evals are charged as if measured (the
             # suite phase decides at measurement; a budget over-charges)
@@ -1476,7 +1521,7 @@ def attempt_once(
                     main_evals = 1
             # a report-less resubmit never rides the failed-gate fast path: it
             # falls through to the refusal below like any other missing report
-            if request.submit and request.report and failed_gate is not None:
+            if on_stop is None and request.submit and request.report and failed_gate is not None:
                 # a resubmit of the tree the gate already turned down: nothing
                 # to budget or charge — the verdict is reused below (the sleep
                 # still counts, so unchanged resubmits stay bounded). An eval
@@ -1484,7 +1529,7 @@ def attempt_once(
                 # retries it (with more minutes, say), so that one runs. The
                 # early seal keeps the later seal's guards: scope first, and a
                 # failed snapshot is the eval error it always was.
-                violations = out_of_scope(list(changed_paths()), contract)
+                violations = scope_validator(list(changed_paths()), contract)
                 if violations:
                     return AttemptResult(
                         outcome="scope-violation",
@@ -1526,6 +1571,11 @@ def attempt_once(
                 suite_gpus=suite_gpus,
                 main_evals=main_evals,
             )
+            if on_stop is not None and request.submit:
+                problem = (
+                    "submit is not available while your PR is in review; end your leg and a "
+                    "code change is re-measured, or launch and sleep"
+                )
             if not problem and request.submit and not request.report:
                 # a refusal the author can act on, never a dead run: a session
                 # that started under an older tool learns the flag here (the wake
@@ -1569,7 +1619,7 @@ def attempt_once(
                 # executed — the out-of-scope edit could be to the ruler
                 # itself, and a launch runs code from this tree in an external
                 # job. Same ending as the candidate path.
-                violations = out_of_scope(list(changed_paths()), contract)
+                violations = scope_validator(list(changed_paths()), contract)
                 if violations:
                     return AttemptResult(
                         outcome="scope-violation",
@@ -1581,6 +1631,7 @@ def attempt_once(
                         run_seed=run_seed,
                     )
                 sha = snapshot()
+                assert launcher is not None
                 launch_afterany = launcher(sha, request)
                 raise RunParked(
                     phase="author-sleep",
@@ -1620,13 +1671,15 @@ def attempt_once(
             )
             if failed is not None:
                 return failed
+        if on_stop is not None:
+            return on_stop(session)
         measured = tuple(changed_paths())
         # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
         # OR measured — the out-of-scope edit could be to the ruler itself. This
         # early exit keeps the snapshot off a rejected tree; measure_and_decide
         # re-checks as the authoritative gate on every entry (including a wake,
         # which re-enters it directly).
-        violations = out_of_scope(list(measured), contract)
+        violations = scope_validator(list(measured), contract)
         if violations:
             return AttemptResult(
                 outcome="scope-violation",

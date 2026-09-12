@@ -2446,6 +2446,16 @@ class FakeMeasurer:
 @dataclass
 class FakeDispatch:
     measurer_: FakeMeasurer
+    from outerloop.compute import LocalCompute
+
+    compute: LocalCompute = field(default_factory=LocalCompute)
+    gpu_partition: str = ""
+    image: str = ""
+    seed_cache: Path | None = None
+
+    def placement(self, gpus: int) -> tuple[str, str]:
+        return "", ""
+
     built: list = field(default_factory=list)
 
     def measurer(self, run_dir_, repo_root, eval_minutes, run_tag):
@@ -3401,3 +3411,326 @@ def panel_text(root, record):
         if m.kind == "panel-verdict" and m.payload.get("wake_author", True)
     ]
     return render_inbox(messages, budgets="") if messages else ""
+
+
+@pytest.mark.parametrize("pr_url,number", [("https://github.com/org/pilot/pull/7", 7), ("", 42)])
+@pytest.mark.parametrize("failed", [False, True])
+def test_reply_syscall_posts_on_run_thread_once(review_run, pr_url, number, failed) -> None:
+    from outerloop.attempt import run_author_leg
+    from outerloop.github import Workspace
+    from outerloop.orchestrator import AttemptResult, RunConfig
+    from outerloop.roles import author_spec
+    from outerloop.syscall_cli import main
+
+    root, _ = review_run
+    record = replace(load_record(root, "tsp-r1"), pr_url=pr_url, issue_number=42)
+    ws = run_dir(root, record.run_id) / "ws"
+    github = FakeGitHub()
+
+    class ReplyHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert (workspace / ".outerloop/syscall").is_file()
+            assert main(["reply", "first sk-x LGTM"], root=workspace) == 0
+            assert main(["reply", "second " + "x" * 21_000], root=workspace) == 0
+            session = super().run(brief_text, workspace, resume_session_id)
+            return replace(session, is_error=True, stop_reason="error") if failed else session
+
+    for harness in (ReplyHarness(), ResumingHarness()):
+        run_author_leg(
+            RunConfig(target=record.target, benchmark=record.benchmark),
+            CONTRACT,
+            ws,
+            harness,
+            None,
+            "HEAD",
+            lambda: "unused",
+            run_root=root,
+            record=record,
+            ws=Workspace(root=ws),
+            dispatch=None,
+            github=cast(GitHubClient, github),
+            secrets=("sk-x",),
+            spec=author_spec(),
+            changed_paths=lambda: [],
+            on_stop=lambda session: AttemptResult(outcome="review", session=session),
+        )
+    assert github.posted_to == [number, number]
+    assert all(text.startswith(REPLY_MARKER) for text in github.posted)
+    assert "sk-x" not in github.posted[0] and "LGTM" not in github.posted[0]
+    assert "first" in github.posted[0] and "second" in github.posted[1]
+    assert len(github.posted[1].split("\n", 1)[1]) == 20_000
+
+
+@pytest.mark.parametrize("sleep_again", [False, True])
+def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_again) -> None:
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
+    import json
+
+    from outerloop.attempt import resume_run
+    from outerloop.compute import LocalCompute
+    from outerloop.inbox import pending
+    from outerloop.measure import DispatchSettings
+    from outerloop.roles import followup_spec
+    from outerloop.syscall_cli import main
+    from outerloop.tick import FollowupSpec, service_in_review
+
+    root, bare = review_run
+    record = load_record(root, "tsp-r1")
+    ws = run_dir(root, record.run_id) / "ws"
+    record = replace(record, stage={"launches_used": 1, "sleeps_used": 1, "gpu_hours_used": 0.25})
+    save_record(root, record, NOW)
+
+    class NoAuth:
+        def token(self) -> str:
+            return "unused"
+
+    compute = LocalCompute()
+    submitted = []
+
+    def submit(self, spec):
+        submitted.append(spec)
+        return "501"
+
+    monkeypatch.setattr(LocalCompute, "submit", submit)
+    monkeypatch.setattr(LocalCompute, "status", lambda self, job_id: "COMPLETED")
+    dispatch = DispatchSettings(compute=compute, image="", account="", partition="")
+    github = FakeGitHub(comments=[member(101, "run an experiment")])
+
+    class SleepingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            budget = json.loads((workspace / ".outerloop/budget.json").read_text())
+            assert budget["launches_remaining"] == 9
+            assert budget["sleeps_remaining"] == 19
+            assert main(["reply", "working on it"], root=workspace) == 0
+            assert (
+                main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
+                == 0
+            )
+            assert main(["sleep"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    out = respond_once(
+        root,
+        record.run_id,
+        SleepingHarness(),
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+        dispatch=dispatch,
+    )
+    assert out.action == "parked", out.note
+    parked = load_record(root, record.run_id)
+    assert parked.state == "waiting" and parked.pr_url == record.pr_url
+    assert parked.stage["phase"] == "author-sleep"
+    assert parked.stage["launches_used"] == 2 and parked.stage["sleeps_used"] == 2
+    assert parked.stage["gpu_hours_used"] == 0.25
+    assert len(submitted) == 1 and github.posted_to == [9]
+
+    github.comments.append(member(102, "try five neighbors"))
+    github.reviews.append(member(12, "review message"))
+    github.review_comments.append(member(22, "inline message"))
+    github.pr = _behind_pr(head=_ws_head(root))
+    github.pr["base"] = {"ref": "main", "sha": _git(ws, "rev-parse", "origin/main").strip()}
+    tick_spec = FollowupSpec(
+        account="", partition="", run_root=root, image="", home=root, bot_login=BOT
+    )
+    from outerloop.runstate import acquire_lease, release_lease
+
+    assert acquire_lease(root, record.run_id, "armed-wake", "502", NOW)
+    assert service_in_review(root, github, compute, tick_spec, NOW + 1) == ([], [])
+    assert len(pending(run_dir(root, record.run_id), parked.inbox_seq)) == 4
+    assert load_record(root, record.run_id).last_comment_id == 101
+    release_lease(root, record.run_id)
+    for _ in range(2):
+        assert service_in_review(root, github, compute, tick_spec, NOW + 1) == ([], [])
+    queued = pending(run_dir(root, record.run_id), parked.inbox_seq)
+    assert [m.kind for m in queued].count("base-moved") == 1
+    assert [m.kind for m in queued].count("comment") == 3
+    assert len(submitted) == 1
+
+    # The sweep's resume entry gathers the job result and drains the inbox.
+    job = run_dir(root, record.run_id) / "eval-launch-probe"
+    job.mkdir(exist_ok=True)
+    (job / "exit-code").write_text("0")
+    (job / "stdout").write_text("probe finished")
+    (job / "stderr").write_text("")
+    github.pr = {"state": "open", "merged": False}
+    evaluator = QueueEvaluator([10.2])
+    monkeypatch.setattr("outerloop.orchestrator.SubprocessEvaluator", lambda **kwargs: evaluator)
+    monkeypatch.setattr(
+        "outerloop.attempt._finish_attempt",
+        lambda **kwargs: pytest.fail("PR wake used climb terminal"),
+    )
+    if sleep_again:
+        checkpoint = ResumingHarness(edits={".outerloop/syscall.json": '{"type":"sleep"}'})
+        again = resume_run(
+            root,
+            record.run_id,
+            dispatch=dispatch,
+            github=cast(GitHubClient, github),
+            bot_auth=NoAuth(),
+            now=NOW + 2,
+            harness=checkpoint,
+            spec=followup_spec(),
+        )
+        assert again.outcome == "parked"
+        assert load_record(root, record.run_id).pr_url == record.pr_url
+        assert "try five neighbors" in checkpoint.calls[0][0]
+        github.comments.append(member(103, "try five neighbors after checkpoint"))
+        service_in_review(root, github, compute, tick_spec, NOW + 3)
+    wake = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 after experiment\n"})
+
+    class Dispatcher:
+        def dispatch(self, waking, reason):
+            out_wake = resume_run(
+                root,
+                record.run_id,
+                dispatch=dispatch,
+                github=cast(GitHubClient, github),
+                bot_auth=NoAuth(),
+                now=NOW + 10000,
+                harness=wake,
+                spec=followup_spec(),
+            )
+            assert out_wake.outcome == "replied"
+            return ""
+
+    from outerloop.tick import sweep
+
+    report = sweep(root, compute, Dispatcher(), NOW + 10000, grace_s=0)
+    assert report.woken
+    assert "try five neighbors" in wake.calls[0][0]
+    delivered = checkpoint.calls[0][0] if sleep_again else wake.calls[0][0]
+    assert "review message" in delivered and "inline message" in delivered
+    assert "base-moved" in delivered and "probe finished" in delivered
+    latest = load_record(root, record.run_id)
+    assert latest.state == IN_REVIEW and latest.pr_url == record.pr_url
+    assert latest.stage["launches_used"] == 2 and latest.stage["sleeps_used"] == 2 + sleep_again
+    assert not pending(run_dir(root, record.run_id), latest.inbox_seq)
+    assert "v2 after experiment" in _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py")
+    assert github.body_addenda and github.row_updates == [10.2]
+
+
+def test_crashed_reply_is_flushed_before_next_author_leg(review_run):
+    from outerloop.inbox import stage_replies
+
+    root, _ = review_run
+    directory = run_dir(root, "tsp-r1")
+    stage_replies(directory, ("saved before crash sk-x LGTM",))
+    github = FakeGitHub(comments=[member(101, "please reply")])
+
+    class RecoveryHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert len(github.posted) == 1
+            assert "saved before crash" in github.posted[0]
+            assert "sk-x" not in github.posted[0] and "LGTM" not in github.posted[0]
+            return super().run(brief_text, workspace, resume_session_id)
+
+    out = respond_once(
+        root,
+        "tsp-r1",
+        RecoveryHarness(),
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+    )
+    assert out.action == "replied", out.note
+    assert (directory / "outbox/000001.posted").exists()
+
+
+@pytest.mark.parametrize(
+    "pr,ending", [({"merged": True}, "merged"), ({"state": "closed"}, "rejected")]
+)
+def test_close_waits_for_wake_lease(review_run, pr, ending):
+    from outerloop.runstate import acquire_lease, read_lease, release_lease
+
+    root, _ = review_run
+    record = load_record(root, "tsp-r1")
+    github = FakeGitHub(pr=pr)
+    assert acquire_lease(root, record.run_id, "wake", "", NOW)
+    assert close_if_done(root, record, cast(GitHubClient, github), NOW) == ""
+    assert load_record(root, record.run_id).state == IN_REVIEW
+    release_lease(root, record.run_id)
+    assert close_if_done(root, record, cast(GitHubClient, github), NOW) == ending
+    assert load_record(root, record.run_id).ending == ending
+    assert read_lease(root, record.run_id) is None
+
+
+def test_review_launch_checks_committed_edits(review_run, monkeypatch):
+    from outerloop.compute import LocalCompute
+    from outerloop.measure import DispatchSettings
+    from outerloop.syscall_cli import main
+
+    root, _ = review_run
+    monkeypatch.setattr(LocalCompute, "submit", lambda *args: pytest.fail("out-of-scope launch"))
+
+    class CommittingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            (workspace / "docs/roadmap.md").write_text("out of scope")
+            _git(workspace, "add", "docs/roadmap.md")
+            _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "edit")
+            assert (
+                main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
+                == 0
+            )
+            assert main(["sleep"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    out = respond_once(
+        root,
+        "tsp-r1",
+        CommittingHarness(),
+        QueueEvaluator(),
+        cast(GitHubClient, FakeGitHub(comments=[member(101, "experiment")])),
+        bot_login=BOT,
+        now=NOW,
+        dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
+    )
+    assert out.action == "error"
+    assert "out-of-scope paths at launch: docs/roadmap.md" in out.note
+
+
+@pytest.mark.parametrize("failed_resume", [False, True])
+def test_review_submit_refused_without_charge(review_run, failed_resume):
+    from outerloop.syscall_cli import main
+
+    root, _ = review_run
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, stage={"gpu_hours_used": 0.25}), NOW)
+    github = FakeGitHub(comments=[member(101, "check it")])
+
+    class SubmittingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            session = super().run(brief_text, workspace, resume_session_id)
+            if len(self.calls) == 1:
+                (workspace / ".outerloop/report.md").write_text("my report")
+                assert main(["submit", "--report", ".outerloop/report.md"], root=workspace) == 0
+                assert main(["sleep"], root=workspace) == 0
+            else:
+                assert (
+                    "submit is not available while your PR is in review; end your leg and a "
+                    "code change is re-measured, or launch and sleep"
+                ) in brief_text
+                assert "REFUSED" in brief_text
+                assert main(["reply", "reply after refusal"], root=workspace) == 0
+                if failed_resume:
+                    return replace(session, is_error=True, stop_reason="error")
+            return session
+
+    harness = SubmittingHarness()
+    out = respond_once(
+        root,
+        "tsp-r1",
+        harness,
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+    )
+    assert out.action == ("error" if failed_resume else "replied"), out.note
+    assert len(harness.calls) == 2
+    assert any("reply after refusal" in reply for reply in github.posted)
+    assert load_record(root, record.run_id).stage["gpu_hours_used"] == 0.25

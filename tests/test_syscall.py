@@ -124,10 +124,10 @@ def test_read_request_rejects_a_wrong_or_missing_type(tmp_path: Path) -> None:
     # a sleep is one syscall TYPE; a file with no type (a target-committed
     # booby-trap) or another type (a verdict) is not a sleep and is refused.
     write_req(tmp_path, {"launches": []}, typed=False)
-    with pytest.raises(SyscallError, match="expected a sleep syscall"):
+    with pytest.raises(SyscallError, match="expected a sleep or reply syscall"):
         read_request(tmp_path)
     write_req(tmp_path, {"type": "verdict", "findings": []}, typed=False)
-    with pytest.raises(SyscallError, match="expected a sleep syscall"):
+    with pytest.raises(SyscallError, match="expected a sleep or reply syscall"):
         read_request(tmp_path)
 
 
@@ -1176,3 +1176,17 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
 
     assert "python .autoresearch/syscall <verb> --help" in tool_update_note(".autoresearch")
     assert "`--report <file>`" in tool_update_note(".outerloop")
+
+
+@pytest.mark.parametrize("replies", ["text", [1], [None], [""], ["x" * 100_001]])
+def test_kernel_rejects_forged_replies(tmp_path, replies) -> None:
+    import json
+
+    from outerloop.syscall import SyscallError, read_request
+
+    channel = tmp_path / ".outerloop"
+    channel.mkdir()
+    (channel / "syscall.json").write_text(json.dumps({"type": "reply", "replies": replies}))
+    with pytest.raises(SyscallError):
+        read_request(tmp_path)
+    assert read_request(tmp_path) is None

@@ -56,6 +56,7 @@ MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
 MAX_NOTE_CHARS = 2_000
 MAX_WHY_CHARS = 200  # one line on what a launch tests; every agent sees it in `queue`
+MAX_REQUEST_BYTES = 65_536
 MAX_REPORT_CHARS = 8_000  # the write-up a submit carries; it becomes the PR's research report
 MAX_LAUNCH_MINUTES = 240
 MAX_LAUNCH_ARRAY = 16  # jobs one launch may fan out to (a sweep)
@@ -203,6 +204,29 @@ def cmd_note(root: Path, args: argparse.Namespace) -> str:
     return "note saved (delivered back to you on wake)."
 
 
+def cmd_reply(root: Path, args: argparse.Namespace) -> str:
+    text = args.text
+    if args.file:
+        path = Path(args.file)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                text = stream.read(MAX_REQUEST_BYTES + 1)
+        except OSError as exc:
+            raise ToolError(f"reply file could not be read: {exc}") from exc
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_REQUEST_BYTES:
+        raise ToolError(f"reply must contain 1 to {MAX_REQUEST_BYTES} chars")
+    path = _dir(root) / ABI
+    payload: dict = json.loads(path.read_text()) if path.exists() else {"type": "reply"}
+    payload.setdefault("replies", []).append(text)
+    encoded = json.dumps(payload)
+    if len(encoded.encode("utf-8")) > MAX_REQUEST_BYTES:
+        raise ToolError(f"staged replies exceed {MAX_REQUEST_BYTES} bytes")
+    path.write_text(encoded)
+    return "reply staged (posted when this leg ends)."
+
+
 def cmd_submit(root: Path, args: argparse.Namespace) -> str:
     path = Path(args.report)
     if not path.is_absolute():
@@ -260,7 +284,10 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     if staged["submit"]:
         # the report rides the submit: the kernel refuses a submit without one
         payload["report"] = str(staged.get("report") or "")
-    (_dir(root) / ABI).write_text(json.dumps(payload))
+    abi = _dir(root) / ABI
+    if abi.exists():
+        payload["replies"] = json.loads(abi.read_text()).get("replies", [])
+    abi.write_text(json.dumps(payload))
     (root / DIR / REQUEST).unlink(missing_ok=True)
     n = len(staged["launches"])
     what = f"{n} launch(es)" if n else "a checkpoint (no launches)"
@@ -335,6 +362,10 @@ def cmd_conclude(root: Path, args: argparse.Namespace) -> str:
 def cmd_status(root: Path, _args: argparse.Namespace) -> str:
     staged = _load_staged(root)
     lines: list[str] = []
+    abi = root / DIR / ABI
+    if abi.exists():
+        for reply in json.loads(abi.read_text()).get("replies", []):
+            lines.append(f"reply staged: {reply}")
     if staged["launches"] or staged["submit"] or (root / DIR / BUDGET).exists():
         lines.append(f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}.")
         for la in staged["launches"]:
@@ -400,11 +431,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="repo-relative file to bring back (repeatable)",
     )
     la.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
+    reply = sub.add_parser("reply", help="post a reply when this leg ends")
+    reply.add_argument("text", nargs="?")
+    reply.add_argument("--file")
     no = sub.add_parser("note", help="save a note to yourself, echoed back on wake")
     no.add_argument("text")
     su = sub.add_parser(
         "submit",
         help="stage a submit: on sleep, seal this tree for the gate + review panel",
+        description="Submit is not available while your PR is in review; end your leg and a "
+        "code change is re-measured, or launch and sleep.",
     )
     su.add_argument(
         "--report",
@@ -722,6 +758,7 @@ def cmd_history(root: Path, args) -> str:
 
 
 _HANDLERS = {
+    "reply": cmd_reply,
     "launch": cmd_launch,
     "note": cmd_note,
     "submit": cmd_submit,

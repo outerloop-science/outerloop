@@ -50,7 +50,7 @@ from outerloop.github import (
     git_identity,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, redact
-from outerloop.inbox import Message, append, delivered_seq, panel_payload, thread_for
+from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.markers import has_marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
@@ -362,7 +362,11 @@ def _clear_stage(record: RunRecord) -> RunRecord:
     once would reach review with a shrunk follow-up budget."""
     # the run's spend survives the wipe: terminal reporting (the climb
     # board) reads it after the transition
-    kept = {k: record.stage[k] for k in ("gpu_hours_used",) if record.stage and k in record.stage}
+    kept: dict[str, object] = {
+        k: record.stage[k]
+        for k in ("launches_used", "sleeps_used", "gpu_hours_used")
+        if record.stage and k in record.stage
+    }
     return dc_replace(
         record,
         stage=kept,
@@ -770,6 +774,117 @@ def _make_watcher(
     return lambda: SessionWatcher(ctx)
 
 
+def post_replies(
+    record: RunRecord,
+    github: GitHubClient,
+    replies: tuple[str, ...],
+    secrets: tuple[str, ...],
+    run_dir: Path,
+) -> None:
+    """Publish consumed author replies on the run's current thread."""
+    from outerloop.followup import MAX_REPLY_CHARS, REPLY_MARKER, _pr_number
+    from outerloop.review import APPROVAL_PATTERN, REDACTED
+
+    number = _pr_number(record.pr_url) if record.pr_url else record.issue_number
+    if not number:
+        return
+    from outerloop.inbox import flush_replies, stage_replies
+
+    def post(reply: str) -> None:
+        body = APPROVAL_PATTERN.sub(REDACTED, redact(reply, secrets))[:MAX_REPLY_CHARS]
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{body}")
+
+    try:
+        stage_replies(run_dir, replies)
+        flush_replies(run_dir, post)
+    except Exception as exc:
+        log.warning("reply delivery failed for %s: %s", record.run_id, exc)
+
+
+def run_author_leg(
+    config: RunConfig,
+    contract_text: str,
+    workspace: Path,
+    harness: Harness,
+    measurer: Any,
+    base_sha: str,
+    snapshot: Callable[[], str],
+    *,
+    run_root: Path,
+    record: RunRecord,
+    ws: Workspace,
+    dispatch: DispatchSettings | None,
+    github: GitHubClient,
+    secrets: tuple[str, ...],
+    **kwargs: Any,
+) -> AttemptResult:
+    """Prepare the author channel and run a resumed leg through the orchestrator."""
+    from outerloop.syscall import write_budget
+
+    directory = run_root / "runs" / record.run_id
+    post_replies(record, github, (), secrets, directory)
+    contract = load_contract(contract_text, record.target)
+    bench = _benchmark(contract, record.benchmark)
+    syscall_excluded(workspace)
+    installed = not (workspace / channel_dir(workspace)).exists()
+    if installed:
+        syscall_install_tool(workspace)
+    changed = syscall_refresh_tool(workspace)
+    if installed or changed:
+        append(
+            directory,
+            Message(
+                0,
+                "note",
+                "kernel",
+                thread_for(record),
+                time.time(),
+                f"tool:{record.resume_session_id}:{record.inbox_seq}",
+                {"text": tool_update_note(channel_dir(workspace))},
+            ),
+        )
+    launches = int(str(record.stage.get("launches_used", 0)))
+    sleeps = int(str(record.stage.get("sleeps_used", 0)))
+    hours = float(str(record.stage.get("gpu_hours_used", 0)))
+    write_budget(
+        workspace,
+        launches_remaining=max(0, bench.depth_k - launches),
+        sleeps_remaining=max(0, bench.sleep_k - sleeps),
+        gpu_hours_remaining=max(0.0, contract.budgets.gpu_hours_per_run - hours)
+        if bench.gpus
+        else None,
+    )
+    _best_effort(
+        "sibling refresh",
+        lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
+    )
+    kwargs.setdefault("ruler", RULER)
+    return attempt_once(
+        config,
+        contract_text,
+        workspace,
+        harness,
+        measurer,
+        base_sha,
+        snapshot,
+        resume_session_id=record.resume_session_id,
+        inbox_dir=directory,
+        inbox_seq=record.inbox_seq,
+        inbox_thread=thread_for(record),
+        launcher=_make_launcher(dispatch, directory, workspace, record.run_id, gpus=bench.gpus)
+        if dispatch
+        else None,
+        watcher=_make_watcher(dispatch, run_root, record.run_id, workspace, config)
+        if dispatch
+        else None,
+        launches_used=launches,
+        sleeps_used=sleeps,
+        gpu_hours_used=hours,
+        on_replies=lambda replies: post_replies(record, github, replies, secrets, directory),
+        **kwargs,
+    )
+
+
 def _wake_author_sleep(
     *,
     run_root: Path,
@@ -810,10 +925,12 @@ def _wake_author_sleep(
     from outerloop.syscall import (
         annotate_launch_states,
         gather_results,
-        write_budget,
     )
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
+        if record.pr_url:
+            log.warning("run %s remains waiting: %s", run_id, result.note or result.outcome)
+            return AttemptOutcome(run_id=run_id, outcome="error")
         # the terminal every climb takes (report, notebook, PR or ending
         # record, issue note); then this park's snapshot is released
         if record.stage.get("submitted") and not result.submit_report:
@@ -898,7 +1015,6 @@ def _wake_author_sleep(
     status_of = getattr(dispatch.compute, "status", None)
     if status_of is not None:
         results = annotate_launch_states(results, task_ids, status_of)
-    launches_used = int(record.stage.get("launches_used", 0))  # type: ignore[call-overload]
     sleeps_used = int(record.stage.get("sleeps_used", 0))  # type: ignore[call-overload]
     elapsed = _launch_elapsed(dispatch, task_ids) if task_ids else None
     _best_effort(
@@ -908,14 +1024,6 @@ def _wake_author_sleep(
         ),
     )
     gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches, elapsed)
-    # the tool the session invokes comes from THIS kernel: a session that
-    # started under an older one gets today's verbs and flags at its wake, and
-    # is told what is new
-    tool_changed = False
-    try:
-        tool_changed = syscall_refresh_tool(workspace)
-    except Exception as exc:
-        log.warning("tool refresh failed: %s", redact(f"{type(exc).__name__}: {exc}", secrets))
     thread = thread_for(record)
     for index, launch_result in enumerate(results):
         job_id = (
@@ -964,19 +1072,6 @@ def _wake_author_sleep(
                 {"text": "\n".join(pacing) + " (the contract's ceiling applies)."},
             ),
         )
-    if tool_changed:
-        append(
-            run_dir,
-            Message(
-                0,
-                "note",
-                "kernel",
-                thread,
-                now,
-                f"tool:{sleep_ref}:{sleeps_used}",
-                {"text": tool_update_note(channel_dir(workspace))},
-            ),
-        )
     # Re-pin the gate and scope base after a line's base advances.
     if _line_ref_for(bench, config.agent_id):
         fresh_base = _line_base_advanced(ws, base_branch, base_sha)
@@ -1003,24 +1098,30 @@ def _wake_author_sleep(
                     },
                 ),
             )
-    _best_effort(
-        "budget refresh",
-        lambda: write_budget(
-            workspace,
-            launches_remaining=max(0, bench.depth_k - launches_used),
-            sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
-            gpu_hours_remaining=(
-                max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used)
-                if bench.gpus
-                else None
-            ),
-        ),
-    )
+    record = dc_replace(record, stage={**record.stage, "gpu_hours_used": gpu_hours_used})
+    if record.pr_url:
+        from outerloop.followup import _pr_number, _respond
+        from outerloop.orchestrator import SubprocessEvaluator
 
-    _best_effort(
-        "sibling refresh",
-        lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
-    )
+        outcome = _respond(
+            run_root,
+            run_id,
+            record,
+            _pr_number(record.pr_url),
+            harness,
+            SubprocessEvaluator(container_image=dispatch.image),
+            github,
+            config.bot_login,
+            now,
+            secrets,
+            _utc_date(now),
+            spec=spec,
+            panel_lenses=panel_lenses,
+            dispatch=dispatch,
+        )
+        if outcome.action != "error":
+            drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
+        return AttemptOutcome(run_id=run_id, outcome=outcome.action)
 
     def acknowledge(seq: int) -> None:
         nonlocal record
@@ -1067,7 +1168,7 @@ def _wake_author_sleep(
     parked: RunParked | None = None
     kept_ref = ""
     try:
-        result = attempt_once(
+        result = run_author_leg(
             config,
             contract_text,
             workspace,
@@ -1075,22 +1176,19 @@ def _wake_author_sleep(
             measurer,
             base_sha,
             snapshot,
+            run_root=run_root,
+            record=record,
+            ws=ws,
+            dispatch=dispatch,
+            github=github,
+            secrets=secrets,
             ruler=RULER,
             changed_paths=changed_paths,
             spec=spec,
             panel_runner=panel_runner,
-            resume_session_id=record.resume_session_id,
-            inbox_dir=run_dir,
-            inbox_seq=delivered_seq(record),
             on_inbox_delivered=acknowledge,
-            inbox_thread=thread,
-            launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
-            watcher=_make_watcher(dispatch, run_root, run_id, workspace, config),
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             judged=judged or _stage_judged(record),
-            launches_used=launches_used,
-            sleeps_used=sleeps_used,
-            gpu_hours_used=gpu_hours_used,
         )
     except RunParked as p:
         # slept again, or the gate dispatched its measures (a candidate park the
@@ -3412,6 +3510,9 @@ def live_attempt(
                 inbox_dir=run_dir,
                 inbox_seq=record.inbox_seq,
                 on_inbox_delivered=acknowledge,
+                on_replies=(lambda replies: post_replies(record, github, replies, secrets, run_dir))
+                if author_syscalls
+                else None,
                 inbox_thread=thread_for(record),
                 line_ref=line_ref,
                 line_memory=line_memory,
