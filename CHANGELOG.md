@@ -8,6 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A research line lost its snapshot when the author's session reset its branch to main: the seal parented on main, the push was refused, and the run left no notebook entry (#368). The kernel now records the line head itself and the line only moves forward from that record. Memory files a reset dropped from the tree come back at the seal; files the session deleted on the line stay deleted.
 - Intake dropped an issue from a private org member without a word: the App's token sees such an author as CONTRIBUTOR, and only OWNER/MEMBER/COLLABORATOR qualified. Every skipped issue is now logged with its reason, a maintainer's `outerloop:task` label vouches for an issue regardless of association, and new Apps request members read so private members read as MEMBER.
 
 ### Changed

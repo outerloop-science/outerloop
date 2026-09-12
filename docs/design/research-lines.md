@@ -99,7 +99,12 @@ v1).
 - **Branch resets**: an agent may deliberately reset its line to main; the
   kernel performs it as `--force-with-lease` on the agent's OWN branch only
   (the only non-fast-forward ever allowed), recorded in the run report.
-  Nothing may force-push any other ref.
+  Nothing may force-push any other ref. A session's own `git reset` in its
+  workspace is not that: the kernel keeps its own record of the line head
+  (`refs/outerloop/line`), the seal parents on it, and memory files the
+  reset dropped from the tree come back (a file the session deleted while
+  its branch still sat on the line stays deleted). The line's content
+  follows the session; its history only moves forward.
 - **Instruction-file isolation**: an agent branch is an AUTHOR-WRITTEN tree.
   Checking one out inherits the same sanitization as any untrusted tree
   (the CLAUDE.md/hooks instruction-smuggling class): harness-instruction

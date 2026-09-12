@@ -4036,6 +4036,121 @@ def test_push_line_snapshot_chains_sequential_terminals(tmp_path: Path, target_r
     assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "second\n"
 
 
+def test_line_seal_parents_on_the_kernels_head_not_the_checked_out_branch(
+    tmp_path: Path, target_repo
+) -> None:
+    """A session that runs `git reset --hard origin/main` moves the checked-out
+    line branch onto main's history and drops the line's memory file from the
+    tree (gpt-speedrun agent-02, 2026-09-12; #368). The seal parents on the
+    kernel's own record of the line head, so the push is still a fast-forward
+    on the line, and the memory file comes back from that head."""
+    from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
+
+    _push_line(
+        tmp_path,
+        target_repo,
+        {"AGENT_MEMORY.md": "remember the pivot\n", "agent_memory/lr.md": "lr 0.08 wins\n"},
+    )
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    line_tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    assert ws.git("rev-parse", LINE_HEAD_REF).strip() == line_tip
+    # the session's reset: the branch now points at main, the memory is gone from the tree
+    ws.git("reset", "-q", "--hard", "origin/main")
+    assert ws.git("rev-parse", "refs/heads/agents/agent-07").strip() != line_tip
+    assert not (ws.root / "AGENT_MEMORY.md").exists()
+    (ws.root / "docs" / "belief.md").write_text("after the reset\n")
+    # ...and it starts a fresh topic file in the (recreated) memory directory
+    (ws.root / "agent_memory").mkdir()
+    (ws.root / "agent_memory" / "wd.md").write_text("wd 0.01\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
+    tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    assert _git(target_repo, "rev-parse", f"{tip}^").strip() == line_tip  # on the line, not main
+    assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "remember the pivot\n"
+    assert _git(target_repo, "show", "agents/agent-07:agent_memory/lr.md") == "lr 0.08 wins\n"
+    assert _git(target_repo, "show", "agents/agent-07:agent_memory/wd.md") == "wd 0.01\n"
+    assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "after the reset\n"
+    assert ws.git("rev-parse", LINE_HEAD_REF).strip() == tip  # the record follows the push
+
+
+def test_line_seal_survives_a_session_removing_or_moving_the_kernels_record(
+    tmp_path: Path, target_repo
+) -> None:
+    """The record lives in the session's writable .git. Deleted, the seal
+    falls back to the remote line head; retargeted off the line, likewise.
+    A session that checks main out (HEAD off the line, the branch untouched)
+    is judged by what its tree came from. In every case the seal lands on
+    the line with its memory."""
+    from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
+
+    _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "remember the pivot\n"})
+    line_tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+    for tamper in ("delete", "retarget", "checkout"):
+        ws = _line_ws(tmp_path / tamper, target_repo)
+        _checkout_line(ws, ws.root, "agent-07", "main")
+        if tamper == "delete":
+            ws.git("update-ref", "-d", LINE_HEAD_REF)
+        elif tamper == "retarget":
+            ws.git("update-ref", LINE_HEAD_REF, ws.git("rev-parse", "origin/main").strip())
+        if tamper == "checkout":
+            ws.git("checkout", "-q", "main")  # HEAD leaves the line; the branch stays put
+        else:
+            ws.git("reset", "-q", "--hard", "origin/main")
+        assert not (ws.root / "AGENT_MEMORY.md").exists()
+        (ws.root / "docs" / "belief.md").write_text(f"after the reset ({tamper})\n")
+        _push_line_snapshot(ws, "agents/agent-07", f"tsp-{tamper}", "improved")
+        tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
+        assert _git(target_repo, "rev-parse", f"{tip}^").strip() == line_tip, tamper
+        assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == (
+            "remember the pivot\n"
+        )
+        line_tip = tip
+
+
+def test_line_seal_prefers_the_lines_memory_over_mains_stale_copy(
+    tmp_path: Path, target_repo
+) -> None:
+    """When main itself tracks a memory path (a human committed one), a reset
+    leaves main's older copy in the tree; the seal still carries the line's,
+    since the session did not write that copy."""
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
+
+    _advance_main(tmp_path, target_repo, {"AGENT_MEMORY.md": "main's stale copy\n"})
+    _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "the line's newer memory\n"})
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    ws.git("checkout", "-q", "--detach", "origin/main")  # the line branch itself is untouched
+    assert (ws.root / "AGENT_MEMORY.md").read_text() == "main's stale copy\n"
+    (ws.root / "docs" / "belief.md").write_text("after the reset\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
+    assert (
+        _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "the line's newer memory\n"
+    )
+
+
+def test_line_seal_keeps_a_memory_deletion_the_session_made_on_the_line(
+    tmp_path: Path, target_repo
+) -> None:
+    """A missing memory file is a deletion when the session's branch had it:
+    the restore is for files a reset took away, not for ones the agent chose
+    to drop."""
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
+
+    _push_line(
+        tmp_path,
+        target_repo,
+        {"AGENT_MEMORY.md": "stale\n", "agent_memory/lr.md": "lr 0.08 wins\n"},
+    )
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "agent_memory" / "lr.md").unlink()  # the agent retires a topic
+    (ws.root / "AGENT_MEMORY.md").write_text("fresh\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    tree = _git(target_repo, "ls-tree", "-r", "--name-only", "agents/agent-07")
+    assert "agent_memory/lr.md" not in tree
+    assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "fresh\n"
+
+
 def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
     from outerloop.attempt import _push_line_snapshot
 
