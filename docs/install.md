@@ -349,7 +349,14 @@ the walltime the tick requests for the climb and author-sleep wake jobs it sizes
 `OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own
 sandbox, evaluations run bare in a throwaway tree under an allowlisted
 environment, both on your machine with your keys, and the loop says so once
-at start. The verification panel is off in this mode unless you set
+at start. Local compute has no lanes, so GPU benchmarks need no
+`OUTERLOOP_GPU_PARTITION`: evaluations and the author's launches run on the
+machine's own GPUs. The author's session itself starts with no GPU visible on
+any backend (`CUDA_VISIBLE_DEVICES` is empty), so an experiment that needs one
+goes through `launch`, where it is recorded in the run's ledger and metered
+against `gpu_hours_per_run`. Uncontained, that is a default the session could
+reset; contained, the session has no GPU device at all, which is one more
+reason to run with the image. The verification panel is off in this mode unless you set
 `OUTERLOOP_PANEL_UNCONTAINED=1`, because an uncontained judge holds a shell
 next to its own key file; a pull request opened without a panel says so. A
 Codex author needs the image in every mode. Contained local mode needs

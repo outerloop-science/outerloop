@@ -2707,6 +2707,77 @@ def test_resume_cli_releases_the_lease_on_exit(tmp_path, monkeypatch) -> None:
     assert not (run_dir(tmp_path, run_id) / "lease.json").exists()  # released
 
 
+@pytest.mark.parametrize("compute_env", ["local", None])
+def test_resume_cli_needs_no_image_when_uncontained(tmp_path, monkeypatch, compute_env) -> None:
+    """A wake rebuilds its dispatch settings from the backend, not from an image
+    file: `--uncontained` is enough on every backend. Local wakes used to be
+    refused for lacking an image, so a local park could never wake."""
+    from outerloop.attempt import AttemptOutcome, main
+    from outerloop.compute import LocalCompute, SlurmCompute
+    from outerloop.runstate import acquire_lease
+
+    run_id = "tsp-wake"
+    (tmp_path / "runs" / run_id).mkdir(parents=True)
+    (tmp_path / "pat").write_text("ghp_x\n")
+    (tmp_path / "pat").chmod(0o600)
+    assert acquire_lease(tmp_path, run_id, "wake-job:1", "1", 1_000.0)
+    monkeypatch.setenv("SLURM_JOB_ID", "1")  # this process IS the wake job that holds it
+    if compute_env:
+        monkeypatch.setenv("OUTERLOOP_COMPUTE", compute_env)
+    else:
+        monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    seen: dict = {}
+
+    def fake_resume(*a, **k):
+        seen.update(k)
+        return AttemptOutcome(run_id=run_id, outcome="parked")
+
+    monkeypatch.setattr(climb_mod, "arm_sigterm_containment", lambda: None)
+    monkeypatch.setattr(climb_mod, "resume_run", fake_resume)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "climb",
+            "--resume",
+            run_id,
+            "--run-root",
+            str(tmp_path),
+            "--uncontained",
+            "--pat-file",
+            str(tmp_path / "pat"),
+            "--panel",
+            "",
+        ],
+    )
+    assert main() == 0
+    expected = LocalCompute if compute_env else SlurmCompute
+    assert isinstance(seen["dispatch"].compute, expected)
+
+
+def test_cli_refuses_an_image_that_is_not_a_file(tmp_path, monkeypatch, capsys) -> None:
+    """A wrong image path fails at the command line instead of silently
+    degrading the run to inline evaluation."""
+    from outerloop.attempt import main as climb_main
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "climb",
+            "--target",
+            "o/r",
+            "--benchmark",
+            "b",
+            "--run-root",
+            str(tmp_path),
+            "--image",
+            str(tmp_path / "missing.sif"),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        climb_main()
+    assert "is not a file" in capsys.readouterr().err
+
+
 def test_resume_reports_terminal_back_to_the_requesting_issue(tmp_path, monkeypatch) -> None:
     # an issue-requested dispatched run must post its outcome back on wake, or
     # the issue stays claimed forever. Improved -> comment with the PR link +

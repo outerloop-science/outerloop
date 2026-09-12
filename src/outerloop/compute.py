@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +166,10 @@ class Compute(Protocol):
     """The verbs every compute backend implements. Callers (the measurer, the
     launcher, the wake dispatcher) depend on this, never on a backend."""
 
+    # Whether jobs are placed on named lanes (accounts/partitions). A backend
+    # without lanes runs every job on the default placement, GPUs included.
+    has_lanes: ClassVar[bool]
+
     def submit(self, spec: JobSpec) -> str: ...
     def status(self, job_id: str) -> str: ...
     def pending_reason(self, job_id: str) -> str: ...
@@ -235,6 +239,8 @@ def combine_states(states: Sequence[str]) -> str:
 @dataclass
 class SlurmCompute:
     """The three verbs, plus afterany for wake jobs."""
+
+    has_lanes: ClassVar[bool] = True
 
     runner: Runner = field(default=_subprocess_runner)
     command_timeout_s: int = 60
@@ -423,6 +429,8 @@ class LocalCompute:
     allocation, for deployments with no cluster at all, and for tests. It runs
     the identical job scripts the cluster runs (fresh checkout of the sealed
     sha, results to the job dir); only WHERE they run differs."""
+
+    has_lanes: ClassVar[bool] = False
 
     _states: dict[str, str] = field(default_factory=dict)
     _seq: int = 0

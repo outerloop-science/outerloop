@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -183,6 +184,8 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
     run_dir.mkdir()
 
     class _DeadCompute:
+        has_lanes: ClassVar[bool] = True
+
         def submit(self, spec) -> str:
             return "123"  # "ran", but wrote nothing (killed at the walltime)
 
@@ -279,39 +282,59 @@ def test_terminal_states_survive_across_instances(tmp_path, monkeypatch) -> None
     assert poller.status(job_id) == GONE  # no root -> memory-only, as before
 
 
-def test_gpu_contracts_pass_the_lane_check_under_local_mode(monkeypatch) -> None:
-    """Local compute has no lanes: a contract with GPU benchmarks must not be
-    rejected for a missing OUTERLOOP_GPU_PARTITION (terra #223)."""
+def test_gpu_contracts_pass_the_lane_check_on_a_backend_without_lanes() -> None:
+    """A backend without lanes (local compute) runs GPU jobs on the default
+    placement, so a contract with GPU benchmarks needs no OUTERLOOP_GPU_PARTITION
+    there; a backend with lanes still refuses loudly (terra #223)."""
     from types import SimpleNamespace
 
     from outerloop.tick import FollowupSpec, _gpu_lane_error
 
-    spec = FollowupSpec(
-        account="", partition="", run_root=Path("/tmp/x"), image="", home=Path("/tmp/x")
-    )
     contract = SimpleNamespace(benchmarks=[SimpleNamespace(name="speedrun", gpus=1)])
-    assert "no GPU lane" in _gpu_lane_error(contract, "speedrun", spec)
-    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
-    assert _gpu_lane_error(contract, "speedrun", spec) == ""
+
+    def spec(has_lanes: bool) -> FollowupSpec:
+        return FollowupSpec(
+            account="",
+            partition="",
+            run_root=Path("/tmp/x"),
+            image="",
+            home=Path("/tmp/x"),
+            has_lanes=has_lanes,
+        )
+
+    assert "no GPU lane" in _gpu_lane_error(contract, "speedrun", spec(True))
+    assert _gpu_lane_error(contract, "speedrun", spec(False)) == ""
 
 
-def test_local_mode_places_gpu_measures_without_a_lane(monkeypatch) -> None:
-    """DispatchSettings.placement must not raise for a GPU measure under
-    local mode (terra #223 r7: the lane waiver admitted GPU contracts that
-    then failed at placement) — local jobs run on the machine's own GPUs."""
-    from outerloop.compute import LocalCompute
-    from outerloop.measure import DispatchSettings
-
-    settings = DispatchSettings(
-        compute=LocalCompute(), image="", account="", partition="", gpu_partition=""
-    )
-    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
-    assert settings.placement(1) == ("", "")
-    monkeypatch.delenv("OUTERLOOP_COMPUTE")
+def test_a_backend_without_lanes_places_gpu_launches_and_measures() -> None:
+    """Both placements ask the backend: LocalCompute has no lanes, so a GPU job
+    places on the default; SlurmCompute without a GPU lane refuses loudly
+    (terra #223 r7; the measure placement once lacked the rule and a GPU
+    benchmark on a local box aborted at its first baseline)."""
     import pytest
 
+    from outerloop.compute import CommandResult, LocalCompute, SlurmCompute
+    from outerloop.measure import DispatchSettings, Measure
+
+    gpu = Measure(name="baseline", tree_sha="a" * 40, command="x", metric="loss", gpus=1)
+    local = DispatchSettings(compute=LocalCompute(), image="", account="", partition="")
+    assert local.placement(1) == ("", "")
+    measurer = local.measurer(
+        Path("/tmp/x"), repo_root=Path("/tmp/x"), eval_minutes=15, run_tag="r"
+    )
+    assert measurer._placement(gpu) == ("", "")
+    slurm = DispatchSettings(
+        compute=SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "", "")),
+        image="",
+        account="",
+        partition="",
+    )
     with pytest.raises(ValueError, match="no GPU lane"):
-        settings.placement(1)  # slurm mode still refuses loudly
+        slurm.placement(1)
+    with pytest.raises(ValueError, match="no GPU lane"):
+        slurm.measurer(
+            Path("/tmp/x"), repo_root=Path("/tmp/x"), eval_minutes=15, run_tag="r"
+        )._placement(gpu)
 
 
 def test_local_job_output_is_kept_beside_its_state(tmp_path: Path, monkeypatch) -> None:

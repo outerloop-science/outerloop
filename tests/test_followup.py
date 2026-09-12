@@ -3126,3 +3126,39 @@ def test_a_resume_that_died_after_its_push_completes_on_the_next_follow_up(
     assert load_record(root, "tsp-r1").followup_stage == {}
     assert _origin_head(bare) == landed  # nothing re-pushed
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_followup_cli_dispatches_uncontained_and_refuses_a_missing_image(
+    tmp_path, monkeypatch, capsys
+):
+    """A follow-up's revision evals dispatch and meter like a climb's: with
+    --uncontained the CLI builds the dispatch settings (they come from the
+    backend, not from an image file), and a --image path that is not a file is
+    refused by the parser. Before this, an uncontained follow-up left dispatch
+    None and a GPU revision evaluated inline on an unmetered host GPU."""
+    import sys
+
+    import pytest
+
+    import outerloop.attempt as attempt_mod
+    import outerloop.followup as followup_mod
+
+    class _Stop(BaseException):
+        pass
+
+    seen: dict = {}
+
+    def fake_dispatch_settings(args):
+        seen["args"] = args
+        raise _Stop
+
+    monkeypatch.setattr(attempt_mod, "_dispatch_settings", fake_dispatch_settings)
+    base = ["followup", "--run-root", str(tmp_path), "--run-id", "r1", "--bot-login", "bot[bot]"]
+    monkeypatch.setattr(sys, "argv", [*base, "--uncontained"])
+    with pytest.raises(_Stop):
+        followup_mod.main()
+    assert seen["args"].image == "" and seen["args"].uncontained is True
+    monkeypatch.setattr(sys, "argv", [*base, "--image", str(tmp_path / "missing.sif")])
+    with pytest.raises(SystemExit):
+        followup_mod.main()
+    assert "is not a file" in capsys.readouterr().err

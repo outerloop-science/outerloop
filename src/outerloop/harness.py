@@ -99,6 +99,12 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     env = {name: os.environ[name] for name in SESSION_ENV_ALLOWLIST if name in os.environ}
     env["HOME"] = str(home)
     env[key_variable] = api_key
+    # The session reasons; experiments that need a GPU go through `launch`,
+    # where they are recorded and metered. This is the DEFAULT a bare session
+    # starts with, not an enforcement: a host process can reset the variable.
+    # Containment is what enforces it (a contained session runs without --nv
+    # and has no GPU device at all); this makes the bare default match.
+    env["CUDA_VISIBLE_DEVICES"] = ""
     return env
 
 

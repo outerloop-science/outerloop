@@ -75,6 +75,7 @@ def test_session_env_is_scrubbed(tmp_path: Path, monkeypatch) -> None:
     assert "aws_SECRET" not in seen
     assert "ANTHROPIC_API_KEY=sk-test-123" in seen
     assert "PATH=" in seen
+    assert "CUDA_VISIBLE_DEVICES=" in seen  # the session sees no GPU
 
 
 def test_home_is_redirected_per_session(tmp_path: Path) -> None:
@@ -98,8 +99,20 @@ def test_home_is_redirected_per_session(tmp_path: Path) -> None:
 
 def test_session_env_allowlist_is_exhaustive(tmp_path: Path) -> None:
     env = session_env("key", "ANTHROPIC_API_KEY", home=tmp_path)
-    assert set(env) <= set(SESSION_ENV_ALLOWLIST) | {"ANTHROPIC_API_KEY", "HOME"}
+    assert set(env) <= set(SESSION_ENV_ALLOWLIST) | {
+        "ANTHROPIC_API_KEY",
+        "HOME",
+        "CUDA_VISIBLE_DEVICES",
+    }
     assert env["HOME"] == str(tmp_path)
+
+
+def test_sessions_see_no_gpu(tmp_path: Path, monkeypatch) -> None:
+    """The session reasons; GPU work goes through `launch`, where it is recorded
+    and metered. A host that exposes GPUs to the loop must not expose them to
+    the session, on any backend."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert session_env("key", "ANTHROPIC_API_KEY", home=tmp_path)["CUDA_VISIBLE_DEVICES"] == ""
 
 
 def test_argv_carries_the_controls(tmp_path: Path) -> None:

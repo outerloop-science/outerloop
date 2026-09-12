@@ -399,25 +399,6 @@ def test_dispatch_settings_place_gpu_jobs_on_the_gpu_lane(tmp_path):
     assert own_account.placement(2) == ("gpu-acct", "h200")
 
 
-def test_local_compute_places_a_gpu_measure_without_a_lane(tmp_path, monkeypatch):
-    """Local compute has no lanes: a GPU measure is a subprocess on the machine's
-    own GPUs, so the gate's placement must not demand OUTERLOOP_GPU_PARTITION.
-    The launch placement already followed that rule; the measure placement did
-    not, and a GPU benchmark on a local box aborted at its first baseline."""
-    from outerloop.compute import LocalCompute
-    from outerloop.measure import DispatchSettings, Measure
-
-    settings = DispatchSettings(compute=LocalCompute(), image="", account="", partition="")
-    m = settings.measurer(tmp_path, repo_root=tmp_path, eval_minutes=15, run_tag="r")
-    gpu = Measure(name="baseline", tree_sha="a" * 40, command="x", metric="loss", gpus=1)
-    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
-    with pytest.raises(ValueError, match="OUTERLOOP_GPU_PARTITION"):
-        m._placement(gpu)
-    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
-    assert m._placement(gpu) == ("", "")
-    assert settings.placement(1) == ("", "")  # the launch side, same rule
-
-
 def test_mixed_suite_places_each_measure_on_its_own_lane(tmp_path):
     """A suite gate measures siblings through the ONE measurer: a GPU
     sibling of a CPU benchmark (or vice versa) must land on its own lane with

@@ -35,6 +35,7 @@ from outerloop.dispatch import (
     Snapshot,
     afterany_ids,
     drop_snapshot,
+    image_file_arg,
     should_dispatch,
     snapshot_tree,
 )
@@ -2889,8 +2890,8 @@ def live_attempt(
                     f"(benchmark `{config.benchmark}`). A report will follow here.",
                 )
 
-        # Expensive benchmarks measure as dispatched cluster jobs; cheap ones
-        # (and any run with no cluster coordinates) measure inline. The choice
+        # Expensive benchmarks measure as dispatched jobs; cheap ones measure
+        # inline (so does a library caller that passes no dispatch). The choice
         # is the benchmark's eval-time hint against the in-job runway, decided
         # ONCE here so the baseline setup, the measurer, and the park deadline
         # all agree on it.
@@ -2900,11 +2901,11 @@ def live_attempt(
         wants_dispatch = should_dispatch(eval_minutes)
         dispatched = dispatch is not None and wants_dispatch
         if wants_dispatch and dispatch is None:
-            # a benchmark asked to be dispatched but no cluster coordinates
-            # reached us — never silently: name it, then measure inline
+            # a benchmark asked to be dispatched but the caller passed no
+            # dispatch settings — never silently: name it, then measure inline
             log.warning(
-                "benchmark %s wants dispatched eval (eval_minutes=%s) but no cluster "
-                "coordinates (image/account/partition) are set; measuring inline",
+                "benchmark %s wants dispatched eval (eval_minutes=%s) but no dispatch "
+                "settings were given; measuring inline",
                 config.benchmark,
                 eval_minutes,
             )
@@ -3462,6 +3463,7 @@ def main() -> int:
     parser.add_argument(
         "--image",
         default=os.environ.get("OUTERLOOP_IMAGE", ""),
+        type=image_file_arg,
         help="apptainer image for session+eval",
     )
     parser.add_argument("--account", default=os.environ.get("OUTERLOOP_ACCOUNT", ""))
@@ -3572,12 +3574,6 @@ def main() -> int:
     # and re-enter the decision. The wake job the WakeDispatcher submits runs
     # exactly this.
     if args.resume:
-        if not (args.image and Path(args.image).is_file()):
-            parser.error(
-                "--resume needs --image to rebuild the dispatched measurer "
-                "(account and partition are optional: empty ones use Slurm's "
-                "defaults, and local compute has no placement)"
-            )
         from outerloop.runstate import load_record
 
         # a wake that is not the lease holder is a straggler (a replacement was
@@ -3741,13 +3737,10 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    # Dispatched measurement needs a real image file to bind against; without
-    # one the climb measures inline. Account and partition are optional: empty
-    # ones use Slurm's defaults (the tick sets them on the climb job's env from
-    # the chain's), and local compute has no placement.
-    dispatch: DispatchSettings | None = None
-    if args.image and Path(args.image).is_file():
-        dispatch = _dispatch_settings(args)
+    # The compute backend always exists (Slurm, or local); containment was
+    # settled by --image/--uncontained above. Account and partition are
+    # optional: empty ones use the backend's defaults.
+    dispatch = _dispatch_settings(args)
     try:
         try:
             outcome = live_attempt(

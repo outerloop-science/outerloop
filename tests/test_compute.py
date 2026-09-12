@@ -240,3 +240,11 @@ def test_job_arrays_have_a_spec_task_ids_and_a_combined_state() -> None:
         c.status("123_[0-3]")
     with pytest.raises(ValueError):
         LocalCompute().status("12a")
+
+
+def test_backends_say_whether_jobs_need_lanes() -> None:
+    """The one property every placement asks instead of testing for local mode."""
+    from outerloop.compute import CommandResult, LocalCompute, SlurmCompute
+
+    assert SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "", "")).has_lanes is True
+    assert LocalCompute().has_lanes is False
