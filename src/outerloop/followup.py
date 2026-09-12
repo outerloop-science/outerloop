@@ -1506,8 +1506,17 @@ def _commit_sealed_tree(
     """Make the SEALED commit the branch head, fold the ledger update the
     caller wrote into it (one amended commit with the standard message), so
     the pushed tree is exactly the measured tree plus the ledger row — never
-    the live workspace, which may hold content the seal excluded."""
+    the live workspace, which may hold content the seal excluded. A session
+    that COMMITTED its change itself leaves a seal with its parent's tree;
+    with no ledger row to fold, that commit is the head as it stands (an
+    amend would make an empty commit, which git refuses)."""
     ws.git("add", "-A")
+    if not ws.staged_paths():
+        sealed_tree = ws.git("rev-parse", f"{sealed_sha}^{{tree}}").strip()
+        parent_tree = ws.git("rev-parse", f"{sealed_sha}^^{{tree}}").strip()
+        if sealed_tree == parent_tree:
+            ws.git("reset", "-q", "--hard", f"{sealed_sha}^")
+            return
     ws.git(
         *git_identity(bot_login),
         "commit",
@@ -1784,14 +1793,45 @@ def _resume_measure(
             now,
         )
         drop_snapshot(ws, snapshot)
-        with contextlib.suppress(Exception):
+        if not stage.get("measured_posted"):
+            with contextlib.suppress(Exception):
+                github.comment(
+                    record.target,
+                    number,
+                    f"{REPLY_MARKER}\n**Re-measured after this change: `{bench.metric}` = "
+                    f"{fmt_metric(candidate, bench.display_digits)}** (pushed as `{landed[:12]}`).",
+                )
+        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
+    # The finished measurement is posted FIRST, whatever becomes of the push
+    # below: a number the reviewer asked for is information on its own, and
+    # an unpushable follow-up must not hide it (three finished evals went
+    # unreported this way, 2026-09-12). The stage remembers the post, so a
+    # retried resume never repeats it.
+    if not stage.get("measured_posted"):
+        prior_entry = load_leader(workspace).get(bench.name)
+        worse_now = prior_entry is not None and not orch_improved(
+            prior_entry.best, candidate, bench.direction, 0.0
+        )
+        try:
             github.comment(
                 record.target,
                 number,
                 f"{REPLY_MARKER}\n**Re-measured after this change: `{bench.metric}` = "
-                f"{fmt_metric(candidate, bench.display_digits)}** (pushed as `{landed[:12]}`).",
+                f"{fmt_metric(candidate, bench.display_digits)}**"
+                + (" — worse than the PR's previous number, stated plainly." if worse_now else ""),
             )
-        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
+        except Exception as exc:  # the row and the body addendum carry the number
+            log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
+        else:
+            with contextlib.suppress(OSError, ValueError):
+                latest = load_record(run_root, run_id)
+                save_record(
+                    run_root,
+                    replace(
+                        latest, followup_stage={**latest.followup_stage, "measured_posted": True}
+                    ),
+                    now,
+                )
 
     # the sealed commit descends from the head the PR had at park (directly,
     # or through the session's local base-sync merge): a push since (a
@@ -1893,10 +1933,6 @@ def _resume_measure(
         + (" — worse than the PR's previous number, stated plainly." if worse else "")
         + floor_note
     )
-    try:
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{measured_note}")
-    except Exception as exc:  # the ledger and the row carry the number
-        log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
     try:
         github.update_candidate_row(record.target, number, candidate, digits=bench.display_digits)
     except Exception as exc:
