@@ -205,6 +205,7 @@ class FollowupSpec:
     # the tick environment, so it is never threaded through argv
     github_app_file: str = ""
     target: str = ""  # the repo the intake pass scans for requested-lane issues
+    has_lanes: bool = True  # the compute backend's: False = every job on the default placement
     # the STEWARD'S OWN key (role separation): the steward lane stays off
     # until the operator provisions it
     steward_key_file: str = ""
@@ -291,9 +292,9 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: FollowupSpec) -> str:
     evals would queue into jobs that can never run (the climb would then
     park forever on a phantom eval). ANY GPU benchmark in the contract
     counts, not just the climbed one: the suite gate measures siblings.
-    Local compute has no lanes — jobs run on whatever GPUs the machine
-    has — so the check is waived there."""
-    if spec.gpu_partition or local_mode():
+    A backend without lanes (local compute) runs GPU jobs on the default
+    placement, so the check does not apply."""
+    if spec.gpu_partition or not spec.has_lanes:
         return ""
     gpu_benches = [
         b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "gpus", 0) or 0)
@@ -3259,6 +3260,7 @@ def _followup_spec_from_env(root: Path) -> tuple[Any, FollowupSpec | None]:
                 gpu_partition=os.environ.get("OUTERLOOP_GPU_PARTITION", ""),
                 gpu_account=os.environ.get("OUTERLOOP_GPU_ACCOUNT", ""),
                 max_job_minutes=_max_job_minutes_from_env(),
+                has_lanes=compute_from_env().has_lanes,
             )
             return github, followup_spec
         except Exception as exc:

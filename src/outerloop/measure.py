@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from outerloop.compute import GONE, Compute, JobSpec, is_terminal, local_mode
+from outerloop.compute import GONE, Compute, JobSpec, is_terminal
 from outerloop.dispatch import (
     eval_job_spec,
     read_eval_result,
@@ -275,9 +275,7 @@ class DispatchedMeasurer:
     seed_cache: Path | None = None
 
     def _placement(self, m: Measure) -> tuple[str, str]:
-        # local compute has no lanes: the job is a subprocess on whatever GPUs
-        # the machine has (same rule as DispatchSettings.placement)
-        if m.gpus <= 0 or local_mode():
+        if m.gpus <= 0 or not self.compute.has_lanes:
             return self.account, self.partition
         if not self.gpu_partition:
             raise ValueError(
@@ -492,9 +490,9 @@ class DispatchSettings:
     def placement(self, gpus: int) -> tuple[str, str]:
         """(account, partition) for a job needing `gpus` GPUs. Raises when a
         GPU job has no lane — a queue that can never run is worse than a
-        loud refusal. Local compute has no lanes: jobs are subprocesses on
-        whatever GPUs the machine has, so placement is empty by design."""
-        if gpus <= 0 or local_mode():
+        loud refusal. A backend without lanes (local compute) runs every job,
+        GPUs included, on the default placement."""
+        if gpus <= 0 or not self.compute.has_lanes:
             return self.account, self.partition
         if not self.gpu_partition:
             raise ValueError(

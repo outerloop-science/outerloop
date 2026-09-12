@@ -6,6 +6,11 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- Whether jobs need a lane is now the compute backend's word (`has_lanes`): the measurer, the launcher, and the tick's GPU preflight ask it instead of testing for local mode. The dispatch settings always exist (a backend always does), so local compute arms the author's `launch`/`sleep` syscalls for benchmarks with `depth_k`, and a local wake no longer needs a container image. A `--image` path that is not a file is refused at the command line instead of silently degrading the run to inline evaluation.
+- Author sessions see no GPU on any backend (`CUDA_VISIBLE_DEVICES` is empty): experiments that need one go through `launch`, so they are recorded in the ledger and metered against the GPU budget. Contained sessions already had none.
+
 ## [0.1.2] - 2026-09-11
 
 ### Fixed

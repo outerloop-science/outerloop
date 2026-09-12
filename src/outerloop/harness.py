@@ -99,6 +99,10 @@ def session_env(api_key: str, key_variable: str, home: Path) -> dict[str, str]:
     env = {name: os.environ[name] for name in SESSION_ENV_ALLOWLIST if name in os.environ}
     env["HOME"] = str(home)
     env[key_variable] = api_key
+    # the session reasons; experiments that need a GPU go through `launch`, so
+    # they are recorded and metered. A contained session has no GPU anyway
+    # (no --nv); this makes the bare session match it.
+    env["CUDA_VISIBLE_DEVICES"] = ""
     return env
 
 

@@ -3633,13 +3633,16 @@ def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path:
     assert spec.account == "" and spec.partition == ""
 
 
-def test_resume_gate_needs_only_the_image(monkeypatch: Any, tmp_path: Path, capsys: Any) -> None:
+def test_resume_gate_needs_only_the_containment_choice(
+    monkeypatch: Any, tmp_path: Path, capsys: Any
+) -> None:
     """The resume gate accepts empty account/partition under
     OUTERLOOP_COMPUTE=local (terra #223: locally dispatched wakes died at
     the parser) and on Slurm (#300: the cluster's defaults apply). Proof of
     admission: the CLI proceeds far enough to complain about the missing
-    parked run, not about the placement. Only the image is required: without
-    it the same argv trips the gate."""
+    parked run, not about the placement. The dispatch settings come from the
+    backend, so the only thing the parser insists on is the containment
+    choice: an image that exists, or --uncontained."""
     import sys
 
     import pytest
@@ -3679,26 +3682,30 @@ def test_resume_gate_needs_only_the_image(monkeypatch: Any, tmp_path: Path, caps
         attempt_mod.main()
     assert "needs --image" not in capsys.readouterr().err
 
-    # the image is the one thing the gate needs
-    # a path that is not a file: past the parser's own --image check, but not
-    # the gate
+    # an image path that is not a file is refused by the parser itself
     missing = str(tmp_path / "missing.sif")
     monkeypatch.setattr(sys, "argv", [(missing if a == str(image) else a) for a in argv])
     with pytest.raises(SystemExit):
         attempt_mod.main()
-    assert "needs --image" in capsys.readouterr().err
+    assert "is not a file" in capsys.readouterr().err
+    # --uncontained instead of an image: admitted the same way
+    monkeypatch.setattr(
+        sys, "argv", [a for a in argv if a not in ("--image", str(image))] + ["--uncontained"]
+    )
+    with pytest.raises(FileNotFoundError, match=r"state\.json"):
+        attempt_mod.main()
 
 
 def test_fresh_climb_dispatches_without_account_or_partition(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    """The fresh climb's dispatch gate needs only the image (#300): with no
-    --account and no --partition the measurer is still dispatched and the
-    settings carry the empty placement (JobSpec then omits both flags, Slurm
-    applies its defaults); a set account passes through; without an image the
-    climb measures inline (dispatch=None). main() is halted right past the
-    gate with a BaseException, which the run's `except Exception`
-    containment does not swallow."""
+    """The fresh climb always builds its dispatch settings (#300): with no
+    --account and no --partition the settings carry the empty placement
+    (JobSpec then omits both flags, Slurm applies its defaults); a set account
+    passes through; --uncontained without an image dispatches the same way;
+    an image path that is not a file is refused by the parser. main() is
+    halted right past the gate with a BaseException, which the run's
+    `except Exception` containment does not swallow."""
     import sys
 
     import pytest
@@ -3760,14 +3767,19 @@ def test_fresh_climb_dispatches_without_account_or_partition(
         attempt_mod.main()
     assert seen.pop("dispatch_args") == ("acct", "")
 
-    # no image: measured inline
-    # a path that is not a file: past the parser's own --image check, but not
-    # the gate
-    missing = str(tmp_path / "missing.sif")
-    monkeypatch.setattr(sys, "argv", [(missing if a == str(image) else a) for a in argv])
+    # --uncontained, no image: dispatched all the same (the backend decides)
+    monkeypatch.setattr(
+        sys, "argv", [a for a in argv if a not in ("--image", str(image))] + ["--uncontained"]
+    )
     with pytest.raises(_Stop):
         attempt_mod.main()
-    assert seen == {"live_dispatch": None}
+    assert seen.pop("dispatch_args") == ("", "")
+    # an image path that is not a file is refused by the parser
+    missing = str(tmp_path / "missing.sif")
+    monkeypatch.setattr(sys, "argv", [(missing if a == str(image) else a) for a in argv])
+    with pytest.raises(SystemExit):
+        attempt_mod.main()
+    assert seen == {}
 
 
 def test_local_jobs_inherit_the_config_env(tmp_path: Path, monkeypatch: Any) -> None:
