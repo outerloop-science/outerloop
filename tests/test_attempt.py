@@ -3461,6 +3461,70 @@ def test_author_sleep_wake_publishes_an_inline_improvement(tmp_path, monkeypatch
     assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
 
 
+def test_author_sleep_wake_reconciles_an_already_open_pr(tmp_path, monkeypatch) -> None:
+    """A wake that opened its PR and died before recording it is woken again:
+    the terminal finds the open PR for its head and reconciles to it, never
+    re-pushing or opening a second."""
+    from outerloop.roles import author_spec
+
+    state, run_id, _, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    github = CommentingGitHub(existing_pr="https://github.com/org/pilot/pull/7")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+        ),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/7")
+    assert github.prs == []  # no duplicate
+    record = load_record(state, run_id)
+    assert record.state == "in-review" and record.pr_url.endswith("/pull/7")
+
+
+def test_author_sleep_wake_keeps_its_snapshot_when_the_terminal_record_fails(
+    tmp_path, monkeypatch
+) -> None:
+    """A terminal whose record cannot be saved leaves the run WAITING; the
+    sleep snapshot must survive with it, or nothing could ever wake it."""
+    import outerloop.attempt as attempt_mod
+    from outerloop.roles import author_spec
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    refs_before = _git(wsroot, "for-each-ref", "refs/dispatch/").strip()
+    assert refs_before
+    real_save = attempt_mod.save_record
+
+    def failing_save(root, record, now):
+        if record.state in ("ended", "in-review"):
+            raise OSError("disk gone")
+        return real_save(root, record, now)
+
+    monkeypatch.setattr(attempt_mod, "save_record", failing_save)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "no-improvement"
+    assert load_record(state, run_id).state == "waiting"  # unsaved terminal
+    assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == refs_before
+
+
 def test_author_sleep_wake_records_each_launch_as_ended_in_the_ledger(
     tmp_path, monkeypatch
 ) -> None:

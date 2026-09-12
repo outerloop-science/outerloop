@@ -838,8 +838,17 @@ def _wake_author_sleep(
             line_ref=_line_ref_for(bench, config.agent_id),
             date=_utc_date(now),
         )
-        for ref in drop_refs:
-            drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
+        # the park's snapshot is released only once the run has left WAITING:
+        # a terminal whose record failed to save stays recoverable by a re-wake
+        try:
+            still_waiting = load_record(run_root, run_id).state == WAITING
+        except Exception:
+            still_waiting = True
+        if still_waiting:
+            log.warning("run %s: terminal record unsaved; the sleep snapshot is kept", run_id)
+        else:
+            for ref in drop_refs:
+                drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         return outcome
 
     # The wake NEEDS the author harness (it resumes the session). Fail as a
@@ -2769,75 +2778,101 @@ def _finish_attempt(
                 raise EvalError("improved result missing measurements or the sealed sha")
             bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
             baseline, candidate = result.baseline, result.candidate
-            # FORCE-checkout: the workspace still holds the session's dirty
-            # tree. The snapshot commit is anchored by the new branch (the
-            # dropped dispatch ref left it unreferenced; nothing pruned it in
-            # this process). clean -fd drops post-snapshot cruft so the
-            # pushed tree is exactly candidate_sha plus the ledger commit.
-            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
-            ws.git("clean", "-fd")
-            entries = update_leader(
-                load_leader(workspace),
-                benchmark=bench.name,
-                metric=bench.metric,
-                direction=bench.direction,
-                baseline=baseline,
-                candidate=candidate,
-                run_id=run_id,
-                date=date,
-                run_seed=result.run_seed,
-            )
-            write_progress(
-                workspace,
-                entries,
-                config.target,
-                digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
-            )
-            # Stage ONLY the ledger files on top of the sealed candidate —
-            # never `git add -A`, which would sweep in anything a session or
-            # eval left behind (same rule as the wake publish).
-            ws.git("add", "--", *PROGRESS_PATHS)
-            staged = ws.staged_paths()
-            extra = [p for p in staged if p not in PROGRESS_PATHS]
-            if extra:
-                raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
-            if staged:
-                ws.git(
-                    *git_identity(config.bot_login),
-                    "commit",
-                    "-m",
-                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
-                    f"\n\nAgent: {config.agent_id}",
+            # IDEMPOTENCY: a wake may have opened the PR and died before
+            # recording it (the run stays WAITING and is woken again). If a PR
+            # is already open for this head->base, reconcile to it — never
+            # re-push (non-fast-forward) or open a duplicate; a lookup failure
+            # just falls through to the normal publish.
+            existing: dict[str, object] | None = None
+            try:
+                existing = github.find_open_pull_for_head(config.target, branch, base_branch)
+            except Exception as exc:
+                log.warning(
+                    "idempotency PR lookup failed for %s: %s",
+                    run_id,
+                    redact(f"{type(exc).__name__}: {exc}", secrets),
                 )
-            ws.push(branch)
-            pushed = True
-            body = pr_body(
-                result,
-                config,
-                redact_secrets=secrets,
-                display_digits=bench.display_digits,
-                experiments=experiments_rows(run_dir),
-            )
-            if issue_number:
-                body = f"Addresses #{issue_number}.\n\n{body}"
-            pr_url = github.create_pull(
-                config.target,
-                # short precision in the title; full precision lives in the
-                # PR body table and the ledger
-                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
-                head=branch,
-                base=base_branch,
-                body=body,
+            if existing:
+                pr_url = str(existing.get("html_url", ""))
+                draft = bool(existing.get("draft"))
+                log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
+                # the workspace goes on the branch a later follow-up expects
+                ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+            else:
                 # blocking findings open at the panel, or a degraded final
                 # read: visible, plainly not merge-ready
-                draft=result.panel_blocking_open or result.panel_degraded,
-            )
+                draft = result.panel_blocking_open or result.panel_degraded
+                # FORCE-checkout: the workspace still holds the session's dirty
+                # tree. The snapshot commit is anchored by the new branch (the
+                # dropped dispatch ref left it unreferenced; nothing pruned it in
+                # this process). clean -fd drops post-snapshot cruft so the
+                # pushed tree is exactly candidate_sha plus the ledger commit.
+                ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+                ws.git("clean", "-fd")
+                entries = update_leader(
+                    load_leader(workspace),
+                    benchmark=bench.name,
+                    metric=bench.metric,
+                    direction=bench.direction,
+                    baseline=baseline,
+                    candidate=candidate,
+                    run_id=run_id,
+                    date=date,
+                    run_seed=result.run_seed,
+                )
+                write_progress(
+                    workspace,
+                    entries,
+                    config.target,
+                    digits={
+                        b.name: b.display_digits for b in contract.benchmarks if b.display_digits
+                    },
+                )
+                # Stage ONLY the ledger files on top of the sealed candidate —
+                # never `git add -A`, which would sweep in anything a session or
+                # eval left behind (same rule as the wake publish).
+                ws.git("add", "--", *PROGRESS_PATHS)
+                staged = ws.staged_paths()
+                extra = [p for p in staged if p not in PROGRESS_PATHS]
+                if extra:
+                    raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
+                if staged:
+                    ws.git(
+                        *git_identity(config.bot_login),
+                        "commit",
+                        "-m",
+                        f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                        f"\n\nAgent: {config.agent_id}",
+                    )
+                ws.push(branch)
+                pushed = True
+                body = pr_body(
+                    result,
+                    config,
+                    redact_secrets=secrets,
+                    display_digits=bench.display_digits,
+                    experiments=experiments_rows(run_dir),
+                )
+                if issue_number:
+                    body = f"Addresses #{issue_number}.\n\n{body}"
+                pr_url = github.create_pull(
+                    config.target,
+                    # short precision in the title; full precision lives in the
+                    # PR body table and the ledger
+                    title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
+                    head=branch,
+                    base=base_branch,
+                    body=body,
+                    # blocking findings open at the panel, or a degraded final
+                    # read: visible, plainly not merge-ready
+                    draft=draft,
+                )
             # Arm auto-merge, best-effort, and ONLY when branch protection
             # requires a human review — the guard keeps bot-never-merges
             # enforced in code, not in per-repo config. Never arm a draft,
             # and never arm a claim whose base has moved (_arm_unless_base_moved).
             pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit() and not (result.panel_blocking_open or result.panel_degraded):
+            if pr_number.isdigit() and not draft:
                 _arm_unless_base_moved(
                     github,
                     ws,
