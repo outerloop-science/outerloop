@@ -330,3 +330,14 @@ def test_brief_renders_the_divergence_stat() -> None:
         make_inputs(line_ref="agents/agent-07", line_divergence="1 file changed"), created="t"
     )
     assert SessionBrief.from_json(brief.to_json()).line_divergence == "1 file changed"
+
+
+def test_launch_section_says_experiment_code_is_scope_checked() -> None:
+    """A launch snapshot is scope-checked like the final tree; an author that
+    writes sweep scripts outside the allowed paths ends the run at the park
+    (quickstart-trial, 2026-09-12). The brief says so where the tool is offered."""
+    text = render(build_brief(make_inputs(launch_budget=3, sleep_budget=2), created="t"))
+    assert "scope-checked the same way your final tree is" in text
+    assert "must live under the contract's allowed paths" in text
+    without = render(build_brief(make_inputs(), created="t"))
+    assert "scope-checked the same way" not in without  # only with the tool
