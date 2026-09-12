@@ -1381,26 +1381,31 @@ def _line_base_advanced(ws: Workspace, base_branch: str, base_sha: str) -> str:
         return ""
 
 
-def _restore_line_memory(ws: Workspace, parent: str) -> None:
+def _restore_line_memory(ws: Workspace, parent: str, seen: str) -> None:
     """Put back the line's memory files a session's reset to main dropped from
-    the tree: they live on the line, and the seal must carry them forward."""
+    the tree. File by file: one missing from the tree is a deletion only when
+    the session's branch (`seen`) had it, so a file the session deleted on the
+    line stays deleted, and a topic file the session never saw (its branch
+    was reset onto main) comes back beside whatever it wrote since."""
     for path in LINE_MEMORY_PATHS:
-        if (Path(ws.root) / path).exists():
-            continue
-        try:
-            ws.git("cat-file", "-e", f"{parent}:{path}")
-        except Exception:
-            continue  # not on the line either
-        ws.git("checkout", parent, "--", path)
+        files = ws.git("ls-tree", "-r", "-z", "--name-only", parent, "--", path).split("\0")
+        for file in filter(None, files):
+            if (Path(ws.root) / file).exists():
+                continue
+            try:
+                ws.git("cat-file", "-e", f"{seen}:{file}")
+                continue  # the session had it and removed it
+            except Exception:
+                pass
+            ws.git("checkout", parent, "--", file)
 
 
-def _line_head(ws: Workspace, line_ref: str) -> str:
+def _line_head(ws: Workspace, line_ref: str, branch: str) -> str:
     """The commit the seal parents on. The line only moves forward from the
     kernel's record: a session that COMMITTED on the line advanced the branch
     past it (those commits count), one that reset the branch onto main moved
     it off the line (the record wins, #368). No record — a park that predates
     it — means the branch is the line."""
-    branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
     try:
         record = ws.git("rev-parse", "--verify", "-q", LINE_HEAD_REF).strip()
     except Exception:
@@ -1439,7 +1444,8 @@ def _push_line_snapshot(
     def _seal_and_push() -> None:
         # raises if the session altered .git (every ws.git call checks) —
         # _best_effort turns that into a logged skip
-        local = _line_head(ws, line_ref)
+        branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()  # what the session saw
+        local = _line_head(ws, line_ref, branch)
         last_exc: Exception | None = None
         # the line commit this workspace's untouched files currently match:
         # the local ref at first, then each remote head reconciled into it
@@ -1464,7 +1470,7 @@ def _push_line_snapshot(
                     fork = parent = remote
             except Exception as exc:
                 log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
-            _restore_line_memory(ws, parent)
+            _restore_line_memory(ws, parent, seen=branch)
             memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
             snap = snapshot_tree(ws, parent, force=memory, author=bot_login)
             try:

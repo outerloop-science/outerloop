@@ -4046,7 +4046,11 @@ def test_line_seal_parents_on_the_kernels_head_not_the_checked_out_branch(
     on the line, and the memory file comes back from that head."""
     from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
 
-    _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "remember the pivot\n"})
+    _push_line(
+        tmp_path,
+        target_repo,
+        {"AGENT_MEMORY.md": "remember the pivot\n", "agent_memory/lr.md": "lr 0.08 wins\n"},
+    )
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
     line_tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
@@ -4056,12 +4060,40 @@ def test_line_seal_parents_on_the_kernels_head_not_the_checked_out_branch(
     assert ws.git("rev-parse", "refs/heads/agents/agent-07").strip() != line_tip
     assert not (ws.root / "AGENT_MEMORY.md").exists()
     (ws.root / "docs" / "belief.md").write_text("after the reset\n")
+    # ...and it starts a fresh topic file in the (recreated) memory directory
+    (ws.root / "agent_memory").mkdir()
+    (ws.root / "agent_memory" / "wd.md").write_text("wd 0.01\n")
     _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
     tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
     assert _git(target_repo, "rev-parse", f"{tip}^").strip() == line_tip  # on the line, not main
     assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "remember the pivot\n"
+    assert _git(target_repo, "show", "agents/agent-07:agent_memory/lr.md") == "lr 0.08 wins\n"
+    assert _git(target_repo, "show", "agents/agent-07:agent_memory/wd.md") == "wd 0.01\n"
     assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "after the reset\n"
     assert ws.git("rev-parse", LINE_HEAD_REF).strip() == tip  # the record follows the push
+
+
+def test_line_seal_keeps_a_memory_deletion_the_session_made_on_the_line(
+    tmp_path: Path, target_repo
+) -> None:
+    """A missing memory file is a deletion when the session's branch had it:
+    the restore is for files a reset took away, not for ones the agent chose
+    to drop."""
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
+
+    _push_line(
+        tmp_path,
+        target_repo,
+        {"AGENT_MEMORY.md": "stale\n", "agent_memory/lr.md": "lr 0.08 wins\n"},
+    )
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "agent_memory" / "lr.md").unlink()  # the agent retires a topic
+    (ws.root / "AGENT_MEMORY.md").write_text("fresh\n")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    tree = _git(target_repo, "ls-tree", "-r", "--name-only", "agents/agent-07")
+    assert "agent_memory/lr.md" not in tree
+    assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "fresh\n"
 
 
 def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:

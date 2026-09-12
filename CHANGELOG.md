@@ -8,7 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A research line's snapshot was lost when the author's session reset its branch to main: the seal parented on wherever the checked-out branch pointed, the push was refused as a non-fast-forward, and the winning run left no notebook entry (gpt-speedrun agent-02, #368). The kernel now keeps its own record of the line head in the workspace refs; the line only moves forward from it (a session's commits count, a reset does not), and the line's memory files a reset dropped from the tree come back at the seal.
+- A research line lost its snapshot when the author's session reset its branch to main: the seal parented on main, the push was refused, and the run left no notebook entry (#368). The kernel now records the line head itself and the line only moves forward from that record. Memory files a reset dropped from the tree come back at the seal; files the session deleted on the line stay deleted.
 - Intake dropped an issue from a private org member without a word: the App's token sees such an author as CONTRIBUTOR, and only OWNER/MEMBER/COLLABORATOR qualified. Every skipped issue is now logged with its reason, a maintainer's `outerloop:task` label vouches for an issue regardless of association, and new Apps request members read so private members read as MEMBER.
 
 ### Changed
