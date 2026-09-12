@@ -15,6 +15,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Every message a session receives at a wake now goes through the run's inbox (files beside the record) and one renderer, so launch results, gate verdicts, panel findings, review comments and base moves arrive in one format, each fenced as data. Advisory panel findings reach the author alongside blocking ones, and the sibling view is refreshed at every wake of a parked author session instead of only at session start. The kernel's wake text states facts; the research advice it used to carry is gone.
+
 - Dispatched wakes are on by default. The old on-switch (`OUTERLOOP_DISPATCH_WAKE=1` or a `DISPATCH_WAKE` sentinel) is gone; the operator turns wakes off with `OUTERLOOP_DISPATCH_WAKE=0` or a `<root>/DISARM_WAKE` sentinel, and a dry sweep says so in the log. An unarmed loop stranded every parked run silently, which local compute, able to park since 0.1.2, hit at once.
 - The brief's launch section says that a launch runs a sealed snapshot of the working tree and is scope-checked like the final tree, so experiment scripts must live under the contract's allowed paths.
 

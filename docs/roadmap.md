@@ -44,7 +44,7 @@ Package skeleton, CI gates, governance docs, architecture (ops+safety reviewed).
       Claude Code adapter (scrubbed session env, timeout, key-redacted
       transcript to disk) + fake adapter for tests
 - [x] Runs span sessions: per-run HOME + native resume (`resume_session_id`)
-      + bounded wake prompt (`render_wake`) so a run hibernates through
+      + bounded wake text (the inbox renderer) so a run hibernates through
       multi-day experiments with its agentic context intact (orchestrator-side
       wake scheduling lands in phase 4 with `compute`)
 - [ ] Session sandboxing: scrubbed env (no PAT/billing keys), hard timeouts,

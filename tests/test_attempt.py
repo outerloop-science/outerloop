@@ -3018,6 +3018,8 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
     @dataclass
     class RevisingHarness:
         def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
+            assert "blocking:" in brief_text and "suspicious" in brief_text
+            assert "advisory:" in brief_text and "name the constant" in brief_text
             # the agent revises in response to the findings
             (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text(
                 "def solve(): return 'revised'\n"
@@ -3047,6 +3049,16 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
             "notes": "",
         }
     )
+    payload = _json.loads(blocking)
+    payload["findings"].append(
+        {
+            **payload["findings"][0],
+            "blocking": False,
+            "summary": "readability",
+            "detail": "name the constant",
+        }
+    )
+    blocking = _json.dumps(payload)
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
     )
@@ -3119,6 +3131,15 @@ def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
     class ConcedingHarness:
         def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
             assert "did NOT clear the gate" in brief_text
+            from outerloop.inbox import pending
+
+            messages = pending(state / "runs" / run_id, 0)
+            assert messages[0].kind == "gate-verdict"
+            assert messages[0].payload["sealed_sha"] == rec.stage["candidate_sha"]
+            assert messages[0].payload["base_sha"] == rec.stage["base_sha"]
+            assert brief_text.startswith("Budgets:")
+            assert brief_text.split("## ", 1)[1].startswith("gate-verdict")
+            assert load_record(state, run_id).inbox_seq == 0
             return SessionResult(
                 stop_reason="end_turn",
                 is_error=False,
@@ -3271,6 +3292,15 @@ def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -
     assert outcome.outcome == "improved"  # publishes...
     assert github.prs[0]["draft"] is True and github.armed == []  # ...as a DRAFT, no revise
 
+    from outerloop.followup import panel_wake_pending
+    from outerloop.inbox import pending
+
+    record = load_record(state, run_id)
+    messages = pending(state / "runs" / run_id, record.inbox_seq)
+    panel = next(m for m in messages if m.kind == "panel-verdict")
+    assert panel.payload["findings"][0]["blocking"]
+    assert not panel_wake_pending(state, record, {"head": {"sha": panel.payload["head"]}})
+
 
 def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> None:
     # a prior wake opened the PR but died before recording it (run left WAITING).
@@ -3383,10 +3413,21 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     state, run_id, wsroot, _ = _write_parked_author_sleep(
         tmp_path, monkeypatch, raise_exc=MeasurementPending(("701", "702"))
     )
+    from outerloop.inbox import pending
     from outerloop.roles import author_spec
+
+    siblings = [{"agent_id": "agent-02", "benchmark": "tsp", "state": "waiting"}]
+    monkeypatch.setattr("outerloop.attempt._sibling_entries", lambda *args: siblings)
+    refreshed = []
+    monkeypatch.setattr(
+        "outerloop.attempt.syscall_write_siblings",
+        lambda ws, entries: refreshed.append((ws, entries)),
+    )
 
     class RecordingHarness(ScriptedHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
+            assert load_record(state, run_id).inbox_seq == 0
+            assert pending(state / "runs" / run_id, 0)
             calls.append((brief_text, str(workspace), resume_session_id))
             return super().run(brief_text, workspace, resume_session_id)
 
@@ -3408,6 +3449,13 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     record = load_record(state, run_id)
     assert record.state == "waiting"
     assert record.stage["phase"] == "candidate"  # flows into the existing wake
+    messages = pending(state / "runs" / run_id, 0)
+    assert record.inbox_seq == messages[-1].seq
+    assert pending(state / "runs" / run_id, record.inbox_seq) == []
+    assert messages[0].kind == "launch-result"
+    assert messages[0].payload["stdout_tail"].startswith("tail improvement")
+    assert refreshed == [(wsroot, siblings)]
+    assert not (wsroot / "inbox").exists()
     # the SAME session was resumed, with the launch results as its prompt
     wake_text, _ws, resumed = calls[0]
     assert resumed == "s1"
@@ -5469,7 +5517,7 @@ def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> No
 
     def fake_run_panel(lenses, panel_ws, claim, contract_text, today, round_no):
         seen["diff"] = claim.diff
-        return PanelVerdict(blocking=(), transcript="ok", wake_text="")
+        return PanelVerdict(blocking=(), transcript="ok")
 
     monkeypatch.setattr("outerloop.attempt.run_panel", fake_run_panel)
     monkeypatch.setattr("outerloop.review_agent.sanitize_checkout", lambda p: (0, 0))
@@ -5580,12 +5628,3 @@ def test_line_base_moved_is_best_effort_false_on_git_failure(tmp_path) -> None:
 
     ws = Workspace(root=tmp_path / "nope")
     assert _line_base_advanced(ws, "main", "deadbeef") == ""
-
-
-def test_reintegrate_prompt_names_the_base_branch() -> None:
-    from outerloop.attempt import REINTEGRATE_PROMPT
-
-    text = REINTEGRATE_PROMPT.format(base_branch="main", digest="  - a sibling win")
-    assert "origin/main" in text and "merge" in text.lower()
-    assert "a sibling win" in text
-    assert "{base_branch}" not in text and "{digest}" not in text

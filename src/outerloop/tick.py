@@ -669,7 +669,7 @@ def service_in_review(
                 not measure_ready
                 and not has_new_comments(record, github, spec.bot_login)
                 and wake_action != "wake"
-                and not panel_wake_pending(record, pr)
+                and not panel_wake_pending(root, record, pr)
             ):
                 # NOTHING awaits servicing — only a fully quiet PR may
                 # self-merge (pending reviewer feedback always wins over

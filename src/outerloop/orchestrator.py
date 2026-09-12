@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
@@ -39,6 +40,8 @@ from outerloop.contract import (
     path_is_forbidden,
 )
 from outerloop.harness import Harness, SessionResult, budget_exhausted, outage, redact
+from outerloop.inbox import Message, append, budgets_line, panel_payload, render_inbox
+from outerloop.inbox import pending as pending_messages
 from outerloop.panel import PanelVerdict
 from outerloop.role_runner import run_role
 from outerloop.roles import author_spec
@@ -54,7 +57,6 @@ from outerloop.syscall import (
 )
 from outerloop.syscall import budget_error as syscall_budget_error
 from outerloop.syscall import read_request as read_syscall_request
-from outerloop.syscall import render_refusal as render_syscall_refusal
 
 log = logging.getLogger(__name__)
 
@@ -1147,6 +1149,7 @@ def attempt_once(
     snapshot: Callable[[], str],
     ruler: str,
     changed_paths: Callable[[], Sequence[str]],
+    inbox_dir: Path,
     lessons: str = "",
     recent_reports: tuple[str, ...] = (),
     report_archive: bool = False,
@@ -1159,7 +1162,9 @@ def attempt_once(
     line_memory: str = "",
     line_divergence: str = "",
     resume_session_id: str = "",
-    improve_prompt: str = "",
+    inbox_seq: int = 0,
+    on_inbox_delivered: Callable[[int], None] | None = None,
+    inbox_thread: str = "",
     launcher: Callable[[str, SyscallRequest], str] | None = None,
     # the session watcher: a context manager around each harness run (None =
     # no watcher in this deployment); docs/design/session-watcher.md
@@ -1216,16 +1221,6 @@ def attempt_once(
     if not spec.scope:
         spec = dc_replace(spec, scope=tuple(contract.scope.allowed))
 
-    # the resume-entry (cumulative depth) is a COUPLED pair: it needs both a
-    # session to resume and an instruction to resume with. Reject either alone
-    # loudly — a lone improve_prompt would be silently discarded by the fresh-brief
-    # branch (a depth pass turning into a fresh attempt behind the caller's back),
-    # a lone session id would burn a promptless turn. And reject a resume on a
-    # no-resume backend rather than let the climb end as `session-error`. The depth
-    # loop (caller) owns WHEN to resume; this validates that choice — it never
-    # silently falls back to a fresh brief.
-    if bool(resume_session_id) != bool(improve_prompt):
-        raise ValueError("resume_session_id and improve_prompt must be given together")
     if resume_session_id and not getattr(harness, "supports_resume", True):
         # same optional-attr idiom as the panel policy
         raise ValueError("resume_session_id given but the harness does not support resume")
@@ -1276,6 +1271,20 @@ def attempt_once(
         else 0
     )
 
+    def _budgets_line() -> str:
+        return budgets_line(
+            launches=bench.depth_k - launches_used,
+            sleeps=bench.sleep_k - sleeps_used,
+            gpu_hours=(contract.budgets.gpu_hours_per_run - gpu_hours_used if bench.gpus else None),
+        )
+
+    def _ack(messages: list[Message]) -> None:
+        nonlocal inbox_seq
+        if messages:
+            inbox_seq = max(m.seq for m in messages)
+            if on_inbox_delivered is not None:
+                on_inbox_delivered(inbox_seq)
+
     # The baseline is NOT measured before the session — it is measured by the
     # GATE (`measure_and_decide`, base_sha vs candidate_sha) after the session,
     # so a dispatched climb has ONE park (the candidate), never a pre-session
@@ -1284,13 +1293,17 @@ def attempt_once(
     # benchmark's first run, and the gate re-measures either way.
     baseline: float | None = brief_baseline
     if resume_session_id:
-        # a cumulative depth pass (research-loop-buildout.md, Phase 2a): resume the
-        # prior session with the improve prompt instead of a fresh brief, so the
-        # author builds on — and sees the measured result of — its own last pass.
+        messages = pending_messages(inbox_dir, inbox_seq)
         with _watched():
             role_result = run_role(
-                spec, harness, improve_prompt, workspace, resume_session_id=resume_session_id
+                spec,
+                harness,
+                render_inbox(messages, budgets=_budgets_line()),
+                workspace,
+                resume_session_id=resume_session_id,
             )
+        if role_result.ok:
+            _ack(messages)
     else:
         task = make_task(contract, config.benchmark, baseline, hypothesis=task_hypothesis)
         brief = build_brief(
@@ -1374,10 +1387,12 @@ def attempt_once(
     failed_gate: tuple[str, AttemptResult] | None = judged
     tree = tree_of or (lambda sha: sha)
 
-    def _resume(prompt: str) -> AttemptResult | None:
-        """Resume the author session with `prompt`: None on success (session
-        advanced), else the terminal AttemptResult for the failed resume."""
+    def _resume(message: Message) -> AttemptResult | None:
+        """Deliver pending messages; return an ending only if the resume fails."""
         nonlocal session
+        append(inbox_dir, message)
+        messages = pending_messages(inbox_dir, inbox_seq)
+        prompt = render_inbox(messages, budgets=_budgets_line())
         # the tool the author is about to use is this kernel's, whatever the
         # session started with (a wake refreshed it too; this covers a refusal)
         with contextlib.suppress(Exception):
@@ -1388,6 +1403,7 @@ def attempt_once(
             )
         session = wake_result.session
         if wake_result.ok:
+            _ack(messages)
             return None
         if outage(session):
             kind = "session-outage"
@@ -1409,17 +1425,6 @@ def attempt_once(
     def _can_resume() -> bool:
         return bool(session.session_id) and getattr(harness, "supports_resume", True)
 
-    def _budgets_line() -> str:
-        gpu = (
-            f", {max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used):.1f} GPU-hours"
-            if bench.gpus
-            else ""
-        )
-        return (
-            f"Budgets: {max(0, bench.depth_k - launches_used)} launches and "
-            f"{max(0, bench.sleep_k - sleeps_used)} sleeps{gpu} remaining."
-        )
-
     def _not_run_note(request: SyscallRequest | None) -> str:
         # inline gates never dispatch a submit's sibling launches (nothing
         # would gather them) — tell the author; their budget was not spent
@@ -1427,7 +1432,7 @@ def attempt_once(
             return ""
         return (
             "Your sibling launches did NOT run (the gate completed inline); "
-            "stage them again if still needed. "
+            "their budget was not spent. "
         )
 
     while True:
@@ -1600,10 +1605,17 @@ def attempt_once(
             refused_once = True
             presealed = ""  # the refused author may edit the tree again
             failed = _resume(
-                render_syscall_refusal(
-                    problem,
-                    launches_remaining=max(0, bench.depth_k - launches_used),
-                    sleeps_remaining=max(0, bench.sleep_k - sleeps_used),
+                Message(
+                    0,
+                    "note",
+                    "kernel",
+                    inbox_thread,
+                    time.time(),
+                    f"refusal:{session.session_id}:{inbox_seq}",
+                    {
+                        "text": "Your syscall request was REFUSED and nothing was launched: "
+                        f"{problem}"
+                    },
                 )
             )
             if failed is not None:
@@ -1765,9 +1777,19 @@ def attempt_once(
                 else:
                     lead = f"Your `submit` did NOT clear the gate: {verdict_text} "
                 failed = _resume(
-                    f"{lead}{_not_run_note(submitted)}{_budgets_line()} "
-                    "Revise and submit again, run more "
-                    "experiments, or finish with an honest negative report."
+                    Message(
+                        0,
+                        "gate-verdict",
+                        "kernel",
+                        inbox_thread,
+                        time.time(),
+                        f"gate:{candidate_sha}:{sleeps_used}",
+                        {
+                            "text": lead + _not_run_note(submitted),
+                            "sealed_sha": candidate_sha,
+                            "base_sha": base_sha,
+                        },
+                    )
                 )
                 if failed is not None:
                     return failed
@@ -1813,6 +1835,16 @@ def attempt_once(
             submitted.report if submitted is not None and submitted.report else session.final_text,
         )
         panel_sections.append(verdict.transcript)
+        panel_message = Message(
+            0,
+            "panel-verdict",
+            "panel",
+            inbox_thread,
+            time.time(),
+            f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
+            {**panel_payload(verdict, candidate_sha), "wake_author": False},
+        )
+        append(inbox_dir, panel_message)
         # only the FINAL read's degradation matters: an earlier outage that a
         # later clean read supersedes is history, not state
         panel_degraded = verdict.degraded
@@ -1822,7 +1854,20 @@ def attempt_once(
             # (buildout Phase B: the author drives the depth axis). The loop
             # then re-reads its next syscall; the revision re-measures from
             # scratch.
-            failed = _resume(f"{verdict.wake_text}\n\n{_not_run_note(submitted)}{_budgets_line()}")
+            if _not_run_note(submitted):
+                append(
+                    inbox_dir,
+                    Message(
+                        0,
+                        "note",
+                        "kernel",
+                        inbox_thread,
+                        time.time(),
+                        f"inline-launches:{candidate_sha}:{panel_reads}",
+                        {"text": _not_run_note(submitted)},
+                    ),
+                )
+            failed = _resume(panel_message)
             if failed is not None:
                 return failed
             continue

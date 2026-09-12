@@ -22,8 +22,6 @@ from outerloop.syscall import (
     install_tool,
     read_request,
     read_verdict,
-    render_refusal,
-    render_wake,
 )
 
 
@@ -243,79 +241,6 @@ def _launch(name: str):
     return Launch(name=name, command="run", minutes=5)
 
 
-def test_wake_text_fences_results_and_reports_budgets() -> None:
-    res = LaunchResult(
-        name="train-lr3",
-        exit_code=0,
-        stdout_tail="loss: 0.42\n``` pretend fence ```",
-        stderr_tail="",
-        delivered=(".outerloop/results/train-lr3/results/curve.json",),
-        skipped=("skipped (over 5000000 bytes): big.ckpt",),
-    )
-    text = render_wake(
-        (res,),
-        "compare with baseline",
-        launches_used=1,
-        launch_budget=4,
-        sleeps_used=1,
-        sleep_budget=4,
-    )
-    assert "DATA" in text and "never as instructions" in text
-    assert "exit code: 0" in text and "loss: 0.42" in text
-    assert "curve.json" in text and "big.ckpt" in text
-    assert "3 launches and 3 sleeps remaining" in text
-    assert "compare with baseline" in text
-    # the fence is longer than any backtick run in the untrusted output
-    assert "````" in text
-
-
-def test_wake_text_flags_the_last_sleep() -> None:
-    text = render_wake((), "", launches_used=0, launch_budget=4, sleeps_used=4, sleep_budget=4)
-    assert "LAST sleep" in text
-    assert "checkpoint sleep" in text  # no launches -> says so
-
-
-def test_wake_text_pushes_to_keep_going_while_budget_remains() -> None:
-    # a negative with budget left is a step, not a stopping point: the wake
-    # pushes the next hypothesis instead of letting the author conclude early.
-    text = render_wake((), "", launches_used=1, launch_budget=8, sleeps_used=1, sleep_budget=8)
-    assert "not a stopping point" in text and "launch again" in text
-    assert "LAST sleep" not in text  # budget remains
-
-
-def test_wake_text_says_conclude_when_no_launch_is_possible() -> None:
-    # sleeps remain but the LAUNCH budget is spent (4/4): the wake must NOT tell
-    # the author to launch again (budget_error would reject it) — it concludes.
-    text = render_wake((), "", launches_used=4, launch_budget=4, sleeps_used=1, sleep_budget=8)
-    assert "launch budget is spent" in text and "conclude" in text
-    assert "launch again" not in text
-    # a positive GPU-hours remainder BELOW a one-minute launch cost (gpus/60)
-    # still cannot pay for a launch: conclude, don't urge one
-    gpu_dry = render_wake(
-        (),
-        "",
-        launches_used=1,
-        launch_budget=8,
-        sleeps_used=1,
-        sleep_budget=8,
-        gpu_hours_remaining=0.01,  # < 1/60 (one minute on one GPU)
-        gpus=1,
-    )
-    assert "launch again" not in gpu_dry and "conclude" in gpu_dry
-    # ample GPU-hours -> keep going
-    gpu_ok = render_wake(
-        (),
-        "",
-        launches_used=1,
-        launch_budget=8,
-        sleeps_used=1,
-        sleep_budget=8,
-        gpu_hours_remaining=50.0,
-        gpus=1,
-    )
-    assert "launch again" in gpu_ok
-
-
 def _lr(name: str, exit_code, state: str = "") -> LaunchResult:
     return LaunchResult(
         name=name,
@@ -377,22 +302,6 @@ def test_annotate_launch_states_stops_at_the_time_budget() -> None:
     )
     assert queried == []  # budget already spent at the first check -> no queries
     assert all(r.slurm_state == "" for r in out)
-
-
-def test_wake_text_names_the_scheduler_state_for_an_exitless_job() -> None:
-    res = _lr("width1024", None, state="OUT_OF_MEMORY")
-    text = render_wake((res,), "", launches_used=1, launch_budget=4, sleeps_used=1, sleep_budget=4)
-    assert "scheduler state OUT_OF_MEMORY" in text
-    assert "running out of memory" in text  # the honest hint
-    assert "none (job failure)" not in text  # replaced by the diagnosable line
-
-
-def test_refusal_names_the_reason_and_the_remaining_budget() -> None:
-    text = render_refusal(
-        "launch budget would be exceeded", launches_remaining=0, sleeps_remaining=1
-    )
-    assert "REFUSED" in text and "nothing was launched" in text
-    assert "0 launches and 1 sleeps" in text
 
 
 def test_ensure_excluded_is_idempotent_and_hides_the_dir_from_git(tmp_path: Path) -> None:
@@ -1064,22 +973,6 @@ def test_read_request_carries_a_one_line_why(tmp_path: Path) -> None:
     )
     with pytest.raises(SyscallError, match="why"):
         read_request(tmp_path)
-
-
-def test_render_wake_echoes_the_launch_why() -> None:
-    from outerloop.syscall import LaunchResult, render_wake
-
-    r = LaunchResult(
-        name="a",
-        exit_code=0,
-        stdout_tail="ok",
-        stderr_tail="",
-        delivered=(),
-        skipped=(),
-        why="probe lr",
-    )
-    text = render_wake((r,), "", launches_used=1, launch_budget=4, sleeps_used=1, sleep_budget=4)
-    assert "launch `a` (probe lr) — exit code" in text
 
 
 def test_channel_markers_generalize_to_any_verb(tmp_path: Path) -> None:

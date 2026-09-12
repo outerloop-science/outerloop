@@ -140,6 +140,7 @@ class RunRecord:
     # in-flight run is immune to a later env change. "" = resolve per backend
     # (legacy records, and the common config-driven case).
     author_key_file: str = ""
+    inbox_seq: int = 0  # last message delivered by a completed session leg
     # Per-source comment cursors: issue comments, top-level reviews, and
     # inline review comments are three REST collections with independent id
     # sequences — one cursor across them drops comments forever.
@@ -157,13 +158,8 @@ class RunRecord:
     # one, or any unrecorded push simply fails the equality: the tick arms
     # only when GitHub's head IS this sha. Empty = never arm (legacy too).
     auto_blessed_head: str = ""
-    # A BLOCKING follow-up re-read wakes the author (docs/design/orchestrator-
-    # verify.md): the panel's findings, data-fenced, and the pushed head they
-    # were read on. The wake fires only while GitHub's head IS that sha, is
-    # cleared when a follow-up services it, and is set again by the next read
-    # if findings remain — bounded by `panel_wake_rounds`.
+    # Follow-up revision bookkeeping; the findings themselves live in the inbox.
     panel_wake_head: str = ""
-    panel_wake_text: str = ""
     panel_wake_rounds: int = 0
     # A follow-up's DISPATCHED re-measure in flight (docs/design/
     # orchestrator-verify.md, "Measuring a follow-up's change"): the sealed
@@ -237,11 +233,37 @@ def load_record(root: Path, run_id: str) -> RunRecord:
     # a genuine new record always wins.
     if "climb_job_id" in raw and "run_job_id" not in raw:
         raw["run_job_id"] = raw["climb_job_id"]
-    # Ignore unknown keys: after a bad-merge revert, older code must still be
-    # able to read records written by newer code — a "corrupt" verdict here
-    # would blind the sweep to the whole run.
+    # Unknown fields must not blind an older kernel to a live run.
     known = {k: v for k, v in raw.items() if k in RunRecord.__dataclass_fields__}
-    return RunRecord(**known)
+    record = RunRecord(**known)
+    legacy = raw.pop("panel_wake_text", "")
+    if legacy:
+        from outerloop.inbox import Message, append, thread_for
+
+        lines = str(legacy).splitlines()
+        fences = [i for i, line in enumerate(lines) if line.startswith("```")]
+        if len(fences) >= 2:
+            legacy = "\n".join(lines[fences[0] + 1 : fences[-1]])
+        append(
+            run_dir(root, run_id),
+            Message(
+                seq=0,
+                kind="panel-verdict",
+                source="panel",
+                thread=thread_for(record),
+                arrived=float(raw.get("updated", 0)),
+                key=f"panel:migrated:{raw.get('panel_wake_head', '')}",
+                payload={
+                    "head": raw.get("panel_wake_head", ""),
+                    "findings": [
+                        {"blocking": True, "summary": "Pending panel findings", "detail": legacy}
+                    ],
+                },
+            ),
+        )
+    # the legacy field is dropped by whoever next saves the record under the
+    # lease; a load never writes
+    return record
 
 
 def list_runs(root: Path) -> list[RunRecord]:

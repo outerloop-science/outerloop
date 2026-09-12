@@ -991,11 +991,12 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
     assert heartbeat["disk"]["launch_ok"] is False
 
 
-def test_disk_preflight_passes_normally(tmp_path: Path) -> None:
+def test_disk_preflight_passes_normally(tmp_path: Path, monkeypatch) -> None:
     """Healthy path must actually run the lanes: the report fields are only
     populated by the github branch, so the test provides one."""
     from outerloop.tick import FollowupSpec, tick
 
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     fetched = []
 
     class G:
@@ -4180,9 +4181,23 @@ def test_a_pending_panel_wake_submits_a_followup_and_holds_off_the_arm(tmp_path:
                 pr_url="https://github.com/org/pilot/pull/9",
                 auto_blessed_head=pr_head,
                 panel_wake_head=wake_head,
-                panel_wake_text="findings",
             ),
             now=NOW,
+        )
+        from outerloop.inbox import Message, append
+        from outerloop.runstate import run_dir
+
+        append(
+            run_dir(root, "r-rev"),
+            Message(
+                0,
+                "panel-verdict",
+                "panel",
+                "pr:9",
+                NOW,
+                f"panel:{wake_head}",
+                {"head": wake_head, "findings": [{"blocking": True, "detail": "findings"}]},
+            ),
         )
         submits: list[list[str]] = []
 
