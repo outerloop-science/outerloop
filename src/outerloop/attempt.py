@@ -35,6 +35,7 @@ from outerloop.dispatch import (
     Snapshot,
     afterany_ids,
     drop_snapshot,
+    image_file_arg,
     should_dispatch,
     snapshot_tree,
 )
@@ -3443,13 +3444,6 @@ def main() -> int:
             )
         return value
 
-    def _image_file(value: str) -> str:
-        # a container image is a file on this machine; a wrong path fails here,
-        # loudly, instead of silently degrading the run to inline evals
-        if value and not Path(value).is_file():
-            raise argparse.ArgumentTypeError(f"--image {value!r} is not a file")
-        return value
-
     parser.add_argument("--agent-id", default="agent-01", type=_agent_id)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument(
@@ -3469,7 +3463,7 @@ def main() -> int:
     parser.add_argument(
         "--image",
         default=os.environ.get("OUTERLOOP_IMAGE", ""),
-        type=_image_file,
+        type=image_file_arg,
         help="apptainer image for session+eval",
     )
     parser.add_argument("--account", default=os.environ.get("OUTERLOOP_ACCOUNT", ""))

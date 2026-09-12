@@ -23,6 +23,7 @@ its own code-side ceiling; under the in-job threshold nothing here runs.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import logging
@@ -75,6 +76,15 @@ def effective_eval_minutes(eval_minutes: int | None) -> int:
     if eval_minutes is None:
         return 0
     return max(1, min(int(eval_minutes), EVAL_JOB_MINUTES_CEILING))
+
+
+def image_file_arg(value: str) -> str:
+    """argparse type for --image on every entry point: a container image is a
+    file on this machine, so a wrong path fails at the parser instead of
+    silently degrading the run to inline evaluation. "" (no image) passes."""
+    if value and not Path(value).is_file():
+        raise argparse.ArgumentTypeError(f"--image {value!r} is not a file")
+    return value
 
 
 def should_dispatch(eval_minutes: int | None) -> bool:

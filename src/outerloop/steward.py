@@ -36,6 +36,7 @@ from outerloop.attempt import (
     arm_sigterm_containment,
 )
 from outerloop.contract import Contract, contract_text_in_tree, load_contract
+from outerloop.dispatch import image_file_arg
 from outerloop.github import (
     GitHubClient,
     TokenProvider,
@@ -761,7 +762,9 @@ def main() -> int:
     parser.add_argument("--target", required=True)
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
-    parser.add_argument("--image", default="", help="apptainer image for session+validation")
+    parser.add_argument(
+        "--image", default="", type=image_file_arg, help="apptainer image for session+validation"
+    )
     parser.add_argument(
         "--uncontained",
         action="store_true",

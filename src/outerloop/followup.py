@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from outerloop.brief import render_review_wake
 from outerloop.contract import CONTRACT_NAME, contract_in_tree, contract_text_in_tree, load_contract
+from outerloop.dispatch import image_file_arg
 from outerloop.github import (
     GitError,
     GitHubClient,
@@ -1976,7 +1977,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Service one in-review run.")
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--image", default="")
+    parser.add_argument("--image", default="", type=image_file_arg)
     parser.add_argument("--uncontained", action="store_true")
     parser.add_argument("--claude-bin", default=default_binary("claude"))
     parser.add_argument(
@@ -2056,10 +2057,10 @@ def main() -> int:
     )
     from outerloop.panel import panel_read_minutes
 
-    # cluster coordinates (the climb's own resolver, the climb's own rule):
-    # a real image dispatches evals, a GPU benchmark's to the GPU lane; with
-    # no image, evals run inline. Account and partition are optional (#300).
-    dispatch = _dispatch_settings(args) if (args.image and Path(args.image).is_file()) else None
+    # the climb's own resolver, the climb's own rule: the compute backend
+    # always exists, so a revision's evals dispatch and meter the same way a
+    # climb's do. Account and partition are optional (#300).
+    dispatch = _dispatch_settings(args)
 
     # a follow-up services ONE run: reproduce THAT run's author (the persisted
     # (backend, model) PAIR), not the current fleet default, so a codex-authored
