@@ -1439,12 +1439,11 @@ def _line_head(ws: Workspace, line_ref: str, branch: str) -> str:
     on the line); one that moved off it (a reset onto main) is not."""
     remote = _rev(ws, f"refs/remotes/origin/{line_ref}")
     record = _rev(ws, LINE_HEAD_REF)
-    if record and remote and record != remote:
-        if not (_is_ancestor(ws, record, remote) or _is_ancestor(ws, remote, record)):
-            log.info(
-                "line %s: the kernel's record is off the line; using the remote head", line_ref
-            )
-            record = ""
+    on_line = not record or not remote or record == remote
+    on_line = on_line or _is_ancestor(ws, record, remote) or _is_ancestor(ws, remote, record)
+    if not on_line:
+        log.info("line %s: the kernel's record is off the line; using the remote head", line_ref)
+        record = ""
     head = record or remote or branch
     if head == branch:
         return branch
