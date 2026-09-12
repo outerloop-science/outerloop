@@ -21,7 +21,7 @@ import shutil
 import time
 import traceback
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
 from pathlib import Path
@@ -50,6 +50,7 @@ from outerloop.github import (
     git_identity,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, redact
+from outerloop.inbox import Message, append, delivered_seq, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.markers import has_marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
@@ -794,7 +795,6 @@ def _wake_author_sleep(
     panel_lenses: tuple[PanelLens, ...],
     issue_number: int,
     eval_minutes: int | None,
-    extra_update: str = "",
     judged: tuple[str, AttemptResult] | None = None,
 ) -> AttemptOutcome:
     """Wake a syscall park and resume the AUTHOR: deliver the launches' results
@@ -804,15 +804,12 @@ def _wake_author_sleep(
     as a CANDIDATE), or end on a terminal. The session's workspace persisted on
     disk exactly as the author left it (the launches ran on node-local
     checkouts of the sealed sha), so the resumed session continues its own tree
-    — cumulative depth. `extra_update` leads the wake text — a SUBMITTED park's
-    gate result or panel verdict (buildout Phase B), delivered back to the
-    author to act on; `sleep_ref` is whichever snapshot ref this park holds
+    — cumulative depth. `sleep_ref` is whichever snapshot ref this park holds
     (the sleep seal, or the submitted candidate)."""
     from outerloop.syscall import Launch as SyscallLaunch
     from outerloop.syscall import (
         annotate_launch_states,
         gather_results,
-        render_wake,
         write_budget,
     )
 
@@ -919,45 +916,92 @@ def _wake_author_sleep(
         tool_changed = syscall_refresh_tool(workspace)
     except Exception as exc:
         log.warning("tool refresh failed: %s", redact(f"{type(exc).__name__}: {exc}", secrets))
-    wake_text = render_wake(
-        results,
-        str(record.stage.get("syscall_note", "")),
-        launches_used=launches_used,
-        launch_budget=bench.depth_k,
-        sleeps_used=sleeps_used,
-        sleep_budget=bench.sleep_k,
-        gpu_hours_remaining=(
-            max(0.0, contract.budgets.gpu_hours_per_run - gpu_hours_used) if bench.gpus else None
-        ),
-        gpus=bench.gpus,
-    )
+    thread = thread_for(record)
+    for index, launch_result in enumerate(results):
+        job_id = (
+            task_ids[index]
+            if index < len(task_ids)
+            else f"{sleep_ref}:{sleeps_used}:{launch_result.name}"
+        )
+        append(
+            run_dir,
+            Message(
+                0,
+                "launch-result",
+                "job",
+                thread,
+                now,
+                f"job:{job_id}",
+                {
+                    **asdict(launch_result),
+                    "elapsed": elapsed[index] if elapsed and index < len(elapsed) else None,
+                },
+            ),
+        )
+    note = str(record.stage.get("syscall_note", ""))
+    if note:
+        append(
+            run_dir,
+            Message(
+                0, "note", "author", thread, now, f"note:{sleep_ref}:{sleeps_used}", {"text": note}
+            ),
+        )
     pacing = [
         f"sweep `{la.name}`: {la.array} tasks, at most {la.concurrency or la.array} at a time"
         for la in launches
         if la.array > 1
     ]
     if pacing:
-        wake_text = f"{wake_text}\n\n" + "\n".join(pacing) + " (the contract's ceiling applies)."
+        append(
+            run_dir,
+            Message(
+                0,
+                "note",
+                "kernel",
+                thread,
+                now,
+                f"pacing:{sleep_ref}:{sleeps_used}",
+                {"text": "\n".join(pacing) + " (the contract's ceiling applies)."},
+            ),
+        )
     if tool_changed:
-        wake_text = f"{wake_text}\n\n{tool_update_note(channel_dir(workspace))}"
-    if extra_update:
-        # a submitted park's gate/panel feedback leads; launch results follow
-        wake_text = f"{extra_update}\n\n{wake_text}"
-    # A research line whose base moved while it slept RE-PINS to the fresh base
-    # and is told to merge it: the agent does the merge (mirroring the in-review
-    # conflict wake, followup.py), the kernel only fetches and re-pins. Re-pinning
-    # base_sha to the fresh head is what makes the gate baseline and the scope
-    # base the CURRENT base (like followup's base_sha_at_fetch), so a sibling's
-    # merged work is never credited to this line and a forbidden conflict
-    # resolution (differing from the fresh base) is still scope-checked. Non-line
-    # runs and an unmoved base are untouched.
+        append(
+            run_dir,
+            Message(
+                0,
+                "note",
+                "kernel",
+                thread,
+                now,
+                f"tool:{sleep_ref}:{sleeps_used}",
+                {"text": tool_update_note(channel_dir(workspace))},
+            ),
+        )
+    # Re-pin the gate and scope base after a line's base advances.
     if _line_ref_for(bench, config.agent_id):
         fresh_base = _line_base_advanced(ws, base_branch, base_sha)
         if fresh_base:
             digest = _reintegration_digest(ws, base_sha, fresh_base)
             base_sha = fresh_base
-            wake_text = (
-                REINTEGRATE_PROMPT.format(base_branch=base_branch, digest=digest) + wake_text
+            append(
+                run_dir,
+                Message(
+                    0,
+                    "base-moved",
+                    "git",
+                    thread,
+                    now,
+                    f"base:{fresh_base}",
+                    {
+                        "text": (
+                            "The base moved while you were asleep. "
+                            f"origin/{base_branch} advanced and has been fetched; your change "
+                            "is measured and scope-checked against this base from now on. "
+                            f"What landed:\n{digest}"
+                        ),
+                        "base_sha": fresh_base,
+                    },
+                ),
             )
     _best_effort(
         "budget refresh",
@@ -972,6 +1016,16 @@ def _wake_author_sleep(
             ),
         ),
     )
+
+    _best_effort(
+        "sibling refresh",
+        lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
+    )
+
+    def acknowledge(seq: int) -> None:
+        nonlocal record
+        record = dc_replace(record, inbox_seq=seq)
+        save_record(run_root, record, time.time())
 
     # The wake's climb IO: measures go through the DISPATCHED measurer (this is
     # a wake job with bounded walltime — the gate's evals run as their own jobs
@@ -1026,7 +1080,10 @@ def _wake_author_sleep(
             spec=spec,
             panel_runner=panel_runner,
             resume_session_id=record.resume_session_id,
-            improve_prompt=wake_text,
+            inbox_dir=run_dir,
+            inbox_seq=delivered_seq(record),
+            on_inbox_delivered=acknowledge,
+            inbox_thread=thread,
             launcher=_make_launcher(dispatch, run_dir, workspace, run_id, gpus=bench.gpus),
             watcher=_make_watcher(dispatch, run_root, run_id, workspace, config),
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
@@ -1330,30 +1387,8 @@ def _line_ref_for(bench: Benchmark | None, agent_id: str) -> str:
     return f"agents/{agent_id}"
 
 
-# The base moved under a line while it slept: rather than the kernel doing a
-# git merge (which mishandles the agent's in-flight tree, its conflicts, and
-# the scope gate), the wake mirrors the in-review conflict wake — fetch the
-# fresh base into the workspace and TELL THE AGENT to merge it. The agent has
-# git and already resolves the run-start merge as its first task; only the
-# credential-bearing fetch/push are the kernel's. No commit text goes in the
-# prompt (no cross-agent prompt-injection surface); the agent reads what
-# landed from git itself.
-REINTEGRATE_PROMPT = (
-    "# The base moved while you were asleep\n"
-    "`origin/{base_branch}` advanced since your last run and is fetched into "
-    "your workspace. What landed:\n{digest}\n"
-    "Merge it into your line and resolve any conflicts honestly, then decide "
-    "what to re-run given what landed — if a sibling took your direction "
-    "further, pivot or say so plainly rather than pushing on. Your change is "
-    "measured against the current base.\n\n"
-)
-
-
 def _reintegration_digest(ws: Workspace, base_sha: str, fresh_head: str) -> str:
-    """A short 'what landed' list: the subjects of the commits merged into the
-    base since this line's base, newest first, capped. These are MERGED commits
-    — vetted by the human-merge gate — so they are context, not untrusted input;
-    the agent also has them in git to read in full."""
+    """Recent merged commit subjects, bounded and kept as untrusted data."""
     try:
         out = ws.git("log", "--no-merges", "--format=%s", f"{base_sha}..{fresh_head}")
     except Exception:
@@ -2034,10 +2069,11 @@ def resume_run(
         )
 
     def _wake_author(
-        extra_update: str, judged: tuple[str, AttemptResult] | None = None
+        message: Message, judged: tuple[str, AttemptResult] | None = None
     ) -> AttemptOutcome:
         # resume the submitted park's author with the gate/panel feedback
         # leading its wake text; the candidate ref is this park's held snapshot
+        append(run_dir, message)
         return _wake_author_sleep(
             run_root=run_root,
             run_id=run_id,
@@ -2062,7 +2098,6 @@ def resume_run(
             panel_lenses=panel_lenses,
             issue_number=issue_number,
             eval_minutes=eval_minutes,
-            extra_update=extra_update,
             judged=judged,
         )
 
@@ -2075,11 +2110,21 @@ def resume_run(
         # errored: feedback, never a silent terminal — the author decides
         # what happens next (rounds stay bounded by sleep_k)
         return _wake_author(
-            "Your `submit` did NOT clear the gate: "
-            f"{result.note or result.outcome} "
-            f"(baseline {result.baseline}, candidate {result.candidate}). "
-            "Revise and submit again, run more experiments, or finish with an "
-            "honest negative report.",
+            Message(
+                0,
+                "gate-verdict",
+                "kernel",
+                thread_for(record),
+                now,
+                f"gate:{candidate_sha}:{record.stage.get('sleeps_used', 0)}",
+                {
+                    "text": "Your `submit` did NOT clear the gate: "
+                    f"{result.note or result.outcome} "
+                    f"(baseline {result.baseline}, candidate {result.candidate}).",
+                    "sealed_sha": candidate_sha,
+                    "base_sha": base_sha,
+                },
+            ),
             # the verdict rides the resume: the same tree, sealed again after
             # the author concludes, is not measured twice; only an explicit
             # resubmit runs an errored eval again
@@ -2259,7 +2304,6 @@ def resume_run(
                     verdict = PanelVerdict(
                         blocking=(),
                         transcript="panel setup failed — NOT a clean read",
-                        wake_text="",
                         degraded=True,
                     )
                 reads = panel_reads + 1
@@ -2268,8 +2312,18 @@ def resume_run(
                 # — it revises and resubmits (a fresh seal + gate + panel), or
                 # concludes. A plain finish (or an unresumable session) DRAFTs
                 # the PR with the findings open for a human to triage.
+                panel_message = Message(
+                    0,
+                    "panel-verdict",
+                    "panel",
+                    thread_for(record),
+                    now,
+                    f"panel:{candidate_sha}:{stage.get('sleeps_used', 0)}:{reads}",
+                    {**panel_payload(verdict, candidate_sha), "wake_author": False},
+                )
+                append(run_dir, panel_message)
                 if bool(verdict.blocking) and submitted_park and author_resumable:
-                    return _wake_author(verdict.wake_text)
+                    return _wake_author(panel_message)
                 result = dc_replace(
                     result,
                     panel_transcript=verdict.transcript,
@@ -2688,7 +2742,6 @@ def build_panel_runner(
                         f"the candidate tree could not be sanitized "
                         f"({failed} instruction file(s) left) — NOT a clean read"
                     ),
-                    wake_text="",
                     degraded=True,
                 )
             claim = PullRequest(
@@ -3327,6 +3380,11 @@ def live_attempt(
                 dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
             )
 
+        def acknowledge(seq: int) -> None:
+            nonlocal record
+            record = dc_replace(record, inbox_seq=seq)
+            save_record(run_root, record, time.time())
+
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
         try:
@@ -3351,6 +3409,10 @@ def live_attempt(
                 spec=spec,
                 panel_runner=panel_runner,
                 brief_baseline=prior_best.best if prior_best else None,
+                inbox_dir=run_dir,
+                inbox_seq=record.inbox_seq,
+                on_inbox_delivered=acknowledge,
+                inbox_thread=thread_for(record),
                 line_ref=line_ref,
                 line_memory=line_memory,
                 line_divergence=line_divergence,

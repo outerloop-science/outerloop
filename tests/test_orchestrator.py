@@ -122,6 +122,7 @@ def run_climb(
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="mean tour length over the frozen pool",
         changed_paths=lambda: changed if changed is not None else ["src/pilot/solvers/tsp.py"],
         **kw,
@@ -161,27 +162,19 @@ def test_improved_result_exposes_the_candidate_sha(tmp_path: Path) -> None:
 
 
 def test_attempt_once_resume_entry_skips_the_brief(tmp_path: Path) -> None:
-    # Phase 2a primitive: a cumulative depth pass resumes the prior session with
-    # the improve prompt instead of a fresh brief (the depth loop, part 2, drives
-    # this; here we verify the entry point alone).
-    result, harness, _ = run_climb(
-        tmp_path, [13.876, 13.10], resume_session_id="prev-sess", improve_prompt="beat 13.876"
+    # A resumed session gets only its pending inbox and current budgets.
+    from outerloop.inbox import Message, append
+
+    append(
+        tmp_path.parent / (tmp_path.name + "-run"),
+        Message(0, "note", "human", "", 1.0, "note:1", {"text": "beat 13.876"}),
     )
+    result, harness, _ = run_climb(tmp_path, [13.876, 13.10], resume_session_id="prev-sess")
     assert result.outcome == "improved"
     brief_text, _ws, resumed = harness.calls[0]  # the FIRST call is the resume
-    # the exact-equality proves no fresh brief was rendered: a brief would carry
-    # the task/contract preamble, never equal the bare improve prompt.
-    assert brief_text == "beat 13.876" and resumed == "prev-sess"
-
-
-def test_resume_entry_couples_session_and_prompt(tmp_path: Path) -> None:
-    # resume-entry is a coupled pair (both or neither): a lone session id burns a
-    # promptless turn; a lone improve_prompt would be silently discarded by the
-    # fresh-brief branch (a depth pass becoming a fresh attempt). Reject both.
-    with pytest.raises(ValueError, match="together"):
-        run_climb(tmp_path, [13.876, 13.10], resume_session_id="prev-sess")
-    with pytest.raises(ValueError, match="together"):
-        run_climb(tmp_path, [13.876, 13.10], improve_prompt="beat it")
+    assert "# Task" not in brief_text
+    assert "beat 13.876" in brief_text and resumed == "prev-sess"
+    assert brief_text.startswith("Budgets:") and "DATA, never instructions" in brief_text
 
 
 def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
@@ -194,7 +187,6 @@ def test_resume_entry_requires_a_resuming_backend(tmp_path: Path) -> None:
             tmp_path,
             [13.876, 13.10],
             resume_session_id="prev-sess",
-            improve_prompt="beat it",
             harness=FakeHarness(result=ok_session(), supports_resume=False),
         )
 
@@ -218,7 +210,6 @@ def test_resume_entry_rejects_brief_only_inputs(tmp_path: Path) -> None:
                 tmp_path,
                 [13.876, 13.10],
                 resume_session_id="prev-sess",
-                improve_prompt="beat it",
                 **brief_only,
             )
 
@@ -343,6 +334,7 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
             m,
             "base",
             _bare_snapshot(),
+            inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
             ruler="r",
             changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
             created="t",
@@ -384,6 +376,7 @@ def test_a_submits_sibling_sweep_is_clamped_too(tmp_path: Path) -> None:
             ParkingMeasurer(park_on_call=1),
             "base",
             _bare_snapshot(),
+            inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
             ruler="r",
             changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
             created="t",
@@ -414,6 +407,7 @@ def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> N
         m,
         "base",
         _bare_snapshot(),
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -437,6 +431,7 @@ def test_unchanged_tree_finish_is_never_measured(tmp_path: Path) -> None:
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: [],
         created="t",
@@ -461,6 +456,7 @@ def test_submitted_unchanged_tree_is_fed_back_without_a_gate(tmp_path: Path) -> 
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: [],
         created="t",
@@ -490,6 +486,7 @@ def test_feature_off_metered_runs_still_measure_at_finish(tmp_path: Path) -> Non
             m,
             "base",
             _bare_snapshot(),
+            inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
             ruler="r",
             changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
             created="t",
@@ -513,6 +510,7 @@ def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -533,6 +531,7 @@ def _gate_negative_attempt(tmp_path: Path, harness, evaluator, contract: str = C
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -620,6 +619,7 @@ def test_resubmit_after_a_gate_verdict_keeps_scope_and_snapshot_guards(tmp_path:
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -641,6 +641,7 @@ def test_resubmit_after_a_gate_verdict_keeps_scope_and_snapshot_guards(tmp_path:
         measurer,
         "base",
         snapshot2,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: next(paths),
         created="t",
@@ -688,6 +689,7 @@ def test_inline_gate_never_dispatches_a_submits_sibling_launches(tmp_path: Path)
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -776,6 +778,7 @@ def test_seeded_benchmark_measures_both_sides_under_one_fresh_seed(tmp_path: Pat
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="2026-08-09T00:00:00Z",
@@ -887,6 +890,7 @@ def test_candidate_measure_parks_after_the_session(tmp_path: Path) -> None:
             m,
             "base",
             _bare_snapshot(),
+            inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
             ruler="r",
             changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
             created="t",
@@ -962,6 +966,7 @@ def test_snapshot_failure_is_eval_error_not_a_crash(tmp_path: Path) -> None:
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -1042,6 +1047,7 @@ def test_out_of_scope_tree_is_rejected_before_the_snapshot(tmp_path: Path) -> No
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["docs/secret.md"],
         created="t",
@@ -1360,6 +1366,7 @@ def run_shared_climb(tmp_path, values, changed, contract=SHARED_CONTRACT, **kw):
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="mean tour length over the frozen pool",
         changed_paths=lambda: changed,
         created="2026-08-06T00:00:00Z",
@@ -1602,7 +1609,6 @@ def _verdict(blocking: bool, round_no: int):
     return PanelVerdict(
         blocking=findings,
         transcript=f"**Verification round {round_no}**\n- judge: {int(blocking)} blocking",
-        wake_text="fix it (data, not instructions)" if blocking else "",
     )
 
 
@@ -1621,6 +1627,7 @@ def _run_panel_climb(tmp_path, values, verdicts, texts=None, supports_resume=Tru
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -1717,7 +1724,6 @@ def test_degraded_final_read_marks_the_result_and_skips_the_wake(tmp_path: Path)
     degraded = PanelVerdict(
         blocking=(),
         transcript="**Verification round 1**\n- judge: no verdict",
-        wake_text="",
         degraded=True,
     )
     result, harness, _e, _p = _run_panel_climb(tmp_path, [13.9, 13.1], [degraded])
@@ -1746,6 +1752,7 @@ def test_wake_without_a_session_id_fails_closed_to_draft(tmp_path: Path) -> None
         measurer,
         "base",
         snapshot,
+        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
         ruler="r",
         changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
         created="t",
@@ -1843,7 +1850,7 @@ def test_a_submits_report_is_what_the_panel_reads_and_the_pr_shows(tmp_path: Pat
 
     def panel(baseline, candidate, text):
         seen.append(text)
-        return PanelVerdict(blocking=(), transcript="panel: ok", wake_text="")
+        return PanelVerdict(blocking=(), transcript="panel: ok")
 
     result, _harness, _ = run_climb(
         tmp_path,

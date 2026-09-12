@@ -32,7 +32,7 @@ kernel prescribes none of it.
   dispatcher, `afterany` wake jobs, `resume_run`. Proven live. The build hands
   the *trigger* to the author; the plumbing underneath is this.
 - **Session resume** — `climb_once`'s resume-entry (`resume_session_id` +
-  `improve_prompt`, the #129 primitives) is the wake-the-same-session
+  the inbox, the #129 primitives) is the wake-the-same-session
   mechanism; `supports_resume` gates backends that cannot (hermes).
 - **The composition seam** (#128) — the decide-next policy extraction. Retained
   as internal structure; no further orchestrator decision policies get built on

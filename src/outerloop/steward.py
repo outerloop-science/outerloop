@@ -218,13 +218,6 @@ def rebase_leader_row(
 
 # A short role reminder prefixed to steward WAKE prompts: the resumed
 # session must keep its constitution without re-sending the whole brief.
-STEWARD_WAKE_PREAMBLE = (
-    "You are the BENCHMARK STEWARD (env/eval/tests territory only; solver "
-    "directories and the record ledger remain forbidden; the orchestrator "
-    "re-validates and re-bases records after any change you make).\n\n"
-)
-
-
 class StewardEvaluator(Protocol):
     def evaluate(self, workspace: Path, command: str, metric: str) -> float: ...
 

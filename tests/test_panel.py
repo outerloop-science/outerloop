@@ -84,9 +84,8 @@ def test_lenses_read_their_workspaces_and_blocking_merges(tmp_path: Path) -> Non
     assert review.workspaces == [tmp_path / "pr-head"]  # review reads the candidate only
     assert len(verdict.blocking) == 1 and verdict.blocking[0].file == "src/x.py"
     assert "0 blocking" in verdict.transcript and "1 blocking" in verdict.transcript
-    # the wake quotes findings as data, fenced
-    assert "```" in verdict.wake_text and "reads the ruler" in verdict.wake_text
-    assert "DATA, not instructions" in verdict.wake_text
+    assert verdict.findings == verdict.blocking
+    assert "reads the ruler" in verdict.findings[0].summary
 
 
 def test_no_verdict_is_never_a_pass(tmp_path: Path) -> None:
@@ -95,14 +94,14 @@ def test_no_verdict_is_never_a_pass(tmp_path: Path) -> None:
     assert verdict.blocking == ()
     assert "no verdict" in verdict.transcript
     assert "silence is not endorsement" in verdict.transcript
-    assert verdict.wake_text == ""  # nothing to wake on, but the transcript says why
+    assert verdict.findings == ()  # nothing to wake on, but the transcript says why
 
 
 def test_clean_panel_has_no_wake(tmp_path: Path) -> None:
     verdict = run_panel(
         (PanelLens("review", _Judge(_VERIFY_CLEAN)),), tmp_path, _PR, "c", "t", round_no=1
     )
-    assert verdict.blocking == () and verdict.wake_text == ""
+    assert verdict.blocking == () and verdict.findings == ()
 
 
 def test_no_verdict_degrades_the_read(tmp_path: Path) -> None:
@@ -129,3 +128,15 @@ def test_parse_lenses_admits_codex_and_refuses_uncontainable_backends() -> None:
     assert parse_lenses("review:hermes:gpt-5.6-terra") == (("review", "hermes", "gpt-5.6-terra"),)
     with pytest.raises(ValueError, match="unknown backend"):
         parse_lenses("review:gemini")
+
+
+def test_advisory_details_survive_the_panel_read(tmp_path):
+    payload = json.loads(_REVIEW_BLOCKING)
+    payload["findings"][0].update(blocking=False, summary="readability", detail="name the constant")
+    verdict = run_panel(
+        (PanelLens("review", _Judge(json.dumps(payload))),), tmp_path, _PR, "c", "t", round_no=1
+    )
+    assert not verdict.blocking
+    assert len(verdict.findings) == 1
+    assert verdict.findings[0].summary == "readability"
+    assert verdict.findings[0].detail == "name the constant"
