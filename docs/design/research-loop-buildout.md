@@ -162,3 +162,15 @@ against fakes before that.)
 3. **Phase B — submit-for-review as a payload** — LANDED (the orchestrator
    panel-revision loop is retired); suite gate + metric taxonomy still to come.
 4. Parallel/coordination helpers only if recurring author patterns earn them.
+5. **Phase C — in review, the author receives messages**: designed in
+   `lifecycle.md`, four reviewed stages, the follow-up module deleted in the
+   last.
+
+## Phase C — in review, the author receives messages
+
+**Status: absorbed into `lifecycle.md` (2026-09-12).** The ruling stands: an
+in-review run is the author receiving messages and doing whatever is
+necessary, not hard-coded steps. The lifecycle note carries the design: three
+states, one park-and-wake engine, the inbox and its message kinds, the
+author's moves (launch, sleep, submit, reply, end), what stays rigid, what is
+deleted, the open decisions and the four-stage sequencing.
