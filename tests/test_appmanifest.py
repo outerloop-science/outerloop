@@ -36,6 +36,7 @@ def test_build_manifest_declares_least_privilege() -> None:
     assert m["default_permissions"] == {
         "contents": "write",
         "issues": "write",
+        "members": "read",  # a private org member's issue reads as MEMBER, not CONTRIBUTOR
         "metadata": "read",
         "pull_requests": "write",
     }

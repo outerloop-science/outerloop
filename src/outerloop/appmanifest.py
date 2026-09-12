@@ -47,6 +47,9 @@ SETUP_URL = os.environ.get("OUTERLOOP_SETUP_URL") or "https://setup.outerloop.sc
 DEFAULT_PERMISSIONS = {
     "contents": "write",
     "issues": "write",
+    # so the App sees a private org member's issue as MEMBER, not CONTRIBUTOR
+    # (intake qualifies issues by author association)
+    "members": "read",
     "metadata": "read",
     "pull_requests": "write",
 }

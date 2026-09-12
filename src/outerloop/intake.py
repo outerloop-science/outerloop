@@ -48,13 +48,28 @@ def infer_benchmark(text: str, contract: Contract) -> str:
     return named[0] if len(named) == 1 else ""
 
 
+def issue_labels(issue: dict) -> set[str]:
+    """The issue's label names, casefolded."""
+    return {
+        str(label.get("name", "")).casefold()
+        for label in issue.get("labels", [])
+        if isinstance(label, dict)
+    }
+
+
 def qualifying_issue(issue: dict, bot_login: str) -> bool:
+    """An issue is a work order when a maintainer vouches for it: by writing it
+    (an OWNER, MEMBER or COLLABORATOR author) or by labelling it `task` (only
+    triage rights can set a label). The label matters because the kernel
+    lists issues with the App's token, and an App without the members
+    permission sees a private org member as CONTRIBUTOR."""
     author = str((issue.get("user") or {}).get("login", ""))
     if is_own_login(author, bot_login):
         return False  # the kernel's own issues (research log, alarms) are never orders
-    if str(issue.get("author_association", "")) not in QUALIFYING_ASSOCIATIONS:
+    if not str(issue.get("title") or "").strip():
         return False
-    return bool(str(issue.get("title") or "").strip())
+    vouched = str(issue.get("author_association", "")) in QUALIFYING_ASSOCIATIONS
+    return vouched or has_label(issue_labels(issue), "task")
 
 
 def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTask | None:
@@ -68,16 +83,20 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
         return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
-        labels = {
-            str(label.get("name", "")).casefold()
-            for label in issue.get("labels", [])
-            if isinstance(label, dict)
-        }
-        if has_label(labels, "steward"):
+        number = int(issue["number"])
+        if has_label(issue_labels(issue), "steward"):
             continue  # the steward lane's, never the solver's
         if not qualifying_issue(issue, bot_login):
+            # every skip says why: a silent one cost a day of "why is my
+            # issue not picked up" on a private org member's issue
+            log.info(
+                "issue #%s skipped: by %s as %s (needs %s, or the task label)",
+                number,
+                (issue.get("user") or {}).get("login", ""),
+                issue.get("author_association", ""),
+                "/".join(QUALIFYING_ASSOCIATIONS),
+            )
             continue
-        number = int(issue["number"])
         claimed = False
         attempts = 0
         for c in github.list_comments(repo, number):
@@ -91,7 +110,8 @@ def pick_issue(github, repo: str, contract: Contract, bot_login: str) -> IssueTa
             if has_marker(body, "claim-released"):
                 claimed = False
         if claimed:
-            continue  # already claimed by a run
+            log.info("issue #%s skipped: claimed by a run", number)
+            continue
         if attempts >= MAX_INTAKE_ATTEMPTS:
             log.info("issue #%s burned %d claim attempts; needs a human look", number, attempts)
             continue

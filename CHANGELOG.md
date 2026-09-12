@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Intake dropped an issue from a private org member without a word: the App's token sees such an author as CONTRIBUTOR, and only OWNER/MEMBER/COLLABORATOR qualified. Every skipped issue is now logged with its reason, a maintainer's `outerloop:task` label vouches for an issue regardless of association, and new Apps request members read so private members read as MEMBER.
+
 ### Changed
 
 - The brief's launch section says that a launch runs a sealed snapshot of the working tree and is scope-checked like the final tree, so experiment scripts must live under the contract's allowed paths.
