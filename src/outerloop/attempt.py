@@ -1411,26 +1411,47 @@ def _restore_line_memory(ws: Workspace, parent: str, seen: str) -> None:
             ws.git("checkout", parent, "--", file)
 
 
+def _rev(ws: Workspace, ref: str) -> str:
+    """The commit `ref` names, or "" when it does not exist."""
+    try:
+        return ws.git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}").strip()
+    except Exception:
+        return ""
+
+
+def _is_ancestor(ws: Workspace, older: str, newer: str) -> bool:
+    try:
+        ws.git("merge-base", "--is-ancestor", older, newer)  # raises when not
+        return True
+    except Exception:
+        return False
+
+
 def _line_head(ws: Workspace, line_ref: str, branch: str) -> str:
-    """The commit the seal parents on. The line only moves forward from the
-    kernel's record: a session that COMMITTED on the line advanced the branch
-    past it (those commits count), one that reset the branch onto main moved
-    it off the line (the record wins, #368). No record — a park that predates
-    it — means the branch is the line."""
-    try:
-        record = ws.git("rev-parse", "--verify", "-q", LINE_HEAD_REF).strip()
-    except Exception:
+    """The commit the seal parents on: the line's head as the kernel knows it,
+    not wherever the session left the checked-out branch (#368). The kernel's
+    record (`LINE_HEAD_REF`, written at checkout and after each push) is the
+    head while it sits on the line, an ancestor or descendant of the remote
+    line head; a record the session removed or moved off the line yields to
+    the remote-tracking ref, which the session cannot move without push
+    rights; the branch itself is the fallback for a line with no remote yet.
+    A branch that DESCENDS from that head is the head (the session committed
+    on the line); one that moved off it (a reset onto main) is not."""
+    remote = _rev(ws, f"refs/remotes/origin/{line_ref}")
+    record = _rev(ws, LINE_HEAD_REF)
+    if record and remote and record != remote:
+        if not (_is_ancestor(ws, record, remote) or _is_ancestor(ws, remote, record)):
+            log.info(
+                "line %s: the kernel's record is off the line; using the remote head", line_ref
+            )
+            record = ""
+    head = record or remote or branch
+    if head == branch:
         return branch
-    if record == branch:
-        return branch
-    try:
-        ws.git("merge-base", "--is-ancestor", record, branch)  # raises when not
-    except Exception:
-        log.info(
-            "line %s: the session moved the branch off the line; sealing on the record", line_ref
-        )
-        return record
-    return branch
+    if _is_ancestor(ws, head, branch):
+        return branch  # the session's own commits on the line
+    log.info("line %s: the session moved the branch off the line; sealing on the record", line_ref)
+    return head
 
 
 def _push_line_snapshot(
