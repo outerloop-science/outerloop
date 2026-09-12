@@ -50,6 +50,7 @@ from outerloop.intake import (
     RELEASE_MARKER,
     IssueTask,
     infer_benchmark,
+    issue_labels,
     qualifying_issue,
 )
 from outerloop.markers import has_label, has_marker, marker
@@ -243,13 +244,9 @@ def pick_steward_issue(
         return None
     issues = sorted(github.list_open_issues(repo), key=lambda i: i.get("number", 0))
     for issue in issues:
-        labels = {
-            str(label.get("name", "")).casefold()
-            for label in issue.get("labels", [])
-            if isinstance(label, dict)
-        }
-        if not has_label(labels, "steward"):
+        if not has_label(issue_labels(issue), "steward"):
             continue
+        # author standing only: no label vouches for the privileged lane
         if not qualifying_issue(issue, bot_login):
             continue
         number = int(issue["number"])
@@ -327,11 +324,7 @@ def release_orphaned_claims(
     for issue in github.list_open_issues(repo):
         if released >= limit:
             break
-        labels = {
-            str(label.get("name", "")).casefold()
-            for label in issue.get("labels", [])
-            if isinstance(label, dict)
-        }
+        labels = issue_labels(issue)
         if not has_label(labels, "steward"):
             continue
         number = int(issue.get("number", 0))
