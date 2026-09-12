@@ -1383,12 +1383,13 @@ def _line_base_advanced(ws: Workspace, base_branch: str, base_sha: str) -> str:
 
 def _restore_line_memory(ws: Workspace, parent: str, seen: str) -> None:
     """Put back the line's memory files a session's reset to main took from
-    the tree. File by file, judged against the session's branch (`seen`): a
-    file the session wrote or deleted stands; any other memory file on the
-    line comes back. So a topic file the session never saw (its branch was
-    reset onto main) returns beside whatever it wrote since, a file the
-    session deleted on the line stays deleted, and main's stale copy of a
-    memory path never replaces the line's."""
+    the tree. File by file, judged against the commit the session's tree was
+    checked out from (`seen`, its HEAD): a file the session wrote or deleted
+    stands; any other memory file on the line comes back. So a topic file the
+    session never saw (it reset onto main, or checked main out) returns
+    beside whatever it wrote since, a file the session deleted on the line
+    stays deleted, and main's stale copy of a memory path never replaces the
+    line's."""
 
     def blob(rev: str, file: str) -> str:
         try:
@@ -1475,7 +1476,8 @@ def _push_line_snapshot(
     def _seal_and_push() -> None:
         # raises if the session altered .git (every ws.git call checks) —
         # _best_effort turns that into a logged skip
-        branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()  # what the session saw
+        branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
+        seen = ws.git("rev-parse", "HEAD").strip()  # what the session's tree was checked out from
         local = _line_head(ws, line_ref, branch)
         last_exc: Exception | None = None
         # the line commit this workspace's untouched files currently match:
@@ -1501,7 +1503,7 @@ def _push_line_snapshot(
                     fork = parent = remote
             except Exception as exc:
                 log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
-            _restore_line_memory(ws, parent, seen=branch)
+            _restore_line_memory(ws, parent, seen=seen)
             memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
             snap = snapshot_tree(ws, parent, force=memory, author=bot_login)
             try:

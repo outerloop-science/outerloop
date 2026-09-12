@@ -4078,19 +4078,25 @@ def test_line_seal_survives_a_session_removing_or_moving_the_kernels_record(
 ) -> None:
     """The record lives in the session's writable .git. Deleted, the seal
     falls back to the remote line head; retargeted off the line, likewise.
-    Either way a reset onto main still seals on the line with its memory."""
+    A session that checks main out (HEAD off the line, the branch untouched)
+    is judged by what its tree came from. In every case the seal lands on
+    the line with its memory."""
     from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
 
     _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "remember the pivot\n"})
     line_tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
-    for tamper in ("delete", "retarget"):
+    for tamper in ("delete", "retarget", "checkout"):
         ws = _line_ws(tmp_path / tamper, target_repo)
         _checkout_line(ws, ws.root, "agent-07", "main")
         if tamper == "delete":
             ws.git("update-ref", "-d", LINE_HEAD_REF)
-        else:
+        elif tamper == "retarget":
             ws.git("update-ref", LINE_HEAD_REF, ws.git("rev-parse", "origin/main").strip())
-        ws.git("reset", "-q", "--hard", "origin/main")
+        if tamper == "checkout":
+            ws.git("checkout", "-q", "main")  # HEAD leaves the line; the branch stays put
+        else:
+            ws.git("reset", "-q", "--hard", "origin/main")
+        assert not (ws.root / "AGENT_MEMORY.md").exists()
         (ws.root / "docs" / "belief.md").write_text(f"after the reset ({tamper})\n")
         _push_line_snapshot(ws, "agents/agent-07", f"tsp-{tamper}", "improved")
         tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
@@ -4113,7 +4119,7 @@ def test_line_seal_prefers_the_lines_memory_over_mains_stale_copy(
     _push_line(tmp_path, target_repo, {"AGENT_MEMORY.md": "the line's newer memory\n"})
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
-    ws.git("reset", "-q", "--hard", "origin/main")
+    ws.git("checkout", "-q", "--detach", "origin/main")  # the line branch itself is untouched
     assert (ws.root / "AGENT_MEMORY.md").read_text() == "main's stale copy\n"
     (ws.root / "docs" / "belief.md").write_text("after the reset\n")
     _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
