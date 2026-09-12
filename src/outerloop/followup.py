@@ -1506,8 +1506,17 @@ def _commit_sealed_tree(
     """Make the SEALED commit the branch head, fold the ledger update the
     caller wrote into it (one amended commit with the standard message), so
     the pushed tree is exactly the measured tree plus the ledger row — never
-    the live workspace, which may hold content the seal excluded."""
+    the live workspace, which may hold content the seal excluded. A session
+    that COMMITTED its change itself leaves a seal with its parent's tree;
+    with no ledger row to fold, that commit is the head as it stands (an
+    amend would make an empty commit, which git refuses)."""
     ws.git("add", "-A")
+    if not ws.staged_paths():
+        sealed_tree = ws.git("rev-parse", f"{sealed_sha}^{{tree}}").strip()
+        parent_tree = ws.git("rev-parse", f"{sealed_sha}^^{{tree}}").strip()
+        if sealed_tree == parent_tree:
+            ws.git("reset", "-q", "--hard", f"{sealed_sha}^")
+            return
     ws.git(
         *git_identity(bot_login),
         "commit",
@@ -1784,15 +1793,45 @@ def _resume_measure(
             now,
         )
         drop_snapshot(ws, snapshot)
-        with contextlib.suppress(Exception):
+        if not stage.get("measured_posted") and not _measured_note_on_thread(
+            github, record.target, number, candidate_sha
+        ):
+            with contextlib.suppress(Exception):
+                github.comment(
+                    record.target,
+                    number,
+                    f"{REPLY_MARKER}\n{_measured_note(bench, candidate, candidate_sha)} "
+                    f"Pushed as `{landed[:12]}`.",
+                )
+        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
+    # The finished measurement is posted FIRST, whatever becomes of the push
+    # below: a number the reviewer asked for is information on its own, and
+    # an unpushable follow-up must not hide it (three finished evals went
+    # unreported this way, 2026-09-12). Posted at most once per sealed tree:
+    # the stage remembers the post, and when it cannot (the record write
+    # after the comment failed) the thread is the record — the note names
+    # the sealed sha, and a retry looks for it before posting.
+    if not stage.get("measured_posted") and not _measured_note_on_thread(
+        github, record.target, number, candidate_sha
+    ):
+        try:
             github.comment(
                 record.target,
                 number,
-                f"{REPLY_MARKER}\n**Re-measured after this change: `{bench.metric}` = "
-                f"{fmt_metric(candidate, bench.display_digits)}** (pushed as `{landed[:12]}`).",
+                f"{REPLY_MARKER}\n{_measured_note(bench, candidate, candidate_sha)}",
             )
-        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
-
+        except Exception as exc:  # the row and the body addendum carry the number
+            log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
+        else:
+            with contextlib.suppress(OSError, ValueError):
+                latest = load_record(run_root, run_id)
+                save_record(
+                    run_root,
+                    replace(
+                        latest, followup_stage={**latest.followup_stage, "measured_posted": True}
+                    ),
+                    now,
+                )
     # the sealed commit descends from the head the PR had at park (directly,
     # or through the session's local base-sync merge): a push since (a
     # maintainer's) makes it unpushable AND measured on a tree that is no
@@ -1894,10 +1933,6 @@ def _resume_measure(
         + floor_note
     )
     try:
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{measured_note}")
-    except Exception as exc:  # the ledger and the row carry the number
-        log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
-    try:
         github.update_candidate_row(record.target, number, candidate, digits=bench.display_digits)
     except Exception as exc:
         log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
@@ -1945,6 +1980,29 @@ def _resume_measure(
             secrets=secrets,
         )
     return FollowupOutcome(run_id, "replied", "dispatched re-measure applied")
+
+
+def _measured_note(bench: Any, candidate: float, candidate_sha: str) -> str:
+    """The number, named by the sealed tree it was measured on."""
+    return (
+        f"**Re-measured after this change: `{bench.metric}` = "
+        f"{fmt_metric(candidate, bench.display_digits)}** (sealed `{candidate_sha[:12]}`)."
+    )
+
+
+def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha: str) -> bool:
+    """Whether this sealed tree's measured note is already on the PR thread —
+    a retry after the record write that follows the comment failed."""
+    try:
+        comments = github.list_comments(target, number)
+    except Exception as exc:
+        log.warning("measured-note lookup failed for %s#%s: %s", target, number, exc)
+        return False  # posting twice beats never posting
+    tag = f"(sealed `{sha[:12]}`)"
+    return any(
+        str(c.get("body", "")).lstrip().startswith(REPLY_MARKER) and tag in str(c.get("body", ""))
+        for c in comments
+    )
 
 
 def _changed_paths(ws: Workspace) -> list[str]:

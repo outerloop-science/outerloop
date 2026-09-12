@@ -2538,6 +2538,174 @@ def test_a_parked_remeasure_is_finished_on_the_sealed_tree(review_run) -> None:
     assert done.calls[0][0].tree_sha == sealed
 
 
+def test_a_parked_remeasure_finishes_when_the_session_committed_and_the_ledger_stands(
+    review_run,
+) -> None:
+    """A session that committed its own change leaves a seal with its
+    parent's tree; a number that does not move the ledger row leaves nothing
+    to fold. The push must still land (the session's commit is the head) and
+    the number must be posted: an empty amend used to fail here, three times,
+    and the finished evaluation was never reported."""
+    import json as _json
+    import subprocess as _sp
+
+    root, bare = review_run
+    # a GPU contract with a cross-seed floor: a number inside it leaves the row alone
+    _set_contract(
+        root,
+        GPU_CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
+    )
+    ws = run_dir(root, "tsp-r1") / "ws"
+    (ws / "results").mkdir(exist_ok=True)
+    (ws / "results" / "leader.json").write_text(
+        _json.dumps(
+            {
+                "tsp": {
+                    "benchmark": "tsp",
+                    "metric": "mean_tour_length",
+                    "direction": "min",
+                    "baseline": 13.876,
+                    "best": 10.0,
+                    "best_run": "r0",
+                    "updated": "d",
+                }
+            }
+        )
+    )
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior best")
+    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
+    pre_session = _git(ws, "rev-parse", "HEAD").strip()  # GitHub's head until the push
+
+    class CommittingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            out = super().run(brief_text, workspace, resume_session_id)
+            for args in (("add", "-A"), ("commit", "-qm", "agent commit")):
+                _sp.run(
+                    [
+                        "git",
+                        "-C",
+                        str(workspace),
+                        "-c",
+                        "user.name=a",
+                        "-c",
+                        "user.email=a@a",
+                        *args,
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            return out
+
+    github = AutoGitHub(comments=[member(901, "try it")])
+    github.ws = ws
+    respond_once(
+        root,
+        "tsp-r1",
+        CommittingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    assert load_record(root, "tsp-r1").followup_stage["candidate_sha"]
+    github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": pre_session}})
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=9.9)),  # type: ignore[arg-type]
+    )
+    assert out.action == "replied" and "applied" in out.note
+    assert "Re-measured" in github2.posted[0] and "9.9" in github2.posted[0]
+    assert "ledger row is unchanged" in github2.body_addenda[0]  # inside the floor
+    head = _origin_head(bare)
+    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2 gpu\n"
+    assert _git(ws, "log", "-1", "--format=%s", head).strip() == "agent commit"  # no empty amend
+    assert load_record(root, "tsp-r1").followup_stage == {}
+
+
+def test_a_parked_remeasure_posts_its_number_before_the_push_and_only_once(
+    review_run, monkeypatch
+) -> None:
+    """The finished measurement is information on its own: it is posted
+    before the push, so a push that fails cannot hide it, and the retry
+    that finishes the push does not post it again."""
+    from outerloop.github import GitError, Workspace
+
+    root, bare = review_run
+    _gpu_run(root)
+    ws = run_dir(root, "tsp-r1") / "ws"
+    pre_session = _git(ws, "rev-parse", "HEAD").strip()  # GitHub's head until a push lands
+    github = AutoGitHub(comments=[member(901, "tweak")])
+    github.ws = ws
+    respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
+        QueueEvaluator(values=[]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
+    )
+    real_push = Workspace.push
+
+    def refused(self, branch):
+        raise GitError("git push failed: remote hung up")
+
+    monkeypatch.setattr(Workspace, "push", refused)
+    github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": pre_session}})
+    out = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github2,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 1,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out.action == "error"
+    assert "Re-measured" in github2.posted[0] and "10.2" in github2.posted[0]
+    assert github2.row_updates == []  # the row follows the push
+    assert not _origin_has_branch(bare)
+    # the worst case: the record write after the comment was lost too, so the
+    # stage does not remember the post — the thread does (the note names the
+    # sealed sha), and the retry finds it there
+    rec = load_record(root, "tsp-r1")
+    stage = {k: v for k, v in rec.followup_stage.items() if k != "measured_posted"}
+    save_record(root, replace(rec, followup_stage=stage), NOW + 1)
+    monkeypatch.setattr(Workspace, "push", real_push)
+    github3 = AutoGitHub(
+        pr={"state": "open", "merged": False, "head": {"sha": pre_session}},
+        comments=[{"id": 950, "body": github2.posted[0], "user": {"login": BOT}}],
+    )
+    out3 = respond_once(
+        root,
+        "tsp-r1",
+        ResumingHarness(),
+        QueueEvaluator(values=[]),
+        github3,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW + 2,
+        secrets=("sk-x",),
+        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
+    )
+    assert out3.action == "replied" and "applied" in out3.note
+    assert not any("Re-measured" in p for p in github3.posted)  # posted once, before
+    assert github3.row_updates == [10.2] and _origin_has_branch(bare)
+
+
 def test_a_failed_dispatched_remeasure_is_abandoned_and_said(review_run) -> None:
     root, bare = review_run
     _gpu_run(root)
@@ -2724,7 +2892,8 @@ def test_a_moved_pr_head_abandons_the_parked_change_honestly(review_run) -> None
         dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
     )
     assert out.action == "replied" and "abandoned" in out.note
-    assert "head moved while the re-measure ran" in github2.posted[0]
+    assert "Re-measured" in github2.posted[0] and "10.2" in github2.posted[0]  # the number, first
+    assert "head moved while the re-measure ran" in github2.posted[1]
     assert not _origin_has_branch(bare)
     rec = load_record(root, "tsp-r1")
     assert rec.followup_stage == {}
@@ -2827,7 +2996,8 @@ def test_a_resume_always_disarms_before_pushing(review_run) -> None:
         secrets=("sk-x",),
         dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
     )
-    assert github2.disarmed == [9] and "WITHHELD" in github2.posted[0]
+    assert github2.disarmed == [9]
+    assert "Re-measured" in github2.posted[0] and "WITHHELD" in github2.posted[1]
     assert not _origin_has_branch(bare)
     assert load_record(root, "tsp-r1").followup_stage != {}  # kept: the next follow-up retries
 
@@ -3122,7 +3292,9 @@ def test_a_resume_that_died_after_its_push_completes_on_the_next_follow_up(
     )
     assert out3.action == "replied" and "already landed" in out3.note
     assert "head moved" not in " ".join(github3.posted)
-    assert "Re-measured" in github3.posted[0]
+    # the number went out in the crashed attempt, before its push; never twice
+    assert "Re-measured" in github2.posted[0]
+    assert not any("Re-measured" in p for p in github3.posted)
     assert load_record(root, "tsp-r1").followup_stage == {}
     assert _origin_head(bare) == landed  # nothing re-pushed
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
