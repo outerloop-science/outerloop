@@ -3302,7 +3302,7 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
 
 
 def _write_parked_author_sleep(
-    tmp_path, monkeypatch, *, raise_exc=None, run_id="tsp-9", values=None
+    tmp_path, monkeypatch, *, raise_exc=None, run_id="tsp-9", values=None, submitted=False
 ):
     """An author-sleep-parked run on disk in the REAL park state: the session's
     tree persisted as the author left it (uncommitted edits over base), the
@@ -3361,6 +3361,7 @@ def _write_parked_author_sleep(
             "syscall_note": "compare against the sweep",
             "launches_used": 1,
             "sleeps_used": 1,
+            **({"submitted": True, "report": "the author's submit report"} if submitted else {}),
         },
     )
     save_record(state, record, 1_000_000.0)
@@ -3459,6 +3460,31 @@ def test_author_sleep_wake_publishes_an_inline_improvement(tmp_path, monkeypatch
     )
     # the sleep snapshot is released; nothing else lingers under the dispatch refs
     assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == ""
+
+
+def test_author_sleep_wake_keeps_the_submit_report_on_the_pr(tmp_path, monkeypatch) -> None:
+    """A submitted park woken with its gate result whose session ends without
+    submitting again still shows the author's submit report on the PR."""
+    from outerloop.roles import author_spec
+
+    state, run_id, _, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}, submitted=True
+    )
+    github = CommentingGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+        ),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved"
+    assert "the author's submit report" in github.prs[0]["body"]
 
 
 def test_author_sleep_wake_reconciles_an_already_open_pr(tmp_path, monkeypatch) -> None:

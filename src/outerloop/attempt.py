@@ -819,6 +819,11 @@ def _wake_author_sleep(
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         # the terminal every climb takes (report, notebook, PR or ending
         # record, issue note); then this park's snapshot is released
+        if record.stage.get("submitted") and not result.submit_report:
+            # the author's report at submit rides the stage: a session woken
+            # with its gate result that ends without submitting again still
+            # shows that report on the PR (same rule as the candidate wake)
+            result = dc_replace(result, submit_report=str(record.stage.get("report") or ""))
         outcome = _finish_attempt(
             result=result,
             ws=ws,
