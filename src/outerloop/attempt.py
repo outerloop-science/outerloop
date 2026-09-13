@@ -2463,6 +2463,7 @@ def resume_run(
                 now,
                 f"panel:{candidate_sha}:{stage.get('sleeps_used', 0)}:{reads}",
                 {**panel_payload(verdict, candidate_sha), "wake_author": False},
+                origin=record.run_id,
             )
             append(run_dir, panel_message)
             result = dc_replace(
@@ -2491,6 +2492,7 @@ def resume_run(
                     ),
                     candidate_sha,
                 ),
+                origin=record.run_id,
             ),
         )
 

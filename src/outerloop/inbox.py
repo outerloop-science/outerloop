@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -528,9 +529,12 @@ def gather_github_messages(
                 continue
             name = str(check.get("name") or "check")
             app = str((check.get("app") or {}).get("slug") or "")
-            # GitHub Actions check runs and workflow jobs share the same id.
+            # an Actions check run's id is its job id; the details_url names
+            # the job too and wins when present
+            found = re.search(r"/job/(\d+)", str(check.get("details_url") or ""))
+            job_id = int(found.group(1)) if found else int(check["id"])
             tail = (
-                github.job_log_tail(record.target, check["id"], MAX_COMMENT_CHARS)
+                github.job_log_tail(record.target, job_id, MAX_COMMENT_CHARS)
                 if app == "github-actions"
                 else ""
             )

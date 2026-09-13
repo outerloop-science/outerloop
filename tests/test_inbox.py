@@ -561,3 +561,50 @@ def test_reply_waits_for_first_thread(tmp_path, caplog):
     assert github.posted[0][:2] == ("org/repo", 9)
     assert "early" in github.posted[0][2]
     assert post_replies(record, cast(GitHubClient, github), (), (), tmp_path) == 0
+
+
+def test_check_log_uses_the_job_named_by_details_url(tmp_path):
+    """An Actions check run's id is its job id; when the details_url names
+    the job, that number is used; otherwise the check run id is."""
+    from outerloop.inbox import gather_github_messages
+
+    record = RunRecord(
+        "run",
+        "org/repo",
+        "task",
+        PARKED,
+        pr_url="https://github.com/org/repo/pull/9",
+        stage={"base_sha": "base"},
+    )
+    pr = {"head": {"sha": "abc"}, "base": {"sha": "base"}}
+
+    class GitHub:
+        def __init__(self):
+            self.jobs: list[int] = []
+
+        def list_comments(self, *args):
+            return []
+
+        list_pr_reviews = list_comments
+        list_pr_review_comments = list_comments
+
+        def list_check_runs(self, repo, ref):
+            base = {"status": "completed", "conclusion": "failure", "head_sha": ref}
+            return [
+                {
+                    **base,
+                    "id": 5,
+                    "name": "a",
+                    "app": {"slug": "github-actions"},
+                    "details_url": "https://github.com/org/repo/actions/runs/1/job/777",
+                },
+                {**base, "id": 6, "name": "b", "app": {"slug": "github-actions"}},
+            ]
+
+        def job_log_tail(self, repo, job_id, max_chars):
+            self.jobs.append(job_id)
+            return ""
+
+    github = GitHub()
+    gather_github_messages(tmp_path, record, cast(GitHubClient, github), "bot", 1, pr)
+    assert github.jobs == [777, 6]

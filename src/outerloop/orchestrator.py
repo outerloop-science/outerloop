@@ -1837,6 +1837,7 @@ def attempt_once(
                         time.time(),
                         f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
                         panel_payload(verdict, candidate_sha),
+                        origin=inbox_dir.name,
                     ),
                 )
             if (
@@ -1938,6 +1939,7 @@ def attempt_once(
             time.time(),
             f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
             {**panel_payload(verdict, candidate_sha), "wake_author": False},
+            origin=inbox_dir.name,
         )
         append(inbox_dir, panel_message)
         # only the FINAL read's degradation matters: an earlier outage that a
