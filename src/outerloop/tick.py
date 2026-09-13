@@ -566,17 +566,20 @@ def _base_dial(
 def _observe_auto_pr(
     root: Path, record: RunRecord, github: Any, pr: dict, now: float, bot_login: str
 ) -> None:
+    from outerloop.github import is_own_login
     from outerloop.inbox import Message, append, thread_for
 
     if _base_dial(github, record.target, pr, None) != "auto":
         return
     number = int(record.pr_url.rstrip("/").split("/")[-1])
-    if (
-        bot_login
-        and ((pr.get("auto_merge") or {}).get("enabled_by") or {}).get("login") == bot_login
+    if is_own_login(
+        str(((pr.get("auto_merge") or {}).get("enabled_by") or {}).get("login") or ""),
+        bot_login,
     ):
         disarmed = github.disable_auto_merge(record.target, number)
         log.info("auto-merge withdrawal on %s#%s: %s", record.target, number, disarmed)
+    if record.state != PARKED:
+        return
     head = str((pr.get("head") or {}).get("sha") or "")
     if record.auto_blessed_head and head and head != record.auto_blessed_head:
         append(
@@ -618,6 +621,7 @@ def _merge_blessed_pr(
             or pr.get("draft")
             or pr.get("mergeable_state") != "clean"
             or str((pr.get("head") or {}).get("sha", "")) != record.auto_blessed_head
+            or (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha")
             or _base_dial(github, record.target, pr, None) != "auto"
         ):
             return
@@ -971,8 +975,8 @@ def sweep(
                     pr = github.get_pull_request(
                         record.target, int(record.pr_url.rstrip("/").split("/")[-1])
                     )
+                    _observe_auto_pr(root, record, github, pr, now, bot_login)
                     if record.state == PARKED:
-                        _observe_auto_pr(root, record, github, pr, now, bot_login)
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )

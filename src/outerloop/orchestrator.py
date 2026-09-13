@@ -1147,6 +1147,12 @@ def _merge_afterany(*parts: str) -> str:
     return "afterany:" + ":".join(ids) if ids else ""
 
 
+def _render_author_inbox(
+    messages: list[Message], *, budgets: str, redact_secrets: tuple[str, ...]
+) -> str:
+    return redact(render_inbox(messages, budgets=budgets, protocol=AUTHOR_PROTOCOL), redact_secrets)
+
+
 def attempt_once(
     config: RunConfig,
     contract_text: str,
@@ -1173,6 +1179,7 @@ def attempt_once(
     inbox_seq: int = 0,
     on_inbox_delivered: Callable[[int], None] | None = None,
     inbox_thread: str = "",
+    redact_secrets: tuple[str, ...] = (),
     launcher: Callable[[str, SyscallRequest], str] | None = None,
     # the session watcher: a context manager around each harness run (None =
     # no watcher in this deployment); docs/design/session-watcher.md
@@ -1348,10 +1355,10 @@ def attempt_once(
             role_result = run_role(
                 spec,
                 harness,
-                render_inbox(
+                _render_author_inbox(
                     messages,
                     budgets=_budgets_line(),
-                    protocol=AUTHOR_PROTOCOL,
+                    redact_secrets=redact_secrets,
                 ),
                 workspace,
                 resume_session_id=resume_session_id,
@@ -1452,10 +1459,10 @@ def attempt_once(
             on_meter(launches_used, sleeps_used, gpu_hours_used)
         append(inbox_dir, message)
         messages = pending_messages(inbox_dir, inbox_seq)
-        prompt = render_inbox(
+        prompt = _render_author_inbox(
             messages,
             budgets=_budgets_line(),
-            protocol=AUTHOR_PROTOCOL,
+            redact_secrets=redact_secrets,
         )
         # the tool the author is about to use is this kernel's, whatever the
         # session started with (a wake refreshed it too; this covers a refusal)

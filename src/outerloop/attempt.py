@@ -228,14 +228,17 @@ def target_clone_url(target: str) -> str:
     return f"https://github.com/{target}.git"
 
 
-def _blessed_head(ws: Workspace, result: Any, contract: Any) -> str:
+def _blessed_head(
+    ws: Workspace, result: Any, contract: Any, base_branch: str, base_sha: str
+) -> str:
     """The pushed PR head the tick may later self-merge — only when this
-    publish was under merge:auto with a clean panel; "" otherwise.
+    publish was under merge:auto with a clean panel and a fresh base; "" otherwise.
     An unreadable HEAD blesses nothing."""
     if not (
         result.panel_rounds > 0
         and not (result.panel_blocking_open or result.panel_degraded)
         and getattr(contract, "merge", "manual") == "auto"
+        and _rev(ws, f"origin/{base_branch}") == base_sha
     ):
         return ""
     try:
@@ -936,6 +939,7 @@ def run_author_leg(
         base_sha,
         snapshot,
         resume_session_id=record.resume_session_id,
+        redact_secrets=secrets,
         inbox_dir=directory,
         inbox_seq=record.inbox_seq,
         inbox_thread=thread_for(record),
@@ -3322,8 +3326,8 @@ def publish(
                 _clear_stage(record),
                 state=PARKED,
                 auto_blessed_head=(
-                    _blessed_head(ws, result, contract)
-                    if not panel_skip and _rev(ws, f"origin/{base_branch}") == base_sha
+                    _blessed_head(ws, result, contract, base_branch, base_sha)
+                    if not panel_skip
                     else ""
                 ),
                 resume_session_id=result.session.session_id
@@ -3456,7 +3460,7 @@ def publish(
                 "state": PARKED,
                 "pr_url": pr_url,
                 "stage": {**record.stage, "review_topup": True},
-                "auto_blessed_head": _blessed_head(ws, result, contract),
+                "auto_blessed_head": _blessed_head(ws, result, contract, base_branch, base_sha),
                 "resume_session_id": result.session.session_id if result.session else "",
                 "ending_note": pr_url,
             }
@@ -3887,6 +3891,7 @@ def live_attempt(
                 measurer,
                 pre_session_sha,
                 snapshot,
+                redact_secrets=secrets,
                 ruler=RULER,
                 changed_paths=changed_paths,
                 created=created,

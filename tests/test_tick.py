@@ -3796,6 +3796,7 @@ def test_legacy_followup_count_logs_even_when_paused(tmp_path, caplog):
         "steward",
         "unclean",
         "running",
+        "base",
         "checks403",
         "methods",
     ],
@@ -3832,7 +3833,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
             return {
                 "state": "closed" if self.merged else "open",
                 "merged": bool(self.merged),
-                "base": {"sha": "base"},
+                "base": {"sha": "moved" if blocked == "base" else "base"},
                 "head": {"sha": "changed" if blocked == "head" else "head"},
                 "draft": blocked == "draft",
                 "mergeable_state": "blocked" if blocked == "unclean" else "clean",
@@ -4061,10 +4062,10 @@ def test_check_message_wakes_only_on_failure(tmp_path, conclusion):
 
 
 @pytest.mark.parametrize("state", ["parked", "running"])
-@pytest.mark.parametrize("armer", ["bot", "human"])
+@pytest.mark.parametrize("armer", ["bot", "former-bot", "human"])
 @pytest.mark.parametrize("blessed", ["blessed", ""])
 def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
-    tmp_path, state, armer, blessed, caplog
+    tmp_path, state, armer, blessed, caplog, monkeypatch
 ):
     from outerloop.inbox import pending
     from outerloop.runstate import release_lease, run_dir
@@ -4116,6 +4117,7 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
         def merge_pull(self, *args, **kwargs):
             raise AssertionError("unblessed head must never merge")
 
+    monkeypatch.setenv("OUTERLOOP_BOT_ALIASES", "former-bot")
     github = GitHub()
     caplog.set_level("INFO")
     for index, head in enumerate(["human-1", "human-1", "human-2"]):
@@ -4129,7 +4131,7 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
             github=github,
             bot_login="bot",
         )
-    assert github.disarms == int(state == "parked" and armer == "bot")
+    assert github.disarms == int(armer in {"bot", "former-bot"})
     if github.disarms:
         assert "auto-merge withdrawal" in caplog.text
     messages = pending(run_dir(tmp_path, record.run_id), 0)
@@ -4141,7 +4143,7 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
     assert messages[1].payload["head"] == "human-2"
 
 
-@pytest.mark.parametrize("changed", ["", "running", "unblessed", "job", "wake"])
+@pytest.mark.parametrize("changed", ["", "running", "unblessed", "job", "wake", "base"])
 def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
     from outerloop import tick
     from outerloop.inbox import Message, append
@@ -4153,6 +4155,7 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
         deadline=0,
         pr_url="https://github.com/org/repo/pull/9",
         auto_blessed_head="head",
+        stage={"base_sha": "base"},
     )
     events = []
 
@@ -4188,7 +4191,12 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
         tmp_path,
         record,
         GitHub(),
-        {"state": "open", "mergeable_state": "clean", "head": {"sha": "head"}},
+        {
+            "state": "open",
+            "mergeable_state": "clean",
+            "head": {"sha": "head"},
+            "base": {"sha": "moved" if changed == "base" else "base"},
+        },
         "tick",
         NOW,
     )

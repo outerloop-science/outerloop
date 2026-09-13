@@ -528,6 +528,7 @@ def gather_github_messages(
                 continue
             name = str(check.get("name") or "check")
             app = str((check.get("app") or {}).get("slug") or "")
+            # GitHub Actions check runs and workflow jobs share the same id.
             tail = (
                 github.job_log_tail(record.target, check["id"], MAX_COMMENT_CHARS)
                 if app == "github-actions"

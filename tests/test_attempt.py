@@ -3921,8 +3921,11 @@ def test_auto_publish_only_records_blessed_head(panel_ran):
 
     class Workspace:
         def git(self, *args):
-            assert args == ("rev-parse", "HEAD")
-            return "blessed"
+            assert args in [
+                ("rev-parse", "HEAD"),
+                ("rev-parse", "--verify", "-q", "origin/main^{commit}"),
+            ]
+            return "blessed" if args[-1] == "HEAD" else "base"
 
     ws = Workspace()
     result = SimpleNamespace(
@@ -3931,7 +3934,7 @@ def test_auto_publish_only_records_blessed_head(panel_ran):
     _arm_unless_base_moved(
         cast(Any, NoGitHub()), cast(Any, ws), "o/r", "7", "main", "base", (), merge_mode="auto"
     )
-    assert _blessed_head(cast(Any, ws), result, SimpleNamespace(merge="auto")) == (
+    assert _blessed_head(cast(Any, ws), result, SimpleNamespace(merge="auto"), "main", "base") == (
         "blessed" if panel_ran else ""
     )
 
@@ -5814,7 +5817,8 @@ def test_end_after_submitted_gate_keeps_verdict_note(tmp_path, monkeypatch):
     assert "Stopping after this verdict." in Path(outcome.report_path).read_text()
 
 
-def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkeypatch):
+@pytest.mark.parametrize("base_moved", [False, True])
+def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkeypatch, base_moved):
     import json
 
     from outerloop.github import GitHubClient
@@ -5822,6 +5826,19 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     target = _seed_target(tmp_path, monkeypatch, CONTRACT + "\nmerge: auto\n")
 
     class GitHub(FakeGitHub):
+        def create_pull(self, *args, **kwargs):
+            from outerloop import attempt
+
+            url = super().create_pull(*args, **kwargs)
+            if base_moved:
+                original_rev = attempt._rev
+                monkeypatch.setattr(
+                    attempt,
+                    "_rev",
+                    lambda ws, ref: "moved-base" if ref == "origin/main" else original_rev(ws, ref),
+                )
+            return url
+
         def enable_auto_merge(self, *args, **kwargs):
             pytest.fail("auto publish armed GitHub auto-merge")
 
@@ -5844,5 +5861,5 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     assert outcome.outcome == "improved"
     assert not github.armed
     record = load_record(tmp_path / "state", "tsp-auto")
-    assert record.auto_blessed_head == _git(target, "rev-parse", github.prs[0]["head"]).strip()
-    assert record.auto_blessed_head
+    expected = "" if base_moved else _git(target, "rev-parse", github.prs[0]["head"]).strip()
+    assert record.auto_blessed_head == expected
