@@ -456,6 +456,16 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
     save_record(tmp_path, moved, 250.0)
     assert service_status(tmp_path, gh, "org/repo", 260.0) is True
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["gpu_hours_used"] == 40.0
+    # the wait word moving (gate done, PR open, now in review) is a shape change too
+    reviewing = dc_replace(
+        moved,
+        pr_url="https://github.com/org/repo/pull/9",
+        stage={**moved.stage, "phase": "author-sleep"},
+    )
+    save_record(tmp_path, reviewing, 270.0)
+    assert service_status(tmp_path, gh, "org/repo", 280.0) is True
+    assert json.loads(gh.files["climb/status.json"])["runs"][0]["waiting"] == "review"
+    assert service_status(tmp_path, gh, "org/repo", 290.0) is False
     # a state change writes again; a terminal run leaves the strip
     save_record(tmp_path, dc_replace(record, state="ended", ending="negative-result"), 400.0)
     assert service_status(tmp_path, gh, "org/repo", 500.0) is True
@@ -1059,6 +1069,7 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
     )
     (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
     assert (r["exp_done"], r["exp_total"]) == (3, 4)
+    assert r["waiting"] == "jobs"  # the pill says what the park waits on
     assert (r["depth_k"], r["sleep_k"]) == (16, 20)
     assert r["eval_minutes"] == 240
     assert r["exp_minutes"] == 180
@@ -1211,3 +1222,32 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
     assert "queue" not in json.loads(gh.files["climb/status.json"])
     assert service_status(tmp_path, gh, "org/repo", 10.0, queue=[]) is True
     assert json.loads(gh.files["climb/status.json"])["queue"] == []
+
+
+def test_status_says_what_a_parked_run_waits_on(tmp_path: Path) -> None:
+    """One derived word beside the state, never a new state: jobs while
+    launches run, gate while a submit is measured, review once a PR is open
+    with nothing pending, wake otherwise (a checkpoint sleep, or a message
+    already in the inbox); running runs carry none."""
+    from outerloop.climbboard import _waiting_on
+
+    parked = RunRecord(
+        run_id="w-1",
+        target="org/repo",
+        task_title="t",
+        state="parked",
+        benchmark="b",
+        agent_id="agent-01",
+        created=1.0,
+        updated=2.0,
+    )
+    in_review = dc_replace(parked, pr_url="https://github.com/org/repo/pull/9")
+    assert _waiting_on(parked, 1, 3, False) == "jobs"
+    assert _waiting_on(dc_replace(parked, stage={"phase": "candidate"}), 0, 0, False) == "gate"
+    assert _waiting_on(in_review, 0, 0, False) == "review"
+    assert _waiting_on(in_review, 0, 0, True) == "wake"  # a message waits: the sweep wakes it
+    measured = dc_replace(parked, stage={"phase": "candidate"})
+    assert _waiting_on(measured, 0, 0, True) == "wake"  # the verdict is in: no longer the gate
+    assert _waiting_on(measured, 1, 2, True) == "jobs"  # messages wait behind jobs
+    assert _waiting_on(parked, 0, 0, False) == "wake"
+    assert _waiting_on(dc_replace(parked, state="running"), 1, 3, False) == ""

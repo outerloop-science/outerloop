@@ -20,6 +20,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- The board's live strip says what a parked run waits on beside its state: jobs, gate, review or wake. Read off the record; the three states are unchanged.
 - Runs have three states: running, parked and ended; the board and the logs show those names, and an open PR is a link on the run. The sweep delivers comments, base moves and job results through one wake path; the separate follow-up job is gone. Old state names are mapped on read; inbox cursors migrate once under the run lease, and every tick logs the number of legacy follow-up records until it is zero. An older kernel cannot read the new state names; that is the only incompatible field, and fleets are updated by commit. The contract's `followup_job_minutes` now sizes the wake job of a run with an open PR.
 
 
