@@ -39,6 +39,7 @@ from outerloop.inbox import (
     append,
     delivered_seq,
     pending,
+    thread_for,
 )
 from outerloop.markers import has_marker, marker
 from outerloop.orchestrator import (
@@ -687,7 +688,7 @@ def _respond(
     if not comments and not conflict_wake and not inbox_wake and record.state != WAITING:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     delivery_seq = max((m.seq for m in messages), default=record.inbox_seq)
-    from outerloop.attempt import LINE_MEMORY_PATHS, _is_line_memory, _park_run, run_author_leg
+    from outerloop.attempt import LINE_MEMORY_PATHS, _park_run, run_author_leg, submission_paths
     from outerloop.dispatch import drop_snapshot, snapshot_tree
     from outerloop.orchestrator import AttemptResult, RunConfig, RunParked
 
@@ -711,25 +712,22 @@ def _respond(
     tip = str((pr.get("head") or {}).get("sha") or ws.git("rev-parse", "HEAD").strip())
 
     def launch_changes() -> list[str]:
-        from outerloop.progress import PROGRESS_PATHS
+        return submission_paths(ws, tip, bool(bench.lines))
 
-        ws.git("add", "-A")
-        try:
-            paths = ws.git("diff", "--cached", "--name-only", "-z", base_sha).split("\0")
-            altered_ledger = set(
-                ws.git("diff", "--cached", "--name-only", "-z", tip, "--", *PROGRESS_PATHS).split(
-                    "\0"
-                )
-            )
-            return [
-                p
-                for p in paths
-                if p
-                and (p not in PROGRESS_PATHS or p in altered_ledger)
-                and not (bench.lines and _is_line_memory(p))
-            ]
-        finally:
-            ws.git("reset")
+    record = replace(record, stage={**record.stage, "panel_skip": panel_skip})
+    if panel_skip:
+        append(
+            directory,
+            Message(
+                0,
+                "note",
+                "kernel",
+                thread_for(record),
+                now,
+                f"panel-skip:{record.inbox_seq}:{panel_skip}",
+                {"text": f"panel read skipped: {panel_skip}"},
+            ),
+        )
 
     from outerloop.attempt import _line_ref_for, build_panel_runner, publish
     from outerloop.compute import LocalCompute

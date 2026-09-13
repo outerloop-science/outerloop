@@ -1680,16 +1680,13 @@ def attempt_once(
                 gpu_hours_used -= evals_charge  # nothing ran
                 outcome: AttemptResult | MeasureOK = failed_gate[1]
             elif not measured:
-                # nothing to measure: no paths changed against base, so the
-                # gate would compare base against itself (any benchmark,
-                # metered or not; a SUBMIT of the unchanged tree feeds back
-                # to the author below like any failed gate, charge refunded)
+                # No submitted paths: return the refusal without spending evals.
                 gpu_hours_used -= evals_charge
                 outcome = AttemptResult(
                     outcome="no-improvement",
                     baseline=baseline,
                     session=session,
-                    note="unmeasured: the sealed tree is unchanged from base",
+                    note="unmeasured: no code change; metric noise.",
                     run_seed=run_seed,
                     panel_transcript="\n\n".join(panel_sections),
                     panel_rounds=panel_reads,

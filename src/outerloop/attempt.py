@@ -473,6 +473,7 @@ def _park_run(
         # verification-panel reads so far — persisted so the next wake
         # continues the count.
         "panel_reads": panel_reads,
+        "panel_skip": record.stage.get("panel_skip", "") if parked.submitted else "",
         # the session's write-up + spend, saved so a candidate wake can build
         # the PR body / panel claim and report the real cost WITHOUT re-running
         # the session (its edits are already in candidate_sha). REDACTED before
@@ -1826,6 +1827,21 @@ def _checkout_line(
     return line
 
 
+def submission_paths(
+    ws: Workspace, head: str, exclude_memory: bool, candidate_sha: str = ""
+) -> list[str]:
+    """Paths carried by a submission, relative to its PR head or initial base."""
+    if not candidate_sha:
+        ws.git("add", "-A")
+    try:
+        revisions = (head, candidate_sha) if candidate_sha else ("--cached", head)
+        paths = ws.git("diff", "--name-only", "-z", *revisions).split("\0")
+        return [p for p in paths if p and not (exclude_memory and _is_line_memory(p))]
+    finally:
+        if not candidate_sha:
+            ws.git("reset")
+
+
 def _paths_changed_from_base(
     ws: Workspace, base: str, exclude_memory: bool, fallback: str = "HEAD"
 ) -> list[str]:
@@ -2062,34 +2078,15 @@ def resume_run(
     measurer = dispatch.measurer(
         run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
     )
-    # measured_paths from the COMMITTED base..candidate diff — the sealed
-    # candidate, never `changed_paths()` on a live tree that may have drifted.
-    # NUL-delimited (like Workspace.staged_paths) so a path with a space is one
-    # entry, not two that could each slip past the scope check. The same
-    # line-memory rule as the climb's changed_paths(): the base is the line
-    # tip, the seal excluded the memory, the diff must not read it as a change.
-    measured_paths = tuple(
-        _without_line_memory(
-            (
-                p
-                for p in ws.git("diff", "--name-only", "-z", base_sha, candidate_sha).split("\0")
-                if p
-            ),
-            _line_ref_for(bench, config.agent_id),
-        )
-    )
+    change_head = base_sha
     if record.pr_url:
         pr = github.get_pull_request(record.target, int(record.pr_url.rstrip("/").split("/")[-1]))
-        head = str((pr.get("head") or {}).get("sha") or "")
-        if head:
-            altered = set(
-                ws.git(
-                    "diff", "--name-only", "-z", head, candidate_sha, "--", *PROGRESS_PATHS
-                ).split("\0")
-            )
-            measured_paths = tuple(
-                p for p in measured_paths if p not in PROGRESS_PATHS or p in altered
-            )
+        change_head = str((pr.get("head") or {}).get("sha") or base_sha)
+    measured_paths = tuple(
+        submission_paths(
+            ws, change_head, bool(_line_ref_for(bench, config.agent_id)), candidate_sha
+        )
+    )
     seed = int(stage["seed"])  # type: ignore[call-overload]
     suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]
     panel_reads = int(stage.get("panel_reads", 0))  # type: ignore[call-overload]
@@ -2219,6 +2216,8 @@ def resume_run(
     # Falls back to the plain-finish behavior (negative terminal / draft PR)
     # when the session cannot be resumed.
     submitted_park = bool(stage.get("submitted"))
+    if stage.get("panel_skip"):
+        panel_lenses = ()
     author_resumable = (
         harness is not None
         and spec is not None
@@ -3084,6 +3083,12 @@ def publish(
             and journal.get("sealed_sha") == result.candidate_sha
             and journal.get("head") == head
         )
+        if (
+            not landed
+            and head
+            and not submission_paths(ws, head, bool(line_ref), result.candidate_sha)
+        ):
+            return refuse("Publish refused: no code change; metric noise.")
         assert result.candidate is not None
         if landed:
             assert isinstance(journal, dict)
@@ -3155,6 +3160,9 @@ def publish(
         note += (
             " Worse than the previous number; the ledger row is unchanged." if worse else floor_note
         )
+        panel_skip = str(record.stage.get("panel_skip") or "")
+        if panel_skip:
+            note += f"\n\npanel read skipped: {panel_skip}"
         github.update_candidate_row(
             record.target, number, result.candidate, digits=bench.display_digits
         )
@@ -3171,7 +3179,7 @@ def publish(
                 state=IN_REVIEW,
                 auto_blessed_head=(
                     _blessed_head(ws, result, contract)
-                    if _rev(ws, f"origin/{base_branch}") == base_sha
+                    if not panel_skip and _rev(ws, f"origin/{base_branch}") == base_sha
                     else ""
                 ),
                 resume_session_id=result.session.session_id

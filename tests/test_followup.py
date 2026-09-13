@@ -1195,7 +1195,8 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
 
 
 @pytest.mark.parametrize("candidate,expected", [(11.4, 11.4), (11.8, 12.0), (12.5, 12.0)])
-def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, expected):
+@pytest.mark.parametrize("unchanged", [False, True])
+def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, expected, unchanged):
     import json
 
     from outerloop.attempt import publish
@@ -1235,7 +1236,8 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior")
     head = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
-    (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+    if not unchanged:
+        (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
     workspace = Workspace(root=ws, url=str(bare))
     snap = snapshot_tree(workspace, head)
 
@@ -1276,6 +1278,14 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
         date="2026-09-12",
     )
     outcome = publish(**publish_args)
+    if unchanged:
+        from outerloop.inbox import pending
+
+        assert outcome.outcome == "publish-refused"
+        assert "no code change; metric noise" in pending(ws.parent, 0)[-1].payload["text"]
+        assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
+        assert not github.row_updates and not github.body_addenda
+        return
     assert outcome.outcome == "improved"
     pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
     _git(ws, "merge-base", "--is-ancestor", head, pushed)
@@ -1467,10 +1477,13 @@ def test_legacy_remeasure_is_retired_at_wake(review_run, caplog):
 
 @pytest.mark.parametrize("credited", [False, True, None])
 @pytest.mark.parametrize("gpus", [0, 1])
-def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credited, gpus):
+@pytest.mark.parametrize("panel_skip", ["", "insufficient panel time"])
+def test_review_submit_parks_and_delivers_verdict(
+    review_run, monkeypatch, credited, gpus, panel_skip
+):
     import json
 
-    from outerloop.attempt import resume_run
+    from outerloop.attempt import resume_attempt, resume_run
     from outerloop.compute import LocalCompute
     from outerloop.inbox import pending
     from outerloop.measure import DispatchSettings, MeasurementPending
@@ -1487,6 +1500,9 @@ def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credi
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "meter")
     _git(ws, "push", "origin", "HEAD:main")
+    (ws / "src/pilot/solvers/pr.py").write_text("existing PR change\n")
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "PR change")
     head = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
     record = load_record(root, "tsp-r1")
@@ -1516,6 +1532,11 @@ def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credi
                 for m in measures
             }
 
+    def check_verdict_paths(*args, **kwargs):
+        assert kwargs["measured_paths"] == ("src/pilot/solvers/tsp.py",)
+        return resume_attempt(*args, **kwargs)
+
+    monkeypatch.setattr("outerloop.attempt.resume_attempt", check_verdict_paths)
     measurer = Measurer()
     dispatch = DispatchSettings(compute=LocalCompute(), image="", account="", partition="")
     monkeypatch.setattr(DispatchSettings, "measurer", lambda *a, **k: measurer)
@@ -1538,6 +1559,7 @@ def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credi
         bot_login=BOT,
         now=NOW,
         dispatch=dispatch,
+        panel_skip=panel_skip,
     )
     assert outcome.action == "parked"
     parked = load_record(root, record.run_id)
@@ -1563,9 +1585,17 @@ def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credi
     latest = load_record(root, record.run_id)
     assert latest.state == IN_REVIEW and latest.pr_url == record.pr_url
     messages = pending(run_dir(root, record.run_id), 0)
-    assert {m.kind for m in messages} >= {"gate-verdict", "panel-verdict"}
+    assert "gate-verdict" in {m.kind for m in messages}
+    if panel_skip:
+        assert not any(m.kind == "panel-verdict" for m in messages)
+        assert parked.stage["panel_skip"] == panel_skip
+        assert not latest.auto_blessed_head
+    else:
+        assert "panel-verdict" in {m.kind for m in messages}
     if credited:
         assert "no report was given" in github.body_addenda[0]
+        if panel_skip:
+            assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
         # The next review wake delivers both verdicts after publication.
         respond_once(
             root,
@@ -1578,7 +1608,8 @@ def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credi
             dispatch=dispatch,
         )
     assert wake.calls and "gate-verdict" in wake.calls[-1][0]
-    assert "panel-verdict" in wake.calls[-1][0]
+    if not panel_skip:
+        assert "panel-verdict" in wake.calls[-1][0]
 
 
 def test_review_reply_suppresses_final_text(review_run):
@@ -1628,10 +1659,11 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
     base = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "push", "origin", "HEAD:main")
     _git(ws, "checkout", "-B", PR_BRANCH, head)
-    if not contains_base:
-        # The new contract is present, but cherry-picking does not carry base ancestry.
-        _git(ws, "cherry-pick", "--no-commit", base)
-        _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "copy contract")
+    # The PR already has the contract, but only a merge carries base ancestry.
+    _git(ws, "cherry-pick", "--no-commit", base)
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "copy contract")
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
     record = load_record(root, "tsp-r1")
     save_record(root, replace(record, stage={"base_sha": old_base}), NOW)
     measured = []
@@ -1701,3 +1733,117 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
         else:
             assert len(author.calls) == 2
             assert latest.state == IN_REVIEW
+
+
+@pytest.mark.parametrize("edit", ["none", "working", "committed"])
+@pytest.mark.parametrize(
+    "panel_skip",
+    [
+        "",
+        "a panel judge key is this run's author key (role separation)",
+        "the job's walltime cap left 1 min for a read that needs 10",
+    ],
+)
+def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, panel_skip):
+    from outerloop.attempt import publish
+    from outerloop.compute import LocalCompute
+    from outerloop.inbox import pending
+    from outerloop.measure import DispatchSettings
+    from outerloop.syscall_cli import main
+
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    (ws / ".autoresearch.yaml").write_text(CONTRACT + "merge: auto\n")
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "auto")
+    _git(ws, "push", "origin", "HEAD:main")
+    base = _git(ws, "rev-parse", "HEAD").strip()
+    (ws / "src/pilot/solvers/tsp.py").write_text("existing PR change\n")
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "PR")
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    measured = []
+    published = []
+
+    class Measurer:
+        def results(self, measures):
+            measured.extend(measures)
+            return {m.name: 14.0 if m.name == "baseline" else 11.0 for m in measures}
+
+    def capture_publish(**kwargs):
+        published.append(kwargs["result"])
+        return publish(**kwargs)
+
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda *a, **k: Measurer())
+    monkeypatch.setattr("outerloop.attempt.publish", capture_publish)
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return True
+
+        def enable_auto_merge(self, *args, **kwargs):
+            pytest.fail("skipped panel armed auto-merge")
+
+    github = GitHub(
+        pr={"state": "open", "base": {"ref": "main"}, "head": {"sha": head, "ref": PR_BRANCH}},
+        comments=[member(101, "submit")],
+    )
+    path = "src/pilot/solvers/new.py"
+
+    class Author(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            first = not self.calls
+            session = super().run(brief_text, workspace, resume_session_id)
+            if first:
+                if edit != "none":
+                    (workspace / path).write_text("one new edit\n")
+                    if edit == "committed":
+                        _git(workspace, "add", "-A")
+                        _git(
+                            workspace,
+                            "-c",
+                            "user.name=t",
+                            "-c",
+                            "user.email=t@t",
+                            "commit",
+                            "-qm",
+                            "edit",
+                        )
+                assert main(["submit"], root=workspace) == 0
+                assert main(["sleep"], root=workspace) == 0
+            return session
+
+    author = Author()
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        author,
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+        panel_skip=panel_skip,
+        dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
+    )
+    assert outcome.action == "replied", outcome.note
+    messages = pending(ws.parent, 0)
+    if edit == "none":
+        assert not measured and not published
+        assert "no code change; metric noise" in author.calls[-1][0]
+        assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
+    else:
+        assert published[0].measured_paths == (path,)
+        assert next(m for m in measured if m.name == "baseline").tree_sha == base
+        assert not load_record(root, "tsp-r1").auto_blessed_head
+        if panel_skip:
+            assert published[0].panel_rounds == 0
+            assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
+    if panel_skip:
+        assert any(
+            m.kind == "note"
+            and m.source == "kernel"
+            and m.payload["text"] == f"panel read skipped: {panel_skip}"
+            for m in messages
+        )
+        assert f"panel read skipped: {panel_skip}" in author.calls[0][0]

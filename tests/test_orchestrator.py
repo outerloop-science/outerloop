@@ -417,7 +417,7 @@ def test_unchanged_tree_finish_is_never_measured(tmp_path: Path) -> None:
         created="t",
     )
     assert result.outcome == "no-improvement"  # maps to the negative-result ending
-    assert "unchanged from base" in result.note
+    assert "no code change; metric noise" in result.note
     assert evaluator.calls == []  # nothing was measured
 
 
