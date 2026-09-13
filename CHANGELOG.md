@@ -6,6 +6,11 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+Local mode now shares workstation GPUs across jobs first come first served and runs
+launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
+overrides GPU detection; `0` disables allocation. Submissions still wait for all
+tasks to finish.
+
 ### Fixed
 
 - Board rows now keep each run's whole hypothesis paragraph; the site's ledger showed sentences cut at 160 characters. Text over 1,000 characters ends at a word with an ellipsis. The next publish repairs rows cut by the earlier limit.
