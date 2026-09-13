@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from outerloop import init
+from outerloop.appmanifest import DEFAULT_PERMISSIONS
 from outerloop.init import (
     InitAnswers,
     author_key_env,
@@ -584,13 +585,18 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
         def _sign(self, data: bytes) -> bytes:
             return b"sig"
 
+        def _transport(self, req):
+            with init.urllib.request.urlopen(req) as response:
+                return json.loads(response.read())
+
         def token(self) -> str:
             return "tok"
 
     answers: dict[str, Any] = {
+        "app": {"slug": "app", "owner": {"login": "o", "type": "User"}, "permissions": {}},
         "repos/o/r/installation": {
             "id": 2,
-            "permissions": {"contents": "write", "issues": "write", "pull_requests": "write"},
+            "permissions": dict(DEFAULT_PERMISSIONS),
         },
     }
 
@@ -611,16 +617,19 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
 
     monkeypatch.setattr(init.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
-    assert init._check_app_access(Provider(), "o/r") == ""
+    assert init.app_permission_gaps(Provider(), "o/r").problem == ""
     answers["repos/o/r/installation"] = None  # not installed there: GitHub 404s, public or not
-    assert "not installed on o/r" in init._check_app_access(Provider(), "o/r")
+    assert "not installed on o/r" in init.app_permission_gaps(Provider(), "o/r").problem
     answers["repos/o/r/installation"] = {
         "id": 2,
         "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"},
+        "account": {"login": "o", "type": "User"},
     }
-    assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")
+    problem = init.app_permission_gaps(Provider(), "o/r").problem
+    assert "contents: write" in problem
+    assert "https://github.com/settings/apps/app/permissions" in problem
     answers["repos/o/r/installation"] = {"id": 9, "permissions": {"contents": "write"}}
-    assert "installation 9" in init._check_app_access(Provider(), "o/r")
+    assert "installation 9" in init.app_permission_gaps(Provider(), "o/r").problem
 
 
 def test_a_credential_that_cannot_open_prs_fails_init(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -759,12 +768,16 @@ def test_transient_github_failures_are_not_dead_credentials(monkeypatch) -> None
         def _sign(self, data: bytes) -> bytes:
             return b"sig"
 
+        def _transport(self, req):
+            with init.urllib.request.urlopen(req) as response:
+                return json.loads(response.read())
+
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
     monkeypatch.setattr(init.urllib.request, "urlopen", raising(502))
-    problem = init._check_app_access(_Provider(), "o/r")
+    problem = init.app_permission_gaps(_Provider(), "o/r").problem
     assert problem.startswith("could not reach GitHub") and not init._auth_is_fatal(problem)
     monkeypatch.setattr(init.urllib.request, "urlopen", raising(404))
-    assert init._auth_is_fatal(init._check_app_access(_Provider(), "o/r"))
+    assert init._auth_is_fatal(init.app_permission_gaps(_Provider(), "o/r").problem)
 
 
 def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
@@ -783,7 +796,11 @@ def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
 
     monkeypatch.setattr(appmanifest, "request_manifest_code", never)
     monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
-    monkeypatch.setattr(init, "_check_app_access", lambda provider, target: "")
+    monkeypatch.setattr(
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps((), "", "", "", known=True),
+    )
     argv = ["--yes", "--force", "--github-app", "--compute", "local", "--target", "o/r"]
     assert init.main(argv) == 0
     env = (tmp_path / ".env").read_text()
@@ -792,7 +809,11 @@ def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
     capsys.readouterr()  # drop the successful run's output
     # still failing: exit 1, credentials kept, the fix and the re-check named, never `start`
     monkeypatch.setattr(
-        init, "_check_app_access", lambda provider, target: "the App lacks write on contents (x)"
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps(
+            ("contents",), "", "", "the App lacks write on contents (x)", known=True
+        ),
     )
     assert init.main(argv) == 1
     captured = capsys.readouterr()
@@ -817,7 +838,11 @@ def test_github_app_rerun_captures_a_missing_installation_id(
     )
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda app_id, pem, owner: 7)
     monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
-    monkeypatch.setattr(init, "_check_app_access", lambda provider, target: "")
+    monkeypatch.setattr(
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps((), "", "", "", known=True),
+    )
     argv = ["--yes", "--force", "--github-app", "--compute", "local", "--target", "o/r"]
     assert init.main(argv) == 0
     assert json.loads(app_json.read_text())["installation_id"] == 7
@@ -826,7 +851,11 @@ def test_github_app_rerun_captures_a_missing_installation_id(
     app_json.write_text(json.dumps(creds))
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda app_id, pem, owner: 0)
     monkeypatch.setattr(
-        init, "_check_app_access", lambda provider, target: "the App is not installed on o/r"
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps(
+            ("contents",), "", "", "the App is not installed on o/r"
+        ),
     )
     assert init.main(argv) == 1
     err = capsys.readouterr().err
