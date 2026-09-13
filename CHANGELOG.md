@@ -8,6 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The board's squeue card scrolls sideways inside its box on a narrow screen instead of overflowing the page; the job name column gives way first.
 - `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.
 
 - In auto mode the sweep merges only a clean PR at the head the kernel measured and approved. Publish never arms GitHub auto-merge; the sweep withdraws old arms and reports head moves to the author.
