@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Protocol, TypedDict
+from typing import ClassVar, NotRequired, Protocol, TypedDict
 
 log = logging.getLogger(__name__)
 
@@ -440,6 +440,9 @@ class _GPUHolder(TypedDict):
     pgid: int
     name: str
     start_time: str
+    submitter: NotRequired[int]
+    reserved_at: NotRequired[float]
+    announce: NotRequired[str]
 
 
 class _GPUWaiter(TypedDict):
@@ -547,6 +550,24 @@ class LocalCompute:
 
     @staticmethod
     def _live(holder: _GPUHolder) -> bool:
+        if holder["pgid"] == 0:
+            try:
+                pgid = int(Path(holder["announce"]).read_text().strip())
+                if pgid > 0:
+                    try:
+                        os.killpg(pgid, 0)
+                        return True
+                    except PermissionError:
+                        return True
+            except (KeyError, OSError, ValueError):
+                pass
+            try:
+                os.kill(holder["submitter"], 0)
+                return True
+            except PermissionError:
+                return True
+            except ProcessLookupError:
+                return time.time() - holder["reserved_at"] <= 60
         try:
             os.killpg(holder["pgid"], 0)
         except ProcessLookupError:
@@ -575,17 +596,21 @@ class LocalCompute:
         spec: JobSpec,
         job_id: str,
         count: int,
-        start: Callable[[list[str]], subprocess.Popen[str]],
+        start: Callable[[list[str], str | None], subprocess.Popen[str]],
         tasks: _LocalTasks,
     ) -> subprocess.Popen[str] | None:
+        state_dir = _local_state_dir()
+        announce = str((state_dir / f"{job_id}.announce").resolve()) if state_dir else None
         waiting = False
         while not tasks.cancelled.is_set():
+            allocated: list[str] = []
             with self._pool() as pool:
                 if tasks.cancelled.is_set():
                     return None
                 holders = pool["holders"]
                 for index, holder in list(holders.items()):
                     if not self._live(holder):
+                        self._remove_announce(holder)
                         del holders[index]
                 pool["queue"] = [w for w in pool["queue"] if self._waiter_live(w)]
                 queue = pool["queue"]
@@ -596,34 +621,61 @@ class LocalCompute:
                 ticket["heartbeat"] = time.time()
                 free = [str(i) for i in range(count) if str(i) not in holders]
                 if queue[0]["id"] == job_id and len(free) >= spec.gpus:
-                    with tasks.lock:
-                        if tasks.cancelled.is_set():
-                            return None
-                        allocated = free[: spec.gpus]
-                        proc = start(allocated)
-                        tasks.running[job_id] = proc
-                        start_time = self._start_time(proc.pid)
-                        for index in allocated:
-                            holders[index] = {
-                                "id": job_id,
-                                "pgid": proc.pid,
-                                "name": spec.job_name,
-                                "start_time": start_time,
-                            }
+                    allocated = free[: spec.gpus]
+                    for index in allocated:
+                        reservation: _GPUHolder = {
+                            "id": job_id,
+                            "pgid": 0,
+                            "name": spec.job_name,
+                            "start_time": "",
+                            "submitter": os.getpid(),
+                            "reserved_at": time.time(),
+                        }
+                        if announce:
+                            reservation["announce"] = announce
+                        holders[index] = reservation
                     queue.pop(0)
-                    log.info("local job %s got GPUs %s", job_id, ",".join(allocated))
-                    return proc
+            if allocated:
+                # The reservation is durable before any child can use the GPUs.
+                with tasks.lock:
+                    if tasks.cancelled.is_set():
+                        self._release(job_id, unstarted=True)
+                        return None
+                    try:
+                        proc = start(allocated, announce)
+                    except SlurmError:
+                        self._release(job_id, unstarted=True)
+                        raise
+                    tasks.running[job_id] = proc
+                    start_time = self._start_time(proc.pid)
+                    with self._pool() as pool:
+                        for index in allocated:
+                            holder = pool["holders"][index]
+                            holder["pgid"] = proc.pid
+                            holder["start_time"] = start_time
+                            holder.pop("submitter", None)
+                            holder.pop("reserved_at", None)
+                log.info("local job %s got GPUs %s", job_id, ",".join(allocated))
+                return proc
             if not waiting:
                 log.info("local job %s waiting for GPUs", job_id)
                 waiting = True
             tasks.cancelled.wait(2)
         return None
 
-    def _release(self, job_id: str) -> None:
+    @staticmethod
+    def _remove_announce(holder: _GPUHolder) -> None:
+        if announce := holder.get("announce"):
+            Path(announce).unlink(missing_ok=True)
+
+    def _release(self, job_id: str, *, unstarted: bool = False) -> None:
         with self._pool() as pool:
-            pool["holders"] = {
-                i: h for i, h in pool["holders"].items() if h["id"] != job_id or self._live(h)
-            }
+            for index, holder in list(pool["holders"].items()):
+                if holder["id"] == job_id and (
+                    (unstarted and holder["pgid"] == 0) or not self._live(holder)
+                ):
+                    self._remove_announce(holder)
+                    del pool["holders"][index]
             pool["queue"] = [w for w in pool["queue"] if w["id"] != job_id]
 
     def submit(self, spec: JobSpec) -> str:
@@ -733,11 +785,16 @@ class LocalCompute:
     ) -> str:
         tasks = tasks or _LocalTasks()
 
-        def start(allocated: list[str]) -> subprocess.Popen[str]:
+        def start(allocated: list[str], announce: str | None = None) -> subprocess.Popen[str]:
             env = {**job_env, "CUDA_VISIBLE_DEVICES": ",".join(allocated)} if allocated else job_env
+            wrapped = (
+                ["sh", "-c", 'echo "$$" > "$1" && shift && exec "$@"', "sh", announce, *argv]
+                if announce
+                else argv
+            )
             try:
                 return subprocess.Popen(
-                    argv,
+                    wrapped,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -823,7 +880,10 @@ class LocalCompute:
                 # is far younger than a day
                 cutoff = time.time() - 24 * 3600
                 for old in state_dir.iterdir():
-                    if old.name in {"gpus.json", "gpus.lock", "gpus.tmp"}:
+                    if (
+                        old.name in {"gpus.json", "gpus.lock", "gpus.tmp"}
+                        or old.suffix == ".announce"
+                    ):
                         continue
                     try:
                         if old.stat().st_mtime < cutoff:

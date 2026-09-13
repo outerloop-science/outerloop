@@ -827,7 +827,7 @@ def test_stale_waiter_dropped_and_heartbeat_refreshed(gpu_root, monkeypatch):
         replace(_spec(command="true"), gpus=1),
         "next",
         1,
-        lambda allocated: subprocess.Popen(["true"], start_new_session=True, text=True),
+        lambda allocated, announce: subprocess.Popen(["true"], start_new_session=True, text=True),
         tasks,
     )
     assert proc is not None
@@ -892,3 +892,124 @@ def test_background_child_retains_gpu_after_shell_exits(gpu_root):
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(int(pidfile.read_text()), signal.SIGKILL)
+
+
+@pytest.mark.parametrize("announced", [False, True])
+def test_reservation_survives_only_while_job_is_live(gpu_root, announced):
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    job = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    lc = LocalCompute()
+    announce = gpu_root / "local_jobs/orphan.announce"
+    try:
+        with lc._pool() as pool:
+            pool["holders"]["0"] = {
+                "id": "999",
+                "pgid": 0,
+                "name": "orphan",
+                "start_time": "",
+                "submitter": dead.pid,
+                "reserved_at": time.time() - 120,
+                "announce": str(announce),
+            }
+        if announced:
+            announce.write_text(str(job.pid))
+        output = gpu_root / "visible"
+        lc.submit(replace(_spec(command=f'echo "$CUDA_VISIBLE_DEVICES" > {output}'), gpus=1))
+        assert output.read_text() == ("1\n" if announced else "0\n")
+        assert bool(_read_pool(gpu_root)["holders"]) is announced
+        if announced:
+            assert announce.exists()
+            job.kill()
+            job.wait()
+            lc._release("999")
+            assert not announce.exists()
+    finally:
+        job.kill()
+        job.wait()
+        lc._release("999")
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_reservation_persisted_before_start_and_confirmed_before_run(
+    gpu_root, monkeypatch, exit_code
+):
+    lc = LocalCompute()
+    popen = subprocess.Popen
+    run_process = LocalCompute._run_process
+    announcements = []
+
+    def start(argv, **kwargs):
+        if argv[0] != "sh":
+            return popen(argv, **kwargs)
+        # Reading through another pool lock proves the reservation was committed.
+        with LocalCompute()._pool() as pool:
+            holders = list(pool["holders"].values())
+            assert len(holders) == 2
+            assert all(h["pgid"] == 0 and h["submitter"] == os.getpid() for h in holders)
+            assert all(time.time() - h["reserved_at"] < 60 for h in holders)
+            announce = Path(holders[0]["announce"])
+            assert announce.parent == gpu_root / "local_jobs"
+            assert not announce.exists()
+            announcements.append(announce)
+        return popen(argv, **kwargs)
+
+    def run(self, spec, proc, job_id, tasks):
+        try:
+            assert wait_until(lambda: announcements[0].exists() and announcements[0].read_text())
+            assert int(announcements[0].read_text()) == proc.pid
+            holders = _read_pool(gpu_root)["holders"]
+            assert all(
+                h["pgid"] == proc.pid and h["start_time"] == lc._start_time(proc.pid)
+                for h in holders.values()
+            )
+            assert all("submitter" not in h and "reserved_at" not in h for h in holders.values())
+            # Recording other jobs must not prune an orphan's announcement.
+            os.utime(announcements[0], (time.time() - 172800,) * 2)
+            self._record(_spec(command="true"), "123", "COMPLETED", "")
+            assert announcements[0].exists()
+        finally:
+            (gpu_root / "release").touch()
+        result = run_process(self, spec, proc, job_id, tasks)
+        assert proc.returncode == exit_code
+        return result
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+    monkeypatch.setattr(LocalCompute, "_run_process", run)
+    job_id = lc.submit(
+        replace(
+            _spec(
+                command=(
+                    f'printf "hello:%s\\n" "$CUDA_VISIBLE_DEVICES"; '
+                    f"while [ ! -f {gpu_root / 'release'} ]; do sleep 0.05; done; exit {exit_code}"
+                )
+            ),
+            gpus=2,
+        )
+    )
+    assert lc.status(job_id) == ("COMPLETED" if exit_code == 0 else "FAILED")
+    assert (gpu_root / f"local_jobs/{job_id}.out").read_text() == "hello:0,1\n"
+    assert not announcements[0].exists()
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+@pytest.mark.parametrize("submitter_alive, age, live", [(True, 120, True), (False, 10, True)])
+def test_unannounced_reservation_keeps_live_submitter_or_grace_period(
+    gpu_root, submitter_alive, age, live
+):
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    assert (
+        LocalCompute._live(
+            {
+                "id": "999",
+                "pgid": 0,
+                "name": "reserved",
+                "start_time": "",
+                "submitter": os.getpid() if submitter_alive else dead.pid,
+                "reserved_at": time.time() - age,
+                "announce": str(gpu_root / "missing.announce"),
+            }
+        )
+        is live
+    )
