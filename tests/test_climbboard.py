@@ -1059,6 +1059,7 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
     )
     (r,) = collect_status(tmp_path, "org/repo", 3.0, contract)["runs"]
     assert (r["exp_done"], r["exp_total"]) == (3, 4)
+    assert r["waiting"] == "jobs"  # the pill says what the park waits on
     assert (r["depth_k"], r["sleep_k"]) == (16, 20)
     assert r["eval_minutes"] == 240
     assert r["exp_minutes"] == 180
@@ -1211,3 +1212,29 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
     assert "queue" not in json.loads(gh.files["climb/status.json"])
     assert service_status(tmp_path, gh, "org/repo", 10.0, queue=[]) is True
     assert json.loads(gh.files["climb/status.json"])["queue"] == []
+
+
+def test_status_says_what_a_parked_run_waits_on(tmp_path: Path) -> None:
+    """One derived word beside the state, never a new state: jobs while
+    launches run, gate while a submit is measured, review once a PR is open
+    with nothing else pending, wake otherwise; running runs carry none."""
+    from outerloop.climbboard import _waiting_on
+
+    parked = RunRecord(
+        run_id="w-1",
+        target="org/repo",
+        task_title="t",
+        state="parked",
+        benchmark="b",
+        agent_id="agent-01",
+        created=1.0,
+        updated=2.0,
+    )
+    assert _waiting_on(parked, 1, 3) == "jobs"
+    assert _waiting_on(dc_replace(parked, stage={"phase": "candidate"}), 0, 0) == "gate"
+    assert (
+        _waiting_on(dc_replace(parked, pr_url="https://github.com/org/repo/pull/9"), 0, 0)
+        == "review"
+    )
+    assert _waiting_on(parked, 0, 0) == "wake"
+    assert _waiting_on(dc_replace(parked, state="running"), 1, 3) == ""

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.markers import marker
-from outerloop.runstate import ENDED, RunRecord, list_runs, run_dir
+from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 
 log = logging.getLogger("outerloop.climbboard")
 
@@ -695,7 +695,7 @@ def render_html(
         "const stateHue = r => r.state === 'parked' ? '150 55% 38%'\n"
         "  : r.state === 'running' ? '262 45% 52%'\n"
         "  : r.phase === 'author-sleep' ? '212 55% 46%' : '38 65% 42%';\n"
-        "const stateName = r => r.state;\n"
+        "const stateName = r => r.waiting ? r.state + ' \u00b7 ' + r.waiting : r.state;\n"
         "const render = () => {\n"
         "  if (!strip) return;\n"
         "  now.textContent = '';\n"
@@ -990,6 +990,20 @@ def _phrase(text: str, cap: int = 64) -> str:
     return summarize(first, cap)
 
 
+def _waiting_on(record: Any, exp_done: int, exp_total: int) -> str:
+    """What a parked run waits for, read off the record: its launched jobs, the
+    gate measuring its submit, review on its PR, or just its next wake."""
+    if record.state != PARKED:
+        return ""
+    if exp_total > exp_done:
+        return "jobs"
+    if str((record.stage or {}).get("phase", "")) == "candidate":
+        return "gate"
+    if record.pr_url:
+        return "review"
+    return "wake"
+
+
 def _experiment_progress(root: Path, record: Any) -> tuple[int, int, int]:
     """(finished, launched, longest walltime minutes) across the current
     park's experiment jobs, counted by the exit-code files the job wrappers
@@ -1087,6 +1101,7 @@ def collect_status(
                 "gpu_hours_used": float(stage.get("gpu_hours_used") or 0.0),  # type: ignore[arg-type]
                 "gpu_hours_budget": gpu_ceiling,
                 "pr_url": record.pr_url,
+                "waiting": _waiting_on(record, exp_done, exp_total),
             }
         )
     runs.sort(key=lambda r: str(r.get("run_id")))
@@ -1133,6 +1148,7 @@ def service_status(
                 "run_id",
                 "state",
                 "phase",
+                "waiting",
                 "gpu_hours_used",
                 "gpu_hours_budget",
                 "direction",
