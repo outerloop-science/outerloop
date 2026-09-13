@@ -1967,11 +1967,13 @@ def _paths_changed_from_base(
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
     """The other agents' live directions from the research-log's
-    status.json (already fetched: the SAME FETCH_HEAD the reports came
-    from). Size-checked BEFORE show like the report blobs, entries and
-    fields bounded — the branch is bot-written but never trusted with
-    unbounded memory. Any failure means no siblings known, never a crash."""
+    status.json, fetched here so every caller (the fresh climb and each
+    wake) reads the branch and not whatever FETCH_HEAD last pointed at.
+    Size-checked BEFORE show like the report blobs, entries and fields
+    bounded — the branch is bot-written but never trusted with unbounded
+    memory. Any failure means no siblings known, never a crash."""
     try:
+        ws.fetch_branch(RESEARCH_LOG_BRANCH)
         blob = "FETCH_HEAD:climb/status.json"
         if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
             raise ValueError("status snapshot oversized; skipped")

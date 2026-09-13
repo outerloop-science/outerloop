@@ -404,7 +404,9 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "status")
     _git(seed, "push", "-q", str(origin), "research-log")
-    _fetch_research_reports(ws, 5)  # refresh FETCH_HEAD
+    # a wake's fetch_origin leaves FETCH_HEAD on main; the sibling view must
+    # fetch the research-log branch itself (the wake path had no siblings)
+    ws.fetch_origin()
     entries = _sibling_entries(ws, "agent-01")
     assert [e["agent"] for e in entries] == ["agent-02"]  # self excluded
     assert len(entries[0]["direction"]) == 160  # bounded
