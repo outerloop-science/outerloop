@@ -1045,6 +1045,7 @@ def collect_status(
         for b in getattr(contract, "benchmarks", ())
     }
     gpu_budget = getattr(getattr(contract, "budgets", None), "gpu_hours_per_run", None)
+    topup = getattr(getattr(contract, "budgets", None), "review_topup", None)
     runs = []
     for record in records:
         if record.target != target or record.state not in _LIVE_STATES:
@@ -1054,6 +1055,12 @@ def collect_status(
         _b, _c, hyp = _report_fields(note)
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))
+        gpu_ceiling = gpu_budget
+        if topup is not None and (record.stage or {}).get("review_topup"):
+            # the review top-up raised this run's ceilings when its PR opened
+            depth_k = None if depth_k is None else depth_k + topup.launches
+            sleep_k = None if sleep_k is None else sleep_k + topup.sleeps
+            gpu_ceiling = None if gpu_budget is None else gpu_budget + topup.gpu_hours
         runs.append(
             {
                 "run_id": record.run_id,
@@ -1084,7 +1091,7 @@ def collect_status(
                     else 0
                 ),
                 "gpu_hours_used": float(stage.get("gpu_hours_used") or 0.0),  # type: ignore[arg-type]
-                "gpu_hours_budget": gpu_budget,
+                "gpu_hours_budget": gpu_ceiling,
                 "pr_url": record.pr_url,
             }
         )

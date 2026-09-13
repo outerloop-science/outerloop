@@ -2038,7 +2038,13 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     ws = tmp_path / "state" / "runs" / "tsp-1" / "ws"
     assert (ws / ".outerloop" / "syscall").exists()
     budget = _json.loads((ws / ".outerloop" / "budget.json").read_text())
-    assert budget == {"launches_remaining": 3, "sleeps_remaining": 20}
+    assert budget == {
+        "launches_remaining": 3,
+        "sleeps_remaining": 20,
+        "review_topup": (
+            "Review top-up added when the PR opens: 2 launches, 4 sleeps, 0.5 GPU-hours."
+        ),
+    }
     # the job is the eval jail on the sealed tree; the author's command travels
     # via command.txt (never shell-interpolated into the script)
     ev = tmp_path / "state" / "runs" / "tsp-1" / "eval-launch-probe"
@@ -5764,3 +5770,114 @@ def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url
     assert _git(tmp_path / f"origin-{run_id}.git", "rev-parse", "agents/agent-01").strip()
     number, body = github.issue_comments[-1]
     assert number == 42 and RELEASE_MARKER in body
+
+
+def test_end_report_seals_notebook_releases_claim_and_posts_replies(tmp_path, target_repo_lines):
+    from outerloop.github import GitHubClient
+    from outerloop.intake import RELEASE_MARKER
+    from outerloop.syscall_cli import main
+
+    class Author(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            session = super().run(brief_text, workspace, resume_session_id)
+            (workspace / ".outerloop" / "ending.md").write_text("No gain; retain the ablation.")
+            assert main(["reply", "The ablation is complete."], root=workspace) == 0
+            assert main(["end", "--report", ".outerloop/ending.md"], root=workspace) == 0
+            return session
+
+    github = CommentingGitHub()
+    with _queued_local([]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="end-report",
+            issue_number=42,
+            harness=Author(edits={"AGENT_MEMORY.md": "Keep the ablation.\n"}),
+            github=cast(GitHubClient, github),
+            bot_auth=NoAuth(),
+            now=1_000_000.0,
+            created="2026-09-12",
+            dispatch=_fake_dispatch(),
+        )
+    record = load_record(tmp_path / "state", "end-report")
+    assert record.state == "ended" and record.ending == "negative-result"
+    assert record.ending_note == "ended without a submit"
+    assert "No gain; retain the ablation." in Path(outcome.report_path).read_text()
+    assert "Keep the ablation." in _git(
+        target_repo_lines, "show", "agents/agent-01:AGENT_MEMORY.md"
+    )
+    assert any(number == 42 and RELEASE_MARKER in body for number, body in github.issue_comments)
+    assert any("The ablation is complete." in body for _, body in github.issue_comments)
+    assert not github.prs
+
+
+def test_first_publish_grants_review_topup_and_clear_preserves_it(tmp_path, target_repo):
+    from outerloop.attempt import _clear_stage
+
+    outcome, _ = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "better\n"},
+        values=[13.876, 13.1],
+    )
+    assert outcome.outcome == "improved"
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert record.stage["review_topup"] is True
+    assert _clear_stage(record).stage["review_topup"] is True
+    # the publish writes no budget file (the next leg does); the grant raises
+    # the ceilings the next leg's budget file, refusals and wake line use
+    import json
+
+    from outerloop.contract import load_contract
+    from outerloop.syscall import write_run_budget
+
+    contract = load_contract(CONTRACT, "org/pilot")
+    bench = next(b for b in contract.benchmarks if b.name == "tsp")
+    ws = tmp_path / "state/runs/tsp-1/ws"
+    assert not (ws / ".outerloop" / "budget.json").exists()
+    write_run_budget(ws, contract.budgets, bench, review_topup=True)
+    budget = json.loads((ws / ".outerloop" / "budget.json").read_text())
+    assert budget["launches_remaining"] == bench.depth_k + 2
+    assert budget["sleeps_remaining"] == bench.sleep_k + 4
+    assert "added when the PR opened" in budget["review_topup"]
+
+
+def test_end_after_submitted_gate_keeps_verdict_note(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from outerloop.github import GitHubClient
+    from outerloop.inbox import pending
+    from outerloop.roles import author_spec
+    from outerloop.syscall_cli import main
+
+    state, run_id = _write_parked_candidate(
+        tmp_path,
+        monkeypatch,
+        values={"baseline": 13.0, "candidate": 14.0},
+    )
+    record = load_record(state, run_id)
+    save_record(state, replace(record, stage={**record.stage, "submitted": True}), 1_000_050.0)
+
+    class Author(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert "did NOT clear the gate" in brief_text
+            assert main(["end"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=cast(GitHubClient, CommentingGitHub()),
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=Author(edits={}, text="Stopping after this verdict."),
+        spec=author_spec(),
+    )
+    ended = load_record(state, run_id)
+    assert outcome.outcome == "no-improvement"
+    assert ended.state == "ended" and ended.ending == "negative-result"
+    assert ended.ending_note and ended.ending_note != "ended without a submit"
+    verdict = next(m for m in pending(state / "runs" / run_id, 0) if m.kind == "gate-verdict")
+    assert ended.ending_note in verdict.payload["text"]
+    assert "Stopping after this verdict." in Path(outcome.report_path).read_text()

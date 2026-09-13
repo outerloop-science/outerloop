@@ -677,3 +677,57 @@ def test_reply_refuses_an_oversized_batch_without_losing_staged_reply(tmp_path: 
     request = read_request(tmp_path)
     assert request is not None and request.replies == ("first",)
     assert run(tmp_path, "reply", "--file", "missing.txt") == 2
+
+
+def test_installed_end_parity_and_status(tmp_path):
+    from outerloop.syscall import budget_error, install_tool
+
+    install_tool(tmp_path)
+    tool = tmp_path / ".outerloop" / "syscall"
+    report = tmp_path / "report.md"
+    report.write_text("The experiment did not improve the score.")
+    for argv in (["reply", "Here are the details."], ["end", "--report", str(report)]):
+        result = subprocess.run([sys.executable, str(tool), *argv], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    result = subprocess.run([sys.executable, str(tool), "status"], capture_output=True, text=True)
+    assert "end staged" in result.stdout
+    request = read_request(tmp_path)
+    assert request is not None and request.end and not request.sleep
+    assert request.report == report.read_text()
+    assert request.replies == ("Here are the details.",)
+    assert (
+        budget_error(
+            request,
+            launches_used=20,
+            launch_budget=0,
+            sleeps_used=40,
+            sleep_budget=0,
+            gpu_hours_used=5,
+            gpu_hour_budget=0,
+            gpus=1,
+        )
+        == ""
+    )
+
+
+def test_end_conflicts_in_both_orders_leave_the_session_usable(tmp_path, capsys):
+    commands = (["launch", "--name", "probe", "--", "true"], ["sleep"], ["submit"])
+    for command in commands:
+        for end_first in (False, True):
+            assert main(["cancel"], root=tmp_path) == 0
+            first, second = (["end"], command) if end_first else (command, ["end"])
+            assert main(first, root=tmp_path) == 0
+            assert main(second, root=tmp_path) == 2
+            note = capsys.readouterr().err
+            assert (
+                "submit first, end after the verdict"
+                if command == ["submit"]
+                else "end is final for the leg; it cannot accompany launch or sleep"
+            ) in note
+            # A refusal does not end the session or prevent another tool call.
+            assert main(["reply", "Still here."], root=tmp_path) == 0
+            assert read_request(tmp_path) is not None
+            assert main(["cancel"], root=tmp_path) == 0
+            assert main(["end"], root=tmp_path) == 0
+            request = read_request(tmp_path)
+            assert request is not None and request.end

@@ -124,10 +124,10 @@ def test_read_request_rejects_a_wrong_or_missing_type(tmp_path: Path) -> None:
     # a sleep is one syscall TYPE; a file with no type (a target-committed
     # booby-trap) or another type (a verdict) is not a sleep and is refused.
     write_req(tmp_path, {"launches": []}, typed=False)
-    with pytest.raises(SyscallError, match="expected a sleep or reply syscall"):
+    with pytest.raises(SyscallError, match="expected a sleep, reply or end syscall"):
         read_request(tmp_path)
     write_req(tmp_path, {"type": "verdict", "findings": []}, typed=False)
-    with pytest.raises(SyscallError, match="expected a sleep or reply syscall"):
+    with pytest.raises(SyscallError, match="expected a sleep, reply or end syscall"):
         read_request(tmp_path)
 
 
@@ -1185,3 +1185,19 @@ def test_kernel_rejects_forged_replies(tmp_path, replies) -> None:
     with pytest.raises(SyscallError):
         read_request(tmp_path)
     assert read_request(tmp_path) is None
+
+
+def test_budget_is_never_written_through_a_symlinked_budget_file(tmp_path, caplog):
+    """A target that ships `.outerloop/budget.json` as a symlink to a file
+    outside the tree must not have that file overwritten by the kernel."""
+    from outerloop.syscall import write_budget
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("untouched")
+    ws = tmp_path / "ws"
+    (ws / ".outerloop").mkdir(parents=True)
+    (ws / ".outerloop" / "budget.json").symlink_to(outside)
+    write_budget(ws, launches_remaining=1, sleeps_remaining=1)
+    assert outside.read_text() == "untouched"
+    assert (ws / ".outerloop" / "budget.json").is_symlink()
+    assert "budget not written" in caplog.text

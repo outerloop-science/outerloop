@@ -240,7 +240,30 @@ class SuiteAggregate(_StrictModel):
     direction: Literal["min", "max"]
 
 
+class ReviewTopup(_StrictModel):
+    launches: int = Field(default=2, ge=0, le=16)
+    sleeps: int = Field(default=4, ge=1, le=32)
+    gpu_hours: float = Field(default=0.5, ge=0)
+
+    def note(self, added: bool) -> str:
+        when = "added when the PR opened" if added else "added when the PR opens"
+        return (
+            f"Review top-up {when}: {self.launches} launches, "
+            f"{self.sleeps} sleeps, {self.gpu_hours:g} GPU-hours."
+        )
+
+
 class Budgets(_StrictModel):
+    review_topup: ReviewTopup = Field(default_factory=ReviewTopup)
+
+    def ceilings(self, bench: Benchmark, review_topup: bool) -> tuple[int, int, float]:
+        topup = self.review_topup
+        return (
+            bench.depth_k + (topup.launches if review_topup else 0),
+            bench.sleep_k + (topup.sleeps if review_topup else 0),
+            self.gpu_hours_per_run + (topup.gpu_hours if review_topup else 0),
+        )
+
     # The attempt's compute allowance, METERED at the syscall for GPU
     # benchmarks: every author launch (minutes x gpus) and a submit's two
     # paired gate evals (2 x eval walltime x gpus) draw on it, and an

@@ -164,7 +164,7 @@ wake the tick sooner than its cadence; that is a trigger, not a transport.
 | `sleep` | seals the tree, submits the staged jobs, records them in the ledger, parks the run on them (possibly none); the results arrive at the wake | containment, placement, the sleep count |
 | `submit` | seals the tree, runs the gate and the panel as jobs, delivers the verdict as a message; a credited verdict publishes | the gate; the publish |
 | `reply` | posts text on the thread the message came from, with secrets redacted and self-approval scrubbed, as the follow-up's reply is today | standing of the poster; redaction |
-| `end` | ends the run with the author's report and the last verdict as its ending | the report |
+| `end` | without a PR, ends with the report and last failed verdict; with an open PR, posts a supplied report and parks for messages | the report |
 
 `reply` and `end` are new. A session that stops without sleeping or
 submitting ends the run with what it has, unmeasured. That is a change: today
@@ -327,9 +327,8 @@ between stages.
    parks; comments and base moves are inbox messages; the author can launch,
    reply and sleep in review. A session that edits code in review still goes
    through today's re-measure-and-push until the next stage replaces it.
-3. **Submit in review, and `end`.** First half landed: submit in review,
-   one publish, verdict messages, and removal of follow-up re-measure and
-   submit policies. `end` and the meter top-up follow in the second half. The publish moves the PR head by
+3. **Submit in review, and `end`.** Status: landed in full, including `end`
+   and the review top-up. The publish moves the PR head by
    fast-forward; a gate verdict is a message on every path; the meter's
    top-up exists; the submit policies [7, 49, 50] go; the follow-up
    re-measure path no longer runs.

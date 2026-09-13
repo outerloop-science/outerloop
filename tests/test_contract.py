@@ -349,3 +349,32 @@ roadmap: docs/roadmap.md
         load_contract(base % ", gpus: 1", "org/x")
     with pytest.raises(ValueError, match="dispatch"):
         load_contract(base % ", gpus: 1, eval_minutes: 3", "org/x")
+
+
+def test_review_topup_defaults_and_custom_ceilings():
+    from outerloop.contract import ReviewTopup
+
+    contract = load_contract(PILOT_CONTRACT, "org/pilot")
+    assert contract.budgets.review_topup == ReviewTopup(launches=2, sleeps=4, gpu_hours=0.5)
+    bench = contract.benchmarks[0]
+    contract.budgets.review_topup = ReviewTopup(launches=3, sleeps=5, gpu_hours=0.75)
+    assert contract.budgets.ceilings(bench, False) == (bench.depth_k, bench.sleep_k, 0)
+    assert contract.budgets.ceilings(bench, True) == (bench.depth_k + 3, bench.sleep_k + 5, 0.75)
+
+
+@pytest.mark.parametrize(
+    "knobs",
+    [
+        {"launches": -1},
+        {"launches": 17},
+        {"sleeps": 0},
+        {"sleeps": 33},
+        {"gpu_hours": -0.1},
+        {"unknown": 1},
+    ],
+)
+def test_review_topup_rejects_out_of_bounds(knobs):
+    from outerloop.contract import ReviewTopup
+
+    with pytest.raises(ValidationError):
+        ReviewTopup.model_validate(knobs)

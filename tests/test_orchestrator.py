@@ -1928,3 +1928,112 @@ def test_a_report_less_resubmit_of_a_judged_tree_is_refused_too(tmp_path: Path) 
     assert resumed == "s1"
     # the run went on: with no new request the judged negative stands, never a dead run
     assert result.outcome == "no-improvement"
+
+
+@pytest.mark.parametrize("judged_note", ["", "candidate is inside the significance floor"])
+def test_explicit_end_uses_report_and_last_verdict(tmp_path, judged_note):
+    from outerloop.orchestrator import AttemptResult
+    from outerloop.syscall_cli import main
+
+    class Author:
+        def run(self, brief_text, workspace, resume_session_id=None):
+            (workspace / "report.md").write_text("A useful negative finding.")
+            assert main(["end", "--report", "report.md"], root=workspace) == 0
+            return ok_session("Final text is not the report.")
+
+    judged = (
+        ("sealed", AttemptResult(outcome="no-improvement", note=judged_note))
+        if judged_note
+        else None
+    )
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [],
+        harness=Author(),
+        launcher=_fake_launcher([]),
+        judged=judged,
+    )
+    assert result.outcome == "no-improvement"
+    assert result.note == (judged_note or "ended without a submit")
+    assert result.session.final_text == "A useful negative finding."
+    assert not evaluator.calls
+
+
+@pytest.mark.parametrize("added", [False, True])
+def test_review_topup_meter_file_brief_and_wake(tmp_path, added):
+    import json
+
+    from outerloop.contract import load_contract
+    from outerloop.syscall import Launch, SyscallRequest, budget_error
+    from outerloop.syscall_cli import main
+
+    contract_text = CONTRACT.replace(
+        "    direction: min", "    direction: min\n    gpus: 1\n    eval_minutes: 30"
+    )
+    contract = load_contract(contract_text, "org/pilot")
+    bench = contract.benchmarks[0]
+    ceilings = contract.budgets.ceilings(bench, added)
+    request = SyscallRequest(launches=(Launch("probe", "true", 30),))
+    assert (
+        bool(
+            budget_error(
+                request,
+                launches_used=bench.depth_k,
+                launch_budget=ceilings[0],
+                sleeps_used=bench.sleep_k,
+                sleep_budget=ceilings[1],
+                gpu_hours_used=1,
+                gpu_hour_budget=ceilings[2],
+                gpus=1,
+            )
+        )
+        is not added
+    )
+    # Each ceiling independently enforces the added allowance.
+    for changes, expected in (
+        ({"launches_used": ceilings[0]}, "launch budget"),
+        ({"sleeps_used": ceilings[1]}, "sleep budget"),
+        ({"gpu_hours_used": ceilings[2]}, "GPU-hour budget"),
+    ):
+        assert expected in budget_error(
+            request,
+            launch_budget=ceilings[0],
+            sleep_budget=ceilings[1],
+            gpu_hour_budget=ceilings[2],
+            gpus=1,
+            launches_used=int(changes.get("launches_used", 0)),
+            sleeps_used=int(changes.get("sleeps_used", 0)),
+            gpu_hours_used=float(changes.get("gpu_hours_used", 0)),
+        )
+
+    class Author:
+        def run(self, brief_text, workspace, resume_session_id=None):
+            note = contract.budgets.review_topup.note(added)
+            assert note in brief_text
+            budget = json.loads((workspace / ".outerloop" / "budget.json").read_text())
+            assert budget == dict(
+                launches_remaining=ceilings[0],
+                sleeps_remaining=ceilings[1],
+                gpu_hours_remaining=ceilings[2],
+                review_topup=note,
+            )
+            if resume_session_id:
+                assert f"{ceilings[0]} launches and {ceilings[1]} sleeps" in brief_text
+                assert f"{ceilings[2]:.1f} GPU-hours" in brief_text
+            else:
+                assert f"{ceilings[0]} experiment launches, {ceilings[1]} sleeps" in brief_text
+                assert f"{ceilings[2]:g} GPU-hours this run" in brief_text
+            assert main(["end"], root=workspace) == 0
+            return ok_session()
+
+    for resume in ("", "s1"):
+        result, _, _ = run_climb(
+            tmp_path,
+            [],
+            harness=Author(),
+            contract=contract_text,
+            launcher=_fake_launcher([]),
+            review_topup=added,
+            resume_session_id=resume,
+        )
+        assert result.outcome == "no-improvement"

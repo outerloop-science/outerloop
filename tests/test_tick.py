@@ -6,12 +6,13 @@ import json
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from fakes import RecordingDispatcher
 from outerloop.compute import CommandResult, SlurmCompute
+from outerloop.github import GitHubClient
 from outerloop.runstate import (
     ENDED,
     STUCK,
@@ -3544,7 +3545,7 @@ def test_sync_is_serviced_even_without_followup_servicing(tmp_path: Path, monkey
         FakeSlurm(states={}).compute(),
         RecordingDispatcher(),
         now=1000.0,
-        github=None,
+        github=cast(GitHubClient, None),
         followup_spec=spec,
     )
     assert calls and calls[0][1] is spec
@@ -4546,3 +4547,69 @@ def test_submitted_review_candidate_sweep(tmp_path: Path, at_cap: bool) -> None:
         assert not report.stuck and len(dispatcher.dispatched) == 1
         assert dispatcher.dispatched[0][0] == "r1"
         assert record.state == WAITING and record.wake_attempts == 1
+
+
+def test_terminal_finish_preserves_live_launches_for_common_cancellation(tmp_path):
+    from typing import cast
+
+    from outerloop.attempt import _finish_attempt
+    from outerloop.contract import load_contract
+    from outerloop.github import GitHubClient, Workspace
+    from outerloop.harness import SessionResult
+    from outerloop.orchestrator import AttemptResult, RunConfig
+    from outerloop.tick import cancel_ended_launches
+
+    config = RunConfig(target="org/pilot", benchmark="tsp")
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: 'echo score=1', metric: score, direction: min}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 1}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        config.target,
+    )
+    record = RunRecord(
+        run_id="end",
+        task_title="end this run",
+        target=config.target,
+        benchmark="tsp",
+        state="waiting",
+        stage={"phase": "author-sleep", "afterany": "afterany:7:8"},
+    )
+    save_record(tmp_path, record, NOW)
+    directory = tmp_path / "runs" / record.run_id
+    session = SessionResult(
+        stop_reason="end_turn",
+        is_error=False,
+        cost_usd=0,
+        num_turns=1,
+        session_id="s1",
+        final_text="End report",
+        transcript_path="",
+    )
+    _finish_attempt(
+        result=AttemptResult(
+            outcome="no-improvement", session=session, note="ended without a submit"
+        ),
+        ws=Workspace(root=directory),
+        workspace=directory,
+        run_root=tmp_path,
+        run_dir=directory,
+        run_id=record.run_id,
+        record=record,
+        config=config,
+        contract=contract,
+        github=cast(GitHubClient, None),
+        now=NOW,
+        secrets=(),
+        base_branch="main",
+        base_sha="base",
+        issue_number=0,
+        line_ref="",
+        date="2026-09-12",
+    )
+    slurm = FakeSlurm(states={"7": "PENDING", "8": "COMPLETED"})
+    assert cancel_ended_launches(tmp_path, slurm.compute(), NOW) == ["7"]
+    assert load_record(tmp_path, record.run_id).stage["launches_cancelled"] is True

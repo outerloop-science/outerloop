@@ -108,7 +108,6 @@ from outerloop.syscall import (
 from outerloop.syscall import ensure_excluded as syscall_excluded
 from outerloop.syscall import install_tool as syscall_install_tool
 from outerloop.syscall import refresh_tool as syscall_refresh_tool
-from outerloop.syscall import write_budget as syscall_write_budget
 from outerloop.syscall import write_siblings as syscall_write_siblings
 from outerloop.verifier import MAX_CLAIM_CHARS
 
@@ -376,11 +375,14 @@ def _clear_stage(record: RunRecord) -> RunRecord:
             "base_sha",
             "base_branch",
             "publish",
+            "review_topup",
         )
         if record.stage
         and k in record.stage
         and (record.state != ENDED or k not in ("base_sha", "base_branch"))
     }
+    if record.state == ENDED and (jobs := stage_launch_job_ids(record)):
+        kept["launch_afterany"] = "afterany:" + ":".join(jobs)
     return dc_replace(
         record,
         stage=kept,
@@ -458,6 +460,7 @@ def _park_run(
 
     job_ids = afterany_ids(parked.afterany)
     stage: dict[str, object] = {
+        **({"review_topup": True} if record.stage.get("review_topup") else {}),
         "phase": parked.phase,
         "base_sha": parked.base_sha,
         "candidate_sha": parked.candidate_sha,
@@ -875,8 +878,6 @@ def run_author_leg(
     **kwargs: Any,
 ) -> AttemptResult:
     """Prepare the author channel and run a resumed leg through the orchestrator."""
-    from outerloop.syscall import write_budget
-
     directory = run_root / "runs" / record.run_id
     replies_posted = post_replies(record, github, (), secrets, directory)
 
@@ -907,14 +908,7 @@ def run_author_leg(
     launches = int(str(record.stage.get("launches_used", 0)))
     sleeps = int(str(record.stage.get("sleeps_used", 0)))
     hours = float(str(record.stage.get("gpu_hours_used", 0)))
-    write_budget(
-        workspace,
-        launches_remaining=max(0, bench.depth_k - launches),
-        sleeps_remaining=max(0, bench.sleep_k - sleeps),
-        gpu_hours_remaining=max(0.0, contract.budgets.gpu_hours_per_run - hours)
-        if bench.gpus
-        else None,
-    )
+    review_topup = bool(record.stage.get("review_topup"))
     _best_effort(
         "sibling refresh",
         lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
@@ -941,6 +935,7 @@ def run_author_leg(
         launches_used=launches,
         sleeps_used=sleeps,
         gpu_hours_used=hours,
+        review_topup=review_topup,
         on_replies=post_leg_replies,
         on_meter=lambda launches, sleeps, hours: save_meter(
             run_root, record.run_id, launches, sleeps, hours
@@ -2826,11 +2821,13 @@ def _finish_attempt(
     if record.pr_url:
         final = dc_replace(_clear_stage(record), state=IN_REVIEW)
     else:
-        final = dc_replace(
-            _clear_stage(record),
-            state=ENDED,
-            ending=_ENDINGS_BY_OUTCOME[result.outcome],
-            ending_note=redact(result.note, secrets),
+        final = _clear_stage(
+            dc_replace(
+                record,
+                state=ENDED,
+                ending=_ENDINGS_BY_OUTCOME[result.outcome],
+                ending_note=redact(result.note, secrets),
+            )
         )
     if result.outcome == "session-outage":
         _best_effort(
@@ -3335,6 +3332,7 @@ def publish(
                 **record.__dict__,
                 "state": IN_REVIEW,
                 "pr_url": pr_url,
+                "stage": {**record.stage, "review_topup": True},
                 "auto_blessed_head": _blessed_head(ws, result, contract),
                 "resume_session_id": result.session.session_id if result.session else "",
                 "ending_note": pr_url,
@@ -3621,14 +3619,6 @@ def live_attempt(
             # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
             # install it plus the informational budget its `status` shows.
             syscall_install_tool(workspace)
-            syscall_write_budget(
-                workspace,
-                launches_remaining=_bench.depth_k,
-                sleeps_remaining=_bench.sleep_k,
-                gpu_hours_remaining=(
-                    float(contract.budgets.gpu_hours_per_run) if _bench.gpus else None
-                ),
-            )
             # AFTER install_tool: installing the tool recreates the channel
             # dir it owns, which would delete an archive written earlier
             _install_report_archive(workspace, reports)

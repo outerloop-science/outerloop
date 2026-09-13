@@ -125,6 +125,7 @@ def _budget_line(root: Path) -> str:
         return (
             f"budget: {b.get('launches_remaining', '?')} launches, "
             f"{b.get('sleeps_remaining', '?')} sleeps{gpu_part} remaining"
+            + (f"; {b['review_topup']}" if b.get("review_topup") else "")
         )
     except (OSError, json.JSONDecodeError):
         return "budget: (unknown)"
@@ -133,7 +134,43 @@ def _budget_line(root: Path) -> str:
 # --- author syscalls: launch / note / sleep --------------------------------
 
 
+def _check_end(root: Path, verb: str) -> None:
+    abi = root / DIR / ABI
+    if abi.exists() and json.loads(abi.read_text()).get("type") == "end":
+        if verb == "submit":
+            raise ToolError("submit first, end after the verdict")
+        raise ToolError("end is final for the leg; it cannot accompany launch or sleep")
+
+
+def cmd_end(root: Path, args: argparse.Namespace) -> str:
+    staged = _load_staged(root)
+    abi = _dir(root) / ABI
+    payload = json.loads(abi.read_text()) if abi.exists() else {}
+    if staged["submit"] or payload.get("submit"):
+        raise ToolError("submit first, end after the verdict")
+    if staged["launches"] or payload.get("type") == "sleep":
+        raise ToolError("end is final for the leg; it cannot accompany launch or sleep")
+    report = ""
+    if args.report:
+        path = Path(args.report)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                report = stream.read(MAX_REPORT_CHARS + 1)
+        except OSError as exc:
+            raise ToolError(f"report file could not be read: {exc}") from exc
+        if not report.strip() or len(report) > MAX_REPORT_CHARS:
+            raise ToolError(f"report must contain 1 to {MAX_REPORT_CHARS} chars")
+    encoded = json.dumps({"type": "end", "report": report, "replies": payload.get("replies", [])})
+    if len(encoded.encode("utf-8")) > MAX_REQUEST_BYTES:
+        raise ToolError(f"staged request exceeds {MAX_REQUEST_BYTES} bytes")
+    abi.write_text(encoded)
+    return "end staged; END YOUR TURN to end the run or park its open PR."
+
+
 def cmd_launch(root: Path, args: argparse.Namespace) -> str:
+    _check_end(root, "launch")
     # shlex.join, NOT " ".join: the shell that invoked this CLI already split
     # `-- python train.py --label "a b"` into tokens, so re-quote them so the
     # eventual `sh -c "$(cat command.txt)"` re-parses the SAME tokens (a plain
@@ -228,6 +265,7 @@ def cmd_reply(root: Path, args: argparse.Namespace) -> str:
 
 
 def cmd_submit(root: Path, args: argparse.Namespace) -> str:
+    _check_end(root, "submit")
     report = ""
     if args.report:
         path = Path(args.report)
@@ -273,6 +311,7 @@ def cmd_submit(root: Path, args: argparse.Namespace) -> str:
 
 
 def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
+    _check_end(root, "sleep")
     staged = _load_staged(root)
     # commit the SLEEP syscall -> the ABI the kernel reads; then END THE TURN.
     payload = {
@@ -366,7 +405,10 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
     lines: list[str] = []
     abi = root / DIR / ABI
     if abi.exists():
-        for reply in json.loads(abi.read_text()).get("replies", []):
+        payload = json.loads(abi.read_text())
+        if payload.get("type") == "end":
+            lines.append("end staged (applies when this turn ends)")
+        for reply in payload.get("replies", []):
             lines.append(f"reply staged: {reply}")
     if staged["launches"] or staged["submit"] or (root / DIR / BUDGET).exists():
         lines.append(f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}.")
@@ -460,6 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
         "2 evals x minutes x GPUs draws on your GPU-hour budget)",
     )
     sub.add_parser("sleep", help="commit staged launches/submit; then end your turn")
+    end = sub.add_parser("end", help="stage an end; then end your turn")
+    end.add_argument("--report", default="", help="file containing your final report")
     # judge verbs
     fi = sub.add_parser("finding", help="record one finding")
     fi.add_argument("--file", required=True)
@@ -759,6 +803,7 @@ def cmd_history(root: Path, args) -> str:
 
 
 _HANDLERS = {
+    "end": cmd_end,
     "reply": cmd_reply,
     "launch": cmd_launch,
     "note": cmd_note,
