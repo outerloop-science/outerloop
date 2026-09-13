@@ -24,6 +24,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -219,6 +220,16 @@ def array_indices(spec: str) -> list[int]:
     if not (lo.isdigit() and hi.isdigit()):
         return []
     return list(range(int(lo), int(hi) + 1))
+
+
+def array_throttle(spec: str) -> int | None:
+    """The optional positive concurrency limit after % in an array spec."""
+    _, sep, limit = spec.partition("%")
+    if not sep:
+        return None
+    if not limit.strip().isdigit() or int(limit) < 1:
+        raise ValueError(f"invalid array throttle: {spec!r}")
+    return int(limit)
 
 
 def combine_states(states: Sequence[str]) -> str:
@@ -428,11 +439,13 @@ class _GPUHolder(TypedDict):
     id: str
     pgid: int
     name: str
+    start_time: str
 
 
 class _GPUWaiter(TypedDict):
     id: str
     pid: int
+    heartbeat: float
 
 
 class _GPUPool(TypedDict):
@@ -463,6 +476,7 @@ class LocalCompute:
     _seq: ClassVar[int] = 0
     _lock: ClassVar[threading.Lock] = threading.Lock()
     _gpu_pool: ClassVar[_GPUPool] = {"holders": {}, "queue": []}
+    _zero_gpu_warning_pid: ClassVar[int | None] = None
     minute_s: int = 60  # a walltime minute; tests shrink it to exercise the kill
 
     @staticmethod
@@ -514,21 +528,40 @@ class LocalCompute:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     @staticmethod
+    def _start_time(pid: int) -> str:
+        try:
+            if sys.platform == "linux":
+                # The parenthesized command can itself contain spaces and parentheses.
+                stat = Path(f"/proc/{pid}/stat").read_text()
+                return stat.rsplit(")", 1)[1].split()[19]
+            result = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired, IndexError):
+            return ""
+
+    @staticmethod
     def _live(holder: _GPUHolder) -> bool:
-        state_dir = _local_state_dir()
-        if state_dir is not None and (state_dir / holder["id"]).exists():
-            return False
-        # A reused pgid with no recorded state stays held; delete the pool file to recover.
         try:
             os.killpg(holder["pgid"], 0)
         except ProcessLookupError:
             return False
         except PermissionError:
             pass
-        return True
+        recorded = holder.get("start_time", "")
+        current = LocalCompute._start_time(holder["pgid"]) if recorded else ""
+        # Unknown start times on exotic platforms can retain reused pgids; delete the pool to reset.
+        return not (recorded and current and recorded != current)
 
     @staticmethod
     def _waiter_live(waiter: _GPUWaiter) -> bool:
+        if time.time() - waiter.get("heartbeat", 0) > 30:
+            return False
         try:
             os.kill(waiter["pid"], 0)
         except ProcessLookupError:
@@ -556,8 +589,11 @@ class LocalCompute:
                         del holders[index]
                 pool["queue"] = [w for w in pool["queue"] if self._waiter_live(w)]
                 queue = pool["queue"]
-                if not any(w["id"] == job_id for w in queue):
-                    queue.append({"id": job_id, "pid": os.getpid()})
+                ticket = next((w for w in queue if w["id"] == job_id), None)
+                if ticket is None:
+                    ticket = {"id": job_id, "pid": os.getpid(), "heartbeat": time.time()}
+                    queue.append(ticket)
+                ticket["heartbeat"] = time.time()
                 free = [str(i) for i in range(count) if str(i) not in holders]
                 if queue[0]["id"] == job_id and len(free) >= spec.gpus:
                     with tasks.lock:
@@ -566,8 +602,14 @@ class LocalCompute:
                         allocated = free[: spec.gpus]
                         proc = start(allocated)
                         tasks.running[job_id] = proc
+                        start_time = self._start_time(proc.pid)
                         for index in allocated:
-                            holders[index] = {"id": job_id, "pgid": proc.pid, "name": spec.job_name}
+                            holders[index] = {
+                                "id": job_id,
+                                "pgid": proc.pid,
+                                "name": spec.job_name,
+                                "start_time": start_time,
+                            }
                     queue.pop(0)
                     log.info("local job %s got GPUs %s", job_id, ",".join(allocated))
                     return proc
@@ -579,7 +621,9 @@ class LocalCompute:
 
     def _release(self, job_id: str) -> None:
         with self._pool() as pool:
-            pool["holders"] = {i: h for i, h in pool["holders"].items() if h["id"] != job_id}
+            pool["holders"] = {
+                i: h for i, h in pool["holders"].items() if h["id"] != job_id or self._live(h)
+            }
             pool["queue"] = [w for w in pool["queue"] if w["id"] != job_id]
 
     def submit(self, spec: JobSpec) -> str:
@@ -593,6 +637,12 @@ class LocalCompute:
                 f"local job {spec.job_name} requests {spec.gpus} GPUs; only {count} available"
             )
         with self._lock:
+            if spec.gpus > 0 and count == 0 and self._zero_gpu_warning_pid != os.getpid():
+                log.warning(
+                    "No local GPUs detected; GPU jobs run without CUDA_VISIBLE_DEVICES. "
+                    "Set OUTERLOOP_LOCAL_GPUS to the GPU count to enable the pool."
+                )
+                LocalCompute._zero_gpu_warning_pid = os.getpid()
             LocalCompute._seq += 1
             if self._seq >= 1_000_000:
                 raise SlurmError("local job id space exhausted for this process")
@@ -621,6 +671,9 @@ class LocalCompute:
         indices = array_indices(spec.array)
         if indices:
             workers = min(len(indices), count // spec.gpus if count else (os.cpu_count() or 1))
+            throttle = array_throttle(spec.array)
+            if throttle is not None:
+                workers = min(workers, throttle)
             tasks = _LocalTasks()
             executor = ThreadPoolExecutor(max_workers=workers)
             try:
