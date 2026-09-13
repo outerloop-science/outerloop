@@ -66,7 +66,7 @@ _HYP = re.compile(r"Hypothesis[:*\s]+(.+)", re.I)
 # as Markdown allows) or a list item; in a report written as "Field: text"
 # lines, the next such line too
 _HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s)")
-_FIELD_LINE = re.compile(r"^\s{0,3}[A-Z][\w /-]{0,40}:(?:\s|$)")
+_FIELD_LINE = re.compile(r"^\s{0,3}(?:\*\*|__)?[A-Z][\w /-]{0,40}:(?:\*\*|__)?(?:\s|$)")
 
 
 def _report_fields(text: str) -> tuple[float | None, float | None, str]:
@@ -92,7 +92,8 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
         # cut on one
         line_start = text.rfind("\n", 0, m.start()) + 1
         after = m.start() + len("Hypothesis")
-        fielded = not text[line_start : m.start()].strip() and text[after : after + 1] == ":"
+        # emphasis around the label (`**Hypothesis:**`) is still the field format
+        fielded = not text[line_start : m.start()].strip("*_ \t") and text[after : after + 1] == ":"
         lines: list[str] = []
         for line in text[m.start(1) :].split("\n"):
             if lines and (
