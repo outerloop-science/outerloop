@@ -1402,6 +1402,9 @@ def test_hypothesis_needs_a_real_label_and_status_falls_back(tmp_path: Path) -> 
     assert report_hypothesis("We tested the hypothesis that EMA helps; it did.") == ""
     assert report_hypothesis("## Hypothesis\n\nEMA helps.\n") == "EMA helps."
     assert report_hypothesis("- Hypothesis: EMA helps.\n") == "EMA helps."
+    # an empty section never turns the next heading or field into a direction
+    assert report_hypothesis("## Hypothesis\n\n## Change\n\nB\n") == ""
+    assert report_hypothesis("Hypothesis:\nChange: B\n") == ""
     record = RunRecord(
         run_id="live-h",
         target="org/repo",
