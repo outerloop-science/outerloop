@@ -30,9 +30,11 @@ def report_hypothesis(text: str) -> str:
         for line in text[m.end(2) - len(m.group(2)) :].split("\n"):
             # an empty section: the first captured line is already the next
             # heading, list item or field, so there is no hypothesis
-            if _HYP_END.match(line) or (fielded and _FIELD_LINE.match(line)):
+            if not lines and (_HYP_END.match(line) or _FIELD_LINE.match(line)):
                 break
-            if lines and not line.strip():
+            if lines and (
+                not line.strip() or _HYP_END.match(line) or (fielded and _FIELD_LINE.match(line))
+            ):
                 break
             lines.append(line)
         hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", "\n".join(lines))

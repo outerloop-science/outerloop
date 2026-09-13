@@ -1405,6 +1405,7 @@ def test_hypothesis_needs_a_real_label_and_status_falls_back(tmp_path: Path) -> 
     # an empty section never turns the next heading or field into a direction
     assert report_hypothesis("## Hypothesis\n\n## Change\n\nB\n") == ""
     assert report_hypothesis("Hypothesis:\nChange: B\n") == ""
+    assert report_hypothesis("## Hypothesis\n\nChange: B\n") == ""  # heading form, then a field
     record = RunRecord(
         run_id="live-h",
         target="org/repo",
