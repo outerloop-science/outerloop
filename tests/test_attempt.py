@@ -394,6 +394,8 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
                 "state": "parked",
                 "phase": "author-sleep",
                 "direction": "d" * 500,
+                "hypothesis": "h" * 1200,
+                "pr_url": "https://github.com/org/repo/pull/9" + "x" * 1100,
             },
         ]
     }
@@ -406,6 +408,8 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     entries = _sibling_entries(ws, "agent-01")
     assert [e["agent"] for e in entries] == ["agent-02"]  # self excluded
     assert len(entries[0]["direction"]) == 160  # bounded
+    assert entries[0]["hypothesis"] == "h" * 400
+    assert entries[0]["pr_url"] == status["runs"][1]["pr_url"][:1000]
 
     # production order: the tool installer recreates the channel dir it owns,
     # so the archive must be written AFTER it (review #191: writing before
@@ -3544,13 +3548,27 @@ def test_author_sleep_wake_keeps_the_submit_report_on_the_pr(tmp_path, monkeypat
         now=1_000_100.0,
         harness=ScriptedHarness(
             submit=True,
-            text="the author's submit report",
+            text=(
+                "Hypothesis: The author's method helps.\nIt preserves late updates.\n\n## Change\nA"
+            ),
             edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"},
         ),
         spec=author_spec(),
     )
     assert outcome.outcome == "improved"
-    assert "the author's submit report" in github.prs[0]["body"]
+    assert "The author's method helps." in github.prs[0]["body"]
+    from dataclasses import replace as dc_replace
+
+    from outerloop.attempt import _clear_stage
+    from outerloop.climbboard import _report_fields
+    from outerloop.runstate import run_dir
+
+    record = load_record(state, run_id)
+    hyp = "The author's method helps. It preserves late updates."
+    assert record.stage["hypothesis"] == hyp
+    assert _clear_stage(record).stage["hypothesis"] == hyp
+    assert _clear_stage(dc_replace(record, state="ended")).stage["hypothesis"] == hyp
+    assert _report_fields((run_dir(state, run_id) / "report.md").read_text())[2] == hyp
 
 
 def test_author_sleep_wake_reconciles_an_already_open_pr(tmp_path, monkeypatch) -> None:

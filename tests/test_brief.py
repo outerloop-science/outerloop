@@ -342,3 +342,11 @@ def test_memory_guidance_at_every_session_boundary() -> None:
     assert "agent_memory/<topic>.md" in text
     assert "on a resume its own context" in text
     assert "What you write here is all your next session gets" not in text
+
+
+def test_siblings_guidance_checks_each_wake_before_direction_and_submit() -> None:
+    text = render(build_brief(make_inputs(launch_budget=3, sleep_budget=2), created="t"))
+    assert "refreshed at every wake; `siblings` shows it" in text
+    assert "before choosing a direction and again before a submit" in text
+    assert "prefer a direction no sibling is on unless you have a distinct angle" in text
+    assert "as of your session start" not in text

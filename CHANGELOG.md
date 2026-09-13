@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Runs retain their hypothesis through review. The status strip and sibling view carry it with the PR link, and the brief asks authors to check the view, refreshed at every wake, before choosing a direction and before submitting.
+
 - Board rows now keep each run's whole hypothesis paragraph; the site's ledger showed sentences cut at 160 characters. Text over 1,000 characters ends at a word with an ellipsis. The next publish repairs rows cut by the earlier limit.
 
 - `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.

@@ -426,9 +426,9 @@ def render(brief: SessionBrief) -> str:
             "sleeps (a `sleep` with nothing staged is a checkpoint that "
             "refreshes your session clock and costs one sleep). Spend them as "
             "your judgment says; they are generous, not a target to exhaust. "
-            "`siblings` shows what the other agents were working on as of "
-            "your session start — prefer a direction no sibling is actively "
-            "on, unless you have a distinct angle.",
+            "The sibling view is refreshed at every wake; `siblings` shows it. "
+            "Check it before choosing a direction and again before a submit, "
+            "and prefer a direction no sibling is on unless you have a distinct angle.",
             "",
             "Stage `submit [--report <file>]` and then `sleep` to seal the tree, "
             "run the paired gate and panel, and receive their verdicts. A credited "
