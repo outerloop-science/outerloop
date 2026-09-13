@@ -355,9 +355,10 @@ def _app_verdict(provider: Any, target: str) -> tuple[str, bool]:
     from outerloop.appmanifest import DEFAULT_PERMISSIONS
 
     gaps = app_permission_gaps(provider, target)
-    fatal = _auth_is_fatal(gaps.problem) and (
-        not gaps.known or any(DEFAULT_PERMISSIONS[n] == "write" for n in gaps.missing)
-    )
+    if gaps.known:  # the installation answered: its write gaps decide, whatever failed after
+        fatal = any(DEFAULT_PERMISSIONS[n] == "write" for n in gaps.missing)
+    else:
+        fatal = _auth_is_fatal(gaps.problem)
     return gaps.problem, fatal
 
 

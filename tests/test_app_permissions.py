@@ -322,3 +322,24 @@ def test_permissions_process_env_overrides_file(app_env, monkeypatch, capsys):
     assert cli.main(["permissions", "--open"]) == 0
     assert "A PAT needs no App permissions" in capsys.readouterr().out
     assert app_env[2] == []
+
+
+def test_write_gap_stays_fatal_when_the_app_lookup_fails(app, monkeypatch):
+    """The installation answered with contents missing; GET /app then failed.
+    The problem sentence has no URLs, but the write gap still fails setup."""
+    provider, _, _ = app
+
+    def transport(request):
+        if request.full_url.endswith("/app"):
+            raise RuntimeError("app lookup failed")
+        return {
+            "id": provider.installation_id,
+            "account": {"login": "org", "type": "Organization"},
+            "permissions": {"issues": "write", "pull_requests": "write", "metadata": "read"},
+        }
+
+    monkeypatch.setattr(provider, "_transport", transport)
+    problem, fatal = init._app_verdict(provider, "org/repo")
+    assert fatal and "contents: write" in problem
+    gaps = init.app_permission_gaps(provider, "org/repo")
+    assert gaps.known and "contents" in gaps.missing and not gaps.edit_url
