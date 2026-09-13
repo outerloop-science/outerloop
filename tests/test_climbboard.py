@@ -134,7 +134,18 @@ def test_row_cap_is_loud_not_silent() -> None:
     capped = merge_rows(_json.dumps(many), [])
     assert len(capped) <= MAX_ROWS_PER_BENCHMARK
     md = render_md("org/repo", {"b": capped}, {"b": "min"})
-    assert f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts" in md
+    assert f"Only the newest {len(capped)} attempts" in md
+    # bounded by bytes too: whole-paragraph hypotheses must never push the
+    # data file past what the contents API returns inline; the newest survive
+    from outerloop.climbboard import MAX_ROWS_BYTES
+
+    heavy = [{**r, "hypothesis": "h" * 1000} for r in many]
+    bounded = merge_rows(_json.dumps(heavy), [])
+    assert len(_json.dumps(bounded, indent=1).encode()) <= MAX_ROWS_BYTES
+    assert 0 < len(bounded) < len(heavy) and bounded[-1]["ended"] == max(r["ended"] for r in heavy)
+    assert f"Only the newest {len(bounded)} attempts" in render_md(
+        "org/repo", {"b": bounded}, {"b": "min"}
+    )
     small = render_md("org/repo", {"b": rows}, {"b": "min"})
     assert "Only the newest" not in small
 
@@ -1251,3 +1262,68 @@ def test_status_says_what_a_parked_run_waits_on(tmp_path: Path) -> None:
     assert _waiting_on(measured, 1, 2, True) == "jobs"  # messages wait behind jobs
     assert _waiting_on(parked, 0, 0, False) == "wake"
     assert _waiting_on(dc_replace(parked, state="running"), 1, 3, False) == ""
+
+
+def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
+    """The board row carries the whole hypothesis paragraph (the table shows a
+    summary); only past the cap is it cut, at a word, with an ellipsis. A row
+    an earlier board cut at 160 characters takes the fresh, longer text on
+    the next publish; nothing else about a published row changes."""
+    import json
+
+    from outerloop.climbboard import (
+        MAX_HYPOTHESIS_CHARS,
+        ClimbRow,
+        _report_fields,
+        merge_rows,
+    )
+
+    first = "The instantaneous AdamW weights retain late-update noise."
+    second = "An exponential moving average should give a lower loss without changing the updates."
+    report = f"# EMA\n\n## Hypothesis\n\n{first} {second}\n\n## Change\n\nkeeps a copy.\n"
+    _b, _c, hyp = _report_fields(report)
+    assert hyp == f"{first} {second}"
+    _b, _c, long = _report_fields("Hypothesis: " + "word " * 400)
+    assert len(long) <= MAX_HYPOTHESIS_CHARS and long.endswith("…") and not long.endswith(" …")
+    _b, _c, token = _report_fields("Hypothesis: " + "x" * 1200)
+    assert len(token) == MAX_HYPOTHESIS_CHARS and token.endswith("…")  # no word to keep whole
+    # the three formats reports use: a bullet list, plain field lines, a heading
+    # followed by a paragraph that wraps; a Change field never rides along
+    assert _report_fields("- **Hypothesis:** A helps.\n- **Change:** B\n")[2] == "A helps."
+    assert _report_fields("Hypothesis: A helps.\nChange: B\nBaseline: 1\n")[2] == "A helps."
+    wrapped = "## Hypothesis\n\nA helps\nbecause C.\n   ## Change\n\nB\n"
+    assert _report_fields(wrapped)[2] == "A helps because C."
+    # prose after a heading may wrap onto a line with a colon; only the field
+    # format ("Hypothesis: ..." starting its line) ends at the next field line
+    prose = "## Hypothesis\n\nA helps.\nThis means: score each candidate.\n\n## Change\n"
+    assert _report_fields(prose)[2] == "A helps. This means: score each candidate."
+    assert (
+        _report_fields("- Hypothesis: A.\nThis means: B.\n- Change: C\n")[2] == "A. This means: B."
+    )
+    assert (
+        _report_fields("Hypothesis:\nA helps.\nChange: B\n")[2] == "A helps."
+    )  # text on the next line
+    assert (
+        _report_fields("**Hypothesis:** A helps.\n**Change:** B\n")[2] == "A helps."
+    )  # bold labels
+    cut = json.dumps(
+        [{"run_id": "r1", "hypothesis": hyp[:160], "candidate": 5312.0, "outcome": "merged"}]
+    )
+    fresh = ClimbRow(
+        run_id="r1",
+        agent="agent-04",
+        ended="2026-09-13T05:30:00Z",
+        outcome="merged",
+        baseline=6528.0,
+        candidate=4.0,
+        gpu_hours=1.0,
+        hypothesis=hyp,
+        note="",
+        pr_url="",
+        report="",
+    )
+    (row,) = merge_rows(cut, [fresh])
+    assert row["hypothesis"] == hyp and row["candidate"] == 5312.0  # text healed, numbers kept
+    other = json.dumps([{"run_id": "r1", "hypothesis": "A different sentence.", "candidate": 1.0}])
+    (row,) = merge_rows(other, [fresh])
+    assert row["hypothesis"] == "A different sentence."  # not a prefix: history stands

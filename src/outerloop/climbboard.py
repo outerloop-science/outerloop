@@ -35,7 +35,7 @@ from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 log = logging.getLogger("outerloop.climbboard")
 
 BOARD_BRANCH = "research-log"
-MAX_HYPOTHESIS_CHARS = 160
+MAX_HYPOTHESIS_CHARS = 1000  # the whole hypothesis paragraph; the table shows a summary
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
 MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
@@ -43,6 +43,7 @@ MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
 # (this per-agent cap is the whole bound — no global total ceiling, which
 # would drop the oldest agent once agents * 5 exceeded it)
 MAX_ROWS_PER_BENCHMARK = 2000
+MAX_ROWS_BYTES = 900_000  # the contents API returns no inline content past 1 MB
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,11 @@ class ClimbRow:
 
 _NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
 _HYP = re.compile(r"Hypothesis[:*\s]+(.+)", re.I)
+# what ends the hypothesis paragraph: a heading (up to three leading spaces,
+# as Markdown allows) or a list item; in a report written as "Field: text"
+# lines, the next such line too
+_HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s)")
+_FIELD_LINE = re.compile(r"^\s{0,3}(?:\*\*|__)?[A-Z][\w /-]{0,40}:(?:\*\*|__)?(?:\s|$)")
 
 
 def _report_fields(text: str) -> tuple[float | None, float | None, str]:
@@ -79,8 +85,28 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
     hyp = ""
     m = _HYP.search(text)
     if m:
-        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", m.group(1))
-        hyp = hyp.strip().rstrip("-").strip()[:MAX_HYPOTHESIS_CHARS]
+        # the whole paragraph: the lines up to a blank one, a heading, a list
+        # item or the next field, so a "- Change:" bullet never rides along
+        # "Hypothesis:" starting its line is the field format (its text on the
+        # same line or the next): there the next field line ends the paragraph;
+        # prose after a heading or in a bullet may contain a colon and is never
+        # cut on one
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        after = m.start() + len("Hypothesis")
+        # emphasis around the label (`**Hypothesis:**`) is still the field format
+        fielded = not text[line_start : m.start()].strip("*_ \t") and text[after : after + 1] == ":"
+        lines: list[str] = []
+        for line in text[m.start(1) :].split("\n"):
+            if lines and (
+                not line.strip() or _HYP_END.match(line) or (fielded and _FIELD_LINE.match(line))
+            ):
+                break
+            lines.append(line)
+        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", "\n".join(lines))
+        hyp = hyp.strip().rstrip("-").strip()
+        if len(hyp) > MAX_HYPOTHESIS_CHARS:
+            head = hyp[: MAX_HYPOTHESIS_CHARS - 1]
+            hyp = (head.rsplit(" ", 1)[0] if " " in head else head) + "…"
     return baseline, candidate, hyp
 
 
@@ -232,13 +258,20 @@ def collect_rows(
 def merge_rows(existing_json: str | None, fresh: list[ClimbRow]) -> list[dict[str, Any]]:
     """Existing board rows plus any new ones, one per run id, oldest first.
     A run already on the board keeps its published row (reports are final at
-    terminal state; the board never rewrites history)."""
+    terminal state; the board never rewrites history). The one exception is a
+    hypothesis an earlier board cut short: when the fresh row's hypothesis
+    extends the published one, the longer text replaces it."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    longer = {r.run_id: r.hypothesis for r in fresh if r.hypothesis}
     if existing_json:
         try:
             for item in json.loads(existing_json):
                 if isinstance(item, dict) and item.get("run_id") not in seen:
+                    had = str(item.get("hypothesis") or "")
+                    full = longer.get(str(item.get("run_id")), "")
+                    if had and len(full) > len(had) and full.startswith(had):
+                        item = {**item, "hypothesis": full}
                     rows.append(item)
                     seen.add(str(item.get("run_id")))
         except ValueError:
@@ -248,10 +281,17 @@ def merge_rows(existing_json: str | None, fresh: list[ClimbRow]) -> list[dict[st
             rows.append(asdict(row))
             seen.add(row.run_id)
     rows.sort(key=lambda r: str(r.get("ended", "")))
-    # the board is a bounded VIEW (the contents API caps file sizes); the
-    # full history stays in reports/ on this same branch, and the trim is
-    # said out loud in CLIMB.md, never silent
-    return rows[-MAX_ROWS_PER_BENCHMARK:]
+    # the board is a bounded VIEW, by rows and by bytes (the contents API
+    # returns nothing inline past 1 MB); the full history stays in reports/
+    # on this same branch, and the trim is said out loud in CLIMB.md
+    rows = rows[-MAX_ROWS_PER_BENCHMARK:]
+    while len(rows) > 1:
+        size = len(json.dumps(rows, indent=1).encode())
+        if size <= MAX_ROWS_BYTES:
+            break
+        # drop the overshoot's share of the oldest rows, then measure again
+        rows = rows[max(1, len(rows) * (size - MAX_ROWS_BYTES) // size) :]
+    return rows
 
 
 def _fmt(value: Any) -> str:
@@ -297,11 +337,14 @@ def render_md(
             f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
             f"**{_fmt(best)}** ({direction}){start_chip} · GPU-hours: **{gpu:.1f}**",
         ]
-        if len(rows) >= MAX_ROWS_PER_BENCHMARK:
+        if (
+            len(rows) >= MAX_ROWS_PER_BENCHMARK
+            or len(json.dumps(rows, indent=1)) > 0.9 * MAX_ROWS_BYTES
+        ):
             lines += [
                 "",
-                f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts are on the board; "
-                "archived reports stay in `reports/` on this branch.",
+                f"Only the newest {len(rows)} attempts are on the board (its data file is "
+                "bounded); archived reports stay in `reports/` on this branch.",
             ]
         lines += [
             "",
