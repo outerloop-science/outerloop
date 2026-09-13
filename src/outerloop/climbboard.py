@@ -63,8 +63,10 @@ class ClimbRow:
 _NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
 _HYP = re.compile(r"Hypothesis[:*\s]+(.+)", re.I)
 # what ends the hypothesis paragraph: a heading (up to three leading spaces,
-# as Markdown allows), a list item, or the next field label ("Change: ...")
-_HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s|\*{0,2}[A-Z][\w /-]{0,40}\*{0,2}:(?:\s|$))")
+# as Markdown allows) or a list item; in a report written as "Field: text"
+# lines, the next such line too
+_HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s)")
+_FIELD_LINE = re.compile(r"^\s{0,3}[A-Z][\w /-]{0,40}:(?:\s|$)")
 
 
 def _report_fields(text: str) -> tuple[float | None, float | None, str]:
@@ -84,9 +86,18 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
     if m:
         # the whole paragraph: the lines up to a blank one, a heading, a list
         # item or the next field, so a "- Change:" bullet never rides along
+        # "Hypothesis: text" at the start of its line is the field format: there
+        # the next field line ends the paragraph; prose after a heading or in
+        # a bullet may contain a colon and is never cut on one
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        fielded = (
+            not text[line_start : m.start()].strip() and "\n" not in text[m.start() : m.start(1)]
+        )
         lines: list[str] = []
         for line in text[m.start(1) :].split("\n"):
-            if lines and (not line.strip() or _HYP_END.match(line)):
+            if lines and (
+                not line.strip() or _HYP_END.match(line) or (fielded and _FIELD_LINE.match(line))
+            ):
                 break
             lines.append(line)
         hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", "\n".join(lines))

@@ -1282,6 +1282,13 @@ def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
     assert _report_fields("Hypothesis: A helps.\nChange: B\nBaseline: 1\n")[2] == "A helps."
     wrapped = "## Hypothesis\n\nA helps\nbecause C.\n   ## Change\n\nB\n"
     assert _report_fields(wrapped)[2] == "A helps because C."
+    # prose after a heading may wrap onto a line with a colon; only the field
+    # format ("Hypothesis: ..." starting its line) ends at the next field line
+    prose = "## Hypothesis\n\nA helps.\nThis means: score each candidate.\n\n## Change\n"
+    assert _report_fields(prose)[2] == "A helps. This means: score each candidate."
+    assert (
+        _report_fields("- Hypothesis: A.\nThis means: B.\n- Change: C\n")[2] == "A. This means: B."
+    )
     cut = json.dumps(
         [{"run_id": "r1", "hypothesis": hyp[:160], "candidate": 5312.0, "outcome": "merged"}]
     )
