@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from outerloop.inbox import wake_pending
 from outerloop.markers import marker
 from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 
@@ -990,16 +991,17 @@ def _phrase(text: str, cap: int = 64) -> str:
     return summarize(first, cap)
 
 
-def _waiting_on(record: Any, exp_done: int, exp_total: int) -> str:
+def _waiting_on(record: Any, exp_done: int, exp_total: int, pending: bool) -> str:
     """What a parked run waits for, read off the record: its launched jobs, the
-    gate measuring its submit, review on its PR, or just its next wake."""
+    gate measuring its submit, review on its PR, or just its next wake (a
+    checkpoint sleep, or a message already waiting in its inbox)."""
     if record.state != PARKED:
         return ""
     if exp_total > exp_done:
         return "jobs"
     if str((record.stage or {}).get("phase", "")) == "candidate":
         return "gate"
-    if record.pr_url:
+    if record.pr_url and not pending:
         return "review"
     return "wake"
 
@@ -1101,7 +1103,9 @@ def collect_status(
                 "gpu_hours_used": float(stage.get("gpu_hours_used") or 0.0),  # type: ignore[arg-type]
                 "gpu_hours_budget": gpu_ceiling,
                 "pr_url": record.pr_url,
-                "waiting": _waiting_on(record, exp_done, exp_total),
+                "waiting": _waiting_on(
+                    record, exp_done, exp_total, wake_pending(run_dir(root, record.run_id), record)
+                ),
             }
         )
     runs.sort(key=lambda r: str(r.get("run_id")))
