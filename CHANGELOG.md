@@ -6,6 +6,11 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+Local mode now shares workstation GPUs across jobs first come first served and runs
+launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
+overrides GPU detection; `0` disables allocation. Submissions still wait for all
+tasks to finish.
+
 ### Fixed
 
 - Runs retain their hypothesis through review. The status strip and sibling view carry it with the PR link, and the brief asks authors to check the view, refreshed at every wake, before choosing a direction and before submitting.

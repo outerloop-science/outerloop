@@ -3,14 +3,22 @@ subprocesses in the current allocation — and the one measurer on top of it."""
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
+import shlex
 import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
 from helpers import wait_until
-from outerloop.compute import GONE, JobSpec, LocalCompute
+from outerloop.compute import GONE, JobSpec, LocalCompute, SlurmError
 from outerloop.dispatch import snapshot_tree
 from outerloop.github import Workspace
 from outerloop.measure import DispatchedMeasurer, MeasurementPending, plan_measures
@@ -355,8 +363,8 @@ def test_local_job_output_is_kept_beside_its_state(tmp_path: Path, monkeypatch) 
     assert out.stat().st_mode & 0o777 == 0o600  # a job may print a credential
 
 
-def test_array_runs_every_task_in_turn(tmp_path: Path) -> None:
-    """A local job array runs its tasks one after another, each with its
+def test_array_runs_every_task(tmp_path: Path) -> None:
+    """A local job array runs all its tasks, each with its
     SLURM_ARRAY_TASK_ID; every task keeps its state under `<id>_<k>` and the
     array's state is theirs combined."""
     lc = LocalCompute()
@@ -369,6 +377,639 @@ def test_array_runs_every_task_in_turn(tmp_path: Path) -> None:
         job_name="t", account="", partition="", time_minutes=1, script=str(script), array="0-2%1"
     )
     job = lc.submit(spec)
-    assert log.read_text().split() == ["0", "1", "2"]
+    assert sorted(log.read_text().split()) == ["0", "1", "2"]
     assert lc.status(job) == "FAILED"  # task 1 failed
     assert lc.status(f"{job}_0") == "COMPLETED" and lc.status(f"{job}_1") == "FAILED"
+
+
+@pytest.fixture
+def gpu_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUTERLOOP_ROOT", str(tmp_path))
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "2")
+    return tmp_path
+
+
+def test_shared_gpu_pool_and_running_queue(gpu_root):
+    first, second = LocalCompute(), LocalCompute()
+    release = gpu_root / "release"
+
+    def job(k):
+        return replace(
+            _spec(
+                command=(
+                    f'echo "$CUDA_VISIBLE_DEVICES" > {gpu_root / str(k)}; '
+                    f"while [ ! -f {release} ]; do sleep 0.05; done"
+                )
+            ),
+            gpus=1,
+            job_name=f"gpu-{k}",
+        )
+
+    with ThreadPoolExecutor(2) as executor:
+        jobs = [executor.submit(lc.submit, job(k)) for k, lc in enumerate((first, second))]
+        try:
+            assert wait_until(lambda: all((gpu_root / str(k)).exists() for k in range(2)))
+            assert {(gpu_root / str(k)).read_text().strip() for k in range(2)} == {"0", "1"}
+            rows = LocalCompute().queue_snapshot()
+            assert len(rows) == 2
+            assert all(
+                set(row)
+                == {
+                    "id",
+                    "name",
+                    "state",
+                    "elapsed",
+                    "partition",
+                    "submitted",
+                    "reason",
+                    "gres",
+                    "limit",
+                }
+                for row in rows
+            )
+            assert {r["state"] for r in rows} == {"RUNNING"}
+            assert {r["gres"] for r in rows} == {"gpu:0", "gpu:1"}
+            assert set(first.active_job_names()) == {"gpu-0", "gpu-1"}
+            assert all(not future.done() for future in jobs)
+        finally:
+            release.touch()
+        ids = [future.result() for future in jobs]
+    assert len(set(ids)) == 2
+    assert {r["id"] for r in rows} == set(ids)
+    assert all(LocalCompute().status(job_id) == "COMPLETED" for job_id in ids)
+    assert LocalCompute().queue_snapshot() == []
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+def test_multi_gpu_and_oversize(gpu_root, monkeypatch):
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "4")
+    output = gpu_root / "visible"
+    lc = LocalCompute()
+    lc.submit(replace(_spec(command=f'echo "$CUDA_VISIBLE_DEVICES" > {output}'), gpus=2))
+    assert output.read_text().strip() == "0,1"
+    with pytest.raises(SlurmError, match="requests 5 GPUs; only 4 available"):
+        lc.submit(replace(_spec(command="true"), gpus=5))
+
+
+@pytest.mark.parametrize("gpus", [0, 1])
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("array, size, concurrency", [("0-3", 4, 2), ("0-1%1", 2, 1)])
+def test_array_concurrency_and_states(
+    gpu_root, monkeypatch, gpus, persistent, array, size, concurrency
+):
+    if not persistent:
+        monkeypatch.delenv("OUTERLOOP_ROOT")
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    if not gpus:
+        monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "0")
+    stamp = shlex.quote("import time; print(time.monotonic())")
+    python = shlex.quote(sys.executable)
+    script = gpu_root / "array.sh"
+    script.write_text(
+        f"{python} -c {stamp} > {gpu_root}/start_$SLURM_ARRAY_TASK_ID\n"
+        f'echo "$CUDA_VISIBLE_DEVICES" > {gpu_root}/gpu_$SLURM_ARRAY_TASK_ID\n'
+        "sleep 0.3\n"
+        f"{python} -c {stamp} > {gpu_root}/end_$SLURM_ARRAY_TASK_ID\n"
+        '[ "$SLURM_ARRAY_TASK_ID" != 1 ]\n'
+    )
+    lc = LocalCompute()
+    job_id = lc.submit(replace(_spec(script=str(script)), gpus=gpus, array=array))
+    events = []
+    for i in range(size):
+        start = float((gpu_root / f"start_{i}").read_text())
+        end = float((gpu_root / f"end_{i}").read_text())
+        events.extend([(start, 1), (end, -1)])
+        assert (gpu_root / f"gpu_{i}").read_text().strip() in ({"0", "1"} if gpus else {""})
+        assert lc.status(f"{job_id}_{i}") == ("FAILED" if i == 1 else "COMPLETED")
+        if persistent:
+            assert (gpu_root / f"local_jobs/{job_id}_{i}.out").exists()
+    alive = peak = 0
+    for _, delta in sorted(events):
+        alive += delta
+        peak = max(peak, alive)
+    assert peak == concurrency
+    assert lc.status(job_id) == "FAILED"
+
+
+def test_stale_holder_is_reclaimed(gpu_root):
+    dead = subprocess.Popen(["sh", "-c", "true"])
+    dead.wait()
+    state_dir = gpu_root / "local_jobs"
+    state_dir.mkdir()
+    (state_dir / "gpus.json").write_text(
+        json.dumps(
+            {
+                "holders": {"0": {"id": "999", "pgid": dead.pid, "name": "dead"}},
+                "queue": [],
+            }
+        )
+    )
+    output = gpu_root / "visible"
+    LocalCompute().submit(
+        replace(_spec(command=f'echo "$CUDA_VISIBLE_DEVICES" > {output}'), gpus=2)
+    )
+    assert output.read_text().strip() == "0,1"
+
+
+@pytest.mark.parametrize("requested", [0, 5])
+def test_zero_gpus_preserves_environment(gpu_root, monkeypatch, requested):
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "0")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "parent")
+    output = gpu_root / "visible"
+    LocalCompute().submit(
+        replace(
+            _spec(command=f'echo "${{CUDA_VISIBLE_DEVICES-unset}}" > {output}'),
+            gpus=requested,
+        )
+    )
+    assert output.read_text().strip() == "unset"
+    assert not (gpu_root / "local_jobs/gpus.json").exists()
+    assert LocalCompute().queue_snapshot() == []
+
+
+@pytest.mark.parametrize("command, state", [("exit 3", "FAILED"), ("sleep 10", "TIMEOUT")])
+def test_gpu_release_on_terminal_state(gpu_root, command, state):
+    lc = LocalCompute(minute_s=1)
+    job = lc.submit(replace(_spec(command=command), gpus=2))
+    assert lc.status(job) == state
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+def test_gpu_release_on_start_failure(gpu_root, monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError("cannot start")
+
+    monkeypatch.setattr(subprocess, "Popen", fail)
+    with pytest.raises(SlurmError, match="cannot start"):
+        LocalCompute().submit(replace(_spec(command="true"), gpus=1))
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+def test_gpu_detection(monkeypatch):
+    monkeypatch.delenv("OUTERLOOP_LOCAL_GPUS", raising=False)
+
+    def detect(argv, **kwargs):
+        assert argv == ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"]
+        return subprocess.CompletedProcess(argv, 0, "0\n1\n", "")
+
+    monkeypatch.setattr(subprocess, "run", detect)
+    assert LocalCompute._gpu_count() == 2
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert LocalCompute._gpu_count() == 0
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "4")
+    assert LocalCompute._gpu_count() == 4
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "0")
+    assert LocalCompute._gpu_count() == 0
+
+
+def test_pool_files_survive_state_pruning(gpu_root):
+    lc = LocalCompute()
+    lc.submit(replace(_spec(command="true"), gpus=1))
+    files = [gpu_root / "local_jobs" / name for name in ("gpus.json", "gpus.lock")]
+    inode = files[1].stat().st_ino
+    for path in files:
+        os.utime(path, (time.time() - 172800,) * 2)
+    lc.submit(_spec(command="true"))
+    assert all(path.exists() for path in files)
+    assert files[1].stat().st_ino == inode
+
+
+def test_submit_waits_for_another_process(gpu_root):
+    ready, release, output = (gpu_root / name for name in ("ready", "release", "next"))
+    command = f"touch {ready}; while [ ! -f {release} ]; do sleep 0.05; done"
+    code = (
+        "from outerloop.compute import LocalCompute, JobSpec; "
+        f"LocalCompute().submit(JobSpec('holder', '', '', 1, command={command!r}, gpus=2))"
+    )
+    child = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        assert wait_until(ready.exists)
+        lc = LocalCompute()
+        assert wait_until(lambda: lc.active_job_names() == ["holder"])
+        with ThreadPoolExecutor(1) as executor:
+            job = executor.submit(
+                lc.submit,
+                replace(_spec(command=f'echo "$CUDA_VISIBLE_DEVICES" > {output}'), gpus=1),
+            )
+            try:
+                time.sleep(0.2)
+                assert not job.done()
+                assert not output.exists()
+            finally:
+                release.touch()
+            assert lc.status(job.result(timeout=10)) == "COMPLETED"
+        assert output.read_text().strip() == "0"
+        assert child.wait(timeout=10) == 0
+    finally:
+        release.touch()
+        child.wait(timeout=10)
+
+
+def test_memory_pool_is_shared(tmp_path, monkeypatch):
+    monkeypatch.delenv("OUTERLOOP_ROOT", raising=False)
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "2")
+    first, second = LocalCompute(), LocalCompute()
+    with first._pool() as pool:
+        pool["holders"]["0"] = {
+            "id": "999",
+            "pgid": os.getpgrp(),
+            "name": "holder",
+            "start_time": "",
+        }
+    try:
+        output = tmp_path / "visible"
+        second.submit(replace(_spec(command=f'echo "$CUDA_VISIBLE_DEVICES" > {output}'), gpus=1))
+        assert output.read_text().strip() == "1"
+        assert second.active_job_names() == ["holder"]
+    finally:
+        with first._pool() as pool:
+            pool["holders"].clear()
+            pool["queue"].clear()
+
+
+def _submit_process(root, name, command, *, array=""):
+    code = (
+        "from outerloop.compute import LocalCompute, JobSpec; "
+        f"LocalCompute().submit(JobSpec({name!r}, '', '', 1, "
+        f"command={command!r}, gpus=1, array={array!r}))"
+    )
+    return subprocess.Popen([sys.executable, "-c", code])
+
+
+def _read_pool(root):
+    path = root / "local_jobs/gpus.json"
+    return json.loads(path.read_text()) if path.exists() else {"holders": {}, "queue": []}
+
+
+def test_process_race_and_ticket_order(gpu_root, monkeypatch):
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "1")
+    go = gpu_root / "go"
+    children = []
+    try:
+        for name in ("a", "b"):
+            command = (
+                f"touch {gpu_root / name}; "
+                f"while [ ! -f {gpu_root / (name + '_release')} ]; "
+                "do sleep 0.05; done"
+            )
+            code = (
+                "import pathlib, time; "
+                f"p=pathlib.Path({str(go)!r}); "
+                "exec('while not p.exists(): time.sleep(0.01)'); "
+                "from outerloop.compute import LocalCompute, JobSpec; "
+                f"LocalCompute().submit(JobSpec({name!r}, '', '', 1, gpus=1, command="
+                f"{command!r}))"
+            )
+            children.append(subprocess.Popen([sys.executable, "-c", code]))
+        go.touch()
+        assert wait_until(lambda: len(_read_pool(gpu_root)["queue"]) == 1)
+        assert wait_until(lambda: any((gpu_root / n).exists() for n in ("a", "b")))
+        winners = [n for n in ("a", "b") if (gpu_root / n).exists()]
+        assert len(winners) == 1
+        winner = winners[0]
+        loser = "b" if winner == "a" else "a"
+        first_ticket = _read_pool(gpu_root)["queue"][0]["id"]
+        children.append(_submit_process(gpu_root, "new", f"touch {gpu_root / 'new'}"))
+        assert wait_until(lambda: len(_read_pool(gpu_root)["queue"]) == 2)
+        assert _read_pool(gpu_root)["queue"][0]["id"] == first_ticket
+        (gpu_root / (winner + "_release")).touch()
+        assert wait_until((gpu_root / loser).exists)
+        assert not (gpu_root / "new").exists()
+        (gpu_root / (loser + "_release")).touch()
+        assert wait_until((gpu_root / "new").exists)
+        assert all(child.wait(timeout=10) == 0 for child in children)
+    finally:
+        for name in ("a", "b"):
+            (gpu_root / (name + "_release")).touch()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=10)
+
+
+@pytest.mark.parametrize("terminal_first", [False, True])
+def test_job_ownership_survives_dead_submitter(gpu_root, monkeypatch, terminal_first):
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "1")
+    job = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    state_dir = gpu_root / "local_jobs"
+    state_dir.mkdir()
+    (state_dir / "gpus.json").write_text(
+        json.dumps(
+            {
+                "holders": {"0": {"id": "999", "pgid": job.pid, "pid": dead.pid, "name": "orphan"}},
+                "queue": [{"id": "998", "pid": dead.pid}],
+            }
+        )
+    )
+    contender = None
+    try:
+        if terminal_first:
+            (state_dir / "999").write_text("COMPLETED")
+        contender = _submit_process(gpu_root, "next", f"touch {gpu_root / 'next'}")
+        assert wait_until(
+            lambda: (
+                bool(_read_pool(gpu_root)["queue"])
+                and _read_pool(gpu_root)["queue"][0]["id"] != "998"
+            )
+        )
+        assert not (gpu_root / "next").exists()
+        assert LocalCompute().active_job_names() == ["orphan"]
+        assert job.poll() is None
+        (state_dir / "999").write_text("FAILED")
+        job.kill()
+        job.wait()
+        assert wait_until((gpu_root / "next").exists)
+        assert contender.wait(timeout=10) == 0
+    finally:
+        job.kill()
+        job.wait()
+        if contender is not None:
+            if contender.poll() is None:
+                contender.kill()
+            contender.wait()
+
+
+@pytest.mark.parametrize("failure", ["exit", "garbage", "timeout"])
+def test_gpu_detection_failures(monkeypatch, failure):
+    monkeypatch.delenv("OUTERLOOP_LOCAL_GPUS", raising=False)
+
+    def detect(argv, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 10)
+        return subprocess.CompletedProcess(
+            argv, int(failure == "exit"), "garbage" if failure == "garbage" else "0\n", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", detect)
+    assert LocalCompute._gpu_count() == 0
+
+
+def test_gpu_job_does_not_modify_submitter_or_following_cpu_env(gpu_root, monkeypatch):
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    lc = LocalCompute()
+    lc.submit(replace(_spec(command="true"), gpus=1))
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+    output = gpu_root / "cpu_env"
+    lc.submit(_spec(command=f'echo "${{CUDA_VISIBLE_DEVICES-unset}}" > {output}'))
+    assert output.read_text().strip() == "unset"
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, RuntimeError])
+def test_array_exception_kills_running_and_cancels_queued(gpu_root, monkeypatch, error):
+    observed: list[int] = []
+
+    def interrupt(futures):
+        assert wait_until(lambda: len(list(gpu_root.glob("started_*"))) == 2)
+        observed.extend(int(p.read_text()) for p in gpu_root.glob("started_*"))
+        raise error("stop array")
+
+    monkeypatch.setattr("outerloop.compute.as_completed", interrupt)
+    lc = LocalCompute()
+    command = f"echo $$ > {gpu_root}/started_$SLURM_ARRAY_TASK_ID; exec sleep 30"
+    with pytest.raises(error, match="stop array"):
+        lc.submit(replace(_spec(command=command), gpus=1, array="0-5"))
+    assert len(observed) == 2
+    for pgid in observed:
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)
+    assert len(list(gpu_root.glob("started_*"))) == 2
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+    array_states = [p for p in (gpu_root / "local_jobs").iterdir() if p.name.isdigit()]
+    assert len(array_states) == 1
+    assert array_states[0].read_text() == "CANCELLED"
+
+
+def test_zero_gpu_warning_once_per_process(gpu_root, monkeypatch, caplog):
+    monkeypatch.setenv("OUTERLOOP_LOCAL_GPUS", "0")
+    monkeypatch.setattr(LocalCompute, "_zero_gpu_warning_pid", None)
+    LocalCompute().submit(_spec(command="true"))
+    assert not caplog.records
+    for _ in range(2):
+        LocalCompute().submit(replace(_spec(command="true"), gpus=1))
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "OUTERLOOP_LOCAL_GPUS" in warnings[0].message
+    assert "CUDA_VISIBLE_DEVICES" in warnings[0].message
+
+
+def test_stale_waiter_dropped_and_heartbeat_refreshed(gpu_root, monkeypatch):
+    from outerloop.compute import _LocalTasks
+
+    lc = LocalCompute()
+    tasks = _LocalTasks()
+    with lc._pool() as pool:
+        pool["queue"] = [
+            {"id": "stale", "pid": os.getpid(), "heartbeat": time.time() - 31},
+            {"id": "live", "pid": os.getpid(), "heartbeat": time.time()},
+        ]
+    polls = []
+
+    def poll(seconds):
+        assert seconds == 2
+        with lc._pool() as pool:
+            assert [w["id"] for w in pool["queue"]] == ["live", "next"]
+            heartbeat = pool["queue"][1]["heartbeat"]
+            polls.append(heartbeat)
+            if len(polls) == 1:
+                pool["queue"][1]["heartbeat"] = time.time() - 10
+            else:
+                assert heartbeat >= polls[0]
+                pool["queue"][0]["heartbeat"] = time.time() - 31
+
+    monkeypatch.setattr(tasks.cancelled, "wait", poll)
+    proc = lc._allocate(
+        replace(_spec(command="true"), gpus=1),
+        "next",
+        1,
+        lambda allocated, announce: subprocess.Popen(["true"], start_new_session=True, text=True),
+        tasks,
+    )
+    assert proc is not None
+    proc.wait()
+    lc._release("next")
+    assert len(polls) == 2
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+@pytest.mark.parametrize("current, live", [("old", True), ("new", False), ("", True)])
+def test_holder_start_time_identity(monkeypatch, current, live):
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(LocalCompute, "_start_time", lambda pid: current)
+    assert LocalCompute._live({"id": "1", "pgid": 123, "name": "job", "start_time": "old"}) is live
+
+
+def test_process_start_time(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        Path, "read_text", lambda self: "123 (a tricky ) name) " + " ".join(map(str, range(3, 23)))
+    )
+    assert LocalCompute._start_time(123) == "22"
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def ps(argv, **kwargs):
+        assert argv == ["ps", "-o", "lstart=", "-p", "123"]
+        return subprocess.CompletedProcess(argv, 0, "  start time\n", "")
+
+    monkeypatch.setattr(subprocess, "run", ps)
+    assert LocalCompute._start_time(123) == "start time"
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert LocalCompute._start_time(123) == ""
+
+
+def test_background_child_retains_gpu_after_shell_exits(gpu_root):
+    import signal
+
+    pidfile = gpu_root / "child"
+    lc = LocalCompute()
+    job_id = lc.submit(
+        replace(_spec(command=f"sleep 30 >/dev/null 2>&1 & echo $! > {pidfile}"), gpus=2)
+    )
+    holders = _read_pool(gpu_root)["holders"]
+    try:
+        assert lc.status(job_id) == "COMPLETED"
+        assert len(holders) == 2
+        assert all("start_time" in holder for holder in holders.values())
+        assert lc.active_job_names() == ["t"]
+        output = gpu_root / "next"
+        with ThreadPoolExecutor(1) as executor:
+            future = executor.submit(lc.submit, replace(_spec(command=f"touch {output}"), gpus=1))
+            try:
+                assert wait_until(lambda: bool(_read_pool(gpu_root)["queue"]))
+                assert not output.exists()
+            finally:
+                os.killpg(holders["0"]["pgid"], signal.SIGKILL)
+            assert lc.status(future.result(timeout=10)) == "COMPLETED"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+
+
+@pytest.mark.parametrize("announced", [False, True])
+def test_reservation_survives_only_while_job_is_live(gpu_root, announced):
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    job = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    lc = LocalCompute()
+    announce = gpu_root / "local_jobs/orphan.announce"
+    try:
+        with lc._pool() as pool:
+            pool["holders"]["0"] = {
+                "id": "999",
+                "pgid": 0,
+                "name": "orphan",
+                "start_time": "",
+                "submitter": dead.pid,
+                "reserved_at": time.time() - 120,
+                "announce": str(announce),
+            }
+        if announced:
+            announce.write_text(str(job.pid))
+        output = gpu_root / "visible"
+        lc.submit(replace(_spec(command=f'echo "$CUDA_VISIBLE_DEVICES" > {output}'), gpus=1))
+        assert output.read_text() == ("1\n" if announced else "0\n")
+        assert bool(_read_pool(gpu_root)["holders"]) is announced
+        if announced:
+            assert announce.exists()
+            job.kill()
+            job.wait()
+            lc._release("999")
+            assert not announce.exists()
+    finally:
+        job.kill()
+        job.wait()
+        lc._release("999")
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_reservation_persisted_before_start_and_confirmed_before_run(
+    gpu_root, monkeypatch, exit_code
+):
+    lc = LocalCompute()
+    popen = subprocess.Popen
+    run_process = LocalCompute._run_process
+    announcements = []
+
+    def start(argv, **kwargs):
+        if argv[0] != "sh":
+            return popen(argv, **kwargs)
+        # Reading through another pool lock proves the reservation was committed.
+        with LocalCompute()._pool() as pool:
+            holders = list(pool["holders"].values())
+            assert len(holders) == 2
+            assert all(h["pgid"] == 0 and h["submitter"] == os.getpid() for h in holders)
+            assert all(time.time() - h["reserved_at"] < 60 for h in holders)
+            announce = Path(holders[0]["announce"])
+            assert announce.parent == gpu_root / "local_jobs"
+            assert not announce.exists()
+            announcements.append(announce)
+        return popen(argv, **kwargs)
+
+    def run(self, spec, proc, job_id, tasks):
+        try:
+            assert wait_until(lambda: announcements[0].exists() and announcements[0].read_text())
+            assert int(announcements[0].read_text()) == proc.pid
+            holders = _read_pool(gpu_root)["holders"]
+            assert all(
+                h["pgid"] == proc.pid and h["start_time"] == lc._start_time(proc.pid)
+                for h in holders.values()
+            )
+            assert all("submitter" not in h and "reserved_at" not in h for h in holders.values())
+            # Recording other jobs must not prune an orphan's announcement.
+            os.utime(announcements[0], (time.time() - 172800,) * 2)
+            self._record(_spec(command="true"), "123", "COMPLETED", "")
+            assert announcements[0].exists()
+        finally:
+            (gpu_root / "release").touch()
+        result = run_process(self, spec, proc, job_id, tasks)
+        assert proc.returncode == exit_code
+        return result
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+    monkeypatch.setattr(LocalCompute, "_run_process", run)
+    job_id = lc.submit(
+        replace(
+            _spec(
+                command=(
+                    f'printf "hello:%s\\n" "$CUDA_VISIBLE_DEVICES"; '
+                    f"while [ ! -f {gpu_root / 'release'} ]; do sleep 0.05; done; exit {exit_code}"
+                )
+            ),
+            gpus=2,
+        )
+    )
+    assert lc.status(job_id) == ("COMPLETED" if exit_code == 0 else "FAILED")
+    assert (gpu_root / f"local_jobs/{job_id}.out").read_text() == "hello:0,1\n"
+    assert not announcements[0].exists()
+    assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+@pytest.mark.parametrize("submitter_alive, age, live", [(True, 120, True), (False, 10, True)])
+def test_unannounced_reservation_keeps_live_submitter_or_grace_period(
+    gpu_root, submitter_alive, age, live
+):
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    assert (
+        LocalCompute._live(
+            {
+                "id": "999",
+                "pgid": 0,
+                "name": "reserved",
+                "start_time": "",
+                "submitter": os.getpid() if submitter_alive else dead.pid,
+                "reserved_at": time.time() - age,
+                "announce": str(gpu_root / "missing.announce"),
+            }
+        )
+        is live
+    )

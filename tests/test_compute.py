@@ -183,7 +183,7 @@ def test_queue_snapshot_parses_rows_and_fails_loud() -> None:
     assert rows[1]["state"] == "PENDING" and len(rows) == 2
     with pytest.raises(SlurmQueryError):
         SlurmCompute(runner=FakeRunner([CommandResult(1, "", "slurmctld down")])).queue_snapshot()
-    assert LocalCompute.queue_snapshot(None) == []  # type: ignore[arg-type]  # no queue in the monolith
+    assert LocalCompute().queue_snapshot() == []  # no GPU holders
 
 
 def test_gpus_in_gres_parses_squeue_tres() -> None:

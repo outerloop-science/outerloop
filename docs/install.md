@@ -426,11 +426,13 @@ your own, `--no-image` keeps runs uncontained even when an image is already on d
 run containers, init says so, prints the install steps for your system, and
 continues uncontained; run `outerloop init --force` after installing it.
 
-**One machine with several GPUs.** Local mode runs one job at a time and gives it
-the whole machine; on a laptop or a Mac mini there is nothing to schedule. To run
-jobs in parallel on a workstation, install Slurm on it; Outerloop then runs in
-Slurm mode with the workstation as its only node, and every feature (parallel
-launches, walltime kills, GPU allocation, the queue view) works unchanged.
+**One machine with several GPUs.** Local mode shares the machine's GPUs across
+jobs first come first served, and launch arrays run their tasks in parallel as
+GPUs become available. `OUTERLOOP_LOCAL_GPUS` overrides automatic detection via
+`nvidia-smi`; set it to `0` to disable GPU allocation. CPU-only arrays run in
+parallel up to the machine's CPU count. Submissions still return only when every
+task has finished. For priorities, walltime accounting, or several machines,
+use Slurm. A workstation can be its only node:
 
 Ubuntu, once, as root:
 
