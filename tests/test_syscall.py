@@ -187,12 +187,8 @@ def test_budget_arithmetic() -> None:
     assert "sleep budget exhausted" in spent
 
 
-def test_submit_requires_a_prior_launch() -> None:
-    """On a METERED benchmark the gate confirms evidence, it does not
-    generate it: a submit is refused until at least one launch has
-    RETURNED results this run — launches staged alongside the submit do
-    not count (results unseen). Exempt: launches disabled (depth_k 0)
-    and CPU benchmarks (an in-job gate costs seconds)."""
+def test_submit_needs_no_prior_launch() -> None:
+    """Only the launch, sleep and GPU-hour budgets constrain a submit."""
 
     def check(request, launches_used: int, launch_budget: int = 4) -> str:
         return budget_error(
@@ -207,10 +203,10 @@ def test_submit_requires_a_prior_launch() -> None:
 
     bare = SyscallRequest(launches=(), submit=True)
     refused = check(bare, launches_used=0)
-    assert "submit refused" in refused and "not measured anything" in refused
-    # staging launches WITH the submit does not lift the refusal
+    assert refused == ""
+    # Sibling launches share the same budgets.
     with_launch = SyscallRequest(launches=(_launch("a"),), submit=True)
-    assert "submit refused" in check(with_launch, launches_used=0)
+    assert check(with_launch, launches_used=0) == ""
     # one completed launch from a prior park: submit freely, as often as
     # sleeps allow (revise-and-resubmit is unaffected)
     assert check(bare, launches_used=1) == ""
@@ -1075,11 +1071,10 @@ def test_sweep_pace_is_validated_clamped_and_expanded(tmp_path: Path) -> None:
     assert launch_task_ids((s8,), ["1", "2"]) == []  # an unknown mapping is never guessed
 
 
-def test_a_submit_needs_a_report(tmp_path: Path) -> None:
+def test_submit_report_is_optional_and_bounded(tmp_path: Path) -> None:
     from outerloop.syscall import MAX_REPORT_CHARS, SyscallError
 
-    # a submit without a report reads fine — the orchestrator REFUSES it with a
-    # wake the author can act on, never a dead run (an older tool has no flag)
+    # A submit without a report is accepted.
     write_req(tmp_path, {"launches": [], "submit": True})
     req = read_request(tmp_path)
     assert req is not None and req.submit and req.report == ""

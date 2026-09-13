@@ -180,6 +180,15 @@ baseline needs a positive floor — the validator says so — and for GPU
 benchmarks `gpu_hours_per_run` is a real meter: launches and evals draw on
 it (CPU benchmarks meter nothing).
 
+Authors can submit in review: a credited verdict fast-forwards the PR head
+only when the sealed commit contains its current head and auto-merge is
+confirmed disarmed. Gate and panel verdicts return as inbox messages. Edits
+in review are measured and pushed only when submitted. Submit needs neither
+a prior launch nor a report (`--report` is optional). With resumable compute,
+a stop without a submit ends unmeasured; on an open PR it returns to review.
+Backends without resume continue to measure at finish.
+
+
 Two things to get right:
 
 1. Your `command` must be **deterministic and re-runnable**, and print the

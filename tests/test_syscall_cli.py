@@ -151,10 +151,9 @@ def test_submit_stages_and_rides_the_sleep(tmp_path: Path, capsys) -> None:
 
 
 def test_submit_requires_a_readable_nonempty_report(tmp_path: Path, capsys) -> None:
-    import pytest
 
-    with pytest.raises(SystemExit):  # --report is required by the parser
-        run(tmp_path, "submit")
+    assert run(tmp_path, "submit") == 0
+    assert run(tmp_path, "sleep") == 0
     capsys.readouterr()
     assert run(tmp_path, "submit", "--report", "missing.md") == 2
     assert "could not be read" in capsys.readouterr().err

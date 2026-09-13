@@ -388,33 +388,13 @@ def test_a_submits_sibling_sweep_is_clamped_too(tmp_path: Path) -> None:
     assert exc.value.syscall is not None and exc.value.syscall.launches[0].concurrency == 3
 
 
-def test_dropped_bare_submit_does_not_buy_the_terminal_gate(tmp_path: Path) -> None:
-    """The refuse-twice bypass: after two bare submits are refused, the
-    dropped request must not be measured at finish — a metered run with no
-    returned launches ends as an unmeasured negative (panel only), never a
-    gate eval."""
-    metered = CONTRACT.replace(
-        "    metric: mean_tour_length\n",
-        "    metric: mean_tour_length\n    gpus: 1\n    eval_minutes: 240\n",
-    ).replace("gpu_hours_per_run: 1", "gpu_hours_per_run: 10")
-    harness = _SeqHarness(["first try", "second try"], submit_on=(1, 2))
-    m = ParkingMeasurer(park_on_call=1)  # any measurement would PARK loudly
-    result = attempt_once(
-        CONFIG,
-        metered,
-        tmp_path,
-        harness,
-        m,
-        "base",
-        _bare_snapshot(),
-        inbox_dir=tmp_path.parent / (tmp_path.name + "-run"),
-        ruler="r",
-        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
-        created="t",
-        launcher=_fake_launcher([]),
+def test_stop_without_submit_is_unmeasured(tmp_path: Path) -> None:
+    result, _harness, evaluator = run_climb(
+        tmp_path, [], contract=DEEP_CONTRACT, launcher=_fake_launcher([])
     )
-    assert result.outcome == "no-improvement"  # maps to the negative-result ending
-    assert "unmeasured finish" in result.note
+    assert result.outcome == "no-improvement" and result.note == "ended without a submit"
+    assert evaluator.calls == []
+    assert result.session is not None and result.session.final_text
 
 
 def test_unchanged_tree_finish_is_never_measured(tmp_path: Path) -> None:
@@ -518,7 +498,7 @@ def test_failed_gate_submit_feeds_back_to_the_author(tmp_path: Path) -> None:
     )
     assert result.outcome == "no-improvement"
     assert harness.resumes == [None, "s1"]  # the author heard the gate result
-    assert len(evaluator.calls) == 3  # the concluding tree differed, so it was measured
+    assert len(evaluator.calls) == 2  # the concluding tree differed, so it was measured
 
 
 def _gate_negative_attempt(tmp_path: Path, harness, evaluator, contract: str = CONTRACT):
@@ -574,8 +554,8 @@ def test_conceding_after_an_errored_eval_ends_without_another_gate(tmp_path: Pat
     harness = _SeqHarness(["the claim", "conceded"], submit_on=(1,))
     evaluator = FakeEvaluator(values=[13.9, EvalError("job hit its walltime (TIMEOUT)")])  # type: ignore[list-item]
     result = _gate_negative_attempt(tmp_path, harness, evaluator)
-    assert result.outcome == "eval-error"
-    assert "walltime" in result.note
+    assert result.outcome == "no-improvement"
+    assert result.note == "ended without a submit"
     assert harness.resumes == [None, "s1"]
     assert len(evaluator.calls) == 2
 
@@ -652,15 +632,14 @@ def test_resubmit_after_a_gate_verdict_keeps_scope_and_snapshot_guards(tmp_path:
 
 
 def test_identical_resubmit_past_the_sleep_budget_ends_on_the_verdict(tmp_path: Path) -> None:
-    """The unchanged-tree reuse runs BEFORE the budget check, so an author out
-    of sleeps (or GPU-hours) is not refused a gate it would never run; past
-    the sleep budget the attempt simply ends on the standing verdict."""
+    """An exhausted submit is refused; the ensuing stop ends unmeasured."""
     one_sleep = CONTRACT.replace("    direction: min\n", "    direction: min\n    sleep_k: 1\n", 1)
     harness = _SeqHarness(["the claim", "again", "never reached"], submit_on=(1, 2))
     evaluator = FakeEvaluator(values=[13.9, 13.9])
     result = _gate_negative_attempt(tmp_path, harness, evaluator, contract=one_sleep)
     assert result.outcome == "no-improvement"
-    assert harness.resumes == [None, "s1"]  # the second resubmit was the last word
+    assert harness.resumes == [None, "s1", "s2"]
+    assert result.note == "ended without a submit"
     assert len(evaluator.calls) == 2
 
 
@@ -721,7 +700,7 @@ def test_over_budget_request_wakes_one_refusal_then_measures(tmp_path: Path) -> 
     result, harness, _ = run_climb(
         tmp_path, [13.876, 13.10], contract=tight, launcher=_fake_launcher(launched)
     )
-    assert result.outcome == "improved" and launched == []
+    assert result.outcome == "no-improvement" and launched == []
     refusal_text, _ws, resumed = harness.calls[1]  # second call = the refusal wake
     assert "REFUSED" in refusal_text and "launch budget" in refusal_text
     assert resumed == "s1"  # the SAME session was woken
@@ -1653,23 +1632,16 @@ def test_clean_panel_read_passes_through(tmp_path: Path) -> None:
     assert len(harness.resumes) == 1  # no wake
 
 
-def test_blocking_verdict_on_a_submit_goes_back_to_the_author(tmp_path: Path) -> None:
-    # THE DEPTH-AXIS CORE (buildout Phase B): the author SUBMITS; the gate
-    # credits; the panel blocks -> the AUTHOR is resumed with the findings,
-    # revises, finishes -> re-measured, panel clean -> published.
-    result, harness, evaluator, _panel = _run_panel_climb(
-        tmp_path,
-        [13.9, 13.1, 13.0],
-        [_verdict(True, 1), _verdict(False, 2)],
-        submit_on=(1,),
+def test_blocking_submit_preserves_credited_tree_for_draft(tmp_path: Path) -> None:
+    from outerloop.inbox import pending
+
+    result, _harness, evaluator, _panel = _run_panel_climb(
+        tmp_path, [13.9, 13.1], [_verdict(True, 1)], submit_on=(1,)
     )
-    assert result.outcome == "improved"
-    assert result.panel_rounds == 2 and not result.panel_blocking_open
-    # the verdict resumed the SAME session and the revision was re-measured
-    assert harness.resumes == [None, "s1"]
-    assert len(evaluator.calls) == 3  # baseline + candidate + revised candidate
-    assert result.candidate == 13.0
-    assert "round 1" in result.panel_transcript and "round 2" in result.panel_transcript
+    assert result.outcome == "improved" and result.panel_blocking_open
+    assert result.panel_rounds == 1 and len(evaluator.calls) == 2
+    messages = pending(tmp_path.parent / (tmp_path.name + "-run"), 0)
+    assert {m.kind for m in messages} == {"panel-verdict", "gate-verdict"}
 
 
 def test_a_backend_that_cannot_resume_drafts_a_blocking_finding(tmp_path: Path) -> None:
@@ -1695,19 +1667,6 @@ def test_blocking_on_a_plain_finish_stays_open_for_a_draft_pr(tmp_path: Path) ->
     assert result.outcome == "improved"  # still credited; the PR will be a DRAFT
     assert result.panel_blocking_open and result.panel_rounds == 1
     assert harness.resumes == [None]  # NO resume without a submit
-
-
-def test_revision_that_loses_the_improvement_is_a_named_negative(tmp_path: Path) -> None:
-    # submit -> credited -> blocking -> the author revises... and the revision
-    # regresses. The gate ends it with the panel-context note. (The author is
-    # NOT resumed again: its submit was consumed; the regressed re-measure is
-    # a plain finish.)
-    result, _h, _e, _p = _run_panel_climb(
-        tmp_path, [13.9, 13.1, 14.5], [_verdict(True, 1)], submit_on=(1,)
-    )
-    assert result.outcome == "no-improvement"
-    assert "lost the improvement" in result.note
-    assert result.panel_rounds == 1
 
 
 def test_panel_pr_body_carries_banner_and_transcript(tmp_path: Path) -> None:
@@ -1941,17 +1900,13 @@ def test_pr_body_leads_with_the_report_and_lists_the_experiments() -> None:
     assert "Session prose" in plain and "## Experiments" not in plain
 
 
-def test_a_submit_without_a_report_is_refused_not_fatal(tmp_path: Path) -> None:
-    """A session under an older tool (no --report flag) submits without a report:
-    the author is woken with the refusal and the flag to use, the run goes on."""
+def test_submit_without_report_is_accepted(tmp_path: Path) -> None:
     _write_syscall(tmp_path, {"launches": [], "submit": True})
     result, harness, _ = run_climb(
         tmp_path, [13.876, 13.10], contract=DEEP_CONTRACT, launcher=_fake_launcher([])
     )
-    assert result.outcome == "improved"  # the run went on after the refusal
-    refusal_text, _ws, resumed = harness.calls[1]
-    assert "REFUSED" in refusal_text and "submit --report <file>" in refusal_text
-    assert resumed == "s1"
+    assert result.outcome == "improved" and len(harness.calls) == 1
+    assert "no report was given" in pr_body(result, CONFIG, ())
 
 
 def test_a_report_less_resubmit_of_a_judged_tree_is_refused_too(tmp_path: Path) -> None:
@@ -1969,7 +1924,7 @@ def test_a_report_less_resubmit_of_a_judged_tree_is_refused_too(tmp_path: Path) 
         judged=judged,
     )
     refusal_text, _ws, resumed = harness.calls[1]
-    assert "REFUSED" in refusal_text and "submit --report <file>" in refusal_text
+    assert "gate-verdict" in refusal_text and "REFUSED" not in refusal_text
     assert resumed == "s1"
     # the run went on: with no new request the judged negative stands, never a dead run
     assert result.outcome == "no-improvement"

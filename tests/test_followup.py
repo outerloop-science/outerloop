@@ -274,70 +274,6 @@ def test_rejected_solver_pr_notes_the_claim_is_held(review_run) -> None:
     assert "stays claimed" in body and "fresh" in body
 
 
-def test_followup_row_update_respects_the_cross_seed_floor(review_run) -> None:
-    """A follow-up re-measure runs under a FRESH seed: beating the recorded
-    best by less than min_delta is pool luck and must not ratchet the
-    ledger (round-1 finding) — while a clearing delta still moves the row
-    and records the seed it was measured under."""
-    import json as _json
-
-    root, _bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    floored = CONTRACT.replace(
-        "    direction: min\n",
-        "    direction: min\n    seed_env: PILOT_TSP_SEED\n    min_delta: 0.5\n",
-        1,
-    )
-    (ws / ".autoresearch.yaml").write_text(floored)
-    (ws / "results").mkdir(exist_ok=True)
-    prior_row = {
-        "tsp": {
-            "benchmark": "tsp",
-            "metric": "mean_tour_length",
-            "direction": "min",
-            "baseline": 13.876,
-            "best": 12.0,
-            "best_run": "r0",
-            "updated": "d",
-        }
-    }
-    (ws / "results" / "leader.json").write_text(_json.dumps(prior_row))
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "floor setup")
-
-    github = FakeGitHub(comments=[member(101, "try tightening the kick")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"})
-    outcome = respond(root, github, harness=harness, evaluator=QueueEvaluator(values=[11.8]))
-    assert outcome.action == "replied"
-    row = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
-    assert row["best"] == 12.0  # 0.2 inside the 0.5 floor: unchanged
-    # ...and the thread says WHY the row did not move (round-2 finding)
-    (reply,) = github.posted
-    assert "noise floor" in reply and "ledger row is unchanged" in reply
-
-    # an outright REGRESSION is reported as one — never blamed on the floor
-    record_r = load_record(root, "tsp-r1")
-    save_record(root, replace(record_r, followup_job_id=""), NOW)
-    github_r = FakeGitHub(comments=[member(150, "hm, try again")])
-    harness_r = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2r\n"})
-    respond(root, github_r, harness=harness_r, evaluator=QueueEvaluator(values=[20.0]))
-    (reply_r,) = github_r.posted
-    assert "worse than" in reply_r
-    assert "noise floor" not in reply_r
-    row_r = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
-    assert row_r["best"] == 12.0  # best never regresses
-
-    # a second round that CLEARS the floor moves the row and records the seed
-    record = load_record(root, "tsp-r1")
-    save_record(root, replace(record, followup_job_id=""), NOW)
-    github2 = FakeGitHub(comments=[member(200, "one more push")])
-    harness2 = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"})
-    outcome2 = respond(root, github2, harness=harness2, evaluator=QueueEvaluator(values=[11.4]))
-    assert outcome2.action == "replied"
-    row2 = _json.loads((ws / "results" / "leader.json").read_text())["tsp"]
-    assert row2["best"] == 11.4 and row2["run_seed"] > 0
-
-
 def test_session_outage_refunds_the_wake_attempt(review_run) -> None:
     """The tick bills a wake attempt at submit; a session the API refused
     gives it back and stamps the latch, so a dead key cannot burn a run's
@@ -425,40 +361,6 @@ def test_reply_only_no_edits(review_run) -> None:
     assert pending(run_dir(root, "tsp-r1"), record.inbox_seq) == []
     assert record.last_comment_id == 101
     assert record.resume_session_id == "sess-resumed"
-
-
-def test_in_scope_edit_is_remeasured_pushed_and_reported(review_run) -> None:
-    root, bare = review_run
-    github = FakeGitHub(comments=[member(101, "the kick looks too aggressive")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gentler kick\n"})
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    assert "10.2" in github.posted[0]
-    # the change landed on the PR branch in origin
-    files = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
-    assert "v2 gentler kick" in files
-
-
-def test_out_of_scope_response_is_reverted_not_pushed(review_run) -> None:
-    root, bare = review_run
-    github = FakeGitHub(comments=[member(101, "also update the eval please")])
-    harness = ResumingHarness(edits={"docs/roadmap.md": "doctored\n"})
-    outcome = respond(root, github, harness)
-    assert outcome.action == "replied"
-    assert "outside" in github.posted[0]
-    assert "tsp-r1" not in _git(bare, "branch", "--list")  # nothing pushed
-
-
-def test_eval_failure_reverts_and_reports(review_run) -> None:
-    from outerloop.orchestrator import EvalError
-
-    root, _ = review_run
-    github = FakeGitHub(comments=[member(101, "tweak it")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "broken\n"})
-    outcome = respond(root, github, harness, QueueEvaluator(values=[EvalError("crash")]))
-    assert outcome.action == "replied"
-    assert "eval failed" in github.posted[0]
 
 
 def test_session_error_keeps_cursor(review_run) -> None:
@@ -558,53 +460,6 @@ def test_per_source_cursors_never_cross_namespaces(review_run) -> None:
     assert "second inline" in harness2.calls[0][0]
 
 
-def test_push_failure_returns_error_not_crash(review_run) -> None:
-    """A commit/push/comment failure after the session must degrade to an
-    error outcome (cursor unadvanced), never a traceback."""
-    root, _ = review_run
-
-    @dataclass
-    class CommentExplodes(FakeGitHub):
-        def comment(self, repo, number, body):
-            raise RuntimeError("secondary rate limit")
-
-    github = CommentExplodes(comments=[member(101, "ping")])
-    outcome = respond(root, github)
-    assert outcome.action == "error"
-    assert "rate limit" in outcome.note
-    assert load_record(root, "tsp-r1").last_comment_id == 100  # will retry
-
-
-def test_pushed_changes_append_a_body_addendum(review_run) -> None:
-    """Follow-up commits desync the report frozen into the body at publish;
-    the addendum marks the body edited so no reader mistakes the original
-    report for the current state (maintainer decision 2026-08-09)."""
-    root, _bare = review_run
-    github = FakeGitHub(comments=[member(101, "the kick looks too aggressive")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gentler kick\n"})
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert github.body_addenda, "no addendum appended"
-    addendum = github.body_addenda[-1]
-    assert addendum.startswith("---")
-    assert "**Edit (" in addendum and "follow-up" in addendum
-    assert "original version" in addendum
-    # the measured table is rewritten in place with the re-measured value
-    assert github.row_updates == [10.2]
-
-
-def test_reverted_change_appends_no_addendum(review_run) -> None:
-    """The addendum gate is the PUSH, not the attempt: an out-of-scope
-    response is reverted, so the body must not claim the solver changed."""
-    root, _bare = review_run
-    github = FakeGitHub(comments=[member(101, "also update the eval please")])
-    harness = ResumingHarness(edits={"docs/roadmap.md": "doctored\n"})
-    outcome = respond(root, github, harness)
-    assert outcome.action == "replied"
-    assert not github.body_addenda  # reverted -> body untouched
-    assert not github.row_updates
-
-
 def test_reply_without_changes_leaves_the_body_alone(review_run) -> None:
     root, _bare = review_run
     github = FakeGitHub(comments=[member(101, "convince me you did not game the eval")])
@@ -679,55 +534,6 @@ class StewardEvaluatorFake:
 
     def evaluate(self, workspace, command, metric, extra_env=None) -> float:
         return self.value
-
-
-def test_steward_followup_revalidates_and_rebases(steward_review_run) -> None:
-    """A comment on a steward PR wakes the STEWARD flow: steward scope on
-    the change, the validation ruler (suite runs), and an orchestrator
-    re-based row — never the solver's improvement math."""
-    root, bare = steward_review_run
-    github = FakeGitHub(comments=[member(101, "address the verifier findings")])
-    harness = ResumingHarness(edits={"src/pilot/instances.py": "SEED = 'per-run'\n"})
-    evaluator = StewardEvaluatorFake(value=15.2)
-    outcome = respond_once(
-        root,
-        "steward-tsp-r1",
-        harness,
-        evaluator,
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-    )
-    assert outcome.action == "replied"
-    assert "uv run pytest -q" in evaluator.checks  # the steward ruler ran
-    leader = _git(bare, "show", "feat/steward/steward-01/steward-tsp-r1:results/leader.json")
-    assert '"baseline": 15.2' in leader and '"best": 15.2' in leader  # re-based, not "improved"
-    log_msg = _git(bare, "log", "feat/steward/steward-01/steward-tsp-r1", "-1", "--format=%B")
-    assert log_msg.startswith("steward: address review feedback")
-    assert "Agent: steward-01" in log_msg
-    # the resumed session got the steward preamble
-    assert "BENCHMARK STEWARD" in harness.calls[0][0]
-
-
-def test_steward_followup_rejects_solver_territory(steward_review_run) -> None:
-    root, bare = steward_review_run
-    github = FakeGitHub(comments=[member(101, "please tweak the solver too")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "rigged\n"})
-    outcome = respond_once(
-        root,
-        "steward-tsp-r1",
-        harness,
-        StewardEvaluatorFake(15.0),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=(),
-    )
-    assert outcome.action == "replied"
-    assert "outside" in github.posted[0]
-    # nothing was pushed at all: the branch never reached the origin
-    assert "steward-tsp-r1" not in _git(bare, "branch", "--list")
 
 
 def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
@@ -872,58 +678,6 @@ def test_read_only_spec_is_refused(review_run) -> None:
     assert load_record(root, "tsp-r1").last_comment_id == 100  # cursor un-advanced
 
 
-def test_auto_mode_followup_withholds_push_when_disarm_fails(tmp_path) -> None:
-    """terra #171 r2: a follow-up code change on an auto-mode PR pushes ONLY
-    after GitHub confirms auto-merge is disarmed; a failed disarm withholds
-    the change (workspace cleaned, the reply says so) instead of pushing an
-    un-gated head at an armed PR."""
-    from outerloop.contract import load_contract
-
-    auto_contract = CONTRACT.replace("roadmap:", "merge: auto\nroadmap:")
-    contract = load_contract(auto_contract, "org/pilot")
-    assert contract.merge == "auto"
-    # the behavior is pinned at the unit seam: disable_auto_merge False =>
-    # no push. (Integration plumbing exercised by the respond tests above.)
-    from outerloop.github import GitHubClient, GitHubError
-
-    class _Tok:
-        def token(self) -> str:
-            return "t"
-
-    client = GitHubClient(auth=_Tok())
-
-    def hard_fail(*a, **k):
-        raise GitHubError(0, "/x", "Something went wrong")
-
-    import types
-
-    armed = {"node_id": "N1", "auto_merge": {"enabled_by": {"login": "x"}}}
-    off = {"node_id": "N1", "auto_merge": None}
-    calls: list[int] = []
-
-    def record_then_fail(self, q, v):
-        calls.append(1)
-        hard_fail()
-
-    # already off (merge:manual repo, "Allow auto-merge" disabled, or the App-auth
-    # case Amelia hit): the disarm IS attempted — never skipped on a stale read,
-    # which would let an actor arm between the read and the push — and when it
-    # errors the off state is confirmed by re-reading, so the push is safe
-    client.get_pull_request = types.MethodType(lambda self, repo, n: off, client)  # type: ignore[method-assign]
-    client._graphql = types.MethodType(record_then_fail, client)  # type: ignore[method-assign]
-    assert client.disable_auto_merge("o/r", 1) is True  # confirmed off = safe
-    assert calls == [1]  # the disarm was attempted, not skipped
-
-    # armed and the disarm succeeds: confirmed
-    client.get_pull_request = types.MethodType(lambda self, repo, n: armed, client)  # type: ignore[method-assign]
-    client._graphql = types.MethodType(lambda self, q, v: {"ok": True}, client)  # type: ignore[method-assign]
-    assert client.disable_auto_merge("o/r", 1) is True
-
-    # the disarm errors and the PR is STILL armed on re-read: cannot confirm, block
-    client._graphql = types.MethodType(record_then_fail, client)  # type: ignore[method-assign]
-    assert client.disable_auto_merge("o/r", 1) is False  # still armed = block
-
-
 def _dirty_pr(head="h" * 40) -> dict:
     return {
         "state": "open",
@@ -984,7 +738,7 @@ def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
     prompt, resume_id = harness.calls[0]
     assert "Your PR is behind its base" in prompt
     assert "no conflicts were detected" in prompt
-    assert "re-measured" in prompt
+    assert "Only a submit measures and publishes" in prompt
     assert resume_id == "sess-original"
     # once per head, same cursor as the conflict wake
     record = load_record(root, "tsp-r1")
@@ -1016,675 +770,6 @@ def test_conflict_wake_action_lifecycle(review_run) -> None:
     assert conflict_wake_action(record, blocked) == ""
 
 
-def test_content_matching_base_is_not_out_of_scope(review_run) -> None:
-    """A merge brings the base branch's own files into the diff; content
-    identical to origin/<base> must not be reverted as out-of-scope."""
-    root, bare = review_run
-    # main moves: an out-of-scope doc lands upstream
-    seed2 = root.parent / "seed2"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    github = FakeGitHub(comments=[member(101, "please update your branch")])
-    # the session merges main (simulated: the identical file appears) and
-    # keeps an in-scope edit of its own
-    harness = ResumingHarness(
-        edits={
-            "docs/news.md": "from main\n",
-            "src/pilot/solvers/tsp.py": "v2 after merge\n",
-        }
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    files = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
-    assert "v2 after merge" in files
-    assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
-
-
-def test_deletions_converging_to_base_are_exempt(review_run) -> None:
-    """The exemption's invariant is FINAL STATE == origin/<base>: a path the
-    base also lacks (a base-side deletion merged in, or a branch-only file
-    removed) converges to the reviewed base state and cannot smuggle or
-    exceed scope. Deleting a file the base still HAS stays guarded."""
-    root, bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    # a branch-only out-of-scope file from an earlier (reviewed) round
-    (ws / "docs" / "branch-only.md").write_text("old note\n")
-    _git(ws, "add", "-A")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior round")
-    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
-    github = FakeGitHub(comments=[member(101, "tidy up")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"})
-
-    def deleting_run(brief_text, workspace, resume_session_id=None):
-        (workspace / "docs" / "branch-only.md").unlink()
-        return ResumingHarness.run(harness, brief_text, workspace, resume_session_id)
-
-    harness.run = deleting_run  # type: ignore[method-assign]
-    _git(ws, "fetch", "-q", "origin", "main")
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    tree = _git(bare, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-r1")
-    assert "docs/branch-only.md" not in tree  # converged to base: allowed
-
-    # deleting a file the base still has is NOT exempt: roadmap.md is on main
-    def roadmap_deleter(brief_text, workspace, resume_session_id=None):
-        (workspace / "docs" / "roadmap.md").unlink()
-        return SessionResult(
-            stop_reason="end_turn",
-            is_error=False,
-            cost_usd=0.1,
-            num_turns=2,
-            session_id="s2",
-            final_text="removed the roadmap",
-            transcript_path="",
-        )
-
-    class Deleter:
-        run = staticmethod(roadmap_deleter)
-
-    github2 = FakeGitHub(comments=[member(102, "again")])
-    outcome2 = respond(root, github2, Deleter(), QueueEvaluator(values=[10.2]))
-    assert outcome2.action == "replied"
-    assert "outside the contract" in github2.posted[0]  # reverted, not pushed
-
-
-def test_committed_resolution_is_measured_and_pushed(review_run) -> None:
-    """A session that COMMITS its work (the normal shape of a resolved merge)
-    leaves the working tree clean; the follow-up must still measure and push
-    the committed head instead of leaving the PR conflicted."""
-    root, bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")  # as publish did
-    github = FakeGitHub(comments=[member(101, "please resolve the conflict")])
-
-    def committing_run(brief_text, workspace, resume_session_id=None):
-        (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("v2 resolved\n")
-        _git(ws, "add", "-A")
-        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "resolve merge")
-        return SessionResult(
-            stop_reason="end_turn",
-            is_error=False,
-            cost_usd=0.2,
-            num_turns=3,
-            session_id="s3",
-            final_text="Merged main and resolved the conflict.",
-            transcript_path="",
-        )
-
-    class Committer:
-        run = staticmethod(committing_run)
-
-    outcome = respond(root, github, Committer(), QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    assert (
-        _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py") == "v2 resolved\n"
-    )
-
-
-def test_committed_out_of_scope_resolution_is_reset(review_run) -> None:
-    """Committed out-of-scope changes are reverted INCLUDING the commit —
-    the local branch resets to the pushed tip."""
-    root, bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")  # as publish did
-    tip_before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    github = FakeGitHub(comments=[member(101, "tidy")])
-
-    def committing_run(brief_text, workspace, resume_session_id=None):
-        (workspace / "docs" / "rogue.md").write_text("out of scope\n")
-        _git(ws, "add", "-A")
-        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "rogue")
-        return SessionResult(
-            stop_reason="end_turn",
-            is_error=False,
-            cost_usd=0.2,
-            num_turns=3,
-            session_id="s4",
-            final_text="done",
-            transcript_path="",
-        )
-
-    class Committer:
-        run = staticmethod(committing_run)
-
-    outcome = respond(root, github, Committer(), QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "outside the contract" in github.posted[0]
-    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
-    assert _git(ws, "rev-parse", "HEAD").strip() == tip_before  # local commit gone
-
-
-def test_forged_base_ref_cannot_vouch(review_run) -> None:
-    """refs/remotes/origin/<base> is a plain file the session can rewrite;
-    the exemption must compare against the sha PINNED at fetch time, so a
-    forged ref pointing at the session's own commit vouches for nothing."""
-    root, bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
-    tip_before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    github = FakeGitHub(comments=[member(101, "tidy")])
-
-    def forging_run(brief_text, workspace, resume_session_id=None):
-        (workspace / "docs" / "rogue.md").write_text("smuggled\n")
-        _git(ws, "add", "-A")
-        _git(ws, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "forge")
-        sha = _git(ws, "rev-parse", "HEAD").strip()
-        _git(ws, "update-ref", "refs/remotes/origin/main", sha)  # the forgery
-        return SessionResult(
-            stop_reason="end_turn",
-            is_error=False,
-            cost_usd=0.2,
-            num_turns=3,
-            session_id="s5",
-            final_text="done",
-            transcript_path="",
-        )
-
-    class Forger:
-        run = staticmethod(forging_run)
-
-    outcome = respond(root, github, Forger(), QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "outside the contract" in github.posted[0]  # forgery did not vouch
-    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == tip_before
-
-
-def test_behind_wake_merge_is_remeasured_and_pushed(review_run) -> None:
-    """The behind wake rides the full sync machinery: the session's merge of
-    the moved base plus its own kept edit are re-measured and pushed (terra
-    #224: the first behind test pinned only the trigger and prompt)."""
-    root, bare = review_run
-    # main moves cleanly: an out-of-scope doc lands upstream (no conflict)
-    seed2 = root.parent / "seed2b"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))  # the wake alone triggers
-    harness = ResumingHarness(
-        merge_base=True,  # an honest session merges; ancestry is verified
-        edits={"src/pilot/solvers/tsp.py": "v2 after sync\n"},
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    solver = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/solvers/tsp.py")
-    assert "v2 after sync" in solver
-    assert _git(bare, "show", "feat/auto/agent-01/tsp-r1:docs/news.md") == "from main\n"
-
-
-def test_behind_wake_without_a_real_merge_is_withheld(review_run) -> None:
-    """A session that edits files but never merges the fetched base is
-    refused: nothing pushed, the cursor stays unspent so the wake retries,
-    and the retry cap climbs instead of resetting (terra #224: without the
-    ancestry check a copied-files 'sync' re-measured and pushed a PR that
-    stayed behind)."""
-    root, bare = review_run
-    seed2 = root.parent / "seed2c"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
-    # the fake merge: base files copied in, no actual merge of origin/main
-    harness = ResumingHarness(
-        edits={
-            "docs/news.md": "from main\n",
-            "src/pilot/solvers/tsp.py": "v2 faked\n",
-        }
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-
-    def _pushed() -> bool:
-        probe = subprocess.run(
-            ["git", "-C", str(bare), "rev-parse", "--verify", "feat/auto/agent-01/tsp-r1"],
-            capture_output=True,
-        )
-        return probe.returncode == 0
-
-    assert not _pushed()  # the fixture starts with no PR branch in the bare
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "does not include the fetched base" in github.posted[0]
-    assert not _pushed()  # the faked sync pushed nothing
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # cursor unspent: the wake retries
-    # the tick charged the submission already; the failed sync must not bill
-    # a second attempt (terra r4) — it keeps the count instead of resetting
-    assert record.wake_attempts == 0
-
-
-def test_sync_needed_with_failed_fetch_services_nothing(review_run, monkeypatch) -> None:
-    """A PR that needs a base sync but whose base fetch failed is not
-    serviced at all this pass — qualifying comments included (terra #224
-    r3: the comment path measured and pushed against no current base while
-    the PR stayed behind)."""
-    from outerloop.github import Workspace
-
-    root, _bare = review_run
-
-    def boom(self) -> None:
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(Workspace, "fetch_origin", boom)
-    github = FakeGitHub(pr=_behind_pr(), comments=[member(11, "please tweak the kick")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "comment-driven edit\n"})
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "error"
-    assert "base sync needed" in outcome.note
-    assert harness.calls == []  # no session ran; nothing measured or pushed
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # cursor unspent: retried next tick
-
-
-def test_conflicted_sync_merge_is_aborted_on_revert(review_run) -> None:
-    """A session that starts a base merge and leaves it conflicted must not
-    poison the workspace: the revert aborts the merge (terra #224 r3:
-    checkout+clean left MERGE_HEAD, so the NEXT wake started inside an
-    unfinished merge)."""
-    root, _bare = review_run
-    # main rewrites the solver the PR branch also changed -> guaranteed conflict
-    seed2 = root.parent / "seed2d"
-    _git(root.parent, "clone", "-q", str(_bare), str(seed2))
-    (seed2 / "src" / "pilot" / "solvers" / "tsp.py").write_text("conflicting main rewrite\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main rewrites")
-    _git(seed2, "push", "-q", "origin", "main")
-
-    class ConflictedMergeHarness(ResumingHarness):
-        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
-            self.calls.append((brief_text, resume_session_id))
-            git = ["git", "-C", str(workspace), "-c", "user.name=t", "-c", "user.email=t@t"]
-            # both sides rewrite the solver -> the merge MUST conflict
-            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("local rewrite\n")
-            subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
-            subprocess.run([*git, "commit", "-qm", "local"], check=True, capture_output=True)
-            merged = subprocess.run(  # conflicts and leaves MERGE_HEAD, like a dying session
-                [*git, "merge", "--no-edit", "origin/main"], capture_output=True
-            )
-            assert merged.returncode != 0, "fixture expected a conflicted merge"
-            return SessionResult(
-                stop_reason="end_turn",
-                is_error=False,
-                cost_usd=0.1,
-                num_turns=2,
-                session_id="sess-conflicted",
-                final_text="tried the merge",
-                transcript_path="",
-            )
-
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
-    outcome = respond(root, github, ConflictedMergeHarness(), QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "does not include the fetched base" in github.posted[0]
-    assert not (ws / ".git" / "MERGE_HEAD").exists()  # the merge was aborted
-    assert _git(ws, "status", "--porcelain") == ""  # workspace fully clean
-
-
-def test_topology_only_base_merge_is_pushed(review_run) -> None:
-    """A clean base merge whose tree is unchanged (the branch already carried
-    the base's content) still pushes — the merge commit IS the contribution;
-    without it the PR stays behind while the cursor is spent (terra #224 r4).
-    No re-measure is owed: the pushed tree is exactly the measured one."""
-    root, bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    git_id = ["-c", "user.name=t", "-c", "user.email=t@t"]
-    # the branch commits a doc; main lands the IDENTICAL content -> merging
-    # main creates a merge commit with the same tree
-    (ws / "docs").mkdir(exist_ok=True)
-    (ws / "docs" / "news.md").write_text("same everywhere\n")
-    _git(ws, *git_id, "add", "-A")
-    _git(ws, *git_id, "commit", "-qm", "branch doc")
-    seed2 = root.parent / "seed2e"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs").mkdir(exist_ok=True)
-    (seed2 / "docs" / "news.md").write_text("same everywhere\n")
-    _git(seed2, *git_id, "add", "-A")
-    _git(seed2, *git_id, "commit", "-qm", "main doc")
-    _git(seed2, "push", "-q", "origin", "main")
-    head = _ws_head(root)
-    github = FakeGitHub(pr=_behind_pr(head=head))
-    harness = ResumingHarness(merge_base=True)  # merge, no edits
-    _git(ws, "fetch", "-q", "origin", "main")
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "only the ancestry moved" in github.posted[0]
-    # the merge commit reached the remote: the base tip is now an ancestor
-    # of the pushed PR branch
-    main_sha = _git(bare, "rev-parse", "main").strip()
-    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    merge_base = _git(bare, "merge-base", main_sha, branch_sha).strip()
-    assert merge_base == main_sha
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == head  # cursor spent: sync done
-
-
-def test_replace_ref_cannot_forge_the_ancestry_check(review_run) -> None:
-    """The session owns the clone: a planted refs/replace/* must not let
-    merge-base call a fake merge an ancestor of the fetched base (terra
-    #224 r5) — GIT_NO_REPLACE_OBJECTS rides every kernel git invocation."""
-    root, bare = review_run
-    seed2 = root.parent / "seed2f"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-
-    class ForgingHarness(ResumingHarness):
-        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
-            self.calls.append((brief_text, resume_session_id))
-            git = ["git", "-C", str(workspace), "-c", "user.name=t", "-c", "user.email=t@t"]
-            # the "session" edits without merging, then REPLACES the fetched
-            # base commit with an ancestor of HEAD so ancestry appears to hold
-            (workspace / "src" / "pilot" / "solvers" / "tsp.py").write_text("forged sync\n")
-            subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
-            subprocess.run([*git, "commit", "-qm", "forged"], check=True, capture_output=True)
-            base_sha = subprocess.run(
-                [*git, "rev-parse", "origin/main"], check=True, capture_output=True, text=True
-            ).stdout.strip()
-            root_commit = (
-                subprocess.run(
-                    [*git, "rev-list", "--max-parents=0", "HEAD"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                .stdout.strip()
-                .splitlines()[0]
-            )
-            subprocess.run(
-                [*git, "update-ref", f"refs/replace/{base_sha}", root_commit],
-                check=True,
-                capture_output=True,
-            )
-            return SessionResult(
-                stop_reason="end_turn",
-                is_error=False,
-                cost_usd=0.1,
-                num_turns=2,
-                session_id="sess-forger",
-                final_text="synced (not really)",
-                transcript_path="",
-            )
-
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    # production shape: the PR branch exists on the remote, so the kernel
-    # can diff origin/<branch>..HEAD and see the forger's commit
-    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
-    before = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
-    outcome = respond(root, github, ForgingHarness(), QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "does not include the fetched base" in github.posted[0]  # forgery refused
-    assert _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip() == before  # no push
-
-
-def test_do_nothing_session_leaves_the_behind_wake_rearmed(review_run) -> None:
-    """A behind wake whose session neither merges nor edits must not spend
-    the cursor (terra #224 r6: the still-behind PR could never re-wake for
-    that head). The reply stands; the next pass wakes again, capped by the
-    tick's submit-time billing."""
-    root, bare = review_run
-    seed2 = root.parent / "seed2g"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=_ws_head(root)))
-    outcome = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # unspent: the sync did not happen
-    # the next pass re-wakes the same head instead of no-opping
-    second = ResumingHarness()
-    outcome2 = respond(root, github, second, QueueEvaluator(values=[10.2]))
-    assert outcome2.action == "replied"
-    assert second.calls, "the head must stay wakeable until the sync is real"
-
-
-def test_base_identical_sync_pushes_without_remeasure(review_run) -> None:
-    """A base move whose merge changes ONLY base-owned content (the live
-    gpt-speedrun#5 shape: a contract flip landed mid-attempt) pushes without
-    a re-measure — the solver and eval surface are bit-for-bit what was
-    measured — and spends the cursor."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2h"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(
-        (seed2 / ".autoresearch.yaml").read_text() + "# lines flip\n"
-    )
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract flip")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    _git(ws, "push", "-q", "origin", "HEAD:feat/auto/agent-01/tsp-r1")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-
-    class FailingEvaluator:
-        def evaluate(self, *a, **k):  # the re-measure path must NOT run
-            raise AssertionError("base-identical sync must not re-measure")
-
-    harness = ResumingHarness(merge_base=True)  # merge brings only the contract
-    outcome = respond(root, github, harness, FailingEvaluator())
-    assert outcome.action == "replied"
-    assert "the numbers above stand" in github.posted[0]
-    # the pushed branch now contains the base tip
-    main_sha = _git(bare, "rev-parse", "main").strip()
-    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == head  # cursor spent: remote progress
-
-
-def test_withheld_sync_leaves_the_cursor_unspent(review_run) -> None:
-    """A sync whose re-measure fails (a solver edit rode along and the eval
-    errored) reaches the remote NOT AT ALL — so the cursor must stay unspent
-    and the head re-wakeable (the live gpt-speedrun#5 lesson: local ancestry
-    spent the cursor while GitHub still showed the PR behind)."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2i"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-
-    class ErroringEvaluator:
-        def evaluate(self, *a, **k):
-            raise RuntimeError("no GPU on this node")
-
-    harness = ResumingHarness(merge_base=True, edits={"src/pilot/solvers/tsp.py": "solver tweak\n"})
-    outcome = respond(root, github, harness, ErroringEvaluator())
-    assert outcome.action == "replied"
-    assert "eval failed" in github.posted[0]
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # unspent: nothing reached the remote
-
-
-def test_bench_definition_change_in_base_still_remeasures(review_run) -> None:
-    """The narrow skip applies ONLY to contract changes that leave every
-    benchmark definition and the scope identical. A base move that edits a
-    bench stanza (here: the command) changes the measurement conditions, so
-    the sync takes the full re-measure path — base-owned content is not the
-    same thing as measured-under conditions (terra #225)."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2j"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(
-        CONTRACT.replace("--env tsp --json", "--env tsp --json --fast")
-    )
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bench change")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-
-    class RecordingEvaluator:
-        calls = 0
-
-        def evaluate(self, *a, **k):
-            RecordingEvaluator.calls += 1
-            raise RuntimeError("no GPU on this node")
-
-    outcome = respond(root, github, ResumingHarness(merge_base=True), RecordingEvaluator())
-    assert outcome.action == "replied"
-    assert RecordingEvaluator.calls == 1  # the re-measure path ran
-    assert "eval failed" in github.posted[0]  # and was withheld honestly
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # nothing reached the remote
-
-
-def test_removed_benchmark_is_never_measured_with_the_old_definition(review_run) -> None:
-    """A base sync whose merged contract no longer defines the run's
-    benchmark withholds — the old command must not be evaluated or
-    published against a contract that removed it (terra #225 r2)."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2k"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(CONTRACT.replace("name: tsp", "name: tsp2"))
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bench renamed")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-
-    class NeverEvaluator:
-        def evaluate(self, *a, **k):
-            raise AssertionError("a removed benchmark must never be measured")
-
-    outcome = respond(root, github, ResumingHarness(merge_base=True), NeverEvaluator())
-    assert outcome.action == "replied"
-    assert "no longer defines benchmark" in github.posted[0]
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # nothing reached the remote
-
-
-def test_base_flip_to_auto_is_disarmed_before_the_sync_push(review_run) -> None:
-    """A base move that flips the contract's merge dial to auto must not
-    push without a confirmed disarm (terra #225 r3: _sync_push read the
-    pre-merge contract, so the flip pushed onto a potentially armed PR)."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2l"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(CONTRACT + "merge: auto\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "auto flip")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-
-    class DisarmRefusingGitHub(FakeGitHub):
-        disarm_calls = 0
-
-        def disable_auto_merge(self, repo, number):
-            DisarmRefusingGitHub.disarm_calls += 1
-            return False  # cannot confirm the disarm
-
-    github = DisarmRefusingGitHub(pr=_behind_pr(head=head))
-    outcome = respond(root, github, ResumingHarness(merge_base=True), QueueEvaluator(values=[]))
-    assert outcome.action == "replied"
-    assert DisarmRefusingGitHub.disarm_calls == 1  # the merged dial was honored
-    assert "withheld" in github.posted[0]
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == ""  # nothing pushed, head re-wakeable
-
-
-def test_widened_merged_scope_publishes_its_allowed_edit(review_run) -> None:
-    """A base sync that widens the scope must let an edit in the NEW area
-    publish: the commit-time forbidden check reads the merged contract, not
-    the pre-merge one (terra #225 r5: commit_all raised ForbiddenPathError
-    after a successful re-measure)."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2m"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(
-        CONTRACT.replace(
-            "scope: {allowed: [src/pilot/solvers/]}",
-            "scope: {allowed: [src/pilot/solvers/, src/pilot/extra/]}",
-        )
-    )
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "scope widens")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-    harness = ResumingHarness(
-        merge_base=True, edits={"src/pilot/extra/helper.py": "new-area edit\n"}
-    )
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    pushed = _git(bare, "show", "feat/auto/agent-01/tsp-r1:src/pilot/extra/helper.py")
-    assert "new-area edit" in pushed
-
-
-def test_workflow_dial_flip_inside_the_stanza_skips_the_remeasure(review_run) -> None:
-    """The LIVE gpt-speedrun#5 shape, exactly: the base flips `lines: true`
-    INSIDE the benchmark stanza. Whole-model equality refused the skip (the
-    dial lives on the Benchmark model); measurement signatures accept it —
-    the dial steers the loop, not what the measured number means."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2n"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / ".autoresearch.yaml").write_text(
-        CONTRACT.replace(
-            "    direction: min\n",
-            "    direction: min\n    lines: true\n",
-        )
-    )
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "lines flip")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-
-    class FailingEvaluator:
-        def evaluate(self, *a, **k):
-            raise AssertionError("a dial flip must not re-measure")
-
-    outcome = respond(root, github, ResumingHarness(merge_base=True), FailingEvaluator())
-    assert outcome.action == "replied"
-    assert "the numbers above stand" in github.posted[0]
-    main_sha = _git(bare, "rev-parse", "main").strip()
-    branch_sha = _git(bare, "rev-parse", "feat/auto/agent-01/tsp-r1").strip()
-    assert _git(bare, "merge-base", main_sha, branch_sha).strip() == main_sha
-
-
 def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
     """direction (claim meaning), eval_minutes (execution route), floors, and
     baseline protocol all sit in the measurement signature — a base change
@@ -1713,707 +798,13 @@ def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
     assert dial.measurement_signature() == base.measurement_signature()
 
 
-def test_eval_failed_note_names_paths_and_scrubs_them(review_run) -> None:
-    """The changed-path list in the eval-failed note is session-controlled
-    text: markdown-inert charset, secrets redacted, the self-approval scrub
-    applied — and the diagnostic itself is pinned (terra #227)."""
-    root, bare = review_run
-    head = _ws_head(root)
-    seed2 = root.parent / "seed2o"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = FakeGitHub(pr=_behind_pr(head=head))
-
-    class ErroringEvaluator:
-        def evaluate(self, *a, **k):
-            raise RuntimeError("boom")
-
-    # hostile filenames: backtick breakout, a secret, the approval phrase —
-    # the inert charset keeps alphanumerics, so ONLY the scrub chain can
-    # neutralize the latter two
-    hostile = "src/pilot/solvers/x`y\nz.py"
-    keyed = "src/pilot/solvers/leak-sk-x-oops.py"  # carries the fixture secret
-    # the secret STRADDLES the 120-char cut: redact must run pre-truncation
-    straddle = "src/pilot/solvers/" + "a" * (120 - len("src/pilot/solvers/") - 2) + "sk-x.py"
-    approving = "src/pilot/solvers/approved.py"  # matches APPROVAL_PATTERN
-    harness = ResumingHarness(
-        merge_base=True,
-        edits={p: "evil\n" for p in (hostile, keyed, approving, straddle)},
-    )
-    outcome = respond(root, github, harness, ErroringEvaluator())
-    assert outcome.action == "replied"
-    note = github.posted[0]
-    assert "Changed paths:" in note
-    assert "docs/news.md" in note  # the diagnostic names the merge's paths
-    assert "x?y?z.py" in note  # hostile chars stripped to the inert charset
-    assert "x`y" not in note  # the raw breakout sequence never survives
-    # the fixture secret rode in via a filename: redact() must strip it, and
-    # the approval-like name must hit the same scrub as every reply line
-    assert "sk-x" not in note
-    assert "[redacted]" in note
-    from outerloop.review import APPROVAL_PATTERN
-
-    tail = note.split("Changed paths:")[1]
-    assert not APPROVAL_PATTERN.search(tail.replace("[redacted: approval-like text]", ""))
-
-
-def test_a_pushed_code_change_kills_the_auto_blessing(review_run) -> None:
-    """A followup that pushes a measured CODE CHANGE replaces the
-    panel-blessed content: the blessed head dies with it, so the tick can never
-    self-merge a head the panel never saw (terra #228 r4). A reply without a
-    pushed change keeps the blessing."""
-    from dataclasses import replace as dc_replace
-
-    root, _bare = review_run
-    record = load_record(root, "tsp-r1")
-    save_record(root, dc_replace(record, auto_blessed_head="b" * 40), NOW)
-    github = FakeGitHub(comments=[member(901, "please tweak the kick")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 tweaked\n"})
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.2]))
-    assert outcome.action == "replied"
-    assert "Re-measured" in github.posted[0]
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""  # blessing dead
-
-    # a plain reply (no change pushed) keeps the blessing
-    save_record(root, dc_replace(load_record(root, "tsp-r1"), auto_blessed_head="b" * 40), NOW + 1)
-    github2 = FakeGitHub(comments=[member(902, "thanks, just explain")])
-    outcome2 = respond(root, github2, ResumingHarness(), QueueEvaluator(values=[]))
-    assert outcome2.action == "replied"
-    assert load_record(root, "tsp-r1").auto_blessed_head == "b" * 40
-
-
 # --- the follow-up re-read: a pushed change is read by the panel before the
 # tick may arm it (docs/design/orchestrator-verify.md, "Re-reading a follow-up")
 
 AUTO_CONTRACT = CONTRACT + "merge: auto\n"
 
 
-def _set_contract(root: Path, text: str, leader: float | None = 10.5) -> None:
-    """Commit a contract (and the PR's own measured ledger row) onto the PR
-    branch so the follow-up sees both as the tree's own, not as a change the
-    session made."""
-    from outerloop.progress import load_leader, update_leader, write_progress
-
-    ws = run_dir(root, "tsp-r1") / "ws"
-    (ws / ".autoresearch.yaml").write_text(text)
-    if leader is not None:
-        entries = update_leader(
-            load_leader(ws),
-            benchmark="tsp",
-            metric="mean_tour_length",
-            direction="min",
-            baseline=leader,
-            candidate=leader,
-            run_id="tsp-r1",
-            date="2026-09-01",
-        )
-        write_progress(ws, entries, "org/pilot")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "dial")
-
-
-@dataclass
-class FakePanel:
-    """Stands in for build_panel_runner: records what it was asked to read
-    and returns canned verdicts."""
-
-    verdicts: list = field(default_factory=list)
-    built: list[dict] = field(default_factory=list)
-    reads: list[tuple[float, float, str]] = field(default_factory=list)
-
-    def __call__(
-        self,
-        ws,
-        run_dir_,
-        base_sha,
-        lenses,
-        contract_text,
-        target,
-        benchmark,
-        bot_login,
-        today,
-        exclude=(),
-        claim_body=None,
-    ):
-        self.built.append(
-            {
-                "base": base_sha,
-                "lenses": lenses,
-                "contract": contract_text,
-                "benchmark": benchmark,
-                "claim": claim_body(10.5, 10.2, "why") if claim_body else "",
-            }
-        )
-
-        def runner(baseline, candidate, report):
-            self.reads.append((baseline, candidate, report))
-            verdict = self.verdicts.pop(0)
-            if isinstance(verdict, Exception):
-                raise verdict
-            return verdict
-
-        return runner
-
-
-def _verdict(
-    blocking=(),
-    degraded=False,
-    transcript="**Verification round 1**\n- `claude` (verify): 0 blocking, 0 advisory",
-):
-    from outerloop.panel import PanelVerdict
-
-    return PanelVerdict(
-        blocking=tuple(blocking),
-        transcript=transcript,
-        # the real panel renders a data-fenced wake for blocking findings
-        findings=tuple(blocking),
-        degraded=degraded,
-    )
-
-
-def _finding(summary="unjustified constant"):
-    from outerloop.review import Finding
-
-    return Finding(
-        file="src/pilot/solvers/tsp.py",
-        line=1,
-        confidence="high",
-        summary=summary,
-        detail="d",
-        blocking=True,
-    )
-
-
-@dataclass
-class AutoGitHub(FakeGitHub):
-    """An auto-mode PR is disarmed before any push; this fake confirms it.
-    With `ws` set, the PR's head follows the workspace HEAD — what GitHub
-    reports right after the follow-up's own push."""
-
-    disarmed: list[int] = field(default_factory=list)
-    ws: Path | None = None
-
-    def disable_auto_merge(self, repo, number):
-        self.disarmed.append(number)
-        return True
-
-    def get_pull_request(self, repo, number):
-        pr = dict(self.pr)
-        if self.ws is not None and "head" not in pr:
-            pr["head"] = {"sha": _git(self.ws, "rev-parse", "HEAD").strip()}
-        return pr
-
-
-def respond_with_panel(root, github, harness, evaluator, panel):
-    if isinstance(github, AutoGitHub) and github.ws is None:
-        github.ws = run_dir(root, "tsp-r1") / "ws"
-    return respond_once(
-        root,
-        "tsp-r1",
-        harness,
-        evaluator,
-        github,
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        panel_lenses=(object(),),
-        panel_builder=panel,
-    )
-
-
-def test_a_clean_reread_under_auto_blesses_the_pushed_head(review_run) -> None:
-    """The consent chain's missing link: after a follow-up pushes a measured
-    code change, the SAME panel reads the new head; clean + merge:auto moves
-    the blessing to exactly that sha, so the tick may arm it once GitHub says
-    the PR is clean. The read is posted on the thread, after the reply."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    github = AutoGitHub(comments=[member(901, "please tweak the kick")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 tweaked\n"})
-    panel = FakePanel(verdicts=[_verdict()])
-    outcome = respond_with_panel(root, github, harness, QueueEvaluator(values=[10.2]), panel)
-    assert outcome.action == "replied"
-    head = _ws_head(root)
-    assert load_record(root, "tsp-r1").auto_blessed_head == head
-    # the reply first (durable before the judges run), then the read
-    assert "Re-measured" in github.posted[0]
-    assert "re-read of the pushed change" in github.posted[1] and head[:12] in github.posted[1]
-    assert "Verification round 1" in github.posted[1]
-    assert "kernel may merge this head" in github.posted[1]
-    # the panel read the pushed tree against the PR's real base, with the
-    # base's contract, under a follow-up claim (not a fresh pre-PR claim)
-    built = panel.built[0]
-    assert built["base"] == _git(run_dir(root, "tsp-r1") / "ws", "rev-parse", "origin/main").strip()
-    assert built["contract"].startswith("benchmarks:") and "merge: auto" not in built["contract"]
-    assert "Follow-up re-measure on open PR #9" in built["claim"]
-    assert "previously measured number: 10.5" in built["claim"]
-    assert panel.reads == [(10.5, 10.2, harness.text)]
-
-
-def test_blocking_or_degraded_rereads_leave_the_merge_to_a_human(review_run) -> None:
-    """Blocking findings are the panel's explicit demand for a human; a
-    degraded read is not a certified pass. Neither blesses; both are named
-    on the thread."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    harness = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"})
-    panel = FakePanel(
-        verdicts=[
-            _verdict(
-                blocking=(_finding(),),
-                transcript=(
-                    "- `claude` (review): 1 blocking, 0 advisory\n"
-                    "  - **src/pilot/solvers/tsp.py:1** — unjustified constant"
-                ),
-            )
-        ]
-    )
-    respond_with_panel(root, github, harness, QueueEvaluator(values=[10.2]), panel)
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-    assert "unjustified constant" in github.posted[1]
-    # blocking findings go back to the author first; a human decides if they stand
-    assert "author is woken" in github.posted[1] and "a human decides" in github.posted[1]
-
-    github2 = AutoGitHub(comments=[member(902, "again")])
-    panel2 = FakePanel(
-        verdicts=[
-            _verdict(
-                degraded=True,
-                transcript=(
-                    "- `claude` (verify): **no verdict** (timeout) — silence is not endorsement"
-                ),
-            )
-        ]
-    )
-    respond_with_panel(
-        root,
-        github2,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"}),
-        QueueEvaluator(values=[10.1]),
-        panel2,
-    )
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-    assert "silence is not endorsement" in github2.posted[1]
-    assert "human decides" in github2.posted[1]
-
-
-def test_a_clean_reread_never_blesses_under_a_manual_dial(review_run) -> None:
-    """merge:manual is the owner's preference, not doubt: the read is still
-    posted (it is useful review), but nothing is blessed."""
-    root, _bare = review_run  # CONTRACT has no merge key -> manual
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict()])
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-    assert "merges by hand" in github.posted[1]
-
-
-def test_no_reread_without_a_pushed_change_or_without_a_panel(review_run) -> None:
-    """A plain reply spends no judge time; without lenses the change is
-    pushed, the blessing dies, and there is one comment — as before."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    github = AutoGitHub(comments=[member(901, "just explain")])
-    panel = FakePanel(verdicts=[])
-    respond_with_panel(root, github, ResumingHarness(), QueueEvaluator(values=[]), panel)
-    assert panel.built == [] and len(github.posted) == 1
-
-    github2 = AutoGitHub(comments=[member(902, "tweak")])
-    respond(
-        root,
-        github2,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-    )
-    assert len(github2.posted) == 1
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-
-
-def test_a_panel_that_cannot_run_is_a_non_read(review_run) -> None:
-    """A judge outage after the push: the reply and the push stand, the
-    thread says the panel did not run, nothing is blessed, and the wake is
-    spent (no repeated push on the next tick)."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[RuntimeError("judge host unreachable sk-x")])
-    outcome = respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    assert outcome.action == "replied"
-    rec = load_record(root, "tsp-r1")
-    assert rec.auto_blessed_head == "" and rec.last_comment_id == 901
-    assert "panel could not run" in github.posted[1] and "sk-x" not in github.posted[1]
-    assert "NOT a clean read" in github.posted[1]
-
-
-def test_a_reread_needs_a_trusted_base(review_run, monkeypatch) -> None:
-    """No pinned base (the fetch failed) means no `base/` for the judges: the
-    read is skipped and said so — never a bless on a base a session could
-    have moved."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    from outerloop.github import Workspace
-
-    def broken_fetch(self):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(Workspace, "fetch_origin", broken_fetch)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict()])
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    assert panel.built == []
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-    assert "no trusted base" in github.posted[1]
-
-
-def test_a_workspace_that_moves_under_the_judges_is_not_blessed(review_run) -> None:
-    """Judges hold a shell next to the checkout: a HEAD that differs from the
-    pushed sha after the read fails the bless, whatever the verdict said."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    ws = run_dir(root, "tsp-r1") / "ws"
-
-    class MovingPanel(FakePanel):
-        def __call__(self, *a, **kw):
-            runner = super().__call__(*a, **kw)
-
-            def moving(baseline, candidate, report):
-                verdict = runner(baseline, candidate, report)
-                (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("moved\n")
-                _git(ws, "-c", "user.name=j", "-c", "user.email=j@j", "commit", "-qam", "judge")
-                return verdict
-
-            return moving
-
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = MovingPanel(verdicts=[_verdict()])
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-    assert "workspace moved" in github.posted[1]
-
-
-def test_a_read_that_cannot_fit_the_job_is_posted_as_a_skip(review_run) -> None:
-    """The tick tells the follow-up how many minutes the read got; when the cap
-    ate them the panel is not run, the skip is on the thread (silence is never
-    endorsement), nothing is blessed, and the author's reply stands."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict()])
-    outcome = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        panel_lenses=(),
-        panel_builder=panel,
-        panel_skip="the job's walltime cap left 10 min for a read that needs 60",
-    )
-    assert outcome.action == "replied"
-    assert panel.built == []
-    assert "panel skipped: the job's walltime cap left 10 min" in github.posted[1]
-    assert "NOT a clean read" in github.posted[1]
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-
-
-def test_the_judges_rules_come_from_the_trusted_base_only(review_run, monkeypatch) -> None:
-    """A base whose contract cannot be read is a non-read: the panel never
-    falls back to the workspace copy, which the pushed tree controls."""
-    from outerloop.github import GitError, Workspace
-
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    real_git = Workspace.git
-
-    def unreadable_base_contract(self, *args):
-        if args and args[0] == "show" and str(args[1]).endswith(":.autoresearch.yaml"):
-            raise GitError("fatal: path '.autoresearch.yaml' does not exist in the base")
-        return real_git(self, *args)
-
-    monkeypatch.setattr(Workspace, "git", unreadable_base_contract)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict()])
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    assert panel.built == []  # no judges were briefed on a PR-controlled contract
-    assert "panel could not run" in github.posted[1] and "NOT a clean read" in github.posted[1]
-    assert load_record(root, "tsp-r1").auto_blessed_head == ""
-
-
 # --- the revise loop as a wake type: a blocking re-read wakes the author
-
-
-def test_a_blocking_reread_records_a_panel_wake_for_the_pushed_head(review_run) -> None:
-    """Findings (not a degraded lens) on a head that is still the pushed one
-    go back to the author: the record carries the fenced findings and the
-    head they were read on, the thread says a revision is asked."""
-    from outerloop.followup import PANEL_WAKE_CAP
-
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(
-        verdicts=[
-            _verdict(
-                blocking=(_finding(),),
-                transcript="- `claude` (review): 1 blocking, 0 advisory",
-            )
-        ]
-    )
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    rec = load_record(root, "tsp-r1")
-    assert rec.panel_wake_head == _ws_head(root)
-    assert rec.panel_wake_rounds == 1
-    assert "unjustified constant" in panel_text(root, rec)  # deliverable: the findings themselves
-    assert rec.auto_blessed_head == ""
-    assert f"revision 1 of {PANEL_WAKE_CAP}" in github.posted[1]
-    assert "author is woken" in github.posted[1]
-
-
-def test_a_capped_out_or_degraded_reread_leaves_the_findings_to_a_human(review_run) -> None:
-    from dataclasses import replace as dc_replace
-
-    from outerloop.followup import PANEL_WAKE_CAP
-
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-    save_record(
-        root, dc_replace(load_record(root, "tsp-r1"), panel_wake_rounds=PANEL_WAKE_CAP), NOW
-    )
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict(blocking=(_finding(),), transcript="- 1 blocking")])
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    rec = load_record(root, "tsp-r1")
-    assert panel_text(root, rec) == "" and rec.panel_wake_rounds == PANEL_WAKE_CAP
-    assert f"after {PANEL_WAKE_CAP} revisions" in github.posted[1]
-
-    # degraded is not findings: no wake, no revision counted
-    github2 = AutoGitHub(comments=[member(902, "again")])
-    panel2 = FakePanel(verdicts=[_verdict(degraded=True, transcript="- no verdict")])
-    save_record(root, dc_replace(load_record(root, "tsp-r1"), panel_wake_rounds=0), NOW + 1)
-    respond_with_panel(
-        root,
-        github2,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v3\n"}),
-        QueueEvaluator(values=[10.1]),
-        panel2,
-    )
-    rec2 = load_record(root, "tsp-r1")
-    assert panel_text(root, rec2) == "" and rec2.panel_wake_rounds == 0
-
-
-def test_a_pending_panel_wake_is_serviced_without_new_comments(review_run) -> None:
-    """The findings reach the author as the wake's prompt; servicing spends the
-    wake (cleared on the record, cursors untouched); a head that moved since
-    the read supersedes the findings (no-op)."""
-    from dataclasses import replace as dc_replace
-
-    root, _bare = review_run
-    head = _ws_head(root)
-    findings = "PANEL FINDINGS: unjustified constant"
-    seed_panel(root, head, findings)
-    save_record(
-        root,
-        dc_replace(
-            load_record(root, "tsp-r1"),
-            panel_wake_head=head,
-            panel_wake_rounds=1,
-        ),
-        NOW,
-    )
-    github = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
-    harness = ResumingHarness(text="Rebutted: the constant is the paper's value.")
-    outcome = respond(root, github, harness, QueueEvaluator(values=[]))
-    assert outcome.action == "replied"
-    assert "Panel verdict for head" in harness.calls[0][0]
-    assert "unjustified constant" in harness.calls[0][0]
-    rec = load_record(root, "tsp-r1")
-    assert panel_text(root, rec) == "" and rec.panel_wake_head == ""
-    assert rec.last_comment_id == 100  # no comment was consumed
-    assert "Rebutted" in github.posted[0]
-
-    seed_panel(root, "f" * 40, findings)
-    # a later push moved the head: the findings are stale, nothing to service
-    save_record(
-        root,
-        dc_replace(load_record(root, "tsp-r1"), panel_wake_head="f" * 40),
-        NOW + 1,
-    )
-    github2 = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
-    assert respond(root, github2, ResumingHarness(), QueueEvaluator(values=[])).action == "no-op"
-
-
-def test_the_wake_is_saved_before_the_reread_comment_and_survives_its_failure(review_run) -> None:
-    """A responder that dies between the two costs a thread without the
-    transcript, never a lost wake (terra #233 r1)."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-
-    class SecondCommentExplodes(AutoGitHub):
-        def comment(self, repo, number, body):
-            if self.posted:  # the reply went out; the re-read comment fails
-                raise RuntimeError("github 502")
-            super().comment(repo, number, body)
-
-    github = SecondCommentExplodes(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict(blocking=(_finding(),), transcript="- 1 blocking")])
-    outcome = respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    assert outcome.action == "replied" and len(github.posted) == 1
-    rec = load_record(root, "tsp-r1")
-    assert rec.panel_wake_head == _ws_head(root) and "unjustified constant" in panel_text(root, rec)
-
-
-def test_a_legacy_panel_wake_text_still_wakes_and_becomes_a_message(review_run) -> None:
-    """A record written by an older kernel carries its blocking findings as
-    text: the wake still fires for that head, the findings reach the session
-    from the inbox, and the record's field is cleared by the wake's save."""
-    from outerloop.inbox import pending
-
-    root, _bare = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    head = _git(ws, "rev-parse", "HEAD").strip()
-    save_record(
-        root,
-        replace(
-            load_record(root, "tsp-r1"),
-            panel_wake_head=head,
-            panel_wake_text="unjustified constant in the kick",
-        ),
-        NOW,
-    )
-    github = AutoGitHub()
-    github.ws = ws
-    harness = ResumingHarness()
-    out = respond(root, github, harness=harness)
-    assert out.action == "replied"
-    prompt = harness.calls[0][0]
-    assert "Pending panel findings" in prompt and "unjustified constant in the kick" in prompt
-    rec = load_record(root, "tsp-r1")
-    assert rec.panel_wake_text == "" and rec.panel_wake_head == ""
-    keys = [m.key for m in pending(run_dir(root, "tsp-r1"), 0)]
-    assert keys.count(f"panel:legacy:{head}") == 1
-
-
-def test_a_reverted_response_keeps_the_panel_wake_pending(review_run) -> None:
-    """The author was woken for the findings but its change was reverted (out
-    of scope here): it never answered them, so the wake stands for the next
-    job instead of being spent."""
-    from dataclasses import replace as dc_replace
-
-    root, _bare = review_run
-    head = _ws_head(root)
-    seed_panel(root, head, "PANEL FINDINGS")
-    save_record(
-        root,
-        dc_replace(
-            load_record(root, "tsp-r1"),
-            panel_wake_head=head,
-            panel_wake_rounds=1,
-        ),
-        NOW,
-    )
-    github = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
-    save_record(root, dc_replace(load_record(root, "tsp-r1"), wake_attempts=3), NOW)
-    outcome = respond(
-        root, github, ResumingHarness(edits={"docs/roadmap.md": "widened\n"}), QueueEvaluator()
-    )
-    assert outcome.action == "replied" and "not applied" in github.posted[0]
-    rec = load_record(root, "tsp-r1")
-    assert "PANEL FINDINGS" in panel_text(root, rec) and rec.panel_wake_head == head
-    # ...and the retry count is KEPT, so the tick's billing still caps the loop (r2)
-    assert rec.wake_attempts == 3
-
-    # a serviced, non-reverted panel wake is progress: the count resets
-    github2 = FakeGitHub(pr={"state": "open", "merged": False, "head": {"sha": head}})
-    respond(root, github2, ResumingHarness(text="Rebutted."), QueueEvaluator())
-    rec2 = load_record(root, "tsp-r1")
-    assert panel_text(root, rec2) == "" and rec2.wake_attempts == 0
-
-
-def test_a_push_during_the_read_supersedes_the_findings(review_run) -> None:
-    """GitHub's head moved while the judges read: a wake for the old sha could
-    never be serviced, so none is recorded and the thread says why."""
-    root, _bare = review_run
-    _set_contract(root, AUTO_CONTRACT)
-
-    class MovingHeadGitHub(AutoGitHub):
-        reads = 0
-
-        def get_pull_request(self, repo, number):
-            self.reads += 1
-            pr = dict(self.pr)
-            if self.reads > 1:  # after the push: someone else pushed again
-                pr["head"] = {"sha": "e" * 40}
-            return pr
-
-    github = MovingHeadGitHub(comments=[member(901, "tweak")])
-    panel = FakePanel(verdicts=[_verdict(blocking=(_finding(),), transcript="- 1 blocking")])
-    respond_with_panel(
-        root,
-        github,
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        panel,
-    )
-    rec = load_record(root, "tsp-r1")
-    assert panel_text(root, rec) == "" and rec.panel_wake_rounds == 0
-    assert "superseded head" in github.posted[1]
 
 
 # --- a GPU benchmark's change is measured on the GPU lane as a job: the
@@ -2424,929 +815,7 @@ GPU_CONTRACT = CONTRACT.replace(
 )
 
 
-@dataclass
-class FakeMeasurer:
-    """Stands in for DispatchedMeasurer: pending until told the result."""
-
-    value: float | None = None
-    error: str = ""
-    calls: list = field(default_factory=list)
-
-    def results(self, measures):
-        from outerloop.measure import EvalError, MeasurementPending
-
-        self.calls.append(measures)
-        if self.error:
-            raise EvalError(self.error)
-        if self.value is None:
-            raise MeasurementPending(("9001",))
-        return {m.name: self.value for m in measures}
-
-
-@dataclass
-class FakeDispatch:
-    measurer_: FakeMeasurer
-    from outerloop.compute import LocalCompute
-
-    compute: LocalCompute = field(default_factory=LocalCompute)
-    gpu_partition: str = ""
-    image: str = ""
-    seed_cache: Path | None = None
-
-    def placement(self, gpus: int) -> tuple[str, str]:
-        return "", ""
-
-    built: list = field(default_factory=list)
-
-    def measurer(self, run_dir_, repo_root, eval_minutes, run_tag):
-        self.built.append((run_dir_, repo_root, eval_minutes, run_tag))
-        return self.measurer_
-
-
-def _gpu_run(root: Path) -> None:
-    _set_contract(root, GPU_CONTRACT)
-
-
 PR_BRANCH = "feat/auto/agent-01/tsp-r1"
-
-
-def _origin_head(bare: Path, branch: str = PR_BRANCH) -> str:
-    return _git(bare, "rev-parse", branch).strip()
-
-
-def _origin_has_branch(bare: Path, branch: str = PR_BRANCH) -> bool:
-    return bool(_git(bare, "branch", "--list", branch).strip())
-
-
-def test_a_gpu_change_is_sealed_and_parked_on_its_dispatched_measure(review_run) -> None:
-    root, bare = review_run
-    _gpu_run(root)
-    before = _ws_head(root)
-    github = FakeGitHub(comments=[member(901, "please tweak the kick")])
-    measurer = FakeMeasurer()  # pending
-    dispatch = FakeDispatch(measurer)
-    outcome = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
-        QueueEvaluator(values=[]),  # never consulted: the eval is a job
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=dispatch,  # type: ignore[arg-type]
-    )
-    assert outcome.action == "parked" and "9001" in outcome.note
-    # the author's reply went out now, with the parked note; nothing was pushed
-    assert (
-        "addressed" in github.posted[0] and "being re-measured on the GPU lane" in github.posted[0]
-    )
-    assert not _origin_has_branch(bare)  # nothing pushed
-    rec = load_record(root, "tsp-r1")
-    stage = rec.followup_stage
-    assert stage["job_ids"] == ["9001"] and stage["afterany"] == "afterany:9001"
-    assert stage["candidate_sha"] and str(stage["candidate_ref"]).startswith("refs/dispatch/")
-    assert rec.last_comment_id == 901  # the comment IS serviced
-    ws = run_dir(root, "tsp-r1") / "ws"
-    # the sealed commit carries the change, parented on the pushed head
-    assert _git(ws, "show", f"{stage['candidate_sha']}:src/pilot/solvers/tsp.py") == "v2 gpu\n"
-    assert _git(ws, "rev-parse", f"{stage['candidate_sha']}^").strip() == before
-    # the measure asked for the GPU lane at the contract command
-    m = measurer.calls[0][0]
-    assert m.gpus == 1 and m.tree_sha == stage["candidate_sha"] and m.name == "followup"
-    assert dispatch.built[0][2] == 30  # eval_minutes from the contract
-
-
-def test_a_parked_remeasure_is_finished_on_the_sealed_tree(review_run) -> None:
-    root, bare = review_run
-    _gpu_run(root)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = run_dir(root, "tsp-r1") / "ws"
-    pending = FakeMeasurer()
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(pending),  # type: ignore[arg-type]
-    )
-    sealed = load_record(root, "tsp-r1").followup_stage["candidate_sha"]
-    # meanwhile the workspace drifts (a stray edit after the park): the push
-    # must carry the SEALED tree, not the live one
-    ws = run_dir(root, "tsp-r1") / "ws"
-    (ws / "src" / "pilot" / "solvers" / "tsp.py").write_text("drift\n")
-
-    # still pending: a resume is a no-op that changes nothing
-    github2 = AutoGitHub(comments=[member(902, "another comment, waits its turn")])
-    github2.ws = ws
-    out2 = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    assert out2.action == "no-op" and "still pending" in out2.note
-    assert github2.posted == [] and load_record(root, "tsp-r1").last_comment_id == 901
-
-    # the measure landed: ledger, push of the sealed tree, comment, record
-    github3 = AutoGitHub(comments=[member(902, "another comment, waits its turn")])
-    github3.ws = ws
-    done = FakeMeasurer(value=10.2)
-    out3 = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github3,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 2,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
-    )
-    assert out3.action == "replied" and "applied" in out3.note
-    assert "Re-measured after this change" in github3.posted[0] and "10.2" in github3.posted[0]
-    assert github3.row_updates == [10.2] and github3.body_addenda
-    head = _origin_head(bare)
-    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2 gpu\n"  # sealed, not drift
-    assert "address review feedback" in _git(ws, "log", "-1", "--format=%s", head)
-    assert (ws / "BENCHMARKS.md").exists()
-    rec = load_record(root, "tsp-r1")
-    assert rec.followup_stage == {} and rec.auto_blessed_head == "" and rec.wake_attempts == 0
-    assert rec.last_comment_id == 901  # comment 902 is serviced by the NEXT follow-up
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # snapshot released
-    # the resumed measure asked for the same determinant as the park
-    assert done.calls[0][0].tree_sha == sealed
-
-
-def test_a_parked_remeasure_finishes_when_the_session_committed_and_the_ledger_stands(
-    review_run,
-) -> None:
-    """A session that committed its own change leaves a seal with its
-    parent's tree; a number that does not move the ledger row leaves nothing
-    to fold. The push must still land (the session's commit is the head) and
-    the number must be posted: an empty amend used to fail here, three times,
-    and the finished evaluation was never reported."""
-    import json as _json
-    import subprocess as _sp
-
-    root, bare = review_run
-    # a GPU contract with a cross-seed floor: a number inside it leaves the row alone
-    _set_contract(
-        root,
-        GPU_CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n", 1),
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    (ws / "results").mkdir(exist_ok=True)
-    (ws / "results" / "leader.json").write_text(
-        _json.dumps(
-            {
-                "tsp": {
-                    "benchmark": "tsp",
-                    "metric": "mean_tour_length",
-                    "direction": "min",
-                    "baseline": 13.876,
-                    "best": 10.0,
-                    "best_run": "r0",
-                    "updated": "d",
-                }
-            }
-        )
-    )
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior best")
-    _git(ws, "push", "-q", "origin", "feat/auto/agent-01/tsp-r1")
-    pre_session = _git(ws, "rev-parse", "HEAD").strip()  # GitHub's head until the push
-
-    class CommittingHarness(ResumingHarness):
-        def run(self, brief_text, workspace, resume_session_id=None):
-            out = super().run(brief_text, workspace, resume_session_id)
-            for args in (("add", "-A"), ("commit", "-qm", "agent commit")):
-                _sp.run(
-                    [
-                        "git",
-                        "-C",
-                        str(workspace),
-                        "-c",
-                        "user.name=a",
-                        "-c",
-                        "user.email=a@a",
-                        *args,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-            return out
-
-    github = AutoGitHub(comments=[member(901, "try it")])
-    github.ws = ws
-    respond_once(
-        root,
-        "tsp-r1",
-        CommittingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    assert load_record(root, "tsp-r1").followup_stage["candidate_sha"]
-    github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": pre_session}})
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=9.9)),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "applied" in out.note
-    assert "Re-measured" in github2.posted[0] and "9.9" in github2.posted[0]
-    assert "ledger row is unchanged" in github2.body_addenda[0]  # inside the floor
-    head = _origin_head(bare)
-    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2 gpu\n"
-    assert _git(ws, "log", "-1", "--format=%s", head).strip() == "agent commit"  # no empty amend
-    assert load_record(root, "tsp-r1").followup_stage == {}
-
-
-def test_a_parked_remeasure_posts_its_number_before_the_push_and_only_once(
-    review_run, monkeypatch
-) -> None:
-    """The finished measurement is information on its own: it is posted
-    before the push, so a push that fails cannot hide it, and the retry
-    that finishes the push does not post it again."""
-    from outerloop.github import GitError, Workspace
-
-    root, bare = review_run
-    _gpu_run(root)
-    ws = run_dir(root, "tsp-r1") / "ws"
-    pre_session = _git(ws, "rev-parse", "HEAD").strip()  # GitHub's head until a push lands
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = ws
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 gpu\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    real_push = Workspace.push
-
-    def refused(self, branch):
-        raise GitError("git push failed: remote hung up")
-
-    monkeypatch.setattr(Workspace, "push", refused)
-    github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": pre_session}})
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out.action == "error"
-    assert "Re-measured" in github2.posted[0] and "10.2" in github2.posted[0]
-    assert github2.row_updates == []  # the row follows the push
-    assert not _origin_has_branch(bare)
-    # the worst case: the record write after the comment was lost too, so the
-    # stage does not remember the post — the thread does (the note names the
-    # sealed sha), and the retry finds it there
-    rec = load_record(root, "tsp-r1")
-    stage = {k: v for k, v in rec.followup_stage.items() if k != "measured_posted"}
-    save_record(root, replace(rec, followup_stage=stage), NOW + 1)
-    monkeypatch.setattr(Workspace, "push", real_push)
-    github3 = AutoGitHub(
-        pr={"state": "open", "merged": False, "head": {"sha": pre_session}},
-        comments=[{"id": 950, "body": github2.posted[0], "user": {"login": BOT}}],
-    )
-    out3 = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github3,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 2,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out3.action == "replied" and "applied" in out3.note
-    assert not any("Re-measured" in p for p in github3.posted)  # posted once, before
-    assert github3.row_updates == [10.2] and _origin_has_branch(bare)
-
-
-def test_a_failed_dispatched_remeasure_is_abandoned_and_said(review_run) -> None:
-    root, bare = review_run
-    _gpu_run(root)
-    github = FakeGitHub(comments=[member(901, "tweak")])
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    github2 = FakeGitHub()
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(error="job died sk-x")),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "abandoned" in out.note
-    assert (
-        "re-measure of the code change failed" in github2.posted[0]
-        and "sk-x" not in github2.posted[0]
-    )
-    assert not _origin_has_branch(bare)  # still nothing pushed
-    rec = load_record(root, "tsp-r1")
-    assert rec.followup_stage == {}
-    ws = run_dir(root, "tsp-r1") / "ws"
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
-    assert (
-        ws / "src" / "pilot" / "solvers" / "tsp.py"
-    ).read_text() == "v1\n"  # workspace back to the pushed head
-
-
-def test_a_synchronous_compute_measures_the_sealed_tree_inline(review_run) -> None:
-    """LocalCompute-style: results() returns at once, so the change is applied
-    in the same follow-up, still measured on the SEALED tree."""
-    root, bare = review_run
-    _gpu_run(root)
-    github = FakeGitHub(comments=[member(901, "tweak")])
-    done = FakeMeasurer(value=10.3)
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "Re-measured" in github.posted[0]
-    ws = run_dir(root, "tsp-r1") / "ws"
-    assert _git(ws, "show", f"{_origin_head(bare)}:src/pilot/solvers/tsp.py") == "v2\n"
-    assert load_record(root, "tsp-r1").followup_stage == {}
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
-
-
-def test_a_cpu_benchmark_still_measures_inline_with_dispatch_configured(review_run) -> None:
-    root, _bare = review_run  # CONTRACT: no gpus
-    github = FakeGitHub(comments=[member(901, "tweak")])
-    never = FakeMeasurer(value=99.0)
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[10.2]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(never),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "10.2" in github.posted[0]
-    assert never.calls == []
-
-
-def test_a_failed_dispatch_releases_the_snapshot_and_is_the_failed_eval_path(review_run) -> None:
-    """A missing GPU lane (ValueError from the measurer), an outage — any
-    failure after sealing must release the retained ref and read as a failed
-    eval on the thread (terra #241 r1)."""
-    root, bare = review_run
-    _gpu_run(root)
-
-    @dataclass
-    class NoLane:
-        def results(self, measures):
-            raise ValueError("measure followup needs 1 GPU(s) but no GPU lane is configured")
-
-    github = FakeGitHub(comments=[member(901, "tweak")])
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(NoLane()),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "eval failed" in github.posted[0]
-    ws = run_dir(root, "tsp-r1") / "ws"
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # no leaked ref
-    assert not _origin_has_branch(bare)
-    assert load_record(root, "tsp-r1").followup_stage == {}
-
-
-def test_a_resume_measures_under_the_sealed_contract_not_the_workspace_file(review_run) -> None:
-    root, _bare = review_run
-    _gpu_run(root)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    # someone edits the live contract during the wait
-    (ws / ".autoresearch.yaml").write_text(GPU_CONTRACT.replace("--json", "--json --cheat"))
-    done = FakeMeasurer(value=10.2)
-    github2 = AutoGitHub()
-    github2.ws = ws
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "applied" in out.note
-    assert "--cheat" not in done.calls[0][0].command  # the SEALED contract's command
-
-
-def test_a_moved_pr_head_abandons_the_parked_change_honestly(review_run) -> None:
-    root, bare = review_run
-    _gpu_run(root)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    # the syncs before this park spent the wake cap
-    save_record(root, replace(load_record(root, "tsp-r1"), wake_attempts=3), NOW)
-    # a maintainer pushed to the PR while the GPU job ran
-    github2 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": "e" * 40}})
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "abandoned" in out.note
-    assert "Re-measured" in github2.posted[0] and "10.2" in github2.posted[0]  # the number, first
-    assert "head moved while the re-measure ran" in github2.posted[1]
-    assert not _origin_has_branch(bare)
-    rec = load_record(root, "tsp-r1")
-    assert rec.followup_stage == {}
-    assert rec.wake_attempts == 0  # "ask again" needs a follow-up: the cap is released
-    assert _git(run_dir(root, "tsp-r1") / "ws", "for-each-ref", "refs/dispatch/").strip() == ""
-
-
-def test_a_base_synced_park_is_finished_when_the_pr_head_did_not_move(review_run) -> None:
-    """A behind wake merges the moved base locally and seals a change on top;
-    the stage's `parent` is that local merge, which GitHub never saw. The
-    resume must judge "did the head move" against the head the PR had at
-    park, not against parent — otherwise every base-synced re-measure is
-    abandoned as moved (speedrun agent-03, 2026-09-06: a landed improvement
-    thrown away with the PR head unchanged for three days)."""
-    root, bare = review_run
-    _gpu_run(root)
-    # main moves cleanly: an out-of-scope doc lands upstream
-    seed2 = root.parent / "seed2f"
-    _git(root.parent, "clone", "-q", str(bare), str(seed2))
-    (seed2 / "docs" / "news.md").write_text("from main\n")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
-    _git(seed2, "push", "-q", "origin", "main")
-    pr_head = _ws_head(root)
-    ws = run_dir(root, "tsp-r1") / "ws"
-    _git(ws, "fetch", "-q", "origin", "main")
-    github = AutoGitHub(pr=_behind_pr(head=pr_head), comments=[member(901, "tweak")])
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(merge_base=True, edits={"src/pilot/solvers/tsp.py": "v2 after sync\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    stage = load_record(root, "tsp-r1").followup_stage
-    assert stage["base_synced"] and stage["pr_head"] == pr_head
-    assert stage["parent"] != pr_head  # the local merge: GitHub never had this commit
-
-    # the measure lands; GitHub still reports the head the PR had at park
-    github2 = AutoGitHub(pr=_behind_pr(head=pr_head))
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "applied" in out.note
-    assert "Re-measured after this change" in github2.posted[0]
-    head = _origin_head(bare)
-    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2 after sync\n"
-    assert _git(ws, "show", f"{head}:docs/news.md") == "from main\n"  # the sync rode along
-    rec = load_record(root, "tsp-r1")
-    assert rec.followup_stage == {} and rec.wake_attempts == 0
-
-
-def test_a_resume_always_disarms_before_pushing(review_run) -> None:
-    """The dial that armed the PR may be any contract the PR saw: the resume
-    disarms unconditionally and withholds the push when the disarm is not
-    confirmed."""
-    root, bare = review_run
-    _gpu_run(root)  # a MANUAL contract: the inline path would not disarm
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-
-    class DisarmRefuses(AutoGitHub):
-        def disable_auto_merge(self, repo, number):
-            self.disarmed.append(number)
-            return False
-
-    github2 = DisarmRefuses()
-    github2.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert github2.disarmed == [9]
-    assert "Re-measured" in github2.posted[0] and "WITHHELD" in github2.posted[1]
-    assert not _origin_has_branch(bare)
-    assert load_record(root, "tsp-r1").followup_stage != {}  # kept: the next follow-up retries
-
-
-def test_a_parked_stage_is_durable_before_the_reply_and_the_reply_is_retried(review_run) -> None:
-    """A GitHub write failure on the park's reply must not leave the running
-    GPU job and its retained ref untracked: the stage is saved first, and the
-    resume posts the reply before anything else (terra #241 r2)."""
-    root, _bare = review_run
-    _gpu_run(root)
-
-    class CommentExplodes(FakeGitHub):
-        def comment(self, repo, number, body):
-            raise RuntimeError("github 502")
-
-    github = CommentExplodes(comments=[member(901, "tweak")])
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    assert out.action == "parked" and "reply pending" in out.note
-    rec = load_record(root, "tsp-r1")
-    assert rec.followup_stage["job_ids"] == ["9001"] and rec.followup_stage["reply_posted"] is False
-    # still pending: the resume posts the reply first, then waits
-    github2 = AutoGitHub()
-    github2.ws = run_dir(root, "tsp-r1") / "ws"
-    out2 = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    assert out2.action == "no-op"
-    assert len(github2.posted) == 1 and "Not pushed yet" in github2.posted[0]
-    assert load_record(root, "tsp-r1").followup_stage["reply_posted"] is True
-
-
-def test_a_pr_closed_while_parked_releases_the_sealed_snapshot(review_run) -> None:
-    root, _bare = review_run
-    _gpu_run(root)
-    github = FakeGitHub(comments=[member(901, "tweak")])
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""
-    # the maintainer closes the PR while the GPU job runs: ended, ref released
-    closed = FakeGitHub(pr={"state": "closed", "merged": False})
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        closed,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    assert out.action == "ended-rejected"
-    rec = load_record(root, "tsp-r1")
-    assert rec.state == "ended" and rec.followup_stage == {}
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
-
-
-def test_a_failed_comment_after_the_push_never_abandons_the_landed_change(review_run) -> None:
-    """The record says the change landed BEFORE any thread write: a comment
-    failure leaves nothing for a later follow-up to abandon (terra #241 r3)."""
-    root, bare = review_run
-    _gpu_run(root)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-
-    class CommentExplodesAfterPush(AutoGitHub):
-        def comment(self, repo, number, body):
-            raise RuntimeError("github 502")
-
-    github2 = CommentExplodesAfterPush()
-    github2.ws = run_dir(root, "tsp-r1") / "ws"
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "applied" in out.note
-    ws = run_dir(root, "tsp-r1") / "ws"
-    assert _git(ws, "show", f"{_origin_head(bare)}:src/pilot/solvers/tsp.py") == "v2\n"  # landed
-    rec = load_record(root, "tsp-r1")
-    assert rec.followup_stage == {} and _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
-    # a later follow-up finds nothing parked: it services comments as usual
-    github3 = AutoGitHub(comments=[member(902, "thanks")])
-    github3.ws = ws
-    out3 = respond(root, github3, ResumingHarness(), QueueEvaluator(values=[]))
-    assert out3.action == "replied" and "abandoned" not in out3.note
-
-
-def test_a_withheld_resume_leaves_no_unmeasured_ledger_files_behind(review_run) -> None:
-    """A refused disarm happens BEFORE any ledger write, and the workspace is
-    left exactly on the pushed head with no stray files — a retry's checkout
-    can never sweep unmeasured content into the sealed tree (terra #241 r3)."""
-    root, _bare = review_run
-    _gpu_run(root)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    github.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    parent = load_record(root, "tsp-r1").followup_stage["parent"]
-
-    class DisarmRefuses(AutoGitHub):
-        def disable_auto_merge(self, repo, number):
-            return False
-
-    github2 = DisarmRefuses()
-    github2.ws = run_dir(root, "tsp-r1") / "ws"
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    ws = run_dir(root, "tsp-r1") / "ws"
-    assert _git(ws, "rev-parse", "HEAD").strip() == parent
-    # nothing modified, nothing stray: the committed ledger row stays as it was
-    assert _git(ws, "status", "--porcelain").strip() == ""
-    assert _git(ws, "show", "HEAD:BENCHMARKS.md") == (ws / "BENCHMARKS.md").read_text()
-
-
-def test_a_synchronous_sealed_measure_pushes_the_sealed_tree_not_the_workspace(review_run) -> None:
-    """On a lines target the seal excludes the line's memory; the pushed tree
-    must be the SEALED one even when the measure returned at once (terra
-    #241 r4): a memory file the session wrote never reaches the PR."""
-    root, bare = review_run
-    lines_gpu = GPU_CONTRACT.replace(
-        "    eval_minutes: 30\n", "    eval_minutes: 30\n    lines: true\n"
-    ).replace(
-        "scope: {allowed: [src/pilot/solvers/]}",
-        "scope: {allowed: [src/pilot/solvers/, agent_memory/, AGENT_MEMORY.md]}",
-    )
-    _set_contract(root, lines_gpu)
-    github = FakeGitHub(comments=[member(901, "tweak")])
-    done = FakeMeasurer(value=10.3)
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(
-            edits={"src/pilot/solvers/tsp.py": "v2\n", "agent_memory/note.md": "remember\n"}
-        ),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(done),  # type: ignore[arg-type]
-    )
-    assert out.action == "replied" and "Re-measured" in github.posted[0]
-    ws = run_dir(root, "tsp-r1") / "ws"
-    head = _origin_head(bare)
-    assert _git(ws, "show", f"{head}:src/pilot/solvers/tsp.py") == "v2\n"
-    assert "agent_memory" not in _git(
-        ws, "ls-tree", "-r", "--name-only", head
-    )  # excluded by the seal
-    assert (
-        _git(ws, "ls-tree", "-r", "--name-only", head).count("BENCHMARKS.md") == 1
-    )  # ledger folded in
-    # the measured commit is the sealed one: same parent as the pushed (amended)
-    # head and the same solver content — the ledger row is the only addition
-    measured = done.calls[0][0].tree_sha
-    assert (
-        _git(ws, "rev-parse", f"{measured}^").strip() == _git(ws, "rev-parse", f"{head}^").strip()
-    )
-    assert _git(ws, "show", f"{measured}:src/pilot/solvers/tsp.py") == "v2\n"
-    assert "agent_memory" not in _git(ws, "ls-tree", "-r", "--name-only", measured)
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""  # released after use
-
-
-def test_a_resume_that_died_after_its_push_completes_on_the_next_follow_up(
-    review_run, monkeypatch
-) -> None:
-    """The commit about to be pushed is recorded before the push; a retry that
-    finds it as the PR head finishes the bookkeeping instead of abandoning a
-    change that already landed (terra #241 r5)."""
-    import outerloop.followup as fu
-
-    root, bare = review_run
-    _gpu_run(root)
-    github = AutoGitHub(comments=[member(901, "tweak")])
-    ws = run_dir(root, "tsp-r1") / "ws"
-    github.ws = ws
-    respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2\n"}),
-        QueueEvaluator(values=[]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer()),  # type: ignore[arg-type]
-    )
-    # the write AFTER the push dies (the clearing save: followup_stage == {})
-    real_save = fu.save_record
-
-    def dying_save(run_root_, record, now_):
-        if record.followup_stage == {}:
-            raise OSError("disk full")
-        return real_save(run_root_, record, now_)
-
-    monkeypatch.setattr(fu, "save_record", dying_save)
-    github2 = AutoGitHub()
-    github2.ws = ws
-    out = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github2,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 1,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out.action == "error"  # the crash
-    landed = _origin_head(bare)
-    rec = load_record(root, "tsp-r1")
-    assert (
-        rec.followup_stage and rec.followup_stage["pushed_head"] == landed
-    )  # recorded before the push
-    monkeypatch.setattr(fu, "save_record", real_save)
-    # the retry: the PR head IS the recorded push -> completed, not abandoned
-    github3 = AutoGitHub(pr={"state": "open", "merged": False, "head": {"sha": landed}})
-    out3 = respond_once(
-        root,
-        "tsp-r1",
-        ResumingHarness(),
-        QueueEvaluator(values=[]),
-        github3,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW + 2,
-        secrets=("sk-x",),
-        dispatch=FakeDispatch(FakeMeasurer(value=10.2)),  # type: ignore[arg-type]
-    )
-    assert out3.action == "replied" and "already landed" in out3.note
-    assert "head moved" not in " ".join(github3.posted)
-    # the number went out in the crashed attempt, before its push; never twice
-    assert "Re-measured" in github2.posted[0]
-    assert not any("Re-measured" in p for p in github3.posted)
-    assert load_record(root, "tsp-r1").followup_stage == {}
-    assert _origin_head(bare) == landed  # nothing re-pushed
-    assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
 
 
 def test_followup_cli_dispatches_uncontained_and_refuses_a_missing_image(
@@ -3476,7 +945,7 @@ def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_a
     from outerloop.syscall_cli import main
     from outerloop.tick import FollowupSpec, service_in_review
 
-    root, bare = review_run
+    root, _bare = review_run
     record = load_record(root, "tsp-r1")
     ws = run_dir(root, record.run_id) / "ws"
     record = replace(record, stage={"launches_used": 1, "sleeps_used": 1, "gpu_hours_used": 0.25})
@@ -3571,7 +1040,7 @@ def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_a
             record.run_id,
             dispatch=dispatch,
             github=cast(GitHubClient, github),
-            bot_auth=NoAuth(),
+            bot_auth=None,  # type: ignore[arg-type]
             now=NOW + 2,
             harness=checkpoint,
             spec=followup_spec(),
@@ -3590,7 +1059,7 @@ def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_a
                 record.run_id,
                 dispatch=dispatch,
                 github=cast(GitHubClient, github),
-                bot_auth=NoAuth(),
+                bot_auth=None,  # type: ignore[arg-type]
                 now=NOW + 10000,
                 harness=wake,
                 spec=followup_spec(),
@@ -3610,8 +1079,12 @@ def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_a
     assert latest.state == IN_REVIEW and latest.pr_url == record.pr_url
     assert latest.stage["launches_used"] == 2 and latest.stage["sleeps_used"] == 2 + sleep_again
     assert not pending(run_dir(root, record.run_id), latest.inbox_seq)
-    assert "v2 after experiment" in _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py")
-    assert github.body_addenda and github.row_updates == [10.2]
+    assert (
+        "v2 after experiment"
+        in (run_dir(root, record.run_id) / "ws/src/pilot/solvers/tsp.py").read_text()
+    )
+    assert not github.body_addenda and not github.row_updates
+    assert evaluator.values == [10.2]
 
 
 def test_a_rejected_request_posts_no_replies(review_run) -> None:
@@ -3721,44 +1194,510 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
     assert "out-of-scope paths at launch: docs/roadmap.md" in out.note
 
 
-@pytest.mark.parametrize("failed_resume", [False, True])
-def test_review_submit_refused_without_charge(review_run, failed_resume):
+@pytest.mark.parametrize("candidate,expected", [(11.4, 11.4), (11.8, 12.0), (12.5, 12.0)])
+def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, expected):
+    import json
+
+    from outerloop.attempt import publish
+    from outerloop.contract import load_contract
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+    from outerloop.orchestrator import AttemptResult, RunConfig
+
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    contract_text = CONTRACT.replace(
+        "    direction: min\n", "    direction: min\n    min_delta: 0.5\n"
+    )
+    (ws / ".autoresearch.yaml").write_text(contract_text)
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract")
+    base = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"{base}:main")
+    from outerloop.progress import load_leader, update_leader, write_progress
+
+    contract = load_contract(contract_text, "org/pilot")
+    write_progress(
+        ws,
+        update_leader(
+            {},
+            benchmark="tsp",
+            metric="mean_tour_length",
+            direction="min",
+            baseline=14.0,
+            candidate=12.0,
+            run_id="prior",
+            date="d",
+        ),
+        "org/pilot",
+    )
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior")
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+    workspace = Workspace(root=ws, url=str(bare))
+    snap = snapshot_tree(workspace, head)
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return True
+
+        def comment(self, repo, number, body):
+            super().comment(repo, number, body)
+            self.comments.append({"body": body})
+
+    github = GitHub(pr={"state": "open", "head": {"sha": head, "ref": PR_BRANCH}})
+    result = AttemptResult(
+        outcome="improved",
+        baseline=14.0,
+        candidate=candidate,
+        candidate_sha=snap.commit,
+        measured_paths=("src/pilot/solvers/tsp.py",),
+    )
+    record = load_record(root, "tsp-r1")
+    publish_args = dict(
+        result=result,
+        ws=workspace,
+        workspace=ws,
+        run_root=root,
+        run_dir=ws.parent,
+        run_id=record.run_id,
+        record=record,
+        config=RunConfig(target=record.target, benchmark="tsp", agent_id=record.agent_id),
+        contract=contract,
+        github=github,
+        now=NOW,
+        secrets=(),
+        base_branch="main",
+        base_sha=base,
+        issue_number=0,
+        line_ref="",
+        date="2026-09-12",
+    )
+    outcome = publish(**publish_args)
+    assert outcome.outcome == "improved"
+    pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
+    _git(ws, "merge-base", "--is-ancestor", head, pushed)
+    _git(ws, "merge-base", "--is-ancestor", snap.commit, pushed)
+    assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
+    assert load_leader(ws)["tsp"].best == expected
+    assert (
+        json.loads(_git(bare, "show", f"{PR_BRANCH}:results/leader.json"))["tsp"]["best"]
+        == expected
+    )
+    assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
+    assert github.row_updates == [candidate]
+    if candidate > 12:
+        assert "Worse" in github.posted[0]
+    assert load_record(root, record.run_id).state == IN_REVIEW
+    github.pr["head"]["sha"] = pushed
+    publish_args["record"] = load_record(root, record.run_id)
+    assert publish(**publish_args).outcome == "improved"
+    assert len(github.posted) == 1
+    assert _git(bare, "rev-parse", PR_BRANCH).strip() == pushed
+
+
+@pytest.mark.parametrize("reason", ["human", "disarm", "contract", "push", "closed", "no-code"])
+def test_publish_refusal_is_a_message(review_run, monkeypatch, reason):
+    from outerloop.attempt import publish
+    from outerloop.contract import load_contract
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+    from outerloop.inbox import pending
+    from outerloop.orchestrator import AttemptResult, RunConfig
+
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    workspace = Workspace(root=ws, url=str(bare))
+    base = _git(ws, "rev-parse", "origin/main").strip()
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+    snap = snapshot_tree(workspace, head)
+    if reason == "human":
+        _git(ws, "checkout", "--", ".")
+        (ws / "src/pilot/solvers/tsp.py").write_text("human\n")
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "human")
+        head = _git(ws, "rev-parse", "HEAD").strip()
+        _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    if reason == "contract":
+        _git(ws, "checkout", "-f", "-B", "main", base)
+        (ws / ".autoresearch.yaml").write_text(CONTRACT.replace("mean_tour_length", "new_metric"))
+        _git(ws, "add", "-A")
+        _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new ruler")
+        _git(ws, "push", "origin", "main")
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return reason != "disarm"
+
+    github = GitHub(
+        pr={
+            "state": "closed" if reason == "closed" else "open",
+            "head": {"sha": head, "ref": PR_BRANCH},
+        }
+    )
+    if reason == "push":
+        from outerloop.github import GitError
+
+        def refused_push(self, branch):
+            assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
+            raise GitError("push refused")
+
+        monkeypatch.setattr(Workspace, "push", refused_push)
+    record = load_record(root, "tsp-r1")
+    outcome = publish(
+        result=AttemptResult(
+            outcome="improved",
+            baseline=14.0,
+            candidate=11.0,
+            candidate_sha=snap.commit,
+            measured_paths=() if reason == "no-code" else ("src/pilot/solvers/tsp.py",),
+        ),
+        ws=workspace,
+        workspace=ws,
+        run_root=root,
+        run_dir=ws.parent,
+        run_id=record.run_id,
+        record=record,
+        config=RunConfig(target=record.target, benchmark="tsp"),
+        contract=load_contract(CONTRACT, record.target),
+        github=github,  # type: ignore[arg-type]
+        now=NOW,
+        secrets=(),
+        base_branch="main",
+        base_sha=base,
+        issue_number=0,
+        line_ref="",
+        date="2026-09-12",
+    )
+    assert outcome.outcome == "publish-refused"
+    assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
+    message = pending(ws.parent, 0)[-1]
+    assert message.kind == ("base-moved" if reason in ("human", "push") else "note")
+    if reason == "human":
+        assert head in message.payload["text"]
+    assert not github.row_updates
+    assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
+    assert load_record(root, record.run_id).auto_blessed_head == ""
+
+    if reason == "push":
+        from outerloop.compute import CommandResult, SlurmCompute
+        from outerloop.runstate import release_lease
+        from outerloop.tick import FollowupSpec, service_in_review
+
+        def runner(argv, timeout_s):
+            assert argv[0] == "sbatch"
+            return CommandResult(0, "77\n", "")
+
+        spec = FollowupSpec(account="", partition="", run_root=root, image="", home=root)
+        ended, submitted = service_in_review(
+            root, cast(GitHubClient, github), SlurmCompute(runner=runner), spec, NOW + 1
+        )
+        assert ended == [] and submitted == [(record.run_id, "77")]
+        release_lease(root, record.run_id)
+        author = ResumingHarness()
+        wake = respond_once(
+            root,
+            record.run_id,
+            author,
+            QueueEvaluator(),
+            cast(GitHubClient, github),
+            bot_login=BOT,
+            now=NOW + 2,
+        )
+        assert wake.action == "replied", wake.note
+        assert message.payload["text"] in author.calls[0][0]
+        assert not pending(ws.parent, load_record(root, record.run_id).inbox_seq)
+
+
+def test_unsubmitted_review_edit_is_not_measured_or_pushed(review_run):
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    before = _git(bare, "show-ref")
+    evaluator = QueueEvaluator([])
+    github = FakeGitHub(comments=[member(101, "try this")])
+    outcome = respond(
+        root,
+        github,
+        harness=ResumingHarness(edits={"src/pilot/solvers/tsp.py": "experiment\n"}),
+        evaluator=evaluator,
+    )
+    assert outcome.action == "replied"
+    assert (ws / "src/pilot/solvers/tsp.py").read_text() == "experiment\n"
+    assert _git(bare, "show-ref") == before
+    assert not github.row_updates
+    assert load_record(root, "tsp-r1").state == IN_REVIEW
+
+
+def test_legacy_remeasure_is_retired_at_wake(review_run, caplog):
+    import json
+
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+    from outerloop.runstate import RECORD_NAME
+
+    root, _ = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    snap = snapshot_tree(Workspace(root=ws), "HEAD")
+    path = ws.parent / RECORD_NAME
+    raw = json.loads(path.read_text())
+    raw["followup_stage"] = {
+        "candidate_ref": snap.ref,
+        "candidate_sha": snap.commit,
+        "job_ids": ["9"],
+    }
+    path.write_text(json.dumps(raw))
+    record = load_record(root, "tsp-r1")
+    assert "followup_stage" in json.loads(path.read_text())
+    save_record(root, record, NOW)
+    assert "followup_stage" in json.loads(path.read_text())
+    harness = ResumingHarness()
+    with caplog.at_level("INFO"):
+        result = respond(root, FakeGitHub(), harness=harness)
+    assert result.action == "no-op"
+    assert not harness.calls
+    assert "followup_stage" not in json.loads(path.read_text())
+    assert load_record(root, "tsp-r1").state == IN_REVIEW
+    assert not _git(ws, "for-each-ref", snap.ref).strip()
+    assert sum("retired legacy" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("credited", [False, True, None])
+@pytest.mark.parametrize("gpus", [0, 1])
+def test_review_submit_parks_and_delivers_verdict(review_run, monkeypatch, credited, gpus):
+    import json
+
+    from outerloop.attempt import resume_run
+    from outerloop.compute import LocalCompute
+    from outerloop.inbox import pending
+    from outerloop.measure import DispatchSettings, MeasurementPending
+    from outerloop.panel import PanelVerdict
+    from outerloop.roles import author_spec
+
+    root, _bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    text = CONTRACT.replace(
+        "    direction: min\n",
+        f"    direction: min\n    gpus: {gpus}\n    eval_minutes: 30\n    seed_env: PRIVATE_SEED\n",
+    )
+    (ws / ".autoresearch.yaml").write_text(text)
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "meter")
+    _git(ws, "push", "origin", "HEAD:main")
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, stage={"base_sha": head}), NOW)
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return True
+
+    github = GitHub(
+        pr={"state": "open", "head": {"sha": head, "ref": PR_BRANCH}, "base": {"ref": "main"}},
+        comments=[member(101, "submit this")],
+    )
+
+    class Measurer:
+        ready = False
+
+        def results(self, measures):
+            if not self.ready:
+                raise MeasurementPending(("11", "12"))
+            if credited is None:
+                from outerloop.orchestrator import EvalError
+
+                raise EvalError("gate job failed")
+            return {
+                m.name: 14.0 if m.name == "baseline" else (11.0 if credited else 15.0)
+                for m in measures
+            }
+
+    measurer = Measurer()
+    dispatch = DispatchSettings(compute=LocalCompute(), image="", account="", partition="")
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda *a, **k: measurer)
+    monkeypatch.setattr(
+        "outerloop.attempt.build_panel_runner",
+        lambda *a, **k: lambda *a: PanelVerdict(blocking=(), transcript="panel read"),
+    )
+    author = ResumingHarness(
+        edits={
+            "src/pilot/solvers/tsp.py": "submitted\n",
+            ".outerloop/syscall.json": json.dumps({"type": "sleep", "submit": True}),
+        }
+    )
+    outcome = respond_once(
+        root,
+        record.run_id,
+        author,
+        QueueEvaluator([]),
+        github,  # type: ignore[arg-type]
+        bot_login=BOT,
+        now=NOW,
+        dispatch=dispatch,
+    )
+    assert outcome.action == "parked"
+    parked = load_record(root, record.run_id)
+    assert parked.state == "waiting" and parked.pr_url == record.pr_url
+    assert parked.stage["submitted"] and parked.stage["launches_used"] == 0
+    assert parked.stage["gpu_hours_used"] == gpus
+    assert int(str(parked.stage["seed"])) > 0
+    sealed = str(parked.stage["candidate_sha"])
+    _git(ws, "merge-base", "--is-ancestor", head, sealed)
+    measurer.ready = True
+    wake = ResumingHarness(text="I read the verdict.")
+    resume_run(
+        root,
+        record.run_id,
+        dispatch=dispatch,
+        github=github,  # type: ignore[arg-type]
+        bot_auth=None,  # type: ignore[arg-type]
+        now=NOW + 10,
+        harness=wake,
+        spec=author_spec(),
+        panel_lenses=(object(),),  # type: ignore[arg-type]
+    )
+    latest = load_record(root, record.run_id)
+    assert latest.state == IN_REVIEW and latest.pr_url == record.pr_url
+    messages = pending(run_dir(root, record.run_id), 0)
+    assert {m.kind for m in messages} >= {"gate-verdict", "panel-verdict"}
+    if credited:
+        assert "no report was given" in github.body_addenda[0]
+        # The next review wake delivers both verdicts after publication.
+        respond_once(
+            root,
+            record.run_id,
+            wake,
+            QueueEvaluator([]),
+            github,  # type: ignore[arg-type]
+            bot_login=BOT,
+            now=NOW + 20,
+            dispatch=dispatch,
+        )
+    assert wake.calls and "gate-verdict" in wake.calls[-1][0]
+    assert "panel-verdict" in wake.calls[-1][0]
+
+
+def test_review_reply_suppresses_final_text(review_run):
     from outerloop.syscall_cli import main
 
     root, _ = review_run
-    record = load_record(root, "tsp-r1")
-    save_record(root, replace(record, stage={"gpu_hours_used": 0.25}), NOW)
-    github = FakeGitHub(comments=[member(101, "check it")])
+    github = FakeGitHub(comments=[member(101, "reply please")])
 
-    class SubmittingHarness(ResumingHarness):
+    class Author(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            session = super().run(brief_text, workspace, resume_session_id)
-            if len(self.calls) == 1:
-                (workspace / ".outerloop/report.md").write_text("my report")
-                assert main(["submit", "--report", ".outerloop/report.md"], root=workspace) == 0
-                assert main(["sleep"], root=workspace) == 0
-            else:
-                assert (
-                    "submit is not available while your PR is in review; end your leg and a "
-                    "code change is re-measured, or launch and sleep"
-                ) in brief_text
-                assert "REFUSED" in brief_text
-                assert main(["reply", "reply after refusal"], root=workspace) == 0
-                if failed_resume:
-                    return replace(session, is_error=True, stop_reason="error")
-            return session
+            assert "once a reply is staged the final message is not posted" in brief_text
+            assert main(["reply", "the staged reply"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
 
-    harness = SubmittingHarness()
-    out = respond_once(
+    outcome = respond_once(
         root,
         "tsp-r1",
-        harness,
+        Author(text="duplicate final"),
         QueueEvaluator(),
         cast(GitHubClient, github),
         bot_login=BOT,
         now=NOW,
     )
-    assert out.action == ("error" if failed_resume else "replied"), out.note
-    assert len(harness.calls) == 2
-    assert any("reply after refusal" in reply for reply in github.posted)
-    assert load_record(root, record.run_id).stage["gpu_hours_used"] == 0.25
+    assert outcome.action == "replied"
+    assert len(github.posted) == 1
+    assert "the staged reply" in github.posted[0]
+    assert "duplicate final" not in github.posted[0]
+
+
+@pytest.mark.parametrize("contains_base", [False, True])
+@pytest.mark.parametrize("credited", [False, True])
+def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_base, credited):
+    from outerloop.compute import LocalCompute
+    from outerloop.inbox import pending
+    from outerloop.measure import DispatchSettings
+    from outerloop.syscall_cli import main
+
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    old_base = _git(ws, "rev-parse", "origin/main").strip()
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    _git(ws, "checkout", "-B", "advance", old_base)
+    (ws / ".autoresearch.yaml").write_text(CONTRACT.replace("mean_tour_length", "fresh_metric"))
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "fresh base")
+    base = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", "HEAD:main")
+    _git(ws, "checkout", "-B", PR_BRANCH, head)
+    if not contains_base:
+        # The new contract is present, but cherry-picking does not carry base ancestry.
+        _git(ws, "cherry-pick", "--no-commit", base)
+        _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "copy contract")
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, stage={"base_sha": old_base}), NOW)
+    measured = []
+
+    class Measurer:
+        def results(self, measures):
+            measured.extend(measures)
+            return {
+                m.name: 14.0 if m.name == "baseline" else (11.0 if credited else 15.0)
+                for m in measures
+            }
+
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda *a, **k: Measurer())
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return True
+
+    github = GitHub(
+        pr={"state": "open", "base": {"ref": "main"}, "head": {"sha": head, "ref": PR_BRANCH}},
+        comments=[member(101, "submit with the fresh ruler")],
+    )
+
+    class Author(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            if self.calls:
+                assert "gate-verdict" in brief_text
+                self.edits = {}
+                self.merge_base = False
+                return super().run(brief_text, workspace, resume_session_id)
+            session = super().run(brief_text, workspace, resume_session_id)
+            assert main(["submit"], root=workspace) == 0
+            assert main(["sleep"], root=workspace) == 0
+            return session
+
+    author = Author(merge_base=contains_base, edits={"src/pilot/solvers/tsp.py": "submitted\n"})
+    outcome = respond_once(
+        root,
+        record.run_id,
+        author,
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+        dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
+    )
+    assert outcome.action == "replied", outcome.note
+    assert measured
+    baseline = next(m for m in measured if m.name == "baseline")
+    assert baseline.tree_sha == base
+    assert baseline.metric == "fresh_metric"
+    latest = load_record(root, record.run_id)
+    assert latest.stage["base_sha"] == base
+    pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
+    if credited and contains_base:
+        assert outcome.note == "improved"
+        _git(ws, "merge-base", "--is-ancestor", head, pushed)
+        _git(ws, "merge-base", "--is-ancestor", base, pushed)
+        assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
+    else:
+        assert pushed == head
+        if credited:
+            refusal = pending(ws.parent, 0)[-1]
+            assert refusal.kind == "base-moved" and refusal.source == "git"
+            assert base in refusal.payload["text"]
+            assert refusal.payload["sealed_sha"] in refusal.payload["text"]
+        else:
+            assert len(author.calls) == 2
+            assert latest.state == IN_REVIEW

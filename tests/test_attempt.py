@@ -671,12 +671,19 @@ class ScriptedHarness:
 
     edits: dict[str, str]
     text: str = "Report: swapped construction heuristic; tours shortened."
+    submit: bool = False
 
     def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
         for rel, content in self.edits.items():
             path = workspace / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
+        if self.submit:
+            import json
+
+            (workspace / ".outerloop" / "syscall.json").write_text(
+                json.dumps({"type": "sleep", "submit": True, "report": self.text})
+            )
         return SessionResult(
             stop_reason="end_turn",
             is_error=False,
@@ -797,6 +804,7 @@ def run_live(
     author_model="claude-opus-5",
     author_key_file="",
     eval_image="",
+    submit=False,
 ) -> tuple:
     github = FakeGitHub()
     queue = list(values)
@@ -805,7 +813,7 @@ def run_live(
             config=RunConfig(target="org/pilot", benchmark="tsp"),
             run_root=tmp_path / "state",
             run_id=run_id,
-            harness=ScriptedHarness(edits=edits),
+            harness=ScriptedHarness(edits=edits, submit=submit),
             github=github,  # type: ignore[arg-type]
             bot_auth=NoAuth(),
             now=1_000_000.0,
@@ -1885,6 +1893,7 @@ def test_expensive_benchmark_runs_session_then_parks_candidate(tmp_path, target_
         target_repo_dispatch,
         edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
         values=[],  # the inline evaluator is never called on the dispatched path
+        submit=True,
         dispatch=_fake_dispatch(),
     )
     assert outcome.outcome == "parked"
@@ -1909,6 +1918,7 @@ def test_cheap_benchmark_ignores_dispatch_and_measures_inline(tmp_path, target_r
         target_repo,
         edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
         values=[13.876, 13.1],
+        submit=True,
         dispatch=_fake_dispatch(),
     )
     assert outcome.outcome == "improved"
@@ -1951,10 +1961,8 @@ def test_syscalls_arm_by_default_with_dispatch_and_resume(tmp_path, target_repo_
     assert record.state == "waiting" and record.stage["phase"] == "author-sleep"
 
 
-def test_depth_k_zero_opts_the_benchmark_out(tmp_path, target_repo_optout) -> None:
-    # `depth_k: 0` is the per-benchmark off switch: even with dispatch coords
-    # and a resumable backend, the tool is not installed and a stray request
-    # file is staged and judged like any other edit.
+def test_depth_k_zero_keeps_checkpoint_and_submit_available(tmp_path, target_repo_optout) -> None:
+    # Zero launch budget still offers sleep and submit.
     import json as json_mod
 
     outcome, _ = run_live(
@@ -1967,7 +1975,8 @@ def test_depth_k_zero_opts_the_benchmark_out(tmp_path, target_repo_optout) -> No
         values=[],  # scope refuses before any measurement
         dispatch=_fake_dispatch(),
     )
-    assert outcome.outcome == "scope-violation"  # staged + judged, not honored
+    assert outcome.outcome == "parked"
+    assert load_record(tmp_path / "state", "tsp-1").stage["launches_used"] == 0
 
 
 def test_author_sleep_live_parks_and_submits_launch_jobs(
@@ -2150,6 +2159,7 @@ def test_armed_syscalls_exclude_the_channel_from_the_candidate(tmp_path, target_
             ".outerloop/notes.txt": "scratch",
         },
         values=[13.876, 13.1],
+        submit=True,
         dispatch=_fake_dispatch(),
     )
     assert outcome.outcome == "improved"
@@ -2225,6 +2235,7 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
         target_repo_dispatch,
         edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
         values=[],
+        submit=True,
         dispatch=dispatch,
     )
     assert outcome.outcome == "attempt-error"  # the failed park ends the run
@@ -2299,6 +2310,8 @@ def _write_parked_candidate(
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
     base_sha = _git(wsroot, "rev-parse", "HEAD").strip()
+    if base_branch != "main":
+        _git(wsroot, "branch", base_branch)
     # the session's edit, left UNCOMMITTED (HEAD stays at base) — the snapshot
     # captures it into candidate_sha.
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): return 'better'\n")
@@ -3100,17 +3113,15 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
         harness=RevisingHarness(),
         spec=author_spec(),
     )
-    assert outcome.outcome == "parked"  # re-parked to measure the REVISED candidate
-    assert github.prs == []  # no PR — the revision must be verified first
+    assert outcome.outcome == "improved"
+    assert github.prs[0]["draft"]
     rec = load_record(state, run_id)
-    assert rec.state == "waiting"
-    # the new park is a plain finish (the author did not resubmit)
-    assert not rec.stage.get("submitted")
-    assert rec.stage["candidate_sha"] != old  # a NEW candidate (the revision)
-    # the revised edit landed in the new candidate; the old snapshot was dropped
-    ws = state / "runs" / run_id / "ws"
-    kept = _git(ws, "for-each-ref", "--format=%(objectname)", "refs/dispatch/").split()
-    assert str(rec.stage["candidate_sha"]) in kept and str(old) not in kept
+    assert rec.state == "in-review"
+    from outerloop.inbox import pending
+
+    messages = pending(state / "runs" / run_id, rec.inbox_seq)
+    assert {m.kind for m in messages} == {"gate-verdict", "panel-verdict"}
+    assert any(m.payload.get("sealed_sha") == old for m in messages)
 
 
 def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
@@ -3244,7 +3255,7 @@ def test_errored_gate_wake_with_a_conceding_author_ends_without_a_retry(
         harness=ConcedingHarness(),
         spec=author_spec(),
     )
-    assert outcome.outcome == "eval-error"
+    assert outcome.outcome == "no-improvement"
     assert github.prs == []
     assert once.calls == 1
     assert load_record(state, run_id).state != "waiting"
@@ -3292,14 +3303,14 @@ def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -
     assert outcome.outcome == "improved"  # publishes...
     assert github.prs[0]["draft"] is True and github.armed == []  # ...as a DRAFT, no revise
 
-    from outerloop.followup import panel_wake_pending
+    from outerloop.followup import inbox_wake_pending
     from outerloop.inbox import pending
 
     record = load_record(state, run_id)
     messages = pending(state / "runs" / run_id, record.inbox_seq)
     panel = next(m for m in messages if m.kind == "panel-verdict")
     assert panel.payload["findings"][0]["blocking"]
-    assert not panel_wake_pending(state, record, {"head": {"sha": panel.payload["head"]}})
+    assert inbox_wake_pending(state, record)
 
 
 def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> None:
@@ -3433,7 +3444,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
 
     calls: list = []
     harness = RecordingHarness(
-        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+        submit=True, edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
     )
     outcome = resume_run(
         state,
@@ -3492,7 +3503,7 @@ def test_author_sleep_wake_publishes_an_inline_improvement(tmp_path, monkeypatch
         bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=ScriptedHarness(
-            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+            submit=True, edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
         ),
         spec=author_spec(),
     )
@@ -3527,7 +3538,9 @@ def test_author_sleep_wake_keeps_the_submit_report_on_the_pr(tmp_path, monkeypat
         bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=ScriptedHarness(
-            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+            submit=True,
+            text="the author's submit report",
+            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"},
         ),
         spec=author_spec(),
     )
@@ -3553,7 +3566,7 @@ def test_author_sleep_wake_reconciles_an_already_open_pr(tmp_path, monkeypatch) 
         bot_auth=NoAuth(),
         now=1_000_100.0,
         harness=ScriptedHarness(
-            edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
+            submit=True, edits={"src/pilot/solvers/tsp.py": "def solve(): return 'polished'\n"}
         ),
         spec=author_spec(),
     )
@@ -3591,7 +3604,9 @@ def test_author_sleep_wake_keeps_its_snapshot_when_the_terminal_record_fails(
         github=CommentingGitHub(),  # type: ignore[arg-type]
         bot_auth=NoAuth(),
         now=1_000_100.0,
-        harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
+        harness=ScriptedHarness(
+            submit=True, edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}
+        ),
         spec=author_spec(),
     )
     assert outcome.outcome == "no-improvement"
@@ -5628,3 +5643,124 @@ def test_line_base_moved_is_best_effort_false_on_git_failure(tmp_path) -> None:
 
     ws = Workspace(root=tmp_path / "nope")
     assert _line_base_advanced(ws, "main", "deadbeef") == ""
+
+
+def test_stop_with_submit_available_ends_unmeasured_with_report(tmp_path, target_repo_lines):
+    outcome, github = run_live(
+        tmp_path,
+        target_repo_lines,
+        edits={
+            "src/pilot/solvers/tsp.py": "experiment\n",
+            "AGENT_MEMORY.md": "Keep this finding.\n",
+        },
+        values=[],
+        dispatch=_fake_dispatch(),
+    )
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert outcome.outcome == "no-improvement"
+    assert record.state == "ended" and record.ending == "negative-result"
+    assert record.ending_note == "ended without a submit"
+    assert "Report: swapped construction heuristic" in Path(outcome.report_path).read_text()
+    assert not github.prs
+    assert "Keep this finding." in _git(
+        target_repo_lines, "show", "agents/agent-01:AGENT_MEMORY.md"
+    )
+
+
+def test_new_pr_contract_refusal_parks_for_author_message(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from outerloop.inbox import pending
+    from outerloop.roles import author_spec
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
+    )
+    record = load_record(state, run_id)
+    save_record(state, replace(record, stage={**record.stage, "submitted": True}), 1_000_050.0)
+    ws = state / "runs" / run_id / "ws"
+    # Change the ruler on base after the candidate was sealed.
+    _git(ws, "checkout", "-f", "main")
+    _git(ws, "clean", "-fd")
+    (ws / ".autoresearch.yaml").write_text(
+        CONTRACT_DISPATCH.replace("mean_tour_length", "new_metric")
+    )
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new ruler")
+    _git(ws, "push", "origin", "main")
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "publish-refused" and not github.prs
+    parked = load_record(state, run_id)
+    assert parked.state == "waiting" and parked.stage["phase"] == "author-sleep"
+    assert {m.kind for m in pending(ws.parent, 0)} >= {"gate-verdict", "note"}
+    assert _git(ws, "for-each-ref", str(parked.stage["candidate_ref"])).strip()
+    # The refusal wakes the author, whose unsubmitted stop ends unmeasured.
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_110.0,
+        harness=ScriptedHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "no-improvement"
+    assert load_record(state, run_id).ending_note == "ended without a submit"
+
+
+@pytest.mark.parametrize("pr_url", ["", "https://github.com/org/pilot/pull/9"])
+def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url):
+    from dataclasses import replace
+
+    from outerloop.github import GitHubClient
+    from outerloop.intake import RELEASE_MARKER
+
+    state, run_id = _write_parked_candidate(
+        tmp_path,
+        monkeypatch,
+        values={"baseline": 13.0, "candidate": 14.0},
+        issue_number=42,
+        contract=CONTRACT_LINES,
+        agent_id="agent-01",
+    )
+    record = load_record(state, run_id)
+    save_record(
+        state,
+        replace(record, pr_url=pr_url, stage={**record.stage, "submitted": True}),
+        1_000_050.0,
+    )
+
+    class GitHub(CommentingGitHub):
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "head": {"sha": record.stage["base_sha"]}}
+
+    github = GitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=cast(GitHubClient, github),
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    ended = load_record(state, run_id)
+    assert outcome.outcome == "negative-result"
+    assert ended.state == "ended" and ended.ending == "negative-result"
+    assert ended.ending_note
+    assert "swapped the construction heuristic" in Path(outcome.report_path).read_text()
+    ws = state / "runs" / run_id / "ws"
+    assert not _git(ws, "for-each-ref", str(record.stage["candidate_ref"])).strip()
+    assert _git(tmp_path / f"origin-{run_id}.git", "rev-parse", "agents/agent-01").strip()
+    number, body = github.issue_comments[-1]
+    assert number == 42 and RELEASE_MARKER in body

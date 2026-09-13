@@ -359,7 +359,7 @@ def render(brief: SessionBrief) -> str:
             f"    python {_CHANNEL}/syscall launch --name <handle> "
             '--minutes <N> [--array <N>] [--concurrency <K>] [--why "one line"] '
             "--artifact <repo-relative file> -- <command>",
-            f"    python {_CHANNEL}/syscall submit --report <file> [--minutes <N>]",
+            f"    python {_CHANNEL}/syscall submit [--report <file>] [--minutes <N>]",
             f"    python {_CHANNEL}/syscall siblings",
             f"    python {_CHANNEL}/syscall queue",
             f"    python {_CHANNEL}/syscall history",
@@ -412,33 +412,13 @@ def render(brief: SessionBrief) -> str:
             "your session start — prefer a direction no sibling is actively "
             "on, unless you have a distinct angle.",
             "",
-            "READY means MEASURED: submit only when your own launch results "
-            "already show the candidate STRICTLY clearing the gate's "
-            "improvement bar — better than the baseline by more than BOTH "
-            "the gate's default relative margin AND the contract's "
-            "significance floor when one is declared. The gate confirms "
-            "evidence you have — it is not your first experiment; an "
-            "unvalidated submit wastes gate compute and spends a sleep on a "
-            "guess.",
-            "",
-            "A submit needs `--report <file>`: a short markdown write-up with "
-            "your hypothesis, what you ran and what it measured (`history` "
-            "lists your launches), why this should merge, and what did not "
-            "work. It becomes the pull request's research report, and the "
-            "panel reads it against the diff and your experiments — claim "
-            "only what the evidence shows.",
-            "",
-            "When your candidate is READY, stage `submit --report <file>` and then `sleep`: "
-            "your tree is sealed, measured against the baseline, and read by "
-            "the review panel. A clean pass is published as a PR directly; "
-            "otherwise you wake with the gate result or the panel's findings "
-            "and decide — revise and submit again, run more experiments, or "
-            "finish with an honest negative report. A submit consumes no "
-            "launch from your budget, but its gate evals spend real compute "
-            "(GPU-hours on metered benchmarks) — measure first. "
-            "Finishing WITHOUT a submit still runs the "
-            "same gate and panel, but blocking findings then open a draft PR "
-            "for a human instead of coming back to you.",
+            "Stage `submit [--report <file>]` and then `sleep` to seal the tree, "
+            "run the paired gate and panel, and receive their verdicts. A credited "
+            "verdict opens a PR or fast-forwards its head. Submit needs no prior "
+            "launch. The optional report becomes the PR's research report.",
+            "A submit spends a sleep and its gate's GPU-hours, but no launch count. "
+            "Stopping without a submit ends unmeasured; with a PR open it returns "
+            "to review. An edit in review is measured and pushed only on submit.",
         ]
     parts += [
         "",

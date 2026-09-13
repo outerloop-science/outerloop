@@ -52,7 +52,7 @@ from outerloop.github import (
 from outerloop.harness import Harness, SessionResult, default_binary, redact
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
-from outerloop.markers import has_marker
+from outerloop.markers import has_marker, marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
     AttemptResult,
@@ -62,6 +62,8 @@ from outerloop.orchestrator import (
     RunParked,
     _benchmark,
     attempt_once,
+    benchmark_floor,
+    clears_min_delta,
     pr_body,
     resume_attempt,
 )
@@ -69,6 +71,7 @@ from outerloop.panel import PanelLens, PanelVerdict, run_panel
 from outerloop.paths import CONFIG_DIR
 from outerloop.progress import (
     PROGRESS_PATHS,
+    fmt_metric,
     load_leader,
     update_leader,
     write_progress,
@@ -108,6 +111,8 @@ from outerloop.syscall import refresh_tool as syscall_refresh_tool
 from outerloop.syscall import write_budget as syscall_write_budget
 from outerloop.syscall import write_siblings as syscall_write_siblings
 from outerloop.verifier import MAX_CLAIM_CHARS
+
+REPLY_MARKER = marker("followup")
 
 log = logging.getLogger(__name__)
 
@@ -364,8 +369,17 @@ def _clear_stage(record: RunRecord) -> RunRecord:
     # board) reads it after the transition
     kept: dict[str, object] = {
         k: record.stage[k]
-        for k in ("launches_used", "sleeps_used", "gpu_hours_used")
-        if record.stage and k in record.stage
+        for k in (
+            "launches_used",
+            "sleeps_used",
+            "gpu_hours_used",
+            "base_sha",
+            "base_branch",
+            "publish",
+        )
+        if record.stage
+        and k in record.stage
+        and (record.state != ENDED or k not in ("base_sha", "base_branch"))
     }
     return dc_replace(
         record,
@@ -469,7 +483,7 @@ def _park_run(
         # with no submit); either way what the wake's panel and the PR body read
         "report": redact(
             parked.syscall.report
-            if parked.syscall is not None and parked.syscall.report
+            if parked.syscall is not None and parked.syscall.submit
             else (parked.session.final_text if parked.session else ""),
             secrets,
         )[:MAX_CLAIM_CHARS],
@@ -785,14 +799,14 @@ def post_replies(
     replies: tuple[str, ...],
     secrets: tuple[str, ...],
     run_dir: Path,
-) -> None:
+) -> int:
     """Publish consumed author replies on the run's current thread."""
     from outerloop.followup import MAX_REPLY_CHARS, REPLY_MARKER, _pr_number
     from outerloop.review import APPROVAL_PATTERN, REDACTED
 
     number = _pr_number(record.pr_url) if record.pr_url else record.issue_number
     if not number:
-        return
+        return 0
     from outerloop.inbox import flush_replies, stage_replies
 
     def post(reply: str, rid: str) -> None:
@@ -813,9 +827,33 @@ def post_replies(
 
     try:
         stage_replies(run_dir, replies)
-        flush_replies(run_dir, post, seen)
+        return flush_replies(run_dir, post, seen)
     except Exception as exc:
         log.warning("reply delivery failed for %s: %s", record.run_id, exc)
+        return 0
+
+
+def save_meter(run_root: Path, run_id: str, launches: int, sleeps: int, hours: float) -> None:
+    record = load_record(run_root, run_id)
+    if (
+        record.stage.get("launches_used", 0),
+        record.stage.get("sleeps_used", 0),
+        record.stage.get("gpu_hours_used", 0.0),
+    ) == (launches, sleeps, hours):
+        return
+    save_record(
+        run_root,
+        dc_replace(
+            record,
+            stage={
+                **record.stage,
+                "launches_used": launches,
+                "sleeps_used": sleeps,
+                "gpu_hours_used": hours,
+            },
+        ),
+        time.time(),
+    )
 
 
 def run_author_leg(
@@ -839,7 +877,12 @@ def run_author_leg(
     from outerloop.syscall import write_budget
 
     directory = run_root / "runs" / record.run_id
-    post_replies(record, github, (), secrets, directory)
+    replies_posted = post_replies(record, github, (), secrets, directory)
+
+    def post_leg_replies(replies: tuple[str, ...]) -> None:
+        nonlocal replies_posted
+        replies_posted += post_replies(record, github, replies, secrets, directory)
+
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
     syscall_excluded(workspace)
@@ -876,7 +919,7 @@ def run_author_leg(
         lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
     )
     kwargs.setdefault("ruler", RULER)
-    return attempt_once(
+    result = attempt_once(
         config,
         contract_text,
         workspace,
@@ -897,9 +940,14 @@ def run_author_leg(
         launches_used=launches,
         sleeps_used=sleeps,
         gpu_hours_used=hours,
-        on_replies=lambda replies: post_replies(record, github, replies, secrets, directory),
+        on_replies=post_leg_replies,
+        on_meter=lambda launches, sleeps, hours: save_meter(
+            run_root, record.run_id, launches, sleeps, hours
+        ),
         **kwargs,
     )
+
+    return dc_replace(result, replies_posted=replies_posted)
 
 
 def _wake_author_sleep(
@@ -2030,6 +2078,18 @@ def resume_run(
             _line_ref_for(bench, config.agent_id),
         )
     )
+    if record.pr_url:
+        pr = github.get_pull_request(record.target, int(record.pr_url.rstrip("/").split("/")[-1]))
+        head = str((pr.get("head") or {}).get("sha") or "")
+        if head:
+            altered = set(
+                ws.git(
+                    "diff", "--name-only", "-z", head, candidate_sha, "--", *PROGRESS_PATHS
+                ).split("\0")
+            )
+            measured_paths = tuple(
+                p for p in measured_paths if p not in PROGRESS_PATHS or p in altered
+            )
     seed = int(stage["seed"])  # type: ignore[call-overload]
     suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]
     panel_reads = int(stage.get("panel_reads", 0))  # type: ignore[call-overload]
@@ -2216,6 +2276,165 @@ def resume_run(
             judged=judged,
         )
 
+    if result.outcome == "improved" or (
+        submitted_park and result.baseline is not None and result.candidate is not None
+    ):
+        baseline, candidate = result.baseline, result.candidate
+        assert baseline is not None and candidate is not None
+        _push_line_snapshot(
+            ws,
+            _line_ref_for(bench, config.agent_id),
+            run_id,
+            result.outcome,
+            secrets,
+            bot_login=config.bot_login,
+        )
+        ws.git("checkout", "-f", "--detach", candidate_sha)
+        ws.git("clean", "-fd")
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+
+        if panel_lenses:
+            # A panel ERROR (a git op in build_panel_runner, not a finding)
+            # must NOT abort the publish and drop the candidate snapshot —
+            # the improvement is real and measured. Fail closed to DEGRADED:
+            # open a DRAFT for a human, keep the candidate. (run_panel itself
+            # already fails closed per-lens; this catches the git setup.)
+            try:
+                verdict = build_panel_runner(
+                    ws,
+                    run_dir,
+                    base_sha,
+                    panel_lenses,
+                    contract_text,
+                    config.target,
+                    config.benchmark,
+                    config.bot_login,
+                    _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
+                    exclude=(LINE_MEMORY_PATHS if _line_ref_for(bench, config.agent_id) else ()),
+                    secrets=secrets,
+                )(baseline, candidate, str(stage.get("report", "")))
+            except Exception as exc:
+                if isinstance(exc, GitError) and _is_git_tamper(exc):
+                    # tamper during the panel is not a panel error to draft
+                    # around — end as a refused wake.
+                    return _end_refused_wake(run_root, record, exc, now, secrets)
+                log.warning(
+                    "wake panel errored for %s (%s); opening a DRAFT",
+                    run_id,
+                    redact(f"{type(exc).__name__}: {exc}", secrets),
+                )
+                verdict = PanelVerdict(
+                    blocking=(),
+                    transcript="panel setup failed — NOT a clean read",
+                    degraded=True,
+                )
+            reads = panel_reads + 1
+            # DEPTH AXIS (docs/design/research-loop.md): blocking findings
+            # on a SUBMITTED claim go back to the AUTHOR (buildout Phase B)
+            # — it revises and resubmits (a fresh seal + gate + panel), or
+            # concludes. A plain finish (or an unresumable session) DRAFTs
+            # the PR with the findings open for a human to triage.
+            panel_message = Message(
+                0,
+                "panel-verdict",
+                "panel",
+                thread_for(record),
+                now,
+                f"panel:{candidate_sha}:{stage.get('sleeps_used', 0)}:{reads}",
+                {**panel_payload(verdict, candidate_sha), "wake_author": False},
+            )
+            append(run_dir, panel_message)
+            result = dc_replace(
+                result,
+                panel_transcript=verdict.transcript,
+                panel_rounds=reads,
+                panel_blocking_open=bool(verdict.blocking),
+                panel_degraded=verdict.degraded,
+            )
+
+    if submitted_park and panel_lenses and (result.baseline is None or result.candidate is None):
+        append(
+            run_dir,
+            Message(
+                0,
+                "panel-verdict",
+                "panel",
+                thread_for(record),
+                now,
+                f"panel:{candidate_sha}:{stage.get('sleeps_used', 0)}:unavailable",
+                panel_payload(
+                    PanelVerdict(
+                        blocking=(),
+                        transcript="Panel unavailable: gate produced no paired numbers.",
+                        degraded=True,
+                    ),
+                    candidate_sha,
+                ),
+            ),
+        )
+
+    if submitted_park and not author_resumable and result.outcome != "improved":
+        append(
+            run_dir,
+            Message(
+                0,
+                "gate-verdict",
+                "kernel",
+                thread_for(record),
+                now,
+                f"gate:{candidate_sha}:{stage.get('sleeps_used', 0)}",
+                {
+                    "text": result.note or result.outcome,
+                    "sealed_sha": candidate_sha,
+                    "base_sha": base_sha,
+                    "measurement_signature": bench.measurement_signature(),
+                    "baseline": result.baseline,
+                    "candidate": result.candidate,
+                    "suite": [asdict(row) for row in result.suite],
+                },
+            ),
+        )
+        # Only a missing resumable author turns a submitted verdict into an ending.
+        result = dc_replace(result, submit_report=str(stage.get("report") or "no report was given"))
+        report_path = run_dir / "report.md"
+        report_path.write_text(result.report(config, redact_secrets=secrets))
+        _push_line_snapshot(
+            ws,
+            _line_ref_for(bench, config.agent_id),
+            run_id,
+            NEGATIVE_RESULT,
+            secrets,
+            bot_login=config.bot_login,
+        )
+        save_record(
+            run_root,
+            dc_replace(
+                _clear_stage(record),
+                state=ENDED,
+                ending=NEGATIVE_RESULT,
+                ending_note=redact(result.note or result.outcome, secrets),
+            ),
+            now,
+        )
+        _post_issue_finished(
+            github,
+            config.target,
+            issue_number,
+            run_id,
+            NEGATIVE_RESULT,
+            "",
+            result.report(config, redact_secrets=secrets)[:8000],
+            secrets,
+        )
+        drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
+        return AttemptOutcome(
+            run_id=run_id,
+            outcome=NEGATIVE_RESULT,
+            pr_url=record.pr_url,
+            report_path=str(report_path),
+        )
+
     if (
         submitted_park
         and author_resumable
@@ -2238,6 +2457,10 @@ def resume_run(
                     f"(baseline {result.baseline}, candidate {result.candidate}).",
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
+                    "measurement_signature": bench.measurement_signature(),
+                    "baseline": result.baseline,
+                    "candidate": result.candidate,
+                    "suite": [asdict(row) for row in result.suite],
                 },
             ),
             # the verdict rides the resume: the same tree, sealed again after
@@ -2246,392 +2469,54 @@ def resume_run(
             judged=(candidate_sha, result),
         )
 
-    def _notebook(outcome: str) -> None:
-        # Research lines: record the tree AS OF THIS DECIDED TERMINAL — never
-        # earlier, because a blocking panel verdict can still resume the
-        # author (a continuation, not a terminal).
-        _push_line_snapshot(
-            ws,
-            _line_ref_for(bench, config.agent_id),
-            run_id,
-            outcome,
-            secrets,
-            bot_login=config.bot_login,
+    if submitted_park:
+        result = dc_replace(result, submit_report=str(stage.get("report") or "no report was given"))
+        append(
+            run_dir,
+            Message(
+                0,
+                "gate-verdict",
+                "kernel",
+                thread_for(record),
+                now,
+                f"gate:{candidate_sha}:{stage.get('sleeps_used', 0)}",
+                {
+                    "text": (
+                        f"Gate: {result.outcome} "
+                        f"(baseline {result.baseline}, candidate {result.candidate})."
+                    ),
+                    "sealed_sha": candidate_sha,
+                    "base_sha": base_sha,
+                    "measurement_signature": bench.measurement_signature(),
+                    "baseline": result.baseline,
+                    "candidate": result.candidate,
+                    "suite": [asdict(row) for row in result.suite],
+                },
+            ),
         )
-
-    if result.outcome == "improved":
-        # Publish: branch the SEALED candidate sha, fold in the ledger, push,
-        # open the PR. No moved-base merge (research-loop.md) — a stale PR is a
-        # re-wake, not an auto-merge.
-        from datetime import UTC, datetime
-
-        assert result.baseline is not None and result.candidate is not None
-        baseline, candidate = result.baseline, result.candidate
-        # a zero-change "improvement" is metric noise, not progress — never a PR
-        # (defense in depth; measure_and_decide already requires a real delta,
-        # and an empty base..candidate diff implies baseline == candidate).
-        if not measured_paths:
-            result = dc_replace(
-                result, outcome="no-improvement", note="no code change; metric noise"
-            )
-            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-            final = _clear_stage(
-                RunRecord(**{**record.__dict__, "state": ENDED, "ending": NEGATIVE_RESULT})
-            )
-            _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
-            _notebook("no-improvement")
-            return AttemptOutcome(run_id=run_id, outcome="no-improvement")
-
-        from datetime import UTC as _UTC
-        from datetime import datetime as _dt
-
-        # seal the notebook before any checkout mutates the persisted session
-        # tree (the memory files are excluded from the sealed candidate and
-        # would not survive the force-checkout + clean below)
-        _notebook("improved")
-
-        branch = f"{config.branch_prefix}/{run_id}"
-
-        # IDEMPOTENCY: a prior wake may have opened the PR but died before
-        # recording it (leaving the run WAITING). On re-entry, if a PR is already
-        # open for this head->base, reconcile to it — do NOT re-push
-        # (non-fast-forward) or open a duplicate. The reconcile does the FULL
-        # terminal (branch checkout, arm, report, issue, in-review record); it
-        # only SKIPS the push + create_pull the prior wake already did. A lookup
-        # failure just falls through to the normal publish.
-        existing: dict[str, object] | None = None
-        try:
-            existing = github.find_open_pull_for_head(config.target, branch, base_branch)
-        except Exception as exc:
-            log.warning(
-                "idempotency PR lookup failed for %s: %s",
-                run_id,
-                redact(f"{type(exc).__name__}: {exc}", secrets),
-            )
-        if existing:
-            pr_url = str(existing.get("html_url", ""))
-            log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
-            # put the workspace on the branch (a later follow-up expects it) and
-            # finish the steps the prior wake may have died before completing.
-            _best_effort(
-                "reconcile checkout", lambda: ws.git("checkout", "-f", "-B", branch, candidate_sha)
-            )
-            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit() and not existing.get("draft"):
-                _arm_unless_base_moved(
-                    github,
-                    ws,
-                    config.target,
-                    pr_number,
-                    base_branch,
-                    base_sha,
-                    secrets,
-                    merge_mode=getattr(contract, "merge", "manual"),
-                    panel_ran=result.panel_rounds > 0,
-                )
-            report_path = run_dir / "report.md"
-            _best_effort(
-                "run report",
-                lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
-                secrets,
-            )
-            final = _clear_stage(
-                RunRecord(
-                    **{
-                        **record.__dict__,
-                        "state": IN_REVIEW,
-                        "pr_url": pr_url,
-                        "auto_blessed_head": _blessed_head(ws, result, contract),
-                        "resume_session_id": result.session.session_id if result.session else "",
-                        "ending_note": pr_url,
-                    }
-                )
-            )
-            if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
-                drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-            _post_issue_finished(
-                github,
-                config.target,
-                issue_number,
-                run_id,
-                "improved",
-                pr_url,
-                redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
-                secrets,
-            )
-            return AttemptOutcome(
-                run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
-            )
-
-        try:
-            # FORCE-checkout the sealed candidate: at wake the workspace still
-            # holds the session's dirty tree (HEAD is pre_session_sha), so a
-            # plain checkout could be blocked; the sha already captured exactly
-            # the measured content.
-            ws.git("checkout", "-f", "-B", branch, candidate_sha)
-            # `checkout -f` does NOT remove untracked files, and the panel's
-            # `git add -A` (in build_panel_runner) would sweep any post-snapshot
-            # cruft into the tree it judges. Clean untracked (non-ignored) files
-            # so the panel reads EXACTLY candidate_sha. The ledger commit stages
-            # only PROGRESS_PATHS, so it was never affected.
-            ws.git("clean", "-fd")
-
-            # Verification panel on the credited claim — the SAME gate the
-            # inline path runs (docs/design/orchestrator-verify.md), so a
-            # dispatched improvement is not published unverified. It reads the
-            # workspace tree, now checked out to the SEALED candidate_sha (the
-            # dispatched evals ran on node-local scratch, so the tree is exactly
-            # what was measured), over base_sha. A blocking or degraded
-            # verdict opens a DRAFT PR carrying the findings and never arms
-            # auto-merge; a clean verdict (or no panel) arms.
-            if panel_lenses:
-                # A panel ERROR (a git op in build_panel_runner, not a finding)
-                # must NOT abort the publish and drop the candidate snapshot —
-                # the improvement is real and measured. Fail closed to DEGRADED:
-                # open a DRAFT for a human, keep the candidate. (run_panel itself
-                # already fails closed per-lens; this catches the git setup.)
-                try:
-                    verdict = build_panel_runner(
-                        ws,
-                        run_dir,
-                        base_sha,
-                        panel_lenses,
-                        contract_text,
-                        config.target,
-                        config.benchmark,
-                        config.bot_login,
-                        _dt.fromtimestamp(now, _UTC).strftime("%Y-%m-%d"),
-                        exclude=(
-                            LINE_MEMORY_PATHS if _line_ref_for(bench, config.agent_id) else ()
-                        ),
-                        secrets=secrets,
-                    )(baseline, candidate, str(stage.get("report", "")))
-                except Exception as exc:
-                    if isinstance(exc, GitError) and _is_git_tamper(exc):
-                        # tamper during the panel is not a panel error to draft
-                        # around — end as a refused wake.
-                        return _end_refused_wake(run_root, record, exc, now, secrets)
-                    log.warning(
-                        "wake panel errored for %s (%s); opening a DRAFT",
-                        run_id,
-                        redact(f"{type(exc).__name__}: {exc}", secrets),
-                    )
-                    verdict = PanelVerdict(
-                        blocking=(),
-                        transcript="panel setup failed — NOT a clean read",
-                        degraded=True,
-                    )
-                reads = panel_reads + 1
-                # DEPTH AXIS (docs/design/research-loop.md): blocking findings
-                # on a SUBMITTED claim go back to the AUTHOR (buildout Phase B)
-                # — it revises and resubmits (a fresh seal + gate + panel), or
-                # concludes. A plain finish (or an unresumable session) DRAFTs
-                # the PR with the findings open for a human to triage.
-                panel_message = Message(
-                    0,
-                    "panel-verdict",
-                    "panel",
-                    thread_for(record),
-                    now,
-                    f"panel:{candidate_sha}:{stage.get('sleeps_used', 0)}:{reads}",
-                    {**panel_payload(verdict, candidate_sha), "wake_author": False},
-                )
-                append(run_dir, panel_message)
-                if bool(verdict.blocking) and submitted_park and author_resumable:
-                    return _wake_author(panel_message)
-                result = dc_replace(
-                    result,
-                    panel_transcript=verdict.transcript,
-                    panel_rounds=reads,
-                    panel_blocking_open=bool(verdict.blocking),
-                    panel_degraded=verdict.degraded,
-                )
-
-            entries = update_leader(
-                load_leader(workspace),
-                benchmark=bench.name,
-                metric=bench.metric,
-                direction=bench.direction,
-                baseline=baseline,
-                candidate=candidate,
-                run_id=run_id,
-                date=datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d"),
-                run_seed=result.run_seed,
-            )
-            write_progress(
-                workspace,
-                entries,
-                config.target,
-                digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
-            )
-            # Stage ONLY the ledger files on top of the sealed candidate — never
-            # `git add -A`, which would sweep in untracked cruft the session left
-            # (eval caches) that was neither measured nor scope-checked. The
-            # candidate content is already vetted (measure_and_decide's scope
-            # check on measured_paths); assert nothing but the ledger is staged.
-            ws.git("add", "--", *PROGRESS_PATHS)
-            staged = ws.staged_paths()
-            extra = [p for p in staged if p not in PROGRESS_PATHS]
-            if extra:
-                raise WorkspaceDrift(f"wake commit would stage non-ledger paths: {extra[:10]}")
-            # Commit the ledger update on top of the sealed candidate ONLY when
-            # it actually moved. When the candidate beat its baseline but not the
-            # recorded best, update_leader is a no-op (the ledger's `best` does
-            # not advance) — a valid composable win with no leaderboard change,
-            # so push the candidate as-is rather than an empty commit.
-            if staged:
-                ws.git(
-                    *git_identity(config.bot_login),
-                    "commit",
-                    "-m",
-                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
-                    f"\n\nAgent: {config.agent_id}",
-                )
-            ws.push(branch)
-            if record.stage.get("submitted"):
-                # the author's report at submit rides the stage: the PR shows it
-                # as the research report, over the ledger's experiments
-                result = dc_replace(result, submit_report=str(record.stage.get("report") or ""))
-            body = pr_body(
-                result,
-                config,
-                redact_secrets=secrets,
-                display_digits=bench.display_digits,
-                experiments=experiments_rows(run_dir),
-            )
-            if issue_number:
-                body = f"Addresses #{issue_number}.\n\n{body}"
-            # blocking findings still open at the panel, or a degraded final
-            # read, mean a human must look: open a DRAFT and never arm. A clean
-            # verdict (or no panel configured) opens non-draft and arms
-            # auto-merge only where branch protection requires a review — same
-            # policy as the inline path.
-            draft = result.panel_blocking_open or result.panel_degraded
-            pr_url = github.create_pull(
-                config.target,
-                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
-                head=branch,
-                base=base_branch,
-                body=body,
-                draft=draft,
-            )
-            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit() and not draft:
-                _arm_unless_base_moved(
-                    github,
-                    ws,
-                    config.target,
-                    pr_number,
-                    base_branch,
-                    base_sha,
-                    secrets,
-                    merge_mode=getattr(contract, "merge", "manual"),
-                    panel_ran=result.panel_rounds > 0,
-                )
-        except Exception as exc:
-            if isinstance(exc, GitError) and _is_git_tamper(exc):
-                # a concurrent object-store removal during the publish block is
-                # tamper, not a publish failure: end as a refused wake (the
-                # clean tamper terminal) rather than mask it as a publish-error.
-                return _end_refused_wake(run_root, record, exc, now, secrets)
-            # push / PR / commit failed — end as an error. Save the ENDED record
-            # BEFORE dropping the snapshot (same ordering as the other terminals):
-            # a failed save then leaves the run WAITING with its snapshot intact
-            # (recoverable), never WAITING with the candidate already gone. On a
-            # successful end, drop the snapshot — ENDED runs are never swept, so
-            # keeping it would only leak the ref (a retry is a fresh climb, not a
-            # re-wake). Never delete a remote branch (a push may have
-            # half-succeeded).
-            note = redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
-            log.warning("wake publish failed for %s: %s", run_id, note)
-            failed = _clear_stage(
-                RunRecord(
-                    **{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note}
-                )
-            )
-            if _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets):
-                drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-            _notebook("publish-error")
-            return AttemptOutcome(run_id=run_id, outcome="publish-error")
-        # PR opened. Record IN_REVIEW *before* dropping the snapshot: if the save
-        # fails, the record stays `waiting` with the snapshot intact, so the run
-        # is recoverable rather than an ABORTED record over a live PR.
-        report_path = run_dir / "report.md"
-        _best_effort(
-            "run report",
-            lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
-            secrets,
-        )
-        final = _clear_stage(
-            RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": IN_REVIEW,
-                    "pr_url": pr_url,
-                    "auto_blessed_head": _blessed_head(ws, result, contract),
-                    "resume_session_id": result.session.session_id if result.session else "",
-                    "ending_note": pr_url,
-                }
-            )
-        )
-        if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
-            drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-        else:
-            log.warning(
-                "run %s: PR %s opened but in-review record unsaved; snapshot kept", run_id, pr_url
-            )
-        _post_issue_finished(
-            github,
-            config.target,
-            issue_number,
-            run_id,
-            "improved",
-            pr_url,
-            redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
-            secrets,
-        )
-        return AttemptOutcome(
-            run_id=run_id, outcome="improved", pr_url=pr_url, report_path=str(report_path)
-        )
-
-    # a negative terminal: end the record, THEN release the snapshot. Save
-    # BEFORE dropping (same ordering as the improved path): if the save fails,
-    # the run stays WAITING with its snapshot intact, so a re-wake can still
-    # reconstruct — never WAITING with the snapshot already gone.
-    _notebook(result.outcome)
-    report_path = run_dir / "report.md"
-    _best_effort(
-        "run report",
-        lambda: report_path.write_text(result.report(config, redact_secrets=secrets)),
-        secrets,
+    outcome = _finish_attempt(
+        result=result,
+        ws=ws,
+        workspace=workspace,
+        run_root=run_root,
+        run_dir=run_dir,
+        run_id=run_id,
+        record=record,
+        config=config,
+        contract=contract,
+        github=github,
+        now=now,
+        secrets=secrets,
+        base_branch=base_branch,
+        base_sha=base_sha,
+        issue_number=issue_number,
+        line_ref=_line_ref_for(bench, config.agent_id),
+        date=_utc_date(now),
     )
-    final = _clear_stage(
-        RunRecord(
-            **{
-                **record.__dict__,
-                "state": ENDED,
-                "ending": _ENDINGS_BY_OUTCOME[result.outcome],
-                "ending_note": redact(result.note, secrets),
-            }
-        )
-    )
-    if _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
+    saved = load_record(run_root, run_id)
+    if saved.state != WAITING or saved.stage.get("candidate_ref") != candidate_ref:
         drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
-    else:
-        log.warning(
-            "run %s: ended negative but record unsaved; snapshot kept for a re-wake", run_id
-        )
-    _post_issue_finished(
-        github,
-        config.target,
-        issue_number,
-        run_id,
-        result.outcome,
-        "",
-        redact(result.report(config, redact_secrets=secrets), secrets)[:8000],
-        secrets,
-    )
-    return AttemptOutcome(run_id=run_id, outcome=result.outcome, report_path=str(report_path))
+    return outcome
 
 
 def _judge_lens_key(
@@ -2807,8 +2692,7 @@ def build_panel_runner(
     round because the tree changes with every revision.
 
     `claim_body` renders the claim the panel judges from (baseline,
-    candidate, report); the default is the pre-PR improvement claim, a
-    follow-up re-read passes its own wording."""
+    candidate, report); the default is the credited improvement claim."""
     from outerloop.review_agent import sanitize_checkout
 
     reads = {"n": start_round}
@@ -2909,20 +2793,176 @@ def _finish_attempt(
     line_ref: str,
     date: str,
 ) -> AttemptOutcome:
-    """A climb's terminal, the same whether the session was fresh or resumed
-    from a park: the report, the line notebook, then a PR for an improved
-    result (the sealed candidate, never the live tree) or an ending record
-    for anything else, and the issue note. On a synchronous backend the gate
-    answers inline instead of parking a candidate, so a resumed session's
-    improvement reaches this path too (a wake that only knew how to END lost
-    two improved runs on cluster0, 2026-09-12). `base_sha` is the tree the
-    run started on (the auto-merge arm checks the base has not moved past
-    it); `date` is the ledger row's date."""
-    if result.outcome == "improved" and not result.measured_paths:
-        # a zero-change "improvement" is metric noise, not progress — never a
-        # PR (same rule as the wake publish)
-        result = dc_replace(result, outcome="no-improvement", note="no code change; metric noise")
+    """Finish an unsubmitted stop, or publish a credited sealed tree."""
+    latest = load_record(run_root, run_id)
+    meter = {
+        k: v
+        for k, v in latest.stage.items()
+        if k in ("launches_used", "sleeps_used", "gpu_hours_used")
+    }
+    record = dc_replace(record, stage={**record.stage, **meter})
+    if result.outcome == "improved":
+        return publish(
+            result=result,
+            ws=ws,
+            workspace=workspace,
+            run_root=run_root,
+            run_dir=run_dir,
+            run_id=run_id,
+            record=record,
+            config=config,
+            contract=contract,
+            github=github,
+            now=now,
+            secrets=secrets,
+            base_branch=base_branch,
+            base_sha=base_sha,
+            issue_number=issue_number,
+            line_ref=line_ref,
+            date=date,
+        )
+    report_path = run_dir / "report.md"
+    report_path.write_text(result.report(config, redact_secrets=secrets))
+    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
+    if record.pr_url:
+        final = dc_replace(_clear_stage(record), state=IN_REVIEW)
+    else:
+        final = dc_replace(
+            _clear_stage(record),
+            state=ENDED,
+            ending=_ENDINGS_BY_OUTCOME[result.outcome],
+            ending_note=redact(result.note, secrets),
+        )
+    if result.outcome == "session-outage":
+        _best_effort(
+            "outage stamp",
+            lambda: stamp_outage(run_root, redact(result.note, secrets)[:300], now),
+            secrets,
+        )
+    _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+    _post_issue_finished(
+        github,
+        config.target,
+        issue_number,
+        run_id,
+        result.outcome,
+        record.pr_url,
+        result.report(config, redact_secrets=secrets)[:8000],
+        secrets,
+    )
+    return AttemptOutcome(
+        run_id=run_id, outcome=result.outcome, pr_url=record.pr_url, report_path=str(report_path)
+    )
 
+
+def _update_ledger(
+    workspace: Path,
+    bench: Any,
+    contract: Any,
+    candidate: float,
+    run_id: str,
+    created: str,
+    run_seed: int,
+    target: str,
+    *,
+    baseline: float | None = None,
+) -> tuple[Any, str]:
+    """Move the best row only past the cross-seed floor; explain an unchanged row."""
+    prior = load_leader(workspace).get(bench.name)
+    floor_note = ""
+    beats_prior = prior is not None and (
+        candidate > prior.best if bench.direction == "max" else candidate < prior.best
+    )
+    if (
+        prior is not None
+        and beats_prior
+        and not clears_min_delta(
+            prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
+        )
+    ):
+        # named on the thread, like the climb's ending note — a silently
+        # unchanged ledger row reads as a bug
+        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
+        where = (
+            f"the cross-seed noise floor ({fmt_metric(floor, bench.display_digits)})"
+            if floor > 0
+            else f"a usable baseline (recorded best {prior.best})"
+        )
+        floor_note = (
+            f" — within {where} of the recorded best {prior.best}, so the ledger row is unchanged"
+        )
+    if not floor_note:
+        entries = update_leader(
+            load_leader(workspace),
+            benchmark=bench.name,
+            metric=bench.metric,
+            direction=bench.direction,
+            baseline=candidate if baseline is None else baseline,
+            candidate=candidate,
+            run_id=run_id,
+            date=created[:10],
+            run_seed=run_seed,
+        )
+        write_progress(
+            workspace,
+            entries,
+            target,
+            digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
+        )
+    return prior, floor_note
+
+
+def _measured_note(bench: Any, candidate: float, candidate_sha: str) -> str:
+    """The number, named by the sealed tree it was measured on."""
+    return (
+        f"**Re-measured after this change: `{bench.metric}` = "
+        f"{fmt_metric(candidate, bench.display_digits)}** (sealed `{candidate_sha[:12]}`)."
+    )
+
+
+def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha: str) -> bool:
+    """Whether this sealed tree's measured note is already on the PR thread —
+    a retry after the record write that follows the comment failed."""
+    try:
+        comments = github.list_comments(target, number)
+    except Exception as exc:
+        log.warning("measured-note lookup failed for %s#%s: %s", target, number, exc)
+        return False  # posting twice beats never posting
+    tag = f"(sealed `{sha[:12]}`)"
+    return any(
+        str(c.get("body", "")).lstrip().startswith(REPLY_MARKER) and tag in str(c.get("body", ""))
+        for c in comments
+    )
+
+
+def publish(
+    *,
+    result: AttemptResult,
+    ws: Workspace,
+    workspace: Path,
+    run_root: Path,
+    run_dir: Path,
+    run_id: str,
+    record: RunRecord,
+    config: RunConfig,
+    contract: Contract,
+    github: GitHubClient,
+    now: float,
+    secrets: tuple[str, ...],
+    base_branch: str,
+    base_sha: str,
+    issue_number: int,
+    line_ref: str,
+    date: str,
+) -> AttemptOutcome:
+    """Publish a credited sealed tree: open a PR or fast-forward its head."""
+    latest = load_record(run_root, run_id)
+    meter = {
+        k: v
+        for k, v in latest.stage.items()
+        if k in ("launches_used", "sleeps_used", "gpu_hours_used")
+    }
+    record = dc_replace(record, stage={**record.stage, **meter})
     report = result.report(config, redact_secrets=secrets)
     report_path = run_dir / "report.md"
     wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
@@ -2935,174 +2975,363 @@ def _finish_attempt(
     # publish-error snapshot at the tail.
     _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
 
+    record = dc_replace(
+        record, stage={**record.stage, "base_sha": base_sha, "base_branch": base_branch}
+    )
+    bench = _benchmark(contract, config.benchmark)
+
+    def refuse(text: str, head: str = "", *, moved: bool = False) -> AttemptOutcome:
+        append(
+            run_dir,
+            Message(
+                0,
+                "base-moved" if moved else "note",
+                "git" if moved else "kernel",
+                thread_for(record),
+                now,
+                f"publish-refused:{result.candidate_sha}:{head}:{text}",
+                {"text": text, "pr_head": head, "sealed_sha": result.candidate_sha},
+            ),
+        )
+        final = dc_replace(record, auto_blessed_head="")
+        if record.pr_url:
+            final = dc_replace(_clear_stage(final), state=IN_REVIEW)
+        elif result.session is not None and result.session.session_id:
+            ref = f"refs/dispatch/publish-{run_id}-{result.candidate_sha}"
+            ws.git("update-ref", ref, result.candidate_sha)
+            _park_run(
+                run_root,
+                final,
+                RunParked(
+                    phase="author-sleep",
+                    afterany="",
+                    base_sha=base_sha,
+                    seed=result.run_seed,
+                    suite_seed=result.suite_seed,
+                    candidate_sha=result.candidate_sha,
+                    session=result.session,
+                    syscall=SyscallRequest(launches=()),
+                    launches_used=int(str(record.stage.get("launches_used", 0))),
+                    sleeps_used=int(str(record.stage.get("sleeps_used", 0))),
+                    gpu_hours_used=float(str(record.stage.get("gpu_hours_used", 0))),
+                ),
+                ref,
+                bench.eval_minutes,
+                now,
+                secrets,
+                base_branch=base_branch,
+            )
+            return AttemptOutcome(run_id=run_id, outcome="publish-refused")
+        save_record(run_root, final, now)
+        return AttemptOutcome(run_id=run_id, outcome="publish-refused", pr_url=record.pr_url)
+
+    if record.pr_url and result.candidate is not None:
+        number = int(record.pr_url.rstrip("/").split("/")[-1])
+        if not _measured_note_on_thread(github, record.target, number, result.candidate_sha):
+            note = _measured_note(bench, result.candidate, result.candidate_sha)
+            prior = load_leader(workspace).get(bench.name)
+            if prior is not None and (
+                result.candidate < prior.best
+                if bench.direction == "max"
+                else result.candidate > prior.best
+            ):
+                note += " Worse than the previous number; the ledger row is unchanged."
+            github.comment(record.target, number, f"{REPLY_MARKER}\n{note}")
+
+    if not result.measured_paths:
+        return refuse("Publish refused: no code change; metric noise.")
+
+    try:
+        ws.fetch_origin()
+        pinned = load_contract(contract_at(ws, base_sha), config.target)
+        pinned_bench = _benchmark(pinned, config.benchmark)
+        current = load_contract(contract_at(ws, f"origin/{base_branch}"), config.target)
+        current_bench = next((b for b in current.benchmarks if b.name == bench.name), None)
+        if (
+            current_bench is None
+            or current_bench.measurement_signature() != pinned_bench.measurement_signature()
+            or pinned_bench.measurement_signature() != bench.measurement_signature()
+        ):
+            return refuse("Publish refused: the base contract's measurement signature changed.")
+    except Exception as exc:
+        return refuse(
+            f"Publish refused: cannot confirm the base contract: {redact(str(exc), secrets)}"
+        )
+
+    if record.pr_url:
+        number = int(record.pr_url.rstrip("/").split("/")[-1])
+        pr = github.get_pull_request(record.target, number)
+        if pr.get("state") == "closed" or pr.get("merged"):
+            return refuse("Publish refused: the PR is closed.")
+        fresh_base = _rev(ws, f"origin/{base_branch}")
+        if fresh_base != base_sha or not _is_ancestor(ws, base_sha, result.candidate_sha):
+            return refuse(
+                f"Publish refused: sealed commit {result.candidate_sha} must contain "
+                f"pinned base {base_sha}, and current base is {fresh_base}.",
+                moved=True,
+            )
+        try:
+            disarmed = github.disable_auto_merge(record.target, number)
+        except Exception:
+            disarmed = False
+        if not disarmed:
+            return refuse("Publish refused: auto-merge could not be confirmed disarmed.")
+        head = str((pr.get("head") or {}).get("sha", ""))
+        branch = str((pr.get("head") or {}).get("ref", ""))
+        journal = record.stage.get("publish", {})
+        landed = (
+            isinstance(journal, dict)
+            and journal.get("sealed_sha") == result.candidate_sha
+            and journal.get("head") == head
+        )
+        assert result.candidate is not None
+        if landed:
+            assert isinstance(journal, dict)
+            prior = load_leader(workspace).get(bench.name)
+            floor_note = str(journal.get("floor_note", ""))
+        else:
+            if not head or not _is_ancestor(ws, head, result.candidate_sha):
+                return refuse(
+                    f"Publish refused: PR head {head} is not contained in "
+                    f"sealed commit {result.candidate_sha}.",
+                    head,
+                    moved=True,
+                )
+            assert result.candidate is not None
+            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+            ws.git("clean", "-fd")
+            prior, floor_note = _update_ledger(
+                workspace,
+                bench,
+                contract,
+                result.candidate,
+                run_id,
+                date,
+                result.run_seed,
+                config.target,
+            )
+            ws.git("add", "--", *PROGRESS_PATHS)
+            staged = ws.staged_paths()
+            if any(path not in PROGRESS_PATHS for path in staged):
+                raise WorkspaceDrift("publish would stage non-ledger paths")
+            if staged:
+                ws.git(
+                    *git_identity(config.bot_login),
+                    "commit",
+                    "-m",
+                    "agent: record submitted measurement",
+                )
+            pushed_head = ws.git("rev-parse", "HEAD").strip()
+            record = dc_replace(
+                record,
+                auto_blessed_head="",
+                stage={
+                    **record.stage,
+                    "publish": {
+                        "sealed_sha": result.candidate_sha,
+                        "head": pushed_head,
+                        "prior_best": prior.best if prior else None,
+                        "floor_note": floor_note,
+                    },
+                },
+            )
+            save_record(run_root, record, now)
+            try:
+                ws.push(branch)
+            except GitError:
+                latest_pr = github.get_pull_request(record.target, number)
+                moved = str((latest_pr.get("head") or {}).get("sha", ""))
+                return refuse(
+                    f"Publish refused: fast-forward push failed; PR head is {moved}.",
+                    moved,
+                    moved=True,
+                )
+        worse = prior is not None and (
+            result.candidate < prior.best
+            if bench.direction == "max"
+            else result.candidate > prior.best
+        )
+        note = _measured_note(bench, result.candidate, result.candidate_sha)
+        note += (
+            " Worse than the previous number; the ledger row is unchanged." if worse else floor_note
+        )
+        github.update_candidate_row(
+            record.target, number, result.candidate, digits=bench.display_digits
+        )
+        github.append_pull_body(
+            record.target,
+            number,
+            f"---\n**Edit ({date}, submit):** {note}\n\n"
+            f"{redact(result.submit_report or 'no report was given', secrets)}",
+        )
+        save_record(
+            run_root,
+            dc_replace(
+                _clear_stage(record),
+                state=IN_REVIEW,
+                auto_blessed_head=(
+                    _blessed_head(ws, result, contract)
+                    if _rev(ws, f"origin/{base_branch}") == base_sha
+                    else ""
+                ),
+                resume_session_id=result.session.session_id
+                if result.session
+                else record.resume_session_id,
+            ),
+            now,
+        )
+        return AttemptOutcome(
+            run_id=run_id, outcome="improved", pr_url=record.pr_url, report_path=str(report_path)
+        )
+
     pr_url = ""
     outcome_name = result.outcome
     branch = ""
     pushed = False
-    if result.outcome == "improved":
+    try:
+        # Publish the SEALED candidate sha — never the live tree, which
+        # may have drifted since the snapshot (eval caches, stray writes);
+        # the sha is exactly the measured, scope-checked content. A base
+        # branch that moved during the climb is NOT merged and re-measured
+        # here: a stale PR is review's to handle (research-loop.md).
+        branch = f"{config.branch_prefix}/{run_id}"
+        if result.baseline is None or result.candidate is None or not result.candidate_sha:
+            raise EvalError("improved result missing measurements or the sealed sha")
+        bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+        baseline, candidate = result.baseline, result.candidate
+        # IDEMPOTENCY: a wake may have opened the PR and died before
+        # recording it (the run stays WAITING and is woken again). If a PR
+        # is already open for this head->base, reconcile to it — never
+        # re-push (non-fast-forward) or open a duplicate; a lookup failure
+        # just falls through to the normal publish.
+        existing: dict[str, object] | None = None
         try:
-            # Publish the SEALED candidate sha — never the live tree, which
-            # may have drifted since the snapshot (eval caches, stray writes);
-            # the sha is exactly the measured, scope-checked content. A base
-            # branch that moved during the climb is NOT merged and re-measured
-            # here: a stale PR is review's to handle (research-loop.md).
-            branch = f"{config.branch_prefix}/{run_id}"
-            if result.baseline is None or result.candidate is None or not result.candidate_sha:
-                raise EvalError("improved result missing measurements or the sealed sha")
-            bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
-            baseline, candidate = result.baseline, result.candidate
-            # IDEMPOTENCY: a wake may have opened the PR and died before
-            # recording it (the run stays WAITING and is woken again). If a PR
-            # is already open for this head->base, reconcile to it — never
-            # re-push (non-fast-forward) or open a duplicate; a lookup failure
-            # just falls through to the normal publish.
-            existing: dict[str, object] | None = None
-            try:
-                existing = github.find_open_pull_for_head(config.target, branch, base_branch)
-            except Exception as exc:
-                log.warning(
-                    "idempotency PR lookup failed for %s: %s",
-                    run_id,
-                    redact(f"{type(exc).__name__}: {exc}", secrets),
-                )
-            if existing:
-                pr_url = str(existing.get("html_url", ""))
-                draft = bool(existing.get("draft"))
-                log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
-                # the workspace goes on the branch a later follow-up expects
-                ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
-            else:
-                # blocking findings open at the panel, or a degraded final
-                # read: visible, plainly not merge-ready
-                draft = result.panel_blocking_open or result.panel_degraded
-                # FORCE-checkout: the workspace still holds the session's dirty
-                # tree. The snapshot commit is anchored by the new branch (the
-                # dropped dispatch ref left it unreferenced; nothing pruned it in
-                # this process). clean -fd drops post-snapshot cruft so the
-                # pushed tree is exactly candidate_sha plus the ledger commit.
-                ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
-                ws.git("clean", "-fd")
-                entries = update_leader(
-                    load_leader(workspace),
-                    benchmark=bench.name,
-                    metric=bench.metric,
-                    direction=bench.direction,
-                    baseline=baseline,
-                    candidate=candidate,
-                    run_id=run_id,
-                    date=date,
-                    run_seed=result.run_seed,
-                )
-                write_progress(
-                    workspace,
-                    entries,
-                    config.target,
-                    digits={
-                        b.name: b.display_digits for b in contract.benchmarks if b.display_digits
-                    },
-                )
-                # Stage ONLY the ledger files on top of the sealed candidate —
-                # never `git add -A`, which would sweep in anything a session or
-                # eval left behind (same rule as the wake publish).
-                ws.git("add", "--", *PROGRESS_PATHS)
-                staged = ws.staged_paths()
-                extra = [p for p in staged if p not in PROGRESS_PATHS]
-                if extra:
-                    raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
-                if staged:
-                    ws.git(
-                        *git_identity(config.bot_login),
-                        "commit",
-                        "-m",
-                        f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
-                        f"\n\nAgent: {config.agent_id}",
-                    )
-                ws.push(branch)
-                pushed = True
-                body = pr_body(
-                    result,
-                    config,
-                    redact_secrets=secrets,
-                    display_digits=bench.display_digits,
-                    experiments=experiments_rows(run_dir),
-                )
-                if issue_number:
-                    body = f"Addresses #{issue_number}.\n\n{body}"
-                pr_url = github.create_pull(
-                    config.target,
-                    # short precision in the title; full precision lives in the
-                    # PR body table and the ledger
-                    title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
-                    head=branch,
-                    base=base_branch,
-                    body=body,
-                    # blocking findings open at the panel, or a degraded final
-                    # read: visible, plainly not merge-ready
-                    draft=draft,
-                )
-            # Arm auto-merge, best-effort, and ONLY when branch protection
-            # requires a human review — the guard keeps bot-never-merges
-            # enforced in code, not in per-repo config. Never arm a draft,
-            # and never arm a claim whose base has moved (_arm_unless_base_moved).
-            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-            if pr_number.isdigit() and not draft:
-                _arm_unless_base_moved(
-                    github,
-                    ws,
-                    config.target,
-                    pr_number,
-                    base_branch,
-                    base_sha,
-                    secrets,
-                    merge_mode=getattr(contract, "merge", "manual"),
-                    panel_ran=result.panel_rounds > 0,
-                )
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": IN_REVIEW,
-                    "pr_url": pr_url,
-                    "auto_blessed_head": _blessed_head(ws, result, contract),
-                    "resume_session_id": result.session.session_id if result.session else "",
-                    "ending_note": pr_url,
-                }
-            )
+            existing = github.find_open_pull_for_head(config.target, branch, base_branch)
         except Exception as exc:
             log.warning(
-                "publish failed for %s: %s",
+                "idempotency PR lookup failed for %s: %s",
                 run_id,
                 redact(f"{type(exc).__name__}: {exc}", secrets),
             )
-            # Never delete the remote branch: an exception from create_pull
-            # does not prove no PR exists (a 422-already-exists or a timeout
-            # after a successful POST both land here), and deleting the ref
-            # would close such a PR and discard the only pushed copy. Leave
-            # it and record it; a sweeper can reap confirmed orphans later.
-            outcome_name = "publish-error"
-            final = RunRecord(
-                **{
-                    **record.__dict__,
-                    "state": ENDED,
-                    "ending": ABORTED,
-                    "ending_note": (
-                        (f"branch left on remote: {branch}; " if pushed else "")
-                        + redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
-                    ),
-                }
+        if existing:
+            pr_url = str(existing.get("html_url", ""))
+            draft = (
+                bool(existing.get("draft")) or result.panel_blocking_open or result.panel_degraded
             )
-    else:
-        if result.outcome == "session-outage":
-            _best_effort(
-                "outage stamp",
-                lambda: stamp_outage(run_root, redact(result.note, secrets)[:300], now),
+            log.info("run %s: PR %s already open; reconciling the record", run_id, pr_url)
+            # the workspace goes on the branch a later follow-up expects
+            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+        else:
+            # blocking findings open at the panel, or a degraded final
+            # read: visible, plainly not merge-ready
+            draft = result.panel_blocking_open or result.panel_degraded
+            # FORCE-checkout: the workspace still holds the session's dirty
+            # tree. The snapshot commit is anchored by the new branch (the
+            # dropped dispatch ref left it unreferenced; nothing pruned it in
+            # this process). clean -fd drops post-snapshot cruft so the
+            # pushed tree is exactly candidate_sha plus the ledger commit.
+            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+            ws.git("clean", "-fd")
+            _update_ledger(
+                workspace,
+                bench,
+                contract,
+                candidate,
+                run_id,
+                date,
+                result.run_seed,
+                config.target,
+                baseline=baseline,
+            )
+            # Stage ONLY the ledger files on top of the sealed candidate —
+            # never `git add -A`, which would sweep in anything a session or
+            # eval left behind (same rule as the wake publish).
+            ws.git("add", "--", *PROGRESS_PATHS)
+            staged = ws.staged_paths()
+            extra = [p for p in staged if p not in PROGRESS_PATHS]
+            if extra:
+                raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
+            if staged:
+                ws.git(
+                    *git_identity(config.bot_login),
+                    "commit",
+                    "-m",
+                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
+                    f"\n\nAgent: {config.agent_id}",
+                )
+            ws.push(branch)
+            pushed = True
+            body = pr_body(
+                result,
+                config,
+                redact_secrets=secrets,
+                display_digits=bench.display_digits,
+                experiments=experiments_rows(run_dir),
+            )
+            if issue_number:
+                body = f"Addresses #{issue_number}.\n\n{body}"
+            pr_url = github.create_pull(
+                config.target,
+                # short precision in the title; full precision lives in the
+                # PR body table and the ledger
+                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
+                head=branch,
+                base=base_branch,
+                body=body,
+                # blocking findings open at the panel, or a degraded final
+                # read: visible, plainly not merge-ready
+                draft=draft,
+            )
+        # Arm auto-merge, best-effort, and ONLY when branch protection
+        # requires a human review — the guard keeps bot-never-merges
+        # enforced in code, not in per-repo config. Never arm a draft,
+        # and never arm a claim whose base has moved (_arm_unless_base_moved).
+        pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+        if pr_number.isdigit() and not draft:
+            _arm_unless_base_moved(
+                github,
+                ws,
+                config.target,
+                pr_number,
+                base_branch,
+                base_sha,
                 secrets,
+                merge_mode=getattr(contract, "merge", "manual"),
+                panel_ran=result.panel_rounds > 0,
             )
         final = RunRecord(
             **{
                 **record.__dict__,
+                "state": IN_REVIEW,
+                "pr_url": pr_url,
+                "auto_blessed_head": _blessed_head(ws, result, contract),
+                "resume_session_id": result.session.session_id if result.session else "",
+                "ending_note": pr_url,
+            }
+        )
+    except Exception as exc:
+        if isinstance(exc, GitError) and _is_git_tamper(exc):
+            return _end_refused_wake(run_root, record, exc, now, secrets)
+        log.warning(
+            "publish failed for %s: %s",
+            run_id,
+            redact(f"{type(exc).__name__}: {exc}", secrets),
+        )
+        # Never delete the remote branch: an exception from create_pull
+        # does not prove no PR exists (a 422-already-exists or a timeout
+        # after a successful POST both land here), and deleting the ref
+        # would close such a PR and discard the only pushed copy. Leave
+        # it and record it; a sweeper can reap confirmed orphans later.
+        outcome_name = "publish-error"
+        final = RunRecord(
+            **{
+                **record.__dict__,
                 "state": ENDED,
-                "ending": _ENDINGS_BY_OUTCOME[result.outcome],
-                "ending_note": redact(result.note, secrets),
+                "ending": ABORTED,
+                "ending_note": (
+                    (f"branch left on remote: {branch}; " if pushed else "")
+                    + redact(f"{type(exc).__name__}: {exc}", secrets)[:480]
+                ),
             }
         )
     # a resumed run's park bookkeeping never rides into review or an ending
@@ -3329,7 +3558,6 @@ def live_attempt(
             dispatch is not None
             and getattr(harness, "supports_resume", True)
             and _bench is not None
-            and _bench.depth_k > 0
         )
         # The `.outerloop/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
@@ -3527,6 +3755,9 @@ def live_attempt(
                 inbox_dir=run_dir,
                 inbox_seq=record.inbox_seq,
                 on_inbox_delivered=acknowledge,
+                on_meter=lambda launches, sleeps, hours: save_meter(
+                    run_root, record.run_id, launches, sleeps, hours
+                ),
                 on_replies=(lambda replies: post_replies(record, github, replies, secrets, run_dir))
                 if author_syscalls
                 else None,

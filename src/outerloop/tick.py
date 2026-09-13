@@ -593,7 +593,7 @@ def service_in_review(
         close_if_done,
         conflict_wake_action,
         has_new_comments,
-        panel_wake_pending,
+        inbox_wake_pending,
     )
 
     if records is None:
@@ -673,35 +673,15 @@ def service_in_review(
             # Idempotent auto-arm: once GitHub reports the PR CLEAN (green
             # checks AND up-to-date with the CURRENT base — GitHub's own
             # freshness proof), the kernel-read contract STILL says auto, and
-            # A dispatched re-measure in flight: nothing else is serviced (the
-            # sealed change lands first, so the next comment is answered on
-            # the tree it will actually see) and nothing is armed. Once every
-            # eval job is terminal, a follow-up is submitted to finish it.
-            measure_ready = False
-            if record.followup_stage:
-                raw_ids = record.followup_stage.get("job_ids")
-                job_ids = [str(j) for j in raw_ids] if isinstance(raw_ids, list) else []
-                if job_ids:
-                    try:
-                        states = [compute.status(j) for j in job_ids]
-                    except SlurmQueryError:
-                        continue  # unknown: neither service nor arm
-                    if not all(is_terminal(s) or s == GONE for s in states):
-                        continue
-                    measure_ready = True
-                else:
-                    # a BLIND park (the measurer could not read the queue at
-                    # dispatch): no ids to poll, so the eval walltime plus the
-                    # climb's queue slack is the floor before a follow-up is
-                    # sent to look — never one per tick (terra #241 r1)
-                    from outerloop.dispatch import effective_eval_minutes
+            from outerloop.followup import retire_followup_stage
 
-                    parked_at = float(record.followup_stage.get("parked_at", 0.0) or 0.0)  # type: ignore[arg-type]
-                    floor_min = int(record.followup_stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
-                    floor_s = (effective_eval_minutes(floor_min) + BLIND_PARK_SLACK_MIN) * 60
-                    if now - parked_at < floor_s:
-                        continue
-                    measure_ready = True
+            if not dry_run and acquire_lease(root, record.run_id, f"migration:{now}", "", now):
+                try:
+                    retired = retire_followup_stage(root, load_record(root, record.run_id), now)
+                finally:
+                    release_lease(root, record.run_id)
+                if retired:
+                    continue
             wake_action = conflict_wake_action(record, pr)
             if wake_action == "clear":
                 # the PR is clean again: re-arm the wake for this head — the
@@ -711,10 +691,9 @@ def service_in_review(
                 except OSError as exc:
                     log.warning("conflict cursor clear failed for %s: %s", record.run_id, exc)
             if (
-                not measure_ready
-                and not has_new_comments(record, github, spec.bot_login)
+                not has_new_comments(record, github, spec.bot_login)
                 and wake_action != "wake"
-                and not panel_wake_pending(root, record, pr)
+                and not inbox_wake_pending(root, record)
             ):
                 # NOTHING awaits servicing — only a fully quiet PR may
                 # self-merge (pending reviewer feedback always wins over
@@ -773,28 +752,7 @@ def service_in_review(
                     continue  # unknown — do not stack another job
             # the wake-attempt counter caps follow-up retries too: a responder
             # that cannot advance its cursors must not burn a session per tick.
-            # A LANDED re-measure gets its own allowance: the sessions that
-            # synced the base and dispatched it were progress, and capping the
-            # follow-up that pushes the sealed number parks the result forever
-            # (speedrun agent-03, 2026-09-04: three syncs spent the cap, the
-            # measure completed, and the run idled for two days on this
-            # branch). The allowance is counted on the stage itself, so a
-            # finishing session that reverts and leaves the stage intact is
-            # retried MAX_WAKE_ATTEMPTS times, not once per tick; a stage that
-            # finishes is cleared, and with it the count.
-            finish_attempts = (
-                int(record.followup_stage.get("finish_attempts", 0) or 0)  # type: ignore[call-overload]
-                if measure_ready
-                else 0
-            )
-            if measure_ready and finish_attempts >= MAX_WAKE_ATTEMPTS:
-                log.warning(
-                    "run %s: %d follow-ups failed to finish the landed re-measure; parked",
-                    record.run_id,
-                    finish_attempts,
-                )
-                continue
-            if record.wake_attempts >= MAX_WAKE_ATTEMPTS and not measure_ready:
+            if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
                 log.warning(
                     "run %s: %d follow-up attempts without progress; not resubmitting",
                     record.run_id,
@@ -807,8 +765,7 @@ def service_in_review(
             if dry_run:
                 submitted.append((record.run_id, "dry-run"))
                 continue
-            # The author follow-up carries the climb's panel so a pushed code
-            # change is RE-READ before the tick may arm it (followup.py). The
+            # The author follow-up carries the panel for submit. The
             # panel brings its own walltime, like the climb's allowance — the
             # contract's followup budget caps the author, not the gate. A
             # panel that would die at startup is left off: the reply still
@@ -885,16 +842,11 @@ def service_in_review(
             # read-modify-write on the FRESH record: the submitted job may
             # already be saving its own fields
             latest = load_record(root, record.run_id)
-            stage = latest.followup_stage
-            if measure_ready and stage:
-                # one finishing attempt billed against this landed measure
-                stage = {**stage, "finish_attempts": finish_attempts + 1}
             save_record(
                 root,
                 replace(
                     latest,
                     followup_job_id=job_id,
-                    followup_stage=stage,
                     wake_attempts=latest.wake_attempts + 1,
                 ),
                 now,

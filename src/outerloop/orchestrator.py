@@ -20,7 +20,7 @@ import math
 import subprocess
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dc_replace
 from fractions import Fraction
 from pathlib import Path
@@ -40,14 +40,20 @@ from outerloop.contract import (
     path_is_forbidden,
 )
 from outerloop.harness import Harness, SessionResult, budget_exhausted, outage, redact
-from outerloop.inbox import Message, append, budgets_line, panel_payload, render_inbox
+from outerloop.inbox import (
+    AUTHOR_PROTOCOL,
+    Message,
+    append,
+    budgets_line,
+    panel_payload,
+    render_inbox,
+)
 from outerloop.inbox import pending as pending_messages
 from outerloop.panel import PanelVerdict
 from outerloop.role_runner import run_role
 from outerloop.roles import author_spec
 from outerloop.rolespec import RoleSpec
 from outerloop.syscall import (
-    MISSING_REPORT,
     SyscallError,
     SyscallRequest,
     clamp_concurrency,
@@ -481,6 +487,7 @@ class AttemptResult:
     note: str = ""
     # the author's report at submit (SyscallRequest.report): the PR's research
     # report and what the panel read; empty when the run never submitted one
+    replies_posted: int = 0
     submit_report: str = ""
     # the seed both measurements ran under (0 = benchmark has no seed_env):
     # recorded in the ledger row so the number is re-derivable
@@ -1174,8 +1181,9 @@ def attempt_once(
     gpu_hours_used: float = 0.0,
     tree_of: Callable[[str], str] | None = None,
     judged: tuple[str, AttemptResult] | None = None,
-    on_replies: Callable[[tuple[str, ...]], None] | None = None,
+    on_replies: Callable[[tuple[str, ...]], object] | None = None,
     on_stop: Callable[[SessionResult], AttemptResult] | None = None,
+    on_meter: Callable[[int, int, float], None] | None = None,
     scope_validator: Callable[[list[str], Contract], list[str]] = out_of_scope,
 ) -> AttemptResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
@@ -1318,12 +1326,7 @@ def attempt_once(
                 render_inbox(
                     messages,
                     budgets=_budgets_line(),
-                    protocol=(
-                        "submit is not available while your PR is in review; end your leg and a "
-                        "code change is re-measured, or launch and sleep"
-                    )
-                    if on_stop is not None
-                    else "",
+                    protocol=AUTHOR_PROTOCOL,
                 ),
                 workspace,
                 resume_session_id=resume_session_id,
@@ -1417,17 +1420,14 @@ def attempt_once(
     def _resume(message: Message) -> AttemptResult | None:
         """Deliver pending messages; return an ending only if the resume fails."""
         nonlocal session
+        if on_meter is not None:
+            on_meter(launches_used, sleeps_used, gpu_hours_used)
         append(inbox_dir, message)
         messages = pending_messages(inbox_dir, inbox_seq)
         prompt = render_inbox(
             messages,
             budgets=_budgets_line(),
-            protocol=(
-                "submit is not available while your PR is in review; end your leg and a "
-                "code change is re-measured, or launch and sleep"
-            )
-            if on_stop is not None
-            else "",
+            protocol=AUTHOR_PROTOCOL,
         )
         # the tool the author is about to use is this kernel's, whatever the
         # session started with (a wake refreshed it too; this covers a refusal)
@@ -1519,45 +1519,6 @@ def attempt_once(
                     gpus=bench.gpus,
                 ):
                     main_evals = 1
-            # a report-less resubmit never rides the failed-gate fast path: it
-            # falls through to the refusal below like any other missing report
-            if on_stop is None and request.submit and request.report and failed_gate is not None:
-                # a resubmit of the tree the gate already turned down: nothing
-                # to budget or charge — the verdict is reused below (the sleep
-                # still counts, so unchanged resubmits stay bounded). An eval
-                # that ERRORED is the exception: resubmitting is how the author
-                # retries it (with more minutes, say), so that one runs. The
-                # early seal keeps the later seal's guards: scope first, and a
-                # failed snapshot is the eval error it always was.
-                violations = scope_validator(list(changed_paths()), contract)
-                if violations:
-                    return AttemptResult(
-                        outcome="scope-violation",
-                        baseline=baseline,
-                        session=session,
-                        note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
-                        run_seed=run_seed,
-                        panel_transcript="\n\n".join(panel_sections),
-                        panel_rounds=panel_reads,
-                    )
-                try:
-                    presealed = snapshot()
-                except EvalError as exc:
-                    return AttemptResult(
-                        outcome="eval-error",
-                        baseline=baseline,
-                        session=session,
-                        note=f"snapshot: {exc}",
-                        run_seed=run_seed,
-                        panel_transcript="\n\n".join(panel_sections),
-                        panel_rounds=panel_reads,
-                    )
-                if failed_gate[1].outcome != "eval-error" and tree(failed_gate[0]) == tree(
-                    presealed
-                ):
-                    submitted = request
-                    sleeps_used += 1
-                    break
             problem = no_backend or syscall_budget_error(
                 request,
                 launches_used=launches_used,
@@ -1571,16 +1532,6 @@ def attempt_once(
                 suite_gpus=suite_gpus,
                 main_evals=main_evals,
             )
-            if on_stop is not None and request.submit:
-                problem = (
-                    "submit is not available while your PR is in review; end your leg and a "
-                    "code change is re-measured, or launch and sleep"
-                )
-            if not problem and request.submit and not request.report:
-                # a refusal the author can act on, never a dead run: a session
-                # that started under an older tool learns the flag here (the wake
-                # refreshed its tool) and resubmits with the report
-                problem = MISSING_REPORT
             # a sweep's pace is clamped to the contract's GPU ceiling here, once,
             # before either path — an author-sleep launch or a submit's sibling
             # launches — submits or records it; clamped, never refused
@@ -1671,8 +1622,15 @@ def attempt_once(
             )
             if failed is not None:
                 return failed
-        if on_stop is not None:
-            return on_stop(session)
+        if on_meter is not None:
+            on_meter(launches_used, sleeps_used, gpu_hours_used)
+        if submitted is None:
+            if on_stop is not None:
+                return on_stop(session)
+            if launcher is not None and getattr(harness, "supports_resume", True):
+                return AttemptResult(
+                    outcome="no-improvement", session=session, note="ended without a submit"
+                )
         measured = tuple(changed_paths())
         # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
         # OR measured — the out-of-scope edit could be to the ruler itself. This
@@ -1736,32 +1694,6 @@ def attempt_once(
                     panel_transcript="\n\n".join(panel_sections),
                     panel_rounds=panel_reads,
                 )
-            elif (
-                submitted is None
-                and launcher is not None  # feature off = the gate IS the measurement
-                and bench.depth_k > 0
-                and bench.gpus > 0
-                and float(contract.budgets.gpu_hours_per_run or 0) > 0
-            ):
-                # a METERED finish without a submit is panel-only, launches or
-                # not: the author chose not to claim, and a human scientist
-                # does not spend the full experimental budget re-verifying
-                # their own negative before writing it in the notebook. (With
-                # zero launches this also closes the refuse-twice bypass —
-                # dropping a repeated bare submit must not buy the very
-                # measurement the refusal denied.)
-                outcome = AttemptResult(
-                    outcome="no-improvement",
-                    baseline=baseline,
-                    session=session,
-                    note=(
-                        "unmeasured finish: no submit was made, so the metered "
-                        "gate did not run (panel only)"
-                    ),
-                    run_seed=run_seed,
-                    panel_transcript="\n\n".join(panel_sections),
-                    panel_rounds=panel_reads,
-                )
             else:
                 outcome = measure_and_decide(
                     contract,
@@ -1806,11 +1738,37 @@ def attempt_once(
                 eval_minutes=submitted.eval_minutes if submitted is not None else None,
             ) from None
         if isinstance(outcome, AttemptResult):
+            if submitted is not None and panel_runner is not None:
+                if outcome.baseline is not None and outcome.candidate is not None:
+                    verdict = panel_runner(
+                        outcome.baseline,
+                        outcome.candidate,
+                        submitted.report or "no report was given",
+                    )
+                else:
+                    verdict = PanelVerdict(
+                        blocking=(),
+                        transcript="Panel unavailable: gate produced no paired numbers.",
+                        degraded=True,
+                    )
+                panel_reads += 1
+                panel_sections.append(verdict.transcript)
+                append(
+                    inbox_dir,
+                    Message(
+                        0,
+                        "panel-verdict",
+                        "panel",
+                        inbox_thread,
+                        time.time(),
+                        f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
+                        panel_payload(verdict, candidate_sha),
+                    ),
+                )
             if (
                 submitted is not None
                 and outcome.outcome in ("no-improvement", "suite-regression", "eval-error")
                 and _can_resume()
-                and not (unchanged and sleeps_used > bench.sleep_k)
             ):
                 # a submitted candidate that failed the gate — including an
                 # eval that errored — is FEEDBACK to the author: it revises and
@@ -1841,6 +1799,13 @@ def attempt_once(
                             "text": lead + _not_run_note(submitted),
                             "sealed_sha": candidate_sha,
                             "base_sha": base_sha,
+                            "measurement_signature": bench.measurement_signature(),
+                            "baseline": outcome.baseline,
+                            "candidate": outcome.candidate,
+                            "suite": [asdict(row) for row in outcome.suite],
+                            "floor": benchmark_floor(
+                                outcome.baseline or 0, bench.min_delta, bench.min_delta_rel
+                            ),
                         },
                     )
                 )
@@ -1885,7 +1850,9 @@ def attempt_once(
             candidate,
             # the author's report at submit is the claim the panel reads; the
             # session's last words only when no submit carried one
-            submitted.report if submitted is not None and submitted.report else session.final_text,
+            (submitted.report or "no report was given")
+            if submitted is not None
+            else session.final_text,
         )
         panel_sections.append(verdict.transcript)
         panel_message = Message(
@@ -1901,33 +1868,29 @@ def attempt_once(
         # only the FINAL read's degradation matters: an earlier outage that a
         # later clean read supersedes is history, not state
         panel_degraded = verdict.degraded
-        if verdict.blocking and submitted is not None and _can_resume():
-            # blocking findings on a SUBMITTED claim go back to the AUTHOR —
-            # it revises and resubmits, runs more experiments, or concludes
-            # (buildout Phase B: the author drives the depth axis). The loop
-            # then re-reads its next syscall; the revision re-measures from
-            # scratch.
-            if _not_run_note(submitted):
-                append(
-                    inbox_dir,
-                    Message(
-                        0,
-                        "note",
-                        "kernel",
-                        inbox_thread,
-                        time.time(),
-                        f"inline-launches:{candidate_sha}:{panel_reads}",
-                        {"text": _not_run_note(submitted)},
-                    ),
-                )
-            failed = _resume(panel_message)
-            if failed is not None:
-                return failed
-            continue
-        # a plain finish (or an unresumable session): blocking findings stay
-        # open — the caller drafts the PR for a human to triage.
         panel_blocking_open = bool(verdict.blocking)
         break
+
+    if on_meter is not None:
+        on_meter(launches_used, sleeps_used, gpu_hours_used)
+    if submitted is not None:
+        append(
+            inbox_dir,
+            Message(
+                0,
+                "gate-verdict",
+                "kernel",
+                inbox_thread,
+                time.time(),
+                f"gate:{candidate_sha}:{sleeps_used}",
+                {
+                    "text": f"Gate: improved (baseline {baseline}, candidate {candidate}).",
+                    "sealed_sha": candidate_sha,
+                    "base_sha": base_sha,
+                    "measurement_signature": bench.measurement_signature(),
+                },
+            ),
+        )
 
     return AttemptResult(
         outcome="improved",
@@ -1941,7 +1904,7 @@ def attempt_once(
         suite=suite,
         suite_seed=suite_seed_ran,
         note=baseline_note,
-        submit_report=submitted.report if submitted is not None else "",
+        submit_report=(submitted.report or "no report was given") if submitted is not None else "",
         panel_transcript="\n\n".join(panel_sections),
         panel_rounds=panel_reads,
         panel_blocking_open=panel_blocking_open,

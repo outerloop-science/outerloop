@@ -615,23 +615,16 @@ def install_tool(workspace: Path) -> None:
     tool.chmod(0o755)
 
 
-MISSING_REPORT = (
-    "a submit needs a report. Write your hypothesis, what you ran and what it measured, "
-    "why this should merge and what did not work to a markdown file, stage "
-    "`submit --report <file>`, and sleep again."
-)
-
-
 def tool_update_note(channel: str) -> str:
     """What a session that started under an older kernel is told at a wake
     whose tool refresh replaced its tool; `channel` is this workspace's channel
     dir name (a resumed legacy session still has `.autoresearch`)."""
     return (
         "Your syscall tool was updated. `reply <text>` or `reply --file <path>` stages "
-        "a reply on your PR or issue, posted when this leg ends. "
-        "Submit is not available while your PR is in review; end your leg and a "
-        "code change is re-measured, or launch and sleep. "
-        "`submit` requires `--report <file>`. The "
+        "a reply on your PR or issue; once a reply is staged the final message is not posted, "
+        "and a code change is published only by `submit`. "
+        "Submit works in review and publishes a credited tree by fast-forward. "
+        "It needs no prior launch. `--report <file>` is optional. The "
         "report explains your hypothesis, what you ran and measured, why this should "
         "merge, and what did not work; it becomes the pull request's research report "
         "and the panel reads it. `launch` accepts `--why` and, with `--array`, "
@@ -742,23 +735,6 @@ def budget_error(
         return (
             f"sleep budget exhausted ({sleeps_used}/{sleep_budget} used): "
             "conclude with what you have"
-        )
-    if (
-        request.submit
-        and launch_budget > 0
-        and gpus > 0
-        and (gpu_hour_budget or 0) > 0
-        and launches_used == 0
-    ):
-        # the gate confirms evidence, it does not generate it: on a METERED
-        # benchmark (the gate costs real GPU-hours) a run that never launched
-        # has measured nothing. Launches staged ALONGSIDE this submit do not
-        # count — their results are unseen. Exempt: launches disabled
-        # (depth_k 0) and CPU benchmarks (an in-job gate costs seconds).
-        return (
-            "submit refused: this run has not measured anything yet. Launch "
-            "first and sleep for the results, then submit once your own "
-            "numbers strictly clear the gate's bar."
         )
     if launches_used + len(request.launches) > launch_budget:
         return (
