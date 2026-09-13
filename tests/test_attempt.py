@@ -5811,6 +5811,34 @@ def test_end_report_seals_notebook_releases_claim_and_posts_replies(tmp_path, ta
     assert not github.prs
 
 
+def test_clear_stage_keeps_the_meters_with_the_topup() -> None:
+    """A run's spend before its PR opened rides into review with the grant:
+    the review leg's ceilings apply to what is already used."""
+    from outerloop.attempt import _clear_stage
+
+    record = RunRecord(
+        run_id="r",
+        target="org/pilot",
+        task_title="t",
+        benchmark="tsp",
+        state="waiting",
+        stage={
+            "launches_used": 3,
+            "sleeps_used": 2,
+            "gpu_hours_used": 1.5,
+            "review_topup": True,
+            "phase": "author-sleep",
+            "candidate_sha": "x",
+        },
+    )
+    assert _clear_stage(record).stage == {
+        "launches_used": 3,
+        "sleeps_used": 2,
+        "gpu_hours_used": 1.5,
+        "review_topup": True,
+    }
+
+
 def test_first_publish_grants_review_topup_and_clear_preserves_it(tmp_path, target_repo):
     from outerloop.attempt import _clear_stage
 

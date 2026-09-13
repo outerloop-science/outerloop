@@ -1187,9 +1187,9 @@ def test_kernel_rejects_forged_replies(tmp_path, replies) -> None:
     assert read_request(tmp_path) is None
 
 
-def test_budget_is_never_written_through_a_symlinked_budget_file(tmp_path, caplog):
-    """A target that ships `.outerloop/budget.json` as a symlink to a file
-    outside the tree must not have that file overwritten by the kernel."""
+def test_budget_is_never_written_through_a_symlinked_budget_file(tmp_path):
+    """A `budget.json` that is a symlink to a file outside the tree is never
+    followed: the write replaces the link under a directory handle."""
     from outerloop.syscall import write_budget
 
     outside = tmp_path / "outside.txt"
@@ -1198,6 +1198,50 @@ def test_budget_is_never_written_through_a_symlinked_budget_file(tmp_path, caplo
     (ws / ".outerloop").mkdir(parents=True)
     (ws / ".outerloop" / "budget.json").symlink_to(outside)
     write_budget(ws, launches_remaining=1, sleeps_remaining=1)
+    # the link is replaced under a directory handle, never followed
     assert outside.read_text() == "untouched"
-    assert (ws / ".outerloop" / "budget.json").is_symlink()
+    target = ws / ".outerloop" / "budget.json"
+    assert not target.is_symlink() and '"launches_remaining": 1' in target.read_text()
+
+
+def test_budget_is_never_written_into_a_channel_the_target_tracks(tmp_path, caplog):
+    """A regular `.outerloop/` directory the target committed is the target's,
+    not the kernel's: nothing is written into it."""
+    import subprocess
+
+    from outerloop.syscall import shipped_channel, write_budget
+
+    ws = tmp_path / "ws"
+    (ws / ".outerloop").mkdir(parents=True)
+    (ws / ".outerloop" / "budget.json").write_text("theirs")
+    subprocess.run(["git", "-C", str(ws), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(ws), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ws),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "ship",
+        ],
+        check=True,
+    )
+    assert shipped_channel(ws) == ".outerloop"
+    write_budget(ws, launches_remaining=1, sleeps_remaining=1)
+    assert (ws / ".outerloop" / "budget.json").read_text() == "theirs"
     assert "budget not written" in caplog.text
+    # the kernel's own, untracked channel is not shipped
+    (ws / ".outerloop" / "budget.json").unlink()
+    subprocess.run(["git", "-C", str(ws), "rm", "-rq", "--cached", ".outerloop"], check=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "own"],
+        check=True,
+    )
+    assert shipped_channel(ws) == ""
+    write_budget(ws, launches_remaining=2, sleeps_remaining=3)
+    assert '"launches_remaining": 2' in (ws / ".outerloop" / "budget.json").read_text()

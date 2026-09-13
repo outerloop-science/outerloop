@@ -38,7 +38,7 @@ import logging
 import os
 import re
 import stat
-import tempfile
+import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +60,27 @@ CHANNEL_DIR_NAMES: tuple[str, ...] = (".outerloop", ".autoresearch")
 SYSCALL_DIR = CHANNEL_DIR_NAMES[0]  # the new default (a fresh clone installs this)
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
+
+
+def shipped_channel(workspace: Path) -> str:
+    """The channel name the TARGET ships, or "". A symlink at either channel
+    name, or a path git tracks there, was committed by the target: writing
+    through it or honouring a request found in it is the booby trap. The
+    kernel's own channel is untracked and excluded, so a workspace it prepared
+    earlier reads as not shipped."""
+    for name in CHANNEL_DIR_NAMES:
+        path = workspace / name
+        if path.is_symlink():
+            return name
+        if path.exists():
+            tracked = subprocess.run(
+                ["git", "-C", str(workspace), "ls-files", "--error-unmatch", "--", name],
+                capture_output=True,
+                check=False,
+            )
+            if tracked.returncode == 0:
+                return name
+    return ""
 
 
 def channel_dir(workspace: Path) -> str:
@@ -713,11 +734,10 @@ def write_budget(
     author's planning only — enforcement stays in `budget_error`. Never
     written through a channel the target shipped (a symlink there would
     carry the write outside the tree); such a run has no syscalls anyway."""
-    d = workspace / channel_dir(workspace)
-    target = d / "budget.json"
-    if d.is_symlink() or target.is_symlink():
-        log.warning("budget not written: %s is a symlink the target shipped", d)
+    if shipped_channel(workspace):
+        log.warning("budget not written: the target ships the %s channel", channel_dir(workspace))
         return
+    d = workspace / channel_dir(workspace)
     d.mkdir(exist_ok=True)
     budget: dict[str, Any] = {
         "launches_remaining": launches_remaining,
@@ -727,12 +747,19 @@ def write_budget(
         budget["review_topup"] = review_topup
     if gpu_hours_remaining is not None:
         budget["gpu_hours_remaining"] = round(gpu_hours_remaining, 2)
-    # temp-and-replace: a link planted between the check and the write is
-    # replaced, never followed
-    fd, name = tempfile.mkstemp(prefix=".budget-", dir=d)
-    with os.fdopen(fd, "w") as stream:
-        stream.write(json.dumps(budget))
-    os.replace(name, target)
+    # every step is relative to a directory handle opened without following
+    # links, so a link planted after the check above cannot carry the write
+    # outside the tree: the temp file is created O_EXCL|O_NOFOLLOW under it and
+    # renamed under it
+    dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        tmp = f".budget-{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(budget))
+        os.replace(tmp, "budget.json", src_dir_fd=dfd, dst_dir_fd=dfd)
+    finally:
+        os.close(dfd)
 
 
 def write_run_budget(

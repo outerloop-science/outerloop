@@ -98,11 +98,11 @@ from outerloop.runstate import (
     run_dir as run_dir_of,
 )
 from outerloop.syscall import (
-    CHANNEL_DIR_NAMES,
     MAX_ARTIFACT_BYTES,
     SyscallRequest,
     channel_dir,
     launch_task_ids,
+    shipped_channel,
     tool_update_note,
 )
 from outerloop.syscall import ensure_excluded as syscall_excluded
@@ -887,11 +887,20 @@ def run_author_leg(
 
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
-    syscall_excluded(workspace)
-    installed = not (workspace / channel_dir(workspace)).exists()
-    if installed:
-        syscall_install_tool(workspace)
-    changed = syscall_refresh_tool(workspace)
+    # the channel must be the kernel's: a path the target ships (a symlink, a
+    # tracked directory) disables the syscalls for this leg, loudly, the same
+    # rule as a fresh climb
+    shipped = shipped_channel(workspace)
+    owned = not shipped
+    if shipped:
+        log.warning("target ships a %s path; author syscalls disabled for this leg", shipped)
+    installed = changed = False
+    if owned:
+        syscall_excluded(workspace)
+        installed = not (workspace / channel_dir(workspace)).exists()
+        if installed:
+            syscall_install_tool(workspace)
+        changed = syscall_refresh_tool(workspace)
     if installed or changed:
         append(
             directory,
@@ -909,10 +918,11 @@ def run_author_leg(
     sleeps = int(str(record.stage.get("sleeps_used", 0)))
     hours = float(str(record.stage.get("gpu_hours_used", 0)))
     review_topup = bool(record.stage.get("review_topup"))
-    _best_effort(
-        "sibling refresh",
-        lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
-    )
+    if owned:
+        _best_effort(
+            "sibling refresh",
+            lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
+        )
     kwargs.setdefault("ruler", RULER)
     result = attempt_once(
         config,
@@ -927,16 +937,16 @@ def run_author_leg(
         inbox_seq=record.inbox_seq,
         inbox_thread=thread_for(record),
         launcher=_make_launcher(dispatch, directory, workspace, record.run_id, gpus=bench.gpus)
-        if dispatch
+        if dispatch and owned
         else None,
         watcher=_make_watcher(dispatch, run_root, record.run_id, workspace, config)
-        if dispatch
+        if dispatch and owned
         else None,
         launches_used=launches,
         sleeps_used=sleeps,
         gpu_hours_used=hours,
         review_topup=review_topup,
-        on_replies=post_leg_replies,
+        on_replies=post_leg_replies if owned else None,
         on_meter=lambda launches, sleeps, hours: save_meter(
             run_root, record.run_id, launches, sleeps, hours
         ),
@@ -3596,14 +3606,7 @@ def live_attempt(
         # feature for the run, loudly; otherwise we create a dir we own.
         # A target must not ship EITHER channel name (both are booby-trap risks:
         # a symlink install writes through, a planted request steals compute).
-        shipped = next(
-            (
-                n
-                for n in CHANNEL_DIR_NAMES
-                if (workspace / n).is_symlink() or (workspace / n).exists()
-            ),
-            "",
-        )
+        shipped = shipped_channel(workspace)
         if author_syscalls and shipped:
             log.warning(
                 "target ships a %s path (symlink=%s); author syscalls disabled for this run",
