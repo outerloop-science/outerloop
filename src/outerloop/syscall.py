@@ -784,7 +784,7 @@ def write_run_budget(
 
 def write_siblings(workspace: Path, entries: list[dict[str, Any]]) -> None:
     """Kernel-written fleet snapshot the tool's `siblings` shows: what the
-    OTHER agents were working on as of this session's start. Informational,
+    OTHER agents are working on, refreshed at every wake. Informational,
     author-pulled — never pushed into the brief."""
     d = workspace / channel_dir(workspace)
     d.mkdir(exist_ok=True)

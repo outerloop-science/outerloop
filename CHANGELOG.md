@@ -13,6 +13,8 @@ tasks to finish.
 
 ### Fixed
 
+- Runs retain their hypothesis through review. The status strip and sibling view carry it with the PR link, and the brief asks authors to check the view, refreshed at every wake, before choosing a direction and before submitting.
+
 - The board's squeue card scrolls sideways inside its box on a narrow screen instead of overflowing the page; the job name column is narrowed first.
 - Board rows now keep each run's whole hypothesis paragraph; the site's ledger showed sentences cut at 160 characters. Text over 1,000 characters ends at a word with an ellipsis. The next publish repairs rows cut by the earlier limit.
 

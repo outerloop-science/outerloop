@@ -741,3 +741,33 @@ def test_session_end_help(tmp_path, capsys):
             run(tmp_path, verb, "--help")
         assert exc.value.code == 0
         assert "The session ends here." in " ".join(capsys.readouterr().out.split())
+
+
+def test_siblings_shows_hypothesis_and_pr_link(tmp_path) -> None:
+    """The view names what each sibling pursues and where its PR is, and
+    says it is from this wake (the kernel refreshes it at every wake)."""
+    import json
+
+    from outerloop.syscall_cli import DIR, cmd_siblings
+
+    (tmp_path / DIR).mkdir()
+    (tmp_path / DIR / "siblings.json").write_text(
+        json.dumps(
+            [
+                {
+                    "agent": "agent-02",
+                    "state": "parked",
+                    "phase": "",
+                    "direction": "EMA weights.",
+                    "hypothesis": "EMA weights reduce late-update noise.",
+                    "pr_url": "https://github.com/org/repo/pull/16",
+                },
+                {"agent": "agent-03", "state": "running", "phase": "author-sleep"},
+            ]
+        )
+    )
+    out = cmd_siblings(tmp_path, None)
+    assert out.startswith("as of this wake:")
+    assert "agent-02 (parked): EMA weights reduce late-update noise." in out
+    assert "in review: https://github.com/org/repo/pull/16" in out
+    assert "agent-03 (running/author-sleep)" in out

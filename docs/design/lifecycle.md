@@ -106,7 +106,11 @@ The author's session never sees a raw comment body outside a fence, never
 sees the seed, and never sees a message the kernel did not write into the
 inbox. Advisory findings are delivered like blocking ones; the author decides
 what to do with them. The sibling view is refreshed at every wake, not only
-at start. The inbox keeps a position per GitHub collection, since issue
+at start, and `siblings` shows each live run's hypothesis and PR link, including
+runs in review. The hypothesis survives publication for the rest of the run.
+The brief asks the author to check the view before choosing a direction and
+again before a submit, and to take an unused direction unless its angle is
+distinct. This is guidance, not a kernel step. The inbox keeps a position per GitHub collection, since issue
 comments, reviews and review comments carry independent id sequences, and
 delivers each message once.
 

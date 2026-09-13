@@ -28,6 +28,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from outerloop.hypothesis import MAX_HYPOTHESIS_CHARS as MAX_HYPOTHESIS_CHARS
+from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import wake_pending
 from outerloop.markers import marker
 from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
@@ -35,7 +37,6 @@ from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 log = logging.getLogger("outerloop.climbboard")
 
 BOARD_BRANCH = "research-log"
-MAX_HYPOTHESIS_CHARS = 1000  # the whole hypothesis paragraph; the table shows a summary
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
 MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
@@ -62,16 +63,10 @@ class ClimbRow:
 
 
 _NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
-_HYP = re.compile(r"Hypothesis[:*\s]+(.+)", re.I)
-# what ends the hypothesis paragraph: a heading (up to three leading spaces,
-# as Markdown allows) or a list item; in a report written as "Field: text"
-# lines, the next such line too
-_HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s)")
-_FIELD_LINE = re.compile(r"^\s{0,3}(?:\*\*|__)?[A-Z][\w /-]{0,40}:(?:\*\*|__)?(?:\s|$)")
 
 
 def _report_fields(text: str) -> tuple[float | None, float | None, str]:
-    """(baseline, candidate, hypothesis one-liner) out of a run report."""
+    """(baseline, candidate, hypothesis paragraph) out of a run report."""
     baseline = candidate = None
     for key, raw in _NUM.findall(text):
         try:
@@ -82,32 +77,7 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
             baseline = value
         else:
             candidate = value
-    hyp = ""
-    m = _HYP.search(text)
-    if m:
-        # the whole paragraph: the lines up to a blank one, a heading, a list
-        # item or the next field, so a "- Change:" bullet never rides along
-        # "Hypothesis:" starting its line is the field format (its text on the
-        # same line or the next): there the next field line ends the paragraph;
-        # prose after a heading or in a bullet may contain a colon and is never
-        # cut on one
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        after = m.start() + len("Hypothesis")
-        # emphasis around the label (`**Hypothesis:**`) is still the field format
-        fielded = not text[line_start : m.start()].strip("*_ \t") and text[after : after + 1] == ":"
-        lines: list[str] = []
-        for line in text[m.start(1) :].split("\n"):
-            if lines and (
-                not line.strip() or _HYP_END.match(line) or (fielded and _FIELD_LINE.match(line))
-            ):
-                break
-            lines.append(line)
-        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", "\n".join(lines))
-        hyp = hyp.strip().rstrip("-").strip()
-        if len(hyp) > MAX_HYPOTHESIS_CHARS:
-            head = hyp[: MAX_HYPOTHESIS_CHARS - 1]
-            hyp = (head.rsplit(" ", 1)[0] if " " in head else head) + "…"
-    return baseline, candidate, hyp
+    return baseline, candidate, report_hypothesis(text)
 
 
 def summarize(text: str, cap: int = MAX_SUMMARY_CHARS) -> str:
@@ -219,6 +189,7 @@ def collect_rows(
             continue
         baseline, candidate, hyp = _report_fields(report)
         stage = record.stage or {}
+        hyp = hyp or str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
         ended = datetime.fromtimestamp(record.updated or record.created, tz=UTC)
         outcome = record.ending or "ended"
         # link the report only when the ledger's own marker says it is on the
@@ -1110,7 +1081,7 @@ def collect_status(
             continue
         stage = record.stage or {}
         note = str(stage.get("syscall_note") or stage.get("report") or "")
-        _b, _c, hyp = _report_fields(note)
+        hyp = report_hypothesis(note) or str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))
         gpu_ceiling = gpu_budget
@@ -1128,6 +1099,7 @@ def collect_status(
                 "phase": stage.get("phase", ""),
                 # the agent's own headline: what it says it is working on
                 "direction": _phrase(hyp or note.replace("\n", " ")),
+                "hypothesis": hyp,
                 "since": record.updated or record.created,
                 # a run that never launched HAS used zero — absent keys must
                 # not blank the card's meters (a plain submit writes none)
@@ -1204,6 +1176,8 @@ def service_status(
                 "gpu_hours_used",
                 "gpu_hours_budget",
                 "direction",
+                "hypothesis",
+                "pr_url",
                 "exp_done",
                 "exp_total",
                 "exp_minutes",

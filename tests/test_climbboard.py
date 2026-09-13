@@ -477,6 +477,11 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
     assert service_status(tmp_path, gh, "org/repo", 280.0) is True
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["waiting"] == "review"
     assert service_status(tmp_path, gh, "org/repo", 290.0) is False
+    for suffix in ("First detail.", "Different detail."):
+        reviewing = dc_replace(reviewing, stage={"hypothesis": "Same direction. " + suffix})
+        save_record(tmp_path, reviewing, 295.0)
+        assert service_status(tmp_path, gh, "org/repo", 296.0) is True
+        assert json.loads(gh.files["climb/status.json"])["runs"][0]["hypothesis"].endswith(suffix)
     # a state change writes again; a terminal run leaves the strip
     save_record(tmp_path, dc_replace(record, state="ended", ending="negative-result"), 400.0)
     assert service_status(tmp_path, gh, "org/repo", 500.0) is True
@@ -1004,6 +1009,24 @@ def test_status_carries_the_working_direction(tmp_path: Path) -> None:
     assert "Sweeping 6 lengths" not in runs[0]["direction"]
 
 
+def test_review_status_keeps_published_hypothesis(tmp_path: Path) -> None:
+    from outerloop.climbboard import collect_status
+
+    hyp = "Longer warmdowns help. " + "Preserve late updates. " * 60
+    record = RunRecord(
+        run_id="review",
+        target="org/repo",
+        task_title="t",
+        state="parked",
+        pr_url="https://github.com/org/repo/pull/9",
+        stage={"hypothesis": hyp},
+    )
+    run = collect_status(tmp_path, "org/repo", 3.0, records=[record])["runs"][0]
+    assert run["direction"] == "Longer warmdowns help."
+    assert run["hypothesis"] == hyp[:1000]
+    assert run["pr_url"] == record.pr_url
+
+
 def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
     """A run that submitted without launching and without --minutes must
     still render meters: zero launches/spend, the contract's eval cap."""
@@ -1287,7 +1310,9 @@ def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
     second = "An exponential moving average should give a lower loss without changing the updates."
     report = f"# EMA\n\n## Hypothesis\n\n{first} {second}\n\n## Change\n\nkeeps a copy.\n"
     _b, _c, hyp = _report_fields(report)
-    assert hyp == f"{first} {second}"
+    from outerloop.hypothesis import report_hypothesis
+
+    assert hyp == report_hypothesis(report) == f"{first} {second}"
     _b, _c, long = _report_fields("Hypothesis: " + "word " * 400)
     assert len(long) <= MAX_HYPOTHESIS_CHARS and long.endswith("…") and not long.endswith(" …")
     _b, _c, token = _report_fields("Hypothesis: " + "x" * 1200)
@@ -1332,3 +1357,70 @@ def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
     other = json.dumps([{"run_id": "r1", "hypothesis": "A different sentence.", "candidate": 1.0}])
     (row,) = merge_rows(other, [fresh])
     assert row["hypothesis"] == "A different sentence."  # not a prefix: history stands
+
+
+def test_submit_report_cannot_replace_measured_board_numbers(tmp_path: Path) -> None:
+    from outerloop.orchestrator import AttemptResult, RunConfig
+
+    record = RunRecord(
+        run_id="measured",
+        target="org/repo",
+        task_title="t",
+        state="ended",
+        ending="merged",
+        benchmark="speedrun",
+        stage={"hypothesis": "Keep the measured direction."},
+    )
+    save_record(tmp_path, record, 100.0)
+    result = AttemptResult(
+        outcome="improved",
+        baseline=14.0,
+        candidate=11.0,
+        submit_report="Hypothesis: Author claim.\n\nBaseline: 99\nCandidate: 98",
+    )
+    report = result.report(RunConfig(target=record.target, benchmark=record.benchmark))
+    report_path = run_dir(tmp_path, record.run_id) / "report.md"
+    report_path.write_text(report)
+    row = collect_rows(tmp_path, record.target)[record.benchmark][0]
+    assert (row.baseline, row.candidate) == (14.0, 11.0)
+    assert row.hypothesis == record.stage["hypothesis"]
+    assert "Hypothesis" not in report and "## Submit report" not in report
+    assert report_path.read_text() == report
+
+    report_path.write_text(report + "\nHypothesis: Report direction.\n")
+    row = collect_rows(tmp_path, record.target)[record.benchmark][0]
+    assert row.hypothesis == "Report direction."
+
+
+def test_hypothesis_needs_a_real_label_and_status_falls_back(tmp_path: Path) -> None:
+    """The word inside prose is not a section: a note without a Hypothesis
+    label yields nothing, and the live status then shows the direction the
+    record retained through publish."""
+    from outerloop.climbboard import collect_status
+    from outerloop.hypothesis import report_hypothesis
+
+    assert report_hypothesis("We tested the hypothesis that EMA helps; it did.") == ""
+    assert report_hypothesis("## Hypothesis\n\nEMA helps.\n") == "EMA helps."
+    assert report_hypothesis("- Hypothesis: EMA helps.\n") == "EMA helps."
+    # an empty section never turns the next heading or field into a direction
+    assert report_hypothesis("## Hypothesis\n\n## Change\n\nB\n") == ""
+    assert report_hypothesis("Hypothesis:\nChange: B\n") == ""
+    assert report_hypothesis("## Hypothesis\n\nChange: B\n") == ""  # heading form, then a field
+    record = RunRecord(
+        run_id="live-h",
+        target="org/repo",
+        task_title="t",
+        state="parked",
+        benchmark="b",
+        agent_id="agent-02",
+        created=1.0,
+        updated=2.0,
+        pr_url="https://github.com/org/repo/pull/16",
+        stage={
+            "syscall_note": "Rerunning the confirm with more seeds.",
+            "hypothesis": "EMA helps.",
+        },
+    )
+    save_record(tmp_path, record, 2.0)
+    (r,) = collect_status(tmp_path, "org/repo", 3.0)["runs"]
+    assert r["hypothesis"] == "EMA helps." and r["direction"]
