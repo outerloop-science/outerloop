@@ -492,6 +492,7 @@ def test_html_carries_the_live_strip() -> None:
     # instead of overflowing the page, and the name column is narrowed first
     assert ".run.queue{width:100%;padding-bottom:.55rem;overflow-x:auto;max-width:100%}" in html
     assert "@media (max-width:640px){.run.queue td.name{max-width:9rem}}" in html
+    assert "<meta name='viewport' content='width=device-width, initial-scale=1'>" in html
 
 
 def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_path: Path) -> None:
