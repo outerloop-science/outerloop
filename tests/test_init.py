@@ -617,19 +617,19 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
 
     monkeypatch.setattr(init.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
-    assert init._check_app_access(Provider(), "o/r") == ""
+    assert init.app_permission_gaps(Provider(), "o/r").problem == ""
     answers["repos/o/r/installation"] = None  # not installed there: GitHub 404s, public or not
-    assert "not installed on o/r" in init._check_app_access(Provider(), "o/r")
+    assert "not installed on o/r" in init.app_permission_gaps(Provider(), "o/r").problem
     answers["repos/o/r/installation"] = {
         "id": 2,
         "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"},
         "account": {"login": "o", "type": "User"},
     }
-    problem = init._check_app_access(Provider(), "o/r")
+    problem = init.app_permission_gaps(Provider(), "o/r").problem
     assert "contents: write" in problem
     assert "https://github.com/settings/apps/app/permissions" in problem
     answers["repos/o/r/installation"] = {"id": 9, "permissions": {"contents": "write"}}
-    assert "installation 9" in init._check_app_access(Provider(), "o/r")
+    assert "installation 9" in init.app_permission_gaps(Provider(), "o/r").problem
 
 
 def test_a_credential_that_cannot_open_prs_fails_init(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -774,10 +774,10 @@ def test_transient_github_failures_are_not_dead_credentials(monkeypatch) -> None
 
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
     monkeypatch.setattr(init.urllib.request, "urlopen", raising(502))
-    problem = init._check_app_access(_Provider(), "o/r")
+    problem = init.app_permission_gaps(_Provider(), "o/r").problem
     assert problem.startswith("could not reach GitHub") and not init._auth_is_fatal(problem)
     monkeypatch.setattr(init.urllib.request, "urlopen", raising(404))
-    assert init._auth_is_fatal(init._check_app_access(_Provider(), "o/r"))
+    assert init._auth_is_fatal(init.app_permission_gaps(_Provider(), "o/r").problem)
 
 
 def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(

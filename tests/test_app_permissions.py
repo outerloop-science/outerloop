@@ -81,7 +81,7 @@ def test_failed_app_lookup_keeps_permission_names(app):
 
 def test_access_uses_one_installation_lookup(app):
     provider, _, calls = app
-    assert "checks: read" in init._check_app_access(provider, "org/repo")
+    assert "checks: read" in init.app_permission_gaps(provider, "org/repo").problem
     assert calls.count("/repos/org/repo/installation") == 1
 
 

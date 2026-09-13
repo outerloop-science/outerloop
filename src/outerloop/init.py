@@ -348,9 +348,17 @@ def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
         )
 
 
-def _check_app_access(provider: Any, target: str) -> str:
-    """Check the target installation and all required App permissions."""
-    return app_permission_gaps(provider, target).problem
+def _app_verdict(provider: Any, target: str) -> tuple[str, bool]:
+    """(problem, fatal): a missing read permission is a warning, since the loop
+    runs without check results; a missing write, or no installation, fails
+    setup. Not being able to ask GitHub right now never does."""
+    from outerloop.appmanifest import DEFAULT_PERMISSIONS
+
+    gaps = app_permission_gaps(provider, target)
+    fatal = _auth_is_fatal(gaps.problem) and (
+        not gaps.known or any(DEFAULT_PERMISSIONS[n] == "write" for n in gaps.missing)
+    )
+    return gaps.problem, fatal
 
 
 def validate_pat(pat_file: str, target: str) -> str:
@@ -484,7 +492,6 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
     write the target, then point the .env at it."""
     from outerloop import appmanifest
     from outerloop.appauth import app_provider_from_file
-    from outerloop.appmanifest import DEFAULT_PERMISSIONS
 
     slug = app_json.name[len("github_app.") : -len(".json")]
     print(f"Re-checking the existing App '{slug}' ({app_json}) against {answers.target}.")
@@ -498,13 +505,7 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
             if iid:
                 appmanifest.set_installation_id(app_json, iid)
                 print(f"  installation id {iid} recorded")
-        gaps = app_permission_gaps(app_provider_from_file(app_json), answers.target)
-        problem = gaps.problem
-        # a missing read permission is a warning: the loop runs without check
-        # results; a missing write, or no installation, is what fails setup
-        fatal = _auth_is_fatal(problem) and (
-            not gaps.known or any(DEFAULT_PERMISSIONS[n] == "write" for n in gaps.missing)
-        )
+        problem, fatal = _app_verdict(app_provider_from_file(app_json), answers.target)
     except Exception as exc:
         problem, fatal = f"could not read the App credentials: {exc}", False
     env_path = CONFIG_DIR / ENV_FILE.name
@@ -584,16 +585,18 @@ def _github_app_setup(
         from outerloop.appauth import app_provider_from_file
 
         try:
-            problem = _check_app_access(app_provider_from_file(app_json), answers.target)
+            problem, fatal = _app_verdict(app_provider_from_file(app_json), answers.target)
         except Exception as exc:  # a check failure is a warning, never fails setup
-            problem = f"could not read the App credentials: {exc}"
-        if _auth_is_fatal(problem):
+            problem, fatal = f"could not read the App credentials: {exc}", False
+        if fatal:
             write_private(
                 CONFIG_DIR / ENV_FILE.name,
                 render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
             )
             return _app_failure(answers, str(conversion["slug"]), problem)
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+        if problem:
+            print("  next: outerloop permissions --open")
     else:
         # the credentials are kept; nothing can run until the App is installed
         write_private(
