@@ -13,6 +13,7 @@ tasks to finish.
 
 ### Fixed
 
+- The board's squeue card scrolls sideways inside its box on a narrow screen instead of overflowing the page; the job name column is narrowed first.
 - Board rows now keep each run's whole hypothesis paragraph; the site's ledger showed sentences cut at 160 characters. Text over 1,000 characters ends at a word with an ellipsis. The next publish repairs rows cut by the earlier limit.
 
 - `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.
