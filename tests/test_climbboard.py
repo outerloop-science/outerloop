@@ -489,7 +489,7 @@ def test_html_carries_the_live_strip() -> None:
     assert "Array.isArray(strip.queue)" in html and "'JOBID'" in html
     assert "'run queue'" in html and "createTHead" in html  # a card with a table, not a <pre>
     # the queue's cells never wrap, so the card scrolls sideways on a phone
-    # instead of overflowing the page, and the name column gives way first
+    # instead of overflowing the page, and the name column is narrowed first
     assert ".run.queue{width:100%;padding-bottom:.55rem;overflow-x:auto;max-width:100%}" in html
     assert "@media (max-width:640px){.run.queue td.name{max-width:9rem}}" in html
 
