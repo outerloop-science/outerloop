@@ -43,6 +43,7 @@ MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
 # (this per-agent cap is the whole bound — no global total ceiling, which
 # would drop the oldest agent once agents * 5 exceeded it)
 MAX_ROWS_PER_BENCHMARK = 2000
+MAX_ROWS_BYTES = 900_000  # the contents API returns no inline content past 1 MB
 
 
 @dataclass(frozen=True)
@@ -280,10 +281,17 @@ def merge_rows(existing_json: str | None, fresh: list[ClimbRow]) -> list[dict[st
             rows.append(asdict(row))
             seen.add(row.run_id)
     rows.sort(key=lambda r: str(r.get("ended", "")))
-    # the board is a bounded VIEW (the contents API caps file sizes); the
-    # full history stays in reports/ on this same branch, and the trim is
-    # said out loud in CLIMB.md, never silent
-    return rows[-MAX_ROWS_PER_BENCHMARK:]
+    # the board is a bounded VIEW, by rows and by bytes (the contents API
+    # returns nothing inline past 1 MB); the full history stays in reports/
+    # on this same branch, and the trim is said out loud in CLIMB.md
+    rows = rows[-MAX_ROWS_PER_BENCHMARK:]
+    while len(rows) > 1:
+        size = len(json.dumps(rows, indent=1).encode())
+        if size <= MAX_ROWS_BYTES:
+            break
+        # drop the overshoot's share of the oldest rows, then measure again
+        rows = rows[max(1, len(rows) * (size - MAX_ROWS_BYTES) // size) :]
+    return rows
 
 
 def _fmt(value: Any) -> str:
@@ -329,11 +337,14 @@ def render_md(
             f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
             f"**{_fmt(best)}** ({direction}){start_chip} · GPU-hours: **{gpu:.1f}**",
         ]
-        if len(rows) >= MAX_ROWS_PER_BENCHMARK:
+        if (
+            len(rows) >= MAX_ROWS_PER_BENCHMARK
+            or len(json.dumps(rows, indent=1)) > 0.9 * MAX_ROWS_BYTES
+        ):
             lines += [
                 "",
-                f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts are on the board; "
-                "archived reports stay in `reports/` on this branch.",
+                f"Only the newest {len(rows)} attempts are on the board (its data file is "
+                "bounded); archived reports stay in `reports/` on this branch.",
             ]
         lines += [
             "",

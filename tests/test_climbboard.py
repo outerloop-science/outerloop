@@ -134,7 +134,18 @@ def test_row_cap_is_loud_not_silent() -> None:
     capped = merge_rows(_json.dumps(many), [])
     assert len(capped) <= MAX_ROWS_PER_BENCHMARK
     md = render_md("org/repo", {"b": capped}, {"b": "min"})
-    assert f"Only the newest {MAX_ROWS_PER_BENCHMARK} attempts" in md
+    assert f"Only the newest {len(capped)} attempts" in md
+    # bounded by bytes too: whole-paragraph hypotheses must never push the
+    # data file past what the contents API returns inline; the newest survive
+    from outerloop.climbboard import MAX_ROWS_BYTES
+
+    heavy = [{**r, "hypothesis": "h" * 1000} for r in many]
+    bounded = merge_rows(_json.dumps(heavy), [])
+    assert len(_json.dumps(bounded, indent=1).encode()) <= MAX_ROWS_BYTES
+    assert 0 < len(bounded) < len(heavy) and bounded[-1]["ended"] == max(r["ended"] for r in heavy)
+    assert f"Only the newest {len(bounded)} attempts" in render_md(
+        "org/repo", {"b": bounded}, {"b": "min"}
+    )
     small = render_md("org/repo", {"b": rows}, {"b": "min"})
     assert "Only the newest" not in small
 
