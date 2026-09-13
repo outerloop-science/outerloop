@@ -209,7 +209,7 @@ honest wording, rather than waiting for the orphan-reconciliation pass to
 mislabel a deliberate "no" as a crash.
 
 After the report is distilled into `lessons/`, the workspace and per-run HOME
-are garbage-collected (grace period first — an `parked` run's context must
+are garbage-collected (grace period first — a `parked` run's context must
 survive until its PR closes). The notebook is the memory; the run directory
 is scaffolding.
 

@@ -182,7 +182,7 @@ def collect_rows(
         records = list_runs(root)
     out: dict[str, list[ClimbRow]] = {}
     for record in records:
-        # only ENDED runs: an parked run's outcome is not known yet (its
+        # only ENDED runs: a parked run's outcome is not known yet (its
         # PR may be rejected), and a published row is never rewritten
         if record.target != target or record.state != ENDED:
             continue
@@ -203,7 +203,7 @@ def collect_rows(
             lines = marker.splitlines()
             if lines and lines[0].startswith(("archived", "pointer-pending", "done")):
                 if len(lines) > 1 and lines[1].startswith("reports/") and lines[1].endswith(".md"):
-                    # the ledger's own path: an parked archive keeps its
+                    # the ledger's own path: a parked archive keeps its
                     # date even after the ENDED transition re-stamps updated
                     report = lines[1]
                 else:  # legacy marker without a path line

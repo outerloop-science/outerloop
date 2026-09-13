@@ -1130,7 +1130,7 @@ def _publish_ledger_entry(
 
     date = datetime.fromtimestamp(record.updated or record.created, tz=UTC).strftime("%Y-%m-%d")
     path = f"reports/{date}-{record.run_id}.md"
-    # an earlier pass may have archived under an earlier date (an parked
+    # an earlier pass may have archived under an earlier date (a parked
     # archive whose record re-stamped `updated` at ENDED): the marker's own
     # second line is the authoritative path for retries and pointers
     prior = state.splitlines()
