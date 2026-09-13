@@ -120,7 +120,7 @@ scope, key), and their spend counts against its budget.
 
 | Now | Fate |
 | --- | --- |
-| `climb`, `steward`, `followup` | Session dispatch collapsed: all five roles run through **one role-runner + a RoleSpec** (judges via their agent modules, `review_cli`/`verifier_cli` deleted; author via `climb_once`; follow-up via `respond_once` under the resuming role's key and scope; steward via `live_steward`) with the harness built from the spec (one `build_harness` for every role). What remains of these modules is each role's kernel half — measure/gate/PR/wake plumbing. The brief/skills halves becoming app config is the remaining consolidation. |
+| `climb`, `steward`, `wake` | Session dispatch collapsed: all five roles run through **one role-runner + a RoleSpec** (judges via their agent modules, `review_cli`/`verifier_cli` deleted; author via `climb_once`; follow-up via `attempt.run_author_leg` under the resuming role's key and scope; steward via `live_steward`) with the harness built from the spec (one `build_harness` for every role). What remains of these modules is each role's kernel half — measure/gate/PR/wake plumbing. The brief/skills halves becoming app config is the remaining consolidation. |
 | `review`, `verifier` (rendering, verdict/blocking machinery) | On the agent-session path; hold the shared vocabulary and rendering both judges use. |
 | `harness`, `brief` | The seam. Keep. Adapters live: claude, codex, hermes. |
 | `orchestrator`, `contract`, `github`, `compute`, `runstate`, `disk`, `limits`, `intake` | Kernel. Barely moves — the point. |

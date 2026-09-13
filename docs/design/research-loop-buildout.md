@@ -179,7 +179,7 @@ against fakes before that.)
 ## Phase C — in review, the author receives messages
 
 **Status: absorbed into `lifecycle.md` (2026-09-12).** The ruling stands: an
-in-review run is the author receiving messages and doing whatever is
+parked run with a PR is the author receiving messages and doing whatever is
 necessary, not hard-coded steps. The lifecycle note carries the design: three
 states, one park-and-wake engine, the inbox and its message kinds, the
 author's moves (launch, sleep, submit, reply, end), what stays rigid, what is

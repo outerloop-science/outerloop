@@ -527,3 +527,15 @@ On by default. Think hard before changing any of them:
 
 Open an issue. If you're reporting something the agent did, include its run
 report — every run writes one, success or failure.
+
+### Lifecycle deployment
+
+Runs appear as `running`, `parked`, or `ended` on the board and in logs.
+An open PR is a link on a parked run. Comments and base moves wake that run
+through the ordinary wake job; there is no separate follow-up job. Runs
+sleeping on jobs receive comments after those jobs finish.
+
+Update the fleet by commit. Before deploying this stage, check every fleet's
+`legacy follow-up records: N` tick line and require zero. Old records migrate
+on read; an older kernel cannot read the new state names. The incompatibility
+is confined to the state field, so rollbacks need state translation.

@@ -180,12 +180,12 @@ email, no command grammar to learn or to secure.
    its own.
 
 **In flight — humans steer through the PR.** A run whose PR is open enters
-`in-review` and stays alive: each tick, the sweep checks the PR for new
+`parked` and stays alive: each tick, the sweep checks the PR for new
 comments by org members (the advisory reviewer never comments on bot PRs, so
 no bot-to-bot loop can form). A qualifying comment wakes the run — the same
 resume mechanism as experiment wakes, comment text data-fenced, task-level
-supersession only — and the agent pushes fixes and replies on the thread via
-the bot identity. Review-response sessions are bounded like everything else
+supersession only. The author replies on the thread and submits changes
+through the gate and publish. Comments wait while launched jobs are active. Review-response sessions are bounded like everything else
 (attempt counter, budget). Non-member comments never trigger a wake.
 
 **Death — a run ends in exactly one of six ways, each producing a report:**
@@ -209,7 +209,7 @@ honest wording, rather than waiting for the orphan-reconciliation pass to
 mislabel a deliberate "no" as a crash.
 
 After the report is distilled into `lessons/`, the workspace and per-run HOME
-are garbage-collected (grace period first — an `in-review` run's context must
+are garbage-collected (grace period first — a `parked` run's context must
 survive until its PR closes). The notebook is the memory; the run directory
 is scaffolding.
 
@@ -363,11 +363,11 @@ failure can strand a run:
    strand the run.
 3. *Backup — the tick sweeps.* The tick chain (independently kept alive:
    two queued successors, heartbeat, GH-Actions watchdog) scans every run in
-   `waiting` each tick: experiment job terminal per `sacct` + no wake lease
+   `parked` each tick: experiment job terminal per `sacct` + no wake lease
    or completion within a grace window → the tick dispatches the wake
    itself. This covers a lost wake job, a wake killed mid-session, and Slurm
    controller restarts that drop pending jobs.
-4. *Deadline floor.* Every `waiting` run records
+4. *Deadline floor.* Every `parked` run records
    `deadline = submit_time + walltime + slack` (recomputed from `start_time`
    once the job starts, so late scheduling never truncates a healthy run).
    Past the deadline the sweep consults `sacct` and acts on what it finds:

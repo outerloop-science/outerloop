@@ -61,7 +61,7 @@ per tiny thing is the accretion trap in a new costume.
 - steward: `ruler-hardening` (when/how to make the metric harder once it's gamed —
   add a transfer split, harder cells) · `benchmark-design` (noise floors, seeds,
   why a sweep beats a single point)
-- follow-up: `respond-to-review` (address maintainer comments; which task
+- resumed author: `respond-to-review` (address maintainer comments; which task
   instruction a wake supersedes; honest scope)
 
 **Target (e.g. `yolo-jepa`)**
@@ -138,7 +138,7 @@ planned set — none are wired yet):
 | author | Read/Grep/Glob/Write/Edit/Bash | kernel-primer, plain-style, hypothesis-discipline, honest-method, experiment-lifecycle, research-report (+ self-review, analyze-results — proposed) | literature-search (retriever), result-aggregation |
 | reviewer | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, review-rubric, read-only-investigation | evidence-sweep (parallel read-only file/caller sweeps on large diffs), reference-check (retriever) |
 | verifier | Read/Grep/Glob + pr-context-read, retriever | kernel-primer, plain-style, integrity-lens, read-only-investigation | evidence-sweep (read-only; e.g. trace every consumer of a changed ruler input) |
-| followup | editing set, resuming role's key/scope | kernel-primer, plain-style, respond-to-review | inherits the resumed role's |
+| resumed author | editing set, resuming role's key/scope | kernel-primer, plain-style, respond-to-review | inherits the resumed role's |
 | steward | editing set, own territory | kernel-primer, plain-style, ruler-hardening, benchmark-design | literature-search (eval conventions) |
 
 The self-review skill's relationship to the panel is specified in
@@ -252,7 +252,7 @@ is the rare exception).
 
 | Field | Meaning |
 | --- | --- |
-| `name` | role id (author, reviewer, verifier, steward, followup) |
+| `name` | role id (author, reviewer, verifier, steward) |
 | `instructions` | standing role prompt, composed from skills |
 | `skills` | skill ids to load (global + role + target) |
 | `tools` | allowed tools (native + harness-provided) |
@@ -267,7 +267,7 @@ is the rare exception).
 
 Replaces the five per-role drivers' session dispatch — all five roles now run
 through `run_role` with their RoleSpec (`review_cli` and `verifier_cli` are
-deleted; author, follow-up, and steward dispatch from their kernel modules).
+deleted; author and steward dispatch from their kernel modules).
 Kernel code; it calls into the agentic realm at step 2, and everything
 trust-critical is deterministic.
 

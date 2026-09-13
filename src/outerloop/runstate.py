@@ -15,6 +15,7 @@ strand the run.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -23,14 +24,12 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Live states.
-IMPLEMENTING = "implementing"  # a session is (or will be) working
-WAITING = "waiting"  # experiment submitted; hibernating until results
-IN_REVIEW = "in-review"  # PR open; wakes on qualifying comments
-CONCLUDING = "concluding"  # results in hand; final session(s)
+# Lifecycle states.
+RUNNING = "running"
+PARKED = "parked"
 ENDED = "ended"
 
-STATES = (IMPLEMENTING, WAITING, IN_REVIEW, CONCLUDING, ENDED)
+STATES = (RUNNING, PARKED, ENDED)
 
 # The six endings ("The life of a run" — every one produces a report).
 MERGED = "merged"
@@ -122,7 +121,7 @@ class RunRecord:
     run_job_id: str = ""  # slurm job running the attempt itself; lets the
     # sweep end records whose job was KILLED (walltime/preemption/node
     # death) rather than crashed — signals leave no exception to contain.
-    # INVARIANT: any future path that re-enters `implementing` from a NEW
+    # INVARIANT: any future path that re-enters `running` from a NEW
     # job must re-stamp this field, or the sweep will judge the run by a
     # stale terminal job. (No such path exists today.)
     resume_session_id: str = ""  # harness session to resume on wake
@@ -141,19 +140,6 @@ class RunRecord:
     # (legacy records, and the common config-driven case).
     author_key_file: str = ""
     inbox_seq: int = 0  # last message delivered by a completed session leg
-    # legacy: blocking findings an older kernel left for the author; the next
-    # follow-up wake turns them into an inbox message and clears this. Never
-    # set by this kernel; carried through saves so a rollback still sees it.
-    panel_wake_text: str = ""
-    # Per-source comment cursors: issue comments, top-level reviews, and
-    # inline review comments are three REST collections with independent id
-    # sequences — one cursor across them drops comments forever.
-    last_comment_id: int = 0
-    last_review_id: int = 0
-    last_review_comment_id: int = 0
-    # head sha the last conflict wake was issued for: a dirty PR wakes the
-    # author ONCE per head — a new push (or new conflict) re-arms it
-    dirty_wake_head: str = ""
     # The exact PR head the auto-arm may merge: set at publish to the pushed
     # head when the PR was published UNDER merge:auto with a CLEAN panel
     # (#171's arming condition), carried forward by signature-clean syncs
@@ -162,12 +148,11 @@ class RunRecord:
     # one, or any unrecorded push simply fails the equality: the tick arms
     # only when GitHub's head IS this sha. Empty = never arm (legacy too).
     auto_blessed_head: str = ""
-    followup_job_id: str = ""  # slurm job servicing this run's review comments
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
     terminal_seen: float = 0.0  # when the sweep first saw the experiment terminal
-    # A WAITING climb's re-entry point: the committed shas, drawn seeds, and the
+    # A PARKED climb's re-entry point: the committed shas, drawn seeds, and the
     # candidate snapshot ref a fresh process reconstructs the measure-and-decide
     # phase from. `phase` says WHICH park (baseline, before the session; or
     # candidate, after it). A JSON dict — small, forward-compatible — not the
@@ -197,12 +182,49 @@ def run_dir(root: Path, run_id: str) -> Path:
 
 
 def save_record(root: Path, record: RunRecord, now: float) -> None:
+    """Serialize record writers; a persisted ending cannot be replaced."""
+    directory = run_dir(root, record.run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".record-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            latest = load_record(root, record.run_id)
+        except FileNotFoundError:
+            latest = None
+        if latest is not None and latest.state == ENDED:
+            return
+        _save_record(root, record, now)
+
+
+def mark_launches_cancelled(root: Path, run_id: str, now: float) -> None:
+    """Stamp terminal cleanup without allowing stale wake writes."""
+    directory = run_dir(root, run_id)
+    with (directory / ".record-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = load_record(root, run_id)
+        if record.state == ENDED and not record.stage.get("launches_cancelled"):
+            _save_record(
+                root, replace(record, stage={**record.stage, "launches_cancelled": True}), now
+            )
+
+
+def mark_workspace_shed(root: Path, run_id: str, now: float) -> None:
+    """Stamp workspace cleanup on the latest terminal record."""
+    directory = run_dir(root, run_id)
+    with (directory / ".record-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = load_record(root, run_id)
+        if record.state == ENDED and not record.workspace_shed:
+            _save_record(root, replace(record, workspace_shed=now), now)
+
+
+def _save_record(root: Path, record: RunRecord, now: float) -> None:
     """Atomic write: a crash mid-save leaves the previous record intact."""
     if record.state not in STATES:
         raise ValueError(f"unknown state {record.state!r}")
     if record.state == ENDED and record.ending not in ENDINGS:
         raise ValueError(f"ended run needs a valid ending, got {record.ending!r}")
-    if record.state == WAITING and record.experiment_job_id and record.deadline <= 0:
+    if record.state == PARKED and record.experiment_job_id and record.deadline <= 0:
         # A waiting run without a deadline is invisible to the deadline floor
         # — the exact "silently immortal run" the fail-safe design forbids.
         raise ValueError("waiting run with an experiment needs a deadline")
@@ -213,11 +235,17 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
     # same tmp file before the atomic replace
     tmp = directory / f".{RECORD_NAME}.{os.getpid()}.tmp"
     payload = asdict(stamped)
-    existing = directory / RECORD_NAME
-    if existing.exists():
-        legacy = json.loads(existing.read_text()).get("followup_stage")
-        if legacy:
-            payload["followup_stage"] = legacy
+    path = directory / RECORD_NAME
+    if path.exists():
+        old = json.loads(path.read_text())
+        for key in (
+            "last_comment_id",
+            "last_review_id",
+            "last_review_comment_id",
+            "panel_wake_text",
+        ):
+            if key in old:
+                payload[key] = old[key]
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
     os.replace(tmp, directory / RECORD_NAME)
 
@@ -226,6 +254,15 @@ def load_record(root: Path, run_id: str) -> RunRecord:
     raw = json.loads((run_dir(root, run_id) / RECORD_NAME).read_text())
     if not isinstance(raw, dict):
         raise ValueError(f"record is not a JSON object: {type(raw).__name__}")
+    old_state = str(raw.get("state", ""))
+    if old_state == "concluding":
+        log.warning("run %s: migrating concluding to parked", run_id)
+    raw["state"] = {
+        "implementing": RUNNING,
+        "waiting": PARKED,
+        "in-review": PARKED,
+        "concluding": PARKED,
+    }.get(old_state, old_state)
     # Back-compat: a record written by pre-rename code carries `climb_job_id`
     # for what is now `run_job_id`. Map it on load so an in-flight run started
     # before the rename still wakes/ends correctly (the deploy is atomic, but
@@ -237,6 +274,69 @@ def load_record(root: Path, run_id: str) -> RunRecord:
     known = {k: v for k, v in raw.items() if k in RunRecord.__dataclass_fields__}
     record = RunRecord(**known)
     return record
+
+
+def migrate_inbox(root: Path, run_id: str, now: float) -> None:
+    """Move legacy inbox data once, while the caller holds the wake lease."""
+    from outerloop.inbox import Message, advance_github_positions, append, thread_for
+
+    if read_lease(root, run_id) is None:
+        raise RuntimeError("inbox migration requires the run lease")
+    directory = run_dir(root, run_id)
+    with (directory / ".record-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = directory / RECORD_NAME
+        raw = json.loads(path.read_text())
+        if raw.get("state") == ENDED:
+            return
+        keys = ("last_comment_id", "last_review_id", "last_review_comment_id")
+        # the follow-up job and its dispatched re-measure no longer exist:
+        # an old record still naming them would count as legacy forever
+        jobs = ("followup_job_id", "followup_stage")
+        if not any(key in raw for key in (*keys, "panel_wake_text", *jobs)):
+            return
+        if (
+            any(key in raw for key in keys)
+            and not (directory / "inbox" / "positions.json").exists()
+        ):
+            advance_github_positions(
+                directory,
+                dict(
+                    zip(
+                        ("comment", "review", "review_comment"),
+                        (int(raw.get(key, 0)) for key in keys),
+                        strict=True,
+                    )
+                ),
+            )
+        record = load_record(root, run_id)
+        if raw.get("panel_wake_text"):
+            append(
+                run_dir(root, run_id),
+                Message(
+                    0,
+                    "panel-verdict",
+                    "panel",
+                    thread_for(record),
+                    float(raw.get("updated", 0)),
+                    "panel:legacy",
+                    {
+                        "findings": [
+                            {
+                                "blocking": True,
+                                "summary": "Pending panel findings",
+                                "detail": raw["panel_wake_text"],
+                            }
+                        ]
+                    },
+                ),
+            )
+        for key in (*keys, "panel_wake_text", *jobs):
+            if raw.pop(key, None):
+                log.info("run %s: legacy %s dropped by the migration", run_id, key)
+        tmp = directory / f".migration.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(raw, indent=2, sort_keys=True))
+        os.replace(tmp, path)
 
 
 def list_runs(root: Path) -> list[RunRecord]:

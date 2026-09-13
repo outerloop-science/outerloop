@@ -70,8 +70,8 @@ from outerloop.runstate import (
     ABORTED,
     BUDGET_EXHAUSTED,
     ENDED,
-    IN_REVIEW,
     NEGATIVE_RESULT,
+    PARKED,
     STUCK,
     RunRecord,
     save_record,
@@ -410,10 +410,14 @@ def live_steward(
     base_branch: str = "main",
     issue_number: int = 0,
     work_order: str = "",
+    author_key_file: str = "",
+    author_model: str = "",
     spec: RoleSpec | None = None,
 ) -> AttemptOutcome:
     """Run one stewardship against the real target repo."""
     import os as _os
+
+    from outerloop.attempt import finish_run
 
     # a deployment bug is loud and immediate — same guard as attempt_once
     spec = spec or steward_spec()
@@ -429,8 +433,11 @@ def live_steward(
         target=config.target,
         task_title=f"steward: {config.benchmark}",
         benchmark=config.benchmark,
-        state="implementing",
+        state="running",
         agent_id=STEWARD_AGENT_ID,
+        author_backend="claude",
+        author_key_file=author_key_file,
+        author_model=author_model,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
         run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
@@ -521,7 +528,11 @@ def live_steward(
                     "resume_session_id": session.session_id or "",
                 }
             )
-            _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
+            _best_effort(
+                "final record",
+                lambda: finish_run(run_root, final, final.ending, final.ending_note, now),
+                secrets,
+            )
             report_path = run_dir / "report.md"
             _best_effort("run report", lambda: report_path.write_text(report), secrets)
             if issue_number:
@@ -621,7 +632,7 @@ def live_steward(
         final = RunRecord(
             **{
                 **record.__dict__,
-                "state": IN_REVIEW,
+                "state": PARKED,
                 "pr_url": pr_url,
                 "resume_session_id": session.session_id or "",
                 "ending_note": pr_url,
@@ -663,7 +674,11 @@ def live_steward(
             }
         )
         report_path = run_dir / "report.md"
-        _best_effort("ending record", lambda: save_record(run_root, final, now), secrets)
+        _best_effort(
+            "ending record",
+            lambda: finish_run(run_root, final, final.ending, final.ending_note, now),
+            secrets,
+        )
         wrote = _best_effort(
             "error report",
             lambda: report_path.write_text(
@@ -813,6 +828,8 @@ def main() -> int:
             created=datetime.now(UTC).isoformat(),
             secrets=(api_key, bot_auth.token()),
             issue_number=args.issue,
+            author_key_file=str(Path(args.key_file).expanduser()),
+            author_model=args.model,
             work_order=(
                 base64.b64decode(args.work_order_b64).decode() if args.work_order_b64 else ""
             ),

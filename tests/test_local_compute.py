@@ -288,12 +288,12 @@ def test_gpu_contracts_pass_the_lane_check_on_a_backend_without_lanes() -> None:
     there; a backend with lanes still refuses loudly (terra #223)."""
     from types import SimpleNamespace
 
-    from outerloop.tick import FollowupSpec, _gpu_lane_error
+    from outerloop.tick import ServiceSpec, _gpu_lane_error
 
     contract = SimpleNamespace(benchmarks=[SimpleNamespace(name="speedrun", gpus=1)])
 
-    def spec(has_lanes: bool) -> FollowupSpec:
-        return FollowupSpec(
+    def spec(has_lanes: bool) -> ServiceSpec:
+        return ServiceSpec(
             account="",
             partition="",
             run_root=Path("/tmp/x"),

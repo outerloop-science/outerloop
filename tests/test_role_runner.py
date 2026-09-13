@@ -77,17 +77,6 @@ def test_editing_role_needs_no_schema() -> None:
     assert result.data is None
 
 
-def test_followup_spec_carries_the_resuming_roles_key() -> None:
-    from outerloop.roles import followup_spec
-
-    spec = followup_spec()
-    assert spec.name == "followup" and spec.key == "author"
-    assert spec.execution.can_execute is True
-    assert {"Write", "Edit", "Bash"} <= set(spec.tools)
-    assert spec.output_schema is None  # the reply is prose; changes are re-measured
-    assert followup_spec(resuming="steward").key == "steward"
-
-
 def test_steward_spec_is_an_executing_editor_in_its_own_territory() -> None:
     from outerloop.roles import steward_spec
 

@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 class MeasurementPending(Exception):
     """Raised when one or more measures have not completed. Carries the wake
     dependency (the colon-joined job ids: `afterany:<a>:<b>` in one wake job)
-    so the caller can park the run as `waiting` on exactly this set."""
+    so the caller can park the run as `parked` on exactly this set."""
 
     def __init__(self, job_ids: tuple[str, ...]):
         self.job_ids = job_ids

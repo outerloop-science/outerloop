@@ -19,10 +19,10 @@ def test_every_role_config_reads_the_login_at_construction(monkeypatch, tmp_path
     after the env is set sees the App's login; an explicit value still wins."""
     from outerloop.orchestrator import RunConfig
     from outerloop.steward import StewardConfig
-    from outerloop.tick import FollowupSpec
+    from outerloop.tick import ServiceSpec
 
     monkeypatch.setenv("OUTERLOOP_BOT_LOGIN", "outerloop-autoresearch[bot]")
-    spec = FollowupSpec(account="a", partition="p", run_root=tmp_path, image="", home=tmp_path)
+    spec = ServiceSpec(account="a", partition="p", run_root=tmp_path, image="", home=tmp_path)
     assert spec.bot_login == "outerloop-autoresearch[bot]"
     assert RunConfig(target="o/r", benchmark="b").bot_login == "outerloop-autoresearch[bot]"
     assert StewardConfig(target="o/r", benchmark="b").bot_login == "outerloop-autoresearch[bot]"

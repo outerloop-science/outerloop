@@ -917,7 +917,7 @@ class CodexHarness:
     # Headless resume is validated on codex-cli 0.130.0: a contained
     # `codex exec resume <thread_id>` recalls prior-turn context (the session id
     # is the `thread.started` event's `thread_id`, restored from the bound
-    # --home). So the revise/wake/followup loops resume codex like Claude.
+    # --home). So the revise/wake loops resume codex like Claude.
     supports_resume = True
 
     def _apptainer_argv(

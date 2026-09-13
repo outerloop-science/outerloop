@@ -220,7 +220,7 @@ def add_credential_args(parser: argparse.ArgumentParser) -> None:
     """Add the shared bot-auth options to a role parser: `--pat-file`, and
     `--github-app-file`, which supplies installation tokens instead of the PAT
     when set. `resolve_bot_auth` reads the pair. One owner so the defaults and
-    help cannot drift between attempt, followup, and steward."""
+    help cannot drift between attempt and steward."""
     parser.add_argument("--pat-file", default=str(CONFIG_DIR / "bot_pat"))
     parser.add_argument(
         "--github-app-file",

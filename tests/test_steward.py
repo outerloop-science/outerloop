@@ -344,7 +344,7 @@ def test_stewardship_rebased_env_lands_with_orchestrator_records(tmp_path, stewa
     )
     assert "Agent: steward-01" in log_out
     record = load_record(tmp_path / "state", "steward-tsp-1")
-    assert record.state == "in-review" and record.agent_id == "steward-01"
+    assert record.state == "parked" and record.agent_id == "steward-01"
     # PR body: measured provenance stated, report present — and the
     # previous best is the PRIOR ledger value, not the fresh overwrite
     body = github.prs[0]["body"]
@@ -664,7 +664,7 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         run_id="steward-tsp-9",
         target="org/pilot",
         task_title="t",
-        state="implementing",
+        state="running",
         agent_id="steward-01",
         issue_number=7,
     )

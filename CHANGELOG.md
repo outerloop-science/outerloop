@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A reply returning after PR merge or close preserves the run’s ending. GitHub outages no longer skip job and deadline handling, failed reply posts suppress duplicate final text, and terminal snapshot cleanup survives notebook failures. Inbox delivery retries refused messages and refuses symlinked destinations.
+
 - A review panel skipped at preflight or in the follow-up now sends the author a kernel note and records the reason in the submit’s PR addendum. These publishes never arm auto-merge.
 
 - A submitted review measurement could go unreported when its push failed. The number is now posted once, as soon as it is known. Review submits push a bot commit with the report’s first line and measured number as its message.
@@ -17,10 +19,13 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Runs have three states: running, parked and ended; the board and the logs show those names, and an open PR is a link on the run. The sweep delivers comments, base moves and job results through one wake path; the separate follow-up job is gone. Old state names are mapped on read; inbox cursors migrate once under the run lease, and every tick logs the number of legacy follow-up records until it is zero. An older kernel cannot read the new state names; that is the only incompatible field, and fleets are updated by commit. The contract's `followup_job_minutes` now sizes the wake job of a run with an open PR.
+
+
 - Authors can stage `end [--report <file>]` and end their turn: without a PR it ends as a negative result with the last failed verdict's note, or “ended without a submit”; with an open PR it posts the supplied report and parks until a message arrives. End costs nothing and cannot accompany launch, sleep or submit.
 - Opening a run's first PR grants a review top-up once: 2 launches, 4 sleeps and 0.5 GPU-hours by default, configurable through `budgets.review_topup`. The increased ceilings and prior spend appear in the tool, brief and every wake.
 
-- Submit works in review and fast-forwards the PR after a confirmed auto-merge disarm; the measured number is posted first, even if publication is refused. Each review leg measures against its freshly fetched base. Verdicts, findings and publish refusals reach the author as messages. A reply posted during a review leg suppresses its final-text comment. A failed submitted park ends as negative-result only when no author session can resume to receive its verdict; its report and notebook are saved and its issue claim released. Sessions without the tool (no launcher or no resume support) are still measured at finish and may end on the verdict by design. Submit needs no prior launch or report. A session offered submit that stops without it ends unmeasured, or returns to review if it has a PR. Legacy follow-up re-measures retire on their next wake and release their snapshots.
+- Submit works in review and fast-forwards the PR after a confirmed auto-merge disarm; the measured number is posted first, even if publication is refused. Each review leg measures against its freshly fetched base. Verdicts, findings and publish refusals reach the author as messages. A reply staged during a review leg suppresses its final-text comment. A failed submitted park ends as negative-result only when no author session can resume to receive its verdict; its report and notebook are saved and its issue claim released. Sessions without the tool (no launcher or no resume support) are still measured at finish and may end on the verdict by design. Submit needs no prior launch or report. A session offered submit that stops without it ends unmeasured, or returns to review if it has a PR. Legacy follow-up re-measures retire on their next wake and release their snapshots.
 
 - Authors can post replies through `reply` and launch experiments or sleep while a PR is in review, using the run’s remaining budget. Comments and base moves received while parked reach the author at its next wake. Replies are kept in an outbox for retries, review launches check committed edits, and closing a run holds its wake lease. Review edits are measured and published only on submit, using the same remaining GPU budget as other author work.
 

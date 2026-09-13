@@ -27,10 +27,9 @@ import os
 import re
 import shutil
 import time
-from dataclasses import replace
 from pathlib import Path
 
-from outerloop.runstate import ENDED, RunRecord, load_record, run_dir, save_record
+from outerloop.runstate import ENDED, RunRecord, load_record, mark_workspace_shed, run_dir
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ def shed_workspace(root: Path, record: RunRecord, now: float) -> bool:
     if remaining:
         log.warning("shed %s incompletely: %s remain", record.run_id, ", ".join(remaining))
         return False
-    save_record(root, replace(record, workspace_shed=now), now)
+    mark_workspace_shed(root, record.run_id, now)
     return True
 
 

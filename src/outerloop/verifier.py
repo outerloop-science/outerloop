@@ -67,9 +67,9 @@ def _standing(comment: dict, bot_login: str) -> bool:
     association, the accused agent's own replies, and prior verifier
     rounds identified by POSTING IDENTITY plus marker (marker alone can be
     forged by any commenter on a public repo)."""
-    # QUALIFYING_ASSOCIATIONS lives in followup, which imports VERIFY_MARKER from
+    # QUALIFYING_ASSOCIATIONS lives in inbox, which imports VERIFY_MARKER from
     # this module; a function-level import avoids the module-level import cycle.
-    from outerloop.followup import QUALIFYING_ASSOCIATIONS
+    from outerloop.inbox import QUALIFYING_ASSOCIATIONS
 
     body = str(comment.get("body") or "")
     if not body.strip():

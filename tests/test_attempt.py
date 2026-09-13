@@ -63,7 +63,7 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     from outerloop.syscall import Launch, SyscallRequest
 
     record = RunRecord(
-        run_id="tsp-7", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-7", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     req = SyscallRequest(
         launches=(
@@ -122,7 +122,7 @@ def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
     from outerloop.syscall import SyscallRequest
 
     record = RunRecord(
-        run_id="tsp-8", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-8", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     req = SyscallRequest(launches=(), note="", submit=True, report="H: token sk-secret-1 helps")
     parked = RunParked(
@@ -155,7 +155,7 @@ def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
 
 def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> None:
     record = RunRecord(
-        run_id="tsp-1", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-1", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     snap = Snapshot(commit="c" * 40, tree="d" * 40, ref="refs/dispatch/tok")
     parked = RunParked(
@@ -170,7 +170,7 @@ def test_park_run_writes_a_waiting_record_with_the_reentry_stage(tmp_path) -> No
     _park_run(tmp_path, record, parked, snap.ref, eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-1")
-    assert r.state == "waiting"
+    assert r.state == "parked"
     # a MULTI-job park records no single experiment job — the sweep must not
     # wake when job 101 finishes while 102 runs; it rides the deadline floor.
     assert r.experiment_job_id == ""
@@ -195,7 +195,7 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
     submits its wake immediately and the wake job holds the lease; without
     the recipe nothing is armed and the sweep delivers as before."""
     from outerloop.runstate import read_lease
-    from outerloop.tick import FollowupSpec, write_wake_spec
+    from outerloop.tick import ServiceSpec, write_wake_spec
 
     monkeypatch.setattr(
         "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
@@ -203,7 +203,7 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
 
     def park(run_id: str) -> None:
         record = RunRecord(
-            run_id=run_id, target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+            run_id=run_id, target="org/pilot", task_title="t", state="running", benchmark="tsp"
         )
         parked = RunParked(
             phase="candidate",
@@ -223,7 +223,7 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
     assert read_lease(tmp_path, "tsp-quiet") is None
     assert load_record(tmp_path, "tsp-quiet").wake_attempts == 0
 
-    spec = FollowupSpec(
+    spec = ServiceSpec(
         account="a", partition="cpu", run_root=tmp_path, image="/img.sif", home=tmp_path
     )
     write_wake_spec(tmp_path, spec)
@@ -235,7 +235,7 @@ def test_park_arms_its_own_wake_when_the_tick_published_the_recipe(tmp_path, mon
     lease = read_lease(tmp_path, "tsp-armed")
     assert lease is not None and lease.holder == "wake-job:1000"
     r = load_record(tmp_path, "tsp-armed")
-    assert r.state == "waiting" and r.wake_attempts == 0  # arming is not a redelivery
+    assert r.state == "parked" and r.wake_attempts == 0  # arming is not a redelivery
 
 
 def test_release_own_lease_keeps_a_lease_handed_to_the_armed_wake(tmp_path, monkeypatch) -> None:
@@ -291,7 +291,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
         run_id="r",
         target="o/p",
         task_title="t",
-        state="waiting",
+        state="parked",
         stage={
             "phase": "candidate",
             "afterany": "afterany:601:602:701:702",
@@ -312,7 +312,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
         run_id="s",
         target="o/p",
         task_title="t",
-        state="waiting",
+        state="parked",
         stage={"phase": "author-sleep", "afterany": "afterany:701:702"},
     )
     assert stage_launch_job_ids(old_sleep) == ["701", "702"]
@@ -320,7 +320,7 @@ def test_launch_hours_are_reconciled_once_from_the_parks_launch_jobs(tmp_path, m
         run_id="c",
         target="o/p",
         task_title="t",
-        state="waiting",
+        state="parked",
         stage={"phase": "candidate", "afterany": "afterany:601:701"},
     )
     assert stage_launch_job_ids(old_cand) == []
@@ -388,10 +388,10 @@ def test_research_reports_fetch_and_archive(tmp_path) -> None:
     assert _sibling_entries(ws, "agent-01") == []  # no status.json yet
     status = {
         "runs": [
-            {"agent": "agent-01", "state": "waiting", "phase": "candidate", "direction": "me"},
+            {"agent": "agent-01", "state": "parked", "phase": "candidate", "direction": "me"},
             {
                 "agent": "agent-02",
-                "state": "waiting",
+                "state": "parked",
                 "phase": "author-sleep",
                 "direction": "d" * 500,
             },
@@ -433,7 +433,7 @@ def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
     from outerloop.syscall import Launch, SyscallRequest
 
     record = RunRecord(
-        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-3", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     verdict = AttemptResult(
         outcome="no-improvement", baseline=13.0, candidate=13.0, note="inside the floor"
@@ -461,7 +461,7 @@ def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
     }
     assert _stage_judged(r) == ("d" * 40, verdict)
     assert r.stage["launch_afterany"] == "afterany:501"
-    bare = RunRecord(run_id="x", target="o/p", task_title="t", state="waiting")
+    bare = RunRecord(run_id="x", target="o/p", task_title="t", state="parked")
     assert _stage_judged(bare) is None
 
 
@@ -474,7 +474,7 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
     from outerloop.syscall import Launch, SyscallRequest
 
     record = RunRecord(
-        run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-2", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     parked = RunParked(
         phase="author-sleep",
@@ -501,7 +501,7 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
     _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
 
     r = load_record(tmp_path, "tsp-2")
-    assert r.state == "waiting"
+    assert r.state == "parked"
     # eval_minutes=None (in-job benchmark) but the launch asks 180 min: the
     # floor rides the launch, so a healthy queued job never gets swept
     assert r.deadline == 1000.0 + (180 + 12 * 60) * 60
@@ -523,7 +523,7 @@ def test_checkpoint_sleep_park_gets_a_near_term_deadline(tmp_path) -> None:
     from outerloop.syscall import SyscallRequest
 
     record = RunRecord(
-        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-3", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     parked = RunParked(
         phase="author-sleep",
@@ -540,7 +540,7 @@ def test_checkpoint_sleep_park_gets_a_near_term_deadline(tmp_path) -> None:
     _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-3")
-    assert r.state == "waiting"
+    assert r.state == "parked"
     # the writer itself must produce the near-term deadline — not the queue
     # slack, and not the benchmark eval hint (nothing was dispatched)
     assert r.deadline == 1000.0 + CHECKPOINT_SLEEP_SLACK_MIN * 60
@@ -551,7 +551,7 @@ def test_checkpoint_sleep_park_gets_a_near_term_deadline(tmp_path) -> None:
 def test_park_run_redacts_the_saved_report(tmp_path) -> None:
     # a session that echoed a secret must not leave it readable in record.json
     record = RunRecord(
-        run_id="tsp-9", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-9", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     leaky = SessionResult(
         stop_reason="end_turn",
@@ -580,7 +580,7 @@ def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
     # one eval job (a baseline park, or a candidate with no siblings): the sweep
     # CAN poll it directly for a terminal+grace wake.
     record = RunRecord(
-        run_id="tsp-3", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-3", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     parked = RunParked(
         phase="baseline", afterany="afterany:77", base_sha="b" * 40, seed=0, suite_seed=0
@@ -590,14 +590,14 @@ def test_park_run_single_job_records_it_for_the_sweep(tmp_path) -> None:
 
 
 def test_park_resets_wake_attempts_a_productive_park_left_waiting(tmp_path) -> None:
-    # the run reached IMPLEMENTING (left waiting, did work) before this park, so
+    # the run reached RUNNING (left waiting, did work) before this park, so
     # "wakes since it last left waiting" resets — a productive park/wake cycle
     # must not creep toward the stuck cap.
     record = RunRecord(
         run_id="tsp-4",
         target="org/pilot",
         task_title="t",
-        state="implementing",
+        state="running",
         benchmark="tsp",
         wake_attempts=2,
     )
@@ -610,7 +610,7 @@ def test_park_resets_wake_attempts_a_productive_park_left_waiting(tmp_path) -> N
 
 def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
     record = RunRecord(
-        run_id="tsp-2", target="org/pilot", task_title="t", state="implementing", benchmark="tsp"
+        run_id="tsp-2", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
     parked = RunParked(
         phase="baseline", afterany="afterany:55", base_sha="b" * 40, seed=0, suite_seed=0
@@ -618,7 +618,7 @@ def test_park_run_baseline_phase_has_no_candidate_or_session(tmp_path) -> None:
     _park_run(tmp_path, record, parked, "", eval_minutes=90, now=1000.0)
 
     r = load_record(tmp_path, "tsp-2")
-    assert r.state == "waiting" and r.resume_session_id == ""  # session not run yet
+    assert r.state == "parked" and r.resume_session_id == ""  # session not run yet
     assert r.stage["phase"] == "baseline"
     assert r.stage["candidate_sha"] == "" and r.stage["candidate_ref"] == ""
 
@@ -879,9 +879,9 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
-    # run record went in-review with the PR url
+    # run record went parked with the PR url
     record = load_record(tmp_path / "state", "tsp-1")
-    assert record.state == "in-review"
+    assert record.state == "parked"
     assert "pull/1" in record.ending_note
     # report exists and is redacted-safe
     report = Path(outcome.report_path).read_text()
@@ -1276,7 +1276,7 @@ def test_issue_run_references_issue_and_reports_back(tmp_path, target_repo) -> N
 
 def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> None:
     """A crash BEFORE the contained call (clone/contract/claim) must end the
-    record and surface on the issue — not strand `implementing`."""
+    record and surface on the issue — not strand `running`."""
 
     def exploding_clone(url, dest, auth=None, dry_run=False):
         raise OSError(122, "Disk quota exceeded")
@@ -1307,7 +1307,7 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
 
 
 def _save_failing_after_first(monkeypatch):
-    """save_record succeeds once (the implementing record) then raises — the
+    """save_record succeeds once (the running record) then raises — the
     quota-crisis failure mode where the ENDING write is what dies."""
 
     real_save = climb_mod.save_record
@@ -1899,7 +1899,7 @@ def test_expensive_benchmark_runs_session_then_parks_candidate(tmp_path, target_
     assert outcome.outcome == "parked"
     assert github.prs == []  # not decided yet; no PR
     record = load_record(tmp_path / "state", "tsp-1")
-    assert record.state == "waiting"
+    assert record.state == "parked"
     # the only park is the candidate; baseline+candidate dispatched together, so
     # the afterany carries BOTH jobs and the run rides the multi-job deadline
     assert record.stage["phase"] == "candidate"
@@ -1958,7 +1958,7 @@ def test_syscalls_arm_by_default_with_dispatch_and_resume(tmp_path, target_repo_
     )
     assert outcome.outcome == "parked"
     record = load_record(tmp_path / "state", "tsp-1")
-    assert record.state == "waiting" and record.stage["phase"] == "author-sleep"
+    assert record.state == "parked" and record.stage["phase"] == "author-sleep"
 
 
 def test_depth_k_zero_keeps_checkpoint_and_submit_available(tmp_path, target_repo_optout) -> None:
@@ -2015,7 +2015,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert outcome.outcome == "parked"
     assert github.prs == []
     record = load_record(tmp_path / "state", "tsp-1")
-    assert record.state == "waiting"
+    assert record.state == "parked"
     assert record.stage["phase"] == "author-sleep"
     assert record.stage["afterany"] == "afterany:1000"
     # experiments yield to verification: the launch went in below the kernel's
@@ -2226,7 +2226,7 @@ def test_failed_park_write_cancels_orphaned_eval_jobs(
     tmp_path, target_repo_dispatch, monkeypatch
 ) -> None:
     # the candidate park dispatched baseline+candidate (two jobs); if the
-    # WAITING record then fails to write, nothing will ever wake those jobs, so
+    # PARKED record then fails to write, nothing will ever wake those jobs, so
     # BOTH must be cancelled rather than left orphaned in the queue.
 
     cancelled: list[str] = []
@@ -2301,7 +2301,7 @@ def _write_parked_candidate(
     pre-session commit, the session's edits are UNCOMMITTED in the working tree,
     there is untracked cruft an eval left behind, and `candidate_sha` is a
     snapshot commit (via `snapshot_tree`, off any branch) kept alive by its ref.
-    Plus a WAITING record with the re-entry stage. The dispatched measurer is
+    Plus a PARKED record with the re-entry stage. The dispatched measurer is
     monkeypatched to a fake so no cluster is touched."""
     from outerloop.dispatch import snapshot_tree
     from outerloop.github import Workspace
@@ -2342,7 +2342,7 @@ def _write_parked_candidate(
         target="org/pilot",
         task_title="improve tsp",
         benchmark="tsp",
-        state="waiting",
+        state="parked",
         resume_session_id="s1",
         issue_number=issue_number,
         agent_id=agent_id,
@@ -2406,7 +2406,7 @@ def test_resume_reparks_when_a_measure_is_pending(tmp_path, monkeypatch) -> None
     )
     assert outcome.outcome == "parked"
     record = load_record(state, run_id)
-    assert record.state == "waiting"
+    assert record.state == "parked"
     assert record.stage["afterany"] == "afterany:601:602"
     ws = state / "runs" / run_id / "ws"
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() != ""  # snapshot kept
@@ -2485,7 +2485,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
     )
     assert outcome.outcome == "parked"
     record = load_record(state, run_id)
-    assert record.state == "waiting"
+    assert record.state == "parked"
     assert record.stage.get("submitted") is True
     # the author's report survives the re-park: the panel and the PR read it
     assert record.stage["report"] == "H: the author's report at submit"
@@ -2500,7 +2500,7 @@ def test_resume_repark_of_a_submitted_park_keeps_the_submit_context(tmp_path, mo
 
 def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     # candidate beats baseline -> branch the sealed sha, fold in the ledger,
-    # push, open the PR against main; the record goes in-review.
+    # push, open the PR against main; the record goes parked.
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
     )
@@ -2516,7 +2516,7 @@ def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     assert outcome.outcome == "improved"
     assert outcome.pr_url.endswith("/pull/1")
     record = load_record(state, run_id)
-    assert record.state == "in-review" and "pull/1" in record.pr_url
+    assert record.state == "parked" and "pull/1" in record.pr_url
     # the PR opened against main from the run's branch, carrying the saved report
     pr = github.prs[0]
     assert pr["head"] == "feat/auto/agent-01/tsp-1" and pr["base"] == "main"
@@ -2633,7 +2633,7 @@ def test_resume_reads_contract_from_base_not_the_dirty_tree(tmp_path, monkeypatc
 def test_resume_negative_keeps_snapshot_if_the_record_save_fails(tmp_path, monkeypatch) -> None:
     # a negative wake must save the ENDED record BEFORE dropping the snapshot:
     # if the save fails, the run stays recoverable (snapshot intact), never
-    # WAITING with the candidate gone.
+    # PARKED with the candidate gone.
 
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
@@ -3122,7 +3122,7 @@ def test_resume_blocking_panel_on_a_submitted_park_wakes_the_author(tmp_path, mo
     assert outcome.outcome == "improved"
     assert github.prs[0]["draft"]
     rec = load_record(state, run_id)
-    assert rec.state == "in-review"
+    assert rec.state == "parked"
     from outerloop.inbox import pending
 
     messages = pending(state / "runs" / run_id, rec.inbox_seq)
@@ -3203,7 +3203,7 @@ def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
     assert outcome.outcome == "no-improvement"
     assert github.prs == []
     assert once.calls == 1
-    assert load_record(state, run_id).state != "waiting"
+    assert load_record(state, run_id).state != "parked"
 
 
 def test_errored_gate_wake_with_a_conceding_author_ends_without_a_retry(
@@ -3264,7 +3264,7 @@ def test_errored_gate_wake_with_a_conceding_author_ends_without_a_retry(
     assert outcome.outcome == "no-improvement"
     assert github.prs == []
     assert once.calls == 1
-    assert load_record(state, run_id).state != "waiting"
+    assert load_record(state, run_id).state != "parked"
 
 
 def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -> None:
@@ -3309,20 +3309,19 @@ def test_resume_blocking_panel_on_a_plain_finish_drafts(tmp_path, monkeypatch) -
     assert outcome.outcome == "improved"  # publishes...
     assert github.prs[0]["draft"] is True and github.armed == []  # ...as a DRAFT, no revise
 
-    from outerloop.followup import inbox_wake_pending
-    from outerloop.inbox import pending
+    from outerloop.inbox import pending, wake_pending
 
     record = load_record(state, run_id)
     messages = pending(state / "runs" / run_id, record.inbox_seq)
     panel = next(m for m in messages if m.kind == "panel-verdict")
     assert panel.payload["findings"][0]["blocking"]
-    assert inbox_wake_pending(state, record)
+    assert wake_pending(state / "runs" / record.run_id, record)
 
 
 def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> None:
-    # a prior wake opened the PR but died before recording it (run left WAITING).
+    # a prior wake opened the PR but died before recording it (run left PARKED).
     # the re-wake must reconcile to that PR: no duplicate PR, no re-push, record
-    # goes in-review.
+    # goes parked.
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
     )
@@ -3339,7 +3338,7 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
     assert github.prs == []  # NO duplicate PR created (the key idempotency property)
     assert github.armed == [("org/pilot", 7)]  # the ADOPTED PR is armed (prior wake may not have)
     record = load_record(state, run_id)
-    assert record.state == "in-review" and "pull/7" in record.pr_url
+    assert record.state == "parked" and "pull/7" in record.pr_url
     # the snapshot is released (the candidate is already published)
     ws = state / "runs" / run_id / "ws"
     assert _git(ws, "for-each-ref", "refs/dispatch/").strip() == ""
@@ -3354,7 +3353,7 @@ def _write_parked_author_sleep(
     """An author-sleep-parked run on disk in the REAL park state: the session's
     tree persisted as the author left it (uncommitted edits over base), the
     sleep snapshot sealed under its ref, launch job outputs in the run dir, and
-    a WAITING record carrying the request + budget counts."""
+    a PARKED record carrying the request + budget counts."""
     import json as json_mod
 
     from outerloop.dispatch import snapshot_tree
@@ -3392,7 +3391,7 @@ def _write_parked_author_sleep(
         target="org/pilot",
         task_title="improve tsp",
         benchmark="tsp",
-        state="waiting",
+        state="parked",
         resume_session_id="s1",
         stage={
             "phase": "author-sleep",
@@ -3433,7 +3432,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     from outerloop.inbox import pending
     from outerloop.roles import author_spec
 
-    siblings = [{"agent_id": "agent-02", "benchmark": "tsp", "state": "waiting"}]
+    siblings = [{"agent_id": "agent-02", "benchmark": "tsp", "state": "parked"}]
     monkeypatch.setattr("outerloop.attempt._sibling_entries", lambda *args: siblings)
     refreshed = []
     monkeypatch.setattr(
@@ -3464,7 +3463,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     )
     assert outcome.outcome == "parked"
     record = load_record(state, run_id)
-    assert record.state == "waiting"
+    assert record.state == "parked"
     assert record.stage["phase"] == "candidate"  # flows into the existing wake
     messages = pending(state / "runs" / run_id, 0)
     assert record.inbox_seq == messages[-1].seq
@@ -3515,7 +3514,7 @@ def test_author_sleep_wake_publishes_an_inline_improvement(tmp_path, monkeypatch
     )
     assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/1")
     record = load_record(state, run_id)
-    assert record.state == "in-review" and record.pr_url == outcome.pr_url
+    assert record.state == "parked" and record.pr_url == outcome.pr_url
     assert not record.stage.get("phase")  # the park's bookkeeping is gone
     pr = github.prs[0]
     assert pr["head"] == f"feat/auto/agent-01/{run_id}" and pr["base"] == "main"
@@ -3579,13 +3578,13 @@ def test_author_sleep_wake_reconciles_an_already_open_pr(tmp_path, monkeypatch) 
     assert outcome.outcome == "improved" and outcome.pr_url.endswith("/pull/7")
     assert github.prs == []  # no duplicate
     record = load_record(state, run_id)
-    assert record.state == "in-review" and record.pr_url.endswith("/pull/7")
+    assert record.state == "parked" and record.pr_url.endswith("/pull/7")
 
 
 def test_author_sleep_wake_keeps_its_snapshot_when_the_terminal_record_fails(
     tmp_path, monkeypatch
 ) -> None:
-    """A terminal whose record cannot be saved leaves the run WAITING; the
+    """A terminal whose record cannot be saved leaves the run PARKED; the
     sleep snapshot must survive with it, or nothing could ever wake it."""
     import outerloop.attempt as attempt_mod
     from outerloop.roles import author_spec
@@ -3598,7 +3597,7 @@ def test_author_sleep_wake_keeps_its_snapshot_when_the_terminal_record_fails(
     real_save = attempt_mod.save_record
 
     def failing_save(root, record, now):
-        if record.state in ("ended", "in-review"):
+        if record.state == "ended" or (record.state == "parked" and record.pr_url):
             raise OSError("disk gone")
         return real_save(root, record, now)
 
@@ -3616,7 +3615,7 @@ def test_author_sleep_wake_keeps_its_snapshot_when_the_terminal_record_fails(
         spec=author_spec(),
     )
     assert outcome.outcome == "no-improvement"
-    assert load_record(state, run_id).state == "waiting"  # unsaved terminal
+    assert load_record(state, run_id).state == "parked"  # unsaved terminal
     assert _git(wsroot, "for-each-ref", "refs/dispatch/").strip() == refs_before
 
 
@@ -4957,7 +4956,7 @@ def _write_parked_line_candidate(tmp_path, monkeypatch, *, values, run_id="tsp-l
         target="org/pilot",
         task_title="improve tsp",
         benchmark="tsp",
-        state="waiting",
+        state="parked",
         resume_session_id="s1",
         agent_id="agent-02",
         stage={
@@ -5488,7 +5487,7 @@ def test_a_refused_wake_ends_the_parked_run_with_the_tampering_note(tmp_path: Pa
         target="org/pilot",
         task_title="t",
         benchmark="tsp",
-        state="waiting",
+        state="parked",
         resume_session_id="s1",
         agent_id="agent-02",
         stage={"phase": "candidate", "base_sha": "a" * 40, "candidate_sha": "b" * 40},
@@ -5707,7 +5706,7 @@ def test_new_pr_contract_refusal_parks_for_author_message(tmp_path, monkeypatch)
     )
     assert outcome.outcome == "publish-refused" and not github.prs
     parked = load_record(state, run_id)
-    assert parked.state == "waiting" and parked.stage["phase"] == "author-sleep"
+    assert parked.state == "parked" and parked.stage["phase"] == "author-sleep"
     assert {m.kind for m in pending(ws.parent, 0)} >= {"gate-verdict", "note"}
     assert _git(ws, "for-each-ref", str(parked.stage["candidate_ref"])).strip()
     # The refusal wakes the author, whose unsubmitted stop ends unmeasured.
@@ -5821,7 +5820,7 @@ def test_clear_stage_keeps_the_meters_with_the_topup() -> None:
         target="org/pilot",
         task_title="t",
         benchmark="tsp",
-        state="waiting",
+        state="parked",
         stage={
             "launches_used": 3,
             "sleeps_used": 2,

@@ -84,10 +84,9 @@ from outerloop.runstate import (
     ABORTED,
     BUDGET_EXHAUSTED,
     ENDED,
-    IN_REVIEW,
     NEGATIVE_RESULT,
+    PARKED,
     STUCK,
-    WAITING,
     RunRecord,
     list_runs,
     load_record,
@@ -112,6 +111,15 @@ from outerloop.syscall import write_siblings as syscall_write_siblings
 from outerloop.verifier import MAX_CLAIM_CHARS
 
 REPLY_MARKER = marker("followup")
+MAX_REPLY_CHARS = 20_000
+
+
+def _pr_number(pr_url: str) -> int:
+    tail = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    if not tail.isdigit():
+        raise ValueError(f"cannot parse PR number from {pr_url!r}")
+    return int(tail)
+
 
 log = logging.getLogger(__name__)
 
@@ -158,7 +166,7 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
 
 def codex_author_config_error(backend: str, model: str, image: str) -> str:
     """Why a codex author would die at startup ("" when it won't). Validates the
-    EFFECTIVE (backend, model) — the fresh climb passes args; a wake/follow-up
+    EFFECTIVE (backend, model) — the fresh climb passes args; a wake
     passes the PARKED RUN's persisted pair — so backend and model are checked as
     a unit and never a fleet backend against a run's model. codex writes+executes,
     so it must be contained (--image) and needs a non-claude model."""
@@ -186,7 +194,7 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
 
 
 def resume_author(record: object, fleet_model: str) -> tuple[str, str, str]:
-    """The (backend, model, key_file) a wake/follow-up must reproduce for a parked
+    """The (backend, model, key_file) a wake must reproduce for a parked
     run — all from the RECORD, not the current fleet.
 
     An empty backend is a legacy record (written before the field) and is
@@ -200,7 +208,12 @@ def resume_author(record: object, fleet_model: str) -> tuple[str, str, str]:
     model = getattr(record, "author_model", "") or (
         "claude-opus-5" if backend == "claude" else fleet_model
     )
-    key_file = getattr(record, "author_key_file", "") or resolve_author_key_file(backend)
+    default_key = (
+        os.environ.get("OUTERLOOP_STEWARD_KEY_FILE", str(CONFIG_DIR / "steward_key"))
+        if str(getattr(record, "agent_id", "")).startswith("steward")
+        else resolve_author_key_file(backend)
+    )
+    key_file = getattr(record, "author_key_file", "") or default_key
     return backend, model, key_file
 
 
@@ -359,11 +372,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 def _clear_stage(record: RunRecord) -> RunRecord:
-    """Strip the WAITING-only bookkeeping from a record leaving `waiting` for a
-    terminal state. Otherwise a dispatched run's `stage`, `deadline`, and
-    especially `wake_attempts` ride into `in-review`, where in-review follow-up
-    servicing reuses `wake_attempts` as its OWN retry cap — so a run that woke
-    once would reach review with a shrunk follow-up budget."""
+    """Clear completed park bookkeeping while retaining the run's meter."""
     # the run's spend survives the wipe: terminal reporting (the climb
     # board) reads it after the transition
     kept: dict[str, object] = {
@@ -407,7 +416,7 @@ def _post_issue_finished(
     the run ends WITHOUT a PR (a negative or an error), include the
     `RELEASE_MARKER` so `intake.pick_issue` can re-select the issue — a comment
     alone does NOT un-claim it. An improved run KEEPS the claim: its PR
-    (`Addresses #N`) is the ongoing work, and `followup` releases the claim if
+    (`Addresses #N`) is the ongoing work, and the terminal releases the claim if
     that PR later closes unmerged."""
     if not issue_number:
         return
@@ -451,13 +460,22 @@ def _park_run(
     panel_reads: int = 0,
     dispatch: DispatchSettings | None = None,
 ) -> None:
-    """Persist a dispatched climb's re-entry point as a WAITING record: the
+    """Persist a dispatched climb's re-entry point as a PARKED record: the
     committed shas, drawn seeds, candidate snapshot ref, and afterany set a
     fresh process reconstructs the measure-and-decide phase from. The caller
     passes the EXACT `candidate_ref` it will keep alive (never re-derive it from
     the commit — two snapshots can share a commit)."""
     from outerloop.dispatch import effective_eval_minutes
 
+    try:
+        latest = load_record(run_root, record.run_id)
+    except FileNotFoundError:
+        latest = record
+    if latest.state == ENDED:
+        if dispatch:
+            for job_id in afterany_ids(parked.afterany):
+                dispatch.compute.cancel(job_id)
+        return
     job_ids = afterany_ids(parked.afterany)
     stage: dict[str, object] = {
         **({"review_topup": True} if record.stage.get("review_topup") else {}),
@@ -600,14 +618,14 @@ def _park_run(
     waiting = RunRecord(
         **{
             **record.__dict__,
-            "state": WAITING,
+            "state": PARKED,
             "experiment_job_id": experiment_job_id,
             "resume_session_id": parked.session.session_id if parked.session else "",
             "deadline": deadline,
             "stage": stage,
             # wake_attempts = "wakes since the run last made progress"; the
             # stuck cap ends a run that keeps waking without advancing. Reset on
-            # a PRODUCTIVE park (the IMPLEMENTING->park entry ran a session; a
+            # a PRODUCTIVE park (the RUNNING->park entry ran a session; a
             # wake that resolved its measures and dispatched NEW ones). A
             # no-progress re-park — results still pending, or a blind re-park
             # (squeue unreachable, nothing new dispatched) — must KEEP the
@@ -805,7 +823,6 @@ def post_replies(
     run_dir: Path,
 ) -> int:
     """Publish consumed author replies on the run's current thread."""
-    from outerloop.followup import MAX_REPLY_CHARS, REPLY_MARKER, _pr_number
     from outerloop.review import APPROVAL_PATTERN, REDACTED
 
     number = _pr_number(record.pr_url) if record.pr_url else record.issue_number
@@ -881,6 +898,11 @@ def run_author_leg(
     directory = run_root / "runs" / record.run_id
     replies_posted = post_replies(record, github, (), secrets, directory)
 
+    def outbox_ids() -> set[str]:
+        return {p.stem for p in (directory / "outbox").glob("*") if p.stem.isdecimal()}
+
+    initial_replies = outbox_ids()
+
     def post_leg_replies(replies: tuple[str, ...]) -> None:
         nonlocal replies_posted
         replies_posted += post_replies(record, github, replies, secrets, directory)
@@ -923,6 +945,10 @@ def run_author_leg(
             "sibling refresh",
             lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
         )
+    if record.agent_id.startswith("steward"):
+        from outerloop.orchestrator import steward_out_of_scope
+
+        kwargs.setdefault("scope_validator", steward_out_of_scope)
     kwargs.setdefault("ruler", RULER)
     result = attempt_once(
         config,
@@ -953,7 +979,9 @@ def run_author_leg(
         **kwargs,
     )
 
-    return dc_replace(result, replies_posted=replies_posted)
+    return dc_replace(
+        result, replies_posted=replies_posted, replies_staged=bool(outbox_ids() - initial_replies)
+    )
 
 
 def _wake_author_sleep(
@@ -999,9 +1027,34 @@ def _wake_author_sleep(
     )
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
-        if record.pr_url:
-            log.warning("run %s remains waiting: %s", run_id, result.note or result.outcome)
-            return AttemptOutcome(run_id=run_id, outcome="error")
+        if record.pr_url and result.outcome != "improved":
+            latest = load_record(run_root, run_id)
+            if latest.state == ENDED:
+                return AttemptOutcome(run_id=run_id, outcome=latest.ending, pr_url=latest.pr_url)
+            report_path = run_dir / "report.md"
+            report_path.write_text(result.report(config, redact_secrets=secrets))
+            attempts = latest.wake_attempts
+            if result.outcome == "session-outage":
+                stamp_outage(
+                    run_root,
+                    redact(result.note, secrets),
+                    now,
+                    role="steward" if record.agent_id.startswith("steward") else "solver",
+                )
+                attempts = max(0, attempts - 1)
+            save_record(
+                run_root,
+                dc_replace(
+                    latest, wake_attempts=attempts, deadline=now + CHECKPOINT_SLEEP_SLACK_MIN * 60
+                ),
+                now,
+            )
+            return AttemptOutcome(
+                run_id=run_id,
+                outcome=result.outcome,
+                pr_url=record.pr_url,
+                report_path=str(report_path),
+            )
         # the terminal every climb takes (report, notebook, PR or ending
         # record, issue note); then this park's snapshot is released
         if record.stage.get("submitted") and not result.submit_report:
@@ -1028,22 +1081,23 @@ def _wake_author_sleep(
             line_ref=_line_ref_for(bench, config.agent_id),
             date=_utc_date(now),
         )
-        # the park's snapshot is released only once the run has left WAITING:
+        # the park's snapshot is released only once the run has left PARKED:
         # a terminal whose record failed to save stays recoverable by a re-wake
         try:
-            still_waiting = load_record(run_root, run_id).state == WAITING
+            latest = load_record(run_root, run_id)
+            still_waiting = latest.state == PARKED and bool(latest.stage.get("phase"))
         except Exception:
             still_waiting = True
         if still_waiting:
             log.warning("run %s: terminal record unsaved; the sleep snapshot is kept", run_id)
         else:
-            for ref in drop_refs:
+            for ref in filter(None, drop_refs):
                 drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         return outcome
 
     # The wake NEEDS the author harness (it resumes the session). Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
-    # help without the harness, so leaving it WAITING would just hit the stuck
+    # help without the harness, so leaving it PARKED would just hit the stuck
     # cap slowly.
     if (
         harness is None
@@ -1169,34 +1223,21 @@ def _wake_author_sleep(
                     },
                 ),
             )
-    record = dc_replace(record, stage={**record.stage, "gpu_hours_used": gpu_hours_used})
-    if record.pr_url:
-        from outerloop.followup import _pr_number, _respond
-        from outerloop.orchestrator import SubprocessEvaluator
-
-        outcome = _respond(
-            run_root,
-            run_id,
-            record,
-            _pr_number(record.pr_url),
-            harness,
-            SubprocessEvaluator(container_image=dispatch.image),
-            github,
-            config.bot_login,
-            now,
-            secrets,
-            _utc_date(now),
-            spec=spec,
-            panel_lenses=panel_lenses,
-            dispatch=dispatch,
-        )
-        if outcome.action != "error":
-            drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
-        return AttemptOutcome(run_id=run_id, outcome=outcome.action)
+    record = dc_replace(
+        record,
+        stage={
+            **record.stage,
+            "gpu_hours_used": gpu_hours_used,
+            "base_sha": base_sha,
+            "base_branch": base_branch,
+        },
+    )
+    save_record(run_root, record, now)
 
     def acknowledge(seq: int) -> None:
         nonlocal record
-        record = dc_replace(record, inbox_seq=seq)
+        latest = load_record(run_root, run_id)
+        record = dc_replace(latest, inbox_seq=seq)
         save_record(run_root, record, time.time())
 
     # The wake's climb IO: measures go through the DISPATCHED measurer (this is
@@ -1205,18 +1246,23 @@ def _wake_author_sleep(
     # first pass: the clone was at base).
     snapshots: list[Snapshot] = []
     wake_line = _line_ref_for(bench, config.agent_id)
+    change_head = base_sha
+    if record.pr_url:
+        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+        change_head = str((pr.get("head") or {}).get("sha") or base_sha)
 
     def snapshot() -> str:
         snap = snapshot_tree(
-            ws, base_sha, exclude=LINE_MEMORY_PATHS if wake_line else (), author=config.bot_login
+            ws,
+            ws.git("rev-parse", "HEAD").strip() if record.pr_url else base_sha,
+            exclude=LINE_MEMORY_PATHS if wake_line else (),
+            author=config.bot_login,
         )
         snapshots.append(snap)
         return snap.commit
 
     def changed_paths() -> list[str]:
-        return _paths_changed_from_base(
-            ws, f"refs/remotes/origin/{base_branch}", bool(wake_line), fallback=base_sha
-        )
+        return submission_paths(ws, change_head, bool(wake_line))
 
     panel_runner = (
         build_panel_runner(
@@ -1259,6 +1305,9 @@ def _wake_author_sleep(
             panel_runner=panel_runner,
             on_inbox_delivered=acknowledge,
             tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
+            on_stop=(lambda session: AttemptResult(outcome="review", session=session))
+            if record.pr_url
+            else None,
             judged=judged or _stage_judged(record),
         )
     except RunParked as p:
@@ -1283,13 +1332,47 @@ def _wake_author_sleep(
                 dispatch.compute.cancel(job_id)
             raise
         parked = p
-        drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
+        if sleep_ref:
+            drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
         return AttemptOutcome(run_id=run_id, outcome="parked")
     finally:
         for snap in snapshots:
             if parked and kept_ref and snap.ref == kept_ref:
                 continue
             drop_snapshot(ws, snap)
+
+    latest = load_record(run_root, run_id)
+    if latest.state == ENDED:
+        return AttemptOutcome(run_id=run_id, outcome=latest.ending, pr_url=latest.pr_url)
+    if record.pr_url and result.outcome == "review" and result.session is not None:
+        from outerloop.review import APPROVAL_PATTERN, REDACTED
+
+        post_replies(record, github, (), secrets, run_dir)
+        reply = APPROVAL_PATTERN.sub(REDACTED, redact(result.session.final_text, secrets))[
+            :MAX_REPLY_CHARS
+        ]
+        if reply and not result.replies_staged:
+            github.comment(record.target, _pr_number(record.pr_url), f"{REPLY_MARKER}\n{reply}")
+        latest = load_record(run_root, run_id)
+        if latest.state == ENDED:
+            return AttemptOutcome(run_id=run_id, outcome=latest.ending, pr_url=latest.pr_url)
+        save_record(
+            run_root,
+            dc_replace(
+                _clear_stage(latest),
+                state=PARKED,
+                resume_session_id=result.session.session_id or latest.resume_session_id,
+            ),
+            now,
+        )
+        if sleep_ref:
+            drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
+        latest = load_record(run_root, run_id)
+        return AttemptOutcome(
+            run_id=run_id,
+            outcome=latest.ending if latest.state == ENDED else "replied",
+            pr_url=latest.pr_url,
+        )
 
     # a terminal from the resumed session: a session ending, a negative
     # verdict, or an inline gate verdict on a synchronous backend (a
@@ -1974,10 +2057,7 @@ def _end_refused_wake(
     alive only within a repository nothing will read again."""
     note = redact(str(exc), secrets)[:480]
     log.warning("wake refused for %s: %s", record.run_id, note)
-    failed = _clear_stage(
-        RunRecord(**{**record.__dict__, "state": ENDED, "ending": ABORTED, "ending_note": note})
-    )
-    _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
+    _best_effort("ending record", lambda: finish_run(run_root, record, ABORTED, note, now), secrets)
     return AttemptOutcome(run_id=record.run_id, outcome="attempt-error")
 
 
@@ -1992,6 +2072,7 @@ def resume_run(
     secrets: tuple[str, ...] = (),
     base_branch: str = "main",
     panel_lenses: tuple[PanelLens, ...] = (),
+    panel_skip: str = "",
     harness: Harness | None = None,
     spec: RoleSpec | None = None,
 ) -> AttemptOutcome:
@@ -2002,7 +2083,7 @@ def resume_run(
     * **re-park** — the wake dispatched a measure that is not done yet (the
       suite pairs an improving candidate fans out, "another round of
       experiments"): `resume_attempt` raises `RunParked`, and this re-persists
-      the WAITING stage on the new afterany, keeping the same candidate
+      the PARKED stage on the new afterany, keeping the same candidate
       snapshot;
     * **a negative terminal** (no-improvement / suite-regression / eval-error):
       drop the candidate snapshot and end the record;
@@ -2015,7 +2096,33 @@ def resume_run(
     """
     run_dir = run_root / "runs" / run_id
     workspace = run_dir / "ws"
+    from outerloop.runstate import acquire_lease, migrate_inbox, read_lease, release_lease
+
+    migration_lease = acquire_lease(run_root, run_id, "wake-migration", "", now)
+    try:
+        if migration_lease or read_lease(run_root, run_id) is not None:
+            migrate_inbox(run_root, run_id, now)
+    finally:
+        if migration_lease:
+            release_lease(run_root, run_id)
     record = load_record(run_root, run_id)
+    if record.state == ENDED:
+        return AttemptOutcome(run_id=run_id, outcome=record.ending, pr_url=record.pr_url)
+    if panel_skip:
+        record = dc_replace(record, stage={**record.stage, "panel_skip": panel_skip})
+        save_record(run_root, record, now)
+        append(
+            run_dir,
+            Message(
+                0,
+                "note",
+                "kernel",
+                thread_for(record),
+                now,
+                f"panel-skip:{record.inbox_seq}:{panel_skip}",
+                {"text": f"panel read skipped: {panel_skip}"},
+            ),
+        )
     dispatch = with_seed(dispatch, run_root, record.target)
     stage = record.stage
     # Push to the CANONICAL target URL, never the workspace's remote.origin.url:
@@ -2047,6 +2154,24 @@ def resume_run(
         ws.fetch_origin()
     except Exception as exc:
         log.warning("wake fetch failed for %s: %s", run_id, exc)
+
+    if record.pr_url and not stage.get("phase"):
+        base_branch = str(stage.get("base_branch") or base_branch)
+        stage = {
+            **stage,
+            "phase": "author-sleep",
+            "base_sha": ws.git("rev-parse", f"origin/{base_branch}").strip(),
+            "candidate_sha": ws.git("rev-parse", "HEAD").strip(),
+            "candidate_ref": "",
+            "seed": 0,
+            "suite_seed": 0,
+        }
+        record = dc_replace(record, stage=stage)
+
+    if record.pr_url and stage.get("phase") == "author-sleep":
+        base_branch = str(stage.get("base_branch") or base_branch)
+        stage = {**stage, "base_sha": ws.git("rev-parse", f"origin/{base_branch}").strip()}
+        record = dc_replace(record, stage=stage)
 
     # Two park kinds reach the wake: a CANDIDATE park (the gate's measures were
     # dispatched) and an AUTHOR-SLEEP park (the author launched work and slept —
@@ -2411,15 +2536,8 @@ def resume_run(
             secrets,
             bot_login=config.bot_login,
         )
-        save_record(
-            run_root,
-            dc_replace(
-                _clear_stage(record),
-                state=ENDED,
-                ending=NEGATIVE_RESULT,
-                ending_note=redact(result.note or result.outcome, secrets),
-            ),
-            now,
+        finish_run(
+            run_root, record, NEGATIVE_RESULT, redact(result.note or result.outcome, secrets), now
         )
         _post_issue_finished(
             github,
@@ -2518,7 +2636,7 @@ def resume_run(
         date=_utc_date(now),
     )
     saved = load_record(run_root, run_id)
-    if saved.state != WAITING or saved.stage.get("candidate_ref") != candidate_ref:
+    if saved.state != PARKED or saved.stage.get("candidate_ref") != candidate_ref:
         drop_snapshot(ws, Snapshot(commit=candidate_sha, tree="", ref=candidate_ref))
     return outcome
 
@@ -2829,15 +2947,19 @@ def _finish_attempt(
     report_path.write_text(result.report(config, redact_secrets=secrets))
     _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
     if record.pr_url:
-        final = dc_replace(_clear_stage(record), state=IN_REVIEW)
+        final = dc_replace(_clear_stage(record), state=PARKED)
+        _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
     else:
-        final = _clear_stage(
-            dc_replace(
+        _best_effort(
+            "final record",
+            lambda: finish_run(
+                run_root,
                 record,
-                state=ENDED,
-                ending=_ENDINGS_BY_OUTCOME[result.outcome],
-                ending_note=redact(result.note, secrets),
-            )
+                _ENDINGS_BY_OUTCOME[result.outcome],
+                redact(result.note, secrets),
+                now,
+            ),
+            secrets,
         )
     if result.outcome == "session-outage":
         _best_effort(
@@ -2845,7 +2967,6 @@ def _finish_attempt(
             lambda: stamp_outage(run_root, redact(result.note, secrets)[:300], now),
             secrets,
         )
-    _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
     _post_issue_finished(
         github,
         config.target,
@@ -2963,6 +3084,8 @@ def publish(
 ) -> AttemptOutcome:
     """Publish a credited sealed tree: open a PR or fast-forward its head."""
     latest = load_record(run_root, run_id)
+    if latest.state == ENDED:
+        return AttemptOutcome(run_id=run_id, outcome="publish-refused", pr_url=latest.pr_url)
     meter = {
         k: v
         for k, v in latest.stage.items()
@@ -3001,7 +3124,7 @@ def publish(
         )
         final = dc_replace(record, auto_blessed_head="")
         if record.pr_url:
-            final = dc_replace(_clear_stage(final), state=IN_REVIEW)
+            final = dc_replace(_clear_stage(final), state=PARKED)
         elif result.session is not None and result.session.session_id:
             ref = f"refs/dispatch/publish-{run_id}-{result.candidate_sha}"
             ws.git("update-ref", ref, result.candidate_sha)
@@ -3206,7 +3329,7 @@ def publish(
             run_root,
             dc_replace(
                 _clear_stage(record),
-                state=IN_REVIEW,
+                state=PARKED,
                 auto_blessed_head=(
                     _blessed_head(ws, result, contract)
                     if not panel_skip and _rev(ws, f"origin/{base_branch}") == base_sha
@@ -3238,7 +3361,7 @@ def publish(
         bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
         baseline, candidate = result.baseline, result.candidate
         # IDEMPOTENCY: a wake may have opened the PR and died before
-        # recording it (the run stays WAITING and is woken again). If a PR
+        # recording it (the run stays PARKED and is woken again). If a PR
         # is already open for this head->base, reconcile to it — never
         # re-push (non-fast-forward) or open a duplicate; a lookup failure
         # just falls through to the normal publish.
@@ -3340,7 +3463,7 @@ def publish(
         final = RunRecord(
             **{
                 **record.__dict__,
-                "state": IN_REVIEW,
+                "state": PARKED,
                 "pr_url": pr_url,
                 "stage": {**record.stage, "review_topup": True},
                 "auto_blessed_head": _blessed_head(ws, result, contract),
@@ -3375,8 +3498,16 @@ def publish(
         )
     # a resumed run's park bookkeeping never rides into review or an ending
     final = _clear_stage(final)
-    if not _best_effort("final record", lambda: save_record(run_root, final, now), secrets):
-        # The on-disk record still says `implementing`, so automated
+    if not _best_effort(
+        "final record",
+        lambda: (
+            finish_run(run_root, final, final.ending, final.ending_note, now)
+            if final.state == ENDED
+            else save_record(run_root, final, now)
+        ),
+        secrets,
+    ):
+        # The on-disk record still says `running`, so automated
         # follow-up servicing will not track this run — and if a PR was
         # opened, its humans are the only ones who can act. Say so WHERE
         # they are looking: GitHub is the one store still writable when the
@@ -3457,7 +3588,7 @@ def live_attempt(
         target=config.target,
         task_title=f"improve {config.benchmark}",
         benchmark=config.benchmark,
-        state="implementing",
+        state="running",
         agent_id=config.agent_id,
         deadline=now + 24 * 3600,
         issue_number=issue_number,
@@ -3799,7 +3930,7 @@ def live_attempt(
             )
         except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
-            # re-entry stage as a WAITING record (not an error), keep the
+            # re-entry stage as a PARKED record (not an error), keep the
             # candidate snapshot alive for the wake, and end. The wake re-enters
             # from the record. `parked` is set only
             # AFTER a successful write: if _park_run raises, it stays None so the
@@ -3826,7 +3957,7 @@ def live_attempt(
                     base_branch=base_branch,
                 )
             except Exception:
-                # The WAITING record did not persist, so nothing will ever wake
+                # The PARKED record did not persist, so nothing will ever wake
                 # the eval jobs this park already submitted. Cancel them so they
                 # don't sit in the queue as orphans (best-effort, self-logging),
                 # then fall through to the error handler — `parked` stays None,
@@ -3868,7 +3999,11 @@ def live_attempt(
             }
         )
         report_path = run_dir / "report.md"
-        _best_effort("ending record", lambda: save_record(run_root, failed, now), secrets)
+        _best_effort(
+            "ending record",
+            lambda: finish_run(run_root, failed, failed.ending, failed.ending_note, now),
+            secrets,
+        )
         wrote = _best_effort(
             "error report",
             lambda: report_path.write_text(
@@ -4046,6 +4181,7 @@ def main() -> int:
         help="wake a parked dispatched run instead of starting a fresh climb",
     )
     parser.add_argument("--base-branch", default="main")
+    parser.add_argument("--panel-skip", default="")
     # All three default from the chain env the tick sets on the climb job, so
     # a contained run with OUTERLOOP_{IMAGE,ACCOUNT,PARTITION} set selects
     # dispatched measurement without extra flags. Only the image is required
@@ -4209,7 +4345,9 @@ def main() -> int:
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
-            wake_lenses, wake_panel_secrets = _panel_lenses_from_args(args)
+            wake_lenses, wake_panel_secrets = (
+                ((), ()) if args.panel_skip else _panel_lenses_from_args(args)
+            )
         except ValueError as exc:
             parser.error(str(exc))
         wake_api_key = ""
@@ -4225,9 +4363,20 @@ def main() -> int:
             wake_lenses
             or _wake_stage.get("phase") == "author-sleep"
             or _wake_stage.get("submitted")
+            or getattr(_wake_record, "pr_url", "")
         ):
             wake_api_key = role_key(wake_key_file, wake_backend)
-            wake_spec = author_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
+            if wake_api_key and wake_api_key in wake_panel_secrets:
+                args.panel_skip = "a panel judge key is this run's author key (role separation)"
+                wake_lenses = ()
+            from outerloop.roles import steward_spec
+
+            role_spec = (
+                steward_spec
+                if str(getattr(_wake_record, "agent_id", "")).startswith("steward")
+                else author_spec
+            )
+            wake_spec = role_spec(max_turns=args.max_turns, walltime_s=args.session_minutes * 60)
             wake_harness = build_harness(
                 wake_api_key,
                 wake_spec,
@@ -4249,6 +4398,7 @@ def main() -> int:
                 secrets=wake_secrets,
                 base_branch=args.base_branch,
                 panel_lenses=wake_lenses,
+                panel_skip=args.panel_skip,
                 harness=wake_harness,
                 spec=wake_spec,
             )
@@ -4398,6 +4548,127 @@ def main() -> int:
         _signal.alarm(0)
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0
+
+
+def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
+    """Route a human PR ending through the run terminal."""
+    from outerloop.github import GitHubError
+    from outerloop.runstate import MERGED, REJECTED
+
+    if record.state == ENDED or not record.pr_url:
+        return ""
+    try:
+        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+    except GitHubError as exc:
+        if exc.status != 404:
+            raise
+        pr = {"state": "closed"}
+    ending = (
+        MERGED
+        if pr.get("merged") or pr.get("merged_at")
+        else REJECTED
+        if pr.get("state") == "closed"
+        else ""
+    )
+    if not ending:
+        return ""
+    note = "PR merged" if ending == MERGED else "PR closed unmerged"
+    finish_run(run_root, record, ending, note, now, github)
+    return ending
+
+
+def finish_run(
+    run_root: Path,
+    record: RunRecord,
+    ending: str,
+    note: str,
+    now: float,
+    github: GitHubClient | None = None,
+) -> None:
+    """Persist the terminal, retain its report, seal its notebook and cancel jobs."""
+    from outerloop.compute import compute_from_env
+    from outerloop.tick import cancel_ended_launches
+
+    directory = run_dir_of(run_root, record.run_id)
+    report = directory / "report.md"
+    if not report.exists():
+        report.write_text(f"# {record.task_title}\n\n{ending}: {note}\n")
+    final = _clear_stage(dc_replace(record, state=ENDED, ending=ending, ending_note=note))
+    jobs = set(stage_launch_job_ids(record)) | set(
+        afterany_ids(str(record.stage.get("afterany") or ""))
+    )
+    if record.experiment_job_id:
+        jobs.add(record.experiment_job_id)
+    if jobs:
+        final = dc_replace(
+            final, stage={**final.stage, "launch_afterany": "afterany:" + ":".join(sorted(jobs))}
+        )
+    save_record(run_root, final, now)
+    ws = Workspace(
+        root=directory / "ws",
+        auth=getattr(github, "auth", None),
+        url=target_clone_url(record.target),
+    )
+    ref = str(record.stage.get("candidate_ref") or "")
+    if ref:
+        _best_effort(
+            f"release ending snapshot for {record.run_id}",
+            lambda: drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref)),
+        )
+    if ws.root.is_dir():
+        try:
+            contract = load_contract(
+                contract_at(ws, str(record.stage.get("base_sha") or "HEAD")), record.target
+            )
+            bench = _benchmark(contract, record.benchmark)
+            _push_line_snapshot(ws, _line_ref_for(bench, record.agent_id), record.run_id, ending)
+        except Exception as exc:
+            log.warning("seal ending notebook for %s: %s", record.run_id, exc)
+    if jobs:
+        _best_effort(
+            "cancel ended launches",
+            lambda: cancel_ended_launches(run_root, compute_from_env(), now),
+        )
+    if github and record.issue_number:
+        _best_effort(
+            "ending issue comment",
+            lambda: github.comment(
+                record.target, record.issue_number, _ending_comment(record, ending)
+            ),
+        )
+
+
+def _ending_comment(record: RunRecord, ending: str) -> str:
+    """What the requesting issue is told when its run's PR merges or closes.
+
+    Claims are what make an open issue inert: intake never re-picks a
+    claimed issue, and the steward lane re-claims only after a release
+    marker. So a merge says "close when satisfied — fresh work needs a
+    fresh issue", and a human-closed steward PR posts its OWN release
+    (honest wording; otherwise reconciliation would release it later
+    as "killed or crashed").
+    """
+    from outerloop.steward import MAX_STEWARD_ATTEMPTS, RELEASE_MARKER
+
+    if ending == "merged":
+        return (
+            f"Pull request {record.pr_url} was merged; run `{record.run_id}` is "
+            "complete. Close this issue when the request is satisfied. Leaving "
+            "it open queues nothing — a claimed issue is never picked up again, "
+            "so further work needs a fresh issue."
+        )
+    if record.agent_id.startswith("steward"):
+        return (
+            f"{RELEASE_MARKER}\nPull request {record.pr_url} was closed without "
+            f"merging; run `{record.run_id}` ended. Claim released — the lane "
+            f"retries up to {MAX_STEWARD_ATTEMPTS} total attempts, then waits "
+            "for a human."
+        )
+    return (
+        f"Pull request {record.pr_url} was closed without merging; run "
+        f"`{record.run_id}` ended. This issue stays claimed — file a fresh "
+        "issue to request another attempt."
+    )
 
 
 if __name__ == "__main__":

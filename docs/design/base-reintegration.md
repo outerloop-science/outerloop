@@ -23,8 +23,8 @@ Two gaps produced this:
   arbitrarily far from main as siblings merge, and `research-lines.md` already
   names the danger ("a stale line reverting others' wins").
 The kernel already reconciles a PR whose base moves AFTER it opens: an open PR
-keeps its run in the in-review state, and the tick's follow-up conflict wake
-(`followup.py`) fetches the moved base into the workspace and asks the agent to
+keeps its run in the parked state, and the tick's base-move inbox message
+(`attempt.resume_run`) fetches the moved base into the workspace and delivers a base-move message; the author decides whether to
 merge and re-measure. So the only real gap is the first bullet — a line that
 never re-syncs main mid-run and opens its PR against a base superseded days
 earlier.
@@ -66,8 +66,8 @@ The semantic choices, settled — the mechanics follow from them.
    beaten (e.g. "warmdown was taken further by #10"); the agent decides to
    pivot or push on. The kernel never kills a line for it.
 4. **Healing a PR after its base moves: already handled, no new mechanism.**
-   An open PR's run stays in-review, and the follow-up conflict wake already
-   fetches the moved base and asks the agent to merge and re-measure. The
+   An open PR's run stays parked, and the base-move inbox message already
+   fetches the moved base and delivers a base-move message; the author decides whether to merge and re-measure. The
    note's earlier "post-terminal" framing was wrong (terra, #341): the run is
    not terminated while its PR is open. Base reintegration is therefore stage 1
    alone — closing the during-run drift; the post-open case needs nothing new.
@@ -77,7 +77,7 @@ The semantic choices, settled — the mechanics follow from them.
 
 **Build order.** The whole feature is one stage: re-pin at wake with the digest
 (decisions 1–3), the re-measure paid only on keep (decision 5). Decision 4 needs
-no code — the existing follow-up conflict wake already covers a base that moves
+no code — the existing base-move inbox message already covers a base that moves
 after the PR opens.
 
 ## Why this shape addresses the problem
@@ -86,7 +86,7 @@ The base pin is correct during a run — you cannot measure improvement against
 a moving target. The failure is not the pin; it is holding one pin for a
 multi-day run and having no reconciliation once the run ends. Waking the line to merge the fresh base keeps the stability the pin gives
 while bounding the drift to a single iteration, and it reuses the exact
-mechanism the in-review conflict wake already uses — the kernel fetches, the
+mechanism the parked PR wake already uses — the kernel fetches, the
 agent merges — rather than adding new kernel git machinery. The post-open case
-needs nothing more: an open PR's run stays in-review and that same conflict
+needs nothing more: an open PR's run stays parked and that same conflict
 wake already reconciles it.
