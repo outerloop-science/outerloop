@@ -274,15 +274,11 @@ Settled (Mengye, 2026-09-12):
 4. `end` is a verb, so a report is asked for at the moment the author
    decides; a session that simply stops still ends the run with what it has.
 
-Open:
-
-5. **Auto-merge.** `architecture.md` lists "any form of auto-merge on code —
-   never"; `install.md` documents `merge: auto` as an explicit per-repo opt-in
-   under branch protection, and the code implements the opt-in. If the answer
-   is never, the blessing, the arming and the disarm rule leave the record and
-   the publish. Recommendation: keep the opt-in as the install guide states it
-   and correct the architecture sentence; the repo owner turning the dial on
-   is the human decision the principle protects.
+5. **Auto-merge** (Mengye, 2026-09-13): the per-repo opt-in `install.md`
+   documents and the code implements stands; `architecture.md`'s "never" is
+   corrected to "off by default, never the kernel's decision". The blessing,
+   the arming and the disarm rule stay in the publish, and `auto_blessed_head`
+   stays on the record.
 
 ## Sequencing
 
