@@ -211,7 +211,7 @@ comment never does.
 | scope on the diff before anything is sealed, launched or measured | the out-of-scope edit could be to the ruler |
 | containment, the lane from the contract, `--nice` on launches, always queue, cancel on end | the session cannot hold GPUs or credentials |
 | launch, sleep and GPU-hour counts; refusal on exhaustion with the numbers | the meter is the only bound on spend |
-| the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, never arm when the base moved, refuse when a human pushed or the contract moved, humans merge | credit, merge authority, and nobody's work overwritten |
+| the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, never arm when the base moved, refuse when a human pushed or the contract moved, humans merge unless the owner opted in with `merge: auto` | credit, merge authority, and nobody's work overwritten |
 | the steward's ruler measurement: full suite, sibling smoke checks, baseline reset | a ruler change must be verified as one |
 | standing: which comments are messages, the bot's own markers, the task label; the issue claim and its release; one delivery per message | authorization and liveness |
 | leases, the sweep, deadline floors, the stuck cap, the outage latch, the tamper guard, the report on every ending, the line seal at every terminal | liveness and audit |
