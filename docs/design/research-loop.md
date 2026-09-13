@@ -164,9 +164,10 @@ The finish belongs to the agent, on the same wake machinery:
 - **Staleness is re-waking, not merging.** A PR that goes stale later wakes the
   agent again (perhaps a human pings it) to pull the latest and edit the PR —
   never an orchestrator auto-merge.
-- **Humans merge, for now.** The human merges at their discretion. Eventually a
-  planner agent may hold some merge authority — a deliberate, later exception to
-  the README's "humans hold merge authority," decided explicitly rather than
+- **Humans merge, for now.** The human merges at their discretion, unless the
+  repo owner opted in with `merge: auto` in the contract. Eventually a planner
+  agent may hold some merge authority — a deliberate, later exception to the
+  README's "humans hold merge authority," decided explicitly rather than
   drifted into.
 
 So the improved-wake is not a mechanical commit-and-push; it is the first place

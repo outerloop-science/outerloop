@@ -29,9 +29,10 @@ data, not accounts: every commit is authored by the one bot account with an
 | **Maintenance agent** | model | later | CI fixes, dependency bumps, issue triage on opted-in repos | count toward research budgets; touch benchmarks |
 
 Authority in one line: **model roles propose, code roles enforce, humans
-decide.** Every merge into a target repo is a human decision (bot PRs arm
-auto-merge only where branch protection requires that human review — the
-arming guard refuses otherwise, in code).
+decide.** Merging into a target repo is a human decision unless the owner
+opted the repo in with `merge: auto` in its contract (architecture.md). Bot
+PRs otherwise arm auto-merge only where branch protection requires that human
+review — the arming guard refuses otherwise, in code.
 
 ## The main flow: one improvement, end to end
 

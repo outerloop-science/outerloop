@@ -8,7 +8,8 @@ review.
 A background agent that co-develops the lab's benchmark-bearing repos (jepa-agent,
 egolearn): picks work from their roadmaps and benchmark gaps, implements on a
 branch, runs GPU experiments, opens a PR when a metric improves, reviews PRs, and
-reports weekly. Humans keep the merge button.
+reports weekly. Humans keep the merge button unless a repo owner opts in to
+`merge: auto` in the contract.
 
 ## Decisions
 
@@ -537,5 +538,9 @@ not yet build-gating.
 - GitHub App (revisit if PAT limits bite)
 - Cloud compute backend (burst valve when Torch queues block)
 - Third-party / self-hosted models
-- Any form of auto-merge on code — never. The sole exception is the prose-only
-  notebook repo.
+- Auto-merge on code is off by default and is never the kernel's decision.
+  A repo owner may turn it on with `merge: auto` in the contract: a PR whose
+  gate and panel read are clean then merges itself, still through the repo's
+  required checks and branch protection, never around them, and the kernel
+  disarms it before it moves a PR head. The prose-only notebook repo merges
+  on its secret-scan check alone.

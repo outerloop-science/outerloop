@@ -403,5 +403,6 @@ one more wording nit:
 The habit exists because later rounds have repeatedly found real defects in
 earlier rounds' own fixes. Bot-authored improvement PRs sit outside this gate:
 the reviewer skips them by design, and their gate is the target repo's
-required human review (the publish step arms auto-merge only when the target's
-branch protection requires one).
+required human review, or its required checks where the owner opted in with
+`merge: auto` (the publish step arms auto-merge only when the target's branch
+protection requires that review or the contract opts in).

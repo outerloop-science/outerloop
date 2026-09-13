@@ -174,7 +174,7 @@ delivered to the author with the verdict. The ledger row moves only when a
 credited number beats the recorded best by the floor; every other number is
 posted and leaves the row alone. A submit whose number is worse than the PR's
 current one still moves the head, with the number stated plainly; the author
-chose it, the thread shows it, and a human merges or not.
+chose it, the thread shows it, and the PR is merged or not.
 
 A steward submit is a ruler change and is measured as one: the full suite
 runs, every sibling's eval is smoke-checked, and the credited number resets
@@ -192,7 +192,7 @@ nothing. A run that has spent everything can still reply and end.
 
 ### Endings
 
-A run ends when the author ends it, when a human merges or closes its PR,
+A run ends when the author ends it, when its PR is merged or closed,
 when the meter runs out, or when the kernel cannot continue: a crash, a
 tampered workspace, or a kernel action that made no progress
 `MAX_WAKE_ATTEMPTS` times, a failed publish retry included. A merge or close
@@ -211,7 +211,7 @@ comment never does.
 | scope on the diff before anything is sealed, launched or measured | the out-of-scope edit could be to the ruler |
 | containment, the lane from the contract, `--nice` on launches, always queue, cancel on end | the session cannot hold GPUs or credentials |
 | launch, sleep and GPU-hour counts; refusal on exhaustion with the numbers | the meter is the only bound on spend |
-| the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, never arm when the base moved, refuse when a human pushed or the contract moved, humans merge | credit, merge authority, and nobody's work overwritten |
+| the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, never arm when the base moved, refuse when a human pushed or the contract moved, humans merge unless the owner opted in with `merge: auto` | credit, merge authority, and nobody's work overwritten |
 | the steward's ruler measurement: full suite, sibling smoke checks, baseline reset | a ruler change must be verified as one |
 | standing: which comments are messages, the bot's own markers, the task label; the issue claim and its release; one delivery per message | authorization and liveness |
 | leases, the sweep, deadline floors, the stuck cap, the outage latch, the tamper guard, the report on every ending, the line seal at every terminal | liveness and audit |
@@ -274,15 +274,11 @@ Settled (Mengye, 2026-09-12):
 4. `end` is a verb, so a report is asked for at the moment the author
    decides; a session that simply stops still ends the run with what it has.
 
-Open:
-
-5. **Auto-merge.** `architecture.md` lists "any form of auto-merge on code —
-   never"; `install.md` documents `merge: auto` as an explicit per-repo opt-in
-   under branch protection, and the code implements the opt-in. If the answer
-   is never, the blessing, the arming and the disarm rule leave the record and
-   the publish. Recommendation: keep the opt-in as the install guide states it
-   and correct the architecture sentence; the repo owner turning the dial on
-   is the human decision the principle protects.
+5. **Auto-merge** (Mengye, 2026-09-13): the per-repo opt-in `install.md`
+   documents and the code implements stands; `architecture.md`'s "never" is
+   corrected to "off by default, never the kernel's decision". The blessing,
+   the arming and the disarm rule stay in the publish, and `auto_blessed_head`
+   stays on the record.
 
 ## Sequencing
 
