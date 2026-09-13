@@ -469,7 +469,11 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
 @pytest.mark.parametrize("candidate,expected", [(11.4, 11.4), (11.8, 12.0), (12.5, 12.0)])
 @pytest.mark.parametrize("unchanged", [False, True])
 @pytest.mark.parametrize("panel_skip", ["", "insufficient panel time"])
-@pytest.mark.parametrize("submit_report", ["", "Improve the solver\nMore detail"])
+@pytest.mark.parametrize(
+    "submit_report",
+    ["", "Hypothesis: " + ("Improve the solver. " * 80).strip()],
+    ids=["no-report", "hypothesis"],
+)
 def test_publish_review_fast_forwards_and_applies_floor(
     review_run, monkeypatch, candidate, expected, unchanged, submit_report, panel_skip
 ):
@@ -536,7 +540,10 @@ def test_publish_review_fast_forwards_and_applies_floor(
         candidate_sha=snap.commit,
         measured_paths=("src/pilot/solvers/tsp.py",),
     )
-    record = replace(load_record(root, "tsp-r1"), stage={"panel_skip": panel_skip})
+    record = replace(
+        load_record(root, "tsp-r1"),
+        stage={"panel_skip": panel_skip, "hypothesis": "OLD hypothesis"},
+    )
     record = replace(record, stage={**record.stage, "review_topup": True})
     save_record(root, record, NOW)
     publish_args = dict(
@@ -586,6 +593,15 @@ def test_publish_review_fast_forwards_and_applies_floor(
     assert outcome.outcome == "improved"
     pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
     _git(ws, "merge-base", "--is-ancestor", head, pushed)
+    from outerloop.climbboard import _report_fields
+    from outerloop.hypothesis import report_hypothesis
+
+    hyp = load_record(root, record.run_id).stage["hypothesis"]
+    # a report with a Hypothesis section replaces the old direction; one
+    # without (or no report at all) keeps it
+    assert hyp == (report_hypothesis(submit_report) or "OLD hypothesis")
+    assert _report_fields((ws.parent / "report.md").read_text())[2] == ""
+    assert len(hyp) <= 1000
     journal = load_record(root, record.run_id).stage["publish"]
     assert isinstance(journal, dict)
     assert journal["sealed_sha"] == snap.commit and journal["head"] == pushed
@@ -689,6 +705,7 @@ def test_publish_refusal_is_a_message(review_run, monkeypatch, reason):
             outcome="improved",
             baseline=14.0,
             candidate=11.0,
+            submit_report="Hypothesis: Preserve the refused direction.",
             candidate_sha=snap.commit,
             measured_paths=() if reason == "no-code" else ("src/pilot/solvers/tsp.py",),
         ),
@@ -709,6 +726,7 @@ def test_publish_refusal_is_a_message(review_run, monkeypatch, reason):
         line_ref="",
         date="2026-09-12",
     )
+    assert load_record(root, record.run_id).stage["hypothesis"] == "Preserve the refused direction."
     assert outcome.outcome == "publish-refused"
     assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
     message = pending(ws.parent, 0)[-1]
@@ -826,12 +844,21 @@ def test_review_submit_parks_and_delivers_verdict(
         "outerloop.attempt.build_panel_runner",
         lambda *a, **k: lambda *a: PanelVerdict(blocking=(), transcript="panel read"),
     )
-    record = replace(record, stage={**record.stage, "review_topup": True})
+    record = replace(
+        record,
+        stage={**record.stage, "review_topup": True, "hypothesis": "Existing review direction."},
+    )
     save_record(root, record, NOW)
     author = ResumingHarness(
         edits={
             "src/pilot/solvers/tsp.py": "submitted\n",
-            ".outerloop/syscall.json": json.dumps({"type": "sleep", "submit": True}),
+            ".outerloop/syscall.json": json.dumps(
+                {
+                    "type": "sleep",
+                    "submit": True,
+                    "report": "Hypothesis: Existing review direction.",
+                }
+            ),
         }
     )
     outcome = wake_review(
@@ -847,6 +874,7 @@ def test_review_submit_parks_and_delivers_verdict(
     assert outcome.action == "parked"
     parked = load_record(root, record.run_id)
     assert parked.state == "parked" and parked.pr_url == record.pr_url
+    assert parked.stage["hypothesis"] == "Existing review direction."
     assert parked.stage["review_topup"] is True
     assert "Review top-up added when the PR opened" in author.calls[0][0]
     assert parked.stage["submitted"] and parked.stage["launches_used"] == 0
@@ -868,6 +896,7 @@ def test_review_submit_parks_and_delivers_verdict(
         panel_lenses=(object(),),  # type: ignore[arg-type]
     )
     latest = load_record(root, record.run_id)
+    assert latest.stage["hypothesis"] == "Existing review direction."
     assert latest.state == PARKED and latest.pr_url == record.pr_url
     messages = pending(run_dir(root, record.run_id), 0)
     assert "gate-verdict" in {m.kind for m in messages}
@@ -878,7 +907,7 @@ def test_review_submit_parks_and_delivers_verdict(
     else:
         assert "panel-verdict" in {m.kind for m in messages}
     if credited:
-        assert "no report was given" in github.body_addenda[0]
+        assert "Hypothesis: Existing review direction." in github.body_addenda[0]
         if panel_skip:
             assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
         # The next review wake delivers both verdicts after publication.

@@ -50,6 +50,7 @@ from outerloop.github import (
     git_identity,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, redact
+from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.markers import has_marker, marker
@@ -352,21 +353,25 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
         return False
 
 
+STAGE_RETAINED_KEYS = (
+    "launches_used",
+    "sleeps_used",
+    "gpu_hours_used",
+    "base_sha",
+    "base_branch",
+    "publish",
+    "review_topup",
+    "hypothesis",
+)
+
+
 def _clear_stage(record: RunRecord) -> RunRecord:
     """Clear completed park bookkeeping while retaining the run's meter."""
     # the run's spend survives the wipe: terminal reporting (the climb
     # board) reads it after the transition
     kept: dict[str, object] = {
         k: record.stage[k]
-        for k in (
-            "launches_used",
-            "sleeps_used",
-            "gpu_hours_used",
-            "base_sha",
-            "base_branch",
-            "publish",
-            "review_topup",
-        )
+        for k in STAGE_RETAINED_KEYS
         if record.stage
         and k in record.stage
         and (record.state != ENDED or k not in ("base_sha", "base_branch"))
@@ -459,7 +464,7 @@ def _park_run(
         return
     job_ids = afterany_ids(parked.afterany)
     stage: dict[str, object] = {
-        **({"review_topup": True} if record.stage.get("review_topup") else {}),
+        **{k: record.stage[k] for k in STAGE_RETAINED_KEYS if k in record.stage},
         "phase": parked.phase,
         "base_sha": parked.base_sha,
         "candidate_sha": parked.candidate_sha,
@@ -1962,11 +1967,13 @@ def _paths_changed_from_base(
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
     """The other agents' live directions from the research-log's
-    status.json (already fetched: the SAME FETCH_HEAD the reports came
-    from). Size-checked BEFORE show like the report blobs, entries and
-    fields bounded — the branch is bot-written but never trusted with
-    unbounded memory. Any failure means no siblings known, never a crash."""
+    status.json, fetched here so every caller (the fresh climb and each
+    wake) reads the branch and not whatever FETCH_HEAD last pointed at.
+    Size-checked BEFORE show like the report blobs, entries and fields
+    bounded — the branch is bot-written but never trusted with unbounded
+    memory. Any failure means no siblings known, never a crash."""
     try:
+        ws.fetch_branch(RESEARCH_LOG_BRANCH)
         blob = "FETCH_HEAD:climb/status.json"
         if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
             raise ValueError("status snapshot oversized; skipped")
@@ -1977,6 +1984,8 @@ def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
                 "state": str(r.get("state", ""))[:32],
                 "phase": str(r.get("phase", ""))[:32],
                 "direction": str(r.get("direction", ""))[:160],
+                "hypothesis": str(r.get("hypothesis", ""))[:400],
+                "pr_url": str(r.get("pr_url", ""))[:1000],
             }
             for r in fleet.get("runs", [])[:64]
             if isinstance(r, dict) and r.get("agent") != self_agent
@@ -3089,6 +3098,15 @@ def publish(
     }
     record = dc_replace(record, stage={**record.stage, **meter})
     report = result.report(config, redact_secrets=secrets)
+    record = dc_replace(
+        record,
+        stage={
+            **record.stage,
+            # a report without a Hypothesis section keeps the direction on record
+            "hypothesis": report_hypothesis(redact(result.submit_report, secrets))
+            or str(record.stage.get("hypothesis") or ""),
+        },
+    )
     report_path = run_dir / "report.md"
     wrote_report = _best_effort("run report", lambda: report_path.write_text(report), secrets)
 
