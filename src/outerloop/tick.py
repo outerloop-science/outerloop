@@ -776,6 +776,7 @@ def service_in_review(
             if not is_steward and spec.panel.strip():
                 panel_error = _panel_preflight_error(spec)
                 if panel_error:
+                    panel_argv = ["--panel-skip", panel_error]
                     log.warning(
                         "follow-up for %s runs without the panel: %s", record.run_id, panel_error
                     )
@@ -790,7 +791,7 @@ def service_in_review(
             # allowance costs the READ (skipped, said so), never the author
             author_minutes = min(spec.time_minutes, spec.max_job_minutes)
             job_minutes = min(author_minutes + panel_minutes, spec.max_job_minutes)
-            if panel_argv:
+            if panel_minutes:
                 panel_argv = [*panel_argv, "--panel-minutes", str(job_minutes - author_minutes)]
             argv = [
                 *_interpreter(spec.home),

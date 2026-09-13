@@ -1196,7 +1196,11 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
 
 @pytest.mark.parametrize("candidate,expected", [(11.4, 11.4), (11.8, 12.0), (12.5, 12.0)])
 @pytest.mark.parametrize("unchanged", [False, True])
-def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, expected, unchanged):
+@pytest.mark.parametrize("panel_skip", ["", "insufficient panel time"])
+@pytest.mark.parametrize("submit_report", ["", "Improve the solver\nMore detail"])
+def test_publish_review_fast_forwards_and_applies_floor(
+    review_run, monkeypatch, candidate, expected, unchanged, submit_report, panel_skip
+):
     import json
 
     from outerloop.attempt import publish
@@ -1207,8 +1211,9 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
 
     root, bare = review_run
     ws = run_dir(root, "tsp-r1") / "ws"
-    contract_text = CONTRACT.replace(
-        "    direction: min\n", "    direction: min\n    min_delta: 0.5\n"
+    contract_text = (
+        CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n")
+        + "merge: auto\n"
     )
     (ws / ".autoresearch.yaml").write_text(contract_text)
     _git(ws, "add", "-A")
@@ -1254,10 +1259,12 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
         outcome="improved",
         baseline=14.0,
         candidate=candidate,
+        submit_report=submit_report,
+        panel_rounds=1,
         candidate_sha=snap.commit,
         measured_paths=("src/pilot/solvers/tsp.py",),
     )
-    record = load_record(root, "tsp-r1")
+    record = replace(load_record(root, "tsp-r1"), stage={"panel_skip": panel_skip})
     publish_args = dict(
         result=result,
         ws=workspace,
@@ -1266,7 +1273,9 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
         run_dir=ws.parent,
         run_id=record.run_id,
         record=record,
-        config=RunConfig(target=record.target, benchmark="tsp", agent_id=record.agent_id),
+        config=RunConfig(
+            target=record.target, benchmark="tsp", agent_id=record.agent_id, bot_login=BOT
+        ),
         contract=contract,
         github=github,
         now=NOW,
@@ -1277,6 +1286,20 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
         line_ref="",
         date="2026-09-12",
     )
+    if not unchanged and not submit_report:
+        update_row = github.update_candidate_row
+        with monkeypatch.context() as patch:
+
+            def crash_after_push(*args, **kwargs):
+                raise RuntimeError("crash after push")
+
+            patch.setattr(github, "update_candidate_row", crash_after_push)
+            with pytest.raises(RuntimeError, match="crash after push"):
+                publish(**publish_args)
+        github.pr["head"]["sha"] = _git(bare, "rev-parse", PR_BRANCH).strip()
+        publish_args["record"] = load_record(root, record.run_id)
+        monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("retry pushed again"))
+        assert github.update_candidate_row == update_row
     outcome = publish(**publish_args)
     if unchanged:
         from outerloop.inbox import pending
@@ -1289,7 +1312,28 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
     assert outcome.outcome == "improved"
     pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
     _git(ws, "merge-base", "--is-ancestor", head, pushed)
-    _git(ws, "merge-base", "--is-ancestor", snap.commit, pushed)
+    journal = load_record(root, record.run_id).stage["publish"]
+    assert isinstance(journal, dict)
+    assert journal["sealed_sha"] == snap.commit and journal["head"] == pushed
+    submitted = journal["pushed_sha"]
+    assert _git(bare, "rev-parse", f"{submitted}^{{tree}}") == _git(
+        ws, "rev-parse", f"{snap.commit}^{{tree}}"
+    )
+    assert _git(bare, "rev-parse", f"{submitted}^").strip() == head
+    summary = submit_report.splitlines()[0] if submit_report else "submitted change"
+    assert (
+        _git(bare, "show", "-s", "--format=%s", submitted).strip()
+        == f"agent: {summary} (mean_tour_length={candidate})"
+    )
+    assert (
+        _git(bare, "show", "-s", "--format=%an|%ae|%cn|%ce", submitted).strip()
+        == f"{BOT}|{BOT}@users.noreply.github.com|{BOT}|{BOT}@users.noreply.github.com"
+    )
+    assert submitted == (
+        pushed if expected == 12 else _git(bare, "rev-parse", f"{pushed}^").strip()
+    )
+    assert snap.commit[:12] in github.body_addenda[0]
+    assert f"pushed as `{submitted}`" in github.body_addenda[0]
     assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
     assert load_leader(ws)["tsp"].best == expected
     assert (
@@ -1300,11 +1344,17 @@ def test_publish_review_fast_forwards_and_applies_floor(review_run, candidate, e
     assert github.row_updates == [candidate]
     if candidate > 12:
         assert "Worse" in github.posted[0]
-    assert load_record(root, record.run_id).state == IN_REVIEW
+    latest = load_record(root, record.run_id)
+    assert latest.state == IN_REVIEW
+    assert latest.auto_blessed_head == ("" if panel_skip else pushed)
+    if panel_skip:
+        assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
     github.pr["head"]["sha"] = pushed
     publish_args["record"] = load_record(root, record.run_id)
+    monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("retry pushed again"))
     assert publish(**publish_args).outcome == "improved"
     assert len(github.posted) == 1
+    assert load_record(root, record.run_id).auto_blessed_head == ("" if panel_skip else pushed)
     assert _git(bare, "rev-parse", PR_BRANCH).strip() == pushed
 
 
@@ -1721,7 +1771,6 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
     if credited and contains_base:
         assert outcome.note == "improved"
         _git(ws, "merge-base", "--is-ancestor", head, pushed)
-        _git(ws, "merge-base", "--is-ancestor", base, pushed)
         assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
     else:
         assert pushed == head
@@ -1815,17 +1864,69 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
             return session
 
     author = Author()
-    outcome = respond_once(
-        root,
-        "tsp-r1",
-        author,
-        QueueEvaluator(),
-        cast(GitHubClient, github),
-        bot_login=BOT,
-        now=NOW,
-        panel_skip=panel_skip,
-        dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
-    )
+    if panel_skip:
+        import shlex
+        import sys
+        from types import SimpleNamespace
+
+        from outerloop.followup import main as followup_main
+        from outerloop.tick import FollowupSpec, service_in_review
+
+        jobs = []
+        outcomes = []
+        compute = LocalCompute()
+
+        def capture_job(self, job):
+            jobs.append(job)
+            return "42"
+
+        monkeypatch.setattr(LocalCompute, "submit", capture_job)
+        monkeypatch.setattr("outerloop.tick._panel_preflight_error", lambda spec: panel_skip)
+        spec = FollowupSpec(
+            account="",
+            partition="",
+            run_root=root,
+            image="",
+            home=root,
+            bot_login=BOT,
+            panel="verify,review",
+        )
+        assert service_in_review(root, github, compute, spec, NOW)[1] == [("tsp-r1", "42")]
+        argv = shlex.split(jobs[0].command)
+        argv = argv[argv.index("outerloop.followup") :]
+        assert argv[argv.index("--panel-skip") + 1] == panel_skip
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr("outerloop.followup.role_key", lambda *args: "")
+        monkeypatch.setattr(
+            "outerloop.appauth.resolve_bot_auth", lambda *args: SimpleNamespace(token=lambda: "")
+        )
+        monkeypatch.setattr("outerloop.followup.GitHubClient", lambda **kwargs: github)
+        monkeypatch.setattr("outerloop.role_runner.build_harness", lambda *args, **kwargs: author)
+        monkeypatch.setattr("outerloop.attempt.arm_self_deadline", lambda *args: 0)
+        monkeypatch.setattr(
+            "outerloop.attempt._dispatch_settings",
+            lambda args: DispatchSettings(compute=compute, image="", account="", partition=""),
+        )
+
+        def respond_from_job(*args, **kwargs):
+            assert kwargs["panel_skip"] == panel_skip
+            outcomes.append(respond_once(*args, **kwargs))
+            return outcomes[-1]
+
+        monkeypatch.setattr("outerloop.followup.respond_once", respond_from_job)
+        assert followup_main() == 0
+        outcome = outcomes[0]
+    else:
+        outcome = respond_once(
+            root,
+            "tsp-r1",
+            author,
+            QueueEvaluator(),
+            cast(GitHubClient, github),
+            bot_login=BOT,
+            now=NOW,
+            dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
+        )
     assert outcome.action == "replied", outcome.note
     messages = pending(ws.parent, 0)
     if edit == "none":

@@ -4123,7 +4123,8 @@ def test_author_followups_carry_the_panel_and_its_read_allowance(tmp_path: Path)
 
     # a missing judge key fails the preflight: no panel, plain budget
     unarmed = run("agent-02", "verify,review", str(tmp_path / "absent"))
-    assert "--panel" not in unarmed and "--time=90" in unarmed and "--job-minutes 90" in unarmed
+    assert "--panel " not in unarmed and "--time=90" in unarmed and "--job-minutes 90" in unarmed
+    assert "--panel-skip" in unarmed
 
     # panel off: nothing added
     off = run("agent-03", "", "")

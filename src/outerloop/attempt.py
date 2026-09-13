@@ -3092,6 +3092,7 @@ def publish(
         assert result.candidate is not None
         if landed:
             assert isinstance(journal, dict)
+            pushed_sha = str(journal.get("pushed_sha", result.candidate_sha))
             prior = load_leader(workspace).get(bench.name)
             floor_note = str(journal.get("floor_note", ""))
         else:
@@ -3103,7 +3104,19 @@ def publish(
                     moved=True,
                 )
             assert result.candidate is not None
-            ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
+            title = (result.submit_report or "").splitlines()
+            summary = redact(title[0].strip(), secrets) if title else ""
+            pushed_sha = ws.git(
+                *git_identity(config.bot_login),
+                "commit-tree",
+                ws.git("rev-parse", f"{result.candidate_sha}^{{tree}}").strip(),
+                "-p",
+                head,
+                "-m",
+                f"agent: {summary or 'submitted change'} "
+                f"({bench.metric}={fmt_metric(result.candidate, bench.display_digits)})",
+            ).strip()
+            ws.git("checkout", "-f", "-B", branch, pushed_sha)
             ws.git("clean", "-fd")
             prior, floor_note = _update_ledger(
                 workspace,
@@ -3134,6 +3147,8 @@ def publish(
                     **record.stage,
                     "publish": {
                         "sealed_sha": result.candidate_sha,
+                        "pushed_sha": pushed_sha,
+                        "panel_skip": record.stage.get("panel_skip", ""),
                         "head": pushed_head,
                         "prior_best": prior.best if prior else None,
                         "floor_note": floor_note,
@@ -3157,10 +3172,18 @@ def publish(
             else result.candidate > prior.best
         )
         note = _measured_note(bench, result.candidate, result.candidate_sha)
+        note = note.removesuffix(".") + f", pushed as `{pushed_sha}`."
         note += (
             " Worse than the previous number; the ledger row is unchanged." if worse else floor_note
         )
-        panel_skip = str(record.stage.get("panel_skip") or "")
+        panel_skip = str(
+            (
+                journal.get("panel_skip")
+                if landed and isinstance(journal, dict)
+                else record.stage.get("panel_skip")
+            )
+            or ""
+        )
         if panel_skip:
             note += f"\n\npanel read skipped: {panel_skip}"
         github.update_candidate_row(

@@ -1030,6 +1030,7 @@ def main() -> int:
         help="walltime the tick added to this job for the panel's read (0 = none fit: "
         "the read is skipped and said so; the author's budget is never the panel's)",
     )
+    parser.add_argument("--panel-skip", default="", help="why the tick skipped the panel")
     args = parser.parse_args()
     if not args.bot_login.strip():
         parser.error("--bot-login / OUTERLOOP_BOT_LOGIN is required (no default identity, #298)")
@@ -1094,7 +1095,9 @@ def main() -> int:
     # author key — the tick preflights against the FLEET key, a run started
     # under another key is only known here (terra #229 r2) — and a read the
     # partition cap left no walltime for (--panel-minutes).
-    panel_skip = ""
+    panel_skip = args.panel_skip
+    if panel_skip:
+        panel_lenses = ()
     if api_key and api_key in panel_secrets:
         panel_skip = "a panel judge key is this run's author key (role separation)"
         log.warning("run %s: %s; the follow-up runs without the panel", args.run_id, panel_skip)
