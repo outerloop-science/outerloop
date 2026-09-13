@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from outerloop.runstate import RunRecord
 
 log = logging.getLogger(__name__)
+_APP_PERMISSION_WARNINGS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -513,10 +514,23 @@ def gather_github_messages(
         known = _keys(directory)
         try:
             runs = github.list_check_runs(record.target, head)
+            _APP_PERMISSION_WARNINGS.pop(record.target, None)
         except GitHubError as exc:
+            if record.target not in _APP_PERMISSION_WARNINGS:
+                from outerloop.appauth import AppInstallationTokenProvider
+                from outerloop.init import app_permission_gaps
+
+                guidance = "App needs checks: read permission"
+                auth = getattr(github, "auth", None)
+                if isinstance(auth, AppInstallationTokenProvider):
+                    gaps = app_permission_gaps(auth, record.target)
+                    if gaps.edit_url and gaps.accept_url:
+                        guidance = gaps.problem
+                _APP_PERMISSION_WARNINGS[record.target] = guidance
             log.warning(
-                "cannot read checks for %s; App needs checks: read permission: %s",
+                "cannot read checks for %s; %s: %s",
                 record.target,
+                _APP_PERMISSION_WARNINGS[record.target],
                 exc,
             )
             runs = []

@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.
+
 - In auto mode the sweep merges only a clean PR at the head the kernel measured and approved. Publish never arms GitHub auto-merge; the sweep withdraws old arms and reports head moves to the author.
 
 - A reply returning after PR merge or close preserves the run’s ending. GitHub outages no longer skip job and deadline handling, failed reply posts suppress duplicate final text, and terminal snapshot cleanup survives notebook failures. Inbox delivery retries refused messages and refuses symlinked destinations.

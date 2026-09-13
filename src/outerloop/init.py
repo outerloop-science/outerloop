@@ -227,55 +227,124 @@ def _check_repo_access(token: str, target: str) -> str:
         return f"could not reach GitHub: {exc.reason}"
 
 
-def _check_app_access(provider: Any, target: str) -> str:
-    """Can this App write the target repo? "" on success, else a short reason.
+@dataclass(frozen=True)
+class AppPermissionGaps:
+    missing: tuple[str, ...]
+    edit_url: str
+    accept_url: str
+    problem: str
+    configured_missing: tuple[str, ...] = ()
 
-    An installation token does not populate a repository's `permissions`
-    object, so the PAT check above reads all-false for an App that can push.
-    The App is asked the two questions that decide it: is the target among
-    the repositories its installation covers, and does the installation carry
-    write on contents and pull requests. Never raises."""
+
+def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
+    """Check installation grants and point to both permission pages; never raise."""
     from outerloop.appauth import build_app_jwt
+    from outerloop.appmanifest import DEFAULT_PERMISSIONS
 
-    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    missing = tuple(DEFAULT_PERMISSIONS)
+    names = ", ".join(f"{name}: {DEFAULT_PERMISSIONS[name]}" for name in missing)
     try:
-        # Asked as the App itself: GitHub answers with the installation that
-        # covers this repository, permissions included, or 404. A public
-        # repository would answer a plain read for any token, and the
-        # installation's repository list paginates, so neither is asked.
         jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
-        req = urllib.request.Request(
-            f"{API}/repos/{target}/installation",
-            headers={**headers, "Authorization": f"Bearer {jwt}"},
-        )
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Authorization": f"Bearer {jwt}",
+        }
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                installation = json.loads(resp.read())
+            installation = provider._transport(
+                urllib.request.Request(
+                    f"{API}/repos/{target}/installation",
+                    headers=headers,
+                )
+            )
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                return f"the App is not installed on {target}; install it there"
+                return AppPermissionGaps(
+                    missing, "", "", f"the App is not installed on {target}; install it there"
+                )
             raise
         if int(installation.get("id", 0)) != int(provider.installation_id):
-            return (
-                f"the App is installed on {target} under installation "
-                f"{installation.get('id')}, but the App file records {provider.installation_id}"
+            return AppPermissionGaps(
+                missing,
+                "",
+                "",
+                (
+                    f"the App is installed on {target} under installation "
+                    f"{installation.get('id')}, but the App file records {provider.installation_id}"
+                ),
             )
         perms = installation.get("permissions") or {}
-        missing = [k for k in ("contents", "issues", "pull_requests") if perms.get(k) != "write"]
-        if missing:
-            return (
-                f"the App lacks write on {', '.join(missing)} "
-                "(it pushes branches, opens PRs, and files and closes issues)"
-            )
-        return ""
+        missing = tuple(
+            name
+            for name, level in DEFAULT_PERMISSIONS.items()
+            if perms.get(name) not in (("read", "write") if level == "read" else ("write",))
+        )
+        if not missing:
+            return AppPermissionGaps((), "", "", "")
+        names = ", ".join(f"{name}: {DEFAULT_PERMISSIONS[name]}" for name in missing)
+        app = provider._transport(urllib.request.Request(f"{API}/app", headers=headers))
+        configured = app.get("permissions") or {}
+        configured_missing = tuple(
+            name
+            for name, level in DEFAULT_PERMISSIONS.items()
+            if configured.get(name) not in (("read", "write") if level == "read" else ("write",))
+        )
+        owner, account = app["owner"], installation["account"]
+        if owner["type"] not in ("User", "Organization") or account["type"] not in (
+            "User",
+            "Organization",
+        ):
+            raise ValueError("unknown account type")
+        slug = app["slug"]
+        if not slug or not owner["login"] or not account["login"]:
+            raise ValueError("missing App or account name")
+        edit_base = "https://github.com"
+        if owner["type"] == "Organization":
+            edit_base += f"/organizations/{owner['login']}"
+        accept_base = "https://github.com"
+        if account["type"] == "Organization":
+            accept_base += f"/organizations/{account['login']}"
+        edit_url = f"{edit_base}/settings/apps/{slug}/permissions"
+        accept_url = f"{accept_base}/settings/installations/{installation['id']}"
+        return AppPermissionGaps(
+            missing,
+            edit_url,
+            accept_url,
+            (
+                f"The App needs {names}; edit permissions at {edit_url}, "
+                f"then accept them at {accept_url}."
+                if configured_missing
+                else f"The installation needs {names}; the App is already configured at "
+                f"{edit_url}; accept the permissions at {accept_url}."
+            ),
+            configured_missing,
+        )
     except urllib.error.HTTPError as exc:
-        if exc.code == 429 or exc.code >= 500:
-            return f"could not reach GitHub: it returned {exc.code} while checking the App"
-        return f"GitHub returned {exc.code} while checking the App"
-    except urllib.error.URLError as exc:
-        return f"could not reach GitHub: {exc.reason}"
-    except Exception as exc:  # a check failure is a warning, never fails setup
-        return f"could not check the App: {exc}"
+        prefix = "could not reach GitHub" if exc.code == 429 or exc.code >= 500 else "GitHub"
+        return AppPermissionGaps(
+            missing,
+            "",
+            "",
+            (
+                f"{prefix}: returned {exc.code} while checking the App; check {names} "
+                "in the App settings and accept them on the installation."
+            ),
+        )
+    except Exception:
+        return AppPermissionGaps(
+            missing,
+            "",
+            "",
+            (
+                f"could not check the App permissions on GitHub; check {names} "
+                "in the App settings and accept them on the installation."
+            ),
+        )
+
+
+def _check_app_access(provider: Any, target: str) -> str:
+    """Check the target installation and all required App permissions."""
+    return app_permission_gaps(provider, target).problem
 
 
 def validate_pat(pat_file: str, target: str) -> str:

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from outerloop import init
+from outerloop.appmanifest import DEFAULT_PERMISSIONS
 from outerloop.init import (
     InitAnswers,
     author_key_env,
@@ -584,13 +585,18 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
         def _sign(self, data: bytes) -> bytes:
             return b"sig"
 
+        def _transport(self, req):
+            with init.urllib.request.urlopen(req) as response:
+                return json.loads(response.read())
+
         def token(self) -> str:
             return "tok"
 
     answers: dict[str, Any] = {
+        "app": {"slug": "app", "owner": {"login": "o", "type": "User"}, "permissions": {}},
         "repos/o/r/installation": {
             "id": 2,
-            "permissions": {"contents": "write", "issues": "write", "pull_requests": "write"},
+            "permissions": dict(DEFAULT_PERMISSIONS),
         },
     }
 
@@ -617,8 +623,11 @@ def test_app_check_asks_the_installation_not_the_repo_permissions(monkeypatch) -
     answers["repos/o/r/installation"] = {
         "id": 2,
         "permissions": {"contents": "read", "issues": "write", "pull_requests": "write"},
+        "account": {"login": "o", "type": "User"},
     }
-    assert "lacks write on contents" in init._check_app_access(Provider(), "o/r")
+    problem = init._check_app_access(Provider(), "o/r")
+    assert "contents: write" in problem
+    assert "https://github.com/settings/apps/app/permissions" in problem
     answers["repos/o/r/installation"] = {"id": 9, "permissions": {"contents": "write"}}
     assert "installation 9" in init._check_app_access(Provider(), "o/r")
 
@@ -758,6 +767,10 @@ def test_transient_github_failures_are_not_dead_credentials(monkeypatch) -> None
 
         def _sign(self, data: bytes) -> bytes:
             return b"sig"
+
+        def _transport(self, req):
+            with init.urllib.request.urlopen(req) as response:
+                return json.loads(response.read())
 
     monkeypatch.setattr("outerloop.appauth.build_app_jwt", lambda *a, **k: "jwt")
     monkeypatch.setattr(init.urllib.request, "urlopen", raising(502))

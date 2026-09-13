@@ -242,8 +242,19 @@ repos; the App takes no seat and needs no collaborator grant. The manifest
 declares Contents, Issues and Pull requests read-write, Metadata read and
 Members read (so a private org member's issue reads as MEMBER, not CONTRIBUTOR),
 and Actions and Checks read. Existing installations must accept the two new
-permissions, `actions: read` and `checks: read`, in the App's settings before
-check results flow. Until then, the sweep logs a warning and delivers nothing
+permissions, `actions: read` and `checks: read`, before check results flow.
+`outerloop upgrade` prints the exact pages when permissions are missing: first
+edit the App's permissions if needed, then accept the change on its installation.
+The page shapes are:
+
+- Edit: `https://github.com/organizations/<owner>/settings/apps/<slug>/permissions`
+  for an organization-owned App, or `https://github.com/settings/apps/<slug>/permissions`
+  for a user-owned App.
+- Accept: `https://github.com/organizations/<account>/settings/installations/<installation id>`
+  for an organization installation, or `https://github.com/settings/installations/<installation id>`
+  for a user installation.
+
+Until then, the sweep logs a warning and delivers nothing
 for checks. If the install step was cut short, run
 `outerloop init --force --github-app` to finish and re-check it.
 
@@ -323,6 +334,18 @@ back to the last commit whose environment was installed. The local loop runs
 the installed package, which has no such policy: run `outerloop upgrade` to move
 it to the newest release (add `--pre` to track pre-releases), then start it
 again. That is `pip install --upgrade outerloop-science` under one verb.
+
+### Upgrading
+
+1. Run `outerloop upgrade` (add `--pre` for pre-releases).
+2. Run `outerloop permissions --open` and follow the page it opens. For an App
+   missing configured permissions, save the edit, then run the command a second
+   time to open the installation page and accept them. If the App is already
+   configured, it opens the accept page directly. Run `outerloop permissions`
+   to verify: it exits 0 when complete (or using a PAT), 1 for missing permissions
+   or a lookup failure. Without `--open`, it prints both settings URLs in order
+   when permissions are missing; their shapes are listed in the App section above.
+3. Stop the running loop, then restart it with `outerloop start`.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI

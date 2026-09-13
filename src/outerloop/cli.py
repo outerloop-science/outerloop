@@ -18,11 +18,16 @@ import shutil
 import stat
 import subprocess
 import sys
+import webbrowser
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from outerloop import paths
+
+if TYPE_CHECKING:
+    from outerloop.init import AppPermissionGaps
 
 RESIDENT_JOB_NAME = "outerloop-resident"
 # A resident submitted before the rename. Slurm's singleton serializes jobs by
@@ -388,6 +393,69 @@ def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]
     return ""
 
 
+APP_PERMISSION_KEYS = ("OUTERLOOP_GITHUB_APP_FILE", "OUTERLOOP_TARGET", "OUTERLOOP_PAT_FILE")
+
+
+def _app_gaps_from_env(values: Mapping[str, str]) -> AppPermissionGaps | None:
+    from outerloop.appauth import app_provider_from_file
+    from outerloop.init import AppPermissionGaps, app_permission_gaps
+
+    app_file = values.get("OUTERLOOP_GITHUB_APP_FILE", "").strip()
+    if not app_file:
+        return None
+    try:
+        return app_permission_gaps(
+            app_provider_from_file(Path(app_file).expanduser()),
+            values.get("OUTERLOOP_TARGET", "").strip(),
+        )
+    except Exception:
+        return AppPermissionGaps((), "", "", "could not check the App permissions on GitHub.")
+
+
+def permissions(args: argparse.Namespace) -> int:
+    from outerloop.appmanifest import DEFAULT_PERMISSIONS
+
+    try:
+        values = {**env_file_values(ENV_FILE, APP_PERMISSION_KEYS), **os.environ}
+        gaps = _app_gaps_from_env(values)
+        if gaps is None:
+            if values.get("OUTERLOOP_PAT_FILE", "").strip():
+                print("A PAT needs no App permissions.")
+                return 0
+            print(
+                "App permissions need OUTERLOOP_GITHUB_APP_FILE; run outerloop init --github-app."
+            )
+            return 1
+        if gaps.problem and not gaps.edit_url:
+            print(gaps.problem)
+            return 1
+        labels = {name: f"{name}: {level}" for name, level in DEFAULT_PERMISSIONS.items()}
+        width = max(map(len, labels.values()))
+        for name, label in labels.items():
+            print(f"{label:<{width}}  {'missing' if name in gaps.missing else 'ok'}")
+        if not gaps.problem:
+            print(
+                "All required App permissions are granted; restart the loop with outerloop start."
+            )
+            return 0
+        if args.open:
+            url = gaps.edit_url if gaps.configured_missing else gaps.accept_url
+            if gaps.configured_missing:
+                print(f"Edit the App permissions: {url}")
+            else:
+                print(f"Accept the installation permissions: {url}")
+            print("After saving, run outerloop permissions --open again to check the next step.")
+            if not webbrowser.open(url):
+                print("Could not open a browser; follow the URL above.")
+        else:
+            print(gaps.problem)
+            print("Next: outerloop permissions --open")
+        return 1
+    except Exception:
+        print("could not check or open the App permissions; retry outerloop permissions.")
+        return 1
+
+
 def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
@@ -424,6 +492,9 @@ def start(args: argparse.Namespace) -> int:
     path_env = {"PATH": uv_dir + os.pathsep + os.environ.get("PATH", "")} if uv_dir else {}
     if uv_dir:
         print(f"uv found at {uv}; {uv_dir} is added to the loop's PATH", file=sys.stderr)
+    gaps = _app_gaps_from_env({**values, **os.environ})
+    if gaps is not None and gaps.problem:
+        print(gaps.problem, file=sys.stderr)
     if plan.mode == "local":
         # the loop has no deploy step, so the author knobs the chain would
         # export from .env each tick are exported here once; the shell wins
@@ -537,6 +608,14 @@ def upgrade(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return proc.returncode
+    gaps = None
+    try:
+        values = {**env_file_values(ENV_FILE, APP_PERMISSION_KEYS), **os.environ}
+        gaps = _app_gaps_from_env(values)
+        if gaps is not None and gaps.problem:
+            print(gaps.problem)
+    except Exception:
+        print("could not check the App permissions after upgrade.", file=sys.stderr)
     after = _installed_version(sys.executable)
     if before == after:
         print(f"already up to date: outerloop {after}.")
@@ -545,6 +624,8 @@ def upgrade(args: argparse.Namespace) -> int:
             f"upgraded outerloop {before} -> {after}. Restart the loop to pick it up: "
             f"stop the running tick, then `outerloop start`."
         )
+    if gaps is not None and gaps.problem:
+        print("outerloop permissions --open")
     return 0
 
 
@@ -611,7 +692,11 @@ def main(argv: list[str] | None = None) -> int:
         from outerloop import init
 
         return init.main(argv[1:])
+    p = sub.add_parser("permissions", help="check and update the App's required permissions")
+    p.add_argument("--open", action="store_true", help="open the next permission settings page")
     args = parser.parse_args(argv)
+    if args.command == "permissions":
+        return permissions(args)
     if args.command == "upgrade":
         return upgrade(args)
     return start(args)

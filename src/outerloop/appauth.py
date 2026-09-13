@@ -35,7 +35,7 @@ from outerloop.paths import CONFIG_DIR
 
 # RS256-sign the JWT signing input, returning the raw signature bytes.
 Signer = Callable[[bytes], bytes]
-# Perform the token-exchange POST and return the parsed JSON body.
+# Perform an App API request and return the parsed JSON body.
 Transport = Callable[[urllib.request.Request], Any]
 
 API = "https://api.github.com"
@@ -95,6 +95,8 @@ def _default_transport(request: urllib.request.Request) -> Any:
         with AUTH_SAFE_OPENER.open(request, timeout=30) as response:
             payload = response.read()
     except urllib.error.HTTPError as exc:
+        if request.get_method() == "GET":
+            raise
         body = exc.read().decode(errors="replace")[:500]
         raise ValueError(f"installation-token exchange failed ({exc.code}): {body}") from None
     except urllib.error.URLError as exc:
