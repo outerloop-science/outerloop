@@ -290,7 +290,10 @@ def migrate_inbox(root: Path, run_id: str, now: float) -> None:
         if raw.get("state") == ENDED:
             return
         keys = ("last_comment_id", "last_review_id", "last_review_comment_id")
-        if not any(key in raw for key in (*keys, "panel_wake_text")):
+        # the follow-up job and its dispatched re-measure no longer exist:
+        # an old record still naming them would count as legacy forever
+        jobs = ("followup_job_id", "followup_stage")
+        if not any(key in raw for key in (*keys, "panel_wake_text", *jobs)):
             return
         if (
             any(key in raw for key in keys)
@@ -328,8 +331,9 @@ def migrate_inbox(root: Path, run_id: str, now: float) -> None:
                     },
                 ),
             )
-        for key in (*keys, "panel_wake_text"):
-            raw.pop(key, None)
+        for key in (*keys, "panel_wake_text", *jobs):
+            if raw.pop(key, None):
+                log.info("run %s: legacy %s dropped by the migration", run_id, key)
         tmp = directory / f".migration.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(raw, indent=2, sort_keys=True))
         os.replace(tmp, path)

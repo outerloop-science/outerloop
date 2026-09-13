@@ -371,3 +371,25 @@ def test_wake_writers_leave_ended_record_byte_identical(tmp_path, writer_state):
         tmp_path, replace(record, state=writer_state, inbox_seq=5, stage={"sleeps_used": 9}), 2
     )
     assert path.read_bytes() == before
+
+
+def test_migration_drops_the_follow_up_job_fields(tmp_path):
+    """An idle old record that names a follow-up job or a dispatched
+    re-measure is migrated once under the lease and stops counting as legacy."""
+    import json
+
+    from outerloop.runstate import acquire_lease, migrate_inbox
+
+    record = RunRecord("legacy2", "org/repo", "t", "parked", pr_url="https://x/pull/3")
+    save_record(tmp_path, record, 1)
+    path = run_dir(tmp_path, "legacy2") / "state.json"
+    raw = json.loads(path.read_text())
+    raw["followup_job_id"] = "12345"
+    raw["followup_stage"] = {"candidate_sha": "abc"}
+    raw["state"] = "in-review"
+    path.write_text(json.dumps(raw))
+    assert acquire_lease(tmp_path, "legacy2", holder="t", holder_job_id="", now=1)
+    migrate_inbox(tmp_path, "legacy2", 2)
+    after = json.loads(path.read_text())
+    assert "followup_job_id" not in after and "followup_stage" not in after
+    assert load_record(tmp_path, "legacy2").state == "parked"
