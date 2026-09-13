@@ -8,7 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- The board row carried only the first 160 characters of a run's hypothesis, so the ledger on the site showed sentences cut mid-word. The row now carries the whole paragraph (cut at a word with an ellipsis past 1000 characters), and rows an earlier board cut short take the full text on the next publish.
+- Board rows now keep each run's whole hypothesis paragraph; the site's ledger showed sentences cut at 160 characters. Text over 1,000 characters ends at a word with an ellipsis. The next publish repairs rows cut by the earlier limit.
 
 - `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.
 

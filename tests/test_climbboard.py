@@ -1274,6 +1274,14 @@ def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
     assert hyp == f"{first} {second}"
     _b, _c, long = _report_fields("Hypothesis: " + "word " * 400)
     assert len(long) <= MAX_HYPOTHESIS_CHARS and long.endswith("…") and not long.endswith(" …")
+    _b, _c, token = _report_fields("Hypothesis: " + "x" * 1200)
+    assert len(token) == MAX_HYPOTHESIS_CHARS and token.endswith("…")  # no word to keep whole
+    # the three formats reports use: a bullet list, plain field lines, a heading
+    # followed by a paragraph that wraps; a Change field never rides along
+    assert _report_fields("- **Hypothesis:** A helps.\n- **Change:** B\n")[2] == "A helps."
+    assert _report_fields("Hypothesis: A helps.\nChange: B\nBaseline: 1\n")[2] == "A helps."
+    wrapped = "## Hypothesis\n\nA helps\nbecause C.\n   ## Change\n\nB\n"
+    assert _report_fields(wrapped)[2] == "A helps because C."
     cut = json.dumps(
         [{"run_id": "r1", "hypothesis": hyp[:160], "candidate": 5312.0, "outcome": "merged"}]
     )

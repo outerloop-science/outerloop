@@ -62,6 +62,9 @@ class ClimbRow:
 
 _NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
 _HYP = re.compile(r"Hypothesis[:*\s]+(.+)", re.I)
+# what ends the hypothesis paragraph: a heading (up to three leading spaces,
+# as Markdown allows), a list item, or the next field label ("Change: ...")
+_HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s|\*{0,2}[A-Z][\w /-]{0,40}\*{0,2}:(?:\s|$))")
 
 
 def _report_fields(text: str) -> tuple[float | None, float | None, str]:
@@ -79,12 +82,18 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
     hyp = ""
     m = _HYP.search(text)
     if m:
-        # the whole paragraph, up to a blank line or the next heading
-        para = re.split(r"\n\s*\n|\n#", text[m.start(1) :], maxsplit=1)[0]
-        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", para)
+        # the whole paragraph: the lines up to a blank one, a heading, a list
+        # item or the next field, so a "- Change:" bullet never rides along
+        lines: list[str] = []
+        for line in text[m.start(1) :].split("\n"):
+            if lines and (not line.strip() or _HYP_END.match(line)):
+                break
+            lines.append(line)
+        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", "\n".join(lines))
         hyp = hyp.strip().rstrip("-").strip()
         if len(hyp) > MAX_HYPOTHESIS_CHARS:
-            hyp = hyp[: MAX_HYPOTHESIS_CHARS - 1].rsplit(" ", 1)[0] + "…"
+            head = hyp[: MAX_HYPOTHESIS_CHARS - 1]
+            hyp = (head.rsplit(" ", 1)[0] if " " in head else head) + "…"
     return baseline, candidate, hyp
 
 
