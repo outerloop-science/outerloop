@@ -1289,6 +1289,9 @@ def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
     assert (
         _report_fields("- Hypothesis: A.\nThis means: B.\n- Change: C\n")[2] == "A. This means: B."
     )
+    assert (
+        _report_fields("Hypothesis:\nA helps.\nChange: B\n")[2] == "A helps."
+    )  # text on the next line
     cut = json.dumps(
         [{"run_id": "r1", "hypothesis": hyp[:160], "candidate": 5312.0, "outcome": "merged"}]
     )
