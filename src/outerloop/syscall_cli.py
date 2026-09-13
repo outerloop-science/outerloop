@@ -228,24 +228,26 @@ def cmd_reply(root: Path, args: argparse.Namespace) -> str:
 
 
 def cmd_submit(root: Path, args: argparse.Namespace) -> str:
-    path = Path(args.report)
-    if not path.is_absolute():
-        path = root / path
-    try:
-        # read one char past the cap, never the whole file: the size check
-        # decides before an oversized file is in memory
-        with path.open(encoding="utf-8", errors="replace") as fh:
-            report = fh.read(MAX_REPORT_CHARS + 1)
-    except OSError as exc:
-        raise ToolError(f"--report {args.report!r} could not be read ({exc})") from exc
-    if len(report) > MAX_REPORT_CHARS:
-        raise ToolError(f"--report is over the limit; at most {MAX_REPORT_CHARS} chars")
-    report = report.strip()
-    if not report:
-        raise ToolError(
-            f"--report {args.report!r} is empty: write the hypothesis, what you ran and "
-            "measured, and why this should merge"
-        )
+    report = ""
+    if args.report:
+        path = Path(args.report)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            # read one char past the cap, never the whole file: the size check
+            # decides before an oversized file is in memory
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                report = fh.read(MAX_REPORT_CHARS + 1)
+        except OSError as exc:
+            raise ToolError(f"--report {args.report!r} could not be read ({exc})") from exc
+        if len(report) > MAX_REPORT_CHARS:
+            raise ToolError(f"--report is over the limit; at most {MAX_REPORT_CHARS} chars")
+        report = report.strip()
+        if not report:
+            raise ToolError(
+                f"--report {args.report!r} is empty: write the hypothesis, what you ran and "
+                "measured, and why this should merge"
+            )
     staged = _load_staged(root)
     staged["submit"] = True
     staged["report"] = report
@@ -282,7 +284,7 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     if staged["submit"] and staged.get("eval_minutes"):
         payload["eval_minutes"] = int(staged["eval_minutes"])
     if staged["submit"]:
-        # the report rides the submit: the kernel refuses a submit without one
+        # The optional report rides the submit.
         payload["report"] = str(staged.get("report") or "")
     abi = _dir(root) / ABI
     if abi.exists():
@@ -439,12 +441,11 @@ def build_parser() -> argparse.ArgumentParser:
     su = sub.add_parser(
         "submit",
         help="stage a submit: on sleep, seal this tree for the gate + review panel",
-        description="Submit is not available while your PR is in review; end your leg and a "
-        "code change is re-measured, or launch and sleep.",
+        description="Seal and measure this tree; a credited verdict publishes it.",
     )
     su.add_argument(
         "--report",
-        required=True,
+        default="",
         help=(
             "markdown file: your hypothesis, what you ran and what it measured (see "
             "`history`), why this should merge, what did not work; it becomes the PR's "

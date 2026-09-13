@@ -209,7 +209,6 @@ def test_a_legacy_record_loads_without_writing(tmp_path):
         "task",
         IN_REVIEW,
         pr_url="https://github.com/org/repo/pull/9",
-        panel_wake_head="abc",
     )
     save_record(tmp_path, record, 10)
     path = run_dir(tmp_path, "run") / "state.json"

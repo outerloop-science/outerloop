@@ -126,15 +126,12 @@ def test_ground_rules_ask_for_a_report() -> None:
     assert "negative result" in text.casefold()
 
 
-def test_brief_demands_measured_evidence_before_submit() -> None:
-    """The gate confirms evidence, it does not generate it: the brief says
-    READY means MEASURED and never calls a submit cheap (its gate evals
-    draw real GPU-hours)."""
+def test_brief_describes_submit_without_prior_launch_or_report() -> None:
     text = render(build_brief(make_inputs(launch_budget=3, sleep_budget=2), created="t"))
-    assert "READY means MEASURED" in text
-    assert "STRICTLY clearing the gate's improvement bar" in text
-    assert "BOTH the gate's default relative margin AND" in text
-    assert "costs only the sleep" not in text
+    assert "Submit needs no prior launch" in text
+    assert "optional report" in text
+    assert "Stopping without a submit ends unmeasured" in text
+    assert "gate's GPU-hours" in text
 
 
 def test_distill_lessons_extracts_takeaways_newest_first() -> None:

@@ -121,6 +121,16 @@ a *further experiment*, revises, resubmits, and lands a PR — the interleaving
 the old stage model could not express. A clean first submit still opens a PR
 with no extra machinery.
 
+Lifecycle stage 3's first half is landed: submit also works in review and
+uses the same publish, with fast-forward ancestry and confirmed disarm.
+An unsubmitted review edit is neither measured nor pushed. Every gate
+verdict reaches a resumable author as a message; a failed submitted park ends
+only when no author can resume to receive it. Sessions without the tool are
+still measured at finish and may end on that verdict. Submit requires no
+prior launch and no report. A resumable session with the tool that stops
+without submitting ends unmeasured, or returns to review if it has a PR.
+The `end` verb and review meter top-up follow in the second half.
+
 ## What falls out for free
 
 - **Parallel dispatch** is no longer a phase: launch several (or submit

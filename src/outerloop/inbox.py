@@ -133,6 +133,12 @@ def budgets_line(*, launches: int, sleeps: int, gpu_hours: float | None = None) 
     return f"Budgets: {max(0, launches)} launches and {max(0, sleeps)} sleeps{gpu} remaining."
 
 
+AUTHOR_PROTOCOL = (
+    "Post with `reply`; once a reply is staged the final message is not posted; "
+    "a code change is published only by `submit`."
+)
+
+
 def render_inbox(
     messages: list[Message], *, budgets: str, clock: str = "", protocol: str = ""
 ) -> str:
@@ -196,7 +202,7 @@ def render_inbox(
             if p.get("text"):
                 lines.append(str(p["text"]))
             lines.append(
-                "A revised tree is measured and read again. A finding you reject can be "
+                "A submitted revision is measured and read again. A finding you reject can be "
                 "answered in your report at submit or in your reply."
             )
         else:

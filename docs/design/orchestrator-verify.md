@@ -165,43 +165,8 @@ never depends on the panel. A panel config that would die at startup is
 left off the follow-up (the reply still goes out; the PR stays
 human-merged; the tick's contract alarm already names the misconfig).
 
-**The revise loop is a wake type.** A blocking re-read (findings, not a
-degraded lens) is recorded on the run — the panel's data-fenced findings and
-the pushed head they were read on — and the tick submits a follow-up for it
-exactly as it does for a maintainer's comment or a base move: every step a
-job, on the one follow-up channel. The woken author addresses or rebuts the
-findings; a code change is re-measured and re-read, and a read that still
-blocks sets the wake again. Bounded by `PANEL_WAKE_CAP` revisions, after
-which the findings are left to a human (the panel's explicit demand stands).
-A wake is spent when a follow-up services it, and superseded by any later
-push (it fires only while GitHub's head is the read head); an open panel
-wake also holds off the auto-arm, whatever the record says about blessing.
-
-## Measuring a follow-up's change
-
-A follow-up's re-measure runs where the contract says the benchmark runs.
-`gpus: 0` benchmarks are measured inline in the follow-up job, as before. A
-GPU benchmark is never measured on that CPU node: the follow-up **seals** the
-session's change as a commit on the PR's current head (the climb's snapshot,
-line memory excluded), asks the dispatched measurer for one measure of that
-tree on the GPU lane, and — on a cluster — **parks**: it posts the author's
-reply now (the comments are serviced), records the sealed sha, its retaining
-ref, the eval job ids and the fresh seed on the run, and ends. Nothing is
-pushed yet. The tick polls those jobs; while they run, no comment is serviced
-and nothing is armed (the sealed change lands first, so the next answer is
-given on the tree the maintainer will actually see). When every job is
-terminal the tick submits a follow-up, which finishes on the sealed tree:
-ledger under the cross-seed floor, disarm, one commit with the standard
-message, push, the measured-number comment, the candidate row, the body
-edit, the record (blessing cleared, stage cleared, snapshot released) — and
-then the panel re-read of the pushed head, exactly as for an inline change.
-A synchronous compute (LocalCompute) returns the value at once and the same
-follow-up applies it; a failed dispatched eval is abandoned and said on the
-thread, with the workspace back on the pushed head.
-
-Placement is derived from the contract's `gpus:` — the author never chooses
-where its change is measured, and the follow-up carries the same cluster
-coordinates the climb does.
+A submit runs the panel through the shared author lifecycle described in [lifecycle.md](lifecycle.md).
+Findings are inbox messages delivered to the author on its next leg, as described there.
 
 ## What changes on GitHub
 

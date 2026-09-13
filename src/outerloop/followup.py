@@ -4,7 +4,7 @@ One `respond_once` call services one in-review run (docs/design/architecture.md,
 "The life of a run"): PR merged or closed ends the run; new qualifying
 comments wake the SAME agent session that wrote the code — native resume in
 the retained workspace — and its answer goes back to the thread as the bot,
-with any code changes scope-checked, re-measured, and pushed to the PR branch.
+with submitted changes measured and published through the shared author engine.
 
 Comment gating mirrors the intake gate without extra API scopes: GitHub's
 `author_association` field marks OWNER/MEMBER/COLLABORATOR, which is exactly
@@ -14,29 +14,23 @@ own comments and the advisory marker — is ignored.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from outerloop.contract import Contract
     from outerloop.measure import DispatchSettings
 
-from outerloop.contract import CONTRACT_NAME, contract_in_tree, contract_text_in_tree, load_contract
+from outerloop.contract import load_contract
 from outerloop.dispatch import image_file_arg
 from outerloop.github import (
-    GitError,
     GitHubClient,
     GitHubError,
-    NothingToCommit,
     Workspace,
     bot_login_from_env,
     contract_at,
-    git_identity,
     is_own_login,
 )
 from outerloop.harness import Harness, SessionResult, default_binary, outage, redact
@@ -44,25 +38,14 @@ from outerloop.inbox import (
     Message,
     append,
     delivered_seq,
-    panel_payload,
     pending,
+    thread_for,
 )
 from outerloop.markers import has_marker, marker
 from outerloop.orchestrator import (
     Evaluator,
-    benchmark_floor,
-    clears_min_delta,
-    draw_run_seed,
     out_of_scope,
     steward_out_of_scope,
-)
-from outerloop.orchestrator import improved as orch_improved
-from outerloop.progress import (
-    PROGRESS_PATHS,
-    fmt_metric,
-    load_leader,
-    update_leader,
-    write_progress,
 )
 from outerloop.review import APPROVAL_PATTERN, REDACTED
 from outerloop.role_runner import role_key
@@ -87,9 +70,6 @@ from outerloop.verifier import VERIFY_MARKER
 log = logging.getLogger(__name__)
 
 QUALIFYING_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
-# revisions a blocking re-read may ask of the author before the findings are
-# left to a human — the climb's depth axis, bounded the same way
-PANEL_WAKE_CAP = 2
 MAX_COMMENTS_PER_WAKE = 5
 MAX_REPLY_CHARS = 20_000
 
@@ -265,7 +245,7 @@ def _release_parked_snapshot(run_root: Path, record: RunRecord) -> None:
     from outerloop.dispatch import Snapshot, drop_snapshot
 
     ws = Workspace(root=run_dir(run_root, record.run_id) / "ws")
-    for stage in (record.stage, record.followup_stage):
+    for stage in (record.stage,):
         ref = str(stage.get("candidate_ref", "") or "")
         if not ref:
             continue
@@ -286,7 +266,7 @@ def _end_run(
     _release_parked_snapshot(run_root, record)
     save_record(
         run_root,
-        replace(record, state=ENDED, ending=ending, ending_note=note, followup_stage={}),
+        replace(record, state=ENDED, ending=ending, ending_note=note),
         now,
     )
     if not record.issue_number:
@@ -331,18 +311,10 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
         release_lease(run_root, record.run_id)
 
 
-def panel_wake_pending(run_root: Path, record: RunRecord, pr: dict) -> bool:
-    """Only undelivered blocking findings on the current head trigger a wake
-    (an older kernel's pending text counts until the wake converts it)."""
-    head = str((pr.get("head") or {}).get("sha", ""))
-    if record.panel_wake_text and record.panel_wake_head == head:
-        return True
-    return any(
-        m.kind == "panel-verdict"
-        and m.payload.get("head") == head
-        and m.payload.get("wake_author", True)
-        and any(f.get("blocking") for f in m.payload.get("findings", []))
-        for m in pending(run_dir(run_root, record.run_id), delivered_seq(record))
+def inbox_wake_pending(run_root: Path, record: RunRecord) -> bool:
+    """Undelivered messages trigger the next review leg."""
+    return bool(
+        record.panel_wake_text or pending(run_dir(run_root, record.run_id), record.inbox_seq)
     )
 
 
@@ -380,20 +352,7 @@ def respond_once(
     panel_skip: str = "",
     dispatch: DispatchSettings | None = None,
 ) -> FollowupOutcome:
-    """Service one in-review run: reply to new maintainer comments (and base
-    moves), re-measure and push any code change the session made.
-
-    `dispatch` carries the cluster coordinates: a code change on a GPU
-    benchmark is then sealed and measured on the GPU lane as a job (the
-    follow-up parks on it and a later follow-up finishes); without it, or on
-    a CPU benchmark, the change is measured inline as before.
-
-    `panel_lenses` (the climb's `--panel`) re-reads a PUSHED code change with
-    the same verification panel; `panel_builder` is the runner factory
-    (`build_panel_runner` unless a test injects one). `panel_skip` names why a
-    configured panel cannot run in this job (no walltime for the read): the
-    skip is then posted on the thread instead of a read — silence is never
-    endorsement, and a skipped read never blesses."""
+    """Resume the author on review messages; only submit measures and publishes."""
     record = load_record(run_root, run_id)
     if record.state != IN_REVIEW:
         return FollowupOutcome(run_id, "no-op", f"state is {record.state}, not in-review")
@@ -543,8 +502,7 @@ def build_review_messages(
                 {
                     "text": fact
                     + f" At delivery, `origin/{base_ref}` has been fetched into your workspace. "
-                    "A change is applied only when your tree contains that base; it is "
-                    "re-measured before it is pushed, and a human merges the updated PR.",
+                    "Only a submit measures and publishes a change; a human merges the updated PR.",
                     "base_sha": base_sha_at_fetch,
                 },
             ),
@@ -601,9 +559,9 @@ def build_review_messages(
                 "panel",
                 thread,
                 now,
-                f"panel:legacy:{record.panel_wake_head}",
+                f"panel:legacy:{(pr.get('head') or {}).get('sha', '')!s}",
                 {
-                    "head": record.panel_wake_head,
+                    "head": str((pr.get("head") or {}).get("sha", "")),
                     "findings": [
                         {
                             "blocking": True,
@@ -616,6 +574,31 @@ def build_review_messages(
         )
         record = replace(record, panel_wake_text="")
     return record, cursors, comments
+
+
+def retire_followup_stage(run_root: Path, record: RunRecord, now: float) -> bool:
+    """Retire a previous kernel's re-measure on its next wake."""
+    import json
+
+    from outerloop.dispatch import Snapshot, drop_snapshot
+    from outerloop.runstate import RECORD_NAME
+
+    path = run_dir(run_root, record.run_id) / RECORD_NAME
+    raw = json.loads(path.read_text())
+    stage = raw.get("followup_stage")
+    if not stage:
+        return False
+    ws = Workspace(root=run_dir(run_root, record.run_id) / "ws")
+    ref = str(stage.get("candidate_ref") or "")
+    if ref:
+        drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
+    log.info("run %s: retired legacy followup_stage; left in review", record.run_id)
+    raw.pop("followup_stage", None)
+    tmp = path.with_suffix(".migration")
+    tmp.write_text(json.dumps(raw))
+    tmp.replace(path)
+    save_record(run_root, replace(record, state=IN_REVIEW), now)
+    return True
 
 
 def _respond(
@@ -652,25 +635,8 @@ def _respond(
     if pr.get("state") == "closed":
         _end_run(run_root, record, github, REJECTED, "PR closed unmerged", now)
         return FollowupOutcome(run_id, "ended-rejected")
-    if record.followup_stage:
-        # a sealed change is waiting on its dispatched measure: finish THAT
-        # (or find it still pending) before any comment is serviced
-        return _resume_measure(
-            run_root,
-            run_id,
-            record,
-            number,
-            pr,
-            github,
-            bot_login,
-            now,
-            secrets,
-            created,
-            dispatch,
-            panel_lenses,
-            panel_builder,
-            panel_skip,
-        )
+    if retire_followup_stage(run_root, record, now):
+        return FollowupOutcome(run_id, "no-op", "retired legacy re-measure; left in review")
 
     workspace = run_dir(run_root, run_id) / "ws"
     if not workspace.is_dir():
@@ -678,7 +644,15 @@ def _respond(
     from outerloop.attempt import target_clone_url
 
     ws = Workspace(root=workspace, auth=github.auth, url=target_clone_url(record.target))
-    contract_text = contract_text_in_tree(workspace)
+    base_ref = str((pr.get("base") or {}).get("ref") or "main")
+    try:
+        ws.fetch_origin()
+        base_sha = ws.git("rev-parse", f"origin/{base_ref}").strip()
+    except Exception as exc:
+        return FollowupOutcome(run_id, "error", f"base fetch failed: {exc}")
+    record = replace(record, stage={**record.stage, "base_sha": base_sha, "base_branch": base_ref})
+    save_record(run_root, record, now)
+    contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
     bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
     if bench is None:
@@ -702,49 +676,31 @@ def _respond(
     )
     spec = replace(spec, key="steward" if is_steward else "author", scope=tuple(owned))
 
-    # Every wake needs a CURRENT origin/<base>: the conflict wake tells the
-    # session to merge it, and the scope check's base-content exemption must
-    # never compare against a stale ref (old base content could smuggle).
-    # The session has no credentials, so the kernel fetches on its behalf.
-    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-    base_sha_at_fetch = ""
-    try:
-        ws.fetch_origin()
-        # pinned NOW, before the session runs: refs/remotes/* are plain
-        # files a session can rewrite, so the scope exemption compares
-        # against this sha, never the ref name
-        base_sha_at_fetch = ws.git("rev-parse", f"origin/{base_ref}").strip()
-    except Exception as exc:
-        log.warning("base fetch failed for %s: %s", run_id, exc)
-    base_fetched = bool(base_sha_at_fetch)
-    if base_sync_head(pr) and not base_fetched:
-        # a PR that NEEDS a base sync cannot be serviced without a current
-        # base — comment-driven edits included: they would measure and push
-        # against no known base while the PR stays behind/conflicted. The
-        # cursor is unspent; the next tick retries the whole wake.
-        return FollowupOutcome(
-            run_id, "error", "base sync needed but the base fetch failed; retrying next tick"
-        )
-
+    base_sha_at_fetch = base_sha
     record, cursors, comments = build_review_messages(
         run_root, record, number, github, bot_login, now, pr, base_sha_at_fetch
     )
     directory = run_dir(run_root, run_id)
     conflict_head = base_sync_head(pr)
     conflict_wake = bool(conflict_head) and conflict_head != record.dirty_wake_head
-    panel_wake = panel_wake_pending(run_root, record, pr)
+    inbox_wake = inbox_wake_pending(run_root, record)
     messages = pending(directory, delivered_seq(record))
-    if not comments and not conflict_wake and not panel_wake and record.state != WAITING:
+    if not comments and not conflict_wake and not inbox_wake and record.state != WAITING:
         return FollowupOutcome(run_id, "no-op", "no new qualifying comments")
     delivery_seq = max((m.seq for m in messages), default=record.inbox_seq)
-    from outerloop.attempt import _park_run, run_author_leg
+    from outerloop.attempt import LINE_MEMORY_PATHS, _park_run, run_author_leg, submission_paths
     from outerloop.dispatch import drop_snapshot, snapshot_tree
     from outerloop.orchestrator import AttemptResult, RunConfig, RunParked
 
     snapshots = []
 
     def snapshot() -> str:
-        snap = snapshot_tree(ws, base_sha_at_fetch or "HEAD", author=bot_login)
+        snap = snapshot_tree(
+            ws,
+            ws.git("rev-parse", "HEAD").strip(),
+            exclude=LINE_MEMORY_PATHS if bench.lines else (),
+            author=bot_login,
+        )
         snapshots.append(snap)
         return snap.commit
 
@@ -753,13 +709,69 @@ def _respond(
         record = replace(record, inbox_seq=seq)
         save_record(run_root, record, now)
 
-    tip = str((pr.get("head") or {}).get("sha", "")) or ws.git("rev-parse", "HEAD").strip()
+    tip = str((pr.get("head") or {}).get("sha") or ws.git("rev-parse", "HEAD").strip())
 
     def launch_changes() -> list[str]:
-        changed, _, known, matches_base = review_changes(ws, tip, base_sha_at_fetch, base_fetched)
-        if not known:
-            raise GitError("cannot determine committed review changes")
-        return [path for path in changed if not matches_base(path)]
+        return submission_paths(ws, tip, bool(bench.lines))
+
+    record = replace(record, stage={**record.stage, "panel_skip": panel_skip})
+    if panel_skip:
+        append(
+            directory,
+            Message(
+                0,
+                "note",
+                "kernel",
+                thread_for(record),
+                now,
+                f"panel-skip:{record.inbox_seq}:{panel_skip}",
+                {"text": f"panel read skipped: {panel_skip}"},
+            ),
+        )
+
+    from outerloop.attempt import _line_ref_for, build_panel_runner, publish
+    from outerloop.compute import LocalCompute
+    from outerloop.measure import DispatchedMeasurer
+
+    config = RunConfig(
+        target=record.target,
+        benchmark=record.benchmark,
+        agent_id=record.agent_id,
+        bot_login=bot_login,
+    )
+    measurer = (
+        dispatch.measurer(
+            directory, repo_root=workspace, eval_minutes=bench.eval_minutes or 0, run_tag=run_id
+        )
+        if dispatch
+        else DispatchedMeasurer(
+            compute=LocalCompute(),
+            run_dir=directory,
+            repo_root=workspace,
+            image="",
+            account="",
+            partition="",
+            eval_minutes=bench.eval_minutes or 0,
+            run_tag=run_id,
+        )
+    )
+    panel_runner = (
+        (panel_builder or build_panel_runner)(
+            ws,
+            directory,
+            base_sha,
+            panel_lenses,
+            contract_text,
+            record.target,
+            record.benchmark,
+            bot_login,
+            created,
+            secrets=secrets,
+            exclude=LINE_MEMORY_PATHS if bench.lines else (),
+        )
+        if panel_lenses
+        else None
+    )
 
     kept_ref = ""
     try:
@@ -773,8 +785,8 @@ def _respond(
             contract_text,
             workspace,
             harness,
-            None,
-            base_sha_at_fetch or "HEAD",
+            measurer,
+            base_sha,
             snapshot,
             run_root=run_root,
             record=record,
@@ -786,6 +798,7 @@ def _respond(
             changed_paths=launch_changes,
             scope_validator=scope_check,
             on_inbox_delivered=acknowledge,
+            panel_runner=panel_runner,
             on_stop=lambda session: AttemptResult(outcome="review", session=session),
         )
     except RunParked as parked:
@@ -821,6 +834,33 @@ def _respond(
         for snap in snapshots:
             if snap.ref != kept_ref:
                 drop_snapshot(ws, snap)
+    record = replace(
+        record,
+        last_comment_id=cursors["comment"],
+        last_review_id=cursors["review"],
+        last_review_comment_id=cursors["review_comment"],
+    )
+    if result.outcome == "improved":
+        published = publish(
+            result=result,
+            ws=ws,
+            workspace=workspace,
+            run_root=run_root,
+            run_dir=directory,
+            run_id=run_id,
+            record=record,
+            config=config,
+            contract=contract,
+            github=github,
+            now=now,
+            secrets=secrets,
+            base_branch=base_ref,
+            base_sha=base_sha,
+            issue_number=record.issue_number,
+            line_ref=_line_ref_for(bench, record.agent_id),
+            date=created[:10],
+        )
+        return FollowupOutcome(run_id, "replied", published.outcome)
     session = result.session
     if session is None:
         return FollowupOutcome(run_id, "error", result.note)
@@ -857,573 +897,48 @@ def _respond(
 
     from outerloop.attempt import _clear_stage
 
+    latest = load_record(run_root, run_id)
+    record = replace(record, stage=latest.stage)
     record = replace(_clear_stage(record), state=IN_REVIEW, wake_attempts=record.wake_attempts)
     delivery_seq = max(delivery_seq, record.inbox_seq)
     return finish_review_leg(
-        base_sha_at_fetch=base_sha_at_fetch,
-        bot_login=bot_login,
-        comments=comments,
-        conflict_head=conflict_head,
-        conflict_wake=conflict_wake,
-        contract=contract,
-        created=created,
         cursors=cursors,
         delivery_seq=delivery_seq,
-        dispatch=dispatch,
-        evaluator=evaluator,
+        conflict_head=conflict_head,
+        conflict_wake=conflict_wake,
         github=github,
         now=now,
         number=number,
-        panel_builder=panel_builder,
-        panel_lenses=panel_lenses,
-        panel_skip=panel_skip,
-        panel_wake=panel_wake,
-        pr=pr,
         record=record,
         run_root=run_root,
         secrets=secrets,
         session=session,
-        workspace=workspace,
-        ws=ws,
-        messages=messages,
+        replies_posted=result.replies_posted,
     )
-
-
-def review_changes(
-    ws: Workspace, pushed_tip: str, base_sha_at_fetch: str, base_fetched: bool
-) -> tuple[list[str], list[str], bool, Callable[[str], bool]]:
-    """Working and committed edits, with the fetched base's content exempted."""
-
-    def _matches_base(path: str) -> bool:
-        # content identical to origin/<base> is the base branch's own (a
-        # merge brings it in); it can neither smuggle nor exceed scope. Only
-        # against the sha PINNED at fetch time — the ref itself is a plain
-        # file the session could have rewritten while it ran. Blob-hash
-        # comparison: `git diff <commit> -- path` would call an UNTRACKED
-        # working file "deleted" instead of reading its content. A deletion
-        # matches when the base deleted the path too.
-        if not base_fetched:
-            return False
-        try:
-            base_blob = ws.git("rev-parse", f"{base_sha_at_fetch}:{path}").strip()
-        except Exception:
-            base_blob = ""  # absent on base
-        local_path = Path(ws.root) / path
-        if not local_path.exists():
-            return not base_blob  # both absent: a base-side deletion merged in
-        if not base_blob:
-            return False
-        try:
-            return ws.git("hash-object", "--", path).strip() == base_blob
-        except Exception:
-            return False
-
-    committed: list[str] = []
-    try:
-        # a session that COMMITTED its work (a resolved merge commit is the
-        # normal shape) leaves the working tree clean — the diff against the
-        # PR branch's pushed tip is where those changes show. The tip is
-        # PINNED from the kernel-fetched PR object: refs/remotes/* are plain
-        # files the session can rewrite to make this diff read empty.
-        committed = [
-            p
-            for p in ws.git("diff", "--name-only", f"{pushed_tip}..HEAD").splitlines()
-            if p.strip()
-        ]
-        history_known = True
-    except Exception:
-        committed = []
-        history_known = False
-
-    changed = sorted(set(_changed_paths(ws)) | set(committed))
-    return changed, committed, history_known, _matches_base
 
 
 def finish_review_leg(
     *,
-    base_sha_at_fetch: str,
-    bot_login: str,
-    comments: list[tuple[int, str, str]],
-    conflict_head: str,
-    conflict_wake: bool,
-    contract: Contract,
-    created: str,
     cursors: dict[str, int],
     delivery_seq: int,
-    dispatch: DispatchSettings | None,
-    evaluator: Evaluator,
+    conflict_head: str,
+    conflict_wake: bool,
     github: GitHubClient,
     now: float,
     number: int,
-    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
-    panel_lenses: tuple[Any, ...],
-    panel_skip: str,
-    panel_wake: bool,
-    pr: dict,
     record: RunRecord,
     run_root: Path,
     secrets: tuple[str, ...],
     session: SessionResult,
-    workspace: Path,
-    ws: Workspace,
-    messages: list[Message],
+    replies_posted: int = 0,
 ) -> FollowupOutcome:
-    base_fetched = bool(base_sha_at_fetch)
-    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-    is_steward = record.agent_id.startswith("steward")
-    run_id = record.run_id
-    directory = run_dir(run_root, run_id)
-    scope_check = steward_out_of_scope if is_steward else out_of_scope
+    from outerloop.attempt import post_replies
 
-    def requeue_panel_findings() -> None:
-        for message in messages:
-            if message.kind == "panel-verdict" and message.payload.get("wake_author", True):
-                append(directory, replace(message, key=f"{message.key}:again:{now}"))
-
-    # Same self-approval scrub as the reviewer: the pipeline must never nudge
-    # humans toward merging its own work, even in the author's voice.
-    reply_body = APPROVAL_PATTERN.sub(REDACTED, redact(session.final_text, secrets))[
-        :MAX_REPLY_CHARS
-    ]
-
-    def _safe_paths(paths: list[str]) -> str:
-        """Session-controlled filenames rendered into a bot comment: strip to
-        a markdown-inert charset (a name can carry backticks, newlines, a
-        secret, or the approval phrase), bound each, then run the same secret
-        redaction and self-approval scrub as every other reply line."""
-        # redact each RAW name before the length cut: a secret straddling
-        # the boundary would otherwise leak its prefix uncaught
-        cleaned = ", ".join(
-            # brackets stay: they cannot close a code span, and the
-            # redaction marker must survive the strip intact
-            "`" + re.sub(r"[^A-Za-z0-9._/@+\[\]-]", "?", redact(p, secrets))[:120] + "`"
-            for p in paths[:12]
-        ) + (" …" if len(paths) > 12 else "")
-        return APPROVAL_PATTERN.sub(REDACTED, redact(cleaned, secrets))
-
-    measured_note = ""
-    change_pushed = False
-    pushed_head = ""  # the exact sha a code-changing push put on the PR
-    sealed_snap: Any = None  # a synchronous sealed measure's snapshot, released after the reply
-
-    branch = _current_branch(ws)
-    pushed_tip = str((pr.get("head") or {}).get("sha", "")) or f"origin/{branch}"
-    changed, committed, history_known, _matches_base = review_changes(
-        ws, pushed_tip, base_sha_at_fetch, base_fetched
-    )
-
-    response_reverted = False
-
-    def _revert_response() -> None:
-        nonlocal response_reverted
-        response_reverted = True
-        # drop working-tree edits AND any local commits past the pushed tip;
-        # abort first — a conflicted, uncommitted merge leaves MERGE_HEAD and
-        # unmerged paths that checkout/clean do not clear, and the next wake
-        # must never start inside someone else's half-merge
-        with contextlib.suppress(GitError):
-            ws.git("merge", "--abort")
-        ws.git("checkout", "--", ".")
-        ws.git("clean", "-fdq")
-        if committed:
-            # the PINNED tip, same reason as the diff above: origin/<branch>
-            # is a session-writable file and may not even exist locally
-            ws.git("reset", "--hard", pushed_tip)
-
-    # The merge may have brought a NEW contract in: everything downstream —
-    # the sync-skip comparison, the scope check, the re-measure's bench —
-    # must see the tree's contract, not the one loaded before the session
-    # ran. An unparsable merged contract withholds the response outright.
-    found_contract = contract_in_tree(workspace)
-    contract_path = found_contract[0] if found_contract else CONTRACT_NAME
-    post_contract = contract
-    contract_broken = False
-    if contract_path in changed:
-        try:
-            post_contract = load_contract((workspace / contract_path).read_text(), record.target)
-        except Exception as exc:
-            contract_broken = True
-            log.warning("merged contract does not parse for %s: %s", run_id, exc)
-
-    # A base-sync wake that changed the tree must actually CONTAIN the fetched
-    # base: without the ancestry check a session could copy base files (or make
-    # any edit) and push a re-measured PR that is still behind/conflicted
-    # (terra #224). An unchanged tree is different — an honest "superseded,
-    # closing" reply spends the cursor and stands.
-    # One ancestry probe decides the sync outcome: the cursor is spent only
-    # when HEAD objectively contains the fetched base. A session that neither
-    # merged nor changed anything (died early, replied vaguely, or declared
-    # itself superseded) leaves the head re-wakeable — supersession's
-    # terminal act is a human closing the PR, and retries stay capped by the
-    # tick's submit-time wake_attempts billing.
-    base_synced = False
-    if conflict_wake and base_sha_at_fetch:
-        try:
-            ws.git("merge-base", "--is-ancestor", base_sha_at_fetch, "HEAD")
-            base_synced = True
-        except GitError:
-            base_synced = False
-    sync_failed = conflict_wake and (
-        (changed and not base_synced) or not history_known or contract_broken
-    )
-    # The cursor spends only on REMOTE progress: a sync that exists solely in
-    # the workspace (e.g. the re-measure was withheld) leaves the head
-    # re-wakeable — the live lesson from gpt-speedrun#5, where a locally
-    # clean merge whose eval was withheld spent the cursor with the PR still
-    # behind on GitHub.
-    sync_pushed = False
-    blessed_head = record.auto_blessed_head
-
-    def _sync_push(note: str) -> bool:
-        """Push the synced head under the #171 rule: an armed auto-mode PR
-        would merge the new head on green CI, so the push is gated on a
-        CONFIRMED disarm. Arming is NOT this function's job: the tick's
-        in-review service re-arms idempotently once GitHub reports the PR
-        clean — panel provenance from the record, the dial from the
-        kernel-read contract, freshness from GitHub's own up-to-date check —
-        which survives crashes here and never trusts two contract dials as
-        proof a panel ran."""
-        nonlocal measured_note, sync_pushed
-        disarm_ok = True
-        # EITHER contract can have armed auto-merge: the pre-merge one at
-        # publish time, the merged one as the repo's current dial — a push
-        # to a possibly-armed PR is never made without a confirmed disarm
-        merge_modes = {
-            getattr(contract, "merge", "manual"),
-            getattr(post_contract, "merge", "manual"),
-        }
-        if "auto" in merge_modes:
-            try:
-                disarm_ok = github.disable_auto_merge(record.target, number)
-            except Exception as exc:
-                disarm_ok = False
-                log.warning("auto-merge disarm errored before sync push: %s", exc)
-        if not disarm_ok:
-            measured_note = (
-                "\n\n_(Base sync withheld: auto-merge could not be confirmed "
-                "disarmed on this auto-mode PR; the wake will retry.)_"
-            )
-            return False
-        ws.push(branch)
-        sync_pushed = True
-        measured_note = note
-        # a signature-clean sync preserves the measured bytes: the blessing
-        # follows the head it now lives on (empty stays empty)
-        nonlocal blessed_head
-        if blessed_head:
-            try:
-                blessed_head = ws.git("rev-parse", "HEAD").strip()
-            except Exception:
-                blessed_head = ""
-        return True
-
-    # A clean base merge can produce a commit whose TREE is unchanged (the
-    # branch already carried the base's content): committed/changed are both
-    # empty, but the merge commit IS the contribution. Same measured tree, so
-    # no re-eval is owed; push the topology and say so.
-    if conflict_wake and not changed and base_synced and history_known:
-        _sync_push(
-            f"\n\n_(Base sync: `origin/{base_ref}` merged; the tree is "
-            "unchanged, so the measured numbers above still describe "
-            "exactly this content — only the ancestry moved.)_"
-        )
-    # The next rung, deliberately NARROW: the merge changed exactly one
-    # path — the contract file, with the base's own content — and every
-    # benchmark's MEASUREMENT SIGNATURE (name, command, metric, seed_env,
-    # gpus) plus the scope parse identical to the pre-merge ones. Workflow
-    # dials and crediting policy may move (a lines flip, depth_k, floors —
-    # they steer the loop, not what a measured number means); the eval
-    # command, protocol, suite membership, and solver bytes are all exactly
-    # what was measured, so the numbers stand. ANY
-    # other changed path — eval/, docs, data, a solver edit — and any
-    # benchmark/scope difference takes the full scope-check + re-measure
-    # path: base-owned content is NOT the same thing as measured-under
-    # conditions (terra #225).
-    if conflict_wake and changed:
-        # session-controlled names: same sanitizer+scrub chain as the note
-        # (a raw list could leak a secret or forge log lines via newlines)
-        log.info(
-            "sync wake for %s: changed=%s base_synced=%s history_known=%s",
-            run_id,
-            _safe_paths(changed),
-            base_synced,
-            history_known,
-        )
-    base_only_sync = False
-    if (
-        conflict_wake
-        and base_synced
-        and history_known
-        and not contract_broken
-        and set(changed) == {contract_path}
-        and all(_matches_base(p) for p in changed)
-        and [b.measurement_signature() for b in post_contract.benchmarks]
-        == [b.measurement_signature() for b in contract.benchmarks]
-        and post_contract.scope == contract.scope
-    ):
-        base_only_sync = True
-        _sync_push(
-            f"\n\n_(Base sync: `origin/{base_ref}` merged; the only change "
-            "is the contract file, whose measurement signatures and scope "
-            "are identical — the eval surface and solver are bit-for-bit "
-            "what was measured, so the numbers above stand.)_"
-        )
-    if sync_failed:
-        _revert_response()
-        measured_note = (
-            "\n\n_(The merged contract does not parse, so the change was "
-            "not applied; the wake will retry.)_"
-            if contract_broken
-            else "\n\n_(A code change was attempted but does not include "
-            "the fetched base — the sync wake requires an actual merge of "
-            f"`origin/{base_ref}` — so it was not applied; the wake will "
-            "retry.)_"
-        )
-    elif changed and not base_only_sync:
-        # the tree's own contract governs its scope and its measurement; a
-        # merged contract that no longer defines this run's benchmark means
-        # there is nothing left to measure the change AGAINST — withhold and
-        # say so, never evaluate a command the contract removed (terra #225
-        # r2: the pre-merge fallback published a phantom benchmark)
-        post_bench = next((b for b in post_contract.benchmarks if b.name == record.benchmark), None)
-        violations = [p for p in scope_check(changed, post_contract) if not _matches_base(p)]
-        if post_bench is None:
-            _revert_response()
-            measured_note = (
-                f"\n\n_(The merged contract no longer defines benchmark "
-                f"`{record.benchmark}`, so the change was not applied — a "
-                "human decides whether this PR is superseded.)_"
-            )
-        elif violations:
-            # revert the out-of-scope response; reply honestly, keep the PR
-            _revert_response()
-            measured_note = (
-                "\n\n_(A code change was attempted but touched paths outside "
-                "the contract's scope and was not applied.)_"
-            )
-        else:
-            bench = post_bench
-            pre_eval_tree = _tree_hash(ws)
-            # one fresh seed for this re-measure, recorded with the row —
-            # same pairing/reproducibility rule as the climb and steward
-            run_seed = draw_run_seed() if bench.seed_env else 0
-            seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
-            dispatched_error: Exception | None = None
-            if dispatch is not None and not is_steward and bench.gpus > 0:
-                # A GPU benchmark is never measured on this CPU node: seal the
-                # change and measure it on the GPU lane as a job, exactly as
-                # the climb does — placement comes from the contract's
-                # `gpus:`, never from the author. A synchronous compute
-                # (LocalCompute) returns the value here; a cluster parks.
-                try:
-                    sealed, sealed_snap = _seal_and_measure(
-                        ws,
-                        run_root,
-                        run_id,
-                        dispatch,
-                        bench,
-                        run_seed,
-                        workspace,
-                        bot_login=bot_login,
-                    )
-                except _RemeasureParked as pend:
-                    return _park_remeasure(
-                        run_root,
-                        run_id,
-                        record,
-                        number,
-                        github,
-                        ws,
-                        bench,
-                        pend,
-                        run_seed,
-                        reply_body,
-                        cursors,
-                        changed=changed,
-                        conflict_head=conflict_head if conflict_wake else "",
-                        base_synced=base_synced,
-                        pr_head=str((pr.get("head") or {}).get("sha", "")),
-                        panel_wake=panel_wake,
-                        inbox_seq=delivery_seq,
-                        now=now,
-                        secrets=secrets,
-                    )
-                except Exception as exc:
-                    # a failed dispatch (eval error, no GPU lane, compute
-                    # outage) is the failed-eval path: reverted and said
-                    dispatched_error, sealed, sealed_snap = exc, None, None
-            else:
-                sealed, sealed_snap = None, None
-            try:
-                if dispatched_error is not None:
-                    raise dispatched_error  # the same failed-eval path as inline
-                if sealed is not None:
-                    candidate = sealed  # measured on the sealed tree, as a job
-                elif is_steward:
-                    from outerloop.steward import validate_and_measure
-
-                    candidate = validate_and_measure(
-                        workspace, post_contract, bench, evaluator, run_seed=run_seed
-                    )
-                else:
-                    candidate = evaluator.evaluate(
-                        workspace, bench.command, bench.metric, extra_env=seed_env
-                    )
-            except Exception as exc:
-                _revert_response()
-                measured_note = (
-                    "\n\n_(A code change was attempted but the eval failed "
-                    f"on it, so it was not applied. Changed paths: "
-                    f"{_safe_paths(changed)}. "
-                    f"Error: {redact(str(exc), secrets)[:200]})_"
-                )
-            else:
-                if sealed_snap is not None:
-                    # measured as a job on the SEALED tree: make that tree the
-                    # branch head now, so the ledger lands on it and the push
-                    # carries exactly what was measured — the live workspace
-                    # may hold content the seal excluded (line memory)
-                    ws.git("checkout", "-f", "-B", branch, sealed_snap.commit)
-                    ws.git("clean", "-fdq")
-                if sealed_snap is None and _tree_hash(ws) != pre_eval_tree:
-                    # same drift rule as the climb: the pushed tree must be
-                    # exactly the measured tree
-                    _revert_response()
-                    measured_note = (
-                        "\n\n_(A code change was attempted but the tree "
-                        "changed during measurement, so it was not applied.)_"
-                    )
-                else:
-                    floor_note = ""
-                    if is_steward:
-                        from outerloop.steward import rebase_leader_row
-
-                        prior = None  # a re-base is not an improvement claim
-                        rebase_leader_row(
-                            workspace,
-                            post_contract,
-                            bench.name,
-                            bench,
-                            candidate,
-                            run_id,
-                            created,
-                            record.target,
-                            run_seed=run_seed,
-                        )
-                    else:
-                        prior, floor_note = _update_ledger(
-                            workspace,
-                            bench,
-                            post_contract,
-                            candidate,
-                            run_id,
-                            created,
-                            run_seed,
-                            record.target,
-                        )
-                    # AUTO merge mode: an armed PR would merge THIS new head
-                    # on green CI without a fresh gate/suite/panel, so the
-                    # commit+push are GATED on a confirmed disarm (terra #171
-                    # r2: ignoring a failed disarm pushed anyway). On failure
-                    # the change is withheld like a failed eval — workspace
-                    # cleaned, the reply says so, next pass retries.
-                    disarmed = True
-                    # EITHER contract can have armed auto-merge — the
-                    # pre-merge one at publish, the merged one as the
-                    # repo's current dial (same rule as _sync_push)
-                    if "auto" in {
-                        getattr(contract, "merge", "manual"),
-                        getattr(post_contract, "merge", "manual"),
-                    }:
-                        try:
-                            disarmed = github.disable_auto_merge(record.target, number)
-                        except Exception as exc:
-                            disarmed = False
-                            log.warning("auto-merge disarm errored: %s", exc)
-                    if not disarmed:
-                        _revert_response()
-                        measured_note = (
-                            "\n\n_(A code change was validated but WITHHELD: "
-                            "auto-merge could not be confirmed disarmed on this "
-                            "auto-mode PR; the follow-up will retry.)_"
-                        )
-                    else:
-                        verb = "steward" if is_steward else "agent"
-                        # a session that committed its work (a resolved merge)
-                        # leaves nothing to stage; the committed diff was
-                        # already scope-checked above, so push what is there
-                        message = (
-                            f"{verb}: address review feedback "
-                            f"({bench.metric}="
-                            f"{fmt_metric(candidate, bench.display_digits)})"
-                            f"\n\nAgent: {record.agent_id}"
-                        )
-                        if sealed_snap is not None:
-                            _commit_sealed_tree(ws, branch, sealed_snap.commit, bot_login, message)
-                        else:
-                            try:
-                                ws.commit_all(
-                                    message,
-                                    author=bot_login,
-                                    forbidden=lambda p: (
-                                        p not in PROGRESS_PATHS
-                                        and bool(scope_check([p], post_contract))
-                                        and not _matches_base(p)
-                                    ),
-                                )
-                            except NothingToCommit:
-                                if not committed:
-                                    raise
-                        pushed_head = ws.git("rev-parse", "HEAD").strip()
-                        ws.push(branch)
-                        change_pushed = True
-                        worse = prior is not None and not orch_improved(
-                            prior.best, candidate, bench.direction, 0.0
-                        )
-                        measured_note = (
-                            f"\n\n**Re-measured after this change: `{bench.metric}` = "
-                            f"{fmt_metric(candidate, bench.display_digits)}**"
-                            + (
-                                " — worse than the PR's previous number, stated plainly."
-                                if worse
-                                else ""
-                            )
-                            + floor_note
-                        )
-
-    if sealed_snap is not None:
-        from outerloop.dispatch import drop_snapshot
-
-        drop_snapshot(ws, sealed_snap)
-    if reply_body or measured_note:
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{measured_note}")
-    if change_pushed:
-        try:
-            # the measured table is rewritten in place; the narrative is
-            # never rewritten (the Edit block below points at the replies)
-            github.update_candidate_row(
-                record.target, number, candidate, digits=bench.display_digits
-            )
-        except Exception as exc:
-            log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
-        # Code changed after publish: the body's report now describes an
-        # older tree. Mark it edited so no
-        # reader — human or verifier — mistakes the original report for the
-        # current state; the authoritative update lives in the reply.
-        try:
-            github.append_pull_body(
-                record.target,
-                number,
-                f"---\n**Edit ({created[:10] or 'date unknown'}, follow-up):** the solver changed "
-                f"after review feedback and was re-measured "
-                f"({measured_note.strip().strip('*')}). The report above "
-                f"describes the original version; see the follow-up replies "
-                f"in the comments for the current one.",
-            )
-        except Exception as exc:  # the reply already carries the truth
-            log.warning("body addendum failed for %s#%s: %s", record.target, number, exc)
-    if panel_wake and response_reverted:
-        requeue_panel_findings()
+    directory = run_dir(run_root, record.run_id)
+    replies_posted += post_replies(record, github, (), secrets, directory)
+    reply = APPROVAL_PATTERN.sub(REDACTED, redact(session.final_text, secrets))[:MAX_REPLY_CHARS]
+    if reply and not replies_posted:
+        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply}")
     save_record(
         run_root,
         replace(
@@ -1432,887 +947,14 @@ def finish_review_leg(
             last_comment_id=cursors["comment"],
             last_review_id=cursors["review"],
             last_review_comment_id=cursors["review_comment"],
-            # the cursor is spent only on REMOTE progress: a base-containing
-            # head was pushed (or the change was measured and pushed while
-            # synced); otherwise the head stays re-wakeable, bounded by the
-            # tick's submit-time billing — the count is kept, never advanced
-            # here, never reset without progress
-            dirty_wake_head=(
-                conflict_head
-                if (conflict_wake and (sync_pushed or (base_synced and change_pushed)))
-                else record.dirty_wake_head
-            ),
+            dirty_wake_head=conflict_head if conflict_wake else record.dirty_wake_head,
             resume_session_id=session.session_id or record.resume_session_id,
-            # a pushed CODE CHANGE replaces the panel-blessed content: the
-            # blessing dies with it (sync pushes carried it to the new head);
-            # the tick arms only on an exact head match, so even a crash
-            # before this write can never bless the pushed code (#228 r4/r8)
-            auto_blessed_head="" if change_pushed else blessed_head,
-            # a serviced panel wake is spent (the re-read below may set a new
-            # one for the head it just pushed) — unless the response was
-            # REVERTED (out of scope, failed eval, failed sync): the author
-            # never got to answer the findings, so the wake stands for the
-            # next job, bounded by the tick's wake_attempts billing
-            panel_wake_head=(
-                "" if (panel_wake and not response_reverted) else record.panel_wake_head
-            ),
             inbox_seq=delivery_seq,
-            # the count is KEPT (never advanced here, never reset) whenever a
-            # wake stays pending without progress — a base sync that did not
-            # reach GitHub, or a panel wake whose response was reverted — so
-            # the tick's submit-time billing still reaches MAX_WAKE_ATTEMPTS
-            # instead of resubmitting a failing job forever (terra #233 r2)
-            wake_attempts=(
-                record.wake_attempts
-                if (
-                    (conflict_wake and not (sync_pushed or (base_synced and change_pushed)))
-                    or (panel_wake and response_reverted)
-                )
-                else 0
-            ),
-        ),
-        now,
-    )
-    if change_pushed and (panel_lenses or panel_skip) and not is_steward:
-        # RE-READ: the pushed change replaced the content the panel blessed,
-        # and the write above already cleared the blessing — the tick never
-        # arms a head the panel has not read. Now the SAME panel reads the
-        # new head. A clean read under merge:auto moves the blessing to the
-        # pushed sha (the tick arms once GitHub reports the PR clean);
-        # blocking findings, a degraded read, a manual dial, or a panel that
-        # could not run all leave the merge to a human — named on the thread.
-        # Ordered AFTER the reply and the record write on purpose: judges
-        # take minutes, and a responder killed mid-read must cost an unarmed
-        # PR, never a silent push or a repeated wake.
-        _reread_pushed_change(
-            ws,
-            run_root,
-            run_id,
-            record,
-            number,
-            github,
-            bench,
-            candidate,
-            prior.best if prior is not None else None,
-            reply_body,
-            trusted_base=base_sha_at_fetch if base_fetched else "",
-            pushed_head=pushed_head,
-            dial=str(getattr(post_contract, "merge", "manual")),
-            panel_lenses=panel_lenses,
-            panel_builder=panel_builder,
-            panel_skip=panel_skip,
-            panel_wake_rounds=record.panel_wake_rounds,
-            bot_login=bot_login,
-            created=created,
-            now=now,
-            secrets=secrets,
-        )
-    return FollowupOutcome(run_id, "replied", f"processed {len(comments)} comment(s)")
-
-
-REREAD_HEADING = "**Verification panel — re-read of the pushed change**"
-
-
-def _followup_claim_body(
-    benchmark: str,
-    number: int,
-    previous: float | None,
-    candidate: float,
-    report: str,
-    *,
-    lines: bool,
-) -> str:
-    """The claim a follow-up re-read judges: a re-measure on an OPEN PR, not
-    a fresh improvement claim — the panel must know the PR already carried
-    a measured number and this is the change made in response to review."""
-    from outerloop.attempt import MAX_CLAIM_CHARS
-
-    mandate = (
-        "\n\nThis target runs research lines: the PR must stay ONE clean "
-        "contribution. A change that bundles unrelated or unablated work is "
-        "a BLOCKING finding — name the pieces that should be separated."
-        if lines
-        else ""
-    )
-    prev = f"{previous}" if previous is not None else "not recorded"
-    return (
-        f"Follow-up re-measure on open PR #{number}: {benchmark} = {candidate} "
-        f"after a code change made in response to review feedback (the PR's "
-        f"previously measured number: {prev}), measured by the orchestrator."
-        f"{mandate}\n\n## Author's reply\n\n*Session prose, written before "
-        f"the orchestrator measured.*\n\n{report[:MAX_CLAIM_CHARS]}"
-    )
-
-
-def _reread_pushed_change(
-    ws: Workspace,
-    run_root: Path,
-    run_id: str,
-    record: RunRecord,
-    number: int,
-    github: GitHubClient,
-    bench: Any,
-    candidate: float,
-    previous: float | None,
-    report: str,
-    *,
-    trusted_base: str,
-    pushed_head: str,
-    dial: str,
-    panel_lenses: tuple[Any, ...],
-    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
-    panel_skip: str,
-    panel_wake_rounds: int,
-    bot_login: str,
-    created: str,
-    now: float,
-    secrets: tuple[str, ...],
-) -> None:
-    """Run the panel over the head a follow-up just pushed and post the
-    read; bless the head for the tick's auto-arm ONLY on a clean read under
-    merge:auto against a trusted base, with the workspace still exactly the
-    pushed commit. Every other outcome is written down and left to a human.
-    Best-effort throughout: a failure here degrades to an unarmed PR."""
-    transcript = ""
-    clean = False
-    verdict: Any = None
-    base = ""
-    if trusted_base and pushed_head and not panel_skip:
-        # the panel's `base/` is the base the PR actually forks from: the
-        # merge-base of the pushed head and the kernel-pinned base sha (after
-        # a base sync the two coincide) — never a ref name a session can move
-        with contextlib.suppress(GitError):
-            base = ws.git("merge-base", pushed_head, trusted_base).strip()
-    if panel_skip:
-        transcript = f"- panel skipped: {panel_skip} — NOT a clean read"
-    elif not base:
-        transcript = "- panel skipped: no trusted base to read against — NOT a clean read"
-    else:
-        try:
-            head_now = ws.git("rev-parse", "HEAD").strip()
-            head_tree = ws.git("rev-parse", "HEAD^{tree}").strip()
-            work_tree = _tree_hash(ws)
-        except GitError:
-            head_now = head_tree = work_tree = ""
-        if not head_now or head_now != pushed_head or work_tree != head_tree:
-            # the panel snapshots the WORKING tree; it must be the pushed commit
-            transcript = (
-                "- panel skipped: the workspace no longer matches the pushed head — "
-                "NOT a clean read"
-            )
-        else:
-            try:
-                from outerloop.attempt import LINE_MEMORY_PATHS, _utc_date, build_panel_runner
-
-                lines = bool(getattr(bench, "lines", False))
-                # the judges' rules come from the TRUSTED base only — never the
-                # workspace copy, which the pushed tree controls (terra #229 r1)
-                contract_text = contract_at(ws, base)
-                runner = (panel_builder or build_panel_runner)(
-                    ws,
-                    run_dir(run_root, run_id),
-                    base,
-                    panel_lenses,
-                    contract_text,
-                    record.target,
-                    bench.name,
-                    bot_login,
-                    created[:10] if created else _utc_date(now),
-                    exclude=LINE_MEMORY_PATHS if lines else (),
-                    claim_body=lambda _b, c, r: _followup_claim_body(
-                        bench.name, number, previous, c, r, lines=lines
-                    ),
-                )
-                verdict = runner(previous if previous is not None else candidate, candidate, report)
-            except Exception as exc:
-                # a panel that cannot run is a NON-read, said plainly
-                transcript = (
-                    f"- panel could not run ({redact(str(exc), secrets)[:160]}) — NOT a clean read"
-                )
-            else:
-                transcript = str(verdict.transcript)
-                clean = not verdict.blocking and not verdict.degraded
-    # judges held a shell next to this checkout: re-pin before trusting
-    try:
-        still_pushed = ws.git("rev-parse", "HEAD").strip() == pushed_head
-    except GitError:
-        still_pushed = False
-    bless = clean and still_pushed and dial == "auto"
-    # blocking findings on a head that is still the pushed one — in the
-    # workspace AND on GitHub (a push during the read supersedes the
-    # findings; a wake for the old sha could never be serviced) — go back to
-    # the AUTHOR (the climb's revise loop as a wake type), bounded; a degraded
-    # read is not findings, and a capped-out author leaves them to a human
-    try:
-        gh_head = str(
-            (github.get_pull_request(record.target, number).get("head") or {}).get("sha", "")
-        )
-    except Exception:
-        gh_head = ""
-    superseded = bool(verdict is not None and verdict.blocking) and gh_head != pushed_head
-    wake_author = (
-        verdict is not None
-        and bool(verdict.blocking)
-        and not verdict.degraded
-        and still_pushed
-        and gh_head == pushed_head
-        and panel_wake_rounds < PANEL_WAKE_CAP
-    )
-    if bless:
-        closing = (
-            "Clean read under `merge: auto`: the kernel may merge this head once "
-            "GitHub reports the PR clean and up to date with its base."
-        )
-    elif clean and dial != "auto":
-        closing = "Clean read; this repository merges by hand (`merge: manual`)."
-    elif clean:
-        closing = "Clean read, but the workspace moved during it — a human merges this PR."
-    elif wake_author:
-        closing = (
-            f"Blocking findings: the author is woken to address them (revision "
-            f"{panel_wake_rounds + 1} of {PANEL_WAKE_CAP}); a human decides if they stand."
-        )
-    elif superseded:
-        closing = (
-            "Blocking findings, but the PR moved during the read — they describe a "
-            "superseded head; the new head gets its own read when a follow-up pushes it."
-        )
-    elif verdict is not None and verdict.blocking and not verdict.degraded:
-        closing = f"Blocking findings after {PANEL_WAKE_CAP} revisions — a human decides this PR."
-    else:
-        closing = "Not a clean read — a human decides this PR."
-    body = APPROVAL_PATTERN.sub(REDACTED, redact(transcript, secrets))[:MAX_REPLY_CHARS]
-    # the WAKE is persisted before the comment: a responder that dies between
-    # the two costs a thread without the transcript (the woken author still
-    # carries the findings in its prompt), never a lost wake (terra #233 r1)
-    try:
-        if verdict is not None:
-            append(
-                run_dir(run_root, run_id),
-                Message(
-                    0,
-                    "panel-verdict",
-                    "panel",
-                    f"pr:{number}",
-                    now,
-                    f"panel:{pushed_head}:{panel_wake_rounds}",
-                    {**panel_payload(verdict, pushed_head), "wake_author": wake_author},
-                ),
-            )
-        if wake_author:
-            latest = load_record(run_root, run_id)
-            save_record(
-                run_root,
-                replace(
-                    latest,
-                    panel_wake_head=pushed_head,
-                    panel_wake_rounds=latest.panel_wake_rounds + 1,
-                ),
-                now,
-            )
-    except (OSError, ValueError) as exc:
-        log.warning("panel inbox write failed for %s: %s", run_id, exc)
-    try:
-        github.comment(
-            record.target,
-            number,
-            f"{REPLY_MARKER}\n{REREAD_HEADING} (`{pushed_head[:12]}`)\n{body}\n\n_{closing}_",
-        )
-    except Exception as exc:
-        log.warning("re-read comment failed for %s#%s: %s", record.target, number, exc)
-        return  # an unposted read never blesses: the thread must carry it
-    if bless:
-        try:
-            latest = load_record(run_root, run_id)
-            save_record(run_root, replace(latest, auto_blessed_head=pushed_head), now)
-        except (OSError, ValueError) as exc:
-            log.warning("blessing write failed for %s: %s", run_id, exc)
-
-
-def _update_ledger(
-    workspace: Path,
-    bench: Any,
-    contract: Any,
-    candidate: float,
-    run_id: str,
-    created: str,
-    run_seed: int,
-    target: str,
-) -> tuple[Any, str]:
-    """Apply a follow-up's re-measured number to the ledger under the climb's
-    cross-seed floor rule, returning (the prior leader entry or None, a note
-    naming an unchanged row). The floor explains only a delta that WOULD have
-    improved: an outright regression must read as a regression, never as
-    noise."""
-    prior = load_leader(workspace).get(bench.name)
-    floor_note = ""
-    beats_prior = prior is not None and (
-        candidate > prior.best if bench.direction == "max" else candidate < prior.best
-    )
-    if (
-        prior is not None
-        and beats_prior
-        and not clears_min_delta(
-            prior.best, candidate, bench.direction, bench.min_delta, bench.min_delta_rel
-        )
-    ):
-        # named on the thread, like the climb's ending note — a silently
-        # unchanged ledger row reads as a bug
-        floor = benchmark_floor(prior.best, bench.min_delta, bench.min_delta_rel)
-        where = (
-            f"the cross-seed noise floor ({fmt_metric(floor, bench.display_digits)})"
-            if floor > 0
-            else f"a usable baseline (recorded best {prior.best})"
-        )
-        floor_note = (
-            f" — within {where} of the recorded best {prior.best}, so the ledger row is unchanged"
-        )
-    if not floor_note:
-        entries = update_leader(
-            load_leader(workspace),
-            benchmark=bench.name,
-            metric=bench.metric,
-            direction=bench.direction,
-            baseline=candidate,  # pinned by existing entry
-            candidate=candidate,
-            run_id=run_id,
-            date=created[:10],
-            run_seed=run_seed,
-        )
-        write_progress(
-            workspace,
-            entries,
-            target,
-            digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
-        )
-    return prior, floor_note
-
-
-FOLLOWUP_MEASURE = "followup"
-
-
-def _commit_sealed_tree(
-    ws: Workspace, branch: str, sealed_sha: str, bot_login: str, message: str
-) -> None:
-    """Make the SEALED commit the branch head, fold the ledger update the
-    caller wrote into it (one amended commit with the standard message), so
-    the pushed tree is exactly the measured tree plus the ledger row — never
-    the live workspace, which may hold content the seal excluded. A session
-    that COMMITTED its change itself leaves a seal with its parent's tree;
-    with no ledger row to fold, that commit is the head as it stands (an
-    amend would make an empty commit, which git refuses)."""
-    ws.git("add", "-A")
-    if not ws.staged_paths():
-        sealed_tree = ws.git("rev-parse", f"{sealed_sha}^{{tree}}").strip()
-        parent_tree = ws.git("rev-parse", f"{sealed_sha}^^{{tree}}").strip()
-        if sealed_tree == parent_tree:
-            ws.git("reset", "-q", "--hard", f"{sealed_sha}^")
-            return
-    ws.git(
-        *git_identity(bot_login),
-        "commit",
-        "-q",
-        "--amend",
-        "-m",
-        message,
-    )
-
-
-def _followup_measure(bench: Any, tree_sha: str, run_seed: int) -> Any:
-    """The one measure a follow-up's change needs: the sealed tree under the
-    contract command at this run's fresh seed. Built identically at park and
-    at resume so the measurer's determinant (and result dir) matches."""
-    from outerloop.measure import Measure
-
-    return Measure(
-        name=FOLLOWUP_MEASURE,
-        tree_sha=tree_sha,
-        command=bench.command,
-        metric=bench.metric,
-        extra_env=((bench.seed_env, str(run_seed)),) if bench.seed_env and run_seed else (),
-        gpus=bench.gpus,
-    )
-
-
-class _RemeasureParked(Exception):
-    """The dispatched measure is queued: carries the sealed snapshot (kept
-    alive by its ref) and the pending job set the park records."""
-
-    def __init__(self, snapshot: Any, pending: Any) -> None:
-        self.snapshot = snapshot
-        self.pending = pending
-        super().__init__(str(pending))
-
-
-def _seal_and_measure(
-    ws: Workspace,
-    run_root: Path,
-    run_id: str,
-    dispatch: Any,
-    bench: Any,
-    run_seed: int,
-    workspace: Path,
-    bot_login: str,
-) -> tuple[float, Any]:
-    """Seal the workspace's change as a commit on the PR's current head and
-    measure it through the dispatched measurer. Returns (value, snapshot)
-    when the compute is synchronous — the snapshot is KEPT so the caller
-    pushes exactly the measured tree, and releases it; raises
-    `_RemeasureParked` when the job is queued (the caller parks); any other
-    failure propagates with the snapshot released."""
-    from outerloop.attempt import LINE_MEMORY_PATHS
-    from outerloop.dispatch import drop_snapshot, snapshot_tree
-    from outerloop.measure import MeasurementPending
-
-    parent = ws.git("rev-parse", "HEAD").strip()
-    from outerloop.attempt import with_seed
-    from outerloop.runstate import load_record
-
-    # the follow-up CLI carries the run id, not the target: the seed comes
-    # from the record
-    dispatch = with_seed(dispatch, run_root, load_record(run_root, run_id).target)
-    snap = snapshot_tree(
-        ws, parent, exclude=LINE_MEMORY_PATHS if bench.lines else (), author=bot_login
-    )
-    measurer = dispatch.measurer(
-        run_dir(run_root, run_id),
-        repo_root=workspace,
-        eval_minutes=int(bench.eval_minutes or 0),
-        run_tag=run_id,
-    )
-    try:
-        vals = measurer.results([_followup_measure(bench, snap.commit, run_seed)])
-    except MeasurementPending as pend:
-        raise _RemeasureParked(snap, pend) from pend
-    except Exception:
-        # EvalError, a missing GPU lane (ValueError), a compute outage: the
-        # retained ref must never outlive the attempt (terra #241 r1)
-        drop_snapshot(ws, snap)
-        raise
-    return float(vals[FOLLOWUP_MEASURE]), snap
-
-
-def _park_remeasure(
-    run_root: Path,
-    run_id: str,
-    record: RunRecord,
-    number: int,
-    github: GitHubClient,
-    ws: Workspace,
-    bench: Any,
-    parked: _RemeasureParked,
-    run_seed: int,
-    reply_body: str,
-    cursors: dict[str, int],
-    *,
-    changed: list[str],
-    conflict_head: str,
-    base_synced: bool,
-    pr_head: str,
-    panel_wake: bool,
-    inbox_seq: int,
-    now: float,
-    secrets: tuple[str, ...],
-) -> FollowupOutcome:
-    """The change is sealed and its measure queued: post the author's reply
-    now (the comments ARE serviced), record the re-entry point, and end this
-    job. The change stays unpushed until the measure lands — the tick polls
-    the jobs and resubmits a follow-up that finishes (`_resume_measure`)."""
-    snap, pend = parked.snapshot, parked.pending
-    stage: dict[str, object] = {
-        "candidate_sha": snap.commit,
-        "candidate_ref": snap.ref,
-        "parent": ws.git("rev-parse", "HEAD").strip(),
-        # the PR's head on GitHub at park. After a base sync `parent` is the
-        # session's local merge, which GitHub never saw: the resume compares
-        # the live head against THIS, not against parent (speedrun agent-03,
-        # 2026-09-06: every base-synced re-measure was abandoned as "moved")
-        "pr_head": pr_head,
-        "job_ids": list(pend.job_ids),
-        "afterany": pend.afterany(),
-        "seed": run_seed,
-        "changed": [redact(p, secrets)[:200] for p in changed[:50]],
-        "reply_body": reply_body,
-        "conflict_head": conflict_head,
-        "base_synced": bool(base_synced),
-        "parked_at": now,
-        "eval_minutes": int(bench.eval_minutes or 0),
-    }
-    note = (
-        "\n\n_(Not pushed yet: the change above is local so far. The changed tree is "
-        f"being re-measured on the GPU lane first ({len(pend.job_ids)} job(s) pending), "
-        "and if the result can be applied the branch is updated with it and its number — "
-        "until then GitHub still shows the previous head, including any conflict. "
-        "Comments posted meanwhile are answered after that.)_"
-    )
-    stage["reply_note"] = note
-    stage["reply_posted"] = False
-    # the STAGE is durable before the reply goes out: a GitHub write failure
-    # must never leave a running GPU job and its retained ref untracked — the
-    # resume posts the reply instead (terra #241 r2)
-    parked_record = replace(
-        record,
-        last_comment_id=cursors["comment"],
-        last_review_id=cursors["review"],
-        last_review_comment_id=cursors["review_comment"],
-        panel_wake_head="" if panel_wake else record.panel_wake_head,
-        inbox_seq=inbox_seq,
-        followup_stage=stage,
-    )
-    save_record(run_root, parked_record, now)
-    try:
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_body}{note}")
-    except Exception as exc:
-        log.warning("parked reply failed for %s (the resume retries it): %s", run_id, exc)
-        return FollowupOutcome(run_id, "parked", "re-measure dispatched; reply pending")
-    save_record(
-        run_root, replace(parked_record, followup_stage={**stage, "reply_posted": True}), now
-    )
-    return FollowupOutcome(run_id, "parked", f"re-measure dispatched: {pend.afterany() or 'blind'}")
-
-
-def _resume_measure(
-    run_root: Path,
-    run_id: str,
-    record: RunRecord,
-    number: int,
-    pr: dict,
-    github: GitHubClient,
-    bot_login: str,
-    now: float,
-    secrets: tuple[str, ...],
-    created: str,
-    dispatch: Any,
-    panel_lenses: tuple[Any, ...],
-    panel_builder: Callable[..., Callable[[float, float, str], Any]] | None,
-    panel_skip: str,
-) -> FollowupOutcome:
-    """Finish a parked re-measure: read the dispatched result, then do what
-    the inline path does after its eval — ledger, disarm, commit, push,
-    comment, row, record — on the SEALED tree (never the live workspace),
-    and hand the pushed head to the panel re-read."""
-    from outerloop.dispatch import Snapshot, drop_snapshot
-    from outerloop.measure import EvalError, MeasurementPending
-
-    stage = record.followup_stage
-    candidate_sha = str(stage.get("candidate_sha", ""))
-    candidate_ref = str(stage.get("candidate_ref", ""))
-    parent = str(stage.get("parent", ""))
-    run_seed = int(stage.get("seed", 0))  # type: ignore[call-overload]
-    reply_body = str(stage.get("reply_body", ""))
-    workspace = run_dir(run_root, run_id) / "ws"
-    if not workspace.is_dir():
-        return FollowupOutcome(run_id, "error", "workspace no longer exists (GC'd?)")
-    if dispatch is None:
-        return FollowupOutcome(
-            run_id,
-            "error",
-            "a dispatched re-measure is parked but no cluster coordinates were given",
-        )
-    from outerloop.attempt import target_clone_url
-
-    ws = Workspace(root=workspace, auth=github.auth, url=target_clone_url(record.target))
-    # the measurement's contract is the SEALED tree's — what was actually
-    # measured — never the live workspace file, which can change during the
-    # wait (terra #241 r1)
-    try:
-        contract_text = contract_at(ws, candidate_sha)
-    except GitError as exc:
-        return FollowupOutcome(run_id, "error", f"sealed contract unreadable: {exc}")
-    contract = load_contract(contract_text, record.target)
-    bench = next((b for b in contract.benchmarks if b.name == record.benchmark), None)
-    if bench is None:
-        return FollowupOutcome(
-            run_id, "error", f"benchmark {record.benchmark!r} not in the contract"
-        )
-    measurer = dispatch.measurer(
-        run_dir(run_root, run_id),
-        repo_root=workspace,
-        eval_minutes=int(bench.eval_minutes or 0),
-        run_tag=run_id,
-    )
-    snapshot = Snapshot(commit=candidate_sha, tree="", ref=candidate_ref)
-    if not stage.get("reply_posted", True):
-        # the park's reply never reached GitHub: post it now, before anything
-        # else, and record that it did
-        github.comment(
-            record.target,
-            number,
-            f"{REPLY_MARKER}\n{reply_body}{stage.get('reply_note', '')}",
-        )
-        record = replace(record, followup_stage={**stage, "reply_posted": True})
-        save_record(run_root, record, now)
-        stage = record.followup_stage
-
-    def _abandon(note: str) -> FollowupOutcome:
-        # the sealed change is dropped: workspace back to the pushed head,
-        # snapshot released, stage cleared, the thread told why
-        with contextlib.suppress(GitError):
-            ws.git("checkout", "-f", parent)
-        with contextlib.suppress(GitError):
-            ws.git("clean", "-fdq")
-        drop_snapshot(ws, snapshot)
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{note}")
-        # the thread was told and invited to ask again: that next ask needs a
-        # follow-up, so the landed measure counts as progress for the cap
-        save_record(
-            run_root,
-            replace(load_record(run_root, run_id), followup_stage={}, wake_attempts=0),
-            now,
-        )
-        return FollowupOutcome(run_id, "replied", "dispatched re-measure abandoned")
-
-    try:
-        vals = measurer.results([_followup_measure(bench, candidate_sha, run_seed)])
-    except MeasurementPending:
-        return FollowupOutcome(run_id, "no-op", "dispatched re-measure still pending")
-    except EvalError as exc:
-        return _abandon(
-            "_(The dispatched re-measure of the code change failed, so it was not "
-            f"applied. Error: {redact(str(exc), secrets)[:200]})_"
-        )
-    candidate = float(vals[FOLLOWUP_MEASURE])
-
-    head_now = str((pr.get("head") or {}).get("sha", ""))
-    landed = str(stage.get("pushed_head", ""))
-    if landed and head_now == landed:
-        # a previous resume pushed this very commit and died before its
-        # record write (terra #241 r5): finish the bookkeeping, never abandon
-        latest = load_record(run_root, run_id)
-        save_record(
-            run_root,
-            replace(latest, followup_stage={}, auto_blessed_head="", wake_attempts=0),
-            now,
-        )
-        drop_snapshot(ws, snapshot)
-        if not stage.get("measured_posted") and not _measured_note_on_thread(
-            github, record.target, number, candidate_sha
-        ):
-            with contextlib.suppress(Exception):
-                github.comment(
-                    record.target,
-                    number,
-                    f"{REPLY_MARKER}\n{_measured_note(bench, candidate, candidate_sha)} "
-                    f"Pushed as `{landed[:12]}`.",
-                )
-        return FollowupOutcome(run_id, "replied", "dispatched re-measure already landed")
-    # The finished measurement is posted FIRST, whatever becomes of the push
-    # below: a number the reviewer asked for is information on its own, and
-    # an unpushable follow-up must not hide it (three finished evals went
-    # unreported this way, 2026-09-12). Posted at most once per sealed tree:
-    # the stage remembers the post, and when it cannot (the record write
-    # after the comment failed) the thread is the record — the note names
-    # the sealed sha, and a retry looks for it before posting.
-    if not stage.get("measured_posted") and not _measured_note_on_thread(
-        github, record.target, number, candidate_sha
-    ):
-        try:
-            github.comment(
-                record.target,
-                number,
-                f"{REPLY_MARKER}\n{_measured_note(bench, candidate, candidate_sha)}",
-            )
-        except Exception as exc:  # the row and the body addendum carry the number
-            log.warning("measured-note comment failed for %s#%s: %s", record.target, number, exc)
-        else:
-            with contextlib.suppress(OSError, ValueError):
-                latest = load_record(run_root, run_id)
-                save_record(
-                    run_root,
-                    replace(
-                        latest, followup_stage={**latest.followup_stage, "measured_posted": True}
-                    ),
-                    now,
-                )
-    # the sealed commit descends from the head the PR had at park (directly,
-    # or through the session's local base-sync merge): a push since (a
-    # maintainer's) makes it unpushable AND measured on a tree that is no
-    # longer the PR's — abandon honestly rather than force or rebuild. Stages
-    # parked before `pr_head` was recorded fall back to conflict_head, then
-    # parent.
-    parked_head = str(stage.get("pr_head") or stage.get("conflict_head") or parent)
-    if head_now and parked_head and head_now != parked_head:
-        return _abandon(
-            f"_(The PR's head moved while the re-measure ran (`{parked_head[:12]}` → "
-            f"`{head_now[:12]}`), so the measured change no longer applies to this "
-            "branch and was not pushed. Ask again and it will be redone on the new head.)_"
-        )
-
-    branch = _current_branch(ws)
-    if branch == "HEAD":
-        branch = str((pr.get("head") or {}).get("ref", "")) or branch
-    # ALWAYS disarm before anything is written: the dial that armed this PR
-    # may be any of the pre-change, sealed, or current base contract, and a
-    # disarm on a PR with nothing armed is confirmed as such (terra #241 r1)
-    try:
-        disarmed = github.disable_auto_merge(record.target, number)
-    except Exception as exc:
-        disarmed = False
-        log.warning("auto-merge disarm errored: %s", exc)
-    if not disarmed:
-        # nothing was written yet; still, leave the workspace exactly on the
-        # pushed head with no stray files for the retry (terra #241 r3)
-        with contextlib.suppress(GitError):
-            ws.git("checkout", "-f", parent)
-        with contextlib.suppress(GitError):
-            ws.git("clean", "-fdq")
-        github.comment(
-            record.target,
-            number,
-            f"{REPLY_MARKER}\n_(The re-measured change was WITHHELD: auto-merge could not "
-            "be confirmed disarmed on this auto-mode PR; the follow-up will retry.)_",
-        )
-        return FollowupOutcome(run_id, "replied", "disarm unconfirmed; re-measure kept")
-    # the SEALED tree becomes the PR branch's head — exactly what was measured
-    ws.git("checkout", "-f", "-B", branch, candidate_sha)
-    ws.git("clean", "-fdq")
-    prior, floor_note = _update_ledger(
-        workspace, bench, contract, candidate, run_id, created, run_seed, record.target
-    )
-    _commit_sealed_tree(
-        ws,
-        branch,
-        candidate_sha,
-        bot_login,
-        f"agent: address review feedback ({bench.metric}="
-        f"{fmt_metric(candidate, bench.display_digits)})\n\nAgent: {record.agent_id}",
-    )
-    pushed_head = ws.git("rev-parse", "HEAD").strip()
-    # the commit about to be pushed is recorded FIRST: a resume that finds it
-    # as the PR head knows the push landed even if the write after the push
-    # never happened (terra #241 r5). A failed write here withholds the push.
-    try:
-        latest = load_record(run_root, run_id)
-        save_record(
-            run_root,
-            replace(latest, followup_stage={**latest.followup_stage, "pushed_head": pushed_head}),
-            now,
-        )
-    except (OSError, ValueError) as exc:
-        log.warning("pre-push record write failed for %s: %s", run_id, exc)
-        with contextlib.suppress(GitError):
-            ws.git("checkout", "-f", parent)
-        with contextlib.suppress(GitError):
-            ws.git("clean", "-fdq")
-        return FollowupOutcome(run_id, "error", "record write failed before the push; retrying")
-    ws.push(branch)
-    # the change is on the PR: the record says so BEFORE any thread write, so
-    # a failed comment can never make a later retry "abandon" a change that
-    # already landed (terra #241 r3); the blessing dies with the pushed code
-    conflict_head = str(stage.get("conflict_head", ""))
-    latest = load_record(run_root, run_id)
-    save_record(
-        run_root,
-        replace(
-            latest,
-            followup_stage={},
-            auto_blessed_head="",
-            dirty_wake_head=(
-                conflict_head
-                if (conflict_head and stage.get("base_synced"))
-                else latest.dirty_wake_head
-            ),
             wake_attempts=0,
         ),
         now,
     )
-    drop_snapshot(ws, snapshot)
-    worse = prior is not None and not orch_improved(prior.best, candidate, bench.direction, 0.0)
-    measured_note = (
-        f"**Re-measured after this change: `{bench.metric}` = "
-        f"{fmt_metric(candidate, bench.display_digits)}**"
-        + (" — worse than the PR's previous number, stated plainly." if worse else "")
-        + floor_note
-    )
-    try:
-        github.update_candidate_row(record.target, number, candidate, digits=bench.display_digits)
-    except Exception as exc:
-        log.warning("candidate-row rewrite failed for %s#%s: %s", record.target, number, exc)
-    try:
-        github.append_pull_body(
-            record.target,
-            number,
-            f"---\n**Edit ({created[:10] or 'date unknown'}, follow-up):** the solver changed "
-            f"after review feedback and was re-measured ({measured_note.strip().strip('*')}). "
-            "The report above describes the original version; see the follow-up replies "
-            "in the comments for the current one.",
-        )
-    except Exception as exc:
-        log.warning("body addendum failed for %s#%s: %s", record.target, number, exc)
-    # the re-read needs a trusted base: pin it fresh, like a comment wake does
-    trusted_base = ""
-    base_ref = str((pr.get("base") or {}).get("ref", "")) or "main"
-    try:
-        ws.fetch_origin()
-        trusted_base = ws.git("rev-parse", f"origin/{base_ref}").strip()
-    except Exception as exc:
-        log.warning("base fetch failed for %s: %s", run_id, exc)
-    if panel_lenses or panel_skip:
-        _reread_pushed_change(
-            ws,
-            run_root,
-            run_id,
-            load_record(run_root, run_id),
-            number,
-            github,
-            bench,
-            candidate,
-            prior.best if prior is not None else None,
-            reply_body,
-            trusted_base=trusted_base,
-            pushed_head=pushed_head,
-            dial=str(getattr(contract, "merge", "manual")),
-            panel_lenses=panel_lenses,
-            panel_builder=panel_builder,
-            panel_skip=panel_skip,
-            panel_wake_rounds=latest.panel_wake_rounds,
-            bot_login=bot_login,
-            created=created,
-            now=now,
-            secrets=secrets,
-        )
-    return FollowupOutcome(run_id, "replied", "dispatched re-measure applied")
-
-
-def _measured_note(bench: Any, candidate: float, candidate_sha: str) -> str:
-    """The number, named by the sealed tree it was measured on."""
-    return (
-        f"**Re-measured after this change: `{bench.metric}` = "
-        f"{fmt_metric(candidate, bench.display_digits)}** (sealed `{candidate_sha[:12]}`)."
-    )
-
-
-def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha: str) -> bool:
-    """Whether this sealed tree's measured note is already on the PR thread —
-    a retry after the record write that follows the comment failed."""
-    try:
-        comments = github.list_comments(target, number)
-    except Exception as exc:
-        log.warning("measured-note lookup failed for %s#%s: %s", target, number, exc)
-        return False  # posting twice beats never posting
-    tag = f"(sealed `{sha[:12]}`)"
-    return any(
-        str(c.get("body", "")).lstrip().startswith(REPLY_MARKER) and tag in str(c.get("body", ""))
-        for c in comments
-    )
-
-
-def _changed_paths(ws: Workspace) -> list[str]:
-    ws.git("add", "-A")
-    paths = ws.staged_paths()
-    ws.git("reset")
-    return paths
-
-
-def _tree_hash(ws: Workspace) -> str:
-    ws.git("add", "-A")
-    tree = ws.git("write-tree").strip()
-    ws.git("reset")
-    return tree
-
-
-def _current_branch(ws: Workspace) -> str:
-    return ws.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+    return FollowupOutcome(record.run_id, "replied", "review leg completed")
 
 
 def main() -> int:
@@ -2374,7 +1016,7 @@ def main() -> int:
         "--panel",
         default="",
         help="verification lenses (kind[:backend[:model]], comma-separated) that "
-        "re-read a pushed code change; '' = no re-read, a changed PR stays human-merged",
+        "read a submitted change; '' = no panel",
     )
     parser.add_argument("--panel-key-file", default="", help="the claude panel lenses' key file")
     parser.add_argument("--account", default=os.environ.get("OUTERLOOP_ACCOUNT", ""))
@@ -2388,6 +1030,7 @@ def main() -> int:
         help="walltime the tick added to this job for the panel's read (0 = none fit: "
         "the read is skipped and said so; the author's budget is never the panel's)",
     )
+    parser.add_argument("--panel-skip", default="", help="why the tick skipped the panel")
     args = parser.parse_args()
     if not args.bot_login.strip():
         parser.error("--bot-login / OUTERLOOP_BOT_LOGIN is required (no default identity, #298)")
@@ -2452,7 +1095,9 @@ def main() -> int:
     # author key — the tick preflights against the FLEET key, a run started
     # under another key is only known here (terra #229 r2) — and a read the
     # partition cap left no walltime for (--panel-minutes).
-    panel_skip = ""
+    panel_skip = args.panel_skip
+    if panel_skip:
+        panel_lenses = ()
     if api_key and api_key in panel_secrets:
         panel_skip = "a panel judge key is this run's author key (role separation)"
         log.warning("run %s: %s; the follow-up runs without the panel", args.run_id, panel_skip)
