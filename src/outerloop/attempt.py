@@ -3100,7 +3100,9 @@ def publish(
         record,
         stage={
             **record.stage,
-            "hypothesis": report_hypothesis(redact(result.submit_report, secrets)),
+            # a report without a Hypothesis section keeps the direction on record
+            "hypothesis": report_hypothesis(redact(result.submit_report, secrets))
+            or str(record.stage.get("hypothesis") or ""),
         },
     )
     report_path = run_dir / "report.md"

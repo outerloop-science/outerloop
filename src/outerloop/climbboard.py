@@ -1081,11 +1081,7 @@ def collect_status(
             continue
         stage = record.stage or {}
         note = str(stage.get("syscall_note") or stage.get("report") or "")
-        hyp = (
-            report_hypothesis(note)
-            if note
-            else str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
-        )
+        hyp = report_hypothesis(note) or str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))
         gpu_ceiling = gpu_budget

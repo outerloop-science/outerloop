@@ -541,7 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="show staged syscalls and remaining budget")
     sub.add_parser(
         "siblings",
-        help="what the other agents were working on as of this session's start",
+        help="what the other agents are working on, refreshed at every wake",
     )
     sync_p = sub.add_parser(
         "sync",
@@ -607,25 +607,28 @@ def cmd_sync(root: Path, args) -> str:
 
 
 def cmd_siblings(root: Path, _args) -> str:
-    """The fleet snapshot the kernel wrote at session start (informational;
-    other agents may have moved on since)."""
+    """The fleet snapshot the kernel wrote at this wake (informational; other
+    agents may have moved on since)."""
     try:
         entries = json.loads((root / DIR / "siblings.json").read_text())
     except (OSError, ValueError):
         entries = []
     if not isinstance(entries, list) or not entries:
         return "no sibling activity known."
-    lines = ["as of this session's start:"]
+    lines = ["as of this wake:"]
     for e in entries:
         if not isinstance(e, dict):
             continue
         who = str(e.get("agent", "?"))[:64]
         state = str(e.get("state", ""))[:32]
         phase = str(e.get("phase", ""))[:32]
-        direction = str(e.get("direction", ""))[:160]
+        what = str(e.get("hypothesis") or e.get("direction") or "")[:400]
+        pr_url = str(e.get("pr_url", ""))[:1000]
         label = f"{state}/{phase}" if phase else state
-        lines.append(f"  - {who} ({label}): {direction}" if direction else f"  - {who} ({label})")
-    lines.append("prefer a direction no sibling is actively on, unless you have a distinct angle.")
+        lines.append(f"  - {who} ({label}): {what}" if what else f"  - {who} ({label})")
+        if pr_url:
+            lines.append(f"    in review: {pr_url}")
+    lines.append("prefer a direction no sibling is on, unless you have a distinct angle.")
     return "\n".join(lines)
 
 

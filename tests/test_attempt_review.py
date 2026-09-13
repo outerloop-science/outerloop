@@ -597,7 +597,9 @@ def test_publish_review_fast_forwards_and_applies_floor(
     from outerloop.hypothesis import report_hypothesis
 
     hyp = load_record(root, record.run_id).stage["hypothesis"]
-    assert hyp == report_hypothesis(submit_report)
+    # a report with a Hypothesis section replaces the old direction; one
+    # without (or no report at all) keeps it
+    assert hyp == (report_hypothesis(submit_report) or "OLD hypothesis")
     assert _report_fields((ws.parent / "report.md").read_text())[2] == ""
     assert len(hyp) <= 1000
     journal = load_record(root, record.run_id).stage["publish"]

@@ -4,7 +4,12 @@ import re
 
 MAX_HYPOTHESIS_CHARS = 1000
 
-_HYP = re.compile(r"Hypothesis[:*\s]+(.+)", re.I)
+# a real section or field label at the start of its line (a heading, a list
+# item, a bold or plain "Hypothesis:"), never the word inside prose
+_HYP = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s*|[-*+]\s+|\d+[.)]\s+)?(?:\*\*|__)?(?P<label>Hypothesis)[:*\s]+(.+)",
+    re.I | re.M,
+)
 # Headings, lists and field labels can end the paragraph.
 _HYP_END = re.compile(r"^\s{0,3}(?:#|[-*+]\s|\d+[.)]\s)")
 _FIELD_LINE = re.compile(r"^\s{0,3}(?:\*\*|__)?[A-Z][\w /-]{0,40}:(?:\*\*|__)?(?:\s|$)")
@@ -16,12 +21,13 @@ def report_hypothesis(text: str) -> str:
     m = _HYP.search(text)
     if m:
         # Only field-format reports stop at the next field label.
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        after = m.start() + len("Hypothesis")
+        label = m.start("label")
+        line_start = text.rfind("\n", 0, label) + 1
+        after = label + len("Hypothesis")
         # emphasis around the label (`**Hypothesis:**`) is still the field format
-        fielded = not text[line_start : m.start()].strip("*_ \t") and text[after : after + 1] == ":"
+        fielded = not text[line_start:label].strip("*_ \t") and text[after : after + 1] == ":"
         lines: list[str] = []
-        for line in text[m.start(1) :].split("\n"):
+        for line in text[m.end(2) - len(m.group(2)) :].split("\n"):
             if lines and (
                 not line.strip() or _HYP_END.match(line) or (fielded and _FIELD_LINE.match(line))
             ):

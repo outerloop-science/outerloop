@@ -1390,3 +1390,33 @@ def test_submit_report_cannot_replace_measured_board_numbers(tmp_path: Path) -> 
     report_path.write_text(report + "\nHypothesis: Report direction.\n")
     row = collect_rows(tmp_path, record.target)[record.benchmark][0]
     assert row.hypothesis == "Report direction."
+
+
+def test_hypothesis_needs_a_real_label_and_status_falls_back(tmp_path: Path) -> None:
+    """The word inside prose is not a section: a note without a Hypothesis
+    label yields nothing, and the live status then shows the direction the
+    record retained through publish."""
+    from outerloop.climbboard import collect_status
+    from outerloop.hypothesis import report_hypothesis
+
+    assert report_hypothesis("We tested the hypothesis that EMA helps; it did.") == ""
+    assert report_hypothesis("## Hypothesis\n\nEMA helps.\n") == "EMA helps."
+    assert report_hypothesis("- Hypothesis: EMA helps.\n") == "EMA helps."
+    record = RunRecord(
+        run_id="live-h",
+        target="org/repo",
+        task_title="t",
+        state="parked",
+        benchmark="b",
+        agent_id="agent-02",
+        created=1.0,
+        updated=2.0,
+        pr_url="https://github.com/org/repo/pull/16",
+        stage={
+            "syscall_note": "Rerunning the confirm with more seeds.",
+            "hypothesis": "EMA helps.",
+        },
+    )
+    save_record(tmp_path, record, 2.0)
+    (r,) = collect_status(tmp_path, "org/repo", 3.0)["runs"]
+    assert r["hypothesis"] == "EMA helps." and r["direction"]
