@@ -174,7 +174,7 @@ delivered to the author with the verdict. The ledger row moves only when a
 credited number beats the recorded best by the floor; every other number is
 posted and leaves the row alone. A submit whose number is worse than the PR's
 current one still moves the head, with the number stated plainly; the author
-chose it, the thread shows it, and a human merges or not.
+chose it, the thread shows it, and the PR is merged or not.
 
 A steward submit is a ruler change and is measured as one: the full suite
 runs, every sibling's eval is smoke-checked, and the credited number resets
@@ -192,7 +192,7 @@ nothing. A run that has spent everything can still reply and end.
 
 ### Endings
 
-A run ends when the author ends it, when a human merges or closes its PR,
+A run ends when the author ends it, when its PR is merged or closed,
 when the meter runs out, or when the kernel cannot continue: a crash, a
 tampered workspace, or a kernel action that made no progress
 `MAX_WAKE_ATTEMPTS` times, a failed publish retry included. A merge or close
