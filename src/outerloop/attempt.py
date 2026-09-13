@@ -292,8 +292,10 @@ def _arm_unless_base_moved(
         if merge_mode == "auto" and panel_ran:
             # the contract's autonomy dial: the owner opted this repo into
             # self-merging gate-clean PRs — arm, or merge directly when
-            # nothing is pending to arm against
-            github.arm_auto_merge_auto_mode(target, int(pr_number))
+            # nothing is pending to arm against. Either way only the head
+            # this publish pushed may merge, never one pushed after the read.
+            head = ws.git("rev-parse", "HEAD").strip()
+            github.arm_auto_merge_auto_mode(target, int(pr_number), expected_head=head)
         else:
             github.arm_auto_merge_when_review_required(target, int(pr_number))
 

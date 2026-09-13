@@ -3918,9 +3918,11 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
         def __init__(self):
             self.auto = []
             self.manual = []
+            self.heads = []
 
-        def arm_auto_merge_auto_mode(self, repo, number):
+        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
             self.auto.append((repo, number))
+            self.heads.append(expected_head)
             return True
 
         def arm_auto_merge_when_review_required(self, repo, number):
@@ -3934,7 +3936,7 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
             return ""
 
         def git(self, *a):
-            return "b" * 40
+            return "h" * 40 if a[-1] == "HEAD" else "b" * 40
 
         def remote_url(self):
             return "https://x"
@@ -3952,6 +3954,7 @@ def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
         panel_ran=True,
     )
     assert gh.auto == [("o/r", 7)] and gh.manual == []
+    assert gh.heads == ["h" * 40]  # the pushed head is the only head it may merge
     _arm_unless_base_moved(
         cast(Any, gh), cast(Any, StillWs()), "o/r", "8", "main", "b" * 40, (), merge_mode="manual"
     )
@@ -3984,9 +3987,11 @@ def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
         def __init__(self):
             self.auto = []
             self.manual = []
+            self.heads = []
 
-        def arm_auto_merge_auto_mode(self, repo, number):
+        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
             self.auto.append(number)
+            self.heads.append(expected_head)
             return True
 
         def arm_auto_merge_when_review_required(self, repo, number):
@@ -4000,7 +4005,7 @@ def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
             return ""
 
         def git(self, *a):
-            return "b" * 40
+            return "h" * 40 if a[-1] == "HEAD" else "b" * 40
 
         def remote_url(self):
             return "https://x"
@@ -4029,7 +4034,7 @@ def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
         merge_mode="auto",
         panel_ran=True,
     )
-    assert gh.auto == [6]
+    assert gh.auto == [6] and gh.heads == ["h" * 40]
 
 
 def test_dispatch_settings_read_once_for_fresh_and_wake() -> None:

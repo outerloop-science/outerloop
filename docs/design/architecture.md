@@ -8,7 +8,8 @@ review.
 A background agent that co-develops the lab's benchmark-bearing repos (jepa-agent,
 egolearn): picks work from their roadmaps and benchmark gaps, implements on a
 branch, runs GPU experiments, opens a PR when a metric improves, reviews PRs, and
-reports weekly. Humans keep the merge button.
+reports weekly. Humans keep the merge button unless a repo owner opts in to
+`merge: auto` in the contract.
 
 ## Decisions
 
