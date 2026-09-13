@@ -86,13 +86,13 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
     if m:
         # the whole paragraph: the lines up to a blank one, a heading, a list
         # item or the next field, so a "- Change:" bullet never rides along
-        # "Hypothesis: text" at the start of its line is the field format: there
-        # the next field line ends the paragraph; prose after a heading or in
-        # a bullet may contain a colon and is never cut on one
+        # "Hypothesis:" starting its line is the field format (its text on the
+        # same line or the next): there the next field line ends the paragraph;
+        # prose after a heading or in a bullet may contain a colon and is never
+        # cut on one
         line_start = text.rfind("\n", 0, m.start()) + 1
-        fielded = (
-            not text[line_start : m.start()].strip() and "\n" not in text[m.start() : m.start(1)]
-        )
+        after = m.start() + len("Hypothesis")
+        fielded = not text[line_start : m.start()].strip() and text[after : after + 1] == ":"
         lines: list[str] = []
         for line in text[m.start(1) :].split("\n"):
             if lines and (
