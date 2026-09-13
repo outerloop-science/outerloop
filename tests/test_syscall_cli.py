@@ -212,6 +212,28 @@ def test_installed_tool_is_standalone(tmp_path: Path) -> None:
     assert abi["launches"][0]["name"] == "solo"
 
 
+def test_installed_reply_survives_sleep(tmp_path: Path) -> None:
+    from outerloop.syscall import install_tool, read_request
+
+    install_tool(tmp_path)
+    tool = tmp_path / ".outerloop/syscall"
+    for args in (("reply", "first"), ("reply", "second"), ("sleep",)):
+        result = subprocess.run(
+            [sys.executable, "-I", str(tool), *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        if len(args) == 2:
+            abi = json.loads((tmp_path / ".outerloop/syscall.json").read_text())
+            assert abi["type"] == "reply"
+            assert abi["replies"][-1] == args[1]
+    request = read_request(tmp_path)
+    assert request is not None and request.sleep
+    assert request.replies == ("first", "second")
+
+
 # --- judge verbs: finding / conclude ---------------------------------------
 
 
@@ -630,3 +652,29 @@ def test_queue_shows_a_sweeps_pace(tmp_path: Path, capsys) -> None:
     with _Kernel(tmp_path, "queue", {**_QUEUE, "jobs": [row]}):
         assert main(["queue", "--wait", "5"], root=tmp_path) == 0
     assert "launch lr (sweep, 4 at a time) — PENDING" in capsys.readouterr().out
+
+
+def test_replies_stage_in_order_with_file_and_sleep(tmp_path: Path, capsys) -> None:
+    assert run(tmp_path, "reply", "first") == 0
+    (tmp_path / "reply.txt").write_text("second")
+    assert run(tmp_path, "reply", "--file", "reply.txt") == 0
+    assert run(tmp_path, "status") == 0
+    assert "reply staged: first" in capsys.readouterr().out
+    request = read_request(tmp_path)
+    assert request is not None and request.replies == ("first", "second")
+    assert not request.sleep
+    assert read_request(tmp_path) is None
+    assert run(tmp_path, "reply", "before sleep") == 0
+    assert run(tmp_path, "sleep") == 0
+    assert run(tmp_path, "reply", "after sleep") == 0
+    request = read_request(tmp_path)
+    assert request is not None and request.sleep
+    assert request.replies == ("before sleep", "after sleep")
+
+
+def test_reply_refuses_an_oversized_batch_without_losing_staged_reply(tmp_path: Path) -> None:
+    assert run(tmp_path, "reply", "first") == 0
+    assert run(tmp_path, "reply", "x" * 65_536) == 2
+    request = read_request(tmp_path)
+    assert request is not None and request.replies == ("first",)
+    assert run(tmp_path, "reply", "--file", "missing.txt") == 2

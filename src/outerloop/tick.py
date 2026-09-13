@@ -601,12 +601,57 @@ def service_in_review(
     ended: list[tuple[str, str]] = []
     submitted: list[tuple[str, str]] = []
     for record in records:
-        if record.state != IN_REVIEW or not record.pr_url:
+        if record.state not in (IN_REVIEW, WAITING) or not record.pr_url:
             continue
         try:
             ending = close_if_done(root, load_record(root, record.run_id), github, now)
             if ending:
                 ended.append((record.run_id, ending))
+                continue
+            if record.state == WAITING:
+                if dry_run:
+                    continue
+                from outerloop.followup import build_review_messages
+
+                latest = load_record(root, record.run_id)
+                if latest.state != WAITING:
+                    continue
+                number = _pr_number(latest.pr_url)
+                pr = github.get_pull_request(latest.target, number)
+                _, cursors, _ = build_review_messages(
+                    root,
+                    latest,
+                    number,
+                    github,
+                    spec.bot_login,
+                    now,
+                    pr,
+                    str((pr.get("base") or {}).get("sha", "")),
+                )
+                # An armed wake holds the lease while jobs wait. Inbox appends
+                # are independently locked; only cursor saves need the lease.
+                if not acquire_lease(
+                    root, record.run_id, holder=f"inbox:{now}", holder_job_id="", now=now
+                ):
+                    continue
+                try:
+                    latest = load_record(root, record.run_id)
+                    if latest.state != WAITING:
+                        continue
+                    save_record(
+                        root,
+                        replace(
+                            latest,
+                            last_comment_id=max(latest.last_comment_id, cursors["comment"]),
+                            last_review_id=max(latest.last_review_id, cursors["review"]),
+                            last_review_comment_id=max(
+                                latest.last_review_comment_id, cursors["review_comment"]
+                            ),
+                        ),
+                        now,
+                    )
+                finally:
+                    release_lease(root, record.run_id)
                 continue
             # Steward records are serviced with the STEWARD'S key and the
             # steward scope check (respond_once derives the mode from the

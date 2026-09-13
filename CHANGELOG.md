@@ -15,6 +15,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Authors can post replies through `reply` and launch experiments or sleep while a PR is in review, using the run’s remaining budget. Comments and base moves received while parked reach the author at its next wake. Replies are kept in an outbox for retries, review launches check committed edits, and closing a run holds its wake lease. Submit is refused during review. A follow-up re-measure is not metered until stage 3.
+
 - Wake messages now use one inbox and one renderer. Launch results, gate verdicts, panel findings, review comments and base moves reach the session in the same fenced format, from files kept beside the run's record. Advisory panel findings now reach the author alongside blocking ones. The sibling view is refreshed at every wake of a parked author session. The kernel's wake text states facts; the research advice it used to carry is gone.
 
 - Dispatched wakes are on by default. The old on-switch (`OUTERLOOP_DISPATCH_WAKE=1` or a `DISPATCH_WAKE` sentinel) is gone; the operator turns wakes off with `OUTERLOOP_DISPATCH_WAKE=0` or a `<root>/DISARM_WAKE` sentinel, and a dry sweep says so in the log. An unarmed loop stranded every parked run silently, which local compute, able to park since 0.1.2, hit at once.
