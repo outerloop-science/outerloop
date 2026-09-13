@@ -180,6 +180,12 @@ baseline needs a positive floor — the validator says so — and for GPU
 benchmarks `gpu_hours_per_run` is a real meter: launches and evals draw on
 it (CPU benchmarks meter nothing).
 
+`budgets.review_topup` grants extra room once, when the run first opens a PR:
+`launches` adds experiment launches to `depth_k` (default 2, range 0–16),
+`sleeps` adds sleeps to `sleep_k` (default 4, range 1–32), and `gpu_hours`
+adds GPU-hours to `gpu_hours_per_run` (default 0.5, nonnegative).
+The meter keeps all prior spend; every wake states the top-up and remaining budget.
+
 Authors can submit in review: a credited verdict fast-forwards the PR head
 only when the sealed commit contains its current head and auto-merge is
 confirmed disarmed. Gate and panel verdicts return as inbox messages. Edits

@@ -12,7 +12,7 @@ ABI the tool commits, and the readers here are its authoritative validators
   session — that IS the sleep. `read_request` reads it; the kernel submits each
   launch as a jailed job on a sealed snapshot, parks the run, and later wakes
   the SAME session with every job's results delivered as data (the inbox).
-  A session that ends with no request follows today's path (implicit submit).
+  A session that ends with no request follows the implicit stop rule.
 - The JUDGE's `conclude` syscall (`type: "verdict"`): a judge's `exit()`,
   carrying its findings. `read_verdict` reads a `{findings, notes}` verdict
   that is well-formed BY CONSTRUCTION (each finding was one validated call).
@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import stat
+import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -44,6 +46,9 @@ from time import monotonic
 from typing import Any
 
 from outerloop.compute import GONE
+from outerloop.contract import Benchmark, Budgets
+
+log = logging.getLogger(__name__)
 
 # The syscall channel dir in the workspace. New runs install `.outerloop/`;
 # `.outerloop/` (a run parked before the rename) is kept — its persisted
@@ -55,6 +60,27 @@ CHANNEL_DIR_NAMES: tuple[str, ...] = (".outerloop", ".autoresearch")
 SYSCALL_DIR = CHANNEL_DIR_NAMES[0]  # the new default (a fresh clone installs this)
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
+
+
+def shipped_channel(workspace: Path) -> str:
+    """The channel name the TARGET ships, or "". A symlink at either channel
+    name, or a path git tracks there, was committed by the target: writing
+    through it or honouring a request found in it is the booby trap. The
+    kernel's own channel is untracked and excluded, so a workspace it prepared
+    earlier reads as not shipped."""
+    for name in CHANNEL_DIR_NAMES:
+        path = workspace / name
+        if path.is_symlink():
+            return name
+        if path.exists():
+            tracked = subprocess.run(
+                ["git", "-C", str(workspace), "ls-files", "--error-unmatch", "--", name],
+                capture_output=True,
+                check=False,
+            )
+            if tracked.returncode == 0:
+                return name
+    return ""
 
 
 def channel_dir(workspace: Path) -> str:
@@ -140,18 +166,20 @@ class Launch:
 
 @dataclass(frozen=True)
 class SyscallRequest:
-    """The author's staged replies and optional sleep request."""
+    """The author's staged replies and optional sleep or end request."""
 
     launches: tuple[Launch, ...]
     replies: tuple[str, ...] = ()
     sleep: bool = True
+    end: bool = False
+    problem: str = ""  # why the request cannot be honoured as staged (told, then the leg goes on)
     note: str = ""  # the author's reminder-to-self, echoed back on wake
     # research-loop-buildout.md Phase B: a submit is a launch whose job is the
     # GATE (paired baseline/candidate on the sealed tree) plus the panel; the
     # wake returns verdict + gate result to the author (published directly when
     # it clears cleanly). Costs the sleep it rides on, nothing else.
     submit: bool = False
-    # the author's report at submit, required with one: it becomes the pull
+    # the author's optional report at submit or end: at submit it becomes the pull
     # request's research report and the panel reads it against the diff
     report: str = ""
     # The author's declared walltime for the submit's paired gate evals
@@ -274,8 +302,8 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     if not isinstance(data, dict):
         raise SyscallError("syscall.json must be a JSON object")
     # Author requests cannot carry a judge verdict.
-    if data.get("type") not in ("sleep", "reply"):
-        raise SyscallError(f"expected a sleep or reply syscall, got type {data.get('type')!r}")
+    if data.get("type") not in ("sleep", "reply", "end"):
+        raise SyscallError(f"expected a sleep, reply or end syscall, got type {data.get('type')!r}")
     unknown = set(data) - {
         "type",
         "launches",
@@ -295,6 +323,13 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         raise SyscallError("replies must be a list of non-empty bounded strings")
     if data["type"] == "reply" and set(data) - {"type", "replies"}:
         raise SyscallError("reply syscall only accepts replies")
+    problem = ""
+    if data["type"] == "end":
+        # a conflicting end is refused and told, never a dead run
+        if data.get("submit"):
+            problem = "submit first, end after the verdict"
+        elif set(data) - {"type", "report", "replies"}:
+            problem = "end is final for the leg; it cannot accompany launch or sleep"
     note = data.get("note", "")
     if not isinstance(note, str) or len(note) > MAX_NOTE_CHARS:
         raise SyscallError(f"note must be a string of at most {MAX_NOTE_CHARS} chars")
@@ -382,6 +417,8 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         launches=tuple(launches),
         replies=tuple(replies),
         sleep=data["type"] == "sleep",
+        end=data["type"] == "end",
+        problem=problem,
         note=note,
         submit=submit,
         eval_minutes=eval_minutes,
@@ -623,6 +660,8 @@ def tool_update_note(channel: str) -> str:
         "Your syscall tool was updated. `reply <text>` or `reply --file <path>` stages "
         "a reply on your PR or issue; once a reply is staged the final message is not posted, "
         "and a code change is published only by `submit`. "
+        "`end [--report <file>]` ends without a PR, or posts the report and parks "
+        "with an open PR, at turn end. "
         "Submit works in review and publishes a credited tree by fast-forward. "
         "It needs no prior launch. `--report <file>` is optional. The "
         "report explains your hypothesis, what you ran and measured, why this should "
@@ -689,18 +728,58 @@ def write_budget(
     launches_remaining: int,
     sleeps_remaining: int,
     gpu_hours_remaining: float | None = None,
+    review_topup: str = "",
 ) -> None:
     """Kernel-written budget the tool's `status` shows. Informational for the
-    author's planning only — enforcement stays in `budget_error`."""
+    author's planning only — enforcement stays in `budget_error`. Never
+    written through a channel the target shipped (a symlink there would
+    carry the write outside the tree); such a run has no syscalls anyway."""
+    if shipped_channel(workspace):
+        log.warning("budget not written: the target ships the %s channel", channel_dir(workspace))
+        return
     d = workspace / channel_dir(workspace)
     d.mkdir(exist_ok=True)
     budget: dict[str, Any] = {
         "launches_remaining": launches_remaining,
         "sleeps_remaining": sleeps_remaining,
     }
+    if review_topup:
+        budget["review_topup"] = review_topup
     if gpu_hours_remaining is not None:
         budget["gpu_hours_remaining"] = round(gpu_hours_remaining, 2)
-    (d / "budget.json").write_text(json.dumps(budget))
+    # every step is relative to a directory handle opened without following
+    # links, so a link planted after the check above cannot carry the write
+    # outside the tree: the temp file is created O_EXCL|O_NOFOLLOW under it and
+    # renamed under it
+    dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        tmp = f".budget-{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(budget))
+        os.replace(tmp, "budget.json", src_dir_fd=dfd, dst_dir_fd=dfd)
+    finally:
+        os.close(dfd)
+
+
+def write_run_budget(
+    workspace: Path,
+    budgets: Budgets,
+    bench: Benchmark,
+    *,
+    review_topup: bool,
+    launches_used: int = 0,
+    sleeps_used: int = 0,
+    gpu_hours_used: float = 0.0,
+) -> None:
+    launch_ceiling, sleep_ceiling, hour_ceiling = budgets.ceilings(bench, review_topup)
+    write_budget(
+        workspace,
+        launches_remaining=max(0, launch_ceiling - launches_used),
+        sleeps_remaining=max(0, sleep_ceiling - sleeps_used),
+        gpu_hours_remaining=max(0.0, hour_ceiling - gpu_hours_used) if bench.gpus else None,
+        review_topup=budgets.review_topup.note(review_topup),
+    )
 
 
 def write_siblings(workspace: Path, entries: list[dict[str, Any]]) -> None:
@@ -731,6 +810,8 @@ def budget_error(
     requested right now counts toward the sleep budget; for a GPU benchmark
     the request's compute (launches, and a submit's two gate evals at the
     declared walltime) must fit the run's remaining GPU-hours."""
+    if not request.sleep:
+        return ""
     if sleeps_used + 1 > sleep_budget:
         return (
             f"sleep budget exhausted ({sleeps_used}/{sleep_budget} used): "

@@ -1183,6 +1183,7 @@ def attempt_once(
     judged: tuple[str, AttemptResult] | None = None,
     on_replies: Callable[[tuple[str, ...]], object] | None = None,
     on_stop: Callable[[SessionResult], AttemptResult] | None = None,
+    review_topup: bool = False,
     on_meter: Callable[[int, int, float], None] | None = None,
     scope_validator: Callable[[list[str], Contract], list[str]] = out_of_scope,
 ) -> AttemptResult:
@@ -1296,11 +1297,33 @@ def attempt_once(
         else 0
     )
 
+    launch_ceiling, sleep_ceiling, hour_ceiling = contract.budgets.ceilings(bench, review_topup)
+    topup_note = contract.budgets.review_topup.note(review_topup)
+
+    def _write_budget() -> None:
+        from outerloop.syscall import write_run_budget
+
+        if launcher is None and on_replies is None:
+            return
+        write_run_budget(
+            workspace,
+            contract.budgets,
+            bench,
+            review_topup=review_topup,
+            launches_used=launches_used,
+            sleeps_used=sleeps_used,
+            gpu_hours_used=gpu_hours_used,
+        )
+
+    _write_budget()
+
     def _budgets_line() -> str:
+        _write_budget()
         return budgets_line(
-            launches=bench.depth_k - launches_used,
-            sleeps=bench.sleep_k - sleeps_used,
-            gpu_hours=(contract.budgets.gpu_hours_per_run - gpu_hours_used if bench.gpus else None),
+            review_topup=topup_note,
+            launches=launch_ceiling - launches_used,
+            sleeps=sleep_ceiling - sleeps_used,
+            gpu_hours=(hour_ceiling - gpu_hours_used if bench.gpus else None),
         )
 
     def _ack(messages: list[Message]) -> None:
@@ -1343,17 +1366,20 @@ def attempt_once(
                 lessons=lessons,
                 recent_reports=recent_reports,
                 report_archive=report_archive,
-                budget=config.budget,
+                budget=dc_replace(
+                    config.budget,
+                    gpu_hours_remaining=max(0.0, hour_ceiling - gpu_hours_used),
+                )
+                if bench.gpus and launcher is not None
+                else config.budget,
                 # the launch/sleep tool is advertised ONLY when it is wired
                 # (never a tool the author cannot actually call)
-                launch_budget=bench.depth_k if launcher is not None else 0,
-                sleep_budget=bench.sleep_k if launcher is not None else 0,
+                launch_budget=launch_ceiling if launcher is not None else 0,
+                syscalls=launcher is not None,
+                sleep_budget=sleep_ceiling if launcher is not None else 0,
                 # GPU benchmarks: the compute meter the author budgets against
-                gpu_hour_budget=(
-                    contract.budgets.gpu_hours_per_run
-                    if launcher is not None and bench.gpus
-                    else 0.0
-                ),
+                gpu_hour_budget=(hour_ceiling if launcher is not None and bench.gpus else 0.0),
+                review_topup=topup_note,
                 eval_minutes_default=bench.eval_minutes or 0,
                 line_ref=line_ref,
                 memory=line_memory,
@@ -1490,6 +1516,46 @@ def attempt_once(
                 )
             if request is None:
                 break
+            if request.problem:
+                # told once, and the leg goes on with nothing staged honoured;
+                # a second conflicting request in one pass ends the leg as a
+                # stop (the refused_once bound stops a refuse/re-ask loop)
+                if refused_once or not _can_resume():
+                    break
+                refused_once = True
+                presealed = ""
+                failed = _resume(
+                    Message(
+                        0,
+                        "note",
+                        "kernel",
+                        inbox_thread,
+                        time.time(),
+                        f"refusal:{session.session_id}:{inbox_seq}",
+                        {
+                            "text": "Your syscall request was REFUSED and nothing was launched: "
+                            f"{request.problem}"
+                        },
+                    )
+                )
+                if failed is not None:
+                    return failed
+                continue
+            if request.end:
+                if request.report:
+                    session = dc_replace(session, final_text=request.report)
+                if on_stop is not None:
+                    if request.report and on_replies is not None:
+                        on_replies((request.report,))
+                    session = dc_replace(session, final_text="")
+                    return on_stop(session)
+                return AttemptResult(
+                    outcome="no-improvement",
+                    session=session,
+                    note=(failed_gate[1].note or failed_gate[1].outcome)
+                    if failed_gate
+                    else "ended without a submit",
+                )
             if not request.sleep:
                 break
             no_backend = (
@@ -1522,11 +1588,11 @@ def attempt_once(
             problem = no_backend or syscall_budget_error(
                 request,
                 launches_used=launches_used,
-                launch_budget=bench.depth_k,
+                launch_budget=launch_ceiling,
                 sleeps_used=sleeps_used,
-                sleep_budget=bench.sleep_k,
+                sleep_budget=sleep_ceiling,
                 gpu_hours_used=gpu_hours_used,
-                gpu_hour_budget=contract.budgets.gpu_hours_per_run,
+                gpu_hour_budget=hour_ceiling,
                 gpus=bench.gpus,
                 eval_minutes_default=bench.eval_minutes or 0,
                 suite_gpus=suite_gpus,

@@ -321,3 +321,12 @@ def test_launch_section_says_experiment_code_is_scope_checked() -> None:
     assert "must live under the contract's allowed paths" in text
     without = render(build_brief(make_inputs(), created="t"))
     assert "scope-checked the same way" not in without  # only with the tool
+
+
+def test_end_is_described_only_when_the_tool_is_offered() -> None:
+    """A run whose syscalls are off (a shipped channel, a backend that cannot
+    resume) must not be told to use a verb it does not have."""
+    off = render(build_brief(make_inputs(syscalls=False, launch_budget=0), created="t"))
+    on = render(build_brief(make_inputs(syscalls=True, launch_budget=0), created="t"))
+    assert "`end [--report <file>]`" not in off
+    assert "`end [--report <file>]`" in on

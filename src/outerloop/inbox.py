@@ -128,9 +128,13 @@ def thread_for(record: RunRecord) -> str:
     return f"issue:{record.issue_number}" if record.issue_number else ""
 
 
-def budgets_line(*, launches: int, sleeps: int, gpu_hours: float | None = None) -> str:
+def budgets_line(
+    *, launches: int, sleeps: int, gpu_hours: float | None = None, review_topup: str = ""
+) -> str:
     gpu = f", {max(0.0, gpu_hours):.1f} GPU-hours" if gpu_hours is not None else ""
-    return f"Budgets: {max(0, launches)} launches and {max(0, sleeps)} sleeps{gpu} remaining."
+    return f"Budgets: {max(0, launches)} launches and {max(0, sleeps)} sleeps{gpu} remaining." + (
+        f" {review_topup}" if review_topup else ""
+    )
 
 
 AUTHOR_PROTOCOL = (

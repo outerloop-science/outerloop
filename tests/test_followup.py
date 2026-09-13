@@ -1101,6 +1101,25 @@ def test_a_rejected_request_posts_no_replies(review_run) -> None:
     assert not any("forged reply" in body for body in github.posted)
 
 
+def test_a_forged_end_with_a_launch_is_refused_and_the_leg_goes_on(review_run) -> None:
+    """The tool refuses an end beside a launch; a forged request that carries
+    both reaches the kernel, which refuses it as a note and continues the leg
+    rather than ending the run as a session error."""
+    root, _bare = review_run
+    github = FakeGitHub(comments=[member(101, "try it")])
+    forged = ResumingHarness(
+        edits={
+            ".outerloop/syscall.json": (
+                '{"type": "end", "launches": [{"name": "x", "command": "true", "minutes": 1}]}'
+            )
+        }
+    )
+    out = respond(root, github, harness=forged)
+    assert out.action == "replied"
+    assert len(forged.calls) == 2
+    assert "REFUSED" in forged.calls[1][0] and "end is final for the leg" in forged.calls[1][0]
+
+
 def test_a_review_sleep_without_a_backend_is_refused(review_run) -> None:
     """With no compute backend a sleep cannot park on anything; the author is
     told so through the refusal path instead of the request being dropped."""
@@ -1265,6 +1284,8 @@ def test_publish_review_fast_forwards_and_applies_floor(
         measured_paths=("src/pilot/solvers/tsp.py",),
     )
     record = replace(load_record(root, "tsp-r1"), stage={"panel_skip": panel_skip})
+    record = replace(record, stage={**record.stage, "review_topup": True})
+    save_record(root, record, NOW)
     publish_args = dict(
         result=result,
         ws=workspace,
@@ -1345,6 +1366,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
     if candidate > 12:
         assert "Worse" in github.posted[0]
     latest = load_record(root, record.run_id)
+    assert latest.stage["review_topup"] is True
     assert latest.state == IN_REVIEW
     assert latest.auto_blessed_head == ("" if panel_skip else pushed)
     if panel_skip:
@@ -1354,6 +1376,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
     monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("retry pushed again"))
     assert publish(**publish_args).outcome == "improved"
     assert len(github.posted) == 1
+    assert load_record(root, record.run_id).stage["review_topup"] is True
     assert load_record(root, record.run_id).auto_blessed_head == ("" if panel_skip else pushed)
     assert _git(bare, "rev-parse", PR_BRANCH).strip() == pushed
 
@@ -1594,6 +1617,8 @@ def test_review_submit_parks_and_delivers_verdict(
         "outerloop.attempt.build_panel_runner",
         lambda *a, **k: lambda *a: PanelVerdict(blocking=(), transcript="panel read"),
     )
+    record = replace(record, stage={**record.stage, "review_topup": True})
+    save_record(root, record, NOW)
     author = ResumingHarness(
         edits={
             "src/pilot/solvers/tsp.py": "submitted\n",
@@ -1614,6 +1639,8 @@ def test_review_submit_parks_and_delivers_verdict(
     assert outcome.action == "parked"
     parked = load_record(root, record.run_id)
     assert parked.state == "waiting" and parked.pr_url == record.pr_url
+    assert parked.stage["review_topup"] is True
+    assert "Review top-up added when the PR opened" in author.calls[0][0]
     assert parked.stage["submitted"] and parked.stage["launches_used"] == 0
     assert parked.stage["gpu_hours_used"] == gpus
     assert int(str(parked.stage["seed"])) > 0
@@ -1948,3 +1975,53 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
             for m in messages
         )
         assert f"panel read skipped: {panel_skip}" in author.calls[0][0]
+
+
+@pytest.mark.parametrize("with_report", [False, True])
+def test_review_end_parks_without_jobs_and_next_comment_wakes(review_run, with_report):
+    from outerloop.syscall_cli import main
+
+    root, bare = review_run
+    before = _git(bare, "show-ref")
+    github = FakeGitHub(comments=[member(101, "finish this leg")])
+
+    class Author(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            args = ["end"]
+            if with_report:
+                (workspace / ".outerloop" / "report.md").write_text("Review experiment complete.")
+                args += ["--report", ".outerloop/report.md"]
+            assert main(args, root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        Author(text="Do not post this final text."),
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+    )
+    assert outcome.action == "replied"
+    record = load_record(root, "tsp-r1")
+    assert record.state == "in-review" and record.pr_url
+    assert not record.experiment_job_id and not record.deadline
+    assert not record.stage.get("afterany")
+    assert len(github.posted) == int(with_report)
+    if with_report:
+        assert "Review experiment complete." in github.posted[0]
+    assert _git(bare, "show-ref") == before
+    github.comments.append(member(102, "One more question."))
+    author = ResumingHarness(text="Here is the answer.")
+    outcome = respond_once(
+        root,
+        "tsp-r1",
+        author,
+        QueueEvaluator(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW + 1,
+    )
+    assert outcome.action == "replied"
+    assert "One more question." in author.calls[0][0]
