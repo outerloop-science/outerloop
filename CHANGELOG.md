@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- The board row carried only the first 160 characters of a run's hypothesis, so the ledger on the site showed sentences cut mid-word. The row now carries the whole paragraph (cut at a word with an ellipsis past 1000 characters), and rows an earlier board cut short take the full text on the next publish.
+
 - `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.
 
 - In auto mode the sweep merges only a clean PR at the head the kernel measured and approved. Publish never arms GitHub auto-merge; the sweep withdraws old arms and reports head moves to the author.

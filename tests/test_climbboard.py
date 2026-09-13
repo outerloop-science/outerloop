@@ -1251,3 +1251,47 @@ def test_status_says_what_a_parked_run_waits_on(tmp_path: Path) -> None:
     assert _waiting_on(measured, 1, 2, True) == "jobs"  # messages wait behind jobs
     assert _waiting_on(parked, 0, 0, False) == "wake"
     assert _waiting_on(dc_replace(parked, state="running"), 1, 3, False) == ""
+
+
+def test_hypothesis_is_the_whole_paragraph_and_a_cut_one_heals() -> None:
+    """The board row carries the whole hypothesis paragraph (the table shows a
+    summary); only past the cap is it cut, at a word, with an ellipsis. A row
+    an earlier board cut at 160 characters takes the fresh, longer text on
+    the next publish; nothing else about a published row changes."""
+    import json
+
+    from outerloop.climbboard import (
+        MAX_HYPOTHESIS_CHARS,
+        ClimbRow,
+        _report_fields,
+        merge_rows,
+    )
+
+    first = "The instantaneous AdamW weights retain late-update noise."
+    second = "An exponential moving average should give a lower loss without changing the updates."
+    report = f"# EMA\n\n## Hypothesis\n\n{first} {second}\n\n## Change\n\nkeeps a copy.\n"
+    _b, _c, hyp = _report_fields(report)
+    assert hyp == f"{first} {second}"
+    _b, _c, long = _report_fields("Hypothesis: " + "word " * 400)
+    assert len(long) <= MAX_HYPOTHESIS_CHARS and long.endswith("…") and not long.endswith(" …")
+    cut = json.dumps(
+        [{"run_id": "r1", "hypothesis": hyp[:160], "candidate": 5312.0, "outcome": "merged"}]
+    )
+    fresh = ClimbRow(
+        run_id="r1",
+        agent="agent-04",
+        ended="2026-09-13T05:30:00Z",
+        outcome="merged",
+        baseline=6528.0,
+        candidate=4.0,
+        gpu_hours=1.0,
+        hypothesis=hyp,
+        note="",
+        pr_url="",
+        report="",
+    )
+    (row,) = merge_rows(cut, [fresh])
+    assert row["hypothesis"] == hyp and row["candidate"] == 5312.0  # text healed, numbers kept
+    other = json.dumps([{"run_id": "r1", "hypothesis": "A different sentence.", "candidate": 1.0}])
+    (row,) = merge_rows(other, [fresh])
+    assert row["hypothesis"] == "A different sentence."  # not a prefix: history stands

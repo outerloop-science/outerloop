@@ -35,7 +35,7 @@ from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 log = logging.getLogger("outerloop.climbboard")
 
 BOARD_BRANCH = "research-log"
-MAX_HYPOTHESIS_CHARS = 160
+MAX_HYPOTHESIS_CHARS = 1000  # the whole hypothesis paragraph; the table shows a summary
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
 MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
@@ -79,8 +79,12 @@ def _report_fields(text: str) -> tuple[float | None, float | None, str]:
     hyp = ""
     m = _HYP.search(text)
     if m:
-        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", m.group(1))
-        hyp = hyp.strip().rstrip("-").strip()[:MAX_HYPOTHESIS_CHARS]
+        # the whole paragraph, up to a blank line or the next heading
+        para = re.split(r"\n\s*\n|\n#", text[m.start(1) :], maxsplit=1)[0]
+        hyp = re.sub(r"[`*_]|\s+", lambda g: " " if g.group().isspace() else "", para)
+        hyp = hyp.strip().rstrip("-").strip()
+        if len(hyp) > MAX_HYPOTHESIS_CHARS:
+            hyp = hyp[: MAX_HYPOTHESIS_CHARS - 1].rsplit(" ", 1)[0] + "…"
     return baseline, candidate, hyp
 
 
@@ -232,13 +236,20 @@ def collect_rows(
 def merge_rows(existing_json: str | None, fresh: list[ClimbRow]) -> list[dict[str, Any]]:
     """Existing board rows plus any new ones, one per run id, oldest first.
     A run already on the board keeps its published row (reports are final at
-    terminal state; the board never rewrites history)."""
+    terminal state; the board never rewrites history). The one exception is a
+    hypothesis an earlier board cut short: when the fresh row's hypothesis
+    extends the published one, the longer text replaces it."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    longer = {r.run_id: r.hypothesis for r in fresh if r.hypothesis}
     if existing_json:
         try:
             for item in json.loads(existing_json):
                 if isinstance(item, dict) and item.get("run_id") not in seen:
+                    had = str(item.get("hypothesis") or "")
+                    full = longer.get(str(item.get("run_id")), "")
+                    if had and len(full) > len(had) and full.startswith(had):
+                        item = {**item, "hypothesis": full}
                     rows.append(item)
                     seen.add(str(item.get("run_id")))
         except ValueError:
