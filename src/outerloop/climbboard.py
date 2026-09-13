@@ -413,7 +413,9 @@ def render_html(
         "border-radius:2px;display:inline-block;box-sizing:border-box}\n"
         ".pill{border-radius:.6rem;padding:.05rem .55rem;font-size:.72rem;\n"
         "font-weight:600;color:#fff}\n"
-        ".run.queue{width:100%;padding-bottom:.55rem}\n"
+        # the table cannot wrap (one job per line), so on a narrow screen it
+        # scrolls inside its card instead of pushing past it
+        ".run.queue{width:100%;padding-bottom:.55rem;overflow-x:auto;max-width:100%}\n"
         ".run.queue table{width:100%;border-collapse:collapse;margin-top:.35rem;\n"
         "  font-size:.72rem;font-variant-numeric:tabular-nums}\n"
         ".run.queue th{text-align:left;font-weight:500;color:var(--muted);\n"
@@ -423,6 +425,7 @@ def render_html(
         ".run.queue tr:last-child td{border-bottom:0}\n"
         ".run.queue .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}\n"
         ".run.queue td.name{max-width:24rem;overflow:hidden;text-overflow:ellipsis}\n"
+        "@media (max-width:640px){.run.queue td.name{max-width:9rem}}\n"
         ".run.queue td.part,.run.queue td.time{color:var(--muted)}\n"
         ".run.queue .st{display:inline-block;min-width:1.5rem;text-align:center;\n"
         "  border-radius:.4rem;padding:0 .35rem;font-size:.66rem;font-weight:600}\n"
