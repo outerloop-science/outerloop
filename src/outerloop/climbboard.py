@@ -998,10 +998,12 @@ def _waiting_on(record: Any, exp_done: int, exp_total: int, pending: bool) -> st
     if record.state != PARKED:
         return ""
     if exp_total > exp_done:
-        return "jobs"
+        return "jobs"  # messages wait behind jobs, so jobs come first
+    if pending:
+        return "wake"
     if str((record.stage or {}).get("phase", "")) == "candidate":
         return "gate"
-    if record.pr_url and not pending:
+    if record.pr_url:
         return "review"
     return "wake"
 

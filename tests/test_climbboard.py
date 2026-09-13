@@ -1246,5 +1246,8 @@ def test_status_says_what_a_parked_run_waits_on(tmp_path: Path) -> None:
     assert _waiting_on(dc_replace(parked, stage={"phase": "candidate"}), 0, 0, False) == "gate"
     assert _waiting_on(in_review, 0, 0, False) == "review"
     assert _waiting_on(in_review, 0, 0, True) == "wake"  # a message waits: the sweep wakes it
+    measured = dc_replace(parked, stage={"phase": "candidate"})
+    assert _waiting_on(measured, 0, 0, True) == "wake"  # the verdict is in: no longer the gate
+    assert _waiting_on(measured, 1, 2, True) == "jobs"  # messages wait behind jobs
     assert _waiting_on(parked, 0, 0, False) == "wake"
     assert _waiting_on(dc_replace(parked, state="running"), 1, 3, False) == ""
