@@ -1375,6 +1375,7 @@ def attempt_once(
                 # the launch/sleep tool is advertised ONLY when it is wired
                 # (never a tool the author cannot actually call)
                 launch_budget=launch_ceiling if launcher is not None else 0,
+                syscalls=launcher is not None,
                 sleep_budget=sleep_ceiling if launcher is not None else 0,
                 # GPU benchmarks: the compute meter the author budgets against
                 gpu_hour_budget=(hour_ceiling if launcher is not None and bench.gpus else 0.0),
