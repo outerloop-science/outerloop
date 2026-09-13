@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
+
+The run lifecycle is now three states (running, parked, ended) with one inbox
+of messages and the author verbs launch, sleep, submit, reply and end. After
+upgrading, run `outerloop permissions --open`: the App needs two new
+permissions, `checks: read` and `actions: read`, before CI results reach the
+author (see docs/install.md, Upgrading).
+
 ### Fixed
 
 - `outerloop permissions` checks App access and opens the next page to edit or accept missing permissions with `--open`; upgrades, starts and sweep warnings provide guidance for existing installations.
