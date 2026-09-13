@@ -478,7 +478,7 @@ def test_check_runs_pagination(provider):
     assert "filter=all" in transport.requests[0].full_url
 
 
-def test_job_log_tail_is_bounded_stripped_and_optional(provider, monkeypatch):
+def test_job_log_tail_is_bounded_stripped_and_optional(provider, monkeypatch, caplog):
     import io
 
     from outerloop.github import AUTH_SAFE_OPENER
@@ -501,7 +501,9 @@ def test_job_log_tail_is_bounded_stripped_and_optional(provider, monkeypatch):
         raise RuntimeError("log unavailable")
 
     monkeypatch.setattr(AUTH_SAFE_OPENER, "open", fail)
+    caplog.set_level("INFO")
     assert client.job_log_tail("org/repo", 123, 100) == ""
+    assert "job log for org/repo job 123 unavailable: log unavailable" in caplog.text
 
 
 def test_log_redirect_strips_credentials_and_refuses_downgrade():

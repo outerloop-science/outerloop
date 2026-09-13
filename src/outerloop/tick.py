@@ -606,11 +606,10 @@ def _merge_blessed_pr(
 ) -> None:
     from outerloop.inbox import wake_pending
 
-    if not acquire_lease(root, record.run_id, holder, "", now):
-        return
-    try:
-        record = load_record(root, record.run_id)
-        if (
+    number = int(record.pr_url.rstrip("/").split("/")[-1])
+
+    def eligible(record: RunRecord, pr: dict) -> bool:
+        return not (
             record.state != PARKED
             or record.agent_id.startswith("steward")
             or not record.auto_blessed_head
@@ -623,19 +622,27 @@ def _merge_blessed_pr(
             or str((pr.get("head") or {}).get("sha", "")) != record.auto_blessed_head
             or (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha")
             or _base_dial(github, record.target, pr, None) != "auto"
-        ):
+        )
+
+    if not eligible(record, pr):
+        return
+    if not acquire_lease(root, record.run_id, holder, "", now):
+        return
+    try:
+        # re-read both under the lease: a wake may have moved the record, and
+        # the base may have moved since the sweep read the PR (the merge API
+        # guards only the head)
+        record = load_record(root, record.run_id)
+        pr = github.get_pull_request(record.target, number)
+        if not eligible(record, pr):
             return
         methods = github.allowed_merge_methods(record.target)
         if not methods:
             log.warning("no allowed merge methods for %s; skipping merge this sweep", record.target)
             return
         github.merge_pull(
-            record.target,
-            int(record.pr_url.rstrip("/").split("/")[-1]),
-            methods[0].lower(),
-            expected_head=record.auto_blessed_head,
+            record.target, number, methods[0].lower(), expected_head=record.auto_blessed_head
         )
-
     finally:
         release_lease(root, record.run_id)
 

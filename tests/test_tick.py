@@ -3797,6 +3797,7 @@ def test_legacy_followup_count_logs_even_when_paused(tmp_path, caplog):
         "unclean",
         "running",
         "base",
+        "base-race",
         "checks403",
         "methods",
     ],
@@ -3830,10 +3831,15 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
             self.merged = []
 
         def get_pull_request(self, *args):
+            # base-race: the base moves between the sweep's read and the
+            # re-read under the lease, where the merge step must see it
+            lease = read_lease(tmp_path, record.run_id)
+            under_lease = lease is not None and lease.holder.startswith("tick:")
+            moved = blocked == "base" or (blocked == "base-race" and under_lease)
             return {
                 "state": "closed" if self.merged else "open",
                 "merged": bool(self.merged),
-                "base": {"sha": "moved" if blocked == "base" else "base"},
+                "base": {"sha": "moved" if moved else "base"},
                 "head": {"sha": "changed" if blocked == "head" else "head"},
                 "draft": blocked == "draft",
                 "mergeable_state": "blocked" if blocked == "unclean" else "clean",
@@ -4179,7 +4185,18 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
     monkeypatch.setattr(tick, "release_lease", lambda *a: events.append("release"))
     monkeypatch.setattr(tick, "_base_dial", lambda *a: "auto")
 
+    pr = {
+        "state": "open",
+        "mergeable_state": "clean",
+        "head": {"sha": "head"},
+        "base": {"sha": "moved" if changed == "base" else "base"},
+    }
+
     class GitHub:
+        def get_pull_request(self, repo, number):
+            assert events == ["acquire"]  # re-read under the lease
+            return pr
+
         def allowed_merge_methods(self, repo):
             return ["SQUASH"]
 
@@ -4187,17 +4204,8 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
             assert events == ["acquire"]
             events.append("merge")
 
-    tick._merge_blessed_pr(
-        tmp_path,
-        record,
-        GitHub(),
-        {
-            "state": "open",
-            "mergeable_state": "clean",
-            "head": {"sha": "head"},
-            "base": {"sha": "moved" if changed == "base" else "base"},
-        },
-        "tick",
-        NOW,
-    )
-    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+    tick._merge_blessed_pr(tmp_path, record, GitHub(), pr, "tick", NOW)
+    if changed == "base":
+        assert events == []  # the sweep's own read already rules it out: no lease taken
+    else:
+        assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])

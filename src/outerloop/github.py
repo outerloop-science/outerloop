@@ -363,7 +363,8 @@ class GitHubClient:
                 return text
             tail = text[-max_chars:]
             return tail.split("\n", 1)[1] if "\n" in tail else ""
-        except Exception:
+        except Exception as exc:
+            log.info("job log for %s job %s unavailable: %s", repo, job_id, str(exc)[:200])
             return ""
 
     def find_open_pull_for_head(
