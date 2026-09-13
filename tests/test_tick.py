@@ -3784,11 +3784,25 @@ def test_legacy_followup_count_logs_even_when_paused(tmp_path, caplog):
 
 
 @pytest.mark.parametrize(
-    "blocked", ["", "message", "job", "lease", "draft", "head", "manual", "steward"]
+    "blocked",
+    [
+        "",
+        "message",
+        "job",
+        "lease",
+        "draft",
+        "head",
+        "manual",
+        "steward",
+        "unclean",
+        "running",
+        "checks403",
+        "methods",
+    ],
 )
-def test_sweep_arms_only_quiet_blessed_pr(tmp_path, blocked):
+def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
     from outerloop.inbox import Message, append
-    from outerloop.runstate import run_dir
+    from outerloop.runstate import RUNNING, run_dir
     from outerloop.tick import sweep
 
     record = waiting_run(
@@ -3800,25 +3814,28 @@ def test_sweep_arms_only_quiet_blessed_pr(tmp_path, blocked):
         stage={"base_sha": "base"},
         agent_id="steward" if blocked == "steward" else "agent-01",
     )
+    if blocked == "running":
+        save_record(tmp_path, replace(record, state=RUNNING), NOW)
     if blocked == "message":
         append(
             run_dir(tmp_path, record.run_id),
-            Message(0, "note", "kernel", "pr:9", NOW, "note", {"text": "feedback"}),
+            Message(0, "note", "kernel", "org/repo#9", NOW, "note", {"text": "feedback"}),
         )
     if blocked == "lease":
         acquire_lease(tmp_path, record.run_id, "wake", "100", NOW)
 
     class GitHub:
         def __init__(self):
-            self.armed = []
+            self.merged = []
 
         def get_pull_request(self, *args):
             return {
-                "state": "open",
+                "state": "closed" if self.merged else "open",
+                "merged": bool(self.merged),
                 "base": {"sha": "base"},
                 "head": {"sha": "changed" if blocked == "head" else "head"},
                 "draft": blocked == "draft",
-                "mergeable_state": "clean",
+                "mergeable_state": "blocked" if blocked == "unclean" else "clean",
             }
 
         def list_comments(self, *args):
@@ -3835,8 +3852,20 @@ def test_sweep_arms_only_quiet_blessed_pr(tmp_path, blocked):
                 + ("manual" if blocked == "manual" else "auto")
             )
 
-        def arm_auto_merge_auto_mode(self, *args, **kwargs):
-            self.armed.append(kwargs["expected_head"])
+        def list_check_runs(self, *args):
+            if blocked == "checks403":
+                from outerloop.github import GitHubError
+
+                raise GitHubError(403, "/check-runs", "Forbidden")
+            return []
+
+        def allowed_merge_methods(self, repo):
+            return [] if blocked == "methods" else ["SQUASH", "MERGE"]
+
+        def merge_pull(self, repo, number, method, expected_head):
+            lease = read_lease(tmp_path, record.run_id)
+            assert lease is not None and lease.holder.startswith("tick:")
+            self.merged.append((repo, number, method, expected_head))
 
     github = GitHub()
     sweep(
@@ -3847,7 +3876,41 @@ def test_sweep_arms_only_quiet_blessed_pr(tmp_path, blocked):
         github=github,
         bot_login="bot",
     )
-    assert github.armed == ([] if blocked else ["head"])
+    assert github.merged == (
+        [] if blocked not in ("", "checks403") else [("org/repo", 9, "squash", "head")]
+    )
+    if blocked == "checks403":
+        assert "checks: read" in caplog.text
+        from outerloop.inbox import pending
+
+        assert not pending(run_dir(tmp_path, record.run_id), 0)
+    if blocked == "methods":
+        assert "no allowed merge methods" in caplog.text
+    if blocked in ("", "checks403", "methods"):
+        assert read_lease(tmp_path, record.run_id) is None
+
+    if not blocked:
+        from outerloop.runstate import ENDED
+
+        report = sweep(
+            tmp_path,
+            FakeSlurm().compute(),
+            RecordingDispatcher(),
+            NOW + 1,
+            github=github,
+            bot_login="bot",
+        )
+        assert report.review_ended == ((record.run_id, "merged"),)
+        assert load_record(tmp_path, record.run_id).state == ENDED
+        report = sweep(
+            tmp_path,
+            FakeSlurm().compute(),
+            RecordingDispatcher(),
+            NOW + 2,
+            github=github,
+            bot_login="bot",
+        )
+        assert not report.review_ended
 
 
 def test_comments_wait_with_jobs_and_idle_pr_does_not_spend_attempts(tmp_path):
@@ -3858,7 +3921,7 @@ def test_comments_wait_with_jobs_and_idle_pr_does_not_spend_attempts(tmp_path):
     record = waiting_run(tmp_path, pr_url="https://github.com/org/repo/pull/9")
     message = append(
         run_dir(tmp_path, record.run_id),
-        Message(0, "comment", "human", "pr:9", NOW, "comment:1", {"body": "question"}),
+        Message(0, "comment", "human", "org/repo#9", NOW, "comment:1", {"body": "question"}),
     )
     dispatcher = RecordingDispatcher()
     report = sweep(tmp_path, FakeSlurm(states={"100": "RUNNING"}).compute(), dispatcher, NOW)
@@ -3944,3 +4007,189 @@ def test_pr_wake_walltime_uses_followup_budget(tmp_path, minutes, cap):
     )
     assert jobs[0].time_minutes == min(minutes, cap)
     assert f"--session-minutes {min(minutes, cap) - ATTEMPT_OVERHEAD_MINUTES}" in jobs[0].command
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "success"])
+def test_check_message_wakes_only_on_failure(tmp_path, conclusion):
+    from outerloop.inbox import pending
+    from outerloop.runstate import run_dir
+    from outerloop.tick import sweep
+
+    record = waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        deadline=0,
+        pr_url="https://github.com/org/repo/pull/9",
+        stage={"base_sha": "base"},
+    )
+
+    class GitHub:
+        def get_pull_request(self, *args):
+            return {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base"}}
+
+        def list_comments(self, *args):
+            return []
+
+        list_pr_reviews = list_comments
+        list_pr_review_comments = list_comments
+
+        def list_check_runs(self, *args):
+            return [
+                {
+                    "id": 1,
+                    "name": "checks",
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "app": {"slug": "github-actions"},
+                }
+            ]
+
+        def job_log_tail(self, *args):
+            return "failed assertion"
+
+    report = sweep(
+        tmp_path,
+        FakeSlurm().compute(),
+        RecordingDispatcher(),
+        NOW,
+        github=GitHub(),
+        bot_login="bot",
+    )
+    messages = pending(run_dir(tmp_path, record.run_id), 0)
+    assert len(messages) == 1 and messages[0].kind == "check-result"
+    assert bool(report.woken) == (conclusion == "failure")
+
+
+@pytest.mark.parametrize("state", ["parked", "running"])
+@pytest.mark.parametrize("armer", ["bot", "human"])
+@pytest.mark.parametrize("blessed", ["blessed", ""])
+def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
+    tmp_path, state, armer, blessed, caplog
+):
+    from outerloop.inbox import pending
+    from outerloop.runstate import release_lease, run_dir
+    from outerloop.tick import sweep
+
+    record = waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        deadline=0,
+        state=state,
+        pr_url="https://github.com/org/repo/pull/9",
+        auto_blessed_head=blessed,
+        stage={"base_sha": "base"},
+    )
+
+    class GitHub:
+        head = "human-1"
+        armed = True
+        disarms = 0
+
+        def get_pull_request(self, *args):
+            return {
+                "state": "open",
+                "head": {"sha": self.head},
+                "base": {"sha": "base"},
+                "auto_merge": {"enabled_by": {"login": armer}} if self.armed else None,
+                "mergeable_state": "clean",
+            }
+
+        def get_file_content(self, *args, **kwargs):
+            return (
+                "benchmarks: [{name: x, command: echo, metric: score, direction: max}]\n"
+                "budgets: {gpu_hours_per_run: 1, runs_per_week: 3}\n"
+                "scope: {allowed: [src/]}\nroadmap: docs/roadmap.md\nmerge: auto"
+            )
+
+        def list_comments(self, *args):
+            return []
+
+        list_pr_reviews = list_comments
+        list_pr_review_comments = list_comments
+        list_check_runs = list_comments
+
+        def disable_auto_merge(self, *args):
+            self.disarms += 1
+            self.armed = False
+            return True
+
+        def merge_pull(self, *args, **kwargs):
+            raise AssertionError("unblessed head must never merge")
+
+    github = GitHub()
+    caplog.set_level("INFO")
+    for index, head in enumerate(["human-1", "human-1", "human-2"]):
+        github.head = head
+        release_lease(tmp_path, record.run_id)
+        sweep(
+            tmp_path,
+            FakeSlurm().compute(),
+            RecordingDispatcher(),
+            NOW + index,
+            github=github,
+            bot_login="bot",
+        )
+    assert github.disarms == int(state == "parked" and armer == "bot")
+    if github.disarms:
+        assert "auto-merge withdrawal" in caplog.text
+    messages = pending(run_dir(tmp_path, record.run_id), 0)
+    if state == "running" or not blessed:
+        assert not messages
+        return
+    assert [m.key for m in messages] == ["head:human-1", "head:human-2"]
+    assert all(m.kind == "head-moved" and m.source == "git" for m in messages)
+    assert messages[1].payload["head"] == "human-2"
+
+
+@pytest.mark.parametrize("changed", ["", "running", "unblessed", "job", "wake"])
+def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
+    from outerloop import tick
+    from outerloop.inbox import Message, append
+    from outerloop.runstate import run_dir
+
+    record = waiting_run(
+        tmp_path,
+        experiment_job_id="",
+        deadline=0,
+        pr_url="https://github.com/org/repo/pull/9",
+        auto_blessed_head="head",
+    )
+    events = []
+
+    def acquire(root, run_id, holder, job, now):
+        events.append("acquire")
+        updated = record
+        if changed == "running":
+            updated = replace(record, state="running")
+        elif changed == "unblessed":
+            updated = replace(record, auto_blessed_head="")
+        elif changed == "job":
+            updated = replace(record, experiment_job_id="100", deadline=NOW + 100)
+        elif changed == "wake":
+            append(
+                run_dir(root, run_id), Message(0, "note", "kernel", "org/repo#9", now, "wake", {})
+            )
+        save_record(root, updated, now)
+        return True
+
+    monkeypatch.setattr(tick, "acquire_lease", acquire)
+    monkeypatch.setattr(tick, "release_lease", lambda *a: events.append("release"))
+    monkeypatch.setattr(tick, "_base_dial", lambda *a: "auto")
+
+    class GitHub:
+        def allowed_merge_methods(self, repo):
+            return ["SQUASH"]
+
+        def merge_pull(self, *a, **k):
+            assert events == ["acquire"]
+            events.append("merge")
+
+    tick._merge_blessed_pr(
+        tmp_path,
+        record,
+        GitHub(),
+        {"state": "open", "mergeable_state": "clean", "head": {"sha": "head"}},
+        "tick",
+        NOW,
+    )
+    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])

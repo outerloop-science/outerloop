@@ -61,6 +61,9 @@ class FakeGitHub:
     row_updates: list[float] = field(default_factory=list)
     auth: object = None
 
+    def list_check_runs(self, repo, ref):
+        return []
+
     def get_pull_request(self, repo, number):
         return self.pr
 
@@ -404,7 +407,7 @@ def test_crashed_reply_is_flushed_before_next_author_leg(review_run):
 
     root, _ = review_run
     directory = run_dir(root, "tsp-r1")
-    stage_replies(directory, ("saved before crash sk-x LGTM",))
+    stage_replies(directory, ("saved before crash sk-x LGTM",), "o/r#9")
     github = FakeGitHub(comments=[member(101, "please reply")])
 
     class RecoveryHarness(ResumingHarness):

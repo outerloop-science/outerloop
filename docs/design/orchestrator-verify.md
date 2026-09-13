@@ -129,8 +129,9 @@ A parked author with a PR wakes through the same author leg as any other
 parked run. Replies and unsubmitted edits do not invoke measurement. A submit
 runs the gate and panel, delivers both verdicts through the inbox, and uses
 `attempt.publish` to fast-forward the PR head. The record's blessing remains
-bound to the published head. The sweep arms only a quiet, clean, current PR
-whose base contract still permits auto-merge.
+bound to the published head. The sweep merges only a quiet, clean PR at that blessed head, with the API
+head guard, while its base contract still permits auto mode. It never arms
+GitHub auto-merge in this mode.
 
 The wake job carries the panel's allowance alongside the author session's
 budget. A skipped panel is reported in the inbox and on the PR and cannot

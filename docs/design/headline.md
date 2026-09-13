@@ -87,11 +87,9 @@ survival the other. No strawman reimplementation.
 Drop the "human keeps the merge button" framing as a principle — it is the
 DEFAULT, not a law. Merge policy becomes a contract knob (`merge:
 manual | auto`, target owner's declaration, like a harness permission mode):
-`auto` = gate + panel clean → the PR merges itself. NOTE the current
-arming path is review-required-shaped (`arm_auto_merge_when_review_required`
-— GitHub only arms against a pending requirement), so `auto` mode needs a
-small publish change: merge directly when the gate CI is the sole
-requirement, arm otherwise. Graded
+`auto` = the kernel sweep merges a clean PR at the head approved by the gate
+and panel, with the API's expected-head guard. Publish never arms GitHub
+auto-merge in this mode. Manual mode keeps the required-review guard. Graded
 autonomy is paper material: interventions per accepted step, measured at
 each grade.
 

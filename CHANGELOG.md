@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- In auto mode the sweep merges only a clean PR at the head the kernel measured and approved. Publish never arms GitHub auto-merge; the sweep withdraws old arms and reports head moves to the author.
+
 - A reply returning after PR merge or close preserves the run’s ending. GitHub outages no longer skip job and deadline handling, failed reply posts suppress duplicate final text, and terminal snapshot cleanup survives notebook failures. Inbox delivery retries refused messages and refuses symlinked destinations.
 
 - A review panel skipped at preflight or in the follow-up now sends the author a kernel note and records the reason in the submit’s PR addendum. These publishes never arm auto-merge.
@@ -16,9 +18,14 @@ Versions follow [SemVer](https://semver.org).
 - On local compute an author-sleep wake could lose an improvement: the gate answers inline there, and the wake only knew how to end a run, so the result became an aborted ending with no PR (cluster0, three runs). Fresh and resumed climbs now share one terminal: the report, the line notebook, a PR or an ending record, and the issue note. A wake that opened its PR but died before recording it reconciles to that PR instead of opening a second, and a park's snapshot is released only once the run has left waiting.
 - A research line lost its snapshot when the author's session reset its branch to main: the seal parented on main, the push was refused, and the run left no notebook entry (#368). The kernel now records the line head itself and the line only moves forward from that record. Memory files a reset dropped from the tree come back at the seal; files the session deleted on the line stay deleted.
 - Intake dropped an issue from a private org member without a word: the App's token sees such an author as CONTRIBUTOR, and only OWNER/MEMBER/COLLABORATOR qualified. Every skipped issue is now logged with its reason, a maintainer's `outerloop:task` label vouches for an issue regardless of association, and new Apps request members read so private members read as MEMBER.
-- Under `merge: auto`, the arming at publish now names the head it pushed, so the direct-merge fallback cannot merge a head pushed after the gate and panel read it.
 
 ### Changed
+
+- Completed CI checks reach the author as messages with bounded log tails. Failed checks wake idle runs; successful, neutral and skipped checks wait as context.
+
+- Messages carry an origin and a qualified repository thread. Staged replies keep their destination through retries and later PR changes.
+
+- Memory guidance now covers every session boundary and asks authors to record durable findings as they learn them. Sleep, submit and end help say the session ends there.
 
 - Runs have three states: running, parked and ended; the board and the logs show those names, and an open PR is a link on the run. The sweep delivers comments, base moves and job results through one wake path; the separate follow-up job is gone. Old state names are mapped on read; inbox cursors migrate once under the run lease, and every tick logs the number of legacy follow-up records until it is zero. An older kernel cannot read the new state names; that is the only incompatible field, and fleets are updated by commit. The contract's `followup_job_minutes` now sizes the wake job of a run with an open PR.
 

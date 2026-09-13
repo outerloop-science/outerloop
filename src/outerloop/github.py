@@ -176,6 +176,11 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> Any:
+        if (
+            urllib.parse.urlparse(req.full_url).scheme == "https"
+            and urllib.parse.urlparse(newurl).scheme != "https"
+        ):
+            raise urllib.error.URLError("refusing HTTPS redirect downgrade")
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         old_parts = urllib.parse.urlparse(req.full_url)
         new_parts = urllib.parse.urlparse(newurl)
@@ -190,6 +195,8 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
 
 # The one opener every API call shares — a redirect that changes host loses
 # the Authorization header instead of forwarding the credential.
+MAX_LOG_BYTES = 8_000_000
+
 AUTH_SAFE_OPENER = urllib.request.build_opener(_NoAuthRedirect)
 
 
@@ -311,6 +318,53 @@ class GitHubClient:
     def get_pull_request(self, repo: str, number: int) -> dict[str, Any]:
         path = f"/repos/{urllib.parse.quote(repo)}/pulls/{number}"
         return self._expect_dict(self._request("GET", path), path)
+
+    def list_check_runs(self, repo: str, ref: str) -> list[dict]:
+        """Read all check runs for this commit, including reruns."""
+        ref = urllib.parse.quote(ref, safe="")
+        path = f"/repos/{urllib.parse.quote(repo)}/commits/{ref}/check-runs"
+        runs: list[dict] = []
+        page = 1
+        while True:
+            data = self._expect_dict(
+                self._request("GET", f"{path}?per_page=100&page={page}&filter=all"), path
+            )
+            batch = data["check_runs"]
+            runs.extend(batch)
+            if len(batch) < 100:
+                return runs
+            page += 1
+
+    def job_log_tail(self, repo: str, job_id: int, max_chars: int) -> str:
+        """Best-effort last lines; storage redirects lose API credentials."""
+        try:
+            if max_chars <= 0:
+                return ""
+            path = f"/repos/{urllib.parse.quote(repo)}/actions/jobs/{job_id}/logs"
+            request = urllib.request.Request(
+                f"{API}{path}",
+                headers={"Authorization": f"Bearer {self.auth.token()}"},
+            )
+            tail_bytes = bytearray()
+            total = 0
+            with AUTH_SAFE_OPENER.open(request, timeout=30) as response:
+                while total < MAX_LOG_BYTES:
+                    chunk = response.read(min(65536, MAX_LOG_BYTES - total))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    tail_bytes.extend(chunk)
+                    del tail_bytes[: max(0, len(tail_bytes) - 4 * max_chars)]
+            text = tail_bytes.decode("utf-8", errors="replace")
+            text = re.sub(
+                r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])", "", text
+            )
+            if len(text) <= max_chars:
+                return text
+            tail = text[-max_chars:]
+            return tail.split("\n", 1)[1] if "\n" in tail else ""
+        except Exception:
+            return ""
 
     def find_open_pull_for_head(
         self, repo: str, head_branch: str, base: str
@@ -444,9 +498,9 @@ class GitHubClient:
         self, repo: str, number: int, method: str = "MERGE", expected_head: str = ""
     ) -> None:
         """Arm GitHub's auto-merge on a PR (a GraphQL-only capability).
-        `expected_head` binds the arm to that head oid: GitHub refuses when
-        the PR head has moved, so a push racing the caller's check can never
-        be the thing that merges.
+        `expected_head` checks the head when arming. It does not prevent a
+        later push from merging under that arm. Auto mode uses merge_pull
+        with an expected head instead.
 
         Arming does not merge anything: it hands the merge to whatever
         branch protection still requires. Callers that must preserve the
@@ -547,8 +601,7 @@ class GitHubClient:
     def merge_pull(
         self, repo: str, number: int, method: str = "merge", expected_head: str = ""
     ) -> bool:
-        """Directly merge a pull request (REST). Used only by AUTO merge mode
-        when nothing is pending for auto-merge to arm against. `expected_head`
+        """Directly merge a clean pull request in auto mode (REST). `expected_head`
         rides the API's `sha` guard: GitHub refuses (409) when the head moved
         since the caller checked it."""
         if self.dry_run:
@@ -567,37 +620,6 @@ class GitHubClient:
         except GitHubError as exc:
             log.warning("direct merge of %s#%s failed: %s", repo, number, exc)
             return False
-
-    def arm_auto_merge_auto_mode(self, repo: str, number: int, expected_head: str = "") -> bool:
-        """AUTO merge mode (the contract's `merge: auto` dial): arm
-        auto-merge so the PR merges when its required checks pass; when
-        GitHub declines ONLY because nothing is pending (clean status),
-        merge directly. Any other decline — auto-merge disabled in repo
-        settings, missing permission — is a repo-owner control and STOPS
-        here (terra #171: the broad fallback would have bulldozed a
-        deliberately disabled auto-merge setting). The manual-mode
-        review-required guard deliberately does not apply — the owner
-        opted this repo in, and the gate/panel bound before publish."""
-        methods = self.allowed_merge_methods(repo) or ["MERGE"]
-        try:
-            self.enable_auto_merge(repo, number, method=methods[0], expected_head=expected_head)
-            return True
-        except GitHubError as exc:
-            if "clean status" not in str(exc).casefold():
-                log.warning(
-                    "auto-merge arming on %s#%s failed (%s); NOT merging "
-                    "directly — the decline may be a repo-owner control",
-                    repo,
-                    number,
-                    exc,
-                )
-                return False
-            log.info(
-                "auto-merge arming on %s#%s: PR already clean; merging directly",
-                repo,
-                number,
-            )
-        return self.merge_pull(repo, number, method=methods[0].lower(), expected_head=expected_head)
 
     def get_pull_request_diff(self, repo: str, number: int) -> str:
         """Fetch a PR's unified diff (uses the diff media type)."""

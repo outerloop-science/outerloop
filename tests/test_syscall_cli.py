@@ -731,3 +731,13 @@ def test_end_conflicts_in_both_orders_leave_the_session_usable(tmp_path, capsys)
             assert main(["end"], root=tmp_path) == 0
             request = read_request(tmp_path)
             assert request is not None and request.end
+
+
+def test_session_end_help(tmp_path, capsys):
+    import pytest
+
+    for verb in ("sleep", "submit", "end"):
+        with pytest.raises(SystemExit) as exc:
+            run(tmp_path, verb, "--help")
+        assert exc.value.code == 0
+        assert "The session ends here." in " ".join(capsys.readouterr().out.split())

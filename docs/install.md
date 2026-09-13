@@ -241,7 +241,10 @@ Tokens are minted from the key an hour at a time and scoped to the installed
 repos; the App takes no seat and needs no collaborator grant. The manifest
 declares Contents, Issues and Pull requests read-write, Metadata read and
 Members read (so a private org member's issue reads as MEMBER, not CONTRIBUTOR),
-nothing else. If the install step was cut short, run
+and Actions and Checks read. Existing installations must accept the two new
+permissions, `actions: read` and `checks: read`, in the App's settings before
+check results flow. Until then, the sweep logs a warning and delivers nothing
+for checks. If the install step was cut short, run
 `outerloop init --force --github-app` to finish and re-check it.
 
 **If you are a member, not an owner, of the organization.** Creating an App
@@ -512,8 +515,10 @@ On by default. Think hard before changing any of them:
 
 - By default the bot never merges and is never a code owner — your branch
   protection applies to it like any contributor. `merge: auto` is an explicit
-  per-repo opt-in: a gate-and-panel-clean PR merges itself, still through
-  your required checks (strict up-to-date), never around them.
+  per-repo opt-in: the kernel sweep merges a clean PR only at the head its
+  gate and panel approved, through your required checks (strict up-to-date).
+  It never arms GitHub auto-merge in this mode and withdraws existing arms.
+  A changed head comes back to the author as a message.
 - Agent sessions run with no credentials in their environment; pushes happen
   after the session ends.
 - Only maintainer-authored issues and comments become tasks. Everything else,

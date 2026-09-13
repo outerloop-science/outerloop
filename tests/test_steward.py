@@ -757,3 +757,19 @@ def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> No
         )
     # "before any work" made checkable: no run dir, no record, nothing on disk
     assert not (tmp_path / "state").exists()
+
+
+def test_steward_auto_publish_does_not_arm(tmp_path, steward_repo, monkeypatch):
+    from outerloop import steward
+
+    original = steward.load_contract
+    monkeypatch.setattr(
+        steward,
+        "load_contract",
+        lambda *a, **k: original(*a, **k).model_copy(update={"merge": "auto"}),
+    )
+    outcome, github, _ = run_steward(
+        tmp_path, edits={"src/pilot/instances.py": "POOL_SEED = 'per-run'\n"}
+    )
+    assert outcome.outcome == "stewarded"
+    assert not github.armed

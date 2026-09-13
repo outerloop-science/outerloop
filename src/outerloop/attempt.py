@@ -230,9 +230,8 @@ def target_clone_url(target: str) -> str:
 
 def _blessed_head(ws: Workspace, result: Any, contract: Any) -> str:
     """The pushed PR head the tick may later self-merge — only when this
-    publish was under merge:auto with a CLEAN panel (#171's arming
-    condition); "" otherwise. Best-effort: an unreadable HEAD blesses
-    nothing (never arm on doubt)."""
+    publish was under merge:auto with a clean panel; "" otherwise.
+    An unreadable HEAD blesses nothing."""
     if not (
         result.panel_rounds > 0
         and not (result.panel_blocking_open or result.panel_degraded)
@@ -242,7 +241,7 @@ def _blessed_head(ws: Workspace, result: Any, contract: Any) -> str:
     try:
         return ws.git("rev-parse", "HEAD").strip()
     except Exception as exc:
-        log.warning("could not read HEAD; not arming self-merge: %s", exc)
+        log.warning("could not read HEAD; not blessing self-merge: %s", exc)
         return ""
 
 
@@ -255,14 +254,10 @@ def _arm_unless_base_moved(
     measured_base_sha: str,
     secrets: tuple[str, ...],
     merge_mode: str = "manual",
-    panel_ran: bool = False,
 ) -> None:
-    """Arm auto-merge only while origin/<base_branch> still equals the base the
-    claim was measured against. A moved base still OPENS the PR — review owns
-    staleness — but never ARMS it: merging a tree whose gate/suite/panel read
-    is stale must be a human's deliberate act, not an armed automation. A
-    failed freshness fetch also declines to arm (fail-safe: un-armed is just a
-    normal PR). Best-effort throughout, like arming itself."""
+    """Manual arming requires the measured base to remain current."""
+    if merge_mode == "auto":
+        return
 
     def _check_and_arm() -> None:
         ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
@@ -278,26 +273,7 @@ def _arm_unless_base_moved(
                 fresh[:12],
             )
             return
-        if merge_mode == "auto" and not panel_ran:
-            # the dial's own precondition: auto means GATE+PANEL clean, so a
-            # publish that ran no panel must not self-merge — fall back to
-            # the manual guard and say so (terra #171: a panel-less
-            # deployment could otherwise self-merge on the metric gate alone)
-            log.warning(
-                "merge mode auto on %s#%s but no panel ran this attempt; "
-                "arming manual-mode instead",
-                target,
-                pr_number,
-            )
-        if merge_mode == "auto" and panel_ran:
-            # the contract's autonomy dial: the owner opted this repo into
-            # self-merging gate-clean PRs — arm, or merge directly when
-            # nothing is pending to arm against. Either way only the head
-            # this publish pushed may merge, never one pushed after the read.
-            head = ws.git("rev-parse", "HEAD").strip()
-            github.arm_auto_merge_auto_mode(target, int(pr_number), expected_head=head)
-        else:
-            github.arm_auto_merge_when_review_required(target, int(pr_number))
+        github.arm_auto_merge_when_review_required(target, int(pr_number))
 
     _best_effort("auto-merge arming", _check_and_arm, secrets)
 
@@ -824,33 +800,31 @@ def post_replies(
     secrets: tuple[str, ...],
     run_dir: Path,
 ) -> int:
-    """Publish consumed author replies on the run's current thread."""
+    """Publish consumed author replies on their stored threads."""
+    from outerloop.inbox import flush_replies, stage_replies
     from outerloop.review import APPROVAL_PATTERN, REDACTED
 
-    number = _pr_number(record.pr_url) if record.pr_url else record.issue_number
-    if not number:
-        return 0
-    from outerloop.inbox import flush_replies, stage_replies
-
-    def post(reply: str, rid: str) -> None:
+    def post(reply: str, rid: str, thread: str) -> None:
+        target, number = thread.rsplit("#", 1)
         body = APPROVAL_PATTERN.sub(REDACTED, redact(reply, secrets))[:MAX_REPLY_CHARS]
-        github.comment(record.target, number, f"{REPLY_MARKER}\n{reply_id_marker(rid)}\n{body}")
+        github.comment(target, int(number), f"{REPLY_MARKER}\n{reply_id_marker(rid)}\n{body}")
 
-    def seen(rid: str) -> bool:
+    def seen(rid: str, thread: str) -> bool:
+        target, number = thread.rsplit("#", 1)
         # the thread is the record of what was posted: a crash between the
         # post and the outbox rename must not post the reply twice
         try:
             return any(
                 reply_id_marker(rid) in str(c.get("body", ""))
-                for c in github.list_comments(record.target, number)
+                for c in github.list_comments(target, int(number))
             )
         except Exception as exc:
             log.warning("reply lookup failed for %s: %s", record.run_id, exc)
             return False  # posting twice beats never posting
 
     try:
-        stage_replies(run_dir, replies)
-        return flush_replies(run_dir, post, seen)
+        stage_replies(run_dir, replies, thread_for(record))
+        return flush_replies(run_dir, post, seen, thread_for(record))
     except Exception as exc:
         log.warning("reply delivery failed for %s: %s", record.run_id, exc)
         return 0
@@ -936,6 +910,7 @@ def run_author_leg(
                 time.time(),
                 f"tool:{record.resume_session_id}:{record.inbox_seq}",
                 {"text": tool_update_note(channel_dir(workspace))},
+                origin=record.run_id,
             ),
         )
     launches = int(str(record.stage.get("launches_used", 0)))
@@ -1171,6 +1146,7 @@ def _wake_author_sleep(
                     **asdict(launch_result),
                     "elapsed": elapsed[index] if elapsed and index < len(elapsed) else None,
                 },
+                origin=launch_result.name,
             ),
         )
     note = str(record.stage.get("syscall_note", ""))
@@ -1178,7 +1154,14 @@ def _wake_author_sleep(
         append(
             run_dir,
             Message(
-                0, "note", "author", thread, now, f"note:{sleep_ref}:{sleeps_used}", {"text": note}
+                0,
+                "note",
+                "author",
+                thread,
+                now,
+                f"note:{sleep_ref}:{sleeps_used}",
+                {"text": note},
+                origin=record.run_id,
             ),
         )
     pacing = [
@@ -1197,6 +1180,7 @@ def _wake_author_sleep(
                 now,
                 f"pacing:{sleep_ref}:{sleeps_used}",
                 {"text": "\n".join(pacing) + " (the contract's ceiling applies)."},
+                origin=record.run_id,
             ),
         )
     # Re-pin the gate and scope base after a line's base advances.
@@ -2123,6 +2107,7 @@ def resume_run(
                 now,
                 f"panel-skip:{record.inbox_seq}:{panel_skip}",
                 {"text": f"panel read skipped: {panel_skip}"},
+                origin=record.run_id,
             ),
         )
     dispatch = with_seed(dispatch, run_root, record.target)
@@ -2524,6 +2509,7 @@ def resume_run(
                     "candidate": result.candidate,
                     "suite": [asdict(row) for row in result.suite],
                 },
+                origin=record.run_id,
             ),
         )
         # Only a missing resumable author turns a submitted verdict into an ending.
@@ -2586,6 +2572,7 @@ def resume_run(
                     "candidate": result.candidate,
                     "suite": [asdict(row) for row in result.suite],
                 },
+                origin=record.run_id,
             ),
             # the verdict rides the resume: the same tree, sealed again after
             # the author concludes, is not measured twice; only an explicit
@@ -2616,6 +2603,7 @@ def resume_run(
                     "candidate": result.candidate,
                     "suite": [asdict(row) for row in result.suite],
                 },
+                origin=record.run_id,
             ),
         )
     outcome = _finish_attempt(
@@ -3122,6 +3110,7 @@ def publish(
                 now,
                 f"publish-refused:{result.candidate_sha}:{head}:{text}",
                 {"text": text, "pr_head": head, "sealed_sha": result.candidate_sha},
+                origin="" if moved else record.run_id,
             ),
         )
         final = dc_replace(record, auto_blessed_head="")
@@ -3460,7 +3449,6 @@ def publish(
                 base_sha,
                 secrets,
                 merge_mode=getattr(contract, "merge", "manual"),
-                panel_ran=result.panel_rounds > 0,
             )
         final = RunRecord(
             **{

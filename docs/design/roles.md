@@ -63,7 +63,7 @@ flowchart TD
 
     F -->|no| R0["run ends: negative result<br/>+ research report"]
     F -->|yes| G["freshness: base moved?<br/>merge + re-measure BOTH sides"]
-    G --> PR["push branch, open PR<br/>report + table in body,<br/>arm auto-merge (guarded)"]
+    G --> PR["push branch, open PR<br/>report + table in body,<br/>record blessed head in auto mode;<br/>manual arming requires human review"]
 
     PR --> V["verifier (next): integrity read<br/>advisory reviewer: skips bot PRs"]
     PR --> H{human code-owner review}
@@ -217,7 +217,7 @@ finding survives.
 | Verifier ≠ author | different role, prompt, key; reads adversarially |
 | Steward ≠ solver | separate identity, credentials, budget; scored on discrimination, never solver metrics |
 | Goal changes are human acts | `vision:` is agent-unwritable (loader invariant); plan issues are vetoable; contract changes merge only by humans |
-| Bot never merges | account permissions + the auto-merge arming guard (code) |
+| Merge authority | manual mode requires a human review; auto mode merges only a clean blessed head |
 
 ## Where state lives
 

@@ -1270,6 +1270,7 @@ def attempt_once(
         # rejected request (a forged type, an unknown key) posts nothing
         request = read_syscall_request(workspace)
         if request is not None and on_replies is not None:
+            # The callback stages replies with thread_for(record) before posting.
             on_replies(request.replies)
         return request
 
@@ -1537,6 +1538,7 @@ def attempt_once(
                             "text": "Your syscall request was REFUSED and nothing was launched: "
                             f"{request.problem}"
                         },
+                        origin=inbox_dir.name,
                     )
                 )
                 if failed is not None:
@@ -1685,6 +1687,7 @@ def attempt_once(
                         "text": "Your syscall request was REFUSED and nothing was launched: "
                         f"{problem}"
                     },
+                    origin=inbox_dir.name,
                 )
             )
             if failed is not None:
@@ -1871,6 +1874,7 @@ def attempt_once(
                                 outcome.baseline or 0, bench.min_delta, bench.min_delta_rel
                             ),
                         },
+                        origin=inbox_dir.name,
                     )
                 )
                 if failed is not None:
@@ -1953,6 +1957,7 @@ def attempt_once(
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
                 },
+                origin=inbox_dir.name,
             ),
         )
 

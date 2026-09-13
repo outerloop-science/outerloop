@@ -482,8 +482,13 @@ def build_parser() -> argparse.ArgumentParser:
     no.add_argument("text")
     su = sub.add_parser(
         "submit",
-        help="stage a submit: on sleep, seal this tree for the gate + review panel",
-        description="Seal and measure this tree; a credited verdict publishes it.",
+        help=(
+            "stage a submit: on sleep, seal this tree for the gate + review panel. "
+            "The session ends here."
+        ),
+        description=(
+            "Seal and measure this tree; a credited verdict publishes it. The session ends here."
+        ),
     )
     su.add_argument(
         "--report",
@@ -501,8 +506,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="walltime for each paired gate eval (default: the contract's; "
         "2 evals x minutes x GPUs draws on your GPU-hour budget)",
     )
-    sub.add_parser("sleep", help="commit staged launches/submit; then end your turn")
-    end = sub.add_parser("end", help="stage an end; then end your turn")
+    sub.add_parser(
+        "sleep",
+        help="commit staged launches/submit; then end your turn. The session ends here.",
+        description="The session ends here.",
+    )
+    end = sub.add_parser(
+        "end",
+        help="stage an end; then end your turn. The session ends here.",
+        description="The session ends here.",
+    )
     end.add_argument("--report", default="", help="file containing your final report")
     # judge verbs
     fi = sub.add_parser("finding", help="record one finding")

@@ -414,42 +414,6 @@ def test_non_utf8_filter_config_neither_crashes_nor_executes(tmp_path: Path) -> 
     assert not marker.exists()
 
 
-def test_auto_mode_arming_merges_only_on_clean_status(monkeypatch) -> None:
-    """terra #171: the direct-merge fallback fires ONLY when GitHub declines
-    arming because the PR is already clean; any other decline (auto-merge
-    disabled in repo settings, missing permission) is a repo-owner control
-    and stops."""
-    from outerloop.github import GitHubClient, GitHubError
-
-    class _Tok:
-        def token(self) -> str:
-            return "t"
-
-    client = GitHubClient(auth=_Tok())
-    merged: list = []
-    monkeypatch.setattr(client, "allowed_merge_methods", lambda repo: ["MERGE"])
-
-    def _fake_merge(repo, n, method, expected_head=""):
-        merged.append(n)
-        return True
-
-    monkeypatch.setattr(client, "merge_pull", _fake_merge)
-
-    def clean_status(repo, n, method="MERGE", expected_head=""):
-        raise GitHubError(0, "/x", "Pull request is in clean status")
-
-    monkeypatch.setattr(client, "enable_auto_merge", clean_status)
-    assert client.arm_auto_merge_auto_mode("o/r", 7) is True
-    assert merged == [7]
-
-    def not_allowed(repo, n, method="MERGE", expected_head=""):
-        raise GitHubError(0, "/x", "Auto merge is not allowed for this repository")
-
-    monkeypatch.setattr(client, "enable_auto_merge", not_allowed)
-    assert client.arm_auto_merge_auto_mode("o/r", 8) is False
-    assert merged == [7]  # no bulldozing a repo-owner control
-
-
 def test_redirect_off_host_loses_the_authorization_header() -> None:
     # the shared opener forwards Authorization on a same-host redirect but
     # strips it when the redirect changes host (or scheme)
@@ -473,45 +437,6 @@ def test_redirect_off_host_loses_the_authorization_header() -> None:
     assert same_host.headers.get("Authorization") == "Bearer jwt"
 
 
-def test_auto_mode_arming_binds_to_the_expected_head(provider: FileTokenProvider) -> None:
-    """arm_auto_merge_auto_mode threads the blessed head into BOTH paths: the
-    GraphQL arm carries expectedHeadOid, and the clean-status direct merge
-    carries the REST `sha` guard — so a push racing the caller's check is
-    refused by GitHub rather than merged (terra #228 r9)."""
-    import json as _json
-
-    seen: list = []
-
-    class T:
-        def __init__(self, decline_arm: bool) -> None:
-            self.decline_arm = decline_arm
-
-        def __call__(self, request):
-            body = _json.loads(request.data) if request.data else {}
-            seen.append((request.get_method(), request.full_url, body))
-            if request.full_url.endswith("/graphql"):
-                if self.decline_arm:
-                    return {"errors": [{"message": "Pull request is in clean status"}]}
-                return {"data": {"enablePullRequestAutoMerge": {"pullRequest": {"number": 1}}}}
-            if "/pulls/1/merge" in request.full_url:
-                return {"merged": True}
-            if request.full_url.endswith("/pulls/1"):
-                return {"node_id": "PR_x", "number": 1}
-            return {"allow_merge_commit": True}
-
-    client = GitHubClient(auth=provider, transport=T(decline_arm=False))
-    assert client.arm_auto_merge_auto_mode("o/r", 1, expected_head="h" * 40) is True
-    gql = [b for m, u, b in seen if u.endswith("/graphql")][-1]
-    assert gql["variables"]["head"] == "h" * 40
-    assert "expectedHeadOid" in gql["query"]
-
-    seen.clear()
-    client = GitHubClient(auth=provider, transport=T(decline_arm=True))
-    assert client.arm_auto_merge_auto_mode("o/r", 1, expected_head="h" * 40) is True
-    merge = [b for m, u, b in seen if "/pulls/1/merge" in u][-1]
-    assert merge["sha"] == "h" * 40
-
-
 def test_update_issue_patches_the_body(provider: FileTokenProvider) -> None:
     transport = FakeTransport([{}])
     client = GitHubClient(auth=provider, transport=transport)
@@ -530,3 +455,103 @@ def test_list_open_issues_can_filter_by_creator(provider: FileTokenProvider) -> 
     ]
     url = transport.requests[0].full_url
     assert "/repos/o/r/issues?per_page=100&page=1&creator=github-actions%5Bbot%5D" in url
+
+
+def test_check_runs_pagination(provider):
+    check = {
+        "id": 1,
+        "name": "test",
+        "status": "completed",
+        "conclusion": "failure",
+        "html_url": "https://github.com/check",
+        "app": {"slug": "github-actions"},
+    }
+    transport = FakeTransport(
+        [{"check_runs": [check] * 100}, {"check_runs": [{**check, "id": 101}]}]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    runs = client.list_check_runs("org/repo", "branch/name")
+    assert len(runs) == 101 and runs[-1]["id"] == 101
+    assert runs[0] == check
+    assert "/commits/branch%2Fname/check-runs" in transport.requests[0].full_url
+    assert "page=2" in transport.requests[1].full_url
+    assert "filter=all" in transport.requests[0].full_url
+
+
+def test_job_log_tail_is_bounded_stripped_and_optional(provider, monkeypatch):
+    import io
+
+    from outerloop.github import AUTH_SAFE_OPENER
+
+    def raw(request, timeout):
+        assert request.full_url.endswith("/repos/org/repo/actions/jobs/123/logs")
+        return io.BytesIO(
+            (
+                "old line\n" * 100 + "\x1b[31merror\x1b[0m\n"
+                "\x1b]8;;https://example.com\x1b\\last line\x1b]8;;\x1b\\\n"
+            ).encode()
+        )
+
+    monkeypatch.setattr(AUTH_SAFE_OPENER, "open", raw)
+    client = GitHubClient(auth=provider)
+    assert client.job_log_tail("org/repo", 123, 21) == "error\nlast line\n"
+    assert client.job_log_tail("org/repo", 123, 0) == ""
+
+    def fail(request, timeout):
+        raise RuntimeError("log unavailable")
+
+    monkeypatch.setattr(AUTH_SAFE_OPENER, "open", fail)
+    assert client.job_log_tail("org/repo", 123, 100) == ""
+
+
+def test_log_redirect_strips_credentials_and_refuses_downgrade():
+    import urllib.error
+
+    from outerloop.github import _NoAuthRedirect
+
+    request = urllib.request.Request(
+        "https://api.github.com/repos/o/r/actions/jobs/1/logs",
+        headers={"Authorization": "Bearer secret"},
+    )
+    redirect = _NoAuthRedirect()
+    redirected = redirect.redirect_request(
+        request, None, 302, "", {}, "https://storage.blob.core.windows.net/log?signature=x"
+    )
+    assert redirected.get_header("Authorization") is None
+    assert "Authorization" not in redirected.unredirected_hdrs
+    with pytest.raises(urllib.error.URLError, match="downgrade"):
+        redirect.redirect_request(request, None, 302, "", {}, "http://storage.example/log")
+
+
+def test_direct_merge_binds_expected_head(provider):
+    transport = FakeTransport([{"merged": True}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.merge_pull("org/repo", 9, "squash", expected_head="blessed")
+    request = transport.requests[0]
+    assert request.get_method() == "PUT"
+    assert isinstance(request.data, bytes)
+    assert json.loads(request.data) == {"merge_method": "squash", "sha": "blessed"}
+
+
+def test_job_log_stream_stops_at_byte_cap(provider, monkeypatch):
+    from outerloop.github import AUTH_SAFE_OPENER, MAX_LOG_BYTES
+
+    class Response:
+        total = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            assert 0 < size <= 65536
+            assert self.total + size <= MAX_LOG_BYTES
+            self.total += size
+            return b"old\n" * (size // 4)
+
+    response = Response()
+    monkeypatch.setattr(AUTH_SAFE_OPENER, "open", lambda *a, **k: response)
+    assert GitHubClient(auth=provider).job_log_tail("org/repo", 1, 15) == "old\nold\nold\n"
+    assert response.total == MAX_LOG_BYTES

@@ -6,7 +6,7 @@ import contextlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import ClassVar, cast
 
 import pytest
 
@@ -3908,133 +3908,32 @@ def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> 
     assert getattr(lenses[0].harness, "container_image", "") == "/img.sif"
 
 
-def test_auto_merge_mode_uses_the_auto_path(tmp_path) -> None:
-    """The contract's autonomy dial: merge_mode=auto calls the auto-mode
-    arming (arm, or direct merge when nothing is pending) instead of the
-    manual review-required guard; the base-moved decline binds in BOTH."""
-    from outerloop.attempt import _arm_unless_base_moved
+@pytest.mark.parametrize("panel_ran", [False, True])
+def test_auto_publish_only_records_blessed_head(panel_ran):
+    from types import SimpleNamespace
+    from typing import Any
 
-    class ArmingGitHub:
-        def __init__(self):
-            self.auto = []
-            self.manual = []
-            self.heads = []
+    from outerloop.attempt import _arm_unless_base_moved, _blessed_head
 
-        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
-            self.auto.append((repo, number))
-            self.heads.append(expected_head)
-            return True
+    class NoGitHub:
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected GitHub call: {name}")
 
-        def arm_auto_merge_when_review_required(self, repo, number):
-            self.manual.append((repo, number))
-            return True
+    class Workspace:
+        def git(self, *args):
+            assert args == ("rev-parse", "HEAD")
+            return "blessed"
 
-    class StillWs:
-        url = ""
-
-        def git_network(self, *a):
-            return ""
-
-        def git(self, *a):
-            return "h" * 40 if a[-1] == "HEAD" else "b" * 40
-
-        def remote_url(self):
-            return "https://x"
-
-    gh = ArmingGitHub()
-    _arm_unless_base_moved(
-        cast(Any, gh),
-        cast(Any, StillWs()),
-        "o/r",
-        "7",
-        "main",
-        "b" * 40,
-        (),
-        merge_mode="auto",
-        panel_ran=True,
+    ws = Workspace()
+    result = SimpleNamespace(
+        panel_rounds=int(panel_ran), panel_blocking_open=False, panel_degraded=False
     )
-    assert gh.auto == [("o/r", 7)] and gh.manual == []
-    assert gh.heads == ["h" * 40]  # the pushed head is the only head it may merge
     _arm_unless_base_moved(
-        cast(Any, gh), cast(Any, StillWs()), "o/r", "8", "main", "b" * 40, (), merge_mode="manual"
+        cast(Any, NoGitHub()), cast(Any, ws), "o/r", "7", "main", "base", (), merge_mode="auto"
     )
-    assert gh.manual == [("o/r", 8)]
-
-    class MovedWs(StillWs):
-        def git(self, *a):
-            return "c" * 40  # base moved
-
-    _arm_unless_base_moved(
-        cast(Any, gh),
-        cast(Any, MovedWs()),
-        "o/r",
-        "9",
-        "main",
-        "b" * 40,
-        (),
-        merge_mode="auto",
-        panel_ran=True,
+    assert _blessed_head(cast(Any, ws), result, SimpleNamespace(merge="auto")) == (
+        "blessed" if panel_ran else ""
     )
-    assert ("o/r", 9) not in gh.auto  # moved base never self-merges
-
-
-def test_auto_mode_without_a_panel_arms_manual(tmp_path) -> None:
-    """auto means gate+PANEL clean: a publish that ran no panel falls back
-    to the manual review-required guard (terra #171)."""
-    from outerloop.attempt import _arm_unless_base_moved
-
-    class ArmingGitHub:
-        def __init__(self):
-            self.auto = []
-            self.manual = []
-            self.heads = []
-
-        def arm_auto_merge_auto_mode(self, repo, number, expected_head=""):
-            self.auto.append(number)
-            self.heads.append(expected_head)
-            return True
-
-        def arm_auto_merge_when_review_required(self, repo, number):
-            self.manual.append(number)
-            return True
-
-    class StillWs:
-        url = ""
-
-        def git_network(self, *a):
-            return ""
-
-        def git(self, *a):
-            return "h" * 40 if a[-1] == "HEAD" else "b" * 40
-
-        def remote_url(self):
-            return "https://x"
-
-    gh = ArmingGitHub()
-    _arm_unless_base_moved(
-        cast(Any, gh),
-        cast(Any, StillWs()),
-        "o/r",
-        "5",
-        "main",
-        "b" * 40,
-        (),
-        merge_mode="auto",
-        panel_ran=False,
-    )
-    assert gh.auto == [] and gh.manual == [5]
-    _arm_unless_base_moved(
-        cast(Any, gh),
-        cast(Any, StillWs()),
-        "o/r",
-        "6",
-        "main",
-        "b" * 40,
-        (),
-        merge_mode="auto",
-        panel_ran=True,
-    )
-    assert gh.auto == [6] and gh.heads == ["h" * 40]
 
 
 def test_dispatch_settings_read_once_for_fresh_and_wake() -> None:
@@ -4604,7 +4503,7 @@ def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_
     brief = str(BriefCapture.seen["brief"])
     assert "# Your memory (AGENT_MEMORY.md" in brief
     assert "- depth pays, width unclear" in brief
-    assert "Maintain the memory before you finish" in brief
+    assert "A session ends whenever" in brief
 
 
 def test_panel_claim_carries_the_one_contribution_mandate() -> None:
@@ -5913,3 +5812,37 @@ def test_end_after_submitted_gate_keeps_verdict_note(tmp_path, monkeypatch):
     verdict = next(m for m in pending(state / "runs" / run_id, 0) if m.kind == "gate-verdict")
     assert ended.ending_note in verdict.payload["text"]
     assert "Stopping after this verdict." in Path(outcome.report_path).read_text()
+
+
+def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkeypatch):
+    import json
+
+    from outerloop.github import GitHubClient
+
+    target = _seed_target(tmp_path, monkeypatch, CONTRACT + "\nmerge: auto\n")
+
+    class GitHub(FakeGitHub):
+        def enable_auto_merge(self, *args, **kwargs):
+            pytest.fail("auto publish armed GitHub auto-merge")
+
+        def merge_pull(self, *args, **kwargs):
+            pytest.fail("publish merged before the sweep")
+
+    github = GitHub()
+    with _queued_local([13.876, 13.1]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-auto",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
+            github=cast(GitHubClient, github),
+            bot_auth=NoAuth(),
+            now=1_000_000.0,
+            created="2026-09-13T00:00:00Z",
+            panel_lenses=_panel_lens(json.dumps({"findings": [], "notes": "clean"})),
+        )
+    assert outcome.outcome == "improved"
+    assert not github.armed
+    record = load_record(tmp_path / "state", "tsp-auto")
+    assert record.auto_blessed_head == _git(target, "rev-parse", github.prs[0]["head"]).strip()
+    assert record.auto_blessed_head
